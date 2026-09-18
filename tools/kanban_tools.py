@@ -563,6 +563,25 @@ def _handle_list(args: dict, **kw) -> str:
             "promoted": promoted})
 
 
+def _unsatisfied_parent_blockers(kb, conn, tid: str) -> list[tuple[str, str]]:
+    """``(parent_id, status)`` for every direct parent not in a terminal state.
+
+    Read-only mirror of the ``task_links`` join in ``kanban_db._parents_satisfied``
+    (``done`` / ``archived`` release the child), in deterministic id order, so a
+    ``complete_task`` refusal that only returns ``False`` can still name the
+    actionable blockers. Advisory reporting only: queried after the authoritative
+    write, so a concurrent parent completion may have already cleared it.
+    """
+    rows = conn.execute(
+        "SELECT p.id, p.status FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+        "ORDER BY p.id",
+        (tid,),
+    ).fetchall()
+    return [(row["id"], row["status"]) for row in rows]
+
+
 @_kanban_handler("kanban_complete")
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
@@ -619,8 +638,19 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"summary/metadata and either drop these ids from created_cards, or pass "
                 f"created_cards=[] to skip the card-claim check entirely.")
         task = kb.get_task(conn, tid)
-        _check(ok, (task.last_failure_error if task else None) or
-               f"could not complete {tid} (unknown id, stale run, or already terminal)")
+        if not ok:
+            # complete_task reports every refusal as bare False; a reopened or
+            # never-finished parent is the actionable one (#113373: the worker's
+            # done work was refused as "stale run"). Name the blockers so the
+            # worker/operator completes the parents instead of re-running.
+            blockers = _unsatisfied_parent_blockers(kb, conn, tid)
+            if blockers:
+                detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
+                raise _Reject(
+                    f"could not complete {tid}: unsatisfied parent dependencies: "
+                    f"{detail}; complete the parents first (done or archived)")
+            _check(False, (task.last_failure_error if task else None) or
+                   f"could not complete {tid} (unknown id, stale run, or already terminal)")
         run = kb.latest_run(conn, tid)
         return _ok(task_id=tid, run_id=run.id if run else None)
 
