@@ -674,7 +674,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         _get_enabled_set,
         _read_manifest as _read_plugin_manifest_at,
     )
-    from hermes_cli.plugins_cmd_catalog import removed_annotation_batch
+    from hermes_cli.plugins_cmd_catalog import removed_annotation
     from hermes_cli.plugin_catalog import resolved_removed_entries
 
     dashboard_list = _get_dashboard_plugins()
@@ -685,15 +685,11 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
 
-    discovered = _discover_all_plugins()
     # One kill-list resolution for the whole rebuild: resolving per row costs a live-catalog
     # fetch per installed plugin when the catalog host is slow or unreachable.
-    removed_annotations = removed_annotation_batch(
-        ((name, dir_str) for name, _v, _d, _s, dir_str, _k in discovered),
-        resolved_removed_entries(),
-    )
+    removed_entries = resolved_removed_entries()
 
-    for name, version, description, source, dir_str, key in discovered:
+    for name, version, description, source, dir_str, key in _discover_all_plugins():
         # Both the path-derived key (nested category plugins) and the bare manifest name
         # count for enabled/disabled state, matching the runtime loader's back-compat lookup.
         aliases = {name, key} if key else {name}
@@ -725,7 +721,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
-            "removed_reason": removed_annotations.get(name),
+            "removed_reason": removed_annotation(name, dir_str, removed_entries),
         })
 
     agent_names = {r["name"] for r in rows}

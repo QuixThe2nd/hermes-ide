@@ -11,6 +11,7 @@ import hermes_cli.web_routers.dashboard_ui as _rt_dashboard_ui
 import hermes_cli.web_server_dashboard as _web_server_dashboard
 import hermes_cli.web_server_memory as _web_server_memory
 from hermes_cli import plugins_cmd
+from hermes_cli import plugin_catalog
 from hermes_cli import plugins_cmd_catalog
 from tools import registry as tools_registry
 
@@ -156,11 +157,12 @@ def test_plugins_hub_route_builds_catalog_annotations_off_event_loop(monkeypatch
     _patch_minimal_hub_dependencies(monkeypatch, check_fn=lambda: True)
     monkeypatch.setattr(web_server, "_require_token", lambda _request: None)
 
-    def removed_annotation(name, _dir_path):
+    def removed_annotation(name, _dir_path, _removed_entries=None):
         annotation_threads.append(threading.current_thread())
         return "withdrawn by catalog" if name == "demo" else None
 
     monkeypatch.setattr(plugins_cmd_catalog, "removed_annotation", removed_annotation)
+    monkeypatch.setattr(plugin_catalog, "resolved_removed_entries", lambda: [])
 
     payload = asyncio.run(_rt_dashboard_ui.get_plugins_hub(object()))
 

@@ -272,21 +272,18 @@ def _live_cache_path() -> Path:
     return get_hermes_home() / "cache" / "plugin-catalog.json"
 
 
-# Last failed live fetch: without it, a dead catalog host costs one full request
-# timeout PER CALLER (the plugins hub alone asks once per installed plugin), so
-# the dashboard event loop stalls for minutes. A remembered failure keeps those
-# callers on the in-tree copy until the TTL lets one fresh attempt through.
-_live_fetch_failed_until: Dict[str, float] = {}
+# Wall-clock deadline of the last failed live fetch. Without it a dead catalog host costs one
+# full request timeout PER CALL (the plugins hub and ``plugins list`` used to ask once per
+# installed plugin), so the dashboard event loop stalled for minutes.
+_live_fetch_failed_until = 0.0
 
 
-def _live_fetch_failure_recent() -> bool:
-    failed_until = _live_fetch_failed_until.get(LIVE_CATALOG_URL)
-    return failed_until is not None and time.time() < failed_until
-
-
-def _remember_live_fetch_failure() -> None:
-    failed_until = time.time() + LIVE_CATALOG_FAILURE_TTL_SECONDS
-    _live_fetch_failed_until[LIVE_CATALOG_URL] = failed_until
+def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
+    """A previously fetched copy still beats the in-tree one when the network is down."""
+    try:
+        return json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
+    except Exception:
+        return None
 
 
 def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
@@ -294,21 +291,16 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     ``HERMES_HOME/cache`` for :data:`LIVE_CATALOG_TTL_SECONDS`. ``None`` on ANY failure — callers fall
     back to the in-tree catalog. A failed network attempt is remembered for
     :data:`LIVE_CATALOG_FAILURE_TTL_SECONDS` so a dead host costs one timeout per TTL window, not one
-    per caller (``force`` bypasses both caches)."""
-    if not force and _live_fetch_failure_recent():
-        try:  # stale cache still beats the in-tree copy when the network is down
-            cache = _live_cache_path()
-            if cache.is_file():
-                return json.loads(cache.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-        return None
+    per call (``force`` bypasses both caches)."""
+    global _live_fetch_failed_until
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
             return json.loads(cache.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
+    if not force and time.time() < _live_fetch_failed_until:
+        return _stale_live_cache(cache)
     try:
         import httpx
         from hermes_constants import mkdir_under_hermes_home
@@ -325,11 +317,8 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         return data
     except Exception as exc:
         logger.debug("Plugin catalog: live fetch failed: %s", exc)
-        _remember_live_fetch_failure()
-        try:  # stale cache still beats the in-tree copy when the network is down
-            return json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
-        except Exception:
-            return None
+        _live_fetch_failed_until = time.time() + LIVE_CATALOG_FAILURE_TTL_SECONDS
+        return _stale_live_cache(cache)
 
 
 def load_catalog_live() -> List[PluginCatalogEntry]:
