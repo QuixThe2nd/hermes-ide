@@ -156,14 +156,14 @@ def _resolve_budget_fallback(
             preserved_verification_fallback = True
         else:
             # _handle_max_iterations makes one extra toolless request for a summary.
-            agent._emit_status(
+            agent._emit_diagnostic_status(
                 f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
                 "— asking model to summarise"
             )
             if not agent.quiet_mode:
                 agent._safe_print(
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-                    "— requesting summary..."
+                    "— requesting summary...", diagnostic=True,
                 )
             _summary_api_started = time.perf_counter()
             try:
