@@ -1,6 +1,6 @@
 name: mnemosyne
 repo: https://github.com/mnemosyne-oss/mnemosyne
-sha: 17abb10b342380856ef6c1d23a449e71edf9d718
+sha: 95ef3be20d28bd9ee1d517bcb25ed00000eab577
 subdir: integrations/hermes-catalog
 requires_hermes: ">=0.21.4"
 version: "0.7.0"
@@ -11,9 +11,12 @@ category: memory
 docs_url: https://github.com/mnemosyne-oss/mnemosyne
 capabilities:
   provides_tools:
+  - mnemosyne_apply_pending
+  - mnemosyne_batch
   - mnemosyne_diagnose
   - mnemosyne_export
   - mnemosyne_forget
+  - mnemosyne_forget_canonical
   - mnemosyne_get
   - mnemosyne_graph_link
   - mnemosyne_graph_query
