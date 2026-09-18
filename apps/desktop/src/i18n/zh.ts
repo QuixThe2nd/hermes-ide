@@ -3430,6 +3430,7 @@ export const zh = defineLocale({
     notAvailableTitle: '更新不可用',
     unsupportedMessage: '此版本的 Hermes 无法在应用内自行更新。',
     connectionRetry: '请检查网络连接后重试。',
+    gitUnusable: 'Hermes 无法在这台电脑上运行 Git，因此无法检查更新。',
     latestBody: '你正在运行最新版本。',
     latestBodyBackend: '后端正在运行最新版本。',
     allSetTitle: '已是最新',

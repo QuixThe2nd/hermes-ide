@@ -2744,6 +2744,7 @@ export const ja = defineLocale({
     notAvailableTitle: '更新は利用できません',
     unsupportedMessage: 'このバージョンの Hermes はアプリ内から自分を更新できません。',
     connectionRetry: '接続を確認してもう一度試してください。',
+    gitUnusable: 'このコンピューターで Git を実行できなかったため、更新を確認できませんでした。',
     latestBody: '最新バージョンを実行しています。',
     latestBodyBackend: 'バックエンドは最新バージョンを実行しています。',
     allSetTitle: '準備完了',

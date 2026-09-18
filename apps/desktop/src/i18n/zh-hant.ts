@@ -2725,6 +2725,7 @@ export const zhHant = defineLocale({
     notAvailableTitle: '更新不可用',
     unsupportedMessage: '此版本的 Hermes 無法在應用程式內自行更新。',
     connectionRetry: '請檢查網路連線後重試。',
+    gitUnusable: 'Hermes 無法在這台電腦上執行 Git，因此無法檢查更新。',
     latestBody: '您正在執行最新版本。',
     latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',

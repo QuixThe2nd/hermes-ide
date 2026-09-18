@@ -3055,6 +3055,7 @@ export const ru = defineLocale({
     notAvailableTitle: 'Обновление недоступно',
     unsupportedMessage: 'Эта версия Hermes не может обновлять себя из приложения.',
     connectionRetry: 'Проверьте соединение и попробуйте снова.',
+    gitUnusable: 'Hermes не удалось запустить Git на этом компьютере, поэтому проверить обновления не получилось.',
     latestBody: 'У вас последняя версия.',
     latestBodyBackend: 'Бэкенд работает на последней версии.',
     allSetTitle: 'Всё готово',

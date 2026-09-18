@@ -388,7 +388,7 @@ import {
   type SecretStoragePolicy,
   writeSecretStoragePolicy
 } from './secret-storage-policy'
-import { selectRunnableBinary } from './select-runnable-binary'
+import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -3150,8 +3150,10 @@ function resolveUpdateRoot() {
 
 function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    const gitBinary = resolveGitBinary()
+
     const child = spawn(
-      resolveGitBinary(),
+      gitBinary,
       IS_WINDOWS ? ['-c', 'windows.appendAtomically=false', ...args] : args,
       hiddenWindowsChildOptions({
         cwd: options.cwd,
@@ -3172,7 +3174,13 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
       stderr += text
       options.onLine?.('stderr', text)
     })
-    child.once('error', reject)
+    // A spawn-level failure means git itself never ran (missing, not
+    // executable, wrong CPU architecture) — a local problem, not a network one.
+    child.once('error', error => {
+      const local = describeGitSpawnFailure(error, gitBinary)
+
+      reject(local ? Object.assign(new Error(local), { kind: GIT_UNUSABLE, cause: error }) : error)
+    })
     // 'close', not 'exit': exit can fire before the stdio pipes drain, and a
     // resolved-early `remote get-url` came back as "" often enough to route
     // passive checks down the wrong remote path.
@@ -17528,7 +17536,7 @@ ipcMain.handle('hermes:updates:check', async (_event, opts) =>
   checkUpdates({ force: Boolean(opts?.force) }).catch(error => ({
     supported: true,
     branch: readDesktopUpdateConfig().branch,
-    error: 'check-failed',
+    error: error?.kind === GIT_UNUSABLE ? GIT_UNUSABLE : 'check-failed',
     message: error?.message || String(error),
     fetchedAt: Date.now()
   }))

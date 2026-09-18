@@ -3295,6 +3295,7 @@ export const en: Translations = {
     unsupportedMessage: 'This version of Hermes can’t update itself from inside the app.',
     connectionRetry:
       "Hermes couldn't reach the update server. Check your internet connection and try again. If you use a remote Hermes, make sure it is online.",
+    gitUnusable: 'Hermes could not run Git on this computer, so it could not check for updates.',
     connectionSettings: 'Connection settings',
     openDownloadPage: 'Open download page',
     latestBody: 'You’re running the latest version.',
