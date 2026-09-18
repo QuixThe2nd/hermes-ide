@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+from agent.error_classifier import _BILLING_PATTERNS, _OVERLOADED_PATTERNS
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -2224,7 +2225,8 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
         logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
     or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY")
     if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
+        _mark_provider_unhealthy(
+            "openrouter", ttl=60, reason=_describe_openrouter_unavailable(or_model), level=logging.DEBUG)
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return _create_openai_client(
@@ -2257,7 +2259,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
         logger.warning("Auxiliary Nous client unavailable: no Nous authentication found (run: hermes auth).")
-        _mark_provider_unhealthy("nous", ttl=60)
+        _mark_provider_unhealthy("nous", ttl=60, reason="no Nous authentication found", level=logging.DEBUG)
         return None, None
     if runtime is None and nous:
         logger.debug("Auxiliary Nous: runtime JWT refresh failed; checking stored auth.json token.")
@@ -2270,7 +2272,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "Auxiliary Nous client unavailable: no usable inference JWT found "
                 "(run: hermes auth add nous)."
             )
-            _mark_provider_unhealthy("nous", ttl=60)
+            _mark_provider_unhealthy("nous", ttl=60, reason="no usable Nous inference JWT", level=logging.DEBUG)
             return None, None
         base_url = str(
             (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
@@ -2285,7 +2287,9 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             # The health marker is provider-wide, so a full-length anonymous cooldown would
             # outlive signing in mid-cooldown; bound it instead of re-resolving credentials
             # (auth store lock, pool read) on every auxiliary call for the cooldown's duration.
-            _mark_provider_unhealthy("nous", ttl=min(remaining, 60.0) if anonymous else remaining)
+            _mark_provider_unhealthy(
+                "nous", ttl=min(remaining, 60.0) if anonymous else remaining,
+                reason="Nous Portal rate-limited", level=logging.INFO)
             return None, None
     lane = "vision" if vision else "text"
     # The free tier's host serves exactly one model, for every lane: asking it for the Portal's
@@ -2983,6 +2987,7 @@ def _get_provider_chain() -> List[tuple]:
 _AUX_UNHEALTHY_TTL_SECONDS = 600  # 10 minutes
 _aux_unhealthy_until: Dict[Any, float] = {}
 _aux_unhealthy_logged_at: Dict[Any, float] = {}
+_aux_unhealthy_reason: Dict[Any, str] = {}
 # resolved_provider / explicit-config names → chain labels.
 _AUX_UNHEALTHY_LABEL_ALIASES = {
     "openrouter": "openrouter", "nous": "nous", "custom": "local/custom",
@@ -2998,10 +3003,16 @@ def _normalize_chain_label(provider: str) -> str:
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
 
 
+_AUX_UNHEALTHY_PAYMENT_REASON = "payment / credit error"
+
+
 def _mark_provider_unhealthy(
     provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
+    reason: str = _AUX_UNHEALTHY_PAYMENT_REASON, level: int = logging.WARNING,
 ) -> None:
-    """Hide one provider endpoint until the TTL expires after a confirmed payment error."""
+    """Hide one provider endpoint until the TTL expires. ``reason`` is what the log says and what the
+    skip line echoes: absent credentials are an expected state (DEBUG), a confirmed 402 is a fault
+    (WARNING) — the old fixed payment wording sent local-only users chasing billing (#64144)."""
     label = _normalize_chain_label(provider)
     if not label:
         return
@@ -3009,10 +3020,12 @@ def _mark_provider_unhealthy(
     ttl = _AUX_UNHEALTHY_TTL_SECONDS if ttl is None else ttl
     expires_at = time.time() + ttl
     _aux_unhealthy_until[key] = expires_at
-    logger.warning(
-        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
+    _aux_unhealthy_reason[key] = reason
+    logger.log(
+        level,
+        "Auxiliary: marking %s unhealthy for %ds (%s). "
         "Subsequent auxiliary calls will skip it until %s.",
-        label, int(ttl), time.strftime("%H:%M:%S", time.localtime(expires_at)),
+        label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
     )
 
 
@@ -3027,6 +3040,7 @@ def _is_provider_unhealthy(label: str, base_url: Optional[str] = None) -> bool:
     if time.time() >= expires_at:
         _aux_unhealthy_until.pop(key, None)
         _aux_unhealthy_logged_at.pop(key, None)
+        _aux_unhealthy_reason.pop(key, None)
         return False
     return True
 
@@ -3041,8 +3055,9 @@ def _log_skip_unhealthy(
         _aux_unhealthy_logged_at[key] = now
         expires_at = _aux_unhealthy_until.get(key, now)
         logger.info(
-            "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
-            task or "call", label, max(0, int(expires_at - now)),
+            "Auxiliary %s: skipping %s (%s, retry in %ds)",
+            task or "call", label, _aux_unhealthy_reason.get(key, _AUX_UNHEALTHY_PAYMENT_REASON),
+            max(0, int(expires_at - now)),
         )
 
 
@@ -3050,6 +3065,7 @@ def _reset_aux_unhealthy_cache() -> None:
     """Clear the unhealthy cache (tests / explicit user reset)."""
     _aux_unhealthy_until.clear()
     _aux_unhealthy_logged_at.clear()
+    _aux_unhealthy_reason.clear()
 
 
 def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
@@ -3057,13 +3073,15 @@ def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
     return any(kw in text for kw in needles)
 
 
-# Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies), plus daily/weekly quota
+# Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies). The main classifier's
+# ``_BILLING_PATTERNS`` is the single source (#107166: the two lists had drifted, so OpenRouter's org
+# "Budget limit exceeded" / "Key limit exceeded" 403s were billing for the main loop but not for the aux
+# ladder, and aux fallback never fired); the aux list only adds broader phrasings and daily/weekly quota
 # exhaustion (functionally credit exhaustion; "resource exhausted" is the Vertex/gRPC quota phrasing —
 # also serialized by SDK wrappers and NIM as RESOURCE_EXHAUSTED / ResourceExhausted / resource-exhausted).
-_PAYMENT_KEYWORDS = (
-    "credits", "insufficient funds", "can only afford", "billing", "payment required",
-    "out of funds", "run out of funds", "balance_depleted", "no usable credits",
-    "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
+_PAYMENT_KEYWORDS = _BILLING_PATTERNS + (
+    "credits", "insufficient funds", "can only afford", "billing",
+    "isn't available on the free tier", "key limit exceeded", "budget limit",
     "requires a subscription", "upgrade for access", "upgrade for higher limits",
     "reached your session usage limit", "quota exceeded", "quota_exceeded",
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
@@ -3098,6 +3116,12 @@ _RATE_LIMIT_BILLING_KEYWORDS = (
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
     "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
 )
+
+
+def _is_overloaded_error(exc: Exception) -> bool:
+    """Server busy, credential fine ("at capacity upstream … not your API key's rate limit"): back off,
+    never bench the credential (#108349). Same phrase table as the main classifier."""
+    return _contains_any(str(exc).lower(), _OVERLOADED_PATTERNS)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -3554,7 +3578,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return _rotate(401)
     if _is_payment_error(exc):
         return _rotate(402)
-    if _is_rate_limit_error(exc):
+    if _is_rate_limit_error(exc) and not _is_overloaded_error(exc):
         return _rotate(429)
     return False
 
@@ -3890,7 +3914,7 @@ def _quarantine_fallback_candidate(
     base_url: str = "", tag: str = "",
 ) -> None:
     """Refresh unavailable or still 401s: token is dead. Quarantine the candidate so the caller moves on."""
-    _mark_provider_unhealthy(fb_provider or fb_label, base_url=base_url)
+    _mark_provider_unhealthy(fb_provider or fb_label, base_url=base_url, reason="stale fallback credential")
     logger.warning("Auxiliary %s%s: fallback candidate %s has a stale/unrefreshable "
                    "credential (%s) — skipping to next fallback", task or "call", tag, fb_label, fb_err)
 
@@ -4093,6 +4117,13 @@ def _try_main_agent_model_fallback(
             return None, None, ""
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
+        return None, None, ""
+    if task == "vision" and (
+            main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
+        # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a
+        # text-only main model turns a transient 429 into a guaranteed 400 (#108349).
+        logger.info("Auxiliary vision: %s on %s — main agent model %s accepts no image input, not falling back",
+                    reason, failed_provider, main_provider)
         return None, None, ""
     main_base_url = _custom_health_base_url(main_provider)
     if _failed_backend_skip(
