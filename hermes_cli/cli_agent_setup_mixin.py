@@ -323,14 +323,14 @@ class CLIAgentSetupMixin:
                     platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
+                # Startup resolved reasoning_config for the launch model; the fallback model has its
+                # own per-model contract (an always-thinking model 400s on the primary's effort).
+                # Same chokepoint as /model, /new and --resume; an explicit --reasoning is the
+                # user's intent for this run and outranks the fallback model's config.
                 if getattr(self, "_explicit_reasoning_config", None) is None:
-                    try:
-                        from cli import CLI_CONFIG
-                        from hermes_constants import resolve_reasoning_config
-                        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
-                    except Exception:
-                        # Fallback routing must remain available when optional config refresh fails.
-                        pass
+                    from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
+                    _resolve_cli_reasoning(self)
+                    logger.info("Fallback %s: reasoning_config resolved: %s", self.model, self.reasoning_config)
                 return runtime
             except Exception:
                 continue
