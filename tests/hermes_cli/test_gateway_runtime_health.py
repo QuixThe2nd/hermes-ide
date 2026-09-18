@@ -64,6 +64,21 @@ def test_runtime_health_lines_include_fatal_platform_and_startup_reason(monkeypa
     assert "⚠ Last startup issue: telegram conflict" in lines
 
 
+def test_runtime_health_lines_render_watchdog_degraded_exit(monkeypatch):
+    """A watchdog-stamped ``degraded`` + exit_reason renders as a health line; the startup-time
+    ``degraded`` (retryable platforms queued, no exit_reason) stays silent (#113372)."""
+    record = {"gateway_state": "degraded", "exit_reason": "loop_liveness_watchdog",
+              "pid": 4242, "updated_at": _iso_age(30), "platforms": {}}
+    monkeypatch.setattr("gateway.status.read_runtime_status", lambda: record)
+
+    degraded = [ln for ln in _runtime_health_lines() if ln.startswith("⚠ Gateway exited degraded:")]
+    assert len(degraded) == 1
+    assert "event loop stopped dispatching" in degraded[0]
+
+    record["exit_reason"] = None
+    assert not [ln for ln in _runtime_health_lines() if "degraded" in ln]
+
+
 def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     from gateway import status as status_mod
 

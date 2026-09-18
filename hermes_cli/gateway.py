@@ -5117,6 +5117,16 @@ def _platform_status(platform: dict) -> str:
     return "partially configured" if any(present) else "not configured"
 
 
+# Operator wording for the out-of-loop watchdog exit reasons stamped by gateway/shutdown_watchdog.py.
+_WATCHDOG_EXIT_REASONS = {
+    "loop_liveness_watchdog": (
+        "event loop stopped dispatching (housekeeping, cron and the kanban dispatcher froze); "
+        f"the liveness watchdog exited with code {GATEWAY_SERVICE_RESTART_EXIT_CODE} for the supervisor to restart it"
+    ),
+    "shutdown_watchdog": "shutdown drain wedged; the shutdown watchdog forced the exit (see logs/gateway-shutdown-watchdog.log)",
+}
+
+
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
@@ -5151,6 +5161,10 @@ def _runtime_health_lines() -> list[str]:
 
     if gateway_state == "startup_failed" and exit_reason:
         lines.append(f"⚠ Last startup issue: {exit_reason}")
+    elif gateway_state == "degraded" and exit_reason:
+        # An out-of-loop watchdog hard-exited the process (#113372): the loop stopped dispatching, so
+        # housekeeping/cron/kanban froze together. Without this arm the file would read 'running'.
+        lines.append(f"⚠ Gateway exited degraded: {_WATCHDOG_EXIT_REASONS.get(exit_reason, exit_reason)}")
     elif gateway_state == "draining":
         action = "restart" if state.get("restart_requested") else "shutdown"
         from gateway.status import parse_active_agents
