@@ -471,6 +471,13 @@ Called at the drain site after the slot was consumed. If there's an overflow ite
 ### Clearing
 
 Queued events for a session are cleared on `/new` and `/reset` (via `_handle_reset_command`).
+`/stop` drops the single-slot follow-up the user sent during the interrupted turn. An
+**internal** wake parked in either store (an async-delegation completion notice, a kanban/cron
+`notify+wake`) survives all three commands: `_interrupt_and_clear_session` leaves it in the slot
+(promoting it out of the overflow when a discarded human follow-up held the slot) so the
+post-command drain starts it right away instead of the session idling until the next user
+message. Whether a wake pinned to a session that `/new` just closed may still run is decided at
+processing time (`_resolve_async_delegation_session`, fail-closed).
 
 ### FIFO Invariant
 
