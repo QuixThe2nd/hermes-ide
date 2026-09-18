@@ -78,6 +78,35 @@ def test_promoted_reasoning_is_returned_but_persisted_row_keeps_content_empty(lo
     assert "api_content" not in assistant_rows[0]
 
 
+def test_stall_guard_interim_row_carries_promoted_text_as_sidecar(loop_agent):
+    """Promoted reasoning that tails on an announced next action trips the stall guard; the interim
+    row it appends must follow the same shape as the final row — ``content`` empty, the promoted
+    text in ``api_content`` — so the continuation request replays a real assistant turn, not an
+    empty one (#111761)."""
+    from tests.agent.test_run_agent import _mock_response
+
+    stalled = "The user wants the file contents. Let me now read the file."
+    loop_agent.valid_tool_names = {"read_file"}
+    loop_agent._stall_guards = True
+
+    result = _run(loop_agent, [
+        _mock_response(content="", finish_reason="stop", reasoning_content=stalled),
+        _mock_response(content="Here is the file.", finish_reason="stop"),
+    ])
+
+    assert result["final_response"] == "Here is the file."
+    interim = [m for m in result["messages"] if m.get("role") == "assistant"][0]
+    assert not interim.get("content")
+    assert interim["reasoning"] == stalled
+    assert interim["api_content"] == stalled
+
+    # The continuation request carried the promoted text as the interim assistant turn.
+    second_call = loop_agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+    interim_wire = [m for m in second_call if m.get("role") == "assistant"][0]
+    assert interim_wire["content"] == stalled
+    assert "api_content" not in interim_wire
+
+
 def test_reasoning_only_clean_stop_logs_warning_with_route(loop_agent, caplog):
     from tests.agent.test_run_agent import _mock_response
 
