@@ -36,7 +36,11 @@ def _load_auxiliary_client() -> None:
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
-from tools.vision_tools_history_budget import resolve_embed_target_bytes as _resolve_embed_target_bytes
+from tools.vision_tools_history_budget import (
+    record_embed as _record_embed,
+    repeat_refusal as _repeat_refusal,
+    resolve_embed_target_bytes as _resolve_embed_target_bytes,
+)
 from tools.vision_tools_image_prep import (
     _VISION_MAX_VALIDATED_AGGREGATE_PIXELS,
     _VISION_MAX_VALIDATED_FRAME_COUNT,
@@ -585,6 +589,9 @@ async def _vision_analyze_native(
     or a JSON error string (the normal tool-result contract) on failure."""
     if not isinstance(image_url, str) or not image_url.strip():
         return tool_error("image_url is required", success=False)
+    refusal = _repeat_refusal(image_url)
+    if refusal is not None:
+        return refusal
     prepared: Optional[_PreparedImage] = None
     try:
         from tools.interrupt import is_interrupted
@@ -612,6 +619,7 @@ async def _vision_analyze_native(
             # Reject rather than embed a session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)
+        _record_embed(image_url)
         return _build_native_vision_tool_result(
             image_url=image_url, question=question, image_data_url=image_data_url,
             image_size_bytes=prepared.size_bytes,

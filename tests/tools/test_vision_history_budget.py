@@ -1,20 +1,32 @@
 """Invariants for the native-embed history budgets (#112095).
 
-A native ``vision_analyze`` result is re-sent on every later API call, so the per-embed byte budget
-must follow ``vision.embed_target_bytes`` instead of a hardcoded 256 KB.
+A native ``vision_analyze`` result is re-sent on every later API call, so (1) a delegated subagent
+may not embed the same image without limit and (2) the per-embed byte budget must follow
+``vision.embed_target_bytes`` instead of a hardcoded 256 KB.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 
 import pytest
 
+from agent.delegation_context import delegated_child_context
 from hermes_cli.config import get_config_path
 from tools import vision_tools_history_budget as budget
 from tools.vision_tools import _vision_analyze_native
 
 PIL = pytest.importorskip("PIL.Image")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_counters():
+    with budget._repeat_lock:
+        budget._repeat_counts.clear()
+    yield
+    with budget._repeat_lock:
+        budget._repeat_counts.clear()
 
 
 def _write_config(text: str) -> None:
@@ -37,8 +49,40 @@ def _load(image, region=None):
     return asyncio.get_event_loop().run_until_complete(_vision_analyze_native(image, "q", region=region))
 
 
+def _embedded(result) -> bool:
+    return isinstance(result, dict) and result.get("_multimodal") is True
+
+
 def _embed_len(result) -> int:
     return len(next(p["image_url"]["url"] for p in result["content"] if p.get("type") == "image_url"))
+
+
+class TestRepeatCap:
+    def test_delegated_subagent_is_refused_after_three_loads_of_one_image(self, tmp_path):
+        """Full loads and region crops of the same file share one counter; the refusal names the
+        knob and tells the model to answer from what it already has (no fourth embed)."""
+        shot = _png(tmp_path / "shot.png")
+        with delegated_child_context("child-session"):
+            assert _embedded(_load(shot))
+            assert _embedded(_load(shot, region=[0, 0, 8, 8]))
+            assert _embedded(_load(shot))
+            refused = _load(shot, region=[4, 4, 12, 12])
+            other = _load(_png(tmp_path / "other.png"))
+        assert isinstance(refused, str)
+        payload = json.loads(refused)
+        assert payload["success"] is False
+        assert "already been loaded" in payload["error"] and "max_calls_per_image" in payload["error"]
+        assert _embedded(other), "a different image in the same session is not affected"
+
+    def test_main_agent_is_unlimited_unless_configured(self, tmp_path):
+        shot = _png(tmp_path / "shot.png")
+        assert all(_embedded(_load(shot)) for _ in range(5))
+
+        _write_config("vision:\n  max_calls_per_image: 1\n")
+        with budget._repeat_lock:
+            budget._repeat_counts.clear()
+        assert _embedded(_load(shot))
+        assert json.loads(_load(shot))["success"] is False
 
 
 class TestEmbedTargetBytes:

@@ -1,16 +1,34 @@
 """History-reuse budgets for native vision embeds (config section ``vision``).
 
 A native ``vision_analyze`` result bakes the image into conversation history, where it is
-re-sent on every later API call. ``vision.embed_target_bytes`` bounds that cost
-(how large one embed may be); see #112095 for why 256 KB is a budget, not a constant.
+re-sent on every later API call. Two knobs bound that cost: ``vision.embed_target_bytes``
+(how large one embed may be) and ``vision.max_calls_per_image`` (how often the same image
+may be embedded per session). See #112095: a delegated subagent re-loaded five screenshots
+158 times in 15 minutes because nothing refused the repeat.
 """
 from __future__ import annotations
+
+import hashlib
+import os
+import threading
+from pathlib import Path
+from typing import Optional
+
+from tools.registry import tool_error
 
 # 256 KB keeps a 1568px screenshot cheap enough to ride the session (#92699); the clamp keeps one
 # setting from turning every later request into a multi-megabyte resend or a useless thumbnail.
 _DEFAULT_EMBED_TARGET_BYTES = 256 * 1024
 _MIN_EMBED_TARGET_BYTES = 64 * 1024
 _MAX_EMBED_TARGET_BYTES = 4 * 1024 * 1024
+
+# Delegated subagents run unattended and cannot be steered mid-loop from the CLI, so they get a
+# cap by default; the main agent stays unlimited unless the user sets ``vision.max_calls_per_image``.
+_SUBAGENT_REPEAT_CAP = 3
+_REPEAT_COUNTS_MAX_KEYS = 4096
+
+_repeat_counts: dict[tuple[str, str], int] = {}
+_repeat_lock = threading.Lock()
 
 
 def _cfg_vision(key: str, default=None):
@@ -32,3 +50,64 @@ def resolve_embed_target_bytes() -> int:
     except (TypeError, ValueError, OverflowError):
         return _DEFAULT_EMBED_TARGET_BYTES
     return min(max(target, _MIN_EMBED_TARGET_BYTES), _MAX_EMBED_TARGET_BYTES)
+
+
+def resolve_repeat_cap() -> int:
+    """Per-image embed cap for this session; 0 = unlimited.
+
+    ``vision.max_calls_per_image`` unset (or unparseable) → ``_SUBAGENT_REPEAT_CAP`` inside a
+    delegated subagent, unlimited for the main agent. An explicit value applies everywhere.
+    """
+    raw = _cfg_vision("max_calls_per_image")
+    try:
+        if raw is not None and raw != "" and not isinstance(raw, bool):
+            return max(int(raw), 0)
+    except (TypeError, ValueError):
+        pass
+    from agent.delegation_context import is_delegated_child_process_context
+    return _SUBAGENT_REPEAT_CAP if is_delegated_child_process_context() else 0
+
+
+def _image_key(image_url: str) -> str:
+    """Stable identity for an image source: local paths resolve (symlinks, ``~``, ``file://``),
+    URLs drop their fragment, data URLs hash. Region crops are NOT part of the key — the incident
+    loop alternated full loads and crops of the same files, and both re-embed the image."""
+    if image_url.startswith("data:"):
+        return "data:" + hashlib.sha256(image_url.encode("utf-8", "ignore")).hexdigest()[:32]
+    stripped = image_url.split("#", 1)[0].removeprefix("file://")
+    if "://" in stripped:
+        return "url:" + stripped
+    return "file:" + str(Path(os.path.expanduser(stripped)).resolve())
+
+
+def _count_key(image_url: str) -> tuple[str, str]:
+    from gateway.session_context import get_session_env
+    return get_session_env("HERMES_SESSION_ID", ""), _image_key(image_url)
+
+
+def repeat_refusal(image_url: str) -> Optional[str]:
+    """Tool-error JSON when this image already hit its per-session embed cap, else ``None``."""
+    cap = resolve_repeat_cap()
+    if cap <= 0:
+        return None
+    with _repeat_lock:
+        count = _repeat_counts.get(_count_key(image_url), 0)
+    if count < cap:
+        return None
+    return tool_error(
+        f"vision_analyze refused: this image has already been loaded into context {count} time(s) "
+        "in this session (region crops of the same file count too), and every native load re-sends "
+        "the full image on each later API call. Answer from what you can already see, or ask the "
+        f"user. (vision.max_calls_per_image = {cap}; 0 = unlimited)",
+        success=False,
+    )
+
+
+def record_embed(image_url: str) -> None:
+    """Count one successful native embed of ``image_url`` for the current session."""
+    key = _count_key(image_url)
+    with _repeat_lock:
+        _repeat_counts[key] = _repeat_counts.get(key, 0) + 1
+        # Bound long-lived gateway memory: evict the oldest (session, image) entries.
+        while len(_repeat_counts) > _REPEAT_COUNTS_MAX_KEYS:
+            _repeat_counts.pop(next(iter(_repeat_counts)))
