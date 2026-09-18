@@ -888,6 +888,26 @@ class TestToolsConfigIncludeMode:
 
 
 class TestShippedCatalog:
+    def test_asana_catalog_uses_v2_static_oauth_guidance(self):
+        """Asana V2 is Streamable HTTP and does not support OAuth DCR."""
+        manifest = Path(__file__).parents[2] / "optional-mcps" / "asana" / "manifest.yaml"
+        raw_manifest = manifest.read_text(encoding="utf-8")
+        entry = yaml.safe_load(raw_manifest)
+
+        assert entry["transport"] == {
+            "type": "http",
+            "url": "https://mcp.asana.com/v2/mcp",
+        }
+        assert "https://mcp.asana.com/sse" not in raw_manifest
+        assert "Streamable HTTP" in raw_manifest
+        assert "Native OAuth 2.1 + Dynamic Client Registration" not in raw_manifest
+        assert re.search(
+            r"does\s+not support Dynamic Client Registration", raw_manifest
+        )
+        assert "pre-registered" in raw_manifest
+        assert "ASANA_CLIENT_ID" in raw_manifest
+        assert "ASANA_CLIENT_SECRET" in raw_manifest
+
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.
 
