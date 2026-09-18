@@ -100,6 +100,17 @@ _record_scope_trust` keys trust on the home; a secondary never adopts the launch
 for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
 session's profile.
 
+**Background-process teardown signals the parent first.** `process_registry.py::ProcessRegistry.
+_terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
+`terminal.daemon_term_grace_seconds` for it to exit and reap its own children, then SIGTERMs the
+snapshot survivors and SIGKILLs whatever ignored both (so a supervisor that reaps its tree — a
+Chromium/Electron browser reaping its zygotes, a shell trap — exits cleanly, while a shell whose
+children ignore SIGHUP still leaves no orphan). Never SIGTERM descendants before the parent: killing
+a browser's zygote mid-shutdown turns exit 0 into a SIGTRAP core dump. `_stop_systemd_unit` (scope
+teardown, kills the worker cgroup) runs only after that PID kill in `kill()`, or on a parent already
+proven dead/recycled (`session.exited`, `_signal_kill` recycled-PID path, checkpoint recovery) —
+it is never the first signal a live parent receives.
+
 ## Delegation (`tools/delegate_tool.py`)
 
 Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless
