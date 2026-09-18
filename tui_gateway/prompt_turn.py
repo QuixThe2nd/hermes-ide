@@ -609,6 +609,7 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
+    _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"])
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
