@@ -1322,7 +1322,10 @@ def _apply_pulled_update(
     # completed restart leaves this marker so the next update catches up even when git is
     # current. Distinct from ``.update-incomplete`` (venv/install repair).
     # See #95294.
-    if not _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "") and defer_restart:
+    if not _write_fleet_restart_pending_marker(
+        expected_sha=post_pull_sha or "",
+        runtimes=_pre_update_plan.to_dict().get("runtimes") if _pre_update_plan is not None else None,
+    ) and defer_restart:
         # The write is normally best-effort — the stock updater can still restart the fleet
         # in-process without it. A DEFERRED run cannot: its whole contract is that the obligation
         # outlives the process, so an undurable breadcrumb means the preparation can never be
