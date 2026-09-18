@@ -53,8 +53,40 @@ def test_vision_fallback_skips_text_only_main_model(monkeypatch):
     assert ac._try_main_agent_model_fallback("nous", "vision", reason="rate limit") == (None, None, "")
 
 
-def test_upstream_capacity_429_is_not_a_credential_to_bench():
-    exc = _Err("Error code: 429 - {'status': 429, 'message': \"The requested model is temporarily at capacity upstream. "
-               "This is not your API key's rate limit — please retry shortly.\"}", 429)
-    assert ac._is_overloaded_error(exc)
-    assert classify_api_error(exc).reason is FailoverReason.overloaded
+@pytest.mark.parametrize("body, benches_pool", [
+    ("Error code: 429 - {'status': 429, 'message': \"The requested model is temporarily at capacity upstream. "
+     "This is not your API key's rate limit — please retry shortly.\"}", False),
+    ("Error code: 429 - {'error': {'message': 'Rate limit exceeded for this API key', 'code': 429}}", True),
+])
+def test_upstream_capacity_429_is_not_a_credential_to_bench(monkeypatch, body, benches_pool):
+    exc = _Err(body, 429)
+    assert ac._is_rate_limit_error(exc)
+    assert ac._is_overloaded_error(exc) is (not benches_pool)
+    assert classify_api_error(exc).reason is (
+        FailoverReason.rate_limit if benches_pool else FailoverReason.overloaded)
+
+    # The predicate is only half the contract: _recover_provider_pool must not bench a credential
+    # for an upstream-capacity 429, while a real per-key rate limit still rotates the pool.
+    class _StubPool:
+        def __init__(self):
+            self.rotate_calls = []
+
+        def has_credentials(self):
+            return True
+
+        def try_refresh_current(self):
+            return None
+
+        def mark_exhausted_and_rotate(self, **kwargs):
+            self.rotate_calls.append(kwargs)
+            return object()  # a next entry exists
+
+    pool = _StubPool()
+    monkeypatch.setattr(ac, "load_pool", lambda provider: pool)
+    monkeypatch.setattr(ac, "_evict_cached_clients", lambda provider: None)
+    recovered = ac._recover_provider_pool("openrouter", exc, failed_api_key="sk-failed")
+    assert recovered is benches_pool
+    assert len(pool.rotate_calls) == (1 if benches_pool else 0)
+    if benches_pool:
+        assert pool.rotate_calls[0]["status_code"] == 429
+        assert pool.rotate_calls[0]["api_key_hint"] == "sk-failed"
