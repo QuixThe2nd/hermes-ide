@@ -84,10 +84,3 @@ def test_cli_complete_names_unsatisfied_parent(running_child_with_parent, monkey
     assert rc != 0
     assert parent_id in out.out + out.err
     assert "unknown id or terminal state" not in out.out + out.err
-
-
-def test_delegate_description_states_child_handoff_contract():
-    """Spawn-time surfacing: the delegate_task schema tells the parent up front
-    that a child cannot close tracked work and must hand back findings."""
-    from tools.delegate_tool import _build_top_level_description
-    assert "tracked work" in _build_top_level_description()

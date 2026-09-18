@@ -92,10 +92,16 @@ def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
         kc._cmd_link(argparse.Namespace(
             parent_id=parent, child_id=running_child,
         ))
+    # Owner handoff: the worker links its own running card, proving ownership
+    # with HERMES_KANBAN_RUN_ID — the one path _cmd_link forwards a run id for.
+    assert kc._cmd_link(argparse.Namespace(
+        parent_id=parent, child_id=worker,
+    )) == 0
 
     with kbc.connect_closing() as conn:
         assert kb.parent_ids(conn, ready_child) == [parent]
         assert kb.parent_ids(conn, running_child) == []
+        assert kb.parent_ids(conn, worker) == [parent]
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
