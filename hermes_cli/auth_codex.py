@@ -267,17 +267,17 @@ def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "
     linear backoff before failing: losing the token exchange to a single SSL EOF wastes a
     device-code approval the user already completed in the browser (#114610).
     """
-    attempts = 3
-    for attempt in range(1, attempts + 1):
+    attempt, attempts = 1, 3
+    while True:
         try:
             with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
                 return client.post(url, **kwargs)
         except Exception as exc:
-            if attempt < attempts and _is_transient_transport_error(exc):
-                time.sleep(attempt)
-                continue
-            raise _codex_err(f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
-    raise _codex_err(f"{failure[0]}: exhausted retries", failure[1])  # pragma: no cover
+            if attempt == attempts or not _is_transient_transport_error(exc):
+                raise _codex_err(
+                    f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
+            time.sleep(attempt)
+            attempt += 1
 
 
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
@@ -827,9 +827,6 @@ def _codex_poll_authorization_code(
                     raise _codex_err(
                         f"Device auth polling returned status {poll_resp.status_code}.",
                         "device_code_poll_error")
-    except KeyboardInterrupt:
-        print("\nLogin cancelled.")
-        raise SystemExit(130)
     except KeyboardInterrupt:
         print("\nLogin cancelled.")
         raise SystemExit(130)
