@@ -2783,9 +2783,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
 
-    async def run_internal_session_turn(self, *, session_id: str, text: str,
-                                        notification_category: str = "result",
-                                        profile: str = "") -> None:
+    async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
+                                        notification_category: str = "result") -> None:
         """Run one background wake turn against a raw session id IN-PROCESS (no HTTP, no API key).
 
         The HTTP wake self-post cannot serve a multiplexed *served* profile: ``/p/<profile>/`` on
@@ -2794,24 +2793,25 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         the session in the DEFAULT profile's store. ``gateway.wake`` therefore runs the turn here,
         inside the owner profile's runtime scope (the session DB, model resolution and tool policy
         all follow the ambient scope), with ``profile`` naming the profile the caller proved owns
-        the session. Raises on failure so the caller can rewind its cursor; a saturated
-        concurrent-run cap is retried with the same backoff the HTTP self-post uses.
+        the session — never derived here, so a missing proof cannot silently become the default.
+        Raises on failure so the caller can rewind its cursor: a draining gateway fails at once
+        (the HTTP self-post's 503) while a saturated concurrent-run cap is retried with the same
+        backoff the HTTP self-post uses for a 429.
         """
         from gateway.wake import _RETRY_DELAYS_SECONDS
-        profile = (profile or "").strip() or (_api_request_profile.get() or "")
+        profile = (profile or "").strip()
         if not profile:
-            # The HTTP paths bind the profile from the /p/<profile>/ prefix; in-process we bind it
-            # ourselves so _run_agent's scope and the session DB resolve to the caller's profile.
-            from hermes_cli.profiles import get_active_profile_name
-            active = (get_active_profile_name() or "").strip()
-            profile = active if active and active != "default" else ""
-        token = _api_request_profile.set(profile) if profile else None
+            raise ValueError("run_internal_session_turn requires the owning profile")
+        token = _api_request_profile.set(profile)
         attempts = 1 + len(_RETRY_DELAYS_SECONDS)
         last_err: Optional[BaseException] = None
         try:
             for attempt in range(attempts):
                 if attempt:
                     await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
+                if self._draining_response() is not None:
+                    raise RuntimeError(
+                        f"internal wake refused for session {session_id}: the gateway is draining")
                 # Transient: the cap clears on its own, exactly as the HTTP self-post's 429 does.
                 if self._concurrency_limited_response() is not None:
                     last_err = RuntimeError(
