@@ -3465,7 +3465,7 @@ class TestStandaloneSend:
 class TestBuzzAdapterEdit:
 
     @pytest.mark.asyncio
-    async def test_edit_targets_the_original_event_and_uses_stdin(self):
+    async def test_edit_targets_the_original_event_and_passes_replacement_text(self):
         adapter = _make_adapter()
         adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
         cli = _ScriptedCli()
@@ -3478,9 +3478,9 @@ class TestBuzzAdapterEdit:
         args, stdin_text = cli.calls[0]
         assert args[:2] == ["messages", "edit"]
         assert args[args.index("--event") + 1] == "orig1"
-        # Content travels via stdin (--content -), never argv, same as send
-        assert args[args.index("--content") + 1] == "-"
-        assert stdin_text == "partial answer"
+        # Unlike ``messages send``, ``messages edit`` treats ``-`` literally.
+        assert args[args.index("--content") + 1] == "partial answer"
+        assert stdin_text is None
 
     @pytest.mark.asyncio
     async def test_edit_returns_the_original_id_not_the_cli_event_id(self):
