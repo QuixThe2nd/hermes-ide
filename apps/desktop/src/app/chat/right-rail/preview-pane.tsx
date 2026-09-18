@@ -1029,7 +1029,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     // The guest preload (main.ts installs it on this partition) forwards a
     // clicked `_blank` anchor here. Admission is our side of the contract —
-    // web/mail schemes only, so a guest page can never reach the local-file
+    // http/https only, so a guest page can never reach the local-file
     // opener — and the open itself goes through the audited
     // `hermes:openExternal` channel, never a popup side effect.
     const onGuestExternal = (event: Event) => {

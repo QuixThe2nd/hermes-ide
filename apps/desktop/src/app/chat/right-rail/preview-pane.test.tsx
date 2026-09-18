@@ -673,6 +673,8 @@ describe('PreviewPane console state', () => {
 })
 
 describe('PreviewPane guest external handoff', () => {
+  // #112941: a guest page's `_blank` anchor (Streamlit's "Ask Google" button)
+  // reaches the OS browser only through the audited `hermes:openExternal` IPC.
   const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
   const initialHermesDesktop = desktopWindow.hermesDesktop
 
@@ -685,6 +687,9 @@ describe('PreviewPane guest external handoff', () => {
   })
 
   async function renderWebview() {
+    const openExternal = vi.fn(async () => undefined)
+    desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
+
     let rendered!: ReturnType<typeof render>
 
     await act(async () => {
@@ -700,49 +705,30 @@ describe('PreviewPane guest external handoff', () => {
       )
     })
 
-    return rendered.container.querySelector('webview') as HTMLElement
+    return { openExternal, webview: rendered.container.querySelector('webview') as HTMLElement }
   }
 
-  function guestHandoff(webview: HTMLElement, url: string) {
+  function guestMessage(webview: HTMLElement, url: string, channel = 'preview-open-external') {
     act(() => {
-      webview.dispatchEvent(Object.assign(new Event('ipc-message'), { args: [url], channel: 'preview-open-external' }))
+      webview.dispatchEvent(Object.assign(new Event('ipc-message'), { args: [url], channel }))
     })
   }
 
   it('opens an admitted guest anchor URL through the audited OS-browser channel', async () => {
-    const openExternal = vi.fn(async () => undefined)
-    desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
+    const { openExternal, webview } = await renderWebview()
 
-    const webview = await renderWebview()
-
-    guestHandoff(webview, 'https://www.google.com/search?q=traceback')
+    guestMessage(webview, 'https://www.google.com/search?q=traceback')
 
     expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://www.google.com/search?q=traceback')
   })
 
-  it('rejects file: and javascript: guest URLs without any OS open', async () => {
-    const openExternal = vi.fn(async () => undefined)
-    desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
+  it('never opens non-web schemes or messages from a channel the preload does not own', async () => {
+    const { openExternal, webview } = await renderWebview()
 
-    const webview = await renderWebview()
-
-    guestHandoff(webview, 'file:///etc/passwd')
-    guestHandoff(webview, 'javascript:alert(1)')
-
-    expect(openExternal).not.toHaveBeenCalled()
-  })
-
-  it('ignores channels the guest preload does not own', async () => {
-    const openExternal = vi.fn(async () => undefined)
-    desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
-
-    const webview = await renderWebview()
-
-    act(() => {
-      webview.dispatchEvent(
-        Object.assign(new Event('ipc-message'), { args: ['https://example.com'], channel: 'something-else' })
-      )
-    })
+    guestMessage(webview, 'file:///etc/passwd')
+    guestMessage(webview, 'javascript:alert(1)')
+    guestMessage(webview, 'mailto:someone@example.com')
+    guestMessage(webview, 'https://example.com', 'something-else')
 
     expect(openExternal).not.toHaveBeenCalled()
   })

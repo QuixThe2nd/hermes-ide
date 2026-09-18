@@ -10,9 +10,10 @@
 // URL through the audited `hermes:openExternal` channel. A guest URL never
 // becomes an Electron popup and this side never opens anything by itself.
 //
-// Deliberate scope: only anchor clicks are forwarded. A page's direct
-// `window.open` calls stay blocked (the webview has no `allowpopups`), which
-// keeps the pre-fix default for script-driven popups.
+// Deliberate scope: only trusted anchor clicks are forwarded. A page's direct
+// `window.open` calls stay blocked (the webview has no `allowpopups`): hooking
+// them would mean reaching into the guest's JS world, and this preload exposes
+// nothing there.
 
 import { installGuestExternalHandoff } from './preview-guest-preload'
 
@@ -21,6 +22,6 @@ const electron = require('electron') as {
 }
 
 installGuestExternalHandoff({
-  addEventListener: (type, listener, capture) => document.addEventListener(type, listener as EventListener, capture),
+  addEventListener: (type, listener, capture) => document.addEventListener(type, listener, capture),
   sendToHost: (channel, ...args) => electron.ipcRenderer.sendToHost(channel, ...args)
 })

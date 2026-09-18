@@ -140,6 +140,35 @@ Two auth-flavored corollaries worth naming because they are easy to get wrong:
   nor write, so the session silently never persists. `electron/oauth-partition.ts`
   pins the invariant; renaming a partition signs its users out once — say so.
 
+## Guest content never opens anything by itself
+
+Untrusted HTML runs in two places: sandboxed `allow-scripts` iframes (artifact
+previews) and the preview pane's `<webview>` (`persist:hermes-preview`). Neither
+may drive the OS browser without the user's hand on it (GHSA-9f4c-93c8-jc8g):
+`setWindowOpenHandler` denies everything and never opens a URL as a side
+effect (`electron/window-open-policy.ts`), and the webview has no
+`allowpopups` — do not add it.
+
+A guest page's `target="_blank"` links (Streamlit's "Ask Google" traceback
+button) reach the OS browser through one explicit bridge instead:
+
+- `main.ts` installs `electron/preview-guest-preload-entry.ts` via
+  `will-attach-webview`, keyed on the `persist:hermes-preview` partition only.
+  It is the app's only guest preload; a new webview does not inherit it unless
+  it opts into that partition.
+- The preload runs in the isolated world, exposes nothing to the page, and
+  forwards only a **trusted** (`event.isTrusted`) primary-button click on an
+  `a[target="_blank"]` to the host via `ipcRenderer.sendToHost`. A synthetic
+  `dispatchEvent(click)` from page script is dropped there; page `window.open`
+  stays blocked.
+- `PreviewPane` admits `http:`/`https:` only (`src/lib/preview-external.ts`)
+  and hands the URL to the existing `hermes:openExternal` IPC, which applies
+  main's URL policy. `file:` is excluded on purpose: a guest must never reach
+  `shell.openPath`.
+
+Widening any of those three (partition key, trusted-click gate, scheme set)
+reopens the gesture-less forced-navigation class the advisory closed.
+
 ## Compatibility without carrying the past forever
 
 Desktop and its runtime update on separate clocks, so a change can meet an older
