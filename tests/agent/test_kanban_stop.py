@@ -167,4 +167,8 @@ def test_nudge_still_fires_for_non_terminal_kanban_tool(clear_kanban_env):
         {"role": "tool", "name": "kanban_comment", "tool_call_id": "1", "content": "ok"},
     ]
     assert session_called_kanban_terminal(messages) is False
-    assert build_kanban_stop_nudge(messages=messages) is not None
+    nudge = build_kanban_stop_nudge(messages=messages)
+    assert nudge is not None
+    # The nudge offers every worker exit, not just close-out; a card that must go
+    # through review must never be steered to ``kanban_complete`` alone.
+    assert "kanban_request_review" in nudge and "kanban_block" in nudge
