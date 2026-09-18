@@ -43,11 +43,10 @@ function StatusPill({ backend }: { backend: TerminalBackendInfo }) {
  * `terminal.backend` config enum. Each backend row carries a live health probe
  * (Docker daemon reachable, SSH host configured, Modal/Daytona credentials
  * present) so users see Ready / Needs-setup guidance instead of a bare
- * dropdown. Selecting a needs-setup backend is allowed — the row shows what's
- * missing rather than blocking, matching the CLI configurator — but it is
- * persisted immediately and every session that re-reads the config afterward
- * inherits a backend that can't run anything, so we gate it behind an
- * explicit confirm() first.
+ * dropdown. Selecting a needs-setup backend is still allowed (matching the CLI
+ * configurator) but goes through a confirm step first: the write persists
+ * immediately and every later session inherits a backend with no terminal or
+ * file tools, so one ambient click must not do that silently.
  */
 export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPanelProps) {
   const { t } = useI18n()
@@ -55,7 +54,6 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
   const [data, setData] = useState<TerminalBackendsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [selecting, setSelecting] = useState<string | null>(null)
-  const [confirming, setConfirming] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -74,33 +72,27 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
   }, [refresh])
 
   async function handleSelect(backend: TerminalBackendInfo) {
-    if (backend.active || selecting || confirming) {
+    if (backend.active || selecting) {
       return
     }
 
-    if (backend.status === 'needs_setup') {
-      setConfirming(backend.name)
-      let proceed: boolean
-      try {
-        proceed = await confirm({
+    setSelecting(backend.name)
+
+    try {
+      if (backend.status === 'needs_setup') {
+        const proceed = await confirm({
           title: copy.needsSetupConfirmTitle(backend.label),
           description: backend.detail
             ? copy.needsSetupConfirmDescription(backend.detail)
             : copy.needsSetupConfirmDescriptionGeneric,
           confirmLabel: copy.needsSetupConfirmAction
         })
-      } finally {
-        setConfirming(null)
+
+        if (!proceed) {
+          return
+        }
       }
 
-      if (!proceed) {
-        return
-      }
-    }
-
-    setSelecting(backend.name)
-
-    try {
       await selectTerminalBackend(backend.name)
       // Mirror the backend write locally so the active highlight tracks the
       // new selection without a refetch (probes are unchanged by a select).
@@ -153,7 +145,7 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
                 ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
                 : 'border-transparent bg-background/55 hover:bg-accent/40'
             )}
-            disabled={selecting !== null || confirming !== null}
+            disabled={selecting !== null}
             key={backend.name}
             onClick={() => void handleSelect(backend)}
             type="button"
