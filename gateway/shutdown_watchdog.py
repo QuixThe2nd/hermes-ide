@@ -146,7 +146,22 @@ def start_loop_liveness_watchdog(
 
 
 def _mark_exited_quietly(exit_code: int, reason: str) -> None:
-    """Best-effort lifecycle-ledger stamp so the next boot names the watchdog, not SIGKILL/OOM."""
+    """Publish terminal watchdog evidence to both lifecycle stores, best effort.
+
+    ``gateway_state.json`` and the lifecycle sentinel are independent records.  The
+    liveness watchdog already had authority to terminate a wedged process, but only
+    updated the sentinel; status readers therefore observed ``running`` until a
+    replacement process booted.  Keep these terminal writes together so every
+    watchdog exit exposes the same degraded reason before ``os._exit`` bypasses normal
+    teardown.
+    """
+    with contextlib.suppress(Exception):
+        from gateway.status import write_runtime_status
+        write_runtime_status(
+            gateway_state="degraded",
+            exit_reason=reason,
+            restart_requested=exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE,
+        )
     with contextlib.suppress(Exception):
         from gateway.lifecycle_ledger import mark_exited
         mark_exited(exit_code, reason=reason)
