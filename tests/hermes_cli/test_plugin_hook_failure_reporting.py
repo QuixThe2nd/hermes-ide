@@ -72,3 +72,29 @@ def test_middleware_failure_warns_once_and_unload_forgets_it(manager, caplog):
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "on_exec" in r.getMessage()]
     assert len(warnings) == 2
     assert "Middleware 'agent_tool_execution'" in warnings[0].getMessage()
+
+
+def test_execution_chain_middleware_failure_warns_once(manager, caplog, monkeypatch):
+    """The execution chain (``tool_execution``/``llm_execution``, one frame per tool or LLM call)
+    reports a mis-declared callback through the same warn-once path as hooks — and still skips the
+    frame and runs the tool."""
+    from hermes_cli import middleware as mw
+
+    monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
+
+    def on_exec(tool_data, next_call):  # core sends tool_name/args, never tool_data
+        return next_call()
+
+    manager._middleware.setdefault(mw.TOOL_EXECUTION_MIDDLEWARE, []).append(on_exec)
+    with caplog.at_level(logging.DEBUG):
+        results = [
+            mw.run_tool_execution_middleware("read_file", {"path": f"/p{i}"}, lambda args: "ran")
+            for i in range(4)
+        ]
+
+    assert results == ["ran"] * 4
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "on_exec" in r.getMessage()]
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG and "on_exec" in r.getMessage()]
+    assert len(warnings) == 1
+    assert len(debugs) == 3
+    assert "Middleware 'tool_execution'" in warnings[0].getMessage()
