@@ -115,7 +115,7 @@ def _write_valid_ssh_backend_lock(tmp_path, monkeypatch) -> int:
 def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeypatch):
     pid = _write_valid_ssh_backend_lock(tmp_path, monkeypatch)
 
-    def assert_owned_pid_is_excluded(*, exclude_pids=None):
+    def assert_owned_pid_is_excluded(*, exclude_pids=None, **_):
         assert exclude_pids is not None
         assert pid in exclude_pids
         return []
@@ -135,7 +135,7 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
 ):
     pid = _write_valid_ssh_backend_lock(tmp_path, monkeypatch)
 
-    def assert_owned_pid_is_not_excluded(*, exclude_pids=None):
+    def assert_owned_pid_is_not_excluded(*, exclude_pids=None, **_):
         assert exclude_pids is None or pid not in exclude_pids
         return []
 

@@ -220,7 +220,10 @@ class TestKillStaleDashboardProcesses:
         foreign_home = "/tmp/hermes-foreign"
         monkeypatch.setenv("HERMES_HOME", own_home)
 
-        with self._patch_find((12345, 12346, 12347)), mock.patch.object(
+        with mock.patch.object(
+            dashboard_procs, "_scan_dashboard_processes",
+            return_value=[(12345, "hermes serve"), (12346, "hermes serve"), (12347, "hermes serve")],
+        ), mock.patch.object(dashboard_procs, "_caller_ancestor_pids", return_value=set()), mock.patch.object(
             dashboard_procs, "_hermes_home_for_pid",
             side_effect=lambda pid: {
                 12345: own_home,
@@ -235,3 +238,26 @@ class TestKillStaleDashboardProcesses:
         kill.assert_called_once()
         assert kill.call_args.args[0] == [12345]
         assert result["matched"] == [12345]
+
+
+class TestHermesHomeForPid:
+    """Tri-state owner resolution: a readable environment always names a home."""
+
+    def test_readable_env_without_var_resolves_to_that_process_default_home(self, monkeypatch):
+        """The common install shape exports no HERMES_HOME: the backend lives in its user's
+        platform default home, and a default-home ``--stop`` must still find it (#113978)."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: {"HOME": "/home/alice"})
+        from hermes_cli import main_dashboard
+        monkeypatch.setattr(main_dashboard, "_dashboard_cmdline_for_pid",
+                            lambda pid: ["hermes", "--profile", "work", "serve"] if pid == 2 else ["hermes", "serve"])
+
+        assert dashboard_procs._hermes_home_for_pid(1) == "/home/alice/.hermes"
+        # ``-p``/``--profile`` is applied to os.environ after exec, invisible in /proc environ.
+        assert dashboard_procs._hermes_home_for_pid(2) == "/home/alice/.hermes/profiles/work"
+        assert dashboard_procs._pids_owned_by_hermes_home([1, 2], "/home/alice/.hermes") == [1]
+
+    def test_unreadable_env_is_none_and_spared(self, monkeypatch):
+        monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: None)
+        assert dashboard_procs._hermes_home_for_pid(7) is None
+        assert dashboard_procs._pids_owned_by_hermes_home([7], "/home/alice/.hermes") == []

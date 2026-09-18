@@ -106,20 +106,48 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     return found
 
 
-def _hermes_home_for_pid(pid: int) -> str | None:
-    """Best-effort ``HERMES_HOME`` from *pid*'s environment (psutil, then /proc)."""
+def _pid_environ(pid: int) -> dict[str, str] | None:
+    """Exec-time environment of *pid* (psutil, then /proc); ``None`` when unreadable."""
     with contextlib.suppress(Exception):
         import psutil
-        if home := psutil.Process(pid).environ().get("HERMES_HOME"):
-            return home
+        return dict(psutil.Process(pid).environ())
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes()
     except OSError:
         return None
+    env: dict[str, str] = {}
     for part in raw.split(b"\x00"):
-        if part.startswith(b"HERMES_HOME="):
-            return part.split(b"=", 1)[1].decode("utf-8", errors="replace") or None
-    return None
+        key, sep, value = part.partition(b"=")
+        if sep:
+            env[key.decode("utf-8", errors="replace")] = value.decode("utf-8", errors="replace")
+    return env
+
+
+def _hermes_home_for_pid(pid: int) -> str | None:
+    """The Hermes home *pid* runs on, tri-state: ``None`` ONLY when its environment is unreadable
+    (another user, hardened ``/proc``) — callers spare those, never guess.
+
+    A readable environment always resolves: ``HERMES_HOME`` when exported at exec time, else the
+    platform default home of the process's own ``HOME`` / ``LOCALAPPDATA`` (the common install shape
+    exports nothing). ``hermes --profile X serve`` sets ``HERMES_HOME`` in ``os.environ`` AFTER
+    startup, which ``/proc/<pid>/environ`` never reflects, so a ``--profile``/``-p`` flag in the
+    argv selects ``<default root>/profiles/X`` — the home ``_apply_profile_override`` resolves.
+    """
+    env = _pid_environ(pid)
+    if env is None:
+        return None
+    if home := env.get("HERMES_HOME", "").strip():
+        return home
+    if sys.platform == "win32":
+        local_appdata = env.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path(env.get("USERPROFILE") or Path.home()) / "AppData" / "Local"
+        default_home = base / "hermes"
+    else:
+        default_home = Path(env.get("HOME") or Path.home()) / ".hermes"
+    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
+    if profile := _profile_flag_value(_dashboard_cmdline_for_pid(pid) or []):
+        return str(default_home / "profiles" / profile)
+    return str(default_home)
 
 
 def _dashboard_subcommand_index(argv: list[str]) -> int | None:
@@ -184,13 +212,13 @@ def _normalized_home_for_compare(home: str) -> str:
 
 
 def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
-    """Return only *pids* whose live environment names ``home`` exactly.
+    """Return only *pids* whose resolved Hermes home (``_hermes_home_for_pid``) is ``home``.
 
     Dashboard argv is discovery-only: it is not an ownership proof because
     several Hermes installs and profiles can run the same command on one
-    machine.  An unreadable or missing process environment is deliberately
-    not treated as a match, so a stop request fails closed rather than taking
-    down an unrelated backend.
+    machine.  An unreadable process environment is deliberately not treated
+    as a match, so a stop request fails closed rather than taking down an
+    unrelated backend.
     """
     target = _normalized_home_for_compare(home)
     return [
@@ -541,9 +569,7 @@ def _kill_stale_dashboard_processes(
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
-    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None)
-    if scope_home:
-        pids = _pids_owned_by_hermes_home(pids, scope_home)
+    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
