@@ -520,12 +520,10 @@ def _extract_url_query_params(url: str):
 # Warn only once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
-# OpenAI-compatible local servers (Ollama, vLLM, llama.cpp server) are served by the
-# generic custom provider — mirroring hermes_cli.auth._PROVIDER_ALIASES. Without these
-# entries an explicit ``provider: ollama`` aux lane dead-ends in the unknown-provider arm
-# and raises a misleading ``OLLAMA_API_KEY`` error instead of using the lane's base_url
-# (#106010). Their OpenAI wire surface lives under /v1, so a bare host base_url needs
-# the /v1 tail (#106010).
+# Local OpenAI-compatible servers (Ollama, vLLM, llama.cpp) route through the generic custom
+# provider — mirrors hermes_cli.auth._PROVIDER_ALIASES. Without this group an explicit
+# ``provider: ollama`` aux lane matches no registry entry and raises a misleading
+# ``OLLAMA_API_KEY`` error instead of using the lane's base_url (#106010).
 _LOCAL_SERVER_ALIASES = {
     "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
     "llama.cpp": "custom", "llama-cpp": "custom",
@@ -548,14 +546,6 @@ _PROVIDER_ALIASES = {
     "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
     **_LOCAL_SERVER_ALIASES,
 }
-
-
-def _bare_host_base_url(base_url: str) -> bool:
-    """True when a base URL is a bare host[:port] with no path component."""
-    try:
-        return urlparse(str(base_url or "").strip()).path.strip("/") == ""
-    except Exception:
-        return False
 
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
@@ -4899,7 +4889,9 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     custom_base = custom_key = wrap_base = ""
     if req.explicit_base_url:
         custom_base = _to_openai_base_url(req.explicit_base_url).strip()
-        if req.original_provider in _LOCAL_SERVER_ALIASES and _bare_host_base_url(custom_base):
+        # Ollama/vLLM/llama.cpp serve the OpenAI surface under /v1; a bare host posts to the
+        # native API and 404s (#106010). Only the alias group gets the tail — ``custom`` is verbatim.
+        if req.original_provider in _LOCAL_SERVER_ALIASES and not urlparse(custom_base).path.strip("/"):
             custom_base = custom_base.rstrip("/") + "/v1"
         if req.api_mode == "anthropic_messages":
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
@@ -5914,6 +5906,8 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
     normalized = str(prov or "").strip().lower()
     if normalized in {"", "auto", "custom"} or normalized.startswith("custom:"):
         return False
+    if normalized in _LOCAL_SERVER_ALIASES:
+        return True  # the custom branch applies the /v1 tail only when it still sees the alias
     try:
         from hermes_cli.providers import get_provider
         return get_provider(normalized) is not None
@@ -5984,7 +5978,8 @@ def _resolve_task_provider_model(
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if cfg_base_url and cfg_api_key:
-        return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+        kept = cfg_provider if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES else "custom"
+        return kept, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     if cfg_base_url and cfg_provider and cfg_provider != "auto":
         # base_url without api_key: keep the provider so it can resolve credentials from env
         # vars instead of locking into "custom".
