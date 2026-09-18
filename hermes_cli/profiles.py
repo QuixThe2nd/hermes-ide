@@ -896,10 +896,53 @@ def _materialize_symlinked_files(profile_dir: Path) -> List[str]:
     return done
 
 
+def _junction_target(path: str) -> Optional[str]:
+    """Target of an NTFS directory junction, else ``None``. A junction is a reparse point, not a
+    symlink: ``os.path.islink()`` is False and ``shutil.copytree(symlinks=True)`` descends into it."""
+    if os.name != "nt":
+        return None
+    try:
+        if os.lstat(path).st_reparse_tag != stat.IO_REPARSE_TAG_MOUNT_POINT:
+            return None
+        target = os.readlink(path)
+    except OSError:
+        return None
+    # readlink hands back the substitute name; CreateJunction rejects the ``\\?\`` spelling.
+    if target.startswith("\\\\?\\UNC\\"):
+        return "\\" + target[7:]
+    return target[4:] if target.startswith("\\\\?\\") else target
+
+
+def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool = False) -> None:
+    """``shutil.copytree(symlinks=True)`` that re-creates NTFS junctions as junctions instead of
+    traversing them. A ``skills/foo`` junction into a ``skills.external_dirs`` root copied as a
+    physical tree is a second same-named candidate and ``_locate_skill`` refuses to guess (#113471).
+    A junction whose target is gone is skipped with a warning, never a crash."""
+    junctions: Dict[str, str] = {}
+
+    def _ignore(directory: str, names: List[str]) -> set:
+        ignored = set(ignore(directory, names))
+        for name in names:
+            target = _junction_target(os.path.join(directory, name))
+            if target is not None:
+                junctions[os.path.join(directory, name)] = target
+                ignored.add(name)
+        return ignored
+
+    shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=dirs_exist_ok, ignore=_ignore)
+    if junctions:
+        import _winapi  # Windows-only stdlib module; only reachable once a junction was seen
+    for link, target in junctions.items():
+        try:
+            _winapi.CreateJunction(target, os.path.join(dst, os.path.relpath(link, src)))
+        except OSError as exc:
+            logger.warning("clone: skipped junction %s -> %s (%s)", link, target, exc)
+
+
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
-    shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
+    _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
     materialized = _materialize_symlinked_files(profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
@@ -941,10 +984,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _clone_file(source_dir, profile_dir, relpath)
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
-        shutil.copytree(
-            source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True,
-            ignore=_non_exportable_entries,
-        )
+        _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
     if sync_imports:
