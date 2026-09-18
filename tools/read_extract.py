@@ -468,8 +468,11 @@ def _extract_docx(path: str) -> str:
     breaks = {f"{w}tab": "\t", f"{w}br": "\n", f"{w}cr": "\n"}
     lines: list[str] = []
     for para in root.iter(f"{w}p"):
+        # w:rt is the ruby (phonetic) guide over w:rubyBase; it annotates the text, it is not text.
+        guide = {n for rt in para.iter(f"{w}rt") for n in rt.iter()}
         text = "".join(
-            (n.text or "") if n.tag == f"{w}t" else breaks.get(n.tag, "") for n in para.iter())
+            (n.text or "") if n.tag == f"{w}t" else breaks.get(n.tag, "")
+            for n in para.iter() if n not in guide)
         lines.extend(text.split("\n"))
     return _joined(lines, "DOCX contains no extractable text")
 
