@@ -2477,8 +2477,11 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
         # from the kill result, not a re-scan: a launchd KeepAlive job respawns
         # its backend on a fresh PID, which is not a failed stop.
         from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
+        from hermes_constants import get_hermes_home
 
-        result = _kill_stale_dashboard_processes(reason="requested via --stop")
+        result = _kill_stale_dashboard_processes(
+            reason="requested via --stop", scope_home=str(get_hermes_home())
+        )
         sys.exit(1 if result["failed"] else 0)
 
 

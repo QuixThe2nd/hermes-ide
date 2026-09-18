@@ -213,3 +213,25 @@ class TestKillStaleDashboardProcesses:
         assert len(taskkill_calls) == 1
         assert result["killed"] == [12345]
         assert result["failed"] == []
+
+    def test_stop_only_targets_the_invoking_hermes_home(self, monkeypatch):
+        """An argv match from another profile is never a ``--stop`` target."""
+        own_home = "/tmp/hermes-own"
+        foreign_home = "/tmp/hermes-foreign"
+        monkeypatch.setenv("HERMES_HOME", own_home)
+
+        with self._patch_find((12345, 12346, 12347)), mock.patch.object(
+            dashboard_procs, "_hermes_home_for_pid",
+            side_effect=lambda pid: {
+                12345: own_home,
+                12346: foreign_home,
+                12347: None,
+            }[pid],
+        ), mock.patch.object(
+            dashboard_procs, "_kill_pids_posix"
+        ) as kill:
+            result = dashboard_procs._kill_stale_dashboard_processes(scope_home=own_home)
+
+        kill.assert_called_once()
+        assert kill.call_args.args[0] == [12345]
+        assert result["matched"] == [12345]

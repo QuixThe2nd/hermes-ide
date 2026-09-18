@@ -183,6 +183,23 @@ def _normalized_home_for_compare(home: str) -> str:
     return os.path.normcase(str(_resolved_home(home)))
 
 
+def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
+    """Return only *pids* whose live environment names ``home`` exactly.
+
+    Dashboard argv is discovery-only: it is not an ownership proof because
+    several Hermes installs and profiles can run the same command on one
+    machine.  An unreadable or missing process environment is deliberately
+    not treated as a match, so a stop request fails closed rather than taking
+    down an unrelated backend.
+    """
+    target = _normalized_home_for_compare(home)
+    return [
+        pid for pid in pids
+        if (pid_home := _hermes_home_for_pid(pid))
+        and _normalized_home_for_compare(pid_home) == target
+    ]
+
+
 def _profile_key_for_respawn(argv: list[str], hermes_home: str | None = None) -> str:
     """Stable owner key: ``HERMES_HOME`` when known, else ``--profile`` / ``-p``.
 
@@ -491,6 +508,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
+    scope_home: str | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
 
@@ -498,6 +516,10 @@ def _kill_stale_dashboard_processes(
     kill (systemd treats our SIGTERM as a clean stop, so ``Restart=on-failure`` never fires) and
     manual PIDs are respawned from captured argv. PIDs owned by *already_restarted_units* (no
     ``.service`` suffix) are left untouched, not killed twice.
+
+    When *scope_home* is supplied, only processes with that exact live
+    ``HERMES_HOME`` are candidates; unknown ownership fails closed. This is
+    used by ``dashboard --stop`` and the per-profile update cleanup.
 
     Manually-started dashboards are not auto-restarted because we don't know the original launch args
     (--host, --port, --insecure, --tui, --no-open). See #68934.
@@ -520,6 +542,8 @@ def _kill_stale_dashboard_processes(
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
     pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None)
+    if scope_home:
+        pids = _pids_owned_by_hermes_home(pids, scope_home)
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
