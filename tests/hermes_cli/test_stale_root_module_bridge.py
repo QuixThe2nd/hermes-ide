@@ -42,6 +42,31 @@ def _import_fresh_consumer(name: str, source: str) -> types.ModuleType:
     return mod
 
 
+# Mirrors the post-pull purge of a pre-handoff updater (v2026.9.14
+# hermes_cli/update_cmd_maint.py): package prefixes only, root-level modules survive.
+_PRE_HANDOFF_PURGE_PREFIXES = ("hermes_cli", "gateway", "tools", "tui_gateway", "agent")
+_PRE_HANDOFF_PURGE_PROTECTED = {"hermes_cli", "hermes_cli.main", "hermes_cli.hermes_logging"}
+
+
+@pytest.fixture
+def pre_handoff_purge():
+    """Evict what a pre-handoff updater evicts after the pull, restoring it afterwards."""
+    saved: dict = {}
+
+    def _purge() -> None:
+        for name in list(sys.modules):
+            if name in _PRE_HANDOFF_PURGE_PROTECTED or name.startswith("hermes_cli.update_"):
+                continue
+            if name.split(".", 1)[0] in _PRE_HANDOFF_PURGE_PREFIXES:
+                module = sys.modules.pop(name, None)
+                if module is not None:
+                    saved[name] = module
+
+    yield _purge
+    for name, module in saved.items():
+        sys.modules.setdefault(name, module)
+
+
 def test_drop_stale_root_modules_evicts_utils_missing_file_signature(monkeypatch):
     import utils
     from hermes_cli.stale_modules import drop_stale_root_modules
@@ -77,18 +102,28 @@ def test_naive_consumer_still_dies_on_stale_utils(monkeypatch):
         )
 
 
-def test_fresh_config_import_heals_stale_utils_missing_file_signature(monkeypatch):
-    """Restart-phase shape: hermes_cli.* purged, root utils stale, config re-imported."""
+def test_fresh_config_import_heals_stale_utils_missing_file_signature(monkeypatch, pre_handoff_purge):
+    """Restart-phase shape: the whole hermes_cli.* graph purged, root utils stale, config
+    re-imported — the exact shape of the post-pull gateway-restart import."""
     import utils
 
     monkeypatch.delattr(utils, "file_signature")
-    for name in list(sys.modules):
-        if name == "hermes_cli.config" or name.startswith("hermes_cli.config."):
-            sys.modules.pop(name, None)
-        if name == "hermes_cli.stale_modules" or name.startswith("hermes_cli.stale_modules."):
-            sys.modules.pop(name, None)
+    pre_handoff_purge()
 
     config = importlib.import_module("hermes_cli.config")
     assert hasattr(config, "file_signature")
     assert callable(config.file_signature)
     assert hasattr(sys.modules["utils"], "file_signature")
+
+
+def test_fresh_managed_scope_import_heals_stale_utils(monkeypatch, pre_handoff_purge):
+    """managed_scope binds ``utils.file_signature`` at import time; a fresh import into a
+    purged graph must heal the root cache itself rather than depend on config running first."""
+    import utils
+
+    monkeypatch.delattr(utils, "file_signature")
+    pre_handoff_purge()
+    assert "hermes_cli.managed_scope" not in sys.modules
+
+    managed_scope = importlib.import_module("hermes_cli.managed_scope")
+    assert callable(managed_scope.file_signature)
