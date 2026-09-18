@@ -1030,8 +1030,11 @@ for a bare CLI session or a worker whose owning task has no subscriptions.
 
 For `kanban_create`, session lineage resolves in this order: explicit `session_id`,
 the owning worker task's durable session, request-scoped API origin, then the
-current process session. Built-in decomposition also inherits its root's durable
-session. Session lineage is not itself a notification destination: changing
+current session. A candidate id is stamped only when it has a row in the active
+profile's `state.db` `sessions` table; an id that resolves nowhere (a session whose
+row was never written, or an id inherited from another process) leaves
+`session_id` NULL rather than pointing at a session no database can resolve.
+Built-in decomposition also inherits its root's durable session. Session lineage is not itself a notification destination: changing
 `session_id` does not replace existing subscriptions; use `notify-subscribe` and
 `notify-unsubscribe` to change where events are delivered.
 

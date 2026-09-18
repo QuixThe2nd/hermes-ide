@@ -949,8 +949,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Originating chat/agent session id when the task was created from
     -- inside an agent loop that propagated ``HERMES_SESSION_ID``. NULL
     -- for tasks created from the CLI, dashboard, or any path that doesn't
-    -- set the env var. Indexed so per-session list queries stay cheap on
-    -- larger boards.
+    -- set the env var, and for an id with no ``sessions`` row in this
+    -- profile's state.db (kanban_create verifies before stamping). Indexed
+    -- so per-session list queries stay cheap on larger boards.
     session_id           TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never

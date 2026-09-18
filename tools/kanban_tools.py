@@ -903,15 +903,19 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
+        from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
                     if _is_dispatcher_owned_worker() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
         # The worker/API runtime may be transient; the owning task's origin is durable.
+        # The ambient id is the request-scoped ContextVar binding, not the process-global
+        # os.environ: in a multi-session gateway the env holds the LAST agent built, and an
+        # id that never reached its ``sessions`` row is provenance pointing at nothing.
         session_id = (_persisted_session_id(args.get("session_id"))
                       or (self_task.session_id if self_task else None)
                       or _persisted_session_id(_current_origin_session_id())
-                      or _persisted_session_id(os.environ.get("HERMES_SESSION_ID")))
+                      or _persisted_session_id(get_session_env("HERMES_SESSION_ID", "")))
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id

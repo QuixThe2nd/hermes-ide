@@ -75,17 +75,42 @@ def test_tool_create_only_stamps_persisted_ambient_session(tmp_path, monkeypatch
     """Ambient worker ids are provenance only after their state.db row exists."""
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
     from tools import kanban_tools as kt
+    from gateway.session_context import scoped_current_session_id
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    monkeypatch.setenv("HERMES_SESSION_ID", session_id)
     kb.init_db()
     state = SessionDB(db_path=tmp_path / "state.db")
     if persisted:
         state.create_session(session_id, source="cli")
     state.close()
 
-    result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
+    # Bound the way agent construction publishes it (ContextVar); a bare os.environ value is
+    # masked once a surface has cleared its session vars, so it is not a stand-in here.
+    with scoped_current_session_id(session_id):
+        result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
     with kbc.connect_closing() as conn:
         task = kb.get_task(conn, result["task_id"])
     assert task.session_id == (session_id if persisted else None)
+
+
+def test_tool_create_stamps_request_scoped_session_over_process_env(tmp_path, monkeypatch):
+    """In a multi-session process os.environ holds the LAST agent built; the request-scoped
+    binding names the conversation that actually ordered the card."""
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    from gateway.session_context import scoped_current_session_id
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_ID", "other-session")
+    kb.init_db()
+    state = SessionDB(db_path=tmp_path / "state.db")
+    for sid in ("other-session", "ordering-session"):
+        state.create_session(sid, source="cli")
+    state.close()
+
+    with scoped_current_session_id("ordering-session"):
+        result = json.loads(kt._handle_create({"title": "child", "assignee": "default"}))
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, result["task_id"]).session_id == "ordering-session"
