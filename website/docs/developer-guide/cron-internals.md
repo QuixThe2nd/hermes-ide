@@ -155,8 +155,13 @@ dropped silently. The mechanics, in the order the due scan applies them
    with a logged reason when the operator set `cron.catch_up_missed: false`
    (planned downtime). One-shots past their 120 s grace are retired with a
    diagnostic, never resurrected.
-6. **Paused / disabled / terminal jobs never catch up**; the due scan drops them
-   before any of the above, and pause/resume clears any pending slot.
+6. **Paused / disabled / terminal jobs never fire**; the due scan drops them
+   before any of the above, and pause/resume clears any pending slot. A
+   recurring occurrence that came due *while paused* is not lost, though:
+   `resume_job` keeps a past stored `next_run_at` as the due instant instead of
+   re-anchoring from now (and logs that it did), so the first tick after
+   resume applies rules 3–5 to it — one late/catch-up run, or a logged skip.
+   One-shots and future instants recompute from now on resume.
 
 The same store fields drive every topology: a standalone `hermes -p X gateway
 run` and a profile served by the default multiplexer (`_start_multiplex` ticks
