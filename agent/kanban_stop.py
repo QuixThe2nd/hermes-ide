@@ -1,7 +1,9 @@
-"""Turn-end guard for kanban workers, which must end with ``kanban_complete`` or
-``kanban_block``. Some models narrate the next step and stop with no tool calls;
-Hermes treats that as a clean exit → ``rc=0`` → dispatcher ``protocol_violation``.
-Policy-only: return a bounded synthetic nudge so the loop continues instead of exiting.
+"""Turn-end guard for kanban workers, which must end with a terminal board tool that hands
+the card to whoever owns it next (``kanban_complete``, ``kanban_block``,
+``kanban_request_review``, ``kanban_request_changes``). Some models narrate the next step
+and stop with no tool calls; Hermes treats that as a clean exit → ``rc=0`` → dispatcher
+``protocol_violation``. Policy-only: return a bounded synthetic nudge so the loop continues
+instead of exiting.
 """
 
 from __future__ import annotations
@@ -12,7 +14,17 @@ from typing import Any, Iterable, Optional
 from agent.delegation_context import owned_kanban_task
 
 
-_TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
+# Every tool that ends this worker's responsibility for the card, not just the two that
+# close it out: ``kanban_request_review`` moves it to ``review`` (goals.py's continuation /
+# finalize prompts tell builders to call it) and ``kanban_request_changes`` returns it to
+# ``ready`` (the sdlc-review skill tells reviewers to). Nudging after either asks a worker
+# that did the right thing to ``kanban_complete`` a card it must not close.
+_TERMINAL_KANBAN_TOOLS = frozenset({
+    "kanban_complete",
+    "kanban_block",
+    "kanban_request_review",
+    "kanban_request_changes",
+})
 
 _DEFAULT_MAX_ATTEMPTS = 2
 
