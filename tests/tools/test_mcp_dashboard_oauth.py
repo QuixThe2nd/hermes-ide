@@ -118,59 +118,46 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
     assert flow.authorization_url == "https://idp.example/authorize?state=state-4"
 
 
-def test_mark_error_surfaces_real_cause_to_callback_waiter():
-    """A failure marked before any browser redirect (worker crash,
-    authorization-URL timeout, user cancel) must reach the SDK's callback
-    waiter, not the generic "did not include an authorization code" line."""
+def _flow(flow_id: str):
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
-    flow = DashboardOAuthFlow(
-        flow_id="flow-err",
-        server_name="asana",
-        profile=None,
-        hermes_home="/tmp/hermes-test",
-        redirect_uri="https://agent.example/mcp/oauth/callback/flow-err",
-    )
-    flow.mark_error("403 Forbidden from the OAuth registration endpoint")
+    return DashboardOAuthFlow(
+        flow_id=flow_id, server_name="asana", profile=None, hermes_home="/tmp/hermes-test",
+        redirect_uri=f"https://agent.example/mcp/oauth/callback/{flow_id}")
 
-    assert flow.snapshot()["error"] == "403 Forbidden from the OAuth registration endpoint"
-    with pytest.raises(RuntimeError, match="403 Forbidden from the OAuth registration endpoint"):
+
+def test_first_mark_error_reason_reaches_callback_waiter_and_is_never_clobbered():
+    """A failure marked before any browser redirect (worker crash, authorization-URL timeout,
+    user cancel) must reach the SDK's callback waiter — not the generic no-code line — and the
+    worker's follow-on ``mark_error`` (the waiter's own exception) must not overwrite the cause
+    the dashboard/Desktop polls. A delivered callback likewise survives a late ``mark_error``."""
+    flow = _flow("flow-err")
+    flow.mark_error("OAuth cancelled by user")
+    with pytest.raises(RuntimeError, match="OAuth cancelled by user"):
         asyncio.run(flow.wait_for_callback())
+    flow.mark_error("OAuth authorization failed: OAuth cancelled by user")
+    assert flow.snapshot()["error"] == "OAuth cancelled by user"
+
+    delivered = _flow("flow-late")
+    asyncio.run(delivered.publish_authorization_url("https://idp.example/authorize?state=s9"))
+    delivered.deliver_callback(code="code-9", state="s9", error=None)
+    delivered.mark_error("worker crashed after the browser redirected")
+    assert asyncio.run(delivered.wait_for_callback())[:2] == ("code-9", "s9")
 
 
-def test_mark_error_with_empty_message_stays_diagnosable():
-    """str() of a bare TimeoutError() is ""; the waiter must still report a
-    flow failure instead of falling through to the no-code message."""
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+def test_empty_exception_text_stays_diagnosable():
+    """``str()`` of a bare ``TimeoutError()``/``RuntimeError()`` is ""; the workers record the type
+    name and the flow never exposes a blank cause to the waiter or the poller."""
+    from tools.mcp_dashboard_oauth import exception_message
 
-    flow = DashboardOAuthFlow(
-        flow_id="flow-empty",
-        server_name="asana",
-        profile=None,
-        hermes_home="/tmp/hermes-test",
-        redirect_uri="https://agent.example/mcp/oauth/callback/flow-empty",
-    )
+    assert exception_message(RuntimeError()) == "RuntimeError"
+    assert exception_message(RuntimeError("boom")) == "boom"
+
+    flow = _flow("flow-empty")
     flow.mark_error("")
-
+    assert flow.snapshot()["error"]
     with pytest.raises(RuntimeError, match="empty error message"):
         asyncio.run(flow.wait_for_callback())
-
-
-def test_late_mark_error_cannot_override_delivered_callback():
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
-
-    flow = DashboardOAuthFlow(
-        flow_id="flow-late",
-        server_name="reports",
-        profile=None,
-        hermes_home="/tmp/hermes-test",
-        redirect_uri="https://agent.example/mcp/oauth/callback/flow-late",
-    )
-    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=s9"))
-    flow.deliver_callback(code="code-9", state="s9", error=None)
-
-    flow.mark_error("worker crashed after the browser redirected")
-    assert asyncio.run(flow.wait_for_callback())[:2] == ("code-9", "s9")
 
 
 def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatch):
