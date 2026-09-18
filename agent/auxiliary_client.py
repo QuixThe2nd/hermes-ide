@@ -3663,13 +3663,20 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
         return False
 
 
-def _auth_refresh_provider_for_route(resolved_provider: Optional[str], client_base_url: str) -> str:
+def _auth_refresh_provider_for_route(
+    resolved_provider: Optional[str], client_base_url: str, effective_provider: str = "",
+) -> str:
     """Provider whose short-lived credentials should be refreshed; auto-routed calls keep
     ``resolved_provider == "auto"``, so infer the backend from the client's base URL."""
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized and normalized != "auto":
         return normalized
-    return _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST) or normalized
+    host_provider = _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST)
+    # The auto client already knows it runs on the host's API-key sibling (``xai`` on api.x.ai):
+    # an XAI_API_KEY 401 must not spend a stale ``xai-oauth`` grant's refresh and switch routes.
+    if host_provider and host_provider == f"{_normalize_aux_provider(effective_provider)}-oauth":
+        return normalized
+    return host_provider or normalized
 
 
 def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[Dict[str, Any]]:
@@ -7208,7 +7215,8 @@ def _ladder_credential_rungs(
     """OAuth credential refresh + same-provider retry, then credential-pool rotation.
     Returns ``(response, None)`` or ``(None, first_err)`` to fall through."""
     client, task, tag, resolved_provider = route.client, route.task, route.tag, route.resolved_provider
-    auth_refresh_provider = _auth_refresh_provider_for_route(resolved_provider, route.base_info)
+    auth_refresh_provider = _auth_refresh_provider_for_route(
+        resolved_provider, route.base_info, _effective_provider_for_client(client, ""))
     if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
             and not client_is_nous):
         refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
