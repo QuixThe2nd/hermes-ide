@@ -112,6 +112,7 @@ class TestCleanupStaleAsyncClients:
     def test_awaits_async_close_for_closed_loop(self):
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -128,7 +129,7 @@ class TestCleanupStaleAsyncClients:
         loop = asyncio.new_event_loop()
         loop.close()
         client = AsyncClient()
-        key = ("test_async_close", True, "", "", "", (), False)
+        key = _client_cache_key("test_async_close", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (client, "test-model", loop)
 
@@ -143,6 +144,7 @@ class TestCleanupStaleAsyncClients:
     def test_shutdown_closes_outside_cache_lock(self):
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             shutdown_cached_clients,
         )
@@ -158,7 +160,7 @@ class TestCleanupStaleAsyncClients:
                 if acquired:
                     _client_cache_lock.release()
 
-        key = ("test_shutdown_lock", False, "", "", "", (), False)
+        key = _client_cache_key("test_shutdown_lock", async_mode=False)
         with _client_cache_lock:
             previous = dict(_client_cache)
             _client_cache.clear()
@@ -176,6 +178,7 @@ class TestCleanupStaleAsyncClients:
     def test_shutdown_does_not_await_live_foreign_loop_client(self):
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             shutdown_cached_clients,
         )
@@ -190,7 +193,7 @@ class TestCleanupStaleAsyncClients:
                 self.awaited = True
 
         client = Client()
-        key = ("test_shutdown_foreign_loop", True, "", "", "", (), False)
+        key = _client_cache_key("test_shutdown_foreign_loop", async_mode=True)
         with _client_cache_lock:
             previous = dict(_client_cache)
             _client_cache.clear()
@@ -209,6 +212,7 @@ class TestCleanupStaleAsyncClients:
         """Entries with an open loop should be preserved."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -216,7 +220,7 @@ class TestCleanupStaleAsyncClients:
         loop = asyncio.new_event_loop()  # NOT closed
 
         mock_client = MagicMock()
-        key = ("test_live", True, "", "", "", (), False)
+        key = _client_cache_key("test_live", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -233,12 +237,13 @@ class TestCleanupStaleAsyncClients:
         """Sync entries (cached_loop=None) should be preserved."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
 
         mock_client = MagicMock()
-        key = ("test_sync", False, "", "", "", (), False)
+        key = _client_cache_key("test_sync", async_mode=False)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", None)
 
@@ -308,10 +313,11 @@ class TestClientCacheBoundedGrowth:
         """Multiple event loops for the same provider should NOT create multiple entries."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
         )
 
-        key = ("test_no_grow", True, "", "", "", (), False)
+        key = _client_cache_key("test_no_grow", async_mode=True)
 
         loops = []
         try:

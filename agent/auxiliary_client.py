@@ -3395,20 +3395,24 @@ def _evict_cached_client_instance(target: Any) -> bool:
     return evicted
 
 
-def _pool_credential_digest(pool: Any) -> str:
-    """Secret-safe digest over the runtime keys of every pool entry.
+def _pool_credential_digest(pool: Any, entry: Any = None) -> str:
+    """Secret-safe digest over the runtime key(s) backing the cache hint.
 
-    Taken WITHOUT availability filters (``pool.entries()``, not ``peek()``): an entry benched by a
-    per-model cooldown still contributes, so a token rotated while the cooldown is active changes
-    the digest too (#113022 point 5). Only the blake2b of the keys enters the cache key.
+    When ``entry`` (the peeked selection) carries a key, only THAT key is digested: rotating a
+    sibling account must not churn this entry's cached client. Otherwise every pool entry
+    contributes, taken WITHOUT availability filters (``pool.entries()``, not ``peek()``): an entry
+    benched by a per-model cooldown still counts, so a token rotated while the cooldown is active
+    changes the digest too (#113022 point 5). Only the blake2b of the keys enters the cache key.
     """
-    try:
-        entries_fn = getattr(pool, "entries", None)
-        entries = entries_fn() if callable(entries_fn) else []
-    except Exception as exc:
-        logger.debug("Auxiliary client: could not list pool entries for digest: %s", exc)
-        return ""
-    keys = sorted(k for k in (_pool_runtime_api_key(e) for e in entries or ()) if k)
+    keys = [k for k in (_pool_runtime_api_key(entry),) if k] if entry is not None else []
+    if not keys:
+        try:
+            entries_fn = getattr(pool, "entries", None)
+            entries = entries_fn() if callable(entries_fn) else []
+        except Exception as exc:
+            logger.debug("Auxiliary client: could not list pool entries for digest: %s", exc)
+            return ""
+        keys = sorted(k for k in (_pool_runtime_api_key(e) for e in entries or ()) if k)
     if not keys:
         return ""
     digest = hashlib.blake2b(digest_size=16)
@@ -3421,8 +3425,9 @@ def _pool_credential_digest(pool: Any) -> str:
 def _pool_cache_hint(provider: str, *, main_runtime: Optional[Dict[str, Any]] = None) -> str:
     """Return a cache discriminator that follows the pooled credential, not just its entry id.
 
-    ``<provider>:<entry id>:<digest>`` when ``peek()`` names an entry, ``<provider>::<digest>``
-    when every entry is filtered out (cooldown) but keyed entries exist. A token rotated or
+    ``<provider>:<entry id>:<digest of that entry's key>`` when ``peek()`` names an entry,
+    ``<provider>::<digest of every entry's key>`` when every entry is filtered out (cooldown)
+    but keyed entries exist. A token rotated or
     refreshed by another process yields a new client instead of a 401 round trip on the cached
     one; the stale entry ages out through the non-closing FIFO cap (#113022).
     """
@@ -3435,8 +3440,8 @@ def _pool_cache_hint(provider: str, *, main_runtime: Optional[Dict[str, Any]] = 
     pool = _load_pool_with_credentials(normalized, " (cache hint)")
     if pool is None:
         return ""
-    digest = _pool_credential_digest(pool)
     entry = _peek_pool_entry(normalized, pool)
+    digest = _pool_credential_digest(pool, entry)
     entry_id = str(getattr(entry, "id", "") or "").strip() if entry is not None else ""
     if not entry_id and not digest:
         return ""

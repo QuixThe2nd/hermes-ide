@@ -57,3 +57,27 @@ def test_pool_cache_hint_follows_rotation_during_per_model_cooldown(isolated_hom
     assert before.startswith("anthropic::") and after.startswith("anthropic::")
     assert before != after
     assert "tok-" not in before + after
+
+
+def _seed_two(provider: str, first_token: str, second_token: str) -> None:
+    rows = []
+    for idx, token in ((1, first_token), (2, second_token)):
+        rows.append({
+            "id": f"entry-{idx}", "label": f"pooled-{idx}", "auth_type": "oauth", "priority": idx,
+            "source": "manual", "access_token": token, "refresh_token": f"rt-{token}",
+            "expires_at": time.time() + 3600,
+        })
+    write_credential_pool(provider, rows)
+
+
+def test_sibling_entry_rotation_does_not_churn_selected_entry_key(isolated_home):
+    """Only the peeked entry's key is digested: rotating entry-2 keeps entry-1's client cached."""
+    _seed_two("anthropic", "tok-a1", "tok-b1")
+    before = aux._pool_cache_hint("anthropic")
+    assert before.startswith("anthropic:entry-1:")
+    _seed_two("anthropic", "tok-a1", "tok-b2")  # sibling rotated, selection unchanged
+    assert aux._pool_cache_hint("anthropic") == before
+    _seed_two("anthropic", "tok-a2", "tok-b2")  # the selected entry itself rotated
+    after = aux._pool_cache_hint("anthropic")
+    assert after.startswith("anthropic:entry-1:") and after != before
+    assert "tok-" not in before + after
