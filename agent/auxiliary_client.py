@@ -110,6 +110,9 @@ from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from agent.auxiliary_health import _custom_health_base_url, _unhealthy_cache_key
+from agent.auxiliary_unavailable import (
+    AuxiliaryClientUnavailable, clear_nous_credential_failure, nous_credential_failure_detail,
+    record_nous_credential_failure)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
 from utils import base_url_host_matches, base_url_hostname, base_url_origin, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -1966,8 +1969,11 @@ def _resolve_nous_runtime_api(
             stale_access_token=stale_access_token or None,
         )
     except Exception as exc:
-        logger.debug("Auxiliary Nous runtime credential resolution failed: %s", exc)
+        # Kept at WARNING (once per message) and remembered: the ladder falls back silently, and
+        # without this the goal judge only ever saw "judge error: RuntimeError" (#42177).
+        record_nous_credential_failure(exc)
         return None
+    clear_nous_credential_failure()
     return _creds_pair(creds)
 
 
@@ -6915,10 +6921,11 @@ def _resolve_call_client(
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit)
                 if fb_client is None:
-                    raise RuntimeError(
+                    nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
+                    raise AuxiliaryClientUnavailable(nous_detail or (
                         f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
                         f"Set the {_explicit.upper()}_API_KEY environment variable, or switch to "
-                        f"a different provider with `hermes model`.")
+                        f"a different provider with `hermes model`."))
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(
@@ -6934,8 +6941,8 @@ def _resolve_call_client(
                     "auto", async_mode=async_mode, main_runtime=main_runtime, task=task)
                 effective_provider = _effective_provider_for_client(client, "auto")
     if client is None:
-        raise RuntimeError(f"No LLM provider configured for task={task} "
-                           f"provider={resolved_provider}. Run: hermes setup")
+        raise AuxiliaryClientUnavailable(f"No LLM provider configured for task={task} "
+                                         f"provider={resolved_provider}. Run: hermes setup")
     return _ResolvedAuxRoute(client, final_model, resolved_provider, effective_provider)
 
 
