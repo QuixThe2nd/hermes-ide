@@ -77,6 +77,27 @@ class TestTelegramExecApproval:
         assert "dangerous deletion" in kwargs["text"]
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("smart_denied", [False, True])
+    async def test_oversized_escaped_approval_text_keeps_inline_keyboard(self, smart_denied):
+        """The rendered HTML card (escaped command + reason + framing) must fit Telegram's
+        4096-char cap, otherwise the API rejects it and the gateway falls back to /approve."""
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="&" * 3700,  # inside the old raw budget; 5x larger once escaped
+            session_key="s",
+            description="<reason>" * 1000,
+            smart_denied=smart_denied,
+        )
+
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert len(kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+        assert "&amp;&amp;" in kwargs["text"] and "&lt;reason&gt;" in kwargs["text"]
+        assert kwargs["reply_markup"] is not None
+
 
     @pytest.mark.asyncio
     async def test_non_smart_allow_permanent_false_keeps_session(self, monkeypatch):

@@ -2596,6 +2596,23 @@ class BasePlatformAdapter(ABC):
         """Escape hook for command preview/reason; HTML-mode platforms (Telegram) override."""
         return text
 
+    def _ea_fit(self, text: str, budget: int, suffix: str = "...") -> str:
+        """``_truncate_preview`` measured after ``_ea_escape``: the platform cap applies to the
+        wire payload, and HTML escaping expands (``&`` → ``&amp;``), so a raw-length cut can
+        still overflow. Returns raw text (the caller escapes); ``suffix`` rides outside ``budget``
+        like ``_truncate_preview``."""
+        text = str(text or "")
+        if len(self._ea_escape(text)) <= budget:
+            return text
+        lo, hi = 0, len(text)
+        while lo < hi:  # escaped length is monotonic in the raw prefix, so bisect it
+            mid = (lo + hi + 1) // 2
+            if len(self._ea_escape(text[:mid])) <= budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo] + suffix
+
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         """Chars of command preview that fit; platforms with a hard message cap compute it."""
         return self._EA_CMD_BUDGET
@@ -2610,8 +2627,8 @@ class BasePlatformAdapter(ABC):
         flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
         platform-local."""
         if self._EA_REASON_BUDGET:
-            description = self._truncate_preview(str(description or ""), self._EA_REASON_BUDGET)
-        cmd_preview = self._truncate_preview(
+            description = self._ea_fit(str(description or ""), self._EA_REASON_BUDGET)
+        cmd_preview = self._ea_fit(
             str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"

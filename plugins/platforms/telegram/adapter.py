@@ -3921,10 +3921,18 @@ class TelegramAdapter(BasePlatformAdapter):
     _EA_CODE_OPEN = "<pre>"
     _EA_CODE_CLOSE = "</pre>\n\n"
     _EA_SMART_DENY_LINE = "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
-    _EA_CMD_BUDGET = 3800
+    _EA_REASON_BUDGET = 500  # escaped chars; the reason shares the 4096 cap with the command
 
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)
+
+    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
+        # Telegram rejects the whole card ("Message is too long") and the gateway then falls back to
+        # the text /approve prompt, so budget the preview against what the framing leaves of the cap.
+        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
+                 + len(self._EA_REASON_LABEL) + len(self._ea_escape(description)) + len("...")
+                 + len(self._ea_deadline_line()) + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
+        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
 
