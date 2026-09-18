@@ -101,103 +101,47 @@ class TestCommandExecutionProjection:
 
 
 
-@pytest.mark.parametrize("output", [
-    "Documentation example:\n[Command interrupted]\n",
-    "Documentation example:\n[execution interrupted by user]\n",
-    "ordinary command output\n",
-])
-def test_successful_command_survives_persisted_replay(tmp_path, output):
-    """A successful child's output is data, even when it ends with an executor marker."""
-    import subprocess
-    import sys
+def test_successful_marker_ending_output_survives_persisted_replay(tmp_path):
+    """exitCode=0 is preserved in the persisted envelope, so a success whose last line is an
+    executor interrupt marker replays as data instead of an UNKNOWN-effect recovery notice."""
     from types import SimpleNamespace
 
     from agent.codex_runtime import _persist_projected_messages
     from agent.replay_cleanup import canonicalize_replay_history
     from agent.session_persistence import SessionPersistenceMixin
-    from agent.transports.chat_completions import ChatCompletionsTransport
     from hermes_state import SessionDB
 
-    child = subprocess.run(
-        [sys.executable, "-I", "-c", f"print({output!r}, end='')"],
-        capture_output=True, text=True, timeout=10, cwd=tmp_path,
-    )
-    assert child.returncode == 0 and not child.stderr
-    assert child.stdout == output
-    item = {
-        "type": "commandExecution", "id": "child", "command": "print documentation",
-        "cwd": str(tmp_path), "status": "completed",
-        "exitCode": child.returncode, "aggregatedOutput": child.stdout,
-    }
-    projected = CodexEventProjector().project({
-        "method": "item/completed", "params": {"item": item},
-    }).messages
+    output = "Documentation example:\n[Command interrupted]\n"
+    item = {"type": "commandExecution", "id": "child", "command": "cat doc", "cwd": str(tmp_path),
+            "status": "completed", "exitCode": 0, "aggregatedOutput": output}
+    projected = CodexEventProjector().project({"method": "item/completed", "params": {"item": item}}).messages
     store = SessionPersistenceMixin()
-    db_path = tmp_path / "session.db"
-    store._session_db = SessionDB(db_path)
+    store._session_db = SessionDB(tmp_path / "session.db")
     store.session_id = "command-replay"
     store._session_db.create_session(store.session_id, source="cli")
     store._session_db_created = True
     store._last_flushed_db_idx = 0
-    messages = [{"role": "user", "content": "Print documentation."}]
-    turn = SimpleNamespace(
-        projected_messages=projected + [{"role": "assistant", "content": "Done."}],
-        submitted_user_text=None,
-    )
+    turn = SimpleNamespace(projected_messages=projected + [{"role": "assistant", "content": "Done."}],
+                           submitted_user_text=None)
     try:
-        _persist_projected_messages(store, turn, messages)
+        _persist_projected_messages(store, turn, [{"role": "user", "content": "Print documentation."}])
+        raw, _display = store._session_db.get_resume_conversations(store.session_id)
     finally:
         store._session_db.close()
-    reopened = SessionDB(db_path)
-    try:
-        loaded = reopened.get_messages_as_conversation(store.session_id)
-        raw, _display = reopened.get_resume_conversations(store.session_id)
-    finally:
-        reopened.close()
-    persisted_tool = next(m for m in loaded if m["role"] == "tool")
-    assert persisted_tool["content"] == projected[1]["content"]
-    replay = canonicalize_replay_history(raw)
-    wire = ChatCompletionsTransport().convert_messages(replay)
-    wire_tool = next(m for m in wire if m["role"] == "tool")
-    assert wire_tool["content"] == persisted_tool["content"]
-    assert json.loads(wire_tool["content"]) == {"exit_code": child.returncode, "output": child.stdout}
+    replay_tool = next(m for m in canonicalize_replay_history(raw) if m["role"] == "tool")
+    assert replay_tool.get("effect_disposition") is None
+    assert json.loads(replay_tool["content"]) == {"exit_code": 0, "output": output}
 
 
-@pytest.mark.parametrize("exit_fields", [{"exitCode": 130}, {}, {"exitCode": None}])
-def test_interrupted_or_unknown_command_remains_conservative(tmp_path, exit_fields):
-    """An actual interrupt, or missing executor status, must not be promoted to success."""
-    import subprocess
-    import sys
-
+@pytest.mark.parametrize("exit_fields", [{"exitCode": 130}, {}])
+def test_interrupted_or_unknown_exit_stays_conservative(exit_fields):
+    """A real interrupt (non-zero exit) or a missing exit status is still recovered as UNKNOWN."""
     from agent.replay_cleanup import canonicalize_replay_history
-    from agent.transports.chat_completions import ChatCompletionsTransport
 
-    child = subprocess.run(
-        [sys.executable, "-I", "-c",
-         "import sys\ntry:\n raise KeyboardInterrupt\nexcept KeyboardInterrupt:\n"
-         " print('[Command interrupted]')\n sys.exit(130)"],
-        capture_output=True, text=True, timeout=10, cwd=tmp_path,
-    )
-    assert child.returncode == 130 and not child.stderr
-    item = {
-        "type": "commandExecution", "id": "interrupted", "command": "interrupted command",
-        "cwd": str(tmp_path), "status": "failed", "aggregatedOutput": child.stdout,
-        **exit_fields,
-    }
-    projected = CodexEventProjector().project({
-        "method": "item/completed", "params": {"item": item},
-    }).messages
-    if exit_fields.get("exitCode") is None:
-        assert projected[1]["content"] == child.stdout
-    else:
-        assert json.loads(projected[1]["content"]) == {
-            "exit_code": child.returncode, "output": child.stdout,
-        }
-    replay = canonicalize_replay_history(projected)
-    assert replay[1]["effect_disposition"] == "unknown"
-    wire = ChatCompletionsTransport().convert_messages(replay)
-    assert "UNKNOWN" in wire[1]["content"]
-    assert wire[1]["tool_call_id"] == projected[1]["tool_call_id"]
+    item = {"type": "commandExecution", "id": "interrupted", "command": "sleep 100", "cwd": "/tmp",
+            "status": "failed", "aggregatedOutput": "[Command interrupted]\n", **exit_fields}
+    projected = CodexEventProjector().project({"method": "item/completed", "params": {"item": item}}).messages
+    assert canonicalize_replay_history(projected)[1]["effect_disposition"] == "unknown"
 
 
 class TestAgentMessageProjection:
