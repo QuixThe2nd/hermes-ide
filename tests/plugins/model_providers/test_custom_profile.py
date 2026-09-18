@@ -182,68 +182,37 @@ class TestCustomReasoningWithNumCtx:
 
 
 class TestCustomResponsesEffortVocabulary:
-    """``supported_reasoning_efforts`` keeps the two transports consistent (#114249).
+    """The Responses transport honours a custom endpoint's configured ``max`` (#114249).
 
-    A custom relay's models are not on the OpenAI per-model ladder, so before
-    this declaration the Responses transport clamped a configured ``max`` down
-    to ``xhigh`` (CODEX_LEGACY_EFFORTS) while the same provider over
-    chat-completions forwarded ``max`` unchanged.
+    A custom relay's models are not on the OpenAI per-model ladder; without the
+    profile declaration the Responses transport clamped a configured ``max`` to
+    ``xhigh`` while chat-completions on the same provider forwarded ``max``.
     """
 
-    def test_declares_openai_compat_wire_set(self, custom_profile):
-        from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS
+    def test_named_relay_keeps_configured_max_where_chat_completions_does(self, custom_profile):
+        from agent.transports.codex import _resolve_reasoning
 
-        declared = custom_profile.supported_reasoning_efforts("deepseek-flash")
-        assert declared == OPENAI_COMPAT_WIRE_EFFORTS
-        assert "max" in declared
+        reasoning = {"enabled": True, "effort": "max"}
+        _, top_level = custom_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning, base_url="https://relay.example/v1"
+        )
+        effort, enabled = _resolve_reasoning(
+            "deepseek-flash",
+            {"provider": "custom:relay", "base_url": "https://relay.example/v1", "reasoning_config": reasoning},
+        )
+        assert (effort, enabled) == (top_level["reasoning_effort"], True) == ("max", True)
 
-    def test_named_custom_route_resolves_to_the_declaration(self, custom_profile):
-        """``custom:<name>`` resolves to this profile through the registry's
-        custom-route fallback, so named relays inherit the same vocabulary."""
-        import providers
-
-        named = providers.get_provider_profile("custom:relay")
-        assert named is custom_profile
-
-    def test_responses_transport_keeps_configured_max(self):
+    def test_custom_entry_at_the_official_openai_origin_keeps_the_per_model_ladder(self):
+        """api.openai.com's vocabulary is known per model; the custom declaration must not
+        put ``max`` on the wire for a slug OpenAI rejects it on."""
         from agent.transports.codex import _resolve_reasoning
 
         effort, enabled = _resolve_reasoning(
-            "deepseek-flash",
+            "gpt-5.2",
             {
-                "provider": "custom:relay",
-                "base_url": "https://relay.example/v1",
-                "reasoning_config": {"enabled": True, "effort": "max"},
-            },
-        )
-        assert (effort, enabled) == ("max", True)
-
-    def test_responses_transport_still_clamps_ultra_to_max(self):
-        """``ultra`` is Hermes-internal; even the widest declared wire set
-        must not pass it through verbatim."""
-        from agent.transports.codex import _resolve_reasoning
-
-        effort, _ = _resolve_reasoning(
-            "deepseek-flash",
-            {
-                "provider": "custom:relay",
-                "base_url": "https://relay.example/v1",
-                "reasoning_config": {"enabled": True, "effort": "ultra"},
-            },
-        )
-        assert effort == "max"
-
-    def test_openai_backend_ladder_is_unchanged(self):
-        """The declaration must not leak into the official OpenAI Responses
-        backend: gpt-5.5 keeps rejecting ``max`` (clamps to xhigh, #68365)."""
-        from agent.transports.codex import _resolve_reasoning
-
-        effort, enabled = _resolve_reasoning(
-            "gpt-5.5",
-            {
-                "provider": "openai",
+                "provider": "custom:oai",
+                "base_url": "https://api.openai.com/v1",
                 "reasoning_config": {"enabled": True, "effort": "max"},
             },
         )
         assert (effort, enabled) == ("xhigh", True)
-

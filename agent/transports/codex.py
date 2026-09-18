@@ -222,12 +222,17 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         # Grok 4.6 accepts xhigh; older Grok tops out at high.
         supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) else XAI_LEGACY_EFFORTS
     else:
-        declared = _profile_declared_efforts(params.get("provider"), model, params.get("base_url"))
+        base_url = params.get("base_url")
+        is_codex_backend = params.get("is_codex_backend") is True
+        # OpenAI's own origins have a known per-model ladder; a profile declaration speaks for
+        # endpoints the transport cannot know (a custom relay, a catalog-driven router), never
+        # for a ``custom:`` entry that merely points at api.openai.com.
+        declared = None
+        if not (is_codex_backend or _is_openai_api_origin(base_url)):
+            declared = _profile_declared_efforts(params.get("provider"), model, base_url)
         if declared is not None and not declared:
             reasoning_enabled = False
-        supported = declared or _codex_efforts_for_route(
-            model, params.get("base_url"), is_codex_backend=params.get("is_codex_backend") is True
-        )
+        supported = declared or _codex_efforts_for_route(model, base_url, is_codex_backend=is_codex_backend)
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 
@@ -263,14 +268,16 @@ def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Op
     return "24h" if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized) else None
 
 
-def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
-    """Astra on the canonical API origin only — exact host, so a Responses-compatible proxy or a
-    lookalike subdomain keeps the generic contract."""
-    if not is_astra_model(model):
-        return False
+def _is_openai_api_origin(base_url: Any) -> bool:
+    """Exact host, so a Responses-compatible proxy or a lookalike subdomain keeps the generic contract."""
     from utils import base_url_hostname
 
     return base_url_hostname(str(base_url or "")).lower() == "api.openai.com"
+
+
+def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
+    """Astra on the canonical API origin only."""
+    return is_astra_model(model) and _is_openai_api_origin(base_url)
 
 
 def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
@@ -328,16 +335,17 @@ def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]],
 def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any = None) -> Optional[tuple]:
     """Provider-profile-declared reasoning-effort vocabulary, or None (fail-open).
 
-    Resolves by provider name, then by endpoint host. Lazy import: provider
-    plugins import this transport during registry discovery.
+    Resolves by endpoint host first, then by provider name: a ``custom:<name>`` entry pointed
+    at a host with a registered profile must follow that host's vocabulary, not the generic
+    custom declaration. Lazy import: provider plugins import this transport during registry
+    discovery.
     """
     try:
         from providers import get_provider_profile
 
         name = str(provider or "").strip().lower()
-        profile = get_provider_profile(name) if name else None
-        declared = profile.supported_reasoning_efforts(model) if profile is not None else None
-        if declared is None and base_url:
+        declared = None
+        if base_url:
             from agent.model_metadata import _infer_provider_from_url
 
             inferred = _infer_provider_from_url(str(base_url))
@@ -345,6 +353,9 @@ def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any
                 inferred_profile = get_provider_profile(inferred)
                 if inferred_profile is not None:
                     declared = inferred_profile.supported_reasoning_efforts(model)
+        if declared is None:
+            profile = get_provider_profile(name) if name else None
+            declared = profile.supported_reasoning_efforts(model) if profile is not None else None
     except Exception as exc:
         logger.debug("profile-declared efforts lookup failed: %s", exc)
         return None
