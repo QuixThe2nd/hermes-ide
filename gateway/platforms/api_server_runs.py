@@ -1062,6 +1062,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
 
     try:
+        # Shutdown landed between admission and the task's first tick: nothing to
+        # interrupt yet, and starting a turn now would outlive the gateway.
+        if run_id in self._shutdown_interrupted_run_ids:
+            _finish("interrupted")
+            return
         self._set_run_status(run_id, "running")
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
