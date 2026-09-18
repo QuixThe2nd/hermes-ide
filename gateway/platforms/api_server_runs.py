@@ -889,7 +889,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # An explicit or chained session owns its routing key and is never rebound to the header.
     _declared_selected = not session_id and bool(gateway_session_key)
     selected_session_id = session_id or (
-        self._declared_conversation_session(gateway_session_key) if _declared_selected else None)
+        await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
+        if _declared_selected else None)
     # A client-addressed id from before a compression rotation must adopt the live tip (#98619):
     # history loads from it, the turn writes to it, and a detached delivery row persisted to it
     # is what the next same-id run consumes below.

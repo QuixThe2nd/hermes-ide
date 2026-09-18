@@ -173,6 +173,32 @@ async def test_list_sessions_resurrects_bot_chat_off_the_event_loop(adapter, ses
 
 
 @pytest.mark.asyncio
+async def test_session_model_lock_persists_off_the_event_loop(adapter, session_db, monkeypatch):
+    """POST /api/sessions/{id}/model writes the lock row through a worker thread: the same
+    contended-write class as the Bot Chat resurrection, on a sibling handler."""
+    session_id = session_db.create_session("lock-off-loop", "api_server", model="gpt-5.5")
+    loop_thread = threading.get_ident()
+    seen = []
+    real = session_db.update_session_runtime_lock
+
+    def record(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(session_db, "update_session_runtime_lock", record)
+    app = _create_session_app(adapter)
+    _register_session_model_route(app, adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/model",
+                json={"provider": "nous", "model": "x-ai/grok-4.5", "require_model_lock": True})
+            assert resp.status == 200, await resp.text()
+    assert seen and all(tid != loop_thread for tid in seen)
+    assert session_db.get_session(session_id)["model"] == "x-ai/grok-4.5"
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")
