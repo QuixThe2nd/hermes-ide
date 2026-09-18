@@ -388,6 +388,7 @@ import {
   type SecretStoragePolicy,
   writeSecretStoragePolicy
 } from './secret-storage-policy'
+import { selectRunnableBinary } from './select-runnable-binary'
 import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
@@ -2925,13 +2926,59 @@ function makeDashboardReadyFile() {
 // standard Git-for-Windows locations, then PATH. Cached after first probe.
 let _gitBinaryCache = null
 
+// A binary can exist on disk and still be unlaunchable — on macOS an
+// Intel-only build ahead on PATH (e.g. a pre-Rosetta-removal Homebrew)
+// fails at spawn time with errno -86 (EBADARCH), which callers then report
+// as an update-server/network problem. Probing `git --version` before
+// committing to a candidate skips such entries; the existence-only
+// fallback keeps behaviour unchanged where the probe itself cannot run.
+function binaryRuns(candidate) {
+  try {
+    execFileSync(candidate, ['--version'], {
+      stdio: 'ignore',
+      timeout: 5000,
+      windowsHide: true
+    })
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+function findPathCandidates(command) {
+  const pathEntries = String(process.env.PATH || '')
+    .split(path.delimiter)
+    .filter(Boolean)
+
+  const candidates = []
+
+  for (const entry of pathEntries) {
+    const candidate = path.join(entry, command)
+
+    if (fileExists(candidate)) {
+      candidates.push(candidate)
+    }
+  }
+
+  return candidates
+}
+
 function resolveGitBinary() {
   if (_gitBinaryCache) {
     return _gitBinaryCache
   }
 
   if (!IS_WINDOWS) {
-    _gitBinaryCache = findOnPath('git') || 'git'
+    // Every PATH hit, probed — the first entry that merely exists can be
+    // unlaunchable while a working system git sits later on the same PATH.
+    const selected = selectRunnableBinary({
+      candidates: findPathCandidates('git'),
+      fileExists,
+      binaryRuns
+    })
+
+    _gitBinaryCache = selected || 'git'
 
     return _gitBinaryCache
   }
@@ -2980,7 +3027,17 @@ function resolveGhBinary() {
     candidates.push('/opt/homebrew/bin/gh', '/usr/local/bin/gh', '/usr/bin/gh', path.join(home, '.local', 'bin', 'gh'))
   }
 
-  _ghBinaryCache = candidates.find(fileExists) || findOnPath('gh') || 'gh'
+  // Same selection rule as git: an existing-but-unlaunchable candidate (e.g.
+  // an Intel-only build from a stale Homebrew) must not shadow a working one
+  // further down the list, and PATH is only consulted when none of the
+  // explicit candidates is usable.
+  const selected = selectRunnableBinary({
+    candidates,
+    fileExists,
+    binaryRuns
+  })
+
+  _ghBinaryCache = selected || findOnPath('gh') || 'gh'
 
   return _ghBinaryCache
 }
