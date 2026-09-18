@@ -1459,17 +1459,34 @@ def check_respawn_guard(
     ).fetchall():
         if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
             continue
-        handed_off = conn.execute(
+        events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
-            "SELECT 1 FROM task_events "
+            "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened') "
-            "LIMIT 1",
+            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
             (task_id, int(c["created_at"] or 0)),
-        ).fetchone()
-        return None if handed_off else "active_pr"
+        ).fetchall()
+        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+            return None
+        return "active_pr"
 
     return None
+
+
+def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
+    """Only an ``assigned`` event that moves the card to a DIFFERENT profile is
+    a handoff. A no-op re-assign (dev→dev via CLI/dashboard/``reassign
+    --reclaim``), an unassign, or the dispatcher's own
+    ``kanban.default_assignee`` write would otherwise lift ``active_pr`` for
+    the very implementer that opened the PR. Events without ``from`` (written
+    before it was recorded) are not trusted as handoffs — fail closed."""
+    if kind != "assigned":
+        return True
+    data = _kb._json_or(payload, {})
+    if not isinstance(data, dict) or data.get("source") == "kanban.default_assignee":
+        return False
+    to = data.get("assignee")
+    return bool(to) and "from" in data and data["from"] != to
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:

@@ -535,6 +535,44 @@ def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
         assert kbd.check_respawn_guard(conn, closer_id) == "active_pr"
 
 
+def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a handoff to a DIFFERENT profile lifts ``active_pr``.
+
+    A no-op ``assign dev -> dev`` (CLI, dashboard PATCH, ``reassign --reclaim``)
+    and an unassign both record an ``assigned`` event but change no owner; if
+    they counted as handoffs the implementer would be re-spawned against its own
+    PR — the duplicate-work protection #111910 says must survive.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="same assign", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        _backdate_comments(conn, tid)
+        assert kb.assign_task(conn, tid, "dev") is True
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        assert kb.reassign_task(conn, tid, "dev", reclaim_first=True) is True
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        assert kb.assign_task(conn, tid, None) is True
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        # The dispatcher's own default_assignee write is not an operator handoff.
+        res = kbd.dispatch_once(conn, dry_run=False, default_assignee="dev")
+        assert tid in res.auto_assigned_default
+        assert dict(res.respawn_guarded).get(tid) == "active_pr"
+        assert tid not in [s[0] for s in res.spawned]
+
+        # A real handoff after all of that still lifts the guard.
+        assert kb.assign_task(conn, tid, "closer") is True
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
     kanban_home: Path,
 ) -> None:
