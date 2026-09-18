@@ -73,9 +73,12 @@ describe('session transcript pagination ownership', () => {
       ).toBe(true)
 
       // Resolve the owner for lookup, but replay the exact ambient read route.
+      // A backfill is a user's "Show earlier" click on an explicit route, so
+      // it carries the foreground dial tag (#111651).
       expect(api).toHaveBeenLastCalledWith({
         ...(connectionId ? { connectionId } : {}),
-        path: `/api/sessions/stored-session/messages?limit=${LATEST_SESSION_MESSAGES_LIMIT}&offset=${tail.length}&order=latest&include_compacted=true`
+        path: `/api/sessions/stored-session/messages?limit=${LATEST_SESSION_MESSAGES_LIMIT}&offset=${tail.length}&order=latest&include_compacted=true`,
+        priority: 'foreground'
       })
       expect(messages.map(message => message.rowId)).toEqual([...older, ...tail].map(message => message.id))
       expect(transcriptBackfillAvailable('stored-session', owner)).toBe(false)
@@ -111,7 +114,8 @@ describe('session transcript pagination ownership', () => {
     // An explicit local pin would bypass Electron's per-profile remote override.
     expect.soft(api).toHaveBeenLastCalledWith({
       profile,
-      path: `/api/sessions/stored-session/messages?profile=${profile}&limit=${LATEST_SESSION_MESSAGES_LIMIT}&order=latest&include_compacted=true`
+      path: `/api/sessions/stored-session/messages?profile=${profile}&limit=${LATEST_SESSION_MESSAGES_LIMIT}&order=latest&include_compacted=true`,
+      priority: 'foreground'
     })
     expect(transcriptBackfillAvailable('stored-session', owner)).toBe(true)
 
@@ -128,7 +132,8 @@ describe('session transcript pagination ownership', () => {
 
     expect(api).toHaveBeenLastCalledWith({
       profile,
-      path: `/api/sessions/stored-session/messages?profile=${profile}&limit=${LATEST_SESSION_MESSAGES_LIMIT}&offset=${tail.length}&order=latest&include_compacted=true`
+      path: `/api/sessions/stored-session/messages?profile=${profile}&limit=${LATEST_SESSION_MESSAGES_LIMIT}&offset=${tail.length}&order=latest&include_compacted=true`,
+      priority: 'foreground'
     })
     expect(applyOlderPage).toHaveBeenCalledWith(toChatMessages([row(1)]))
     expect(transcriptTailState('stored-session', owner)).toMatchObject({
@@ -186,7 +191,8 @@ describe('session transcript pagination ownership', () => {
     // Serving-profile metadata selects the cache entry, not the request route.
     expect(api).toHaveBeenLastCalledWith({
       connectionId: 'source-a',
-      path: `/api/sessions/stored-session/messages?limit=${LATEST_SESSION_MESSAGES_LIMIT}&offset=${tail.messages.length}&order=latest&include_compacted=true`
+      path: `/api/sessions/stored-session/messages?limit=${LATEST_SESSION_MESSAGES_LIMIT}&offset=${tail.messages.length}&order=latest&include_compacted=true`,
+      priority: 'foreground'
     })
     expect(applyOlderPage).toHaveBeenCalledWith(toChatMessages([row(0)]))
     expect(transcriptTailState('stored-session', ownerA)).toEqual({
