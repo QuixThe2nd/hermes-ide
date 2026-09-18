@@ -408,6 +408,13 @@ async function isAttachedSharedRemote(
     return false
   }
 
+  // A local primary is one `hermes serve --profile <primary>` child; every other
+  // local profile has its own pooled child and `sharedRemote` is a remote-only
+  // answer, so the probe below can only cost the pooled dial a 20 s timeout.
+  if (g.primaryConnectionMode === 'local') {
+    return false
+  }
+
   const desktop = window.hermesDesktop
 
   if (!desktop?.getConnectionFor) {
@@ -423,18 +430,18 @@ async function isAttachedSharedRemote(
 
     return Boolean(conn && typeof conn === 'object' && (conn as { sharedRemote?: boolean }).sharedRemote === true)
   } catch {
-    // Probe failed. On a REMOTE primary a secondary at this already-attached
-    // source is the #96493 ghost WebSocket (accept/close, messages=1), so
-    // prefer the primary until a later probe can prove isolation
-    // (`sharedRemote: false`). A LOCAL primary is a different animal: it is
-    // one `hermes serve --profile <primary>` child and every other local
-    // profile has its own pooled child. The primary would still ACCEPT a
-    // `profile`-tagged session.create (profile_home multiplexing) and mint
-    // the session under its own pid, but the exact-owner route then names the
-    // pool backend — after a renderer reload or a pool respawn the resume
-    // dials that backend and is refused SESSION_NOT_OWNED by a pid of the
-    // same Desktop (#101416). Let the pooled dial surface its own failure.
-    return g.primaryConnectionMode !== 'local'
+    // Probe failed on a remote (or not-yet-classified) primary: a secondary at
+    // this already-attached source is the #96493 ghost WebSocket (accept/close,
+    // messages=1), so prefer the primary until a later probe can prove
+    // isolation (`sharedRemote: false`). A LOCAL primary never reaches here
+    // (early return above): it is one `hermes serve --profile <primary>` child
+    // and every other local profile has its own pooled child. The primary
+    // would still ACCEPT a `profile`-tagged session.create (profile_home
+    // multiplexing) and mint the session under its own pid, but the exact-owner
+    // route then names the pool backend — after a renderer reload or a pool
+    // respawn the resume dials that backend and is refused SESSION_NOT_OWNED by
+    // a pid of the same Desktop (#101416).
+    return true
   }
 }
 
