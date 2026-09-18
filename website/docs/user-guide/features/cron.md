@@ -84,7 +84,14 @@ validates that the job's configuration can actually produce a successful run:
 - attached skills are ready (no missing required environment variables,
   commands, or credential files),
 - delivery platform targets are known and have gateway credentials configured
-  (`local`/`origin` targets are never checked).
+  (`local`/`origin` targets are never checked),
+- every MCP server the job names in its own `enabled_toolsets` resolved to at
+  least one tool for this profile. A server that connected earlier in this
+  gateway and is only reconnecting after a network blip (router reboot, DNS
+  failure) does **not** block: the job runs with the tools that did resolve and
+  the gateway log notes which servers were skipped. Only a server that never
+  connected for this profile (wrong URL or credentials, or a server another
+  profile owns under a multiplexer) blocks the run.
 
 When validation fails, the job's `last_status` becomes `blocked_config`, ONE
 alert is delivered (it is not repeated every tick), and **no LLM call is

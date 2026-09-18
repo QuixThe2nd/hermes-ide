@@ -90,3 +90,45 @@ def test_requested_mcp_server_with_tools_runs(tmp_path):
 
     assert agent_built is True
     assert success is True and error is None
+
+
+def _park_notion(*, ever_connected: bool):
+    """Install a sessionless ``notion`` run task (tools deregistered, alias still global) the way
+    the MCP layer leaves a degraded/parked server; ``ever_connected`` separates a server that
+    worked in this process and lost its network from one that never came up here."""
+    import tools.mcp_tool as core
+    from tools.registry import registry
+
+    server = core.MCPServerTask("notion")
+    server._ever_connected = ever_connected
+    registry.register_toolset_alias("notion", "mcp-notion")
+    core._servers["notion"] = server
+    return lambda: core._servers.pop("notion", None)
+
+
+def test_requested_mcp_server_reconnecting_runs_without_its_tools(tmp_path):
+    """A server that connected in this process and is parked/self-probing after a network blip
+    is recoverable: the job runs with the tools that did resolve instead of blocking (#112871)."""
+    undo = _park_notion(ever_connected=True)
+    try:
+        (success, _output, _final, error), agent_built = _run(
+            _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
+    finally:
+        undo()
+
+    assert agent_built is True
+    assert success is True and error is None
+
+
+def test_requested_mcp_server_never_connected_still_blocks(tmp_path):
+    """A parked server that never connected here (bad URL, wrong credentials) keeps the block."""
+    undo = _park_notion(ever_connected=False)
+    try:
+        (success, _output, _final, error), agent_built = _run(
+            _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
+    finally:
+        undo()
+
+    assert agent_built is False
+    assert success is False
+    assert error is not None and "[blocked_config]" in error and "notion" in error

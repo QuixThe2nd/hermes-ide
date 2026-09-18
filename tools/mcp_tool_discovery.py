@@ -611,6 +611,18 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
     return result
 
 
+def mcp_server_reconnecting(name: str) -> bool:
+    """True when this profile's connection to *name* connected once in this process and is now
+    between sessions (degraded/parked): the run task is alive and self-probing, so the outage is
+    environmental and heals on its own. A server that never connected here (wrong URL, other
+    profile's credentials, permanent error) is not reconnecting. Reads cached state; never connects."""
+    with _core._lock:
+        server = _core._servers.get(_resolve_server_key(name))
+    if server is None or server.session is not None or not server._ever_connected:
+        return False
+    return server._task is None or not server._task.done()
+
+
 def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     """Connect each enabled server, list ``(tool_name, description)``, disconnect; nothing is
     registered and failed servers are omitted."""
