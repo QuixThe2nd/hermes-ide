@@ -4503,7 +4503,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
     sync_base_url = str(sync_client.base_url)
-    async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
+    # A key_cmd/Entra client keeps its credential in the SDK's per-request provider slot, not in
+    # ``.api_key`` (which stays ""); rebuilding from the snapshot alone ships NO Authorization
+    # header. Configured default_headers (a named entry's extra_headers) are likewise carried over,
+    # merged last exactly as the SDK merges them on the sync client. See #109595.
+    from agent.auxiliary_async_rebuild import async_api_key, configured_default_headers
+    async_kwargs = {"api_key": async_api_key(sync_client), "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
     elif _is_official_codex_base_url(sync_base_url):
@@ -4522,6 +4527,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
         if sync_client.api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
             headers = {**(headers or {}), **opencode_zen_free_headers()}
+    headers = {**(headers or {}), **configured_default_headers(sync_client)}
     if headers:
         async_kwargs["default_headers"] = headers
     _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)
@@ -4895,11 +4901,16 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     return None, None
 
 
-def _named_custom_openai_wire_client(custom_base: str, custom_key: Any):
-    """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL."""
+def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_headers: Optional[Dict[str, str]] = None):
+    """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL.
+
+    ``extra_headers`` is the entry's own header block (gateway routing tags, proxy auth): the main
+    runtime lifts it onto every request, so aux must too (#109595). SECURITY: never log the values."""
     _clean_base, _dq = _extract_url_query_params(_to_openai_base_url(custom_base))
     _extra = {"default_query": _dq} if _dq else {}
     _headers = _apply_user_default_headers(None)
+    if extra_headers:
+        _headers = {**(_headers or {}), **extra_headers}
     if _headers:
         _extra["default_headers"] = _headers
     return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
@@ -4937,6 +4948,8 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     if not custom_base:
         logger.warning("resolve_provider_client: named custom provider %r has no base_url", provider)
         return None, None
+    from hermes_cli.config import normalize_extra_headers
+    entry_headers = normalize_extra_headers(custom_entry.get("extra_headers"))
     final_model = _normalize_resolved_model(
         req.model
         or custom_entry.get("model")
@@ -4957,10 +4970,10 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         except ImportError:
             logger.warning("Named custom provider %r declares api_mode=anthropic_messages but the anthropic SDK "
                            "is not installed — falling back to OpenAI-wire.", provider)
-            return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key), final_model)
+            return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key, entry_headers), final_model)
         return _route_client(
             req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base, is_oauth=False), final_model)
-    client = _named_custom_openai_wire_client(custom_base, custom_key)
+    client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
         client = CodexAuxiliaryClient(client, final_model)
