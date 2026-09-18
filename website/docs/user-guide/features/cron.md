@@ -444,22 +444,36 @@ cron:
   retry_unreachable: false   # default true; disables the automatic re-runs
 ```
 
-### Failure incidents: acknowledge a known failure
+### Failure incidents: alert once, remind on a cooldown, acknowledge
 
-A recurring job that keeps failing with the *same* error pings you on every
-run. Each failure is also recorded as a durable **incident**, keyed by the
-job plus a normalized signature of the error text, in the same per-profile
-ledger database as the execution history.
+A recurring job that keeps failing with the *same* error alerts you **once**,
+not on every run. Each failure is recorded as a durable **incident**, keyed by
+the job plus a normalized signature of the error text, in the same per-profile
+ledger database as the execution history; the first failure of a signature is
+always delivered, and repeats are then withheld while the incident is `alerted`
+(the run is still recorded — `hermes cron runs` and the failure streak see it,
+only the ping is held back).
+
+```yaml
+cron:
+  failure_repeat_alert_hours: 6   # still broken after this long → one reminder ping,
+                                  # then silent again; 0 = alert on every failing run
+```
+
+Anything that changes the picture alerts immediately: a *different* error mints
+its own incident and pings at once, and a successful run re-arms the signature
+so the same error after a green run alerts again. If the incident ledger cannot
+be read, the ping is delivered rather than swallowed.
 
 ```bash
 hermes cron incidents                 # list incidents (newest activity first)
 hermes cron incidents --state alerted # filter: detected | alerted | resolved | closed
-hermes cron incidents ack <id>        # acknowledge — stop re-pinging
+hermes cron incidents ack <id>        # acknowledge — silence this signature for good
 ```
 
-Acknowledging an incident silences the per-run failure ping for that exact
-signature only. Nothing else changes: the run history still records every
-failure, the failure streak keeps counting, and the moment the job starts
+Acknowledging an incident silences the failure ping for that exact signature
+only, reminders included. Nothing else changes: the run history still records
+every failure, the failure streak keeps counting, and the moment the job starts
 failing with a *different* error a new incident is minted and alerts fire
 again.
 
@@ -470,13 +484,10 @@ the job later fails with the *same* error, the resolved incident re-opens as
 the exception: a success leaves them alone, and a repeat stays silent.
 
 Incident lifecycle: `detected` (failure recorded) → `alerted` (at least one
-failure ping reached delivery) → `resolved` (the job ran OK afterwards;
-re-opens on a repeat) or `closed` (acknowledged; terminal for that
-signature). Stored error text is secret-redacted and truncated before it is
-written.
-
-Recording is always on and costs nothing to ignore — no ping is ever
-suppressed until you explicitly `ack`.
+failure ping reached delivery; `alerted_at` is the latest one and starts the
+reminder cooldown) → `resolved` (the job ran OK afterwards; re-opens on a
+repeat) or `closed` (acknowledged; terminal for that signature). Stored error
+text is secret-redacted and truncated before it is written.
 
 ### Fleet health check: `hermes cron doctor`
 
