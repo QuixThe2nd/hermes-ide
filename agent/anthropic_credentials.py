@@ -100,6 +100,9 @@ def _commit_private_json(path: Path, payload: Any, what: str) -> None:
 # reached its store. Two scopes: process-local (OrderedDict) and a durable sidecar next to the shared singleton
 # file so OTHER processes fail closed too. Non-reversible digests; never cleared.
 _SPENT_ROTATION_LOCK = threading.Lock()
+# Fingerprints of Claude Code refresh tokens the endpoint rejected terminally: the WARNING fires once per token
+# per process and later attempts skip the POST (a re-login rotates the token, so a new one is tried normally).
+_DEAD_REFRESH_TOKEN_FINGERPRINTS: set = set()
 _SPENT_ROTATION_FINGERPRINTS: "OrderedDict[str, None]" = OrderedDict()
 _SPENT_ROTATION_MAX_TRACKED = 64
 _SPENT_ROTATION_SIDECAR_COMMENT = (
@@ -225,8 +228,12 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
 
 def claude_code_credentials_path() -> Path:
-    """Claude Code's shared OAuth file; every profile reads/writes this same path."""
-    return Path.home() / ".claude" / ".credentials.json"
+    """Claude Code's shared OAuth file; every profile reads/writes this same path. Honours ``CLAUDE_CONFIG_DIR``
+    like the Claude CLI itself (blank = unset, as in ``hermes_cli.foreign_sessions``), so pointing it at an
+    empty directory opts a Hermes process out of borrowing the login."""
+    override = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    root = Path(override).expanduser() if override else Path.home() / ".claude"
+    return root / ".credentials.json"
 
 
 def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
@@ -368,12 +375,17 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
             # Another process may have spent this token and lost the commit; its sidecar verdict is authoritative.
             if is_rotation_consumed_uncommitted(refresh_token, source_path=cred_path):
                 logger.debug("Refresh token was already consumed by an uncommitted rotation "
-                             "- refusing to replay it; re-run 'claude setup-token'")
+                             "- refusing to replay it; run 'hermes auth add anthropic'")
+                return None
+            fingerprint = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()[:32]
+            if fingerprint in _DEAD_REFRESH_TOKEN_FINGERPRINTS:
+                logger.debug("Claude Code refresh token was already rejected as terminally invalid - not replaying it")
                 return None
             try:
                 refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
             except Exception as e:
                 if is_terminal_anthropic_refresh_error(e):
+                    _DEAD_REFRESH_TOKEN_FINGERPRINTS.add(fingerprint)
                     logger.warning(
                         "Claude Code OAuth refresh token is terminally invalid (%s); Hermes cannot use this "
                         "login. Run 'hermes auth add anthropic' to give Hermes its own login.", e)
@@ -388,7 +400,7 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
                 logger.error(
                     "Anthropic OAuth refresh rotated the single-use token but could not "
                     "commit it to %s (%s) — treating the refresh as failed; "
-                    "re-run 'claude setup-token' to reauthenticate",
+                    "run 'hermes auth add anthropic' to give Hermes its own login",
                     cred_path, e,
                 )
                 mark_rotation_consumed_uncommitted(
@@ -443,7 +455,7 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
     logger.debug("Claude Code credentials expired — attempting refresh")
     refreshed = _refresh_oauth_token(creds)
     if not refreshed:
-        logger.debug("Token refresh failed — re-run 'claude setup-token' to reauthenticate")
+        logger.debug("Token refresh failed — run 'hermes auth add anthropic' to give Hermes its own login")
     return refreshed or None
 
 
