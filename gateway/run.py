@@ -37067,6 +37067,14 @@ def _start_gateway_housekeeping(
     while not stop_event.is_set():
         tick_count += 1
 
+        # Upstream a3cce7b9743: re-stamp ``updated_at`` in gateway_state.json first every tick so
+        # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x interval with the
+        # PID alive — a wedged chore stops the NEXT stamp (#113372). Upstream ships this as a
+        # scheduled chore; the fork's housekeeping thread owns the tick loop, so the stamp runs
+        # inline at tick start. NOTE(future-me): if this thread is ever replaced by upstream's
+        # chore scheduler, drop this block and re-add the (1, "Runtime heartbeat", ...) chore.
+        _write_runtime_status_quiet()
+
         # Restart-safe cron workers run outside the gateway cgroup and queue
         # their final send for whichever gateway instance is live.  Drain on
         # the gateway-wide housekeeper rather than the built-in scheduler tick:
