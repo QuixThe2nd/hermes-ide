@@ -859,18 +859,21 @@ def _configured_provider_matches(
                        if isinstance(slug, str) and isinstance(cfg, dict)]
     # Callers (gateway, TUI, CLI) pass both ``providers:`` and the compat ``custom_providers`` view,
     # which re-lists every ``providers.<slug>`` row as ``custom:<name>``; a hand-migrated config may
-    # also keep the same endpoint in both sections. Either is one provider, not two (#112788).
+    # also keep the same endpoint in both sections. Either is one provider, not two (#112788) — but
+    # the duplicate is folded at the MATCH level, not dropped as a candidate: a model only the legacy
+    # row declares still routes to the shared endpoint instead of falling through to the current
+    # provider.
     rows = {slug: _configured_provider_identity(slug, cfg) for slug, cfg in candidates}
-    candidates += [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-                   if isinstance(e.get("name"), str) and e["name"].strip()
-                   and not _duplicates_configured_row(f"custom:{e['name']}", e, rows)]
+    entries = [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
+               if isinstance(e.get("name"), str) and e["name"].strip()]
 
     matches: dict[str, str] = {}
-    for slug, cfg in candidates:
+    for slug, cfg in candidates + entries:
         hit = next((mid for key in ("models", "model", "default_model")
                     for mid in _declared_model_ids(cfg.get(key)) if mid.lower() == target), None)
         if hit:
-            matches.setdefault(slug, hit)  # first declaration wins
+            owner = _duplicates_configured_row(slug, cfg, rows) if slug not in rows else None
+            matches.setdefault(owner or slug, hit)  # first declaration wins
     return matches
 
 
@@ -895,15 +898,17 @@ def _configured_provider_identity(slug: str, cfg: dict) -> tuple[str, str, str, 
     return name, base_url, credential, _canonical_api_mode(api_mode).lower() if api_mode else ""
 
 
-def _duplicates_configured_row(slug: str, entry: dict, rows: dict[str, tuple[str, str, str, str]]) -> bool:
-    """A ``custom_providers`` entry is a second view of a ``providers.<slug>`` row when it is that
-    row's compat projection (``provider_key`` names the slug AND it points at the same endpoint —
-    on the raw-list fallback a hand-written provider_key aimed elsewhere stays a candidate) or a
-    legacy duplicate with the same provider identity."""
+def _duplicates_configured_row(
+        slug: str, entry: dict, rows: dict[str, tuple[str, str, str, str]]) -> Optional[str]:
+    """Slug of the ``providers.<slug>`` row a ``custom_providers`` entry is a second view of, else
+    None: the row's compat projection (``provider_key`` names the slug AND it points at the same
+    endpoint with the same credential — on the raw-list fallback a hand-written provider_key aimed
+    at another endpoint or another key stays a candidate) or a legacy duplicate with the same
+    provider identity."""
     identity = _configured_provider_identity(slug, entry)
     provider_key = _clean(entry.get("provider_key")).lower()
-    return any(identity == row or (provider_key == row_slug.lower() and identity[1] == row[1])
-               for row_slug, row in rows.items())
+    return next((row_slug for row_slug, row in rows.items()
+                 if identity == row or (provider_key == row_slug.lower() and identity[1:3] == row[1:3])), None)
 
 
 def _current_provider_match(st: "_Switch", cfg_matches: dict[str, str]) -> Optional[str]:

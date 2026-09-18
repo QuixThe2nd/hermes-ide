@@ -223,3 +223,33 @@ def test_raw_list_provider_key_pointing_elsewhere_stays_ambiguous():
         custom_providers=raw)
     assert result.success is False
     assert "multiple configured providers" in (result.error_message or "")
+
+
+def test_legacy_duplicate_keeps_its_own_declared_models():
+    """Folding an identity-equal legacy row into ``providers.relay`` must not drop the models only
+    that row declares: ``/model gpt-5.4-mini`` still routes to the shared endpoint instead of
+    falling through to the current provider (#112788 review follow-up)."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {"relay": _RELAY}
+    cfg = {"providers": user_providers,
+           "custom_providers": [{**_LEGACY_RELAY, "models": ["gpt-5.4", "gpt-5.4-mini"]}]}
+    result = _run_switch(
+        raw_input="gpt-5.4-mini", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=get_compatible_custom_providers(cfg))
+    assert result.success is True, result.error_message
+    assert result.target_provider == "relay"
+    assert result.new_model == "gpt-5.4-mini"
+
+
+def test_raw_list_provider_key_with_different_credential_stays_ambiguous():
+    """Raw-list fallback: a ``provider_key: relay`` stamp on the same endpoint but a DIFFERENT
+    credential is not the row's projection — credential identity differs, ambiguity is preserved."""
+    user_providers = {"relay": _RELAY}
+    raw = [{"name": "relay", "provider_key": "relay", "base_url": "https://relay.example/v1",
+            "key_env": "OTHER_KEY", "model": "claude-opus-4-7"}]
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=raw)
+    assert result.success is False
+    assert "multiple configured providers" in (result.error_message or "")
