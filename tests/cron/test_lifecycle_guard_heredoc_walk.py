@@ -48,3 +48,47 @@ def test_inert_heredoc_body_script_path_still_read(tmp_path):
     script.write_text("#!/bin/sh\nhermes gateway restart\n")
     command = f"python3 - <<'PY'\nimport os\nos.system('{script}')\nPY"
     assert guard(command, cwd=str(tmp_path)) is True
+
+
+def test_mentioned_data_file_that_cannot_be_scanned_is_not_a_verdict(tmp_path, monkeypatch):
+    """A file only MENTIONED in an inert body may exhaust the text budget (one >64 KiB line), pull
+    in 64+ remote-read misses (a markdown table of paths) or be a live SQLite database: each is
+    "nothing to scan", never a block (#113944). The same file *executed* still fails closed."""
+    import cron.lifecycle_guard as lifecycle_guard
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    minified = tmp_path / "minified.json"
+    minified.write_text("[" + "1," * 40000 + "1]")
+    notes = tmp_path / "notes.md"
+    notes.write_text("\n".join(f"| /opt/frag{i}/tool-{i}.md | note |" for i in range(70)))
+    db = tmp_path / "state.db"
+    conn = connect_tracked(db)
+    monkeypatch.setattr(lifecycle_guard, "_MAX_LIFECYCLE_SCAN_REMOTE_READS", 8)
+    remote_misses: list[str] = []
+
+    def remote(path: str):
+        remote_misses.append(path)
+        return None
+
+    try:
+        for data in (minified, notes, db):
+            command = f"cd {tmp_path} && python3 - <<'PY'\nt = open('{data}').read()\nPY"
+            assert guard(command, cwd=str(tmp_path), read_remote_script=remote) is False, data.name
+        assert remote_misses  # the notes table was walked and its misses were bounded, not fatal
+        unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(f"bash {minified}")
+        assert unsafe is True and "budget" in refusal
+        unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(f"bash {db}")
+        assert unsafe is True and "SQLite" in refusal
+    finally:
+        conn.close()
+
+
+def test_mentioned_script_with_lifecycle_command_still_blocks(tmp_path):
+    """The lenient path only covers "could not scan": a mentioned script whose text IS a lifecycle
+    command is still a positive verdict, and the refusal reason stays empty (it is not a scan failure)."""
+    import cron.lifecycle_guard as lifecycle_guard
+
+    script = tmp_path / "restart.sh"
+    script.write_text("#!/bin/sh\nhermes gateway restart\n")
+    command = f"cd {tmp_path} && python3 - <<'PY'\nimport os\nos.system('{script}')\nPY"
+    assert lifecycle_guard.scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (True, None)
