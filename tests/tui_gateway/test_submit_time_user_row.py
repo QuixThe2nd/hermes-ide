@@ -62,7 +62,7 @@ def test_turn_adopts_the_submit_row_and_writes_no_duplicate(monkeypatch, tmp_pat
         agent = _flush_agent(db, key)
         # The prologue rewrote the persisted prompt (@-expansion): the early row follows it.
         expanded = "look at @notes.md\n\n<file notes.md>todo</file>"
-        server._adopt_submit_user_row(session, agent, expanded)
+        server._adopt_submit_user_row(session, agent, expanded, "look at @notes.md")
         assert "_submit_user_row" not in session
         user_msg, _pending = _stage_turn_user_message(agent, expanded, expanded, None, None, None, None)
         assert user_msg is agent._pending_cli_user_message  # adopted by identity, not rebuilt
@@ -72,6 +72,41 @@ def test_turn_adopts_the_submit_row_and_writes_no_duplicate(monkeypatch, tmp_pat
         agent._flush_messages_to_session_db(messages + [{"role": "assistant", "content": "done"}], [])  # turn end
         rows = db.get_messages_as_conversation(key, include_inactive=True)
         assert [(r["role"], r["content"]) for r in rows] == [("user", expanded), ("assistant", "done")]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_failed_build_drops_the_staged_row_and_a_later_turn_never_adopts_it(monkeypatch, tmp_path):
+    """The submit-time row is the durable record of THAT send only. A turn that ends before the agent runs
+    (build failed / bounded wait expired) must drop the staging dict, and a later turn without a matching
+    prompt.submit (wake-up, auto-continue, queued drain) must not rewrite the user's row to its own text."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    monkeypatch.setattr(server, "_emit", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_wait_agent_for_prompt",
+                        lambda _session, _rid, _sid: {"error": {"message": "agent initialization failed"}})
+    try:
+        with session["history_lock"]:
+            session["running"] = True
+            server._start_inflight_turn(session, "please refactor the login page")
+        assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None) is None
+        server._run_after_agent_ready("rid", sid, session, "please refactor the login page", None, None)
+        assert "_submit_user_row" not in session, "staged row survived a turn that never reached the agent"
+
+        # Even if a staged row were still around, a turn whose raw submit differs must leave the DB alone.
+        with session["history_lock"]:
+            server._start_inflight_turn(session, "please refactor the login page")
+        server._persist_submit_user_row(session, "please refactor the login page", None)
+        agent = _flush_agent(db, key)
+        synthesized = "[subagent finished] result summary"
+        server._adopt_submit_user_row(session, agent, synthesized, synthesized)
+        assert "_submit_user_row" not in session
+        assert agent._pending_cli_user_message is None
+        rows = db.get_messages_as_conversation(key, include_inactive=True)
+        assert [(r["role"], r["content"]) for r in rows] == [
+            ("user", "please refactor the login page"), ("user", "please refactor the login page")]
     finally:
         server._sessions.pop(sid, None)
         db.close()

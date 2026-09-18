@@ -333,6 +333,9 @@ def _fail_inflight_turn(session: dict, error: Any, error_surface: Optional[dict]
         turn.pop("error_surface", None)
     turn.update(streaming=False, updated_at=now)
     session["inflight_turn"] = turn
+    # The turn is over (build failed, agent missing, prologue raised): the submit-time row stays as the
+    # durable record of the send, but a later turn must not adopt it as its own input.
+    session.pop("_submit_user_row", None)
 
 
 _TURN_FAILURE_DETAIL_LIMIT = 240

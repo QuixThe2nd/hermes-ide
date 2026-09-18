@@ -367,13 +367,15 @@ def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None)
     session["_submit_user_row"] = staged
 
 
-def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any) -> None:
+def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text: Any) -> None:
     """Hand the row written at submit to the turn as its user dict (``agent._pending_cli_user_message``,
     adopted by ``_stage_turn_user_message`` when the content matches). A prompt the prologue rewrote
     (@-expansion, image parts) first updates that row so the durable transcript replays what the model
-    was sent and the ``api_content`` sidecar can address it; ``_row_id`` rides along for that stamp."""
+    was sent and the ``api_content`` sidecar can address it; ``_row_id`` rides along for that stamp.
+    ``text`` is THIS turn's raw submit: a staged row from an earlier send (its turn ended before the agent
+    ran) is discarded untouched, so the DB row stays the user's message and never a synthesized turn's text."""
     staged = session.pop("_submit_user_row", None)
-    if not isinstance(staged, dict) or agent is None:
+    if not isinstance(staged, dict) or agent is None or staged.get("content") != text:
         return
     if staged["content"] != persist_user_message:
         from agent.session_persistence import _durable_content

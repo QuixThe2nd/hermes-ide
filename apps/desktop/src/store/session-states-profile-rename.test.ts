@@ -38,6 +38,11 @@ describe('migrateTilesForProfile', () => {
       connectionId: 'local',
       profile: 'webdesign_bhp'
     })
+    // Same-named profile on a remote connection: not renamed, its tail must stay put.
+    tails.saveTranscriptTail('s-9', [{ id: 'm9', parts: [{ text: 'remote', type: 'text' }], role: 'user' } as never], {
+      connectionId: 'remote-1',
+      profile: 'webdesign_bhp'
+    })
 
     const sessionStore = await import('@/store/session')
     sessionStore.setRememberedSessionId('s-1', 'webdesign_bhp')
@@ -58,6 +63,8 @@ describe('migrateTilesForProfile', () => {
 
     expect(tails.loadTranscriptTail('s-1', { connectionId: 'local', profile: 'hutnik-projectmanager' })).toHaveLength(1)
     expect(tails.loadTranscriptTail('s-1', { connectionId: 'local', profile: 'webdesign_bhp' })).toBeNull()
+    expect(tails.loadTranscriptTail('s-9', { connectionId: 'remote-1', profile: 'webdesign_bhp' })).toHaveLength(1)
+    expect(tails.loadTranscriptTail('s-9', { connectionId: 'remote-1', profile: 'hutnik-projectmanager' })).toBeNull()
 
     expect(sessionStore.getRememberedSessionId('hutnik-projectmanager')).toBe('s-1')
     expect(sessionStore.getRememberedSessionId('webdesign_bhp')).toBeNull()
