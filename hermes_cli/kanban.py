@@ -697,19 +697,14 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 
 def _cmd_link(args: argparse.Namespace) -> int:
-    worker_task_id = os.environ.get("HERMES_KANBAN_TASK")
+    # A worker linking its own running card (dependency-block handoff) proves
+    # ownership with its run id; linking a foreign task never needs one.
     expected_child_run_id = (
         _worker_run_id_for(args.child_id)
-        if args.child_id == worker_task_id
-        else None
-    )
+        if args.child_id == os.environ.get("HERMES_KANBAN_TASK") else None)
     with kbc.connect_closing() as conn:
-        gated = kb.link_tasks(
-            conn,
-            args.parent_id,
-            args.child_id,
-            expected_child_run_id=expected_child_run_id,
-        )
+        gated = kb.link_tasks(conn, args.parent_id, args.child_id,
+                              expected_child_run_id=expected_child_run_id)
     print(f"Linked {args.parent_id} -> {args.child_id}")
     if gated:
         print(
@@ -813,8 +808,6 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     if env_tid and env_tid != task_id:
         raise ValueError(f"worker is scoped to task {env_tid}; refusing to mutate {task_id}")
-    if os.environ.get("HERMES_KANBAN_BOARD") != kb.get_current_board():
-        return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if os.environ.get("HERMES_KANBAN_TASK") != task_id or not raw:
         return None
@@ -902,7 +895,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
             try:
-                return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
+                done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
                                         force=bool(getattr(args, "force", False)))
             except kb.LiveClaimError:
@@ -910,6 +903,15 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
                                  f"--force to close its run and complete anyway.")
                 return False
+            if not done:
+                # complete_task returns bare False for a dependency refusal too;
+                # name the open parents instead of claiming the id is unknown.
+                blockers = kb.unsatisfied_parents(conn, tid)
+                if blockers:
+                    detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
+                    fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
+                                     f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+            return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 

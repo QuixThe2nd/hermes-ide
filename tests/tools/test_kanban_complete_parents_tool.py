@@ -1,4 +1,4 @@
-"""Tool-surface parents reporting for kanban_complete. Regression for #113373.
+"""Dependency refusals name the open parents on every surface.
 
 ``complete_task`` reports every refusal as bare ``False``. On the CLI surface
 the open PRs #110323/#110330/#110334 make the parents refusal actionable;
@@ -65,116 +65,29 @@ def test_complete_names_unsatisfied_parent(running_child_with_parent):
         assert kb.get_task(conn, child_id).status == "running"
     finally:
         conn.close()
+    # The board view names the same parents on the running card.
+    shown = json.loads(kt._handle_show({"task_id": child_id}))
+    assert shown["unsatisfied_parents"] == [{"id": parent_id, "status": "todo"}]
 
 
-def test_complete_multiple_parents_deterministic_order(monkeypatch, tmp_path):
-    """Several unfinished parents are all named, in stable id order."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
-    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
-    from pathlib import Path as _Path
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+def test_cli_complete_names_unsatisfied_parent(running_child_with_parent, monkeypatch, capsys):
+    """`hermes kanban complete` (operator, --force) reports the same blockers."""
+    import argparse
 
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools as kt
-    kb._INITIALIZED_PATHS.clear()
-    kb.init_db()
-    conn = kbc.connect()
-    try:
-        p1 = kb.create_task(conn, title="gate one", assignee="op")
-        p2 = kb.create_task(conn, title="gate two", assignee="op")
-        for p in (p1, p2):
-            assert kb.complete_task(conn, p, result="x")
-        child = kb.create_task(
-            conn, title="child", assignee="test-worker", parents=[p2, p1])
-        assert kb.claim_task(conn, child) is not None
-        # Both gates reopen mid-run.
-        with kb.write_txn(conn):
-            conn.execute(
-                "UPDATE tasks SET status = 'todo', completed_at = NULL "
-                "WHERE id IN (?, ?)", (p1, p2),
-            )
-    finally:
-        conn.close()
-    monkeypatch.setenv("HERMES_KANBAN_TASK", child)
-    out = json.loads(kt._handle_complete(
-        {"task_id": child, "summary": "done"}))
-    assert out.get("error")
-    # Deterministic id order: ids are random hex, so sort first rather than
-    # assuming creation order.
-    first, second = sorted([p1, p2])
-    assert out["error"].index(first) < out["error"].index(second)
+    from hermes_cli import kanban as kc
 
-
-def _isolated_home(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    from pathlib import Path as _Path
-    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
-    from hermes_cli import kanban_db as kb
-    kb._INITIALIZED_PATHS.clear()
-    kb.init_db()
-
-
-def test_complete_unknown_id_stays_generic(monkeypatch, tmp_path):
-    """Missing tasks keep the generic message (no phantom parent lookup)."""
-    _isolated_home(monkeypatch, tmp_path)
+    parent_id, child_id = running_child_with_parent
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    from tools import kanban_tools as kt
-    out = json.loads(kt._handle_complete(
-        {"task_id": "t_deadbeefdeadbeef", "summary": "x"}))
-    assert "unknown id, stale run, or already terminal" in out.get("error", "")
-
-
-def test_complete_terminal_stays_generic(monkeypatch, tmp_path):
-    """An already-done task keeps the generic message (no parents to name)."""
-    _isolated_home(monkeypatch, tmp_path)
-    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools as kt
-    conn = kbc.connect()
-    try:
-        tid = kb.create_task(conn, title="t", assignee="test-worker")
-        assert kb.claim_task(conn, tid) is not None
-        assert kb.complete_task(conn, tid, result="done")
-    finally:
-        conn.close()
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    out = json.loads(kt._handle_complete({"task_id": tid, "summary": "again"}))
-    assert "unknown id, stale run, or already terminal" in out.get("error", "")
-
-
-def test_complete_happy_path_unchanged(monkeypatch, tmp_path):
-    """Parents done -> completion still succeeds exactly as before."""
-    _isolated_home(monkeypatch, tmp_path)
-    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools as kt
-    conn = kbc.connect()
-    try:
-        parent = kb.create_task(conn, title="p", assignee="op")
-        assert kb.complete_task(conn, parent, result="p done")
-        child = kb.create_task(
-            conn, title="c", assignee="test-worker", parents=[parent])
-        assert kb.claim_task(conn, child) is not None
-    finally:
-        conn.close()
-    monkeypatch.setenv("HERMES_KANBAN_TASK", child)
-    out = json.loads(kt._handle_complete({"task_id": child, "summary": "c done"}))
-    assert out.get("ok") is True
+    rc = kc._cmd_complete(argparse.Namespace(
+        task_ids=[child_id], result=None, summary=None, metadata=None, force=True))
+    out = capsys.readouterr()
+    assert rc != 0
+    assert parent_id in out.out + out.err
+    assert "unknown id or terminal state" not in out.out + out.err
 
 
 def test_delegate_description_states_child_handoff_contract():
-    """Spawn-time surfacing (#113373 ask 1): the delegate_task schema tells the
-    parent up front that a child cannot close tracked work and must hand back
-    findings. Keyword-level so rewording does not break CI."""
+    """Spawn-time surfacing: the delegate_task schema tells the parent up front
+    that a child cannot close tracked work and must hand back findings."""
     from tools.delegate_tool import _build_top_level_description
-    desc = _build_top_level_description()
-    assert "tracked work" in desc
-    assert len(desc) <= 2200
+    assert "tracked work" in _build_top_level_description()

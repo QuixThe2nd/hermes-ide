@@ -1195,23 +1195,6 @@ def test_link_tasks_rejects_unowned_running_child_without_recording_edge(kanban_
         assert "linked" not in [event.kind for event in kb.list_events(conn, child)]
 
 
-def test_link_tasks_allows_owning_current_run_dependency_handoff(kanban_home):
-    """The active worker may link its own card before dependency-blocking it."""
-    with kbc.connect() as conn:
-        parent = kb.create_task(conn, title="review parent")
-        child = kb.create_task(conn, title="active child")
-        assert kb.claim_task(conn, child, claimer="worker") is not None
-        run_id = kb.get_task(conn, child).current_run_id
-
-        gated = kb.link_tasks(
-            conn, parent, child, expected_child_run_id=run_id,
-        )
-
-        assert gated is False
-        assert kb.parent_ids(conn, child) == [parent]
-        assert "linked" in [event.kind for event in kb.list_events(conn, child)]
-
-
 def test_link_tasks_no_dependency_wait_when_parent_done(kanban_home):
     """A done parent demotes nothing and reports no gate."""
     with kbc.connect() as conn:

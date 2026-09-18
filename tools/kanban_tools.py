@@ -167,10 +167,8 @@ def _own_task_env(task_id: str, var: str) -> Optional[str]:
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
 
 
-def _worker_run_id(task_id: str, target_board: Optional[str] = None) -> Optional[int]:
-    """This worker's dispatcher run id, optionally bound to its pinned board."""
-    if target_board is not None and os.environ.get("HERMES_KANBAN_BOARD") != target_board:
-        return None
+def _worker_run_id(task_id: str) -> Optional[int]:
+    """This worker's dispatcher run id when it is scoped to task_id."""
     raw = _own_task_env(task_id, "HERMES_KANBAN_RUN_ID")
     try:
         return int(raw) if raw else None
@@ -524,6 +522,10 @@ def _handle_show(args: dict, **kw) -> str:
         return json.dumps({
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
+            # Non-terminal parents; on a running card this means the dependency
+            # gate is not holding it and kanban_complete will refuse.
+            "unsatisfied_parents": [
+                {"id": pid, "status": status} for pid, status in kb.unsatisfied_parents(conn, tid)],
             "children": kb.child_ids(conn, tid),
             "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
             # Capped; full log via CLI.
@@ -561,25 +563,6 @@ def _handle_list(args: dict, **kw) -> str:
             "next_limit": (min(limit * 2, KANBAN_LIST_MAX_LIMIT)
                            if truncated and limit < KANBAN_LIST_MAX_LIMIT else None),
             "promoted": promoted})
-
-
-def _unsatisfied_parent_blockers(kb, conn, tid: str) -> list[tuple[str, str]]:
-    """``(parent_id, status)`` for every direct parent not in a terminal state.
-
-    Read-only mirror of the ``task_links`` join in ``kanban_db._parents_satisfied``
-    (``done`` / ``archived`` release the child), in deterministic id order, so a
-    ``complete_task`` refusal that only returns ``False`` can still name the
-    actionable blockers. Advisory reporting only: queried after the authoritative
-    write, so a concurrent parent completion may have already cleared it.
-    """
-    rows = conn.execute(
-        "SELECT p.id, p.status FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
-        "ORDER BY p.id",
-        (tid,),
-    ).fetchall()
-    return [(row["id"], row["status"]) for row in rows]
 
 
 @_kanban_handler("kanban_complete")
@@ -640,10 +623,9 @@ def _handle_complete(args: dict, **kw) -> str:
         task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or
-            # never-finished parent is the actionable one (#113373: the worker's
-            # done work was refused as "stale run"). Name the blockers so the
-            # worker/operator completes the parents instead of re-running.
-            blockers = _unsatisfied_parent_blockers(kb, conn, tid)
+            # never-finished parent is the actionable one. Name the blockers so
+            # the worker/operator completes the parents instead of re-running.
+            blockers = kb.unsatisfied_parents(conn, tid)
             if blockers:
                 detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
                 raise _Reject(
@@ -1067,19 +1049,17 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
-    """Add a dependency edge, proving ownership for an active child handoff."""
+    """Add a parent→child dependency edge after the fact (cycles/self-links/running
+    children → ValueError). A worker linking its OWN running card proves ownership
+    with its run id so the dependency-block handoff still works."""
     _reject_delegated_child_mutation("kanban_link")
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
     with _board(args.get("board")) as (kb, conn):
-        target_board = kb._normalize_board_slug(args.get("board")) or kb.get_current_board()
         gated = kb.link_tasks(
-            conn,
-            parent_id=parent_id,
-            child_id=child_id,
-            expected_child_run_id=_worker_run_id(child_id, target_board),
-        )
+            conn, parent_id=parent_id, child_id=child_id,
+            expected_child_run_id=_worker_run_id(str(child_id)))
         return _ok(parent_id=parent_id, child_id=child_id, gated=gated,
                    **({"gated_by": parent_id} if gated else {}))
 
