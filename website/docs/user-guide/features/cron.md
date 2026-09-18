@@ -89,9 +89,10 @@ validates that the job's configuration can actually produce a successful run:
   least one tool for this profile. A server that connected earlier in this
   gateway and is only reconnecting after a network blip (router reboot, DNS
   failure) does **not** block: the job runs with the tools that did resolve and
-  the gateway log notes which servers were skipped. Only a server that never
-  connected for this profile (wrong URL or credentials, or a server another
-  profile owns under a multiplexer) blocks the run.
+  the gateway log notes which servers were skipped (once per outage). A server
+  that never connected for this profile (wrong URL or credentials, or a server
+  another profile owns under a multiplexer), or one parked on a permanent error
+  such as revoked credentials, blocks the run.
 
 When validation fails, the job's `last_status` becomes `blocked_config`, ONE
 alert is delivered (it is not repeated every tick), and **no LLM call is
