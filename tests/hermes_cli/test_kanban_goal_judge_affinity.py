@@ -85,3 +85,28 @@ def test_tool_gate_binds_per_task_affinity_scope():
         kanban_tools._goal_gate("kanban_complete", _task("task-9"), "task-9", "ev")
     assert seen == ["kanban:task-9"]
     assert get_affinity_scope() is None
+
+
+def test_goal_loop_judge_binds_per_task_affinity_scope():
+    """The between-turns judge in run_kanban_goal_loop runs under kanban:<task_id> too."""
+    from hermes_cli import goals
+
+    seen = []
+
+    def fake_judge(goal, last_response):
+        seen.append(get_affinity_scope())
+        return ("continue", "not yet", False, None, False)
+
+    with patch.object(goals, "judge_goal", side_effect=fake_judge):
+        result = goals.run_kanban_goal_loop(
+            task_id="task-7",
+            goal_text="goal",
+            run_turn=lambda prompt: "still working",
+            task_status_fn=lambda: "running",
+            block_fn=lambda msg: None,
+            max_turns=2,
+            first_response="first",
+        )
+    assert result["outcome"] == "blocked_budget"
+    assert seen == ["kanban:task-7", "kanban:task-7"]
+    assert get_affinity_scope() is None

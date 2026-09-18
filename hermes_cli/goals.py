@@ -1646,7 +1646,15 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
             return _result("stopped", f"status={status}")
 
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        # The between-turns judge runs outside any agent turn: bind the per-task relay-affinity
+        # scope (same shape as the handoff gates) so the relay does not reject the call (#113669).
+        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+        try:
+            verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        finally:
+            if affinity_token is not None:
+                reset_affinity_scope(affinity_token)
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
