@@ -353,8 +353,12 @@ class GatewayShutdownMixin:
             for profile_adapters in (getattr(self, "_profile_adapters", {}) or {}).values():
                 for platform in profile_adapters:
                     add_platform(platform)
-        except Exception:  # noqa: BLE001 - diagnostics must not block gateway startup
-            return active
+        except Exception:  # noqa: BLE001 - unreadable state must keep the gateway awake
+            logger.debug(
+                "scale-to-zero: active messaging platforms unreadable — staying awake",
+                exc_info=True,
+            )
+            return ["<unavailable>"]
         return active
 
     @staticmethod
