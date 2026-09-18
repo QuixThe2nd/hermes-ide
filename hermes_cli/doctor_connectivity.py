@@ -210,6 +210,9 @@ def _apikey_request(key: str, base_env, default_url) -> tuple:
     # Google's Generative Language API rejects ``Authorization: Bearer <api-key>`` with 401
     # ACCESS_TOKEN_TYPE_UNSUPPORTED (reserved for OAuth 2 tokens); plain keys use ``x-goog-api-key``.
     if url and base_url_host_matches(url, "generativelanguage.googleapis.com"):
+        from agent.gemini_native_adapter import normalize_gemini_base_url
+        # A Vertex express key (AQ.) can only 403 on the Studio host; normalize routes it to aiplatform.
+        url = normalize_gemini_base_url(url.rsplit("/models", 1)[0], key) + "/models"
         headers.pop("Authorization", None)
         headers["x-goog-api-key"] = key
     return base, url, headers
