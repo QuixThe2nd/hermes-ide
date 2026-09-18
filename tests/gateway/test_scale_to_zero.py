@@ -81,6 +81,70 @@ def test_scale_to_zero_gate_accounts_for_secondary_profile_direct_adapter(monkey
     assert runner._scale_to_zero_should_arm() is False
 
 
+def test_watcher_reasks_gate_before_dormant_sequence(monkeypatch):
+    # Arming is a boot-time snapshot. A direct adapter hot-added afterwards (profile reconcile)
+    # must stop the dormant sequence; with relay only, the same tick still reaches go_dormant.
+    import asyncio
+    import time
+
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.run_shutdown import GatewayShutdownMixin
+
+    monkeypatch.setenv("GATEWAY_RELAY_SLEEP_URL", "https://sleep.example.test/instance")
+
+    class Relay:
+        def __init__(self):
+            self.calls = []
+
+        def hold_redial(self):
+            return True
+
+        def release_redial(self):
+            return True
+
+        async def go_dormant(self):
+            self.calls.append("go_dormant")
+            return False  # refuse the ack: the tick must abandon before any suspend call
+
+    class Runner(GatewayShutdownMixin):
+        def __init__(self):
+            self.config = GatewayConfig(platforms={Platform.RELAY: PlatformConfig(enabled=True)})
+            self.adapters = {Platform.RELAY: Relay()}
+            self._profile_adapters = {}
+            self._running = True
+            self._running_agents = {}
+            self._background_tasks = set()
+            self._last_inbound_at = time.time() - 3600
+            self._scale_to_zero_cooldown_until = 0.0
+            self._scale_to_zero_no_suspend_logged = False
+            self._scale_to_zero_direct_platform_logged = False
+
+        def _running_agent_count(self):
+            return 0
+
+        def _update_runtime_status(self, state):
+            pass
+
+    async def one_tick(runner):
+        task = asyncio.ensure_future(runner._scale_to_zero_watcher(interval=0.0))
+        await asyncio.sleep(0.05)
+        runner._running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    hot_added = Runner()
+    hot_added._profile_adapters = {"imessage": {Platform("photon"): object()}}
+    asyncio.run(one_tick(hot_added))
+    assert hot_added.adapters[Platform.RELAY].calls == []
+
+    relay_only = Runner()
+    asyncio.run(one_tick(relay_only))
+    assert relay_only.adapters[Platform.RELAY].calls == ["go_dormant"]
+
+
 # ── should_arm (D1/D11/§3.4(1)) ──────────────────────────────────────────────
 
 

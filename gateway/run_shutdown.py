@@ -335,6 +335,9 @@ class GatewayShutdownMixin:
         ``self.config`` belongs to the launch profile, while ``_profile_adapters`` holds
         live adapters for multiplexed secondary profiles. A direct secondary connection
         must block suspension just like a direct primary connection.
+
+        config.platforms is pre-seeded with disabled placeholders, and the api_server is
+        force-enabled on every hosted container (counting it silently disarmed the feature).
         """
         non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
         active = []
@@ -451,6 +454,7 @@ class GatewayShutdownMixin:
         sees only INBOUND connections and would freeze mid-job. Without a flaps socket NAS brokers
         the stop through the stamped GATEWAY_RELAY_SLEEP_URL; with no lever at all the watcher
         abstains."""
+        from gateway.scale_to_zero import messaging_is_relay_only_or_absent
         await asyncio.sleep(min(interval, 30.0))  # let startup settle
         while self._running:
             try:
@@ -459,6 +463,22 @@ class GatewayShutdownMixin:
                     return
                 if time.time() < self._scale_to_zero_cooldown_until or not self._scale_to_zero_is_idle():
                     continue
+                # The arm gate ran once at boot. A direct adapter that came up since (profile
+                # reconcile hot-adding a secondary, a re-enabled platform) owns a socket no wake
+                # URL can revive, so the same gate is re-asked before every dormant sequence.
+                active = self._scale_to_zero_active_messaging_platforms()
+                if not messaging_is_relay_only_or_absent(active):
+                    if not self._scale_to_zero_direct_platform_logged:
+                        self._scale_to_zero_direct_platform_logged = True
+                        logger.info(
+                            "scale-to-zero: idle, but directly connected messaging platform(s) %s "
+                            "hold a live socket that a suspended instance cannot wake from — staying "
+                            "awake. Route them through the relay connector or disable them to allow "
+                            "suspend.",
+                            ", ".join(str(getattr(p, "value", p)) for p in active),
+                        )
+                    continue
+                self._scale_to_zero_direct_platform_logged = False
                 go_dormant = getattr(self._relay_adapter_for_dormancy(), "go_dormant", None)
                 if not callable(go_dormant):
                     continue

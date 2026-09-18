@@ -10436,6 +10436,7 @@ class GatewayRunner(
         self._scale_to_zero_cooldown_until: float = 0.0
         # One-shot: log the "platform owns the suspend" notice once, not per tick.
         self._scale_to_zero_no_suspend_logged: bool = False
+        self._scale_to_zero_direct_platform_logged: bool = False
 
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
