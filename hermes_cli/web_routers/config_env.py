@@ -314,8 +314,15 @@ def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
     return slug or fallback
 
 
-def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve a custom endpoint id using the stored key first, then its legacy slug."""
+def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """Resolve a custom endpoint id using the stored key first, then its legacy slug.
+
+    The list route hands Desktop the literal ``providers.<key>`` (a v11→v12
+    migration keeps dots/colons from the display name: ``local-127.0.0.1:8283``;
+    hand-written keys keep their case), so that spelling must round-trip
+    unchanged. Slugging is only the compatibility path for callers that still
+    send an unslugged display name.
+    """
     stored_key, entry = find_provider_entry(providers, endpoint_id)
     if entry is not None:
         return stored_key, entry
@@ -425,21 +432,27 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> None:
+def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]] = None) -> None:
     """Drop the main-slot mirror of a provider that no longer exists.
 
     ``activate_custom_endpoint`` copies the endpoint's ``base_url`` and
     ``api_key`` onto ``model``; that mirror outranks the environment at client
     construction, so deleting the endpoint without clearing it leaves the agent
     authenticating to the deleted host with the deleted key (and the key in
-    config.yaml). Only touches ``model`` when it names the deleted provider.
+    config.yaml). Only touches ``model`` when it names the deleted provider —
+    ``switch_model`` spells that either as the stored key or as
+    ``custom:<lowercased name>``, so both spellings count.
 
     See #62269.
     """
     model_cfg = cfg.get("model")
     if not isinstance(model_cfg, dict):
         return
-    if str(model_cfg.get("provider") or "").strip().lower() != provider_key:
+    names = {coerce_provider_id(provider_key).lower()}
+    if isinstance(entry, dict) and coerce_provider_id(entry.get("name")):
+        names.add(coerce_provider_id(entry.get("name")).lower())
+    current = str(model_cfg.get("provider") or "").strip().lower()
+    if current.removeprefix("custom:") not in names:
         return
     for field in ("provider", "base_url", "api_key", "key_env"):
         model_cfg.pop(field, None)
@@ -447,7 +460,6 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> 
 
 
 def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
-    endpoint_id = _custom_endpoint_id(body.id or body.name)
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
     model = (body.model or "").strip()
@@ -468,7 +480,10 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     providers = cfg.get("providers")
     if not isinstance(providers, dict):
         providers = {}
-    stored_key, existing = find_provider_entry(providers, endpoint_id)
+    # An edit payload carries the stored key verbatim; slugging it first would
+    # miss the entry and fork a slugged twin next to the original.
+    stored_key, existing = _resolve_custom_endpoint_entry(providers, body.id or body.name)
+    endpoint_id = coerce_provider_id(stored_key) if existing is not None else _custom_endpoint_id(body.id or body.name)
     if existing is None:
         existing = {}
 
@@ -576,9 +591,10 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     ):
         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
-            provider_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
+            stored_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
             if entry is None:
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
+            provider_key = coerce_provider_id(stored_key)
 
             models = _models_from_custom_endpoint_entry(entry)
             model = str(entry.get("model") or (models[0] if models else "")).strip()
@@ -620,10 +636,10 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
             stored_key, entry = _resolve_custom_endpoint_entry(providers, endpoint_id)
             if entry is None or not isinstance(providers, dict):
                 raise HTTPException(status_code=404, detail="custom endpoint not found")
-            provider_key = stored_key
+            provider_key = coerce_provider_id(stored_key)
             providers.pop(stored_key, None)
             cfg["providers"] = providers
-            _detach_main_model_from_provider(cfg, provider_key)
+            _detach_main_model_from_provider(cfg, provider_key, entry)
             remove_env_value(custom_endpoint_key_env(provider_key))
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
