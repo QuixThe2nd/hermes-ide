@@ -240,6 +240,14 @@ respawned automatically on the next relevant file operation. Set
 `idle_timeout: 0` to disable reaping and hold every server's index warm
 for the life of the process.
 
+Servers are also released when their workspace goes away, independent of
+the idle timer: removing a Hermes-managed worktree (`hermes -w` session
+end, Kanban task cleanup) shuts down that tree's language servers before
+`git worktree remove` runs, and the periodic sweep shuts down any server
+whose project root no longer exists on disk (deleted outside Hermes). A
+multi-root server only drops the vanished folder and keeps serving its
+sibling roots.
+
 Servers that support multi-root workspaces (currently pyright) run as a
 **single process** per Hermes process: the first Python project spawns
 it, and every further project root — for example sibling git worktrees
