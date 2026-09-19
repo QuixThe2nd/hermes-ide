@@ -129,6 +129,7 @@ from hermes_state_messages import SessionMessagesMixin
 from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
+from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_gateway import SessionGatewayMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
@@ -5466,6 +5467,7 @@ class SessionDB(
     SessionTitlesMixin,
     SessionMessagesMixin,
     SessionRewindMixin,
+    SessionProfileRepairMixin,
 ):
     """
     SQLite-backed session storage with FTS5 search.
