@@ -224,16 +224,55 @@ def test_review_input_budget_exhausted_predicate_edge_cases():
 @pytest.mark.parametrize(
     ("config_value", "expected"),
     [
-        ({}, 600_000),
         ({"max_input_tokens": 1_000_000}, 1_000_000),
         ({"max_input_tokens": 0}, None),
         ({"max_input_tokens": -5}, None),
-        ({"max_input_tokens": "not-a-number"}, 600_000),
         ({"max_input_tokens": "300000"}, 300_000),
     ],
 )
 def test_review_input_token_budget_resolution(config_value, expected):
-    """Config parsing: default, override, explicit disable, garbage fallback."""
+    """Explicit settings retain their established override and unlimited semantics."""
     from agent.background_review import _review_input_token_budget
 
     assert _review_input_token_budget(config_value) == expected
+
+
+@pytest.mark.parametrize(
+    ("context_window", "expected"),
+    [
+        (65_536, 49_152),
+        (4_096, 3_072),
+    ],
+)
+def test_review_input_token_budget_default_tracks_active_context(context_window, expected):
+    """An unset budget leaves room below the review model's context window."""
+    from agent.background_review import _review_input_token_budget
+
+    runtime = {"provider": "lmstudio", "model": "local-model", "base_url": "http://localhost:1234"}
+    with patch("agent.model_metadata.get_model_context_length", return_value=context_window):
+        assert _review_input_token_budget({}, runtime) == expected
+
+
+def test_review_input_token_budget_malformed_value_uses_context_derived_default():
+    """A malformed explicit value is safe, rather than restoring the old 600k default."""
+    from agent.background_review import _review_input_token_budget
+
+    runtime = {"provider": "lmstudio", "model": "local-model", "base_url": "http://localhost:1234"}
+    with patch("agent.model_metadata.get_model_context_length", return_value=65_536):
+        assert _review_input_token_budget({"max_input_tokens": "not-a-number"}, runtime) == 49_152
+
+
+def test_review_input_token_budget_unknown_context_uses_conservative_fallback():
+    """Failed context discovery must still bound unattended review work."""
+    from agent.background_review import _review_input_token_budget
+
+    runtime = {"provider": "local", "model": "unknown", "base_url": "http://localhost:1234"}
+    with patch("agent.model_metadata.get_model_context_length", side_effect=RuntimeError("unavailable")):
+        assert _review_input_token_budget({}, runtime) == 120_000
+
+
+def test_background_review_config_does_not_freeze_a_fixed_input_budget():
+    """The config default must leave the budget resolver access to the active runtime."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert "max_input_tokens" not in DEFAULT_CONFIG["auxiliary"]["background_review"]

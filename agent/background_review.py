@@ -151,9 +151,12 @@ _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
 # ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
 # (both compression gates deferred until the first response); compaction then bounds each
-# request, but nothing else caps the SUM across the tool loop. 2x the historical 300k foreground
-# trigger. Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
-_REVIEW_MAX_INPUT_TOKENS_DEFAULT = 600_000
+# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
+# review model's context window available and never exceeds the historical cloud-scale ceiling.
+# Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
+_REVIEW_MAX_INPUT_TOKENS_CAP = 600_000
+_REVIEW_INPUT_CONTEXT_FRACTION = 0.75
+_REVIEW_MAX_INPUT_TOKENS_FALLBACK = 120_000
 
 
 def _task_block(cfg: Any) -> Dict[str, Any]:
@@ -175,13 +178,45 @@ def _background_review_task_config(task_cfg: Optional[Dict[str, Any]] = None) ->
         return {}
 
 
-def _review_input_token_budget(task_cfg: Optional[Dict[str, Any]] = None) -> Optional[int]:
+def _context_derived_review_input_budget(runtime: Optional[Dict[str, Any]] = None) -> int:
+    """Return a bounded default based on the active review runtime when known."""
+    runtime = runtime if isinstance(runtime, dict) else {}
+    model = str(runtime.get("model") or "").strip()
+    if not model:
+        return _REVIEW_MAX_INPUT_TOKENS_FALLBACK
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        context_window = get_model_context_length(
+            model,
+            base_url=str(runtime.get("base_url") or ""),
+            api_key=str(runtime.get("api_key") or ""),
+            provider=str(runtime.get("provider") or ""),
+        )
+    except Exception:
+        logger.debug("Background review context-window resolution failed", exc_info=True)
+        return _REVIEW_MAX_INPUT_TOKENS_FALLBACK
+    if not isinstance(context_window, int) or context_window <= 0:
+        return _REVIEW_MAX_INPUT_TOKENS_FALLBACK
+    return min(
+        _REVIEW_MAX_INPUT_TOKENS_CAP,
+        max(1, int(context_window * _REVIEW_INPUT_CONTEXT_FRACTION)),
+    )
+
+
+def _review_input_token_budget(
+    task_cfg: Optional[Dict[str, Any]] = None,
+    runtime: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
     """Aggregate input-token budget for one review fork (None = unlimited; <= 0 disables)."""
-    raw = _background_review_task_config(task_cfg).get("max_input_tokens", _REVIEW_MAX_INPUT_TOKENS_DEFAULT)
+    task = _background_review_task_config(task_cfg)
+    if "max_input_tokens" not in task:
+        return _context_derived_review_input_budget(runtime)
+    raw = task["max_input_tokens"]
     try:
         budget = int(raw)
     except (TypeError, ValueError):
-        budget = _REVIEW_MAX_INPUT_TOKENS_DEFAULT
+        return _context_derived_review_input_budget(runtime)
     return budget if budget > 0 else None
 
 
@@ -978,7 +1013,7 @@ def build_cache_parity_fork(
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).
-    review_agent._review_input_token_budget = _review_input_token_budget(task_cfg)
+    review_agent._review_input_token_budget = _review_input_token_budget(task_cfg, _rt)
     return review_agent, _rt, _routed
 
 
