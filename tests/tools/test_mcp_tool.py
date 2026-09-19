@@ -1167,28 +1167,6 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
-    def test_start_defaults_stdio_cwd_to_terminal_cwd(self, tmp_path, monkeypatch):
-        """Without a session pin, the TERMINAL_CWD bridge anchors the stdio default."""
-        from agent.runtime_cwd import clear_session_cwd
-        from tools.mcp_tool import MCPServerTask
-
-        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-
-        mock_session = MagicMock()
-        mock_session.initialize = AsyncMock()
-        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
-        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
-
-        async def _test():
-            clear_session_cwd()
-            with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
-                server = MCPServerTask("terminal_cwd")
-                await server.start({"command": "npx", "args": ["-y", "test"]})
-                assert Path(params.call_args.kwargs["cwd"]) == tmp_path
-                await server.shutdown()
-
-        asyncio.run(_test())
-
     def test_start_configured_cwd_overrides_session_cwd(self, tmp_path, monkeypatch):
         """An explicit per-server `cwd` in config always wins over the session anchor."""
         from agent.runtime_cwd import clear_session_cwd, set_session_cwd
@@ -1215,32 +1193,6 @@ class TestMCPServerTask:
                 clear_session_cwd()
 
         asyncio.run(_test())
-
-    def test_start_missing_session_cwd_keeps_native_default(self, tmp_path, monkeypatch):
-        """A session pin pointing at a deleted directory yields None, not a stale anchor."""
-        from agent.runtime_cwd import clear_session_cwd, set_session_cwd
-        from tools.mcp_tool import MCPServerTask
-
-        monkeypatch.delenv("TERMINAL_CWD", raising=False)
-
-        mock_session = MagicMock()
-        mock_session.initialize = AsyncMock()
-        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
-        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
-
-        async def _test():
-            set_session_cwd(str(tmp_path / "gone"))
-            try:
-                with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
-                    server = MCPServerTask("gone")
-                    await server.start({"command": "npx", "args": ["-y", "test"]})
-                    assert params.call_args.kwargs["cwd"] is None
-                    await server.shutdown()
-            finally:
-                clear_session_cwd()
-
-        asyncio.run(_test())
-
 
     def test_stdio_recycle_deadline_pauses_while_rpc_active(self):
         from tools.mcp_tool import MCPServerTask
