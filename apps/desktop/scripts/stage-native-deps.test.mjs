@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  findHalfInstalledGetWindowsDir,
   installGetWindowsNativeBinding,
   stageGetWindows,
   stageGetWindowsInto,
@@ -647,33 +648,63 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 
 // ─── stageGetWindows (optionalDependency gate) ──────────────────────
 //
-// get-windows is an optionalDependency: on Linux its node-pre-gyp install
-// script fails because no prebuilt exists. Windows ARM64 has the same package
-// state: its prebuilt URL returns 404 and npm may omit the optional dependency.
-// Staging skips those unsupported targets, but supported native targets remain
-// a hard failure when the package is missing.
+// get-windows is an optionalDependency: npm omits it when its install script
+// fails (no prebuilt for Linux / Windows ARM64) and a Windows in-place update
+// can leave it half-extracted when a running Desktop holds files open
+// (#90829). Either way only read_window_below is lost, so staging degrades
+// with a warning on every platform instead of failing the whole build.
 
-test('linux staging skips when get-windows is absent (optional dep skipped by npm)', () => {
-  assert.equal(stageGetWindows({ platform: 'linux', resolveRoot: () => null }), undefined)
+test('staging degrades (never throws) when get-windows is absent on every platform', () => {
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (msg) => warnings.push(String(msg))
+  try {
+    for (const [platform, arch] of [['linux', 'x64'], ['darwin', 'arm64'], ['win32', 'arm64'], ['win32', 'x64']]) {
+      assert.equal(
+        stageGetWindows({ platform, arch, resolveRoot: () => null, findHalfInstalledDir: () => null }),
+        undefined,
+        `${platform}-${arch} must degrade`
+      )
+    }
+  } finally {
+    console.warn = origWarn
+  }
+  assert.equal(warnings.length, 4)
+  assert.ok(warnings.every((w) => w.includes('read_window_below will be unavailable')))
+  assert.ok(warnings.every((w) => !w.includes('npm install get-windows')), 'no repair hint without a stale dir')
 })
 
-test('darwin staging fails when get-windows is absent', () => {
-  assert.throws(
-    () => stageGetWindows({ platform: 'darwin', arch: 'arm64', resolveRoot: () => null }),
-    /get-windows is not installed/
-  )
-})
+test('a half-installed get-windows dir is found and named in a repair hint', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'half-installed-'))
+  try {
+    // Reporter's state: node_modules/get-windows exists (binding extracted) but
+    // package.json never was, so require.resolve fails while the dir is there.
+    const app = join(tmp, 'apps', 'desktop')
+    const stale = join(tmp, 'node_modules', 'get-windows', 'lib', 'binding')
+    fs.mkdirSync(app, { recursive: true })
+    fs.mkdirSync(stale, { recursive: true })
+    assert.equal(findHalfInstalledGetWindowsDir(app), join(tmp, 'node_modules', 'get-windows'))
 
-test('win32-arm64 staging skips when get-windows is absent after its optional install fails', () => {
-  assert.equal(
-    stageGetWindows({ platform: 'win32', arch: 'arm64', resolveRoot: () => null }),
-    undefined
-  )
-})
+    const warnings = []
+    const origWarn = console.warn
+    console.warn = (msg) => warnings.push(String(msg))
+    try {
+      stageGetWindows({
+        platform: 'win32',
+        arch: 'x64',
+        resolveRoot: () => null,
+        findHalfInstalledDir: () => findHalfInstalledGetWindowsDir(app)
+      })
+    } finally {
+      console.warn = origWarn
+    }
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /npm install get-windows --save-exact/)
+    assert.ok(warnings[0].includes(join(tmp, 'node_modules', 'get-windows')))
 
-test('win32-x64 staging fails when get-windows is absent', () => {
-  assert.throws(
-    () => stageGetWindows({ platform: 'win32', arch: 'x64', resolveRoot: () => null }),
-    /get-windows is not installed/
-  )
+    fs.rmSync(join(tmp, 'node_modules'), { recursive: true, force: true })
+    assert.equal(findHalfInstalledGetWindowsDir(app), null)
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
 })

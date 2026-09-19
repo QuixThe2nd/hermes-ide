@@ -640,11 +640,46 @@ export function installGetWindowsNativeBinding(
   }
 }
 
+/**
+ * A get-windows directory that exists but does not resolve as a package: an
+ * `npm install` interrupted by a running Desktop/gateway holding files open
+ * (TAR_ENTRY_ERROR on Windows) leaves the binding on disk without
+ * package.json, and npm never revisits a directory that already exists, so the
+ * tree stays broken across every later update. Walks the same
+ * `node_modules` ancestors `require.resolve` does (the workspace root hoist or
+ * the app-local copy).
+ */
+export function findHalfInstalledGetWindowsDir(startDir = projectRoot, exists = existsSync) {
+  for (let dir = startDir; ; dir = dirname(dir)) {
+    const candidate = join(dir, 'node_modules', 'get-windows')
+    if (exists(candidate)) return candidate
+    if (dirname(dir) === dir) return null
+  }
+}
+
+/** The warning printed when get-windows cannot be staged; exported for tests. */
+export function missingGetWindowsWarning({ platform, arch, halfInstalledDir }) {
+  const lines = [
+    `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
+      'read_window_below will be unavailable in this build'
+  ]
+  if (halfInstalledDir) {
+    lines.push(
+      `[stage-native-deps] ${halfInstalledDir} exists but is not a loadable package — an ` +
+        'interrupted npm install left it half-extracted (look for TAR_ENTRY_ERROR in the install log). ' +
+        'To restore read_window_below: close every Hermes window and gateway, then run ' +
+        '`npm install get-windows --save-exact` in apps/desktop and rebuild with `hermes desktop --force-build`.'
+    )
+  }
+  return lines.join('\n')
+}
+
 export function stageGetWindows(
   {
     platform = process.platform,
     arch = process.arch,
-    resolveRoot = resolveGetWindowsRoot
+    resolveRoot = resolveGetWindowsRoot,
+    findHalfInstalledDir = findHalfInstalledGetWindowsDir
   } = {}
 ) {
   const srcRoot = resolveRoot()
@@ -656,8 +691,7 @@ export function stageGetWindows(
     // already fails soft, so we disable only window enumeration instead of failing
     // the entire Desktop build (which would strand users on an old version).
     console.warn(
-      `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
-        'read_window_below will be unavailable in this build'
+      missingGetWindowsWarning({ platform, arch, halfInstalledDir: findHalfInstalledDir() })
     )
     return undefined
   }
