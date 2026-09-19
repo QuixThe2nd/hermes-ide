@@ -680,11 +680,11 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     allowlist = kbd.dispatch_profile_allowlist_summary()
 
     if getattr(args, "json", False):
-        _print_json({
-            "dispatch_profiles": allowlist,
-            "tasks": [{"task_id": tid, **meta.get(tid, {}), "diagnostics": [d.to_dict() for d in dl]}
-                      for tid, dl in diags_by_task.items()],
-        })
+        # Per-task rows unchanged; the home-scope allowlist rides as a trailing row
+        # (task_id null) so existing `payload[0]["diagnostics"]` consumers keep working.
+        _print_json([{"task_id": tid, **meta.get(tid, {}), "diagnostics": [d.to_dict() for d in dl]}
+                     for tid, dl in diags_by_task.items()]
+                    + [{"task_id": None, "dispatch_profiles": allowlist, "diagnostics": []}])
         return 0
 
     print(f"kanban.dispatch_profiles: {allowlist}")
