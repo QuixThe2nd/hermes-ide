@@ -141,7 +141,9 @@ _SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
     "out of credit", "out of extra usage",
 )
 
-_SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = ("no api key was found", "no api key found")
+_SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "no api key was found", "no api key found", "no credentials were found",
+)
 
 _HYGIENE_PREAGENT_ONLY_COOLDOWN_MARKERS: tuple[str, ...] = (
     "session hygiene compression timed out", "hygiene compression deferred: turn-hold budget expired",
