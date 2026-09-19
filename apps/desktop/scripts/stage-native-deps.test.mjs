@@ -463,21 +463,31 @@ test('win32 staging rejects a binding dir that claims win32 but holds a foreign 
   }
 })
 
-test('win32-x64 staging fails when only foreign bindings exist', () => {
+test('win32-x64 staging degrades to the fail-soft JS surface when only foreign bindings exist', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (msg) => warnings.push(String(msg))
   try {
     const srcRoot = join(tmp, 'get-windows')
     const destRoot = join(tmp, 'dest')
 
+    // Half-extracted install (#90829): the package resolves, but lib/binding
+    // holds only the darwin dir the tarball bundles and the installer is a no-op.
     makeFakeGetWindows(srcRoot, {
       bindings: [{ dir: 'napi-9-darwin-unknown-arm64', platform: 'darwin' }]
     })
 
-    assert.throws(
-      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' }),
-      /no win32-x64 prebuilt binding/
+    assert.equal(
+      stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64', install: () => {} }),
+      destRoot
     )
+    assert.ok(existsSync(join(destRoot, 'lib', 'windows.js')))
+    assert.ok(!existsSync(join(destRoot, 'lib', 'binding')))
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /native installer produced no win32-x64 binding/)
   } finally {
+    console.warn = origWarn
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
@@ -534,28 +544,24 @@ test('win32 staging self-heals through the native installer when the binding is 
   }
 })
 
-test('win32 staging rejects a successful installer that produces no binding', () => {
+test('darwin staging degrades (not staged) when the helper binary is missing', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = (msg) => warnings.push(String(msg))
   try {
     const srcRoot = join(tmp, 'get-windows')
     const destRoot = join(tmp, 'dest')
 
-    makeFakeGetWindows(srcRoot, { bindings: [] })
+    makeFakeGetWindows(srcRoot)
+    fs.rmSync(join(srcRoot, 'main'))
 
-    assert.throws(
-      () =>
-        stageGetWindowsInto(srcRoot, destRoot, {
-          platform: 'win32',
-          arch: 'x64',
-          install: () => {}
-        }),
-      (error) => {
-        assert.match(error.message, /installer completed without producing a win32-x64 binding/)
-        assert.doesNotMatch(error.message, /npm rebuild/)
-        return true
-      }
-    )
+    assert.equal(stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' }), undefined)
+    assert.ok(!existsSync(destRoot), 'a helper-less module must not ship half-staged')
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /missing its macOS helper binary/)
   } finally {
+    console.warn = origWarn
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })

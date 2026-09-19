@@ -536,7 +536,15 @@ export function stageGetWindowsInto(
   if (platform === 'darwin') {
     const helper = join(srcRoot, 'main')
     if (!existsSync(helper)) {
-      throw new Error('[stage-native-deps] get-windows is missing its macOS helper binary (main)')
+      // A half-extracted install (#90829) can keep the package but lose the
+      // helper; the runtime already fails soft on an unstaged module, so lose
+      // only window enumeration rather than the whole Desktop build.
+      removeDirSync(destRoot)
+      console.warn(
+        '[stage-native-deps] get-windows is missing its macOS helper binary (main); ' +
+          'not staged — read_window_below will be unavailable in this build'
+      )
+      return undefined
     }
     copyFileSync(helper, join(destRoot, 'main'))
     makeExecutable(join(destRoot, 'main'))
@@ -560,15 +568,7 @@ export function stageGetWindowsInto(
         : []
     let bindingDirs = scanBindingDirs()
     let installAttempted = false
-    if (bindingDirs.length === 0 && arch === 'arm64') {
-      // get-windows 9.3.0 publishes win32 prebuilds for ia32/x64 only.
-      // The staged windows.js deliberately fails soft when binding/ is absent,
-      // so preserve the desktop build and disable only window enumeration.
-      console.warn(
-        '[stage-native-deps] get-windows has no win32-arm64 prebuilt binding; ' +
-          'staging the fail-soft JS surface without native window enumeration.'
-      )
-    } else if (bindingDirs.length === 0 && typeof install === 'function') {
+    if (bindingDirs.length === 0 && arch !== 'arm64' && typeof install === 'function') {
       // A plain `npm install` won't re-run an install script for a package
       // that is already on disk, so every checkout that installed while
       // get-windows was missing from allowScripts stays bricked even after
@@ -579,14 +579,27 @@ export function stageGetWindowsInto(
         '[stage-native-deps] get-windows has no win32 binding; running its native installer...'
       )
       installAttempted = true
-      install()
+      try {
+        install()
+      } catch (error) {
+        console.warn(
+          `[stage-native-deps] get-windows native installer failed: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
       bindingDirs = scanBindingDirs()
     }
-    if (bindingDirs.length === 0 && arch !== 'arm64') {
+    if (bindingDirs.length === 0) {
+      // get-windows 9.3.0 publishes win32 prebuilds for ia32/x64 only, and a
+      // half-extracted install (#90829) can leave even those without one. The
+      // staged windows.js deliberately fails soft when binding/ is absent, so
+      // preserve the desktop build and disable only window enumeration.
       const reason = installAttempted
-        ? `native installer completed without producing a win32-${arch} binding under lib/binding`
-        : `has no win32-${arch} prebuilt binding under lib/binding`
-      throw new Error(`[stage-native-deps] get-windows ${reason}`)
+        ? `native installer produced no win32-${arch} binding`
+        : `has no win32-${arch} prebuilt binding`
+      console.warn(
+        `[stage-native-deps] get-windows ${reason}; ` +
+          'staging the fail-soft JS surface without native window enumeration.'
+      )
     }
     for (const dir of bindingDirs) {
       const dest = join(destRoot, 'lib', 'binding', dir)
