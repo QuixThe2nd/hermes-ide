@@ -27,7 +27,8 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 from agent.error_classifier import (
     _BILLING_PATTERNS,
     _OVERLOADED_PATTERNS,
-    is_reasoning_disable_rejected,
+    UNSUPPORTED_PARAM_MARKERS,
+    is_reasoning_field_rejection,
 )
 from agent.auxiliary_structured_output import remember_structured_output_rejection
 from agent.codex_headers import (
@@ -3244,16 +3245,7 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
     if not param_lower:
         return False
     err_lower = str(exc).lower()
-    # Bedrock Converse rejects sampling params for reasoning-first models with the contraction
-    # ("This model doesn't support the temperature field", xAI Grok) and inference-profile Claude
-    # with "`temperature` is deprecated for this model" (#111043).
-    return param_lower in err_lower and _contains_any(err_lower, (
-        "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
-        "doesn't support", "is deprecated for this model",
-        "unknown parameter", "unrecognized request argument", "unrecognized parameter", "invalid parameter",
-        # Strict pydantic-validated gateways (Fireworks) name the unknown field this way (#109774).
-        "extra inputs are not permitted",
-    ))
+    return param_lower in err_lower and _contains_any(err_lower, UNSUPPORTED_PARAM_MARKERS)
 
 
 def _is_structured_output_rejection(exc: Exception) -> bool:
@@ -3307,10 +3299,7 @@ def _is_reasoning_field_rejection(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if status is not None and status not in {400, 422}:
         return False
-    # Shared wording-class matcher (agent.error_classifier): the strict
-    # standalone-token gate inside keeps model-id segments and the "reasoning
-    # models" adjective on the provider-fallback rung (#114460).
-    return is_reasoning_disable_rejected(str(exc))
+    return is_reasoning_field_rejection(str(exc))
 
 
 def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:

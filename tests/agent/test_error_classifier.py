@@ -891,27 +891,23 @@ class TestClassifyApiError:
         assert result.should_fallback is False
         assert result.should_compress is False
 
-    def test_reasoning_effort_none_unsupported_wording_is_reasoning_mandatory(self):
-        """Reversed wording rejecting a reasoning disable (#114460): the route mandates
-        reasoning, so the loop must drop the disable and retry, not abort as format_error."""
-        e = MockAPIError(
-            "Error code: 400 - reasoning_effort 'none' unsupported; "
-            "use minimal|low|medium|high|xhigh",
-            status_code=400,
+    def test_reasoning_field_rejection_is_reasoning_mandatory(self):
+        """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'
+        unsupported; use ...", #114460) or forward ("Unrecognized request argument supplied:
+        reasoning_effort") — takes the drop-the-disable rung, not the format_error abort; a
+        model-id segment (kimi-k2-thinking) stays route gating."""
+        for msg in (
+            "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
+            "Unrecognized request argument supplied: reasoning_effort",
+        ):
+            result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
+            assert result.reason == FailoverReason.reasoning_mandatory, msg
+            assert result.retryable is True and result.should_fallback is False
+        gated = classify_api_error(
+            MockAPIError("The model kimi-k2-thinking is not supported when using this account", status_code=400),
+            provider="custom", model="kimi-k2-thinking",
         )
-        result = classify_api_error(e, provider="custom", model="halogen-qwen3.8-flash-next")
-        assert result.reason == FailoverReason.reasoning_mandatory
-        assert result.retryable is True
-        assert result.should_fallback is False
-
-    def test_reasoning_model_route_gating_is_not_reasoning_mandatory(self):
-        """Model-id segments (kimi-k2-thinking) stay route gating, never disable rejection."""
-        e = MockAPIError(
-            "The model kimi-k2-thinking is not supported when using this account",
-            status_code=400,
-        )
-        result = classify_api_error(e, provider="custom", model="kimi-k2-thinking")
-        assert result.reason != FailoverReason.reasoning_mandatory
+        assert gated.reason != FailoverReason.reasoning_mandatory
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 

@@ -596,11 +596,13 @@ def recover_after_classification(
             "messages with image parts found; surfacing original error."
         )
 
-    # Reasoning-mandatory route (Nous Portal / OpenRouter, e.g. GLM-5.3) 400s on
-    # ``reasoning: {enabled: false}``. The catalog guard in the provider profile normally swallows
-    # the disable, but a process that warmed its caps cache before the route flipped keeps sending
-    # it. One-shot: never send a disable again this session (the wire builder omits it → upstream
-    # default thinking), queue a catalog refresh so the guard is right next time, retry.
+    # Route rejecting a reasoning disable: a reasoning-mandatory route (Nous Portal / OpenRouter,
+    # e.g. GLM-5.3) 400s on ``reasoning: {enabled: false}``; a chat-only OpenAI-compatible relay
+    # 400s on the ``reasoning_effort: none`` the title/continuation disable projects (#114460).
+    # The catalog guard in the provider profile normally swallows the first, but a process that
+    # warmed its caps cache before the route flipped keeps sending it. One-shot: never send a
+    # disable again this session (the wire builder omits it → route default), queue a catalog
+    # refresh so the guard is right next time (no-op for providers without a catalog), retry.
     if (
         classified.reason == FailoverReason.reasoning_mandatory
         and not _retry.reasoning_mandatory_retry_attempted
@@ -612,8 +614,8 @@ def recover_after_classification(
             refresh_reasoning_caps_async(agent.provider)
         except Exception:
             pass
-        _vlines(agent, f"⚠️  {agent.model} requires reasoning — thinking stays on for this session, retrying...")
-        logger.warning("%sReasoning-mandatory recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
+        _vlines(agent, f"⚠️  {agent.model} rejects disabling reasoning — using the route's default for this session, retrying...")
+        logger.warning("%sReasoning-disable recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
         return True, recovered_with_pool
 
     # Provider rejected the image bytes; shrinking can't help, so strip image parts.

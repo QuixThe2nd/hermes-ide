@@ -435,43 +435,42 @@ _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=Fa
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 
-# Reasoning wire-field token shared with the auxiliary retry rung
-# (agent/auxiliary_client._is_reasoning_field_rejection, which cannot be imported
-# here — it imports from this module). Standalone field name only: never a model-id
-# segment ("kimi-k2-thinking") nor the adjective in "... with reasoning models" (#114460).
-_REASONING_DISABLE_TOKEN = re.compile(
-    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
-    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
-)
-
-# Generic unsupported/unknown markers mirroring the auxiliary rung's parameter check.
-_UNSUPPORTED_PARAM_MARKERS = (
+# Generic markers a provider 400 puts next to the offending parameter name. Bedrock Converse
+# rejects sampling params for reasoning-first models with the contraction ("This model doesn't
+# support the temperature field", xAI Grok) and inference-profile Claude with "`temperature` is
+# deprecated for this model" (#111043); strict pydantic gateways (Fireworks) name the unknown
+# field as "extra inputs are not permitted" (#109774). Shared with the auxiliary retry ladder
+# (``agent.auxiliary_client._is_unsupported_parameter_error``).
+UNSUPPORTED_PARAM_MARKERS = (
     "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
     "doesn't support", "is deprecated for this model",
     "unknown parameter", "unrecognized request argument", "unrecognized parameter",
     "invalid parameter", "extra inputs are not permitted",
 )
 
+# Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.
+# Standalone only: never a model-id segment ("The model kimi-k2-thinking is not supported when
+# using this account" is route gating for the provider-fallback rung) nor the adjective in
+# "... not supported with reasoning models".
+_REASONING_FIELD_TOKEN = re.compile(
+    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
+    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+)
 
-def is_reasoning_disable_rejected(error_msg: str) -> bool:
-    """True when a provider error rejects a reasoning wire control by name (#114460).
 
-    Covers the forward markers ("Unrecognized request argument supplied:
-    reasoning_effort") and the reversed word order some providers use
-    ("reasoning_effort 'none' unsupported": field token plus standalone
-    "unsupported" within 32 chars). The main loop maps this to
-    reasoning_mandatory (drop the disable, retry); the auxiliary ladder maps it
-    to its strip-and-retry rung. Same wording class, same remedy.
-    """
+def is_reasoning_field_rejection(error_msg: str) -> bool:
+    """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
+    ``thinking``/``think``): the field token plus either a generic unsupported marker ("Unrecognized
+    request argument supplied: reasoning_effort", #112781) or a standalone "unsupported" next to the
+    field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none' unsupported;
+    use minimal|low|medium|high|xhigh", #114460). The route default is the right answer for such a
+    model, so both the main loop and the auxiliary ladder retry once without the disable."""
     msg = (error_msg or "").lower()
-    if "reasoning" not in msg and "think" not in msg:
+    token = _REASONING_FIELD_TOKEN.search(msg)
+    if token is None:
         return False
-    if not any(name in msg and any(m in msg for m in _UNSUPPORTED_PARAM_MARKERS)
-               for name in ("reasoning", "think")):
-        token = _REASONING_DISABLE_TOKEN.search(msg)
-        if token is None or "unsupported" not in msg[token.end():token.end() + 32]:
-            return False
-    return _REASONING_DISABLE_TOKEN.search(msg) is not None
+    near = msg[max(0, token.start() - 32):token.end() + 32]
+    return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
 
 
 def _billing_hints(error_msg: str) -> Verdict:
@@ -932,10 +931,11 @@ def _classify_400(c: _Ctx) -> Verdict:
         "conflicting authenticated continuation identities" in msg
     ):
         return _V_INVALID_ENCRYPTED
-    # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
-    # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops
-    # the disable and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_disable_rejected(msg):
+    # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /
+    # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
+    # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
+    # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
+    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.
