@@ -14,7 +14,6 @@ import { PageSearchShell } from '../page-search-shell'
 import { CapabilityTabs } from './capability-tabs'
 import { parseCatalog } from './catalog-data'
 import { PluginActions, PluginsTab } from './plugins-tab'
-import { $catalogCardView } from './store'
 
 const requestGateway = vi.fn(async () => ({ plugins: $agentPlugins.get() }))
 
@@ -90,7 +89,6 @@ describe('PluginsTab', () => {
     $pluginRecords.set({})
     $agentPlugins.set([])
     $agentPluginsStatus.set('ready')
-    $catalogCardView.set(false)
     closePluginInstallRequest()
     requestGateway.mockReset()
     requestGateway.mockImplementation(async () => ({ plugins: $agentPlugins.get() }))
@@ -347,7 +345,6 @@ describe('PluginsTab catalog UX', () => {
   beforeEach(() => {
     $agentPlugins.set([])
     $agentPluginsStatus.set('ready')
-    $catalogCardView.set(false)
     closePluginInstallRequest()
     requestGateway.mockReset()
     requestGateway.mockImplementation(async () => ({ plugins: $agentPlugins.get() }))
