@@ -81,21 +81,32 @@ def test_reasoning_effort_none_unsupported_reversed_wording():
     assert not _is_reasoning_field_rejection(_Bad400("reasoning models: tool_choice 'required' is unsupported"))
 
 
-def test_enum_rejection_with_field_in_structured_param_tail():
-    """commandcode.ai rejects ``reasoning_effort: "none"`` as an enum violation whose message carries
-    no "unsupported" marker at all — the field name appears only in the structured ``'param'`` tail
-    (#115277). The enum wording still fires the strip-and-retry rung, while the same wording against
-    a non-reasoning parameter does not (no reasoning field token anywhere)."""
-    assert _is_reasoning_field_rejection(_Bad400(
-        "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
-        "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
-        "'param': 'reasoning_effort'}}"
-    ))
-    assert not _is_reasoning_field_rejection(_Bad400(
-        "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
-        "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
-        "'param': 'temperature'}}"
-    ))
+def test_structured_param_rejection_strips_reasoning_effort_on_retry():
+    """commandcode.ai rejects ``reasoning_effort`` as an enum violation with no "unsupported" marker
+    (#115277) and a custom Responses relay sends a message-less structured 400 whose only signal is
+    ``param`` / ``invalid_reasoning_effort`` (#100536). Both must land the strip-and-retry rung: the
+    second call goes out without ``reasoning_effort`` and succeeds."""
+    client = MagicMock(base_url="https://api.example/v1")
+
+    def create(**kwargs):
+        body = dict(kwargs)
+        body.update(body.pop("extra_body", None) or {})
+        if "reasoning_effort" in body:
+            raise _Bad400(
+                "Error code: 400 - {'error': {'param': 'reasoning.effort', "
+                "'error_code': 'invalid_reasoning_effort', 'retryable': False}}"
+            )
+        return _ok()
+
+    client.chat.completions.create.side_effect = create
+    resp = _call_fallback_candidate_sync(
+        client, "custom-relay", "fallback_chain[0](custom)", task="title_generation",
+        messages=[{"role": "user", "content": "hi"}], temperature=0.3, max_tokens=16, tools=None,
+        effective_timeout=30.0, effective_extra_body={}, reasoning_config={"enabled": True, "effort": "max"},
+    )
+    assert resp.choices[0].message.content == "ok"
+    sent = [c.kwargs for c in client.chat.completions.create.call_args_list]
+    assert [("reasoning_effort" in k) for k in sent] == [True, False]
 
 
 def test_fallback_candidate_recovers_from_rejected_temperature():
