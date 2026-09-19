@@ -124,7 +124,7 @@ express-mode** keys start with `AQ.…` and only authenticate against
 `GEMINI_BASE_URL` to `https://aiplatform.googleapis.com` (with or without `/v1beta1`)
 Hermes completes it to the `publishers/google` form; a base URL on any other host (a
 proxy) is never rewritten. Express keys are separate from the OAuth-based
-[Vertex AI provider](/guides/google-vertex), which needs no API key.
+[Vertex AI provider](./google-vertex.md), which needs no API key.
 
 ## Available Models
 

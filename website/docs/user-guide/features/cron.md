@@ -855,7 +855,7 @@ Semantics:
 
 #### Giving a script a credential
 
-A script that must authenticate to an external service (an API token, a service-account key) gets it the same way terminal and `execute_code` children do — declare the variable name in the owning profile's `config.yaml` and define the value in that profile's `.env` (or an external [secret source](/user-guide/secrets/)):
+A script that must authenticate to an external service (an API token, a service-account key) gets it the same way terminal and `execute_code` children do — declare the variable name in the owning profile's `config.yaml` and define the value in that profile's `.env` (or an external [secret source](../secrets/index.md)):
 
 ```yaml
 terminal:
