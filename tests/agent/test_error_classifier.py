@@ -913,6 +913,28 @@ class TestClassifyApiError:
         )
         assert gated.reason != FailoverReason.reasoning_mandatory
 
+    def test_structured_invalid_reasoning_effort_400_never_compresses(self):
+        """A custom Responses relay rejects an unsupported ``reasoning.effort`` with a message-less
+        structured 400 (``param`` + ``error_code: invalid_reasoning_effort``, #100536). No wording rule
+        can match it; before, the empty message fell to the large-session overflow heuristic and the
+        loop compressed a tiny conversation. Now it is a reasoning-field rejection with
+        ``should_compress`` off on every session size; a genuine context-window 400 still compresses."""
+        body = {"error": {"param": "reasoning.effort", "error_code": "invalid_reasoning_effort", "retryable": False}}
+        for approx_tokens, num_messages in ((77, 3), (90000, 100)):
+            result = classify_api_error(
+                MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body),
+                provider="custom", model="m", approx_tokens=approx_tokens, context_length=200000,
+                num_messages=num_messages,
+            )
+            assert result.reason == FailoverReason.reasoning_mandatory, approx_tokens
+            assert result.should_compress is False
+        overflow = classify_api_error(
+            MockAPIError("This model's maximum context length is 128000 tokens. Please reduce the length "
+                         "of the messages.", status_code=400),
+            provider="custom", model="m", approx_tokens=77, num_messages=3,
+        )
+        assert overflow.reason == FailoverReason.context_overflow and overflow.should_compress is True
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):
