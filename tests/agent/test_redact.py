@@ -19,6 +19,26 @@ def _ensure_redaction_enabled(monkeypatch):
 
 class TestKnownPrefixes:
 
+    def test_dotted_sk_and_zhipu_keys_are_fully_redacted(self):
+        """Provider keys with internal dots must not leave a cleartext tail (#113901)."""
+        dotted_sk = "sk-sp-" + "ABCDEFGH1234567890" + "." + "abcdefgh1234567890_XYZ-0987654321"
+        zhipu = "50aaedFAKE1234567890abcdef1234567890abc" + "." + "ZpSh99"
+
+        result = redact_sensitive_text(f"dotted={dotted_sk} zhipu={zhipu}")
+
+        assert dotted_sk not in result
+        assert "abcdefgh1234567890_XYZ" not in result
+        assert zhipu not in result
+
+    def test_zhipu_matcher_keeps_nearby_non_key_text(self):
+        """The provider-specific id.secret shape must not become a generic dotted-token sweep."""
+        text = "release=" + "a" * 31 + ".ZpSh99"
+
+        assert redact_sensitive_text(text) == text
+
+    def test_short_sk_token_remains_unredacted(self):
+        assert redact_sensitive_text("sk-short") == "sk-short"
+
 
 
 
