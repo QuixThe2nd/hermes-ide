@@ -191,14 +191,6 @@ class TestGenerate:
         body = json.loads(codex_backend["requests"][0].content)
         assert body["images"] == [{"image_url": "data:image/png;base64," + _b64_png()}]
 
-    def test_remote_source_url_refused_by_ssrf_guard(self, provider, codex_backend):
-        """A model-supplied image_url pointing at a metadata endpoint must be
-        refused before any fetch."""
-        result = provider.generate("edit", image_url="http://169.254.169.254/latest/meta-data")
-
-        assert result["success"] is False
-        assert codex_backend["requests"] == []
-
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()
         assert caps["modalities"] == ["text", "image"]

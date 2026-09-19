@@ -78,9 +78,10 @@ def test_save_url_strict_content_type_rejects_non_video(monkeypatch, tmp_path):
     assert not list(provider_media.cache_dir("videos").iterdir())
 
 
-def test_save_url_redirect_does_not_forward_caller_headers(monkeypatch, tmp_path):
-    """Caller auth headers (provider base_url fetches) go to the first hop only —
-    a redirect target must never receive them."""
+def test_save_url_redirect_scopes_caller_headers_to_first_hop_and_fails_closed(monkeypatch, tmp_path):
+    """Caller auth headers (provider base_url fetches) go to the first hop only — a
+    redirect target must never receive them — and a 3xx without ``Location`` is an
+    error, never a cached body."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     calls = []
 
@@ -90,6 +91,8 @@ def test_save_url_redirect_does_not_forward_caller_headers(monkeypatch, tmp_path
         calls.append(request)
         if request.url.path == "/start":
             return httpx.Response(302, headers={"Location": "/final"})
+        if request.url.path == "/no-location":
+            return httpx.Response(302, content=b"<html>3xx body</html>")
         return httpx.Response(200, headers={"Content-Type": "video/mp4"}, content=b"clip")
 
     _stub_fetch(monkeypatch, handler)
@@ -104,3 +107,7 @@ def test_save_url_redirect_does_not_forward_caller_headers(monkeypatch, tmp_path
     assert len(calls) == 2
     assert calls[0].headers.get("Authorization") == "Bearer test"
     assert calls[1].headers.get("Authorization") is None
+
+    with pytest.raises(ValueError, match="without a Location"):
+        _save_video("https://api.example/no-location", require_known_content_type=True)
+    assert list(provider_media.cache_dir("videos").iterdir()) == [path]
