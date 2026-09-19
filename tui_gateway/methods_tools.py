@@ -317,15 +317,20 @@ def _(rid, params: dict) -> dict:
         can change WHILE discover connects: re-hash and repeat until stable so the marked
         generation matches what loaded."""
         global _mcp_reload_gen, _mcp_reload_loaded_rev
-        loaded = _compute_mcp_rev()
-        for _ in range(_MCP_RELOAD_MAX_PASSES):
-            _mcp_lifecycle.shutdown_mcp_servers()
-            _mcp_agent.reprobe_tool_availability()
-            _mcp_discovery.discover_mcp_tools()
-            after = _compute_mcp_rev()
-            if after == loaded:
-                break
-            loaded = after
+        # The launch profile is a profile too: its servers' connect-time credential reads (stdio
+        # child env, ``${VAR}`` header refs) go through ``get_secret``, which fails closed once this
+        # process multiplexes — an unscoped rediscovery parked every launch-profile stdio server
+        # with UnscopedSecretError while the RPC still answered "reloaded" (#113746).
+        with _session_profile_runtime_scope({"profile_home": None}):
+            loaded = _compute_mcp_rev()
+            for _ in range(_MCP_RELOAD_MAX_PASSES):
+                _mcp_lifecycle.shutdown_mcp_servers()
+                _mcp_agent.reprobe_tool_availability()
+                _mcp_discovery.discover_mcp_tools()
+                after = _compute_mcp_rev()
+                if after == loaded:
+                    break
+                loaded = after
         # The unscoped shutdown tore down every profile's servers, but discover_mcp_tools() above
         # only rebuilt the launch profile's overlay; a secondary-profile session refreshed against
         # that registry would lose its MCP tools until its own reload.
