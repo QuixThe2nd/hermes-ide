@@ -237,38 +237,19 @@ def test_review_input_token_budget_resolution(config_value, expected):
     assert _review_input_token_budget(config_value) == expected
 
 
-@pytest.mark.parametrize(
-    ("context_window", "expected"),
-    [
-        (65_536, 49_152),
-        (4_096, 3_072),
-    ],
-)
-def test_review_input_token_budget_default_tracks_active_context(context_window, expected):
-    """An unset budget leaves room below the review model's context window."""
+def test_review_input_token_budget_default_tracks_forks_context_window():
+    """Unset or malformed ``max_input_tokens`` → 75% of the fork's RESOLVED window (a 65k local
+    model gets ~49k, not the cloud-scale 600k), capped at 600k; unknown window → 120k fallback."""
     from agent.background_review import _review_input_token_budget
 
-    runtime = {"provider": "lmstudio", "model": "local-model", "base_url": "http://localhost:1234"}
-    with patch("agent.model_metadata.get_model_context_length", return_value=context_window):
-        assert _review_input_token_budget({}, runtime) == expected
+    def fork(window):
+        return SimpleNamespace(context_compressor=SimpleNamespace(context_length=window))
 
-
-def test_review_input_token_budget_malformed_value_uses_context_derived_default():
-    """A malformed explicit value is safe, rather than restoring the old 600k default."""
-    from agent.background_review import _review_input_token_budget
-
-    runtime = {"provider": "lmstudio", "model": "local-model", "base_url": "http://localhost:1234"}
-    with patch("agent.model_metadata.get_model_context_length", return_value=65_536):
-        assert _review_input_token_budget({"max_input_tokens": "not-a-number"}, runtime) == 49_152
-
-
-def test_review_input_token_budget_unknown_context_uses_conservative_fallback():
-    """Failed context discovery must still bound unattended review work."""
-    from agent.background_review import _review_input_token_budget
-
-    runtime = {"provider": "local", "model": "unknown", "base_url": "http://localhost:1234"}
-    with patch("agent.model_metadata.get_model_context_length", side_effect=RuntimeError("unavailable")):
-        assert _review_input_token_budget({}, runtime) == 120_000
+    assert _review_input_token_budget({}, fork(65_536)) == 49_152
+    assert _review_input_token_budget({"max_input_tokens": "not-a-number"}, fork(65_536)) == 49_152
+    assert _review_input_token_budget({}, fork(2_000_000)) == 600_000
+    assert _review_input_token_budget({}, fork(None)) == 120_000
+    assert _review_input_token_budget({}, None) == 120_000
 
 
 def test_background_review_config_does_not_freeze_a_fixed_input_budget():
