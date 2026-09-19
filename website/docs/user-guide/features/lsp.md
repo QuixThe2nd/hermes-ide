@@ -72,6 +72,7 @@ agent sees a syntax-clean file with semantic problems as
 | YAML | `yaml-language-server` | npm |
 | Lua | `lua-language-server` | manual (GitHub releases) |
 | PHP | `intelephense` | npm |
+| Laravel Blade (`.blade.php`) | `laravel-lsp` | manual (composer) |
 | OCaml | `ocaml-lsp` | manual (opam) |
 | Dockerfile | `dockerfile-language-server-nodejs` | npm |
 | Terraform | `terraform-ls` | manual |
@@ -114,6 +115,22 @@ host. Setup:
 `hermes lsp status` reports `installed` once `pwsh` is found; if the
 bundle is missing you'll see a one-time warning in the logs with the
 download link.
+
+### Laravel Blade
+
+`.blade.php` templates go to [laravel-lsp](https://github.com/laravel/lsp)
+(Blade, Eloquent, Facades) while plain `.php` files stay with
+intelephense. Install it once with Composer and make sure the binary
+is on PATH (or pin it with `lsp.servers.laravel-lsp.command`):
+
+```bash
+composer global require laravel/lsp
+export PATH="$HOME/.config/composer/vendor/bin:$PATH"
+```
+
+Hermes launches it as `laravel-lsp lsp` (stdio). There is no
+auto-install recipe; `hermes lsp status` shows `manual-only` until the
+binary is found.
 
 A few servers are installed alongside a peer dependency that npm
 won't auto-pull. `typescript-language-server` and `@vue/language-server`

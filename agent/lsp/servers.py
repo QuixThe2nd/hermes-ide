@@ -34,7 +34,7 @@ _EXTS_BY_LANGUAGE: Dict[str, Sequence[str]] = {
     "csharp": (".cs", ".csx"), "fsharp": (".fs", ".fsi", ".fsx"),
     "swift": (".swift",), "java": (".java",), "kotlin": (".kt", ".kts"),
     "yaml": (".yaml", ".yml"), "json": (".json",), "jsonc": (".jsonc",),
-    "lua": (".lua",), "php": (".php",), "prisma": (".prisma",), "dart": (".dart",),
+    "lua": (".lua",), "php": (".php",), "blade": (".blade.php",), "prisma": (".prisma",), "dart": (".dart",),
     "ocaml": (".ml", ".mli"),
     "shellscript": (".sh", ".bash", ".zsh"),
     "terraform": (".tf", ".tfvars"),
@@ -94,10 +94,16 @@ class ServerContext:
 
 # ---- helpers ----
 
+# Multi-part extensions that name a different language than their last segment: ``os.path.splitext``
+# would reduce ``home.blade.php`` to ``.php`` and hand Blade templates to the plain-PHP server.
+_COMPOUND_EXTS = (".blade.php",)
+
+
 def _file_ext_or_basename(path: str) -> str:
-    """Lower-cased extension, or the full basename for extensionless files (``Dockerfile``)."""
+    """Lower-cased extension (compound ones first), or the full basename for extensionless files (``Dockerfile``)."""
     base = os.path.basename(path)
-    return os.path.splitext(base)[1].lower() or base
+    lower = base.lower()
+    return next((c for c in _COMPOUND_EXTS if lower.endswith(c)), None) or os.path.splitext(base)[1].lower() or base
 
 
 def _which(*names: str) -> Optional[str]:
@@ -364,6 +370,9 @@ SERVERS: List[ServerDef] = [
     _server("lua-language-server", (".lua",), "Lua — lua-language-server",
             markers=[".luarc.json", ".luarc.jsonc", ".luacheckrc", ".stylua.toml", "stylua.toml", "selene.toml", "selene.yml"],
             install_pkg="lua-language-server"),
+    # Before intelephense: Blade templates are Laravel's, plain .php stays with intelephense.
+    _server("laravel-lsp", (".blade.php",), "Laravel Blade — laravel-lsp (manual: composer global require laravel/lsp)",
+            markers=["artisan", "composer.json", "composer.lock"], args=("lsp",)),
     _server("intelephense", (".php",), "PHP — intelephense", markers=["composer.json", "composer.lock", ".php-version"],
             args=("--stdio",), install_pkg="intelephense", base_init={"telemetry": {"enabled": False}}),
     _server("ocaml-lsp", (".ml", ".mli"), "OCaml — ocaml-lsp", markers=["dune-project", "dune-workspace", ".merlin", "opam"],

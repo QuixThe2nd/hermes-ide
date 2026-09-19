@@ -65,6 +65,8 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     "rust-analyzer": _manual("rust-analyzer"),
     "clangd": _manual("clangd"),
     "lua-language-server": _manual("lua-language-server"),
+    # laravel-lsp ships via composer (`composer global require laravel/lsp`), not npm.
+    "laravel-lsp": _manual("laravel-lsp"),
     # PowerShellEditorServices is a release-zip bundle driven by pwsh; we probe
     # the host so `hermes lsp status` reports its presence.
     "powershell": _manual("pwsh"),
