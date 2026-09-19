@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -240,6 +241,58 @@ def test_review_lane_gets_reserved_slot_under_ready_backlog(
     # Budget 2: one ready + the reserved review slot — never 2×ready.
     assert len(spawned_ids) == 2
     assert review_id in spawned_ids
+
+
+def test_guarded_review_does_not_reserve_the_only_ready_slot(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A review card in cooldown must not consume fairness reservation."""
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        ready_id = kb.create_task(conn, title="ready-now", assignee="alice")
+        review_id = _park_in_review(conn, "review-cooldown", "reviewer")
+        now = int(time.time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, "
+                "started_at, ended_at) VALUES (?, 'reviewer', 'rate_limited', "
+                "'rate_limited', ?, ?)",
+                (review_id, now, now),
+            )
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert [task_id for task_id, *_ in res.spawned] == [ready_id]
+
+
+def test_unguarded_review_reserves_the_only_ready_slot(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A dispatchable review card still receives the single shared slot."""
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="ready-now", assignee="alice")
+        review_id = _park_in_review(conn, "review-now", "reviewer")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert [task_id for task_id, *_ in res.spawned] == [review_id]
 
 
 def test_review_reservation_released_when_no_review_work(

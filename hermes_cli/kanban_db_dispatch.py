@@ -2083,15 +2083,27 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
-    """Mirrors the review loop's own gate so human-pulled control-plane lanes
-    don't tax ready throughput; assumes spawnable when profiles are unimportable."""
+def _any_spawnable_review(
+    conn: sqlite3.Connection, review_rows: list[sqlite3.Row],
+) -> bool:
+    """Mirror review dispatch gates before reserving ready-lane capacity.
+
+    Unavailable profile metadata retains the historic fail-open behavior. A
+    respawn-guarded review row cannot consume the reservation, however, so it
+    must not withhold capacity from an otherwise ready task.
+    """
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
-    if profile_exists is None:
-        return any(row["assignee"] for row in review_rows)
-    return any(row["assignee"] and profile_exists(row["assignee"]) for row in review_rows)
+    for row in review_rows:
+        assignee = row["assignee"]
+        if not assignee:
+            continue
+        if profile_exists is not None and not profile_exists(assignee):
+            continue
+        if check_respawn_guard(conn, row["id"], lane="review") is None:
+            return True
+    return False
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
@@ -2152,7 +2164,7 @@ def _dispatch_once_locked(
     # backlog. When spawnable review work exists and there is any budget, hold
     # one slot back.
     ready_budget = spawn_budget
-    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(review_rows):
+    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(conn, review_rows):
         ready_budget = max(spawn_budget - 1, 0)
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
