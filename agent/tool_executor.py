@@ -927,7 +927,9 @@ def _run_sequential_tool_execution_middleware(
 ) -> _ManagedToolResult:
     """Run one sequential call on a worker thread under the concurrent executor's deadline.
     Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
-    generic deadline would report ``tool_timeout`` while the prompt is still live."""
+    generic deadline would report ``tool_timeout`` while the prompt is still live. They
+    are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
+    they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
     timeout_s = _resolve_sequential_tool_timeout()
     if function_name in _resolve_unbounded_tools():
         # Long-running external agents have no stall watchdog of their own and
