@@ -1851,6 +1851,8 @@ def _update_fallback_context_compressor(agent) -> None:
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
         api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
     )
+    from agent.conversation_compression import revalidate_compression_feasibility
+    revalidate_compression_feasibility(agent)
 
 
 def _reresolve_fallback_reasoning_config(agent) -> None:

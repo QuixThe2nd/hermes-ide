@@ -3579,6 +3579,16 @@ class _CompressionLockLeaseRefresher:
                 break
 
 
+def _emit_feasibility_notice(agent: Any, msg: str) -> None:
+    """Store + emit a feasibility verdict once per distinct text: every main-runtime change re-probes, and an
+    unchanged verdict must not re-warn on each `/model --once` restore or fallback cycle (#114707)."""
+    if getattr(agent, "_last_feasibility_notice", None) == msg:
+        return
+    agent._last_feasibility_notice = msg
+    agent._compression_warning = msg
+    agent._emit_diagnostic_status(msg)
+
+
 def _lower_threshold_to_aux_context(
     agent: Any, *, aux_model: str, aux_context: int, aux_provider: str, aux_base_url: str
 ) -> None:
@@ -3589,6 +3599,9 @@ def _lower_threshold_to_aux_context(
     compressor = agent.context_compressor
     old_threshold = compressor.threshold_tokens
     new_threshold = compressor.threshold_tokens = aux_context
+    # Durable ceiling: update_model() recomputes threshold_tokens from the main model on every window
+    # correction and re-applies this through _apply_threshold_tokens_cap() (#114707).
+    compressor._aux_context_ceiling = aux_context
     summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
     if getattr(compressor, "tail_mode", None) == "lean":
         # Keep the window-relative policy owned by the compressor property.
@@ -3646,8 +3659,7 @@ def _lower_threshold_to_aux_context(
             f"Hermes's small-context floor and output reservation would recompute the trigger to "
             f"{recomputed_threshold:,} tokens, still above the compression model's {aux_context:,}.)"
         )
-    agent._compression_warning = msg
-    agent._emit_diagnostic_status(msg)
+    _emit_feasibility_notice(agent, msg)
     logger.warning(
         "Auxiliary compression model %s has %d token context, below the main model's compression threshold of %d "
         "tokens — auto-lowered session threshold to %d to keep compression working.", aux_model, aux_context,
@@ -3724,8 +3736,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
                     "⚠ No auxiliary LLM provider configured: Hermes has no helper model for summarising "
                     "long chats, so older messages will be cut without a summary. Run `hermes setup` to add one."
                 )
-            agent._compression_warning = msg
-            agent._emit_diagnostic_status(msg)
+            _emit_feasibility_notice(agent, msg)
             logger.warning("No auxiliary LLM provider for compression — summaries will be unavailable.")
             return
 
@@ -3786,6 +3797,22 @@ def check_compression_model_feasibility(agent: Any) -> None:
         logger.debug(
             "Compression feasibility check failed (non-fatal): %s", exc
         )
+
+
+def revalidate_compression_feasibility(agent: Any) -> None:
+    """Re-run the aux feasibility probe after the main runtime changed (model switch, fallback activation,
+    primary restore). ``update_model()`` already voided the previous ceiling; probing now clamps the trigger
+    before the first compaction on the new window rather than after it (#114707). A probe failure leaves the
+    latch unset so the lazy probe at the next compaction re-raises hard rejections."""
+    agent._compression_feasibility_checked = False
+    if not getattr(agent, "context_compressor", None):
+        return
+    try:
+        check_compression_model_feasibility(agent)
+    except Exception as exc:
+        logger.debug("Compression feasibility re-check deferred to the next compaction: %s", exc)
+        return
+    agent._compression_feasibility_checked = True
 
 
 def replay_compression_warning(agent: Any) -> None:
@@ -6331,6 +6358,7 @@ __all__ = [
     "COMPACTION_STATUS_MARKER",
     "is_compaction_progress_status",
     "check_compression_model_feasibility",
+    "revalidate_compression_feasibility",
     "replay_compression_warning",
     "compress_context",
     "try_shrink_image_parts_in_messages",

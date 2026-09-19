@@ -107,6 +107,47 @@ def test_aux_sync_legacy_tail_follows_lowered_threshold():
     assert compressor.tail_token_budget == int(compressor.threshold_tokens * compressor.summary_target_ratio)
 
 
+def test_fallback_activation_reprobes_aux_ceiling_and_keeps_it_durable():
+    """Every main-runtime change re-probes the summariser and the clamp survives later window
+    corrections; a failed probe leaves the latch unset for the lazy compaction-time probe (#114707)."""
+    from agent.chat_completion_helpers import _update_fallback_context_compressor
+
+    agent = _make_agent(main_context=200_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=200_000, threshold_percent=0.50, quiet_mode=True,
+    )
+    notices = 0
+
+    def _count(_message):
+        nonlocal notices
+        notices += 1
+
+    agent._emit_status = _count
+    agent._config_context_length = None
+    agent._compression_feasibility_checked = True  # probed on the primary; aux fit there
+    agent.model = "fallback-model"
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
+         patch("agent.model_metadata.get_model_context_length", side_effect=[1_000_000, 80_000]):
+        _update_fallback_context_compressor(agent)
+    assert compressor.context_length == 1_000_000
+    assert compressor.threshold_tokens == 80_000
+    assert agent._compression_feasibility_checked is True
+    # Same-runtime window correction (provider-reported limit) keeps the ceiling.
+    compressor.update_model(
+        "fallback-model", context_length=800_000, base_url=agent.base_url, api_key=agent.api_key,
+        provider=agent.provider, api_mode=agent.api_mode,
+    )
+    assert compressor.threshold_tokens == 80_000
+    # An unchanged verdict is not re-announced on the next runtime change (fallback/restore cycles).
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
+         patch("agent.model_metadata.get_model_context_length", side_effect=[1_000_000, 80_000]):
+        agent.base_url = "https://other-route.example/v1"  # runtime change, identical verdict text
+        _update_fallback_context_compressor(agent)
+    assert compressor.threshold_tokens == 80_000
+    assert notices == 1
+
+
 # ── Core warning logic ──────────────────────────────────────────────
 
 
