@@ -676,6 +676,49 @@ class TestAppTldSuppression:
         assert result["action"] == "block"
 
 
+class TestEmojiVariationSelectorSuppression:
+    """Emoji presentation selectors must not require terminal approval."""
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_emoji_only_variation_selector_warn_is_downgraded(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        findings = [{"rule_id": "variation_selector", "severity": "medium"}]
+        mock_run.return_value = _mock_run(2, _json_stdout(findings, "variation selector"))
+
+        result = check_command_security('ls "🗞️ Journal/"')
+
+        assert result == {"action": "allow", "findings": [], "summary": ""}
+
+    @pytest.mark.parametrize("command", ["printf 'a️'", "printf '0️'", "printf 'x󠄀'"])
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_non_emoji_or_non_fe0f_variation_selector_keeps_warn(self, mock_cfg, mock_run, command):
+        mock_cfg.return_value = _CFG
+        findings = [{"rule_id": "variation_selector", "severity": "medium"}]
+        mock_run.return_value = _mock_run(2, _json_stdout(findings, "variation selector"))
+
+        result = check_command_security(command)
+
+        assert result["action"] == "warn"
+        assert result["findings"] == findings
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_mixed_findings_keep_warn_for_emoji_path(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        findings = [
+            {"rule_id": "variation_selector", "severity": "medium"},
+            {"rule_id": "shortened_url", "severity": "medium"},
+        ]
+        mock_run.return_value = _mock_run(2, _json_stdout(findings, "mixed"))
+
+        result = check_command_security('curl https://bit.ly/x --output "🗞️ Journal/file"')
+
+        assert result["action"] == "warn"
+        assert result["findings"] == findings
+
+
 class TestIsAppTldFinding:
     """Unit tests for the _is_app_tld_finding helper."""
 

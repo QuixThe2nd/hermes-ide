@@ -477,6 +477,8 @@ _EXIT_ACTIONS = {0: "allow", 1: "block", 2: "warn"}
 _NO_DETAILS_SUMMARY = {
     "block": "security issue detected (details unavailable)",
     "warn": "security warning detected (details unavailable)"}
+_VARIATION_SELECTOR_16 = "\ufe0f"
+_EMOJI_PRESENTATION_BASE_RANGES = ((0x2600, 0x27BF), (0x1F000, 0x1FAFF))
 
 
 def _verdict(action: str, summary: str = "", findings: list | None = None) -> dict:
@@ -548,6 +550,12 @@ def check_command_security(command: str) -> dict:
     # known false positive and is downgraded to allow. Any other finding keeps the warn.
     if action == "warn" and findings and all(_is_app_tld_finding(f) for f in findings):
         return _verdict("allow")
+    # VS16 follows ordinary emoji-capable code points in standard emoji-presentation sequences.
+    # Preserve warnings for every other selector, including VS16 after text, because those can
+    # carry the steganographic payload that Tirith is intended to detect.
+    if action == "warn" and findings and all(_is_emoji_variation_selector_finding(f) for f in findings) \
+            and _has_only_emoji_presentation_selectors(command):
+        return _verdict("allow")
     return _verdict(action, summary, findings)
 
 
@@ -558,3 +566,24 @@ def _is_app_tld_finding(finding: dict) -> bool:
     return any(
         val is not None and ".app" in str(val).lower()
         for val in (finding.get(k) for k in ("value", "tld", "detail", "description", "message")))
+
+
+def _is_emoji_variation_selector_finding(finding: dict) -> bool:
+    """True only for the Tirith rule that reports variation selectors."""
+    return isinstance(finding, dict) and finding.get("rule_id") == "variation_selector"
+
+
+def _has_only_emoji_presentation_selectors(command: str) -> bool:
+    """Whether every variation selector is VS16 immediately after an emoji-capable base."""
+    selectors = ("\ufe00", "\U000e0100")
+    saw_selector = False
+    for idx, char in enumerate(command):
+        if not selectors[0] <= char <= "\ufe0f" and not selectors[1] <= char <= "\U000e01ef":
+            continue
+        saw_selector = True
+        if char != _VARIATION_SELECTOR_16 or idx == 0:
+            return False
+        base = ord(command[idx - 1])
+        if not any(start <= base <= end for start, end in _EMOJI_PRESENTATION_BASE_RANGES):
+            return False
+    return saw_selector
