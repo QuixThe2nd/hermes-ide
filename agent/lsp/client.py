@@ -283,6 +283,16 @@ class LSPClient:
             "workspace/didChangeWorkspaceFolders", {"event": {"added": [_folder(root)], "removed": []}},
         )
 
+    async def remove_workspace_folder(self, root: str) -> None:
+        """Detach ``root`` from a running multi-root server (a removed worktree) so the process keeps
+        serving its sibling roots instead of being torn down with them.  Idempotent."""
+        if root not in self.workspace_folders:
+            return
+        self.workspace_folders.remove(root)
+        await self._send_notification(
+            "workspace/didChangeWorkspaceFolders", {"event": {"added": [], "removed": [_folder(root)]}},
+        )
+
     async def _initialize(self) -> None:
         params = {
             "rootUri": file_uri(self.workspace_root), "rootPath": self.workspace_root, "processId": os.getpid(),

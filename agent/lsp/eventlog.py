@@ -116,6 +116,15 @@ def log_reaped(keys: List[Tuple[str, str]], idle_timeout: float) -> None:
     _emit("reaper", logging.INFO, f"reaped {len(keys)} idle client(s) after {idle_timeout:.0f}s: {summary}")
 
 
+def log_released(keys: List[Tuple[str, str]], reason: str) -> None:
+    """Clients were shut down because their workspace went away (worktree released or root deleted).
+    INFO, one line per event; forgets the ``log_active`` announcement like :func:`log_reaped`."""
+    with _announce_lock:
+        _announced_active.difference_update(keys)
+    summary = ", ".join(f"{sid} ({root})" for sid, root in keys)
+    _emit("reaper", logging.INFO, f"released {len(keys)} client(s) ({reason}): {summary}")
+
+
 def reset_announce_caches() -> None:
     """Test-only: clear the dedup caches.  Production code never calls this."""
     with _announce_lock:

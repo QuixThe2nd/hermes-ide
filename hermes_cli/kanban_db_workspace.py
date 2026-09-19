@@ -181,7 +181,7 @@ def _cleanup_worktree_workspace(
     it. The auto-generated ``wt/<task-id>`` branch is deleted with it; custom
     branches are kept. Best-effort."""
     try:
-        from hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty
+        from hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty, release_lsp_clients
     except Exception:
         return  # CLI safety predicates unavailable — preserve
     try:
@@ -223,6 +223,7 @@ def _cleanup_worktree_workspace(
                 return
         # No --force: git's own dirty guard re-verifies at removal time, so if
         # the tree became dirty since our check (TOCTOU) removal fails safe.
+        release_lsp_clients(str(worktree_path))
         result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
         if result.returncode != 0:
             # Windows can retain a directory handle briefly after cwd changes.

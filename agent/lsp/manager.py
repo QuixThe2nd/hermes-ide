@@ -482,6 +482,66 @@ class LSPService:
         if clients:
             eventlog.log_reaped([(c.server_id, c.workspace_root) for c in clients], self._idle_timeout)
             await asyncio.gather(*(client.shutdown() for client in clients), return_exceptions=True)
+        # Externally deleted project roots (rm -rf, a worktree removed by another process) never go
+        # idle from the server's point of view — tsserver keeps its multi-GiB heap for a tree that is gone.
+        await self._detach_roots(lambda folder: not os.path.isdir(folder), reason="workspace root deleted")
+
+    def release_workspace(self, workspace_root: str) -> int:
+        """Shut down the clients serving ``workspace_root`` or any root beneath it; returns how many.
+
+        Called by the worktree cleanup paths BEFORE ``git worktree remove`` so a gateway that outlives the
+        session does not keep the language server (and its stdio pipes) alive for a tree that no longer
+        exists.  Multi-root servers only drop the folder.  Idempotent; best-effort — never blocks removal.
+        """
+        if not self._enabled:
+            return 0
+        root = os.path.abspath(workspace_root)
+        try:
+            return self._loop.run(self._release_async(root), timeout=15.0)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("LSP release of %s failed: %s", root, e)
+            return 0
+
+    async def _release_async(self, root: str) -> int:
+        def _under(path: str) -> bool:
+            return path == root or path.startswith(root + os.sep)
+
+        # A spawn in flight would insert its client AFTER we detach; let it land first (same loop, so
+        # once the future resolves the client is in ``_clients`` and the pass below sees it).
+        with self._state_lock:
+            pending = [fut for fut in self._spawning.values() if not fut.done()]
+            self._broken = {key for key in self._broken if not _under(key[1])}
+            for path in [p for p in self._delta_baseline if _under(p)]:
+                del self._delta_baseline[path]
+        if pending:
+            await asyncio.wait(pending, timeout=10.0)
+        released = await self._detach_roots(_under, reason="workspace released")
+        clear_cache()
+        return released
+
+    async def _detach_roots(self, is_gone: Callable[[str], bool], *, reason: str) -> int:
+        """Shared teardown primitive for :meth:`release_workspace` and the reaper.
+
+        Clients whose every workspace folder ``is_gone`` are detached under ``_state_lock`` and shut down;
+        multi-root clients that still serve other folders only drop the gone ones.  Returns the number of
+        clients shut down.
+        """
+        with self._state_lock:
+            dead_keys = [key for key, c in self._clients.items() if all(map(is_gone, c.workspace_folders))]
+            clients = [self._clients.pop(key) for key in dead_keys]
+            for key in dead_keys:
+                self._last_used.pop(key, None)
+            trims = [(c, [f for f in c.workspace_folders if is_gone(f)]) for c in self._clients.values()]
+        for client, folders in trims:
+            for folder in folders:
+                try:
+                    await client.remove_workspace_folder(folder)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("LSP folder removal for %s failed: %s", folder, e)
+        if clients:
+            eventlog.log_released([(c.server_id, c.workspace_root) for c in clients], reason)
+            await asyncio.gather(*(client.shutdown() for client in clients), return_exceptions=True)
+        return len(clients)
 
     async def _shutdown_async(self) -> None:
         if (reaper := self._idle_reaper_task) is not None:
