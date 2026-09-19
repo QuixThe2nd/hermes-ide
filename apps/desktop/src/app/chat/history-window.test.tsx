@@ -31,12 +31,12 @@ beforeEach(() => {
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api: vi.fn() } })
 })
 
-function mount() {
+function mount(storedId = 'stored') {
   const $messages = atom(Array.from({ length: 120 }, (_, index) => message(10_000 + index)))
 
   const view = {
     ...PRIMARY_SESSION_VIEW, $messages,
-    $runtimeId: atom<string | null>('runtime'), $storedId: atom<string | null>('stored')
+    $runtimeId: atom<string | null>('runtime'), $storedId: atom<string | null>(storedId)
   }
 
   let window!: Required<TranscriptWindowValue>
@@ -208,6 +208,27 @@ describe('paging earlier from an open history window', () => {
       expect.stringContaining('/timeline?limit=500'),
       expect.stringContaining('around?row_id=3880')
     ])
+  })
+
+  it('shows the older page on its own when a turn longer than the page limit separates it from the anchor', async () => {
+    vi.spyOn(window.hermesDesktop, 'api')
+      // 300 display rows precede the anchor; the previous prompt's forward
+      // page (offset 40, 120 rows) ends 140 rows short of it.
+      .mockResolvedValueOnce({ ...page(4000), pagination: { ...page(4000).pagination, offset: 300 } })
+      .mockResolvedValueOnce(index([3700, 4000]))
+      .mockResolvedValueOnce(page(3700))
+    const mounted = mount('stored-gap')
+
+    await act(async () => { await mounted.window.revealRow(4000, new AbortController().signal) })
+    const beforePrepend = vi.fn()
+    let grew = false
+    await act(async () => { grew = (await mounted.window.expandWindow(beforePrepend)) === true })
+
+    expect(grew).toBe(true)
+    const rows = mounted.window.currentMessages?.map(message => message.rowId) ?? []
+    // Never one continuous transcript with a silent hole before 4000.
+    expect(rows).toEqual(Array.from({ length: 120 }, (_, index) => 3700 + index))
+    expect(beforePrepend).not.toHaveBeenCalled()
   })
 
   it('still retires the entry point when the open window starts at the session top', async () => {

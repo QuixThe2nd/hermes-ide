@@ -21,6 +21,8 @@ interface HistoryPage {
   messages: ChatMessage[]
   olderAvailable: boolean
   newerAvailable: boolean
+  /** Display rows before this page's first row; how two pages prove they touch. */
+  offset: number
 }
 
 export async function fetchHistoryWindow(
@@ -54,7 +56,8 @@ export async function fetchHistoryWindow(
   return {
     messages: toChatMessages(response.messages),
     olderAvailable: response.pagination.has_older === true,
-    newerAvailable: response.pagination.has_newer === true
+    newerAvailable: response.pagination.has_newer === true,
+    offset: Math.max(0, Number(response.pagination.offset) || 0)
   }
 }
 
@@ -163,7 +166,12 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
       }
 
       const next = await fetchHistoryWindow(captured.storedId, rowId, captured.scope, controller.signal)
-      const messages = mergeOlderTranscriptPage(current.messages, next.messages)
+      // The around route reads forward from a prompt, so a turn longer than the
+      // page limit leaves rows between that page's end and this anchor. Never
+      // paint that as one continuous transcript: show the older page on its
+      // own instead, the way a rail jump to that mark would.
+      const contiguous = next.offset + next.messages.length >= current.offset
+      const messages = contiguous ? mergeOlderTranscriptPage(current.messages, next.messages) : next.messages
 
       // A window replaced while this one was in flight owns the display page.
       if (
@@ -175,10 +183,13 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
         return false
       }
 
-      beforePrepend?.()
+      if (contiguous) {
+        beforePrepend?.()
+      }
+
       setSelection({
         lifetime: captured.lifetime,
-        page: { messages, olderAvailable: next.olderAvailable, newerAvailable: current.newerAvailable }
+        page: contiguous ? { ...next, messages, newerAvailable: current.newerAvailable } : next
       })
 
       return true
