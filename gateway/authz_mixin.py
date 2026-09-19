@@ -284,6 +284,11 @@ class GatewayAuthorizationMixin:
             return self._primary_adapters().get(platform) if platform else None
         return None
 
+    def _adapter_for_source(self, source: Optional[SessionSource]):
+        """Compat alias for :meth:`_delivery_adapter_for` (pre-rename name). Upstream keeps it for
+        tests written against the old seam; the fork's ``run.py`` monolith still calls it."""
+        return self._delivery_adapter_for(source)
+
     def _delivery_adapter_for(self, source: Optional[SessionSource]):
         """The adapter that ANSWERS *source*: sends, edits, typing, progress, pickers, pending slots.
 
@@ -680,7 +685,7 @@ class GatewayAuthorizationMixin:
             and source.chat_id
         ):
             try:
-                adapter = self._adapter_for_source(source)
+                adapter = self._delivery_adapter_for(source)
                 if adapter is not None:
                     extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
                     group_allow_from = extra.get("group_allow_from") or extra.get("groupAllowFrom")
