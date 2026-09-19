@@ -137,47 +137,6 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
-def _user_bus_socket_exists(runtime_dir: str) -> bool:
-    """True when the standard per-user D-Bus socket exists under *runtime_dir*.
-
-    An unreadable path (a foreign runtime dir, ``EACCES``) counts as absent —
-    same posture as ``hermes_cli.gateway._path_exists_safe``.
-    """
-    try:
-        return (Path(runtime_dir) / "bus").exists()
-    except OSError:
-        return False
-
-
-def _ensure_user_bus_env() -> None:
-    """Provision the user-bus coordinates ``--user`` systemd tools need.
-
-    A gateway running as a systemd **system** unit starts with neither
-    ``XDG_RUNTIME_DIR`` nor ``DBUS_SESSION_BUS_ADDRESS`` in its environment,
-    even when the user manager is healthy (linger on, socket present).  Every
-    ``systemd-run --user`` probe/spawn then fails with "Failed to connect to
-    user scope bus via local transport" and restart-safe dispatch fails
-    closed.  Default the two standard coordinates the same way
-    ``hermes_cli.gateway._ensure_user_systemd_env`` does for its ``systemctl
-    --user`` calls — only ever filling in blanks, never clobbering: an
-    explicitly exported value always wins over our guess, and DBUS is only
-    derived when the socket actually exists.
-
-    Mutates ``os.environ`` so the probe/spawn/stop subprocesses (and caller
-    env snapshots taken afterwards) inherit the coordinates.  No-op off
-    Linux, matching the ``_IS_LINUX`` gate on every scope path.
-    """
-    if not _IS_LINUX:
-        return
-    if not os.environ.get("XDG_RUNTIME_DIR"):
-        os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
-    if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
-        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
-        if runtime_dir and _user_bus_socket_exists(runtime_dir):
-            bus_path = Path(runtime_dir) / "bus"
-            os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
-
-
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
     ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
@@ -304,14 +263,17 @@ def _is_supervised_gateway_process() -> bool:
     """Whether this process is the live, supervised Hermes gateway itself.
     Supervisor markers and ``_HERMES_GATEWAY`` are inherited by every descendant (and
     importing ``gateway.run`` sets the latter), so also require ownership of the live
-    gateway PID file — scopes are for the gateway, not terminal children or CLIs."""
+    gateway PID file — scopes are for the gateway, not terminal children or CLIs.
+    Reads the launch marker (``HERMES_SUPERVISED_CHILD`` included), not the restart-route
+    probe: a Windows Scheduled-Task gateway sets only that marker, and the self-kill guards
+    gated here must protect it too (#113667)."""
     if os.environ.get("_HERMES_GATEWAY") != "1":
         return False
     try:
-        from gateway.restart import is_gateway_supervisor_process
+        from gateway.restart import is_supervised_gateway_launch
         from gateway.status import get_running_pid
 
-        return is_gateway_supervisor_process() and get_running_pid(cleanup_stale=False) == os.getpid()
+        return is_supervised_gateway_launch() and get_running_pid(cleanup_stale=False) == os.getpid()
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
@@ -474,9 +436,6 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     binary = shutil.which("systemctl")
     if binary is None:
         return False
-    # ``systemctl --user`` resolves the same user bus as systemd-run — make
-    # sure the stop subprocess carries the coordinates too.
-    _ensure_user_bus_env()
     try:
         result = subprocess.run(
             [binary, "--user", "stop", unit_name],
