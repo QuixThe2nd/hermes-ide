@@ -609,6 +609,11 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        # _EXTRA_KNOWN_ROOT_KEYS: read by the runtime (setup wizard / tools_config save flow)
+        # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
+        # key" notice with a bogus near-miss suggestion (platform_hints.cli).
+        "platform_toolsets.cli",
+        "smart_model_routing.enabled",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
