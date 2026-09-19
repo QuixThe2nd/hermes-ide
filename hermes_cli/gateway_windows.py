@@ -259,6 +259,11 @@ def _legacy_startup_entry_path() -> Path:
     return _startup_dir() / f"{_sanitize_filename(get_task_name())}.cmd"
 
 
+def _startup_staging_path() -> Path:
+    """The Startup-folder staging file; also the debris a pre-fix failed swap left behind (#114093)."""
+    return get_startup_entry_path().with_suffix(".tmp")
+
+
 def _stable_gateway_working_dir(project_root: Path) -> str:
     """Stable cwd for detached/startup runs: anchor at HERMES_HOME when it exists (mirrors the POSIX
     service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
@@ -528,7 +533,7 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), entry.with_suffix(".tmp"))
+    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
     legacy_entry = _legacy_startup_entry_path()
     try:
         if legacy_entry.exists():
@@ -793,6 +798,12 @@ def install(
 
     task_name = get_task_name()
     script_path = _write_task_script()
+    # A pre-fix install that failed its Startup-folder swap left `Hermes_Gateway.tmp` there, and the
+    # Scheduled Task path below never touches that folder — sweep it so a re-run clears the debris.
+    try:
+        _startup_staging_path().unlink(missing_ok=True)
+    except OSError:
+        pass
 
     # On locked-down accounts schtasks can sit for the full timeout before returning Access Denied.
     # All intent questions were asked above, so ask for UAC before touching schtasks.
@@ -1177,6 +1188,7 @@ def uninstall() -> None:
 
     for path, label in (
         (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
+        (_startup_staging_path(), "Windows login item staging file"),
         (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Task launcher"),
     ):
         try:
