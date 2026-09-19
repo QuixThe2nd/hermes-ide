@@ -19,6 +19,44 @@ export function deliveryTargetFromCommand(command: string): null | string {
   return match ? match[2].toLowerCase() : null
 }
 
+/** `@Dr. Foo`, `scribe@laptop`, `peer/scribe` → `dr. foo` / `scribe`: the
+ *  routing alias a `message_agent` target and a "Message from" signature share. */
+function agentKey(value: unknown): string {
+  return typeof value === 'string' ? value.trim().replace(/^@/, '').replace(/@[^@]*$/, '').split('/').pop()!.toLowerCase() : ''
+}
+
+/**
+ * Did THIS bot send a `message_agent` to `sender` in `earlier` (the thread up
+ * to, not including, the inbound "Message from <sender>" row)? True means that
+ * row is the teammate's answer to our dispatch — the round trip is complete and
+ * the next assistant message addresses the human, not the teammate. Matching
+ * the sender by handle OR display name (either may sign the inbound row) errs
+ * towards "expanded": a missed fold shows content, a wrong fold hides it.
+ */
+export function dispatchedTo(earlier: readonly { content?: unknown; role?: string }[], sender: (string | undefined)[]): boolean {
+  const keys = new Set(sender.map(agentKey).filter(Boolean))
+
+  if (!keys.size) {
+    return false
+  }
+
+  for (let i = earlier.length - 1; i >= 0; i--) {
+    const row = earlier[i]
+
+    if (row.role !== 'assistant' || !Array.isArray(row.content)) {
+      continue
+    }
+
+    for (const part of row.content as { args?: { target?: unknown }; toolName?: string; type?: string }[]) {
+      if (part?.type === 'tool-call' && part.toolName === 'message_agent' && keys.has(agentKey(part.args?.target))) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
 /** Extract the recipient's reply text from the terminal result payload. */
 export function replyTextFromResult(result: unknown): string {
   const container = (result ?? {}) as { content?: unknown; output?: unknown }
