@@ -140,7 +140,9 @@ RECONNECTED_NOTICE_MARKER = (
 # with the attempts already spent, so a platform-side outage is not hammered by the redelivery timer.
 # A whole-chat death (blocked bot, deleted group, deactivated user) is never retried: the target is gone.
 _RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
-_RETRY_BACKOFF_SECONDS = (30.0, 120.0, 600.0)
+# One tier per in-process retry; the last budgeted attempt is left to the boot sweep (retry_not_before).
+_RETRY_BACKOFF_SECONDS = (30.0, 120.0)
+assert len(_RETRY_BACKOFF_SECONDS) == MAX_ATTEMPTS - 1
 
 # A final send the platform refused with flood control is the other transient case: a 429 means the
 # refused request was never accepted, and the platform said how long to wait. Adapters fail such sends
@@ -243,7 +245,7 @@ def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optiona
     spent = int(attempts or 0)
     if spent >= MAX_ATTEMPTS - 1:
         return None
-    return _failed_stamp(updated_at) + _RETRY_BACKOFF_SECONDS[min(spent, len(_RETRY_BACKOFF_SECONDS) - 1)]
+    return _failed_stamp(updated_at) + _RETRY_BACKOFF_SECONDS[spent]
 
 
 def _db_path():
@@ -933,6 +935,10 @@ def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
         ).fetchall()
     earliest: Dict[tuple, float] = {}
     for platform, adapter_profile, updated_at, last_error, attempts, created_at in rows:
+        # Reconnect-only rows (a claim released because the adapter was gone) are re-claimed by the
+        # reconnect sweep; a timer would claim and release them every tick until the adapter is back.
+        if str(last_error or "").strip().lower() in _RUNTIME_RETRYABLE_ERRORS:
+            continue
         due = retry_not_before(updated_at, last_error, attempts)
         if due is None or attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:
             continue
