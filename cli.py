@@ -4172,10 +4172,13 @@ def _run_quiet_single_query(cli, effective_query):
     from agent.turn_author import take_turn_author_from_env
     from hermes_cli.quiet_single_query import (
         adopt_unanswered_turn, bind_quiet_session_key, continue_quiet_notify_completions,
-        quiet_notify_linger_seconds,
+        quiet_notify_linger_seconds, take_turn_report_path, write_turn_report,
     )
 
     author = take_turn_author_from_env()
+    # A spawner that bounds only the turn (cron Bot Chat lane) learns the outcome from this
+    # report, written before the linger below; popped so tool subprocesses do not inherit it.
+    turn_report_path = take_turn_report_path()
     # A dispatcher's re-run of a failed bot delivery resumes the DM row its first attempt persisted.
     adopt_unanswered_turn(cli, effective_query)
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
@@ -4191,6 +4194,12 @@ def _run_quiet_single_query(cli, effective_query):
         # The exit line below reports session_id to stderr for automation wrappers;
         # without this sync it would point at the ended parent after compression.
         _sync_cli_session_id_from_agent(cli)
+        # The turn is over and persisted: the one-shot exit linger that follows protects nested
+        # notify_on_complete replies and is NOT part of the spawner's delivery (#113608).
+        write_turn_report(
+            turn_report_path, exit_code=_single_query_exit_code(result),
+            error=str(result.get("error") or "") if isinstance(result, dict) else "agent turn did not run",
+        )
         if isinstance(result, dict) and not result.get("failed"):
             history = result.get("messages") or cli.conversation_history
 
