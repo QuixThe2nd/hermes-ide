@@ -294,14 +294,17 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
         lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
         "get_anchored_view failed for title match %s/%s", session_id, anchor_id)
     title = session_meta.get("title") or title_query
-    def shape(key, fallback, anchor=None):
-        return [_shape_message(m, anchor_id=anchor) for m in (view.get(key) or fallback)]
+    # Same caps as FTS hits (_bookend / _hydrate_hit): a title match is a discovery entry too.
+    def shape(key, fallback, anchor=None, max_content_len=1200):
+        return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len)
+                for m in (view.get(key) or fallback)]
     return {**_discovery_entry(
         lineage_root, session_id=session_id, when=_format_timestamp(session_meta.get("started_at")),
         source=session_meta.get("source", "unknown"), model=session_meta.get("model") or "unknown",
         title=title, matched_role="session_title", match_message_id=anchor_id,
         snippet=f"Session title matched: {title}",
-        bookend_start=shape("bookend_start", messages[:3]), messages=shape("window", messages[:5], anchor_id),
+        bookend_start=shape("bookend_start", messages[:3]),
+        messages=shape("window", messages[:5], anchor_id, max_content_len=4000),
         bookend_end=shape("bookend_end", messages[-3:]), messages_before=view.get("messages_before", 0),
         messages_after=view.get("messages_after", max(len(messages) - 5, 0)), detail="full"),
         "_lineage_root": lineage_root}

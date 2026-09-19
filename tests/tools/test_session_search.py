@@ -508,6 +508,19 @@ class TestReadShape:
         assert big["original_content_chars"] == 80_000
         assert sum(len(m.get("content") or "") for m in result["messages"]) < 5_000
 
+    def test_title_match_entry_caps_content_like_fts_hits(self, db):
+        """A session-title match is a discovery entry: bookends 1200, window 4000, same as FTS hits."""
+        db.create_session("s_titled", source="cli")
+        db.set_session_title("s_titled", "quasar ledger reconciliation")
+        db.append_message("s_titled", role="user", content="reconcile the quasar ledger")
+        db.append_message("s_titled", role="tool", content="y" * 80_000)
+        db.end_session("s_titled", "cli_exit")
+        result = json.loads(session_search(query="quasar ledger reconciliation", db=db, detail="full"))
+        entry = next(r for r in result["results"] if r["matched_role"] == "session_title")
+        shaped = entry["bookend_start"] + entry["messages"] + entry["bookend_end"]
+        big = [m for m in shaped if m.get("original_content_chars") == 80_000]
+        assert big and all(m["content_truncated"] and len(m["content"]) <= 4001 for m in big)
+
 
 # =========================================================================
 # Session links — the value the agent writes to point the user at a session
