@@ -49,7 +49,7 @@ import { isMain } from './utils.mjs'
 const RCEDIT_COMMIT_RETRY_DELAYS_MS = [500, 1000, 2000]
 
 // A failure to spawn the rcedit binary itself (missing or not executable) is
-// permanent; waiting 3.5 s on it only delays after-pack.mjs's warning. The npm
+// permanent; waiting 3.5 s on it only delays after-extract.mjs's warning. The npm
 // rcedit wrapper surfaces the spawn error as `originalError` on its rejection,
 // while a non-zero rcedit exit carries a numeric `code`.
 const RCEDIT_PERMANENT_SPAWN_CODES = new Set(['ENOENT', 'EACCES'])

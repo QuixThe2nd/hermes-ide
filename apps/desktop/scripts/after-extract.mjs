@@ -3,8 +3,16 @@
  *
  * Stamps the Hermes icon + identity onto the unpacked Windows Electron binary
  * before electron-builder renames it and injects the ASAR integrity resource.
- * Keeping the rcedit mutation before electron-builder's resedit rewrite makes
- * both resource edits compose into the final Hermes.exe.
+ *
+ * WHY afterExtract and not afterPack (#105629): with ASAR integrity on (the
+ * default) electron-builder's `beforeCopyExtraFiles` rebuilds the whole PE in
+ * memory with resedit to push the ELECTRONASAR resource. rcedit cannot commit
+ * changes to that rewritten PE ("Fatal error: Unable to commit changes"),
+ * deterministically, on every build. afterExtract fires on the pristine
+ * electron.exe, before the rename and the integrity rewrite, and resedit then
+ * carries the stamped resources through — so the exe keeps both its identity
+ * and its integrity checksum. Disabling `disableAsarIntegrity` would also
+ * "fix" it, at the cost of the integrity check on every Windows build.
  *
  * Windows-only: rcedit edits PE resources, irrelevant on macOS/Linux where the
  * app identity comes from the bundle Info.plist / desktop entry. Best-effort:
