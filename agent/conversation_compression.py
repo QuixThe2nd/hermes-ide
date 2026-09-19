@@ -2139,13 +2139,12 @@ def resolve_context_compression_timeouts(
         # host idle watchdog defaults to 120s. Clamp the idle window up to at least the effective aux
         # compression timeout so prep/chunking work with no streamed tokens yet is not cut off. Only raises:
         # an explicit cfg value above the aux budget is kept, and idle never exceeds the ceiling.
-        with contextlib.suppress(Exception):
-            from agent.auxiliary_client import _effective_aux_timeout
-            _aux_budget = float(_effective_aux_timeout("compression", None))
-            if _aux_budget > 0:
-                if _aux_budget > ceiling:
-                    ceiling = _aux_budget
-                idle = max(idle, min(_aux_budget, ceiling))
+        from agent.auxiliary_client import _effective_aux_timeout
+        _aux_budget = float(_effective_aux_timeout("compression", None))
+        if _aux_budget > 0:
+            if _aux_budget > ceiling:
+                ceiling = _aux_budget
+            idle = max(idle, min(_aux_budget, ceiling))
     return idle, ceiling
 
 
