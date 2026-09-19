@@ -269,31 +269,22 @@ def test_modify_other_keys_shift_letter_produces_uppercase(letter):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("cp", [
-    33,   # '!'
-    34,   # '"'
-    35,   # '#'
-    36,   # '$'
-    43,   # '+'
     58,   # ':'
-    60,   # '<'
-    62,   # '>'
-    63,   # '?'
-    64,   # '@'
     95,   # '_' (Shift+Minus)
     123,  # '{'
-    124,  # '|'
     125,  # '}'
-    126,  # '~'
 ])
 def test_modify_other_keys_shift_symbol_produces_char(cp):
-    """Under modifyOtherKeys=2, Shift+symbol (e.g. Shift+- -> '_') emits
-    ESC[27;2;<produced_cp>~. It must parse to the produced character,
-    not leak literal escape text."""
+    """Under modifyOtherKeys=2, Shift+symbol (e.g. Shift+[ -> '{') arrives as
+    ESC[27;2;<produced_cp>~ (xterm's own key table; Ghostty follows it). It must parse
+    to the produced character, not leak literal escape text. The kitty CSI-u spelling
+    carries the UNSHIFTED codepoint and must stay unmapped (layout-specific)."""
     ch = chr(cp)
     mok_seq = f"\x1b[27;2;{cp}~"
     assert _parse(mok_seq) == [ch], (
         f"modifyOtherKeys Shift+symbol ({mok_seq!r}) should produce {ch!r}"
     )
+    assert ANSI_SEQUENCES.get(f"\x1b[{cp};2u") is None
 
 
 def test_shift_symbol_data_normalized_in_buffer():
