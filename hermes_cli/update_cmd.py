@@ -94,8 +94,8 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _repair_node_deps_on_current_checkout, _restore_active_tool_dependencies,
     _sync_python_dependencies_after_pull, _update_node_dependencies,
     _upgrade_pip_before_lazy_refresh, _validate_critical_modules_import,
-    _venv_core_imports_healthy, _venv_foreign_owned_paths, _web_build_toolchain_ready,
-    _web_toolchain_roots)
+    _venv_core_imports_healthy, _venv_dependency_set_stale, _venv_foreign_owned_paths,
+    _web_build_toolchain_ready, _web_toolchain_roots)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
@@ -723,13 +723,21 @@ def _repair_current_checkout(
     # The Windows shim hand-off child is current BY DESIGN; its one job is the pending sync,
     # not venv health — without this it would print "Already up to date!" and skip it.
     handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
+    # Importable is not synced: a venv installed from an older release imports fine while its
+    # pins lag the checkout (the sync after the pull was refused or died, #97208).
+    stale, stale_detail = (
+        _venv_dependency_set_stale() if healthy and not handed_off_sync else (False, ""))
     if handed_off_sync:
         print("→ Finishing the dependency install handed off by hermes.exe...")
     elif not healthy:
         print("⚠ Checkout is current, but the venv is unhealthy:")
         print(f"  {detail}")
         print("→ Repairing Python dependencies...")
-    if handed_off_sync or not healthy:
+    elif stale:
+        print("⚠ Checkout is current, but its dependencies were never synced after the last pull:")
+        print(f"  {stale_detail}")
+        print("→ Syncing Python dependencies...")
+    if handed_off_sync or not healthy or stale:
         current_checkout_complete = _repair_venv_on_current_checkout(
             assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,
