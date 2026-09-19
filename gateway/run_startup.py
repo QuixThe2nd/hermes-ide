@@ -1349,7 +1349,7 @@ class GatewayStartupMixin:
             self._booted_from_restart = True
         # Boot-path adapter.send() calls must not pin the inbound restore gate (a Telegram flood-
         # control sleep here once froze every platform).
-        # Restart notification, notification-channel startup notice, and obligation redelivery all call
+        # Restart notification, home-channel startup notice, and obligation redelivery all call
         # adapter.send(). Bound them the same way _finish_startup_restore bounds resume turns. See #91969.
         await self._await_startup_boot_sends(
             planned_restart_notification_pending=_planned_restart_notification_pending(),
@@ -1489,8 +1489,8 @@ class GatewayStartupMixin:
         platform: Platform
         platform_name: str
         transport: Any
-        channel: Any
-        channel_chat_id: str
+        home: Any
+        home_chat_id: str
         effective_thread_id: Optional[str]
         source: SessionSource
         handoff_config: Any
@@ -1517,7 +1517,7 @@ class GatewayStartupMixin:
     async def _handoff_resolve_destination(
         self, row: Dict[str, Any], profile_name: Optional[str]
     ) -> "GatewayStartupMixin._HandoffDestination":
-        """Resolve platform, transport, notification channel, thread and destination source for a row."""
+        """Resolve platform, transport, home channel, thread and destination source for a row."""
         from gateway.delivery import resolve_delivery_transport
         cli_session_id = row["id"]
         platform_name = (row.get("handoff_platform") or "").strip().lower()
@@ -1533,27 +1533,26 @@ class GatewayStartupMixin:
         transport = resolve_delivery_transport(platform, handoff_config, handoff_adapters)
         if not transport:
             raise RuntimeError(f"platform '{platform_name}' is not active in this gateway")
-        channel = handoff_config.get_notification_channel(platform)
-        if not channel or not channel.chat_id:
+        home = handoff_config.get_home_channel(platform)
+        if not home or not home.chat_id:
             raise RuntimeError(
-                f"no delivery target configured for {platform_name}; "
-                f"run /setnotify on the destination chat to set one"
+                f"no home channel configured for {platform_name}; run /sethome on the desired chat first"
             )
-        channel_chat_id = str(channel.chat_id)
+        home_chat_id = str(home.chat_id)
         # Fresh thread for the handoff's own scrollback; None when unsupported or creation failed.
         cli_title = row.get("title") or cli_session_id[:8]
         try:
             new_thread_id = await transport.adapter.create_handoff_thread(
-                channel_chat_id, f"Hermes — {cli_title}",
+                home_chat_id, f"Hermes — {cli_title}",
             )
         except Exception as exc:
             logger.debug("Handoff: create_handoff_thread raised on %s: %s", platform_name, exc, exc_info=True)
             new_thread_id = None
-        effective_thread_id = new_thread_id or (str(channel.thread_id) if channel.thread_id else None)
+        effective_thread_id = new_thread_id or (str(home.thread_id) if home.thread_id else None)
         # Telegram private-chat DM topics use the DM-topic source shape (user_id == chat_id) so the
         # synthetic turn binds the same key later inbound turns arrive on (`dm`, not `thread`).
         is_telegram_private_chat = (
-            platform == Platform.TELEGRAM and looks_like_telegram_private_chat_id(channel_chat_id)
+            platform == Platform.TELEGRAM and looks_like_telegram_private_chat_id(home_chat_id)
         )
         is_thread = bool(new_thread_id) and not is_telegram_private_chat
         chat_type = "thread" if is_thread else "dm"
@@ -1566,28 +1565,28 @@ class GatewayStartupMixin:
             # Slack keys a thread reply on the parent channel's type ("dm" for a D… channel, else
             # "group") plus the workspace id — never on a "thread" slot. Mirror the adapter's inbound
             # source shape or the first reply after a restart lands on a different key (#111896).
-            chat_type = "dm" if channel_chat_id.startswith("D") else "group"
+            chat_type = "dm" if home_chat_id.startswith("D") else "group"
             scope_for_chat = getattr(transport.adapter, "scope_id_for_chat", None)
-            scope_id = channel.scope_id or (scope_for_chat(channel_chat_id) if callable(scope_for_chat) else None)
+            scope_id = home.scope_id or (scope_for_chat(home_chat_id) if callable(scope_for_chat) else None)
         if platform == Platform.MATRIX:
             # Matrix likewise keys an in-thread reply on the ROOM's type (#112918); the adapter's
             # get_chat_info reports "dm"/"group" for the home room.
-            chat_type = "dm" if await self._handoff_home_is_dm(transport.adapter, channel_chat_id) else "group"
+            chat_type = "dm" if await self._handoff_home_is_dm(transport.adapter, home_chat_id) else "group"
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
         dest_source = SessionSource(
             platform=platform,
             chat_id=str(effective_thread_id) if (
                 is_thread and platform == Platform.DISCORD and effective_thread_id
-            ) else channel_chat_id,
-            chat_name=channel.name,
+            ) else home_chat_id,
+            chat_name=home.name,
             chat_type=chat_type,
-            user_id=channel_chat_id if is_telegram_private_chat else "system:handoff",
+            user_id=home_chat_id if is_telegram_private_chat else "system:handoff",
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
             scope_id=scope_id,
         )
         return self._HandoffDestination(
-            platform=platform, platform_name=platform_name, transport=transport, channel=channel,
-            channel_chat_id=channel_chat_id, effective_thread_id=effective_thread_id, source=dest_source,
+            platform=platform, platform_name=platform_name, transport=transport, home=home,
+            home_chat_id=home_chat_id, effective_thread_id=effective_thread_id, source=dest_source,
             handoff_config=handoff_config,
         )
 
@@ -1658,20 +1657,20 @@ class GatewayStartupMixin:
         )
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
-            "(target=%s, thread=%s, session_key=%s)",
-            cli_session_id, dest.platform_name, dest.channel_chat_id, dest.effective_thread_id, session_key,
+            "(home=%s, thread=%s, session_key=%s)",
+            cli_session_id, dest.platform_name, dest.home.chat_id, dest.effective_thread_id, session_key,
         )
         # Inline _handle_message keeps success/failure observable (handle_message would detach it).
         response_text = await self._handle_message(synthetic_event)
         if not response_text:
             # Streaming may have delivered inline; the agent ran without raising — success.
             return
-        # Reply into the new thread (else the notification channel) via the resolved transport, so a relay-fronted
+        # Reply into the new thread (else the home channel) via the resolved transport, so a relay-fronted
         # logical platform is stamped on the outbound frame.
         send_metadata = {"thread_id": dest.effective_thread_id} if dest.effective_thread_id else None
         try:
             result = await dest.transport.send(
-                dest.platform, str(dest.channel_chat_id), response_text, send_metadata,
+                dest.platform, str(dest.home.chat_id), response_text, send_metadata,
             )
         except Exception as exc:
             raise RuntimeError(f"adapter.send failed: {exc}") from exc
