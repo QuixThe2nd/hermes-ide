@@ -1,0 +1,19 @@
+name: umt
+repo: https://github.com/Markgatcha/universal-mcp-toolkit
+sha: b062608b903f81e6e4cf8baa36d30f95e6077644
+subdir: plugin
+description: 'Connect 28 production-ready MCP servers to any coding agent. Portable Agent
+  Plugins v1 package (mcp.json + skills/): three zero-config stdio servers out of the box
+  (Hacker News, arXiv, npm registry, each pinned to an exact npm version), plus the umt-mcp
+  skill that drives the umt CLI to wire any of the 28 servers into Claude Code, Cursor,
+  Codex, Windsurf, Zed and more. Needs Node.js and npm on PATH.'
+maintainer: Markgatcha
+tier: community
+category: tools
+docs_url: https://github.com/Markgatcha/universal-mcp-toolkit#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
