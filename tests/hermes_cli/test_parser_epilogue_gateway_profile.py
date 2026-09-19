@@ -3,25 +3,28 @@
 ``-p/--profile`` is consumed before argparse (``main._apply_profile_override``), so it never
 appears among the parser's option rows — the epilogue examples are the only place ``--help``
 can teach the ``hermes -p <profile> gateway <action>`` form that generated service units and
-user-facing copy already rely on (#114495). Contract, not snapshot: assert the verbs and the
-profile flag are named, not the exact wording.
+user-facing copy already rely on. Contract, not snapshot: assert the verbs and the profile flag
+are named in the RENDERED help (the wiring, not just the constant), not the exact wording.
 """
 
-from hermes_cli._parser import _EPILOGUE, build_top_level_parser
+from hermes_cli._parser import PRE_ARGPARSE_INHERITED_FLAGS, build_top_level_parser
 
 
-def test_epilogue_documents_the_profile_scoped_command_form():
-    assert "-p <profile>" in _EPILOGUE
-    assert "hermes -p coder gateway stop" in _EPILOGUE
+def _rendered_help() -> str:
+    return build_top_level_parser()[0].format_help()
 
 
-def test_epilogue_documents_the_gateway_service_verbs():
-    for verb in ("gateway start", "gateway stop", "gateway install"):
-        assert f"hermes {verb}" in _EPILOGUE
-
-
-def test_rendered_help_carries_the_epilogue_rows():
-    """The wiring, not just the constant: the rows must reach what argparse prints."""
-    help_text = build_top_level_parser()[0].format_help()
-    assert "hermes gateway start" in help_text
+def test_rendered_help_documents_the_profile_scoped_command_form():
+    help_text = _rendered_help()
+    assert "hermes -p <profile>" in help_text
+    assert "--profile" in help_text
     assert "hermes -p coder gateway stop" in help_text
+    # The flag stays pre-argparse: documented in the epilogue, never registered as an option.
+    assert ("-p", True) in PRE_ARGPARSE_INHERITED_FLAGS
+    assert "-p PROFILE" not in help_text and "--profile PROFILE" not in help_text
+
+
+def test_rendered_help_documents_the_gateway_service_verbs():
+    help_text = _rendered_help()
+    for verb in ("install", "start", "stop", "status"):
+        assert f"hermes gateway {verb}" in help_text, verb
