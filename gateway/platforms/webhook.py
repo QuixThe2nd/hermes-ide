@@ -333,11 +333,13 @@ class WebhookAdapter(BasePlatformAdapter):
     def toolsets_for_source(self, source) -> Optional[List[str]]:
         """Per-route ``toolsets`` override (config.yaml or a manual key in webhook_subscriptions.json —
         deliberately NOT settable via `hermes webhook subscribe`, so an agent-created subscription
-        cannot self-grant tools)."""
-        parts = str(getattr(source, "chat_id", "") or "").split(":", 2)
-        if len(parts) < 2 or parts[0] != "webhook":
+        cannot self-grant tools). Keyed on ``user_id`` (exactly ``webhook:{route}`` as authenticated), not
+        ``chat_id``, whose caller-supplied delivery id and ``:``-bearing route names make any split ambiguous
+        (GHSA-2fmg-cjqm-hhrj)."""
+        user_id = str(getattr(source, "user_id", "") or "")
+        if not user_id.startswith("webhook:"):
             return None
-        route_config = self._routes.get(parts[1])
+        route_config = self._routes.get(user_id[len("webhook:"):])
         toolsets = route_config.get("toolsets") if isinstance(route_config, dict) else None
         if not isinstance(toolsets, list):
             return None
