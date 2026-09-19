@@ -201,11 +201,20 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
         result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         exit_code = result.get("returncode", 0)
+        output = result.get("output", "")
+        # The command wrapper's own ``builtin cd -- <cwd> || exit 126`` failed: the
+        # working directory does not exist on this backend (typically ``terminal.cwd``
+        # is a host path and the backend is a container). Name that, or the raw
+        # ``cd:`` line reads like a sandbox/mount fault at the requested path.
+        if exit_code == 126 and "cd: " in output:
+            output = (f"working directory {effective_cwd!r} does not exist on the active "
+                      f"terminal backend; terminal.cwd is not valid for this backend "
+                      f"(for docker use a path inside the container, e.g. /workspace). {output.strip()}")
         # A stdin write failure with a clean child exit is still a failure: the
         # child never received the input.
         if result.get("stdin_error") and exit_code == 0:
             exit_code = 1
-        return ExecuteResult(stdout=result.get("output", ""), exit_code=exit_code)
+        return ExecuteResult(stdout=output, exit_code=exit_code)
 
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached); rg goes through

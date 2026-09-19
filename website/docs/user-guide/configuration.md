@@ -708,6 +708,8 @@ Security tradeoff:
 
 Use the opt-in only when you intentionally want the container to work on live host files.
 
+A host path in `terminal.cwd` (for example `C:\Users\me\project` on Windows, or a desktop/TUI session's workspace) never becomes the container's working directory: when it is the directory mounted at `/workspace`, file tools and terminal commands use `/workspace`; otherwise the container keeps its own working directory. If a file tool still cannot enter its working directory, the error names the invalid `terminal.cwd` for the active backend rather than the shell's raw `cd:` line.
+
 ### Persistent Shell
 
 By default, each terminal command runs in its own subprocess — working directory, environment variables, and shell variables reset between commands. When **persistent shell** is enabled, a single long-lived bash process is kept alive across `execute()` calls so that state survives between commands.

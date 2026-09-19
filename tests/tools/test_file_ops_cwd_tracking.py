@@ -106,6 +106,32 @@ class TestShellFileOpsCwdTracking:
         assert result.exit_code == 0
         assert "fixed-content" in result.stdout
 
+    def test_wrapper_cd_failure_names_the_invalid_working_directory(self, tmp_path):
+        """When the backend's own ``builtin cd -- <cwd> || exit 126`` fails (a
+        host ``terminal.cwd`` inside a container, #113894) the surfaced error
+        must name the working directory / ``terminal.cwd`` problem, not just
+        the raw ``cd:`` line that reads like a fault at the requested path."""
+        host_cwd = r"C:\Users\rashi\OneDrive\Documents\ai_workspace"
+
+        class _WrapperEnv:
+            cwd = host_cwd
+
+            def execute(self, command, cwd=None, **kwargs):
+                import shlex
+                import subprocess
+                script = f"builtin cd -- {shlex.quote(cwd)} || exit 126\n{command}"
+                proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                      input=kwargs.get("stdin_data"))
+                return {"output": proc.stdout + proc.stderr, "returncode": proc.returncode}
+
+        ops = ShellFileOperations(_WrapperEnv())
+        result = ops.write_file(str(tmp_path / "probe.py"), "print('hi')\n")
+
+        assert result.error is not None
+        assert "terminal.cwd" in result.error and host_cwd in result.error
+        assert "No such file or directory" in result.error  # the shell's own line is kept
+        assert not (tmp_path / "probe.py").exists()
+
     def test_patch_returns_success_only_when_file_actually_written(self, tmp_path):
         """Safety rail: patch_replace success must reflect the real file state.
 
