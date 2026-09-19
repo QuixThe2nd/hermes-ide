@@ -3981,7 +3981,7 @@ class TestCodexAuxiliaryAdapterReservedToolAliases:
     _TOOLS = [
         {"type": "function", "function": {"name": name, "description": name,
                                           "parameters": {"type": "object", "properties": {}}}}
-        for name in ("web_search", "search_files", "people_search", "read_file")
+        for name in ("web_search", "search_files", "people_search", "read_file", "tool_search")
     ]
     _HISTORY = [
         {"role": "system", "content": "sys"},
@@ -3994,23 +3994,31 @@ class TestCodexAuxiliaryAdapterReservedToolAliases:
     @pytest.mark.parametrize("base_url, aliased", [
         ("https://api.perplexity.ai/v1", {"web_search", "search_files", "people_search"}),
         ("https://opencode.ai/zen/v1", {"web_search", "search_files"}),
+        # xAI (client web-search mode): Grok's native ``web_search`` and ``tool_search`` collide.
+        ("https://api.x.ai/v1", {"web_search", "tool_search"}),
         ("https://api.perplexity.ai.evil.com/v1", set()),
         ("https://example.com/v1", set()),
     ])
-    def test_wire_tools_match_main_transport_aliases_and_strict(self, base_url, aliased):
+    def test_wire_tools_match_main_transport_aliases_and_strict(self, base_url, aliased, monkeypatch):
+        from agent.codex_responses_adapter import classify_responses_route
         from agent.transports.codex import ResponsesApiTransport
 
+        # Deterministic xAI branch: a non-xAI web backend keeps client dispatch under ``hermes_web_search``.
+        monkeypatch.setattr("agent.transports.codex._xai_prefers_native_web_search", lambda: False)
         adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url=base_url), "m")
         resp_kwargs, _, _ = adapter._build_responses_kwargs(
             {"model": "m", "messages": self._HISTORY, "tools": self._TOOLS}
         )
+        # The main loop hands build_kwargs the route flags it classified from provider + base_url.
+        route = classify_responses_route(SimpleNamespace(provider="custom", base_url=base_url))
         main_kwargs = ResponsesApiTransport().build_kwargs(
-            "m", self._HISTORY, self._TOOLS, provider="custom", base_url=base_url
+            "m", self._HISTORY, self._TOOLS, provider="custom", base_url=base_url, **route._asdict()
         )
         assert resp_kwargs["tools"] == main_kwargs["tools"]
         assert all(t["strict"] is False for t in resp_kwargs["tools"])
         assert {t["name"] for t in resp_kwargs["tools"]} == {
-            f"hermes_{n}" if n in aliased else n for n in ("web_search", "search_files", "people_search", "read_file")
+            f"hermes_{n}" if n in aliased else n
+            for n in ("web_search", "search_files", "people_search", "read_file", "tool_search")
         }
         # Replayed history names the tool the way this request declares it; the alias map rides on the payload.
         history_names = [i["name"] for i in resp_kwargs["input"] if i.get("type") == "function_call"]
