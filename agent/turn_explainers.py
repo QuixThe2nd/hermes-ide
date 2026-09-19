@@ -255,8 +255,8 @@ class TurnExplainersMixin:
             if mgr is not None and getattr(mgr, "enabled", False):
                 backend = None
                 with suppress(Exception):
-                    from agent.tool_executor import _checkpoint_container_backend
-                    backend = _checkpoint_container_backend(task_id or "default")
+                    from tools.file_tools_paths import container_backend_for_task
+                    backend = container_backend_for_task(task_id or "default")
                 if backend is None:  # container paths carry no host ledger entry
                     for _p in landed_paths:
                         with suppress(Exception):

@@ -764,6 +764,8 @@ class CLICommandsMixin:
             "  (Plain /diff still works — it uses git directly.)"))
         if mgr is None:
             return
+        if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
+            return print(f"  {reason}")
         result = mgr.session_diff(cwd)
         if not result.get("success"):
             return print(f"  {result.get('error', 'Could not generate diff')}")
