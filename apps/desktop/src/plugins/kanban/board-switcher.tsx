@@ -336,7 +336,14 @@ export function BoardSwitcher() {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button className="h-full min-w-0 max-w-full gap-1.5 px-2" size="sm" variant="ghost">
+          <Button
+            aria-label={`${k.board}: ${label}`}
+            className="h-full min-w-0 max-w-full gap-1.5 px-2"
+            size="sm"
+            title={`${k.board}: ${label}`}
+            variant="ghost"
+          >
+            <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{k.board}</span>
             <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
             {typeof current?.total === 'number' && (
               <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>

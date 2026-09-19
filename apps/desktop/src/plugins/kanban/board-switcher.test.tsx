@@ -36,4 +36,12 @@ describe('board switcher', () => {
 
     expect(await screen.findByText('Shipping')).toBeTruthy()
   })
+
+  it('identifies the current board switcher as a control', async () => {
+    mount()
+
+    const trigger = await screen.findByRole('button', { name: /board: Shipping/i })
+
+    expect(trigger.getAttribute('title')).toMatch(/board: Shipping/i)
+  })
 })
