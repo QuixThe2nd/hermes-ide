@@ -1660,14 +1660,6 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
     threading.Thread(target=lambda: ctx.run(_refresh), daemon=True, name=f"model-cache-swr-{cache_key}").start()
 
 
-def provider_catalogs_refreshing() -> set[str]:
-    """Slugs with a background catalog refresh in flight, for read paths that must mark which rows
-    are still warming (``catalog_pending``). Unscoped keys only — a routed profile's inflight key is
-    a (home, slug) tuple and reports nothing rather than the wrong slug."""
-    with _swr_refresh_lock:
-        return {key for key in _swr_refresh_inflight if isinstance(key, str)}
-
-
 def _provider_models_cache_path() -> Path:
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "provider_models_cache.json"

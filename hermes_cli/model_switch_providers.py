@@ -208,21 +208,6 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     return t
 
 
-def _spawn_background_warm(target, *args, cache_key: str = "", **kwargs) -> None:
-    """Run a cache-warming probe in a daemon thread (fire-and-forget, exception-isolated).
-
-    The GUI read path never waits on a probe; the warm thread makes the NEXT open cheap. Named by
-    ``cache_key`` so a stack dump says which catalog is being fetched."""
-    def _warm() -> None:
-        try:
-            target(*args, **kwargs)
-        except Exception:
-            logger.debug("background catalog warm failed (%s)", cache_key or target, exc_info=True)
-
-    _threading.Thread(target=_warm, daemon=True,
-                      name=f"catalog-warm-{cache_key or 'anon'}").start()
-
-
 def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     """Fetch stale/missing provider catalogs in parallel before the serial picker loop.
 
@@ -888,9 +873,9 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
             continue
         if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
             # Live OAuth-backed discovery so Pro-only Codex slugs not in the static catalog
-            # appear; falls back to curated when unreachable.
-            from hermes_cli.models import cached_provider_model_ids
-            model_ids = cached_provider_model_ids(hermes_slug, non_blocking=b.non_blocking_catalogs)
+            # appear; falls back to curated when unreachable (or not yet cached on the read path).
+            model_ids = _live_or_curated_ids(hermes_slug, b.curated, merge_models_dev=False,
+                                             non_blocking=b.non_blocking_catalogs)
         elif overlay.auth_type == "aws_sdk":
             model_ids = _aws_live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid,
                                                  non_blocking=b.non_blocking_catalogs)
@@ -1120,12 +1105,8 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     curated["nous"] = get_curated_nous_model_ids()
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
-        if non_blocking:
-            curated["ollama-cloud"] = fetch_ollama_cloud_models(cache_only=True)
-            if not curated["ollama-cloud"]:  # nothing cached: warm for the next open, return now
-                _spawn_background_warm(fetch_ollama_cloud_models, cache_key="ollama-cloud")
-        else:
-            curated["ollama-cloud"] = fetch_ollama_cloud_models()
+        # Read path: cache only; the row's own SWR refresh (cached_provider_model_ids) warms it.
+        curated["ollama-cloud"] = fetch_ollama_cloud_models(cache_only=non_blocking)
     # LM Studio has no static catalog: probe its native endpoint live. Base URL precedence:
     # LM_BASE_URL > active config base_url (when current) > default. On auth rejection /
     # unreachable, fall back to the current model so the picker still shows something offline.
@@ -1166,9 +1147,8 @@ def list_authenticated_providers(
     ``probe_custom_providers`` enables live ``/models`` discovery for saved custom endpoints (CLI
     true, GUI false); ``probe_current_custom_provider`` probes only the selected custom endpoint.
     ``non_blocking_catalogs`` is the GUI read path (``model.options``): provider catalogs come from
-    the disk cache only, stale/missing ones warm in the background, and rows still waiting on a
-    warm-up carry ``catalog_pending``. A degraded provider therefore never stalls the picker
-    (#114215)."""
+    the disk cache only and stale/missing ones warm in the background, so a degraded provider
+    never stalls the picker (#114215)."""
 
     from agent.models_dev import fetch_models_dev
     from hermes_cli.config import coerce_provider_id, stringify_provider_map
@@ -1228,26 +1208,7 @@ def list_authenticated_providers(
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
 
-    if non_blocking_catalogs:
-        _mark_catalogs_pending(b.results)
-
     return _finalize_picker_rows(b.results, user_providers, current_model)
-
-
-def _mark_catalogs_pending(rows: list) -> None:
-    """Flag rows whose catalog is still being warmed in the background (``catalog_pending``), so a
-    GUI knows an empty/short row is a not-yet-resolved state rather than that provider's catalog."""
-    try:
-        from hermes_cli.models import normalize_provider, provider_catalogs_refreshing
-        refreshing = provider_catalogs_refreshing()
-    except Exception:
-        return
-    if not refreshing:
-        return
-    for row in rows:
-        slug = str(row.get("slug") or "").strip().lower()
-        if slug and (normalize_provider(slug) or slug) in refreshing:
-            row["catalog_pending"] = True
 
 
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:

@@ -190,9 +190,8 @@ def build_model_options_payload(
     offline saved endpoints don't block the picker; explicit refresh probes all and busts the cache.
 
     A normal open (``refresh=False``) is a READ path: provider catalogs come from the disk cache
-    only, stale/missing ones warm in the background, and rows still waiting carry ``catalog_pending``.
-    A degraded provider (hanging endpoint, failed auth probe) can therefore delay neither the other
-    providers' rows nor the response (#114215)."""
+    only and stale/missing ones warm in the background, so a degraded provider (hanging endpoint,
+    failed auth probe) delays neither the other providers' rows nor the response (#114215)."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
