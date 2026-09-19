@@ -78,20 +78,24 @@ def test_unset_allowlist_keeps_default_claimable(kanban_home, all_assignees_spaw
     assert res.skipped_nonspawnable == []
 
 
-@pytest.mark.parametrize("value", ["", None], ids=["blank", "null"])
+@pytest.mark.parametrize("value", ["", None], ids=["empty_string", "bare_key"])
 def test_present_blank_or_null_allowlist_skips_all_cards(
-    kanban_home, all_assignees_spawnable, value,
+    kanban_home, all_assignees_spawnable, value, caplog,
 ):
-    """A present key with no names must not fall back to unrestricted claims."""
+    """A present key with no names must not fall back to unrestricted claims,
+    and must say so once in the log so an upgraded home that copied the old
+    ``dispatch_profiles: null`` example is not silently idle (#113620)."""
     rendered = "" if value is None else ' ""'
     (kanban_home / "config.yaml").write_text(
         f"kanban:\n  dispatch_profiles:{rendered}\n", encoding="utf-8",
     )
-    with kbc.connect() as conn:
+    with kbc.connect() as conn, caplog.at_level("WARNING", logger="hermes_cli.kanban_db"):
         tid = kb.create_task(conn, title="foreign card", assignee="default")
         res = kbd.dispatch_once(conn, dry_run=True)
     assert res.spawned == []
     assert res.skipped_nonspawnable == [tid]
+    assert any("present but empty" in r.getMessage() and "omit the key" in r.getMessage()
+               for r in caplog.records)
 
 
 def test_allowlist_config_read_failure_skips_all_cards(

@@ -1554,7 +1554,11 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
     if not isinstance(kanban, Mapping) or "dispatch_profiles" not in kanban:
         return None
     raw = kanban["dispatch_profiles"]
-    if raw is None:
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        _kb._log.warning(
+            "kanban: kanban.dispatch_profiles is present but empty — this home "
+            "claims no cards; omit the key to allow any existing profile"
+        )
         return frozenset()
     names = [str(n) for n in raw] if isinstance(raw, (list, tuple)) else str(raw).split(",")
     allowed = set()
