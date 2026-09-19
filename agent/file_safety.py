@@ -88,10 +88,9 @@ def _guard_homes(path: str = "") -> set[str]:
     raw = str(path)
     if len(raw) > 1 and raw.startswith("~") and raw[1] not in "/\\":
         name = raw[1:].split("/", 1)[0].split("\\", 1)[0]
-        with suppress(Exception):
-            expanded = os.path.expanduser(f"~{name}")
-            if not expanded.startswith("~"):
-                homes.add(expanded)
+        expanded = os.path.expanduser(f"~{name}")
+        if not expanded.startswith("~"):
+            homes.add(expanded)
     return {os.path.realpath(h) for h in homes}
 
 
