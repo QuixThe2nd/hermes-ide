@@ -13,7 +13,7 @@ def test_half_installed_dir_is_removed_and_a_complete_one_is_kept(tmp_path):
     half.mkdir(parents=True)
     complete = tmp_path / "apps" / "desktop" / "node_modules" / "get-windows"
     complete.mkdir(parents=True)
-    (complete / "package.json").write_text('{"name": "get-windows"}')
+    (complete / "package.json").write_text('{"name": "get-windows"}', encoding="utf-8")
 
     removed = main_desktop._remove_half_installed_get_windows(tmp_path)
 

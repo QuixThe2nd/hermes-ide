@@ -662,15 +662,15 @@ export function installGetWindowsNativeBinding(
  * `node_modules` ancestors `require.resolve` does (the workspace root hoist or
  * the app-local copy).
  */
-export function findHalfInstalledGetWindowsDir(startDir = projectRoot, exists = existsSync) {
+export function findHalfInstalledGetWindowsDir(startDir = projectRoot) {
   for (let dir = startDir; ; dir = dirname(dir)) {
     const candidate = join(dir, 'node_modules', 'get-windows')
-    if (exists(candidate)) return candidate
+    if (existsSync(candidate)) return candidate
     if (dirname(dir) === dir) return null
   }
 }
 
-/** The warning printed when get-windows cannot be staged; exported for tests. */
+/** The warning printed when get-windows cannot be staged. */
 export function missingGetWindowsWarning({ platform, arch, halfInstalledDir }) {
   const lines = [
     `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
@@ -680,8 +680,8 @@ export function missingGetWindowsWarning({ platform, arch, halfInstalledDir }) {
     lines.push(
       `[stage-native-deps] ${halfInstalledDir} exists but is not a loadable package — an ` +
         'interrupted npm install left it half-extracted (look for TAR_ENTRY_ERROR in the install log). ' +
-        'To restore read_window_below: close every Hermes window and gateway, then run ' +
-        '`npm install get-windows --save-exact` in apps/desktop and rebuild with `hermes desktop --force-build`.'
+        'To restore read_window_below: close every Hermes window and gateway so the extract is not ' +
+        'interrupted again, then run `hermes desktop --force-build` — it removes the stale dir before npm.'
     )
   }
   return lines.join('\n')

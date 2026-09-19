@@ -677,7 +677,7 @@ test('staging degrades (never throws) when get-windows is absent on every platfo
   }
   assert.equal(warnings.length, 4)
   assert.ok(warnings.every((w) => w.includes('read_window_below will be unavailable')))
-  assert.ok(warnings.every((w) => !w.includes('npm install get-windows')), 'no repair hint without a stale dir')
+  assert.ok(warnings.every((w) => !w.includes('half-extracted')), 'no repair hint without a stale dir')
 })
 
 test('a half-installed get-windows dir is found and named in a repair hint', () => {
@@ -705,7 +705,7 @@ test('a half-installed get-windows dir is found and named in a repair hint', () 
       console.warn = origWarn
     }
     assert.equal(warnings.length, 1)
-    assert.match(warnings[0], /npm install get-windows --save-exact/)
+    assert.match(warnings[0], /hermes desktop --force-build/)
     assert.ok(warnings[0].includes(join(tmp, 'node_modules', 'get-windows')))
 
     fs.rmSync(join(tmp, 'node_modules'), { recursive: true, force: true })
