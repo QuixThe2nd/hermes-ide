@@ -762,7 +762,10 @@ The copy is local to the machine the desktop app runs on. Against a remote
 backend, the remote box's `~/.hermes/plugins` is not reachable as a filesystem —
 only locally installed packages contribute a desktop half this way. For a
 remote backend the install dialog clones the desktop half separately into
-`desktop-plugins/`, the same as a desktop-only repo.
+`desktop-plugins/`, the same as a desktop-only repo. A package whose agent half
+was installed on the remote host without that clone shows its Desktop half as
+**unavailable (remote backend)** on the Plugins page — not as a pending copy —
+and the tooltip points at **Install from Git** with the Desktop target checked.
 :::
 
 ### Distributing with an install link {#install-link}

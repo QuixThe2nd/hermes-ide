@@ -1807,7 +1807,7 @@ export const en: Translations = {
         'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
       desktopHalfRemote: 'unavailable (remote backend)',
       desktopHalfRemoteTip:
-        "This package's desktop half is installed on the remote backend's disk. This app can only copy desktop halves from a backend running on this machine.",
+        "This package's desktop half is on the remote backend's disk, which this app cannot read. To use it here, run Install from Git with the package's repo URL and the Desktop target checked — that clones the desktop half onto this machine.",
       emptyAll: 'No plugins yet.',
       empty: 'No agent plugins installed for this profile.',
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
