@@ -380,6 +380,7 @@ def test_every_relay_refusal_carries_its_typed_reason(tmp_path, monkeypatch, fai
 
     h = tmp_path / "h"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").touch()  # identity marker: bare dirs are not profiles
     monkeypatch.setenv("HERMES_HOME", str(h))
     monkeypatch.setattr(bot_relay, "local_delivery_command", lambda prof, tmp: ["__delivery__", prof])
 
