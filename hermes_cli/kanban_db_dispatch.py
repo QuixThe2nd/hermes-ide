@@ -1231,6 +1231,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    infrastructure: bool = False,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1243,6 +1244,12 @@ def _record_task_failure(
     ``blocked`` + ``gave_up``). Threshold: per-task ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips
     unconditionally (caller applied its own bounded-retry policy).
+
+    ``infrastructure=True``: the host refused the spawn (no restart-safe scope,
+    #114720) — nothing about the card ran, so the run and event are recorded
+    with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
+    the breaker never trips; the card stays retryable and
+    :func:`check_respawn_guard` spaces the retries.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1259,7 +1266,7 @@ def _record_task_failure(
             if release_claim
             else ("review" if row["status"] == "review" else "ready")
         )
-        failures = int(row["consecutive_failures"]) + 1
+        failures = int(row["consecutive_failures"]) + (0 if infrastructure else 1)
 
         # Per-task override wins over caller-supplied and default thresholds.
         task_override = _kb._row_get(row, "max_retries")
@@ -1268,7 +1275,7 @@ def _record_task_failure(
         else:
             effective_limit, limit_source = int(failure_limit), "dispatcher"
 
-        if not (force_trip or failures >= effective_limit):
+        if infrastructure or not (force_trip or failures >= effective_limit):
             if release_claim:
                 # Spawn path: restore the claimed source phase + clear claim.
                 conn.execute(
@@ -1286,15 +1293,13 @@ def _record_task_failure(
                 )
             # Timeout/crash path's caller already emitted its own event.
             if end_run:
+                detail = {"failures": failures, "retry_status": retry_status}
+                if infrastructure:
+                    detail["infrastructure"] = True
                 run_id = _kb._end_run(
-                    conn, task_id, outcome=outcome, status=outcome, error=error,
-                    metadata={"failures": failures, "retry_status": retry_status},
+                    conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
                 )
-                _kb._append_event(
-                    conn, task_id, outcome,
-                    {"error": error, "failures": failures, "retry_status": retry_status},
-                    run_id=run_id,
-                )
+                _kb._append_event(conn, task_id, outcome, {"error": error, **detail}, run_id=run_id)
             return False
 
         # Spawn path (release_claim) is still running and also clears claim
@@ -1372,6 +1377,8 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
+    ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
+    refused — no restart-safe scope — within the cooldown; never counted),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
@@ -1396,13 +1403,21 @@ def check_respawn_guard(
 
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
+    #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
+    #    condition is not the card's, so it retries forever, spaced, and never
+    #    reaches the breaker.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
-        "SELECT outcome, ended_at FROM task_runs "
+        "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
+    if latest_run is not None and latest_run["outcome"] == "spawn_failed":
+        if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
+            ended_at = latest_run["ended_at"]
+            if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
+                return "infrastructure_cooldown"
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
@@ -1949,9 +1964,17 @@ def _dispatch_lane_task(
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
+        from tools.process_registry import RestartSafeScopeUnavailable
+
+        # The host refused the spawn (no restart-safe scope): nothing about the
+        # card ran, so it must not spend the card's retry budget (#114720).
+        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+        if infrastructure:
+            _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
         if _record_task_failure(
             conn, claimed.id, str(exc),
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            infrastructure=infrastructure,
         ):
             result.auto_blocked.append(claimed.id)
         return False
@@ -2546,10 +2569,15 @@ def _open_worker_log(task: Task, board: Optional[str]):
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
-    """Wrap a managed-gateway worker in the shared restart-safe scope.
+    """Wrap a systemd-hosted dispatcher's worker in the shared restart-safe scope.
 
-    Kanban workers are long-lived agentic runs, so they never take cron's
-    degraded mode: ``require_restart_safe_scope=True`` makes the helper raise.
+    Kanban workers are long-lived agentic runs that outlive the dispatcher
+    tick, so they never take cron's degraded mode under the managed gateway:
+    ``require_restart_safe_scope=True`` makes the helper raise
+    ``RestartSafeScopeUnavailable`` there (an infrastructure spawn failure the
+    dispatcher does not charge to the card). Under any other systemd unit
+    (``Type=oneshot`` dispatch timers, #113612) ``outlives_parent=True`` gets the
+    worker its own scope so the unit's cgroup teardown cannot kill it.
     """
     from tools.process_registry import restart_safe_gateway_child_argv
 
@@ -2561,6 +2589,7 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
             command,
             unit_suffix=f"kanban-{task.id}-run-missing",
             require_restart_safe_scope=True,
+            outlives_parent=True,
         )
         if dispatch.mode != "in_process":
             raise RuntimeError(
@@ -2573,6 +2602,7 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
         command,
         unit_suffix=f"kanban-{task.id}-run-{task.current_run_id}",
         require_restart_safe_scope=True,
+        outlives_parent=True,
     ).argv
 
 
