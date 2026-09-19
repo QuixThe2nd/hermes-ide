@@ -1589,108 +1589,52 @@ class TestGatewaySessionDbRecovery:
             RuntimeError("gifts received")
         )
 
-    def test_rebuild_fts_once_retries_after_cooldown_and_escalates_log(self, caplog, monkeypatch):
-        """_rebuild_fts_once must block retries until the cooldown window elapses, then allow
-        one more attempt (#114266: a permanent one-shot flag disabled recovery forever after a
-        single failed rebuild). Once the append-failure count crosses the escalation threshold,
-        the append-failure logging must escalate from WARNING to ERROR."""
+    def test_rebuild_fts_once_retries_after_cooldown(self, monkeypatch):
+        """A deferred/failed rebuild must not disable recovery for the process lifetime
+        (#114266): blocked inside the cooldown, retried once it elapses. A call with no usable
+        DB attempts nothing and so must not start the cooldown."""
+        from types import SimpleNamespace
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+        rebuild_calls = []
+        store = object.__new__(SessionStore)
+        store._fts_rebuild_last_attempt_at = None
+        store._db = None
+        assert store._rebuild_fts_once() is False
+        assert store._fts_rebuild_last_attempt_at is None  # no attempt, no cooldown
+
+        store._db = SimpleNamespace(rebuild_fts=lambda: rebuild_calls.append(clock["now"]) or 0)
+        assert store._rebuild_fts_once() is False  # deferred (0 indexes rebuilt)
+        clock["now"] += store._FTS_REBUILD_COOLDOWN_SECONDS - 1
+        assert store._rebuild_fts_once() is False
+        assert len(rebuild_calls) == 1  # still cooling down: no second attempt
+        clock["now"] += 2
+        store._db = SimpleNamespace(rebuild_fts=lambda: rebuild_calls.append(clock["now"]) or 1)
+        assert store._rebuild_fts_once() is True
+        assert len(rebuild_calls) == 2
+
+    def test_transcript_append_failures_escalate_to_error(self, caplog):
+        """Repeated append failures on one session escalate WARNING -> ERROR at the threshold so a
+        multi-day write outage is not a wall of identical warnings (#114266)."""
         import threading
         from types import SimpleNamespace
 
-        class FakeDb:
-            def __init__(self):
-                self.rebuild_calls = 0
+        def _fail(**kwargs):
+            raise RuntimeError("database disk image is malformed")
 
-            def rebuild_fts(self):
-                self.rebuild_calls += 1
-                return 1
-
-        fake_db = FakeDb()
         store = object.__new__(SessionStore)
-        store._db = fake_db
-        store._fts_rebuild_last_attempt_at = None
-
-        # Fake clock so the cooldown boundary is exact and not flaky under real time.
-        clock = {"now": 1000.0}
-        monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
-
-        assert store._rebuild_fts_once() is True
-        assert fake_db.rebuild_calls == 1
-
-        # Still within the cooldown window: blocked, no second rebuild call.
-        clock["now"] += store._FTS_REBUILD_COOLDOWN_SECONDS - 1
-        assert store._rebuild_fts_once() is False
-        assert fake_db.rebuild_calls == 1
-
-        # Cooldown has elapsed: retry is allowed again.
-        clock["now"] += 2
-        assert store._rebuild_fts_once() is True
-        assert fake_db.rebuild_calls == 2
-
-        # --- Escalation logging on _append_to_transcript_serialized ---
-        db_fail = SimpleNamespace(
-            append_message=lambda **kwargs: (_ for _ in ()).throw(
-                RuntimeError("database disk image is malformed")
-            )
-        )
-        log_store = object.__new__(SessionStore)
-        log_store._db = db_fail
-        log_store._transcript_retry_lock = threading.Lock()
-        log_store._dirty_transcripts = {}
-        log_store._transcript_append_failures = {}
-        log_store._fts_rebuild_last_attempt_at = time.monotonic()
-
-        threshold = log_store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        store._db = SimpleNamespace(append_message=_fail)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_last_attempt_at = time.monotonic()
+        threshold = store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
         with caplog.at_level(logging.WARNING, logger="gateway.session_transcript"):
-            for i in range(threshold - 1):
-                caplog.clear()
-                log_store.append_to_transcript("s-esc", {"role": "user", "content": f"m{i}"})
-                assert any(r.levelno == logging.WARNING for r in caplog.records)
-                assert not any(r.levelno == logging.ERROR for r in caplog.records)
-
-            caplog.clear()
-            log_store.append_to_transcript("s-esc", {"role": "user", "content": "trigger"})
-            assert any(r.levelno == logging.ERROR for r in caplog.records)
-            assert log_store._transcript_append_failures["s-esc"] == threshold
-
-    def test_rebuild_fts_once_no_db_guard_does_not_burn_cooldown(self, monkeypatch):
-        """A call with no usable DB (db is None, or lacks rebuild_fts) must not stamp
-        _fts_rebuild_last_attempt_at, since no rebuild was actually attempted. Otherwise
-        a single no-op call burns the 5-minute cooldown window for a real subsequent
-        attempt once a DB becomes available."""
-        store = object.__new__(SessionStore)
-        store._db = None
-        store._fts_rebuild_last_attempt_at = None
-
-        clock = {"now": 1000.0}
-        monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
-
-        assert store._rebuild_fts_once() is False
-        assert store._fts_rebuild_last_attempt_at is None
-
-        # A DB without rebuild_fts should likewise not stamp the cooldown.
-        class DbWithoutRebuild:
-            pass
-
-        store._db = DbWithoutRebuild()
-        assert store._rebuild_fts_once() is False
-        assert store._fts_rebuild_last_attempt_at is None
-
-        # Once a real DB is available, the very next call should be able to attempt
-        # immediately -- not be blocked by a cooldown that was never legitimately started.
-        class FakeDb:
-            def __init__(self):
-                self.rebuild_calls = 0
-
-            def rebuild_fts(self):
-                self.rebuild_calls += 1
-                return 1
-
-        fake_db = FakeDb()
-        store._db = fake_db
-        assert store._rebuild_fts_once() is True
-        assert fake_db.rebuild_calls == 1
-        assert store._fts_rebuild_last_attempt_at == clock["now"]
+            for i in range(threshold):
+                store.append_to_transcript("s-esc", {"role": "user", "content": f"m{i}"})
+        levels = [r.levelno for r in caplog.records if "transcript append failed" in r.getMessage()]
+        assert levels == [logging.WARNING] * (threshold - 1) + [logging.ERROR]
+        assert store._transcript_append_failures["s-esc"] == threshold
 
     def test_pending_queue_caps_at_max(self):
         """Pending queue should drop oldest messages when exceeding the cap
