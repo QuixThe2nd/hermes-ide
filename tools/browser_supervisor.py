@@ -352,6 +352,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             with contextlib.suppress(Exception):
                 await ws.close()
 
+    def _reconnect_budget_spent(self, failures: int, e: BaseException) -> bool:
+        """True once ``failures`` consecutive post-attach reconnects failed: log ONE final line
+        and drop this supervisor from the registry so a dead endpoint (its Chrome exited with
+        the task) leaves neither a retrying thread nor a stale registry entry behind. A later
+        browser call for the task starts a fresh supervisor via ``get_or_start``."""
+        if failures < MAX_POST_ATTACH_RECONNECT_FAILURES:
+            return False
+        logger.warning("CDP supervisor %s: stopped after %s failed reconnect attempts: %s",
+                       self.task_id, failures, _redact_cdp_error_text(e))
+        if SUPERVISOR_REGISTRY.get(self.task_id) is self:
+            SUPERVISOR_REGISTRY._pop(self.task_id)
+        return True
+
     async def _run(self) -> None:
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
         socket whenever a short-lived client (agent-browser's per-command CDP client)
@@ -368,9 +381,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 if self._fail_start(e):
                     return
                 reconnect_failures += 1
-                if reconnect_failures >= MAX_POST_ATTACH_RECONNECT_FAILURES:
-                    logger.warning("CDP supervisor %s: stopped after %s failed reconnect attempts: %s",
-                                   self.task_id, reconnect_failures, _redact_cdp_error_text(e))
+                if self._reconnect_budget_spent(reconnect_failures, e):
                     return
                 logger.warning("CDP supervisor %s: connect failed (attempt %s/%s): %s",
                                self.task_id, reconnect_failures, MAX_POST_ATTACH_RECONNECT_FAILURES,
@@ -396,9 +407,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 if self._fail_start(e):
                     raise
                 reconnect_failures += 1
-                if reconnect_failures >= MAX_POST_ATTACH_RECONNECT_FAILURES:
-                    logger.warning("CDP supervisor %s: stopped after %s failed reconnect attempts: %s",
-                                   self.task_id, reconnect_failures, _redact_cdp_error_text(e))
+                if self._reconnect_budget_spent(reconnect_failures, e):
                     return
                 logger.warning("CDP supervisor %s: session dropped after %.1fs (attempt %s/%s): %s",
                                self.task_id, time.time() - last_success_at, reconnect_failures,

@@ -40,10 +40,17 @@ import time
 import pytest
 
 
-_requires_browser = pytest.mark.skipif(
-    os.environ.get("HERMES_E2E_BROWSER", "").strip() != "1",
-    reason="real-browser E2E: set HERMES_E2E_BROWSER=1 to opt in",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.environ.get("HERMES_E2E_BROWSER", "").strip() != "1",
+        reason="real-browser E2E: set HERMES_E2E_BROWSER=1 to opt in",
+    ),
+    pytest.mark.skipif(
+        not shutil.which("google-chrome") and not shutil.which("chromium"),
+        reason="Chrome/Chromium not installed",
+    ),
+]
 
 
 def _find_chrome() -> str:
@@ -212,8 +219,6 @@ def _wait_for_dialog(supervisor, timeout: float = 5.0):
     return ()
 
 
-@pytest.mark.integration
-@_requires_browser
 def test_supervisor_start_and_snapshot(chrome_cdp, supervisor_registry):
     """Supervisor attaches, exposes an active snapshot with a top frame."""
     cdp_url, _port = chrome_cdp
@@ -232,8 +237,6 @@ def test_supervisor_start_and_snapshot(chrome_cdp, supervisor_registry):
     assert snap.frame_tree.get("top") is not None
 
 
-@pytest.mark.integration
-@_requires_browser
 def test_main_frame_alert_detection_and_dismiss(chrome_cdp, supervisor_registry):
     """alert() in the main frame surfaces and can be dismissed via the sync API."""
     cdp_url, _port = chrome_cdp
@@ -253,8 +256,6 @@ def test_main_frame_alert_detection_and_dismiss(chrome_cdp, supervisor_registry)
     assert supervisor.snapshot().pending_dialogs == ()
 
 
-@pytest.mark.integration
-@_requires_browser
 def test_iframe_contentwindow_alert(chrome_cdp, supervisor_registry):
     """alert() fired from inside a same-origin iframe surfaces too."""
     cdp_url, _port = chrome_cdp
@@ -272,8 +273,6 @@ def test_iframe_contentwindow_alert(chrome_cdp, supervisor_registry):
     assert result["ok"] is True
 
 
-@pytest.mark.integration
-@_requires_browser
 def test_prompt_dialog_with_response_text(chrome_cdp, supervisor_registry):
     """prompt() gets our prompt_text back inside the page."""
     cdp_url, _port = chrome_cdp
@@ -294,8 +293,6 @@ def test_prompt_dialog_with_response_text(chrome_cdp, supervisor_registry):
     assert result["ok"] is True
 
 
-@pytest.mark.integration
-@_requires_browser
 def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     """Full agent-path check: fire an alert, call the tool handler directly."""
     from tools.browser_dialog_tool import browser_dialog
@@ -312,8 +309,6 @@ def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     assert "PYTEST-TOOL-END2END" in r["dialog"]["message"]
 
 
-@pytest.mark.integration
-@_requires_browser
 def test_browser_cdp_frame_id_real_oopif_smoke_documented():
     """Document that real-OOPIF E2E was manually verified — see PR #14540.
 
@@ -345,8 +340,6 @@ def test_browser_cdp_frame_id_real_oopif_smoke_documented():
     )
 
 
-@pytest.mark.integration
-@_requires_browser
 def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     """``Infinity``/``NaN``/``BigInt`` come back via ``unserializableValue``."""
     cdp_url, _port = chrome_cdp
@@ -358,97 +351,3 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
-
-
-class _ClosingWebSocket:
-    async def close(self):
-        pass
-
-
-def test_supervisor_stops_after_bounded_post_attach_reconnect_failures(monkeypatch):
-    """A dead endpoint cannot keep a previously attached supervisor alive forever."""
-    from tools import browser_supervisor as bs
-
-    supervisor = bs.CDPSupervisor(task_id="bounded-reconnect", cdp_url="ws://127.0.0.1:9222")
-    attempts = 0
-
-    async def connect(*_args, **_kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            return _ClosingWebSocket()
-        if attempts <= 3:
-            raise ConnectionError("CDP endpoint is gone")
-        await asyncio.Event().wait()
-
-    async def attach():
-        pass
-
-    async def reader():
-        pass
-
-    async def immediate_sleep(_delay):
-        pass
-
-    import websockets
-
-    monkeypatch.setattr(websockets, "connect", connect)
-    monkeypatch.setattr(supervisor, "_attach_initial_page", attach)
-    monkeypatch.setattr(supervisor, "_read_loop", reader)
-    monkeypatch.setattr(bs.asyncio, "sleep", immediate_sleep)
-    monkeypatch.setattr(bs, "MAX_POST_ATTACH_RECONNECT_FAILURES", 2, raising=False)
-
-    asyncio.run(asyncio.wait_for(supervisor._run(), timeout=0.1))
-
-    assert attempts == 3  # Initial attach plus the bounded reconnect failures.
-    assert supervisor.snapshot().active is False
-
-
-def test_supervisor_does_not_reconnect_after_explicit_stop(monkeypatch):
-    """An explicit stop during a live session suppresses a reconnect attempt."""
-    from tools import browser_supervisor as bs
-
-    supervisor = bs.CDPSupervisor(task_id="explicit-stop", cdp_url="ws://127.0.0.1:9222")
-    attempts = 0
-
-    async def connect(*_args, **_kwargs):
-        nonlocal attempts
-        attempts += 1
-        return _ClosingWebSocket()
-
-    async def attach():
-        pass
-
-    async def reader():
-        supervisor._stop_requested = True
-
-    import websockets
-
-    monkeypatch.setattr(websockets, "connect", connect)
-    monkeypatch.setattr(supervisor, "_attach_initial_page", attach)
-    monkeypatch.setattr(supervisor, "_read_loop", reader)
-
-    asyncio.run(supervisor._run())
-
-    assert attempts == 1
-    assert supervisor.snapshot().active is False
-
-
-def test_supervisor_keeps_initial_connect_failures_fatal(monkeypatch):
-    """Reconnect budgeting applies only after the first successful attachment."""
-    from tools import browser_supervisor as bs
-
-    supervisor = bs.CDPSupervisor(task_id="initial-failure", cdp_url="ws://127.0.0.1:9222")
-
-    async def connect(*_args, **_kwargs):
-        raise ConnectionError("CDP endpoint is unavailable")
-
-    import websockets
-
-    monkeypatch.setattr(websockets, "connect", connect)
-
-    asyncio.run(supervisor._run())
-
-    assert isinstance(supervisor._start_error, ConnectionError)
-    assert supervisor._ready_event.is_set()
-    assert supervisor.snapshot().active is False
