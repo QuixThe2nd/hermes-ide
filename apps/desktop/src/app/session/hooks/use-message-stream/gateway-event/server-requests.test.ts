@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $toursEnabled } from '@/store/tours'
 
-import { handleServerRequest } from './server-requests'
+import { handleServerRequest, previewSessionRoute } from './server-requests'
 import type { ServerRequestContext } from './server-requests'
 
 const deps = {
@@ -42,12 +42,34 @@ describe('connection request routing', () => {
 })
 
 describe('preview action request routing', () => {
+  it('waits one turn for a replayed scoped request while the active-session binding resumes', () => {
+    expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: null })).toBe('retry')
+    expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: 'session-a' })).toBe('run')
+  })
+
+  it('leaves scoped preview requests for another window unanswered', () => {
+    expect(previewSessionRoute({ replayed: false, sessionId: 'session-a', activeSessionId: 'session-b' })).toBe('ignore')
+    expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: 'session-b' })).toBe('ignore')
+  })
+
+  it('keeps unscoped preview requests on the existing fail-fast path', () => {
+    expect(previewSessionRoute({ replayed: true, sessionId: '', activeSessionId: null })).toBe('run')
+  })
+
   it('leaves a scoped action request unanswered in a window showing another session', () => {
     const { handled, respond, fail } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-b')
 
     expect(handled).toBe(true)
     expect(respond).not.toHaveBeenCalled()
     expect(fail).not.toHaveBeenCalled()
+  })
+
+  it('leaves a scoped read request unanswered in a window showing another session', async () => {
+    const { respond } = deliver('preview.read', { session_id: 'session-a' }, 'session-b')
+
+    await Promise.resolve()
+
+    expect(respond).not.toHaveBeenCalled()
   })
 
   it('fails fast for an unscoped request with no session in view', () => {

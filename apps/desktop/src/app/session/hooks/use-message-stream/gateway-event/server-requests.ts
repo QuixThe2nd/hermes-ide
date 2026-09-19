@@ -55,6 +55,31 @@ export interface ServerRequestContext {
 
 type Handler = (ctx: ServerRequestContext) => void
 
+type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
+
+/**
+ * Preview panes are local to one desktop window, while gateway requests fan out
+ * to every connected window. A scoped request may only be answered by the
+ * window showing its session. During reconnect, however, an open request can
+ * replay one event-loop turn before the resumed session becomes active; retry
+ * that one narrow race and otherwise leave the request for its owner.
+ */
+export function previewSessionRoute({
+  activeSessionId,
+  replayed,
+  sessionId
+}: {
+  activeSessionId: null | string
+  replayed: boolean | undefined
+  sessionId: string
+}): PreviewSessionRoute {
+  if (!sessionId || sessionId === activeSessionId) {
+    return 'run'
+  }
+
+  return replayed && !activeSessionId ? 'retry' : 'ignore'
+}
+
 const markNeedsInput = (ctx: ServerRequestContext) => {
   if (ctx.sessionId) {
     ctx.deps.updateSessionState(ctx.sessionId, state => ({ ...state, needsInput: true }))
@@ -408,6 +433,27 @@ export function handleServerRequest(
   }
 
   const sessionId = str(request.params.session_id)
+
+  if (request.method === 'preview.act' || request.method === 'preview.read') {
+    const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
+
+    if (route === 'ignore') {
+      return true
+    }
+
+    if (route === 'retry') {
+      // Re-read the ref instead of capturing activeSessionId: session resume
+      // publishes its binding synchronously between this replay and the next
+      // turn. A second miss deliberately stays silent for another window.
+      setTimeout(() => {
+        if (previewSessionRoute({ activeSessionId: deps.activeSessionIdRef.current, replayed: false, sessionId }) === 'run') {
+          handler({ deps, request, sessionId, isActiveSession: true })
+        }
+      }, 0)
+
+      return true
+    }
+  }
 
   handler({ deps, request, sessionId, isActiveSession: Boolean(sessionId) && sessionId === activeSessionId })
 
