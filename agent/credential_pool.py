@@ -2182,11 +2182,16 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
         read_claude_code_credentials,
         read_hermes_oauth_credentials,
     )
+    from agent.credential_sources import adopt_external_logins_enabled
 
-    for source_name, creds in (
-        ("hermes_pkce", read_hermes_oauth_credentials()),
-        ("claude_code", read_claude_code_credentials()),
-    ):
+    sources = [("hermes_pkce", read_hermes_oauth_credentials())]
+    if adopt_external_logins_enabled():
+        sources.append(("claude_code", read_claude_code_credentials()))
+    else:
+        # Singleton-seeded rows are otherwise never pruned; the opt-out must also drop the row an
+        # earlier (adopting) process persisted, or it keeps rotating a login Hermes no longer reads.
+        seed.changed |= _retain_sources_not_in(seed.entries, {"claude_code"})
+    for source_name, creds in sources:
         if creds and creds.get("accessToken"):
             seed.upsert(source_name, {
                 "auth_type": AUTH_TYPE_OAUTH,

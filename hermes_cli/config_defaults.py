@@ -1794,6 +1794,14 @@ DEFAULT_CONFIG = {
     # Custom personalities: {"name": "system prompt"} or {"name": {"description", "system_prompt",
     # "tone", "style"}}.
     "personalities": {},
+    "auth": {  # Login policy (credentials themselves live in auth.json / .env).
+        # Borrow and refresh the Codex CLI (~/.codex/auth.json) and Claude Code (~/.claude/.credentials.json)
+        # logins automatically when Hermes has no usable login of its own. Their refresh tokens are single-use
+        # and rotate, so two programs on one login can log each other out; set false to make Hermes use only
+        # its own logins (`hermes auth add <provider>`). `hermes auth add openai-codex` still offers the import
+        # interactively.
+        "adopt_external_logins": True,
+    },
     "security": {  # Security: pre-exec scanning via tirith plus related guards.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
         # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
