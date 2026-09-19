@@ -269,6 +269,8 @@ class ModelOptionProvider(OpenModel):
     free_tier_pending: bool | None = None
     free_tier_row: bool | None = None
     unavailable_models: list[str] | None = None
+    # Set on a normal picker open while this row's catalog is still warming in the background.
+    catalog_pending: bool | None = None
 
 
 class ModelOptionsResult(Result):

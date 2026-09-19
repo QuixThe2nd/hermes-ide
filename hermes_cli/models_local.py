@@ -657,10 +657,11 @@ def fetch_ollama_cloud_models(
     base_url: Optional[str] = None,
     *,
     force_refresh: bool = False,
+    cache_only: bool = False,
 ) -> list[str]:
     """Ollama Cloud models: fresh disk cache (< 1h, unless force_refresh) → live ``/v1/models``
     (freshest) merged with models.dev additions (deduped, live first) → stale cache → ``[]``.
-    Never None."""
+    ``cache_only`` (GUI read path) never runs the 8s network probe. Never None."""
     from hermes_cli.models import fetch_api_models
     if not force_refresh:
         cached = _load_ollama_cloud_cache()
@@ -669,7 +670,9 @@ def fetch_ollama_cloud_models(
 
     api_key = api_key or os.getenv("OLLAMA_API_KEY", "")
     base_url = base_url or os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
-    live_models = (fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else []
+    # cache_only (GUI read path): skip only the network probe. The models.dev additions are a local
+    # cache read, so the row still populates with what is known; the live catalog lands next open.
+    live_models = [] if cache_only else ((fetch_api_models(api_key, base_url, timeout=8.0) or []) if api_key else [])
     mdev_models: list[str] = []
     try:
         from agent.models_dev import list_agentic_models
