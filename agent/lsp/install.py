@@ -91,12 +91,18 @@ def hermes_lsp_bin_dir() -> Path:
     return p
 
 
-def _native_binary_candidates(base: Path) -> list[Path]:
-    """Return platform-native executable candidates for a staged binary (``base`` plus Windows wrappers)."""
-    if not _is_windows():
+def _native_binary_candidates(base: Path, *, is_windows: Optional[bool] = None) -> list[Path]:
+    """Return platform-native executable candidates for a staged binary, most runnable first.
+
+    On Windows the ``.cmd``/``.exe``/``.bat`` wrappers come BEFORE the bare name: npm writes a
+    POSIX ``#!/bin/sh`` shim under the bare name next to its ``.cmd``, ``os.access(X_OK)`` is
+    always true there, and ``CreateProcess`` on the shim fails with WinError 193.  The bare name
+    stays as a last resort for genuinely extension-less executables.
+    """
+    if not (_is_windows() if is_windows is None else is_windows):
         return [base]
     cands: Dict[str, Path] = {}
-    for c in (base, *(Path(str(base) + s) for s in _WINDOWS_WRAPPER_SUFFIXES)):
+    for c in (*(Path(str(base) + s) for s in _WINDOWS_WRAPPER_SUFFIXES), base):
         cands.setdefault(str(c).lower(), c)
     return list(cands.values())
 
@@ -106,12 +112,18 @@ def _first_existing(*bases: Path) -> Optional[Path]:
     return next((c for base in bases for c in _native_binary_candidates(base) if c.exists()), None)
 
 
+def _npm_bin_dir() -> Path:
+    """npm's own ``node_modules/.bin`` under the staging tree, where its ``%~dp0``-relative wrappers work."""
+    return hermes_lsp_bin_dir().parent / "node_modules" / ".bin"
+
+
 def _existing_binary(name: str) -> Optional[str]:
-    """Probe the staging dir + PATH for a binary named ``name``."""
-    for staged in _native_binary_candidates(hermes_lsp_bin_dir() / name):
+    """Probe the staging dir (+ npm's bin dir on Windows) then PATH for a binary named ``name``."""
+    bases = [hermes_lsp_bin_dir() / name] + ([_npm_bin_dir() / name] if _is_windows() else [])
+    for staged in (c for base in bases for c in _native_binary_candidates(base)):
         if staged.exists() and os.access(staged, os.X_OK):
             return str(staged)
-    suffixes = ("", *_WINDOWS_WRAPPER_SUFFIXES) if _is_windows() else ("",)
+    suffixes = (*_WINDOWS_WRAPPER_SUFFIXES, "") if _is_windows() else ("",)
     return next((p for s in suffixes if (p := shutil.which(f"{name}{s}"))), None)
 
 
@@ -198,7 +210,9 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
         return None
     found = _first_existing(staging / "node_modules" / ".bin" / bin_name)
     if found is not None:
-        return _link_into_bin(found)
+        # npm's Windows wrappers resolve their payload via ``%~dp0\..\<pkg>``, so a copy or symlink
+        # in ``lsp/bin/`` points at nothing; use them where npm put them (``_existing_binary`` probes there).
+        return str(found) if _is_windows() and found.suffix.lower() in (".cmd", ".bat") else _link_into_bin(found)
     logger.warning("[install] npm install for %s succeeded but bin %s not found", pkg, bin_name)
     return None
 
