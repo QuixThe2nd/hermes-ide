@@ -604,51 +604,15 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
         ) from None
 
 
-def _is_credential_required_error(result: subprocess.CompletedProcess) -> bool:
-    """True when git's exit looks like a credential/permission prompt that ``GIT_TERMINAL_PROMPT=0``
-    blocked, or a server-side 401/403 — the class of error that says "this repo needs auth"."""
-    blob = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
-    return (
-        "could not read username" in blob
-        or "could not read password" in blob
-        or "authentication failed" in blob
-        or "terminal prompts disabled" in blob
-        or " 401 " in blob
-        or " 403 " in blob
-    )
-
-
-def _clone_with_auth_fallback(
-    git_exe: str, target: Path, *clone_args: str, auth_url: str = ""
-) -> subprocess.CompletedProcess:
-    """Run *clone_args* against *target* anonymously first, then retry with the user's stored
-    HTTPS credential only when the first attempt fails with a credential-required error.
-
-    Public catalog repos must clone without a credential — injecting ``Authorization: basic``
-    against a public GitHub URL breaks the anonymous path (GitHub rejects the Basic header and
-    git falls back to a Username prompt that ``GIT_TERMINAL_PROMPT=0`` blocks, surfacing as
-    "could not read Username ... terminal prompts disabled", #114526). Private repos that
-    genuinely demand auth reach the fallback naturally when anonymous access is refused.
-    """
-    result = _run_plugin_git(git_exe, target, *clone_args)
-    if result.returncode == 0 or not _is_credential_required_error(result) or not auth_url:
-        return result
-    return _run_plugin_git(git_exe, target, *clone_args, auth_url=auth_url)
-
-
 def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -> str:
     """Shallow-clone *git_url* into *tmp_clone* (detached at *revision* when given), scrub any
-    credentials from the recorded origin, and return the installed HEAD SHA.
-
-    Clones anonymously first; only falls back to the user's stored HTTPS credential when the
-    remote explicitly demands one (regression guard for #114526, where injecting ``gh auth``'s
-    token against a public catalog URL broke the anonymous path)."""
+    credentials from the recorded origin, and return the installed HEAD SHA."""
     git_exe = _resolve_git_executable()
     if not git_exe:
         raise PluginOperationError("git is not installed or not in PATH.")
     clone_args = ["clone", "--depth", "1", *(["--no-checkout"] if revision else []), git_url, str(tmp_clone)]
     try:
-        result = _clone_with_auth_fallback(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url)
+        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url)
     except FileNotFoundError as e:
         raise PluginOperationError("git is not installed or not in PATH.") from e
     except subprocess.TimeoutExpired as e:
@@ -2029,14 +1993,12 @@ def _run_plugin_git(
     git_exe: str, target: Path, *args: str, timeout: int = 60, auth_url: str = "",
 ) -> subprocess.CompletedProcess:
     """Run one git command inside a plugin checkout (non-interactive). *auth_url* names the remote
-    a network verb talks to so a stored user credential for its host is attached (private repos)."""
-    env = noninteractive_git_env()
-    if auth_url:
-        from hermes_cli.git_credentials import with_git_auth
-        env = with_git_auth(env, auth_url)
-    return subprocess.run(
-        [git_exe, *args], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
-        cwd=str(target), stdin=subprocess.DEVNULL, env=env)
+    a network verb talks to; it runs anonymously first and a stored user credential for that host
+    is attached only when the remote refuses anonymous access (private repos)."""
+    from hermes_cli.git_credentials import run_git_with_credential_fallback
+    return run_git_with_credential_fallback(
+        [git_exe, *args], auth_url, env=noninteractive_git_env(), capture_output=True, text=True,
+        encoding='utf-8', errors='replace', timeout=timeout, cwd=str(target))
 
 
 def _stash_ref(git_exe: str, target: Path) -> str:

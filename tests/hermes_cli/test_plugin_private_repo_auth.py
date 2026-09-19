@@ -118,37 +118,62 @@ def test_public_clone_attempts_anonymously_when_credential_resolves(tmp_path, mo
     assert "ghp_fake" not in str(clone_calls)
 
 
-def test_non_https_clone_skips_auth_header_even_when_credential_resolves(tmp_path, monkeypatch):
-    """SSH-style ``git@github.com:owner/repo.git`` URLs reach git via the local ssh agent, not via
-    the https Authorization extraheader — the credential path must be a true no-op for them."""
-    clone_calls: list[list[str]] = []
+@pytest.mark.parametrize("verb", ["fetch", "pull"])
+@pytest.mark.parametrize("refused", [False, True])
+def test_ref_fetch_and_update_pull_attach_credential_only_after_anonymous_refusal(
+        tmp_path, monkeypatch, verb, refused):
+    """The pinned-ref fetch (``--ref`` install) and ``hermes plugins update``'s pull are the
+    clone's siblings: with a stored GitHub credential resolvable they still run anonymously
+    against a public remote, and attach the credential only after the remote refuses."""
+    _seed_bare_upstream(tmp_path)
+    repo = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "upstream.git"), str(repo)], check=True)
+    revision = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+    public_url = "https://github.com/acme/public-plugin.git"
+    subprocess.run(["git", "-C", str(repo), "remote", "set-url", "origin", public_url], check=True)
+
+    attempts: list[list[str]] = []
     real_run = subprocess.run
-    target_url = "git@github.com:robbyczgw-cla/hermes-web-search-plus.git"
 
     def spy_run(argv, *a, **kw):
-        env = kw.get("env") or {}
-        if "clone" in argv:
-            clone_calls.append(_auth_headers_for(env, "github.com"))
-            # Skip the real clone; the SSH path isn't under test here.
-            return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
-        # Subsequent post-clone git calls (rev-parse, etc.) aren't under test; swallow them so
-        # the absence of a real upstream doesn't cascade into a fixture error.
-        if isinstance(argv, (list, tuple)) and argv and argv[0].endswith("git") and len(argv) > 1:
-            return subprocess.CompletedProcess(argv, returncode=0, stdout="deadbeef\n", stderr="")
-        return real_run(argv, *a, **kw)
+        if verb not in argv:
+            return real_run(argv, *a, **kw)
+        attempts.append(_auth_headers_for(kw.get("env") or {}, "https://github.com"))
+        if refused and len(attempts) == 1:
+            return subprocess.CompletedProcess(
+                argv, 128, stdout="",
+                stderr="fatal: could not read Username for 'https://github.com': terminal prompts disabled\n")
+        return subprocess.CompletedProcess(argv, 0, stdout="Already up to date.\n", stderr="")
 
     monkeypatch.setattr(plugins_cmd.subprocess, "run", spy_run)
     monkeypatch.setattr(git_credentials, "resolve_git_basic_auth", lambda url: ("x-access-token", "ghp_fake"))
 
-    dest = tmp_path / "clone"
-    plugins_cmd._clone_plugin_repo(dest, target_url, None)
+    if verb == "fetch":
+        plugins_cmd._checkout_exact_revision(repo, "git", revision, source_url=public_url)
+    else:
+        assert plugins_cmd._git_pull_plugin_dir(repo)[0] is True
 
-    assert len(clone_calls) == 1, (
-        f"non-HTTPS clone must be a single anonymous attempt, got {len(clone_calls)}: {clone_calls}"
-    )
-    assert clone_calls[0] == [], (
-        f"non-HTTPS URL must not receive an Authorization extraheader, got {clone_calls[0]}"
-    )
+    expected = base64.b64encode(b"x-access-token:ghp_fake").decode()
+    assert attempts == ([[], [f"Authorization: basic {expected}"]] if refused else [[]])
+
+
+def test_non_credential_failure_is_returned_without_an_authenticated_retry(monkeypatch):
+    """A failure that is not about credentials (missing repo, bad commit, network) must surface
+    as-is: the stored credential is never even resolved, let alone sent."""
+    calls: list = []
+    monkeypatch.setattr(git_credentials.subprocess, "run", lambda argv, **kw: (
+        calls.append(kw["env"]) or subprocess.CompletedProcess(
+            argv, 128, stdout="", stderr="fatal: repository 'https://github.com/acme/nope.git/' not found\n")))
+    monkeypatch.setattr(git_credentials, "resolve_git_basic_auth",
+                        lambda url: pytest.fail("credential must not be resolved for a non-credential failure"))
+
+    result = git_credentials.run_git_with_credential_fallback(
+        ["git", "clone", "https://github.com/acme/nope.git"], "https://github.com/acme/nope.git",
+        env=noninteractive_git_env(), capture_output=True, text=True)
+
+    assert result.returncode == 128 and len(calls) == 1
+    assert _auth_headers_for(calls[0], "https://github.com") == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell stub credential helper")
