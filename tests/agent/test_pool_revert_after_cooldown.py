@@ -1,106 +1,100 @@
-"""Regression tests for #114501 — pool rotation never reverts after cooldown.
+# Copyright 2025 Nous Research (Licensed under the Apache License, Version 2.0)
+"""A live session rotated off a quota-benched credential moves back once the bench lifts.
 
-A transient quota bench (429 / 402) rotates the agent onto a fallback
-credential via ``mark_exhausted_and_rotate`` + ``_swap_credential``, but the
-per-turn ``restore_primary_runtime`` hook early-returns when no model/provider
-fallback is active — so the agent stays on the fallback credential forever,
-burning the wrong billing bucket.
-
-The fix arms ``agent._credential_pool_revert_id`` at rotation time and lets
-the per-turn hook swap back once the preferred entry is available again.
+New sessions already do this (``load_pool().select()`` prefers the priority-0 entry again once
+its 429/402 cooldown has elapsed); the per-turn ``restore_primary_runtime`` hook must do the same
+for the session that took the rotation, or a long-lived gateway agent bills the fallback for
+its whole life. Credential-only: it must not touch the model/base_url/compressor restore path.
 """
 
-from types import SimpleNamespace
+import time
 
-import pytest
+import agent.credential_pool as cp
+from agent.agent_runtime_helpers import recover_with_credential_pool, restore_primary_runtime
+from agent.credential_pool import EXHAUSTED_TTL_429_SECONDS, CredentialPool, PooledCredential
 
-from agent.agent_runtime_helpers import _maybe_revert_credential_rotation
-
-
-def _entry(entry_id, label=None):
-    return SimpleNamespace(id=entry_id, label=label or entry_id[:8])
+_BASE = "https://api.anthropic.com"
 
 
-class _FakePool:
-    """Mirrors ``_available_entries()``'s contract: (available, pending)."""
+def _entry(entry_id, label, *, priority, auth_type, token):
+    raw = {
+        "id": entry_id, "label": label, "auth_type": auth_type, "priority": priority,
+        "access_token": token, "base_url": _BASE, "source": "manual",
+    }
+    if auth_type == "oauth":
+        raw["refresh_token"] = f"rt-{entry_id}"
+        raw["expires_at_ms"] = int((time.time() + 30 * 86400) * 1000)
+    return PooledCredential.from_dict("anthropic", raw)
 
-    def __init__(self, available):
-        self._available = list(available)
-        self.calls = 0
 
-    def _available_entries(self, *, model=None):
-        self.calls += 1
-        return list(self._available), []
+class _LiveAgent:
+    """Long-lived session stand-in: real pool + real recovery/restore helpers, no client build."""
 
+    _fallback_activated = False
+    _fallback_index = 0
+    _primary_runtime = {"provider": "anthropic", "model": "claude-opus-5", "base_url": _BASE}
+    provider = "anthropic"
+    model = "claude-opus-5"
+    base_url = _BASE
 
-def _make_agent(pool, bound_id, revert_id, rotated_to):
-    agent = SimpleNamespace(
-        _credential_pool=pool,
-        _credential_pool_entry_id=bound_id,
-        _credential_pool_revert_id=revert_id,
-        _credential_pool_rotated_to=rotated_to,
-        _provider_fallback_active=False,
-        model="claude-opus-4-6",
-        swapped=[],
-    )
+    def __init__(self, pool):
+        self._credential_pool = pool
+        first = pool.select()
+        self._credential_pool_entry_id = first.id
+        self.api_key = first.runtime_api_key
 
-    def _swap(entry):
-        agent.swapped.append(entry.id)
-        agent._credential_pool_entry_id = entry.id
+    def _swap_credential(self, entry):
+        self.api_key = entry.runtime_api_key
+        self._credential_pool_entry_id = entry.id
         return True
 
-    agent._swap_credential = _swap
-    return agent
+    def _is_entitlement_failure(self, error_context, status_code):
+        return False
 
 
-def test_reverts_when_preferred_available_again():
-    """Preferred cooled down: swap back once, clear the armed flags."""
-    preferred = _entry("pref-1")
-    pool = _FakePool([preferred])
-    agent = _make_agent(pool, bound_id="fb-2", revert_id="pref-1", rotated_to="fb-2")
+def _expire_cooldowns(monkeypatch):
+    real = time.time
+    monkeypatch.setattr(cp.time, "time", lambda: real() + EXHAUSTED_TTL_429_SECONDS + 120)
 
-    _maybe_revert_credential_rotation(agent)
 
-    assert agent.swapped == ["pref-1"]
-    assert agent._credential_pool_entry_id == "pref-1"
+def test_live_session_reverts_to_quota_benched_credential_once_cooldown_lifts(monkeypatch):
+    pool = CredentialPool(provider="anthropic", entries=[
+        _entry("pref0000", "subscription-oauth", priority=0, auth_type="oauth", token="sk-ant-oat01-PREF"),
+        _entry("fall0000", "paid-api-key", priority=1, auth_type="api_key", token="sk-ant-api03-FALL"),
+    ])
+    agent = _LiveAgent(pool)
+    assert agent.api_key == "sk-ant-oat01-PREF"
+
+    # 429 twice = retry once, then rotate (the real rate-limit ladder).
+    recover_with_credential_pool(agent, status_code=429, has_retried_429=False, error_context={"message": "Error"})
+    recovered, _ = recover_with_credential_pool(agent, status_code=429, has_retried_429=True, error_context={"message": "Error"})
+    assert recovered and agent.api_key == "sk-ant-api03-FALL"
+
+    # Control: while the bench is still active the session stays on the fallback.
+    assert restore_primary_runtime(agent) is False
+    assert agent.api_key == "sk-ant-api03-FALL"
+
+    _expire_cooldowns(monkeypatch)
+    assert restore_primary_runtime(agent) is False  # credential-only: no primary-runtime restore ran
+    assert agent.api_key == "sk-ant-oat01-PREF"
+    assert agent._credential_pool_entry_id == "pref0000"
+    assert agent._fallback_activated is False and agent.model == "claude-opus-5"
     assert agent._credential_pool_revert_id is None
-    assert agent._credential_pool_rotated_to is None
+    # The pool agrees the preferred entry is healthy again (cooldown cleared, not merely elapsed).
+    assert next(e for e in pool.entries() if e.id == "pref0000").last_status != cp.STATUS_EXHAUSTED
 
 
-def test_waits_while_preferred_still_cooling():
-    """Preferred absent from available: no swap, flags stay armed."""
-    fallback = _entry("fb-2")
-    pool = _FakePool([fallback])
-    agent = _make_agent(pool, bound_id="fb-2", revert_id="pref-1", rotated_to="fb-2")
+def test_auth_bench_does_not_arm_a_revert(monkeypatch):
+    """A 401 bench is not a quota window: the session keeps the credential it rotated to."""
+    pool = CredentialPool(provider="anthropic", entries=[
+        _entry("pref0000", "primary-key", priority=0, auth_type="api_key", token="sk-ant-api03-PREF"),
+        _entry("fall0000", "backup-key", priority=1, auth_type="api_key", token="sk-ant-api03-FALL"),
+    ])
+    agent = _LiveAgent(pool)
+    recovered, _ = recover_with_credential_pool(agent, status_code=401, has_retried_429=False, error_context={"message": "invalid"})
+    assert recovered and agent.api_key == "sk-ant-api03-FALL"
 
-    _maybe_revert_credential_rotation(agent)
-
-    assert agent.swapped == []
-    assert agent._credential_pool_revert_id == "pref-1"
-    assert pool.calls == 1
-
-
-def test_manual_move_stands_down_without_swap():
-    """User moved the binding elsewhere: clear flags, never yank."""
-    preferred = _entry("pref-1")
-    pool = _FakePool([preferred])
-    agent = _make_agent(pool, bound_id="manual-9", revert_id="pref-1", rotated_to="fb-2")
-
-    _maybe_revert_credential_rotation(agent)
-
-    assert agent.swapped == []
-    assert agent._credential_pool_revert_id is None
-    assert pool.calls == 0
-
-
-def test_already_home_clears_flag():
-    """Binding already back on preferred: clear, no redundant swap."""
-    preferred = _entry("pref-1")
-    pool = _FakePool([preferred])
-    agent = _make_agent(pool, bound_id="pref-1", revert_id="pref-1", rotated_to="fb-2")
-
-    _maybe_revert_credential_rotation(agent)
-
-    assert agent.swapped == []
-    assert agent._credential_pool_revert_id is None
-    assert pool.calls == 0
+    _expire_cooldowns(monkeypatch)
+    assert restore_primary_runtime(agent) is False
+    assert agent.api_key == "sk-ant-api03-FALL"
+    assert getattr(agent, "_credential_pool_revert_id", None) is None

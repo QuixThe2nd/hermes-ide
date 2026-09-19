@@ -858,14 +858,14 @@ def recover_with_credential_pool(
         if (
             swapped
             and credential_id
-            and getattr(next_entry, "id", None) != credential_id
+            and not getattr(agent, "_credential_pool_revert_id", None)
             and effective_reason in (FailoverReason.rate_limit, FailoverReason.billing)
         ):
-            # Transient quota bench (429 / 402): the benched credential recovers when
-            # its cooldown expires. Arm the per-turn hook to swap back (#114501);
-            # auth and other failures keep today's behavior.
+            # A quota bench (429/402) lifts when the window reopens, and a fresh session's
+            # select() would go straight back to this entry; arm the per-turn hook so the live
+            # session does too (#114501). Keep the FIRST benched entry across chained rotations
+            # — it is the preferred one. Auth benches are not windows; they stay as they are.
             agent._credential_pool_revert_id = credential_id
-            agent._credential_pool_rotated_to = getattr(next_entry, "id", None)
         return swapped
     if effective_reason == FailoverReason.upstream_rate_limit:
         # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
@@ -1121,48 +1121,31 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
         )
 
 
-def _maybe_revert_credential_rotation(agent) -> None:
-    """Swap back to a transiently benched credential once it is available again (#114501).
-
-    Best-effort and exception-proof: the per-turn restore hook calls this every turn,
-    so it must never raise. Uses the read-only ``_available_entries()`` check (the same
-    side-effect profile as ``pool.peek()``) — never ``select()``, which would bump
-    request counts and rotate round-robin order on a mere check.
-    """
-    try:
-        revert_id = getattr(agent, "_credential_pool_revert_id", None)
-        if not revert_id:
-            return
-        pool = getattr(agent, "_credential_pool", None)
-        if pool is None:
-            agent._credential_pool_revert_id = None
-            return
-        if getattr(agent, "_provider_fallback_active", False):
-            return  # A provider fallback owns the binding right now; don't fight it.
-        bound = getattr(agent, "_credential_pool_entry_id", None)
-        if bound == revert_id:
-            # Already home (manual switch-back or another path restored it).
-            agent._credential_pool_revert_id = None
-            agent._credential_pool_rotated_to = None
-            return
-        if bound != getattr(agent, "_credential_pool_rotated_to", None):
-            # The binding moved elsewhere by hand; stand down rather than yank it.
-            agent._credential_pool_revert_id = None
-            agent._credential_pool_rotated_to = None
-            return
-        available, _pending = pool._available_entries(model=getattr(agent, "model", None))
-        target = next((e for e in available if getattr(e, "id", None) == revert_id), None)
-        if target is None:
-            return  # Preferred still cooling (or gone); keep waiting.
-        if agent._swap_credential(target) is not False:
-            logger.info(
-                "credential pool: preferred credential %s available again, reverted",
-                getattr(target, "label", None) or revert_id[:8],
-            )
+def _revert_credential_rotation(agent) -> None:
+    """Move a live session back onto the credential a quota bench rotated it off, once the bench
+    lifts. New sessions already do this through ``select()``; without it a long-lived (gateway)
+    session keeps billing the fallback for its whole life (#114501). Credential-only: the
+    model/base_url/compressor restore stays gated on ``_fallback_activated``."""
+    revert_id = getattr(agent, "_credential_pool_revert_id", None)
+    if not revert_id:
+        return
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or getattr(agent, "_credential_pool_entry_id", None) == revert_id:
         agent._credential_pool_revert_id = None
-        agent._credential_pool_rotated_to = None
-    except Exception:
-        logger.debug("credential pool revert check failed", exc_info=True)
+        return
+    try:
+        entry = pool.reclaim(revert_id, model=getattr(agent, "model", None))
+    except Exception as exc:
+        logger.warning("Credential revert check failed: %s", exc)
+        return
+    if entry is None:
+        return  # still cooling down; check again next turn
+    if agent._swap_credential(entry) is not False:
+        logger.info(
+            "Credential %s (%s) available again — reverted pool rotation",
+            getattr(entry, "id", "?"), getattr(entry, "label", "?"),
+        )
+    agent._credential_pool_revert_id = None
 
 
 def restore_primary_runtime(agent) -> bool:
@@ -1172,7 +1155,7 @@ def restore_primary_runtime(agent) -> bool:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks.
         agent._fallback_index = 0
-        _maybe_revert_credential_rotation(agent)
+        _revert_credential_rotation(agent)
         return False
     # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
     # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
@@ -2172,6 +2155,7 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0
+    agent._credential_pool_revert_id = None
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;
     # otherwise a failed turn silently re-activates the provider the user just rejected.
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
