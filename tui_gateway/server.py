@@ -553,12 +553,23 @@ def _profile_scoped(handler):
     (``prompt_turn._prepare_turn_input``) so they never depend on ambient ``os.environ``
     that a secondary context might have poisoned (#107422). Single-profile processes stay
     unscoped and keep legacy ``os.environ`` precedence.
+
+    No ``profile`` param but a ``session_id`` naming a live session: that session's ``profile_home``
+    is the scope. The TUI and the Desktop's ambient dispatcher send session-bound RPCs with the
+    session id alone, so a ``config.set`` from a focused worker session otherwise persisted into the
+    LAUNCH profile's config.yaml while the worker's stayed unchanged (#85669).
     """
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-        if home is None:
+        p = params if isinstance(params, dict) else {}
+        if str(p.get("profile") or "").strip():
+            home = _profile_home(p.get("profile"))
+            profile_home = str(home) if home else None
+        else:
+            session = _sessions.get(str(p.get("session_id") or ""))
+            profile_home = session.get("profile_home") if isinstance(session, dict) else None
+        if profile_home is None:
             return handler(rid, params)
-        token = set_hermes_home_override(home)
+        token = set_hermes_home_override(profile_home)
         try:
             return handler(rid, params)
         finally:
