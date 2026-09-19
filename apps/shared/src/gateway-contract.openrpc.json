@@ -21891,6 +21891,18 @@
             "default": null,
             "title": "Voice Context"
           },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
+          },
           "truncate_before_user_ordinal": {
             "anyOf": [
               {

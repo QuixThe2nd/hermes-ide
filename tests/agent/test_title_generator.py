@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from agent.title_generator import (
     MAX_TITLE_INPUT_CHARS,
     build_title_input,
+    derive_title,
     generate_title,
     auto_title_session,
     maybe_auto_title,
@@ -22,32 +23,31 @@ class TestGenerateTitle:
     @pytest.mark.parametrize(
         ("instruction", "paste_preview", "expected_parts"),
         [
-            ("", "Quarterly incident analysis for the database migration", ["Quarterly incident analysis"]),
+            ("@file:/tmp/composer-pastes/pasted_content_1.txt", "Quarterly incident analysis for the database migration",
+             ["Quarterly incident analysis"]),
             ("Analyze this", "Quarterly incident analysis for the database migration", ["Analyze this", "Quarterly incident analysis"]),
             ("Prepare the deployment follow-up", "Quarterly incident analysis", ["Prepare the deployment follow-up", "Quarterly incident analysis"]),
         ],
     )
-    def test_title_input_includes_only_generated_paste_preview(
-        self, instruction, paste_preview, expected_parts
-    ):
-        """Regression for #114124: a generated paste remains an attachment for the turn but informs its title."""
+    def test_generated_paste_preview_reaches_the_shared_title_input(self, instruction, paste_preview, expected_parts):
+        """A Desktop large paste stays an @file attachment for the turn, but its preview informs BOTH title
+        paths (derive_title instant + generate_title model input) through the one shared input."""
         title_input = build_title_input(instruction, paste_preview)
 
         assert all(part in title_input for part in expected_parts)
         assert "@file:" not in title_input
+        # Paste-only opener (just the generated ref): the instant title is the paste's topic, not the path.
+        lead = paste_preview if instruction.startswith("@file:") else instruction
+        assert derive_title(instruction, paste_preview).startswith(lead[:12])
 
-    def test_title_input_keeps_manual_attachment_and_preview_out_of_title_context(self):
-        title_input = build_title_input("Summarize @file:notes.txt", None)
-
-        assert title_input == "Summarize @file:notes.txt"
-        assert "Pasted content:" not in title_input
-
-    def test_title_input_budgets_instruction_and_generated_paste_preview(self):
+    def test_title_input_budget_and_manual_attachments_stay_unread(self):
         title_input = build_title_input("Describe the release plan", "p" * MAX_TITLE_INPUT_CHARS)
 
         assert len(title_input) == MAX_TITLE_INPUT_CHARS
         assert title_input.startswith("Describe the release plan")
         assert title_input.endswith("p" * 20)
+        # No preview => an ordinary manual attachment ref is never read for titling.
+        assert build_title_input("Summarize @file:notes.txt", None) == "Summarize @file:notes.txt"
 
 
 

@@ -47,6 +47,7 @@ RuntimeValidator = Callable[[], bool]
 # Text budget handed to the model (Claude Code / OpenClaw converged on 1000).
 MAX_TITLE_INPUT_CHARS = 1000
 _PASTE_PREVIEW_LABEL = "\n\nPasted content:\n"
+_ATTACHMENT_REF_RE = re.compile(r"@(?:file|folder):\S+")
 # Cap on the instant derived title; a raw fragment reads worse the longer it runs.
 MAX_DERIVED_TITLE_CHARS = 48
 # Answer-shaped guard: a tiny model sometimes answers instead of titling; longer is rejected, not truncated.
@@ -223,7 +224,9 @@ def build_title_input(user_message: str, title_preview: str | None = None) -> st
     preview = title_preview.strip() if isinstance(title_preview, str) else ""
     if not preview:
         return message[:MAX_TITLE_INPUT_CHARS]
-    if not message:
+    # A paste-only opener is just the generated `@file:` ref: the preview IS the topic, so it
+    # leads (derive_title takes the first line, and a file path is not a title).
+    if not _ATTACHMENT_REF_RE.sub("", message).strip():
         return preview[:MAX_TITLE_INPUT_CHARS]
     message_budget = min(len(message), MAX_TITLE_INPUT_CHARS // 2)
     preview_budget = MAX_TITLE_INPUT_CHARS - message_budget - len(_PASTE_PREVIEW_LABEL)
@@ -495,12 +498,18 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
         return _set(deduped)
 
 
-def apply_instant_title(session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None) -> Optional[str]:
-    """Write the derived title inline. Returns it, or None (no usable text, or a ``derived``+ title exists). Never raises."""
+def apply_instant_title(
+    session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None,
+    title_preview: str | None = None,
+) -> Optional[str]:
+    """Write the derived title inline. Returns it, or None (no usable text, or a ``derived``+ title exists). Never raises.
+
+    ``title_preview`` must reach this stage too: the model upgrade's own ``derive_title`` fallback writes
+    ``derived`` provenance, which never replaces the ``derived`` title written here."""
     if not session_db or not session_id:
         return None
     try:
-        title = derive_title(user_message) if is_titleable_user_message(user_message) else None
+        title = derive_title(user_message, title_preview) if is_titleable_user_message(user_message) else None
         persisted = _persist_session_title(session_db, session_id, title, source="derived", dedupe=False) if title else None
         if persisted:
             _notify_title(title_callback, persisted, "derived", "Instant-title")
@@ -644,7 +653,7 @@ def maybe_auto_title(
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
-    apply_instant_title(session_db, session_id, user_message, title_callback)
+    apply_instant_title(session_db, session_id, user_message, title_callback, title_preview=title_preview)
     if not _model_title_upgrade_enabled():
         logger.debug("Instant title persisted; model upgrade disabled by auxiliary.title_generation.model_upgrade_enabled=false")
         return
