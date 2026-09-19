@@ -13399,6 +13399,28 @@ def test_prompt_submit_truncation_signals_busy_instead_of_queueing(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_truncation_refuses_redirect_of_live_turn():
+    """The redirect-capable agent (the Desktop's normal case) is the branch that silently
+    absorbed the edit: `busy_input_mode=interrupt` turned the rewind into a mid-turn
+    redirect and left the un-edited transcript in place."""
+    redirected = []
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True, redirect=lambda text: redirected.append(text) or True)
+    server._sessions["sid"] = _session(agent=agent, running=True, history=[{"role": "user", "content": "original"}])
+
+    try:
+        resp = server.handle_request({
+            "id": "1", "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "edited while thinking", "truncate_before_user_ordinal": 0,
+                       "confirm_truncate": True, "confirm_empty_truncate": True}})
+
+        assert resp.get("error", {}).get("code") == 4009
+        assert redirected == []
+        assert server._sessions["sid"]["history"] == [{"role": "user", "content": "original"}]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
     """If replace_messages fails during edit/regenerate truncate, do not run the turn.
 
