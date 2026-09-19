@@ -6410,10 +6410,19 @@ def _merge_aux_extra_body(
 ) -> Dict[str, Any]:
     """Caller extra_body + profile body/reasoning + generic reasoning fallback + Nous tags."""
     merged_extra = dict(extra_body or {})
+    caller_disabled = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
+    if caller_disabled:
+        # The caller's thinking-off beats ``auxiliary.<task>.reasoning_effort`` (folded into
+        # ``extra_body.reasoning`` by _get_task_extra_body). Dropped BEFORE the profile merge so a
+        # profile that projects disabled reasoning onto its own wire (custom: top-level
+        # ``reasoning_effort=none``) never ships beside a task-level ``reasoning.effort`` — strict
+        # gateways 400 on the contradiction (#114020) — while a profile whose disabled shape IS
+        # ``extra_body.reasoning`` (OpenRouter) still lands it below.
+        merged_extra.pop("reasoning", None)
     merged_extra.update(projection.body)
     merged_extra.update(projection.reasoning_extra)
     if reasoning_config and isinstance(reasoning_config, dict) and not projection.handles_reasoning:
-        if reasoning_config.get("enabled") is False:
+        if caller_disabled:
             merged_extra["reasoning"] = {"enabled": False}
         else:
             # This fallback uses the OpenAI-compatible chat-completions wire. Hermes'
@@ -6436,11 +6445,6 @@ def _merge_aux_extra_body(
     # main turn (cache warmth) — tags alone are not enough on /v1/messages.
             # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
             merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
-    elif reasoning_config and isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
-        # A reasoning-aware profile has already projected disabled reasoning to its own wire
-        # (for example, ``reasoning_effort=none``). Task-level extra_body must not reintroduce
-        # generic OpenAI reasoning alongside that profile-specific control.
-        merged_extra.pop("reasoning", None)
     # Caller/task ``extra_body.reasoning`` (``auxiliary.<task>.reasoning_effort`` folds in here via
     # _get_task_extra_body) takes the same wire clamp: Hermes-only ``ultra`` never reaches the
     # OpenAI-compat wire from any aux task (#112010).
