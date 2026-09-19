@@ -208,6 +208,32 @@ lsp:
   `initializationOptions` payload sent in the `initialize`
   handshake. Server-specific; consult the language server's docs.
 
+### Custom servers
+
+Any `lsp.servers` key that is **not** a built-in server id declares
+your own language server. It needs `command` and `extensions`; the
+other keys are optional. Custom servers are matched *before* the
+built-ins, so they can also take over an extension Hermes already
+handles.
+
+```yaml
+lsp:
+  servers:
+    panache:
+      command: ["panache-lsp", "--stdio"]   # PATH lookup or an absolute/~ path
+      extensions: [".pnch"]                 # or basenames like "Justfile"
+      root_markers: ["panache.toml"]        # nearest dir with one of these; default: workspace root
+      language_id: "panache"                # didOpen languageId; default: derived from the extension
+      description: "Panache markdown"
+      env: { PANACHE_LOG: "warn" }          # same optional keys as built-ins
+      initialization_options: {}
+```
+
+Custom servers are never auto-installed: put the binary on PATH (or
+give an absolute path) and `hermes lsp status` lists it as
+`installed`. A malformed entry is logged and skipped without
+affecting the other servers.
+
 ## Installation locations
 
 When `install_strategy: auto`, Hermes installs binaries into

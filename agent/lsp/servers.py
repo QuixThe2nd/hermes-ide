@@ -75,6 +75,8 @@ class ServerDef:
     # Server handles ``workspace/didChangeWorkspaceFolders``: one process serves every project root
     # (git worktrees included) as extra workspaceFolders instead of one process per root.
     multi_root: bool = False
+    # didOpen languageId; "" = derive from LANGUAGE_BY_EXT (custom servers name theirs in config).
+    language_id: str = ""
 
     def matches(self, file_path: str) -> bool:
         return _file_ext_or_basename(file_path) in self.extensions
@@ -398,14 +400,54 @@ SERVERS: List[ServerDef] = [
 ]
 
 
-def find_server_for_file(file_path: str) -> Optional[ServerDef]:
-    """Return the registry entry that handles ``file_path``, or None."""
-    return next((srv for srv in SERVERS if srv.matches(file_path)), None)
+def find_server_for_file(file_path: str, servers: Optional[Sequence[ServerDef]] = None) -> Optional[ServerDef]:
+    """Return the first entry of ``servers`` (default: the built-in registry) that handles ``file_path``."""
+    return next((srv for srv in (SERVERS if servers is None else servers) if srv.matches(file_path)), None)
 
 
-def language_id_for(path: str) -> str:
-    """Return the LSP languageId to send in didOpen for ``path``."""
+def language_id_for(path: str, srv: Optional[ServerDef] = None) -> str:
+    """Return the LSP languageId to send in didOpen for ``path`` (a custom server's own id wins)."""
+    if srv is not None and srv.language_id:
+        return srv.language_id
     return LANGUAGE_BY_EXT.get(_file_ext_or_basename(path), "plaintext")
 
 
-__all__ = ["ServerDef", "ServerContext", "SpawnSpec", "SERVERS", "find_server_for_file", "language_id_for", "LANGUAGE_BY_EXT"]
+def _custom_spawn(server_id: str, command: Sequence[str]) -> _SpawnFn:
+    """Spawn builder for a config-declared server: ``command[0]`` is a path or a PATH lookup, no auto-install."""
+    def build(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+        bin_path = _which(os.path.expanduser(command[0]))
+        if bin_path is None:
+            _warn_once(f"custom:{server_id}", f"lsp.servers.{server_id}: command {command[0]!r} not found on PATH — server skipped")
+            return None
+        return _make_spec(root, ctx, server_id, [bin_path, *command[1:]])
+    return build
+
+
+def custom_servers(servers_cfg: Any) -> List[ServerDef]:
+    """``lsp.servers`` entries that declare ``extensions`` and name no built-in server are user-declared
+    servers (issue #100257).  They go AHEAD of the built-ins so a custom entry can claim an extension;
+    malformed entries are logged and skipped so one typo never disables the rest of the subsystem."""
+    if not isinstance(servers_cfg, dict):
+        return []
+    builtin = {s.server_id for s in SERVERS}
+    out: List[ServerDef] = []
+    for server_id, cfg in servers_cfg.items():
+        if server_id in builtin or not isinstance(cfg, dict) or "extensions" not in cfg:
+            continue
+        command, exts, markers = cfg.get("command"), cfg.get("extensions"), cfg.get("root_markers")
+        if not (isinstance(command, list) and command and all(isinstance(c, str) and c for c in command)
+                and isinstance(exts, list) and exts and all(isinstance(e, str) and e for e in exts)):
+            logger.warning("lsp.servers.%s: custom server needs command: [bin, ...args] and extensions: [.ext, ...] — ignored", server_id)
+            continue
+        out.append(ServerDef(
+            str(server_id), tuple(e.lower() if e.startswith(".") else e for e in exts),
+            _markers_root([str(m) for m in markers] if isinstance(markers, list) and markers else None),
+            _custom_spawn(str(server_id), command),
+            description=str(cfg.get("description") or f"{server_id} — custom (lsp.servers)"),
+            language_id=str(cfg.get("language_id") or ""),
+        ))
+    return out
+
+
+__all__ = ["ServerDef", "ServerContext", "SpawnSpec", "SERVERS", "custom_servers", "find_server_for_file",
+           "language_id_for", "LANGUAGE_BY_EXT"]

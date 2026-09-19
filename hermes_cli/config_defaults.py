@@ -2440,6 +2440,9 @@ DEFAULT_CONFIG = {
         # Per-server overrides keyed by registry server_id (pyright, gopls...): disabled: true;
         # command: ["path/to/server", "--stdio"] (bypasses auto- install); env: {...};
         # initialization_options: {...} (merged into LSP initializationOptions).
+        # A key that is NOT a built-in id declares a custom server (matched before the built-ins):
+        # command: ["my-ls", "--stdio"]; extensions: [".ext"]; optional root_markers: [...],
+        # language_id: "..." (didOpen languageId), description: "...". Manual install only.
         "servers": {},
     },
     # X (Twitter) Search via xAI's x_search Responses tool. Registers when xAI creds exist
