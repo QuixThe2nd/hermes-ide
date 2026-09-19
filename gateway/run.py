@@ -34741,7 +34741,8 @@ class GatewayRunner(
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None), adapter_profile=adapter_profile)
+                parent_chat_id=getattr(source, "parent_chat_id", None),
+                adapter_profile=adapter_profile, user_id=source.user_id)
         except Exception:
             logger.warning(
                 "Profile route matching failed for %s/%s, falling back to default",
@@ -34768,9 +34769,9 @@ class GatewayRunner(
                 raise ProfileRouteRejected(matched.name)
             return matched.profile
         logger.debug(
-            "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
+            "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s user_id=%s",
             source.platform.value, source.chat_id,
-            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),
+            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None), source.user_id,
         )
         return None
 
