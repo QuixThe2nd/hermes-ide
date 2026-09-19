@@ -3060,7 +3060,7 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     from hermes_cli.profiles import get_active_profile_name, get_profile_dir
 
     homes = _multiplex_profile_homes(config)
-    active = get_active_profile_name() or "default"
+    active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
     if any(name == active for name, _home in homes):
         return homes
     try:
@@ -11052,9 +11052,14 @@ class GatewayRunner(
         config = getattr(self, "config", None)
         # Mirror SessionStore._resolve_profile_for_key so this fallback path
         # produces the same namespace as the primary path: None (legacy
-        # agent:main) unless multiplexing is on, then the active profile.
+        # agent:main) unless multiplexing is on, then the pinned identity's
+        # runtime profile, the source stamp, or the active profile.
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
         _profile = None
-        if getattr(config, "multiplex_profiles", False):
+        if identity is not None:
+            _profile = identity.session_key_profile
+        elif getattr(config, "multiplex_profiles", False):
             if source.profile:
                 _profile = source.profile
             else:
@@ -17373,7 +17378,7 @@ class GatewayRunner(
             if self._is_session_running(entry.session_key):
                 continue
 
-            source = entry.origin
+            source = self._restored_source(entry)
             adapter = self._adapter_for_source(source)
             if adapter is None:
                 logger.debug(
@@ -21118,7 +21123,7 @@ class GatewayRunner(
         except Exception:
             return 0
 
-        active = get_active_profile_name() or "default"
+        active = get_active_profile_name() or "default"  # launch profile, pre-identity (adapter boot)
         connected = 0
         # Resource claim -> profile that owns it. Credential claims prevent two
         # profiles polling the same account; listener claims prevent sidecars
@@ -25241,7 +25246,8 @@ class GatewayRunner(
         if not getattr(self, "_running", False) or getattr(self, "_draining", False):
             return False
 
-        source = dataclasses.replace(entry.origin)
+        from gateway.session_identity import replace_source
+        source = replace_source(self._restored_source(entry))
         try:
             if not self._is_user_authorized(
                 source,
@@ -32430,7 +32436,7 @@ class GatewayRunner(
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                    return self._restored_source(entry)
             except Exception as exc:
                 logger.debug(
                     "Synthetic process-event session-store lookup failed for %s: %s",

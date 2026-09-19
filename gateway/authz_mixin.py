@@ -284,6 +284,11 @@ class GatewayAuthorizationMixin:
             return self._primary_adapters().get(platform) if platform else None
         return None
 
+    def _adapter_for_source(self, source: Optional[SessionSource]):
+        """Compat alias for :meth:`_delivery_adapter_for` (pre-rename name). Upstream keeps it for
+        tests written against the old seam; the fork's ``run.py`` monolith still calls it."""
+        return self._delivery_adapter_for(source)
+
     def _delivery_adapter_for(self, source: Optional[SessionSource]):
         """The adapter that ANSWERS *source*: sends, edits, typing, progress, pickers, pending slots.
 
@@ -328,18 +333,13 @@ class GatewayAuthorizationMixin:
         return (adapter, profile) if registered else None
 
     def _authorization_home_for_source(self, source: SessionSource):
-        """HERMES_HOME whose allowlist admits *source*: the identity's transport home (or the
-        ingress-stamped one), else the home of the profile owning the adapter that delivers it.
-        ``None`` = authorize in the ambient scope (multiplex off, or no live adapter — the check then
-        fails closed on its own).
+        """HERMES_HOME whose allowlist admits *source*: the ingress-stamped transport home, else the home of
+        the profile owning the adapter that delivers it. ``None`` = authorize in the ambient scope
+        (multiplex off, or no live adapter — the check then fails closed on its own).
 
         Inside a routed satellite's turn the ambient scope is the satellite's, whose ``.env`` has no
         token/allowlist; every authorization decision made mid-turn (``/topic``, sibling ``/stop``, plugin
         injection, voice, auto-resume) must read the admitting bot's allowlist instead."""
-        from gateway.session_identity import identity_of
-        identity = identity_of(source)
-        if identity is not None:
-            return identity.authorization_home if identity.multiplexed else None
         stamped = getattr(source, "_authorization_profile_home", None)
         if stamped is not None:
             return Path(stamped)
@@ -445,6 +445,132 @@ class GatewayAuthorizationMixin:
         profile = getattr(source, "profile", None)
         return per_profile[profile] if profile and profile in per_profile else getattr(self, "pairing_store", None)
 
+    def _config_describes_profile(self, profile: Optional[str]) -> bool:
+        """Whether ``self.config`` is the config of *profile*.
+
+        ``self.config`` is loaded from the launching profile's home. That is
+        the default profile in a multiplex gateway, or the named profile of a
+        ``hermes -p <name>`` launch — in both cases it describes exactly the
+        active profile. Any OTHER named secondary profile has its own config
+        this runner never loaded, so reads for it must not fall back here.
+        """
+        profile_name = (profile or "").strip()
+        if not profile_name or profile_name == "default":
+            return True
+        active_profile = None
+        active_profile_fn = getattr(self, "_active_profile_name", None)
+        if callable(active_profile_fn):
+            try:
+                active_profile = active_profile_fn()
+            except Exception:
+                active_profile = None
+        return profile_name == active_profile
+
+    def _whatsapp_mission_only_dms(
+        self,
+        platform: Optional[Platform],
+        *,
+        profile: Optional[str] = None,
+    ) -> bool:
+        """Whether *platform* opted into mission-only WhatsApp DMs.
+
+        Reads ``platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms``.
+        Off unless explicitly configured true, so allowlist-only installs keep
+        their exact current policy. Prefers the live adapter's ``config.extra``
+        (profile-scoped under multiplex) and treats it as AUTHORITATIVE: an
+        adapter that carries an ``extra`` dict has its own profile's config, so
+        a key absent there means off — falling through to ``self.config`` (the
+        DEFAULT profile's config) would gate profile B by profile A's flag,
+        the same cross-profile leak ``_platform_gate_env`` closes (#72348).
+        The gateway-config fallback serves bare runners built without a live
+        adapter, and only when the resolved profile is one ``self.config``
+        actually describes — the default profile, or the active profile of a
+        single-profile launch. A named secondary profile that is not the
+        active one owns a config this runner never loaded, so its flag stays
+        off rather than being inherited. Same resolution order as
+        ``_adapter_dm_policy``.
+        """
+        if platform not in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            return False
+        adapter = self._authorization_adapter(platform, profile)
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+        candidates = [extra] if isinstance(extra, dict) else []
+        if self._config_describes_profile(profile):
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                candidates.append(extra)
+        for extra in candidates:
+            value = extra.get("mission_only_dms")
+            if value is True:
+                return True
+            if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}:
+                return True
+        return False
+
+    def _whatsapp_mission_only_dm_denied(self, source: "SessionSource") -> bool:
+        """Whether the mission-only WhatsApp opt-in denies *source*'s chat.
+
+        Single source of truth for the mission-only gate, shared by the
+        authorization decision (``_is_user_authorized``) and the
+        unauthorized-DM handling in ``GatewayRunner._handle_message``: the
+        two must agree, or the handler would answer the denial with a
+        pairing code — an unsolicited reply to a sender the operator
+        explicitly fenced off. True only when the platform opted into
+        ``mission_only_dms`` AND no active mission is bound to the chat;
+        an absent or false flag keeps the legacy pairing handshake exactly
+        as-is.
+        """
+        platform = getattr(source, "platform", None)
+        if platform not in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            return False
+        if not self._whatsapp_mission_only_dms(
+            platform,
+            profile=self._adapter_profile_for_source(source),
+        ):
+            return False
+        return not self._source_has_active_mission(source)
+
+    def _source_has_active_mission(self, source: "SessionSource") -> bool:
+        """Whether an active assistant-mission is bound to *source*'s chat.
+
+        Consults ``plugins.missions.find_active_mission_for_chat`` with every
+        identifier the source carries (chat_id / user_id and their ``_alt``
+        forms); the mission store canonicalizes WhatsApp phone/JID/LID forms
+        itself, so no extra normalization happens here. Any lookup miss —
+        plugin absent, store unreadable, no mission bound — counts as "no
+        active mission" so the mission-only gate stays fail-closed.
+        """
+        try:
+            from plugins.missions import find_active_mission_for_chat
+        except Exception:
+            return False
+        # ``getattr`` guards bare test sources built via SimpleNamespace that
+        # omit the ``_alt`` fields (see AGENTS.md pitfall #17).
+        identifiers = (
+            getattr(source, "chat_id", None),
+            getattr(source, "user_id", None),
+            getattr(source, "chat_id_alt", None),
+            getattr(source, "user_id_alt", None),
+        )
+        seen: set[str] = set()
+        for identifier in identifiers:
+            identifier = str(identifier or "").strip()
+            if not identifier or identifier in seen:
+                continue
+            seen.add(identifier)
+            try:
+                if find_active_mission_for_chat(identifier):
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _adapter_extra_for_source(self, source) -> dict:
         return _adapter_config_extra(self._delivery_adapter_for(source))
 
@@ -530,6 +656,27 @@ class GatewayAuthorizationMixin:
             or self._adapter_flag(source.platform, "authorization_is_upstream", adapter_profile)
         ):
             return True
+        # Fork (missions plugin): goal-bound group-mission grant, upstream of the chat-scoped
+        # allowlists below (companion of ``_whatsapp_mission_only_dm_denied``).
+        # Goal-bound group missions (missions plugin): an active mission on
+        # this EXACT WhatsApp group chat admits it — by the group chat id
+        # only, never a participant's user_id — even when the configured
+        # group policy is disabled or excludes the group. WhatsApp intake
+        # already admitted the group (whatsapp_common._is_group_allowed);
+        # this is the matching gateway-side admission so the message reaches
+        # the assistant instead of dying at the no-allowlist default-deny
+        # below. Closing the mission removes admission immediately (the
+        # mission store is read live — no gateway restart). Fail closed when
+        # the plugin is absent or errors.
+        if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
+            if source.chat_type in {"group", "forum", "channel"} and source.chat_id:
+                try:
+                    from plugins.missions import find_active_group_mission
+
+                    if find_active_group_mission(str(source.chat_id)):
+                        return True
+                except Exception:
+                    pass
         # Chat-scoped group allowlists must work with ``user_id is None`` (anonymous admins,
         # sender_chat posts, channel broadcasts).
         if is_group and source.chat_id:
@@ -542,6 +689,41 @@ class GatewayAuthorizationMixin:
                 adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
                 if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
                     return True
+        # WhatsApp observe-unmentioned group sessions key on the group chat
+        # with a shared source (user_id=None), exactly like Telegram's
+        # observe mode. WhatsApp has no group_allowed_chats env var — its
+        # group allowlist is ``group_allow_from`` (``@g.us`` JIDs), honored
+        # by adapter intake (_is_group_allowed) and bridged from
+        # ``platforms.whatsapp.extra.group_allow_from``. Admit an allowlisted
+        # group chat by chat id so those user-less shared sources pass
+        # authorization; DMs never carry chat_type="group" and stay on the
+        # per-user allowlist/pairing path below.
+        if (
+            source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}
+            and source.chat_type in {"group", "forum", "channel"}
+            and source.chat_id
+        ):
+            try:
+                adapter = self._delivery_adapter_for(source)
+                if adapter is not None:
+                    extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+                    group_allow_from = extra.get("group_allow_from") or extra.get("groupAllowFrom")
+                    if not group_allow_from:
+                        # Parsed set[str] when the adapter seeded it in __init__.
+                        group_allow_from = getattr(adapter, "_group_allow_from", None)
+                    if group_allow_from:
+                        # ``_coerce_allow_set`` only understands list/str, not
+                        # the adapter's live set — normalize both shapes here.
+                        if isinstance(group_allow_from, (set, frozenset, tuple)):
+                            allowed_groups = {
+                                str(part).strip() for part in group_allow_from if str(part).strip()
+                            }
+                        else:
+                            allowed_groups = _coerce_allow_set(group_allow_from)
+                        if "*" in allowed_groups or source.chat_id in allowed_groups:
+                            return True
+            except Exception:
+                pass
         # Bots admitted by {PLATFORM}_ALLOW_BOTS (scoped env → the routed adapter's YAML ``allow_bots`` →
         # none) bypass the human allowlist (Slack Workflow Builder posts arrive with user=None). The YAML
         # rung is what a secondary profile has: its config is never bridged into the process env.
@@ -623,7 +805,24 @@ class GatewayAuthorizationMixin:
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
 
+        from gateway.run import logger  # fork: the mission-contact authz block below logs via gateway.run
+
         adapter_profile = self._adapter_profile_for_source(source)
+        # Mission-only WhatsApp DMs (opt-in, default off): when
+        # ``platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms`` is
+        # true, WhatsApp senders are authorized ONLY while an assistant-mission
+        # is bound to their chat. Runs before the allowlist / pairing /
+        # allow-all checks below so none of them can override it — otherwise a
+        # contact listed on WHATSAPP_ALLOWED_USERS keeps getting answered by
+        # the default profile after their mission closes, which is exactly
+        # what the operator opted out of. Fail-closed: no missions plugin or
+        # no matching mission means deny. The shared gate
+        # (_whatsapp_mission_only_dm_denied) is also what the unauthorized-DM
+        # handler consults, so the denial and its (silent) handling cannot
+        # diverge.
+        if self._whatsapp_mission_only_dm_denied(source):
+            return False
+
         is_group = source.chat_type in _GROUP_CHAT_TYPES
         is_group_or_forum = source.chat_type in _GROUP_FORUM_TYPES
         if self._chat_scoped_grant(source, adapter_profile, is_group, allow_adapter_delegation):
@@ -646,9 +845,70 @@ class GatewayAuthorizationMixin:
             return True
         # Pairing store: a first-class grant created only by an operator approving a code. Honored as
         # a UNION with the allowlist (approval also mirrors into it).
+        platform_name = source.platform.value if source.platform else ""
         pairing_store = self._pairing_store_for(source)
-        if pairing_store is not None and pairing_store.is_approved(source.platform.value if source.platform else "", user_id):
+        if pairing_store is not None and pairing_store.is_approved(platform_name, user_id):
             return True
+
+        # Never-routed inbound DMs have no source.profile, so the pairing
+        # check above used the global store and missed the serving-profile
+        # approval written at mission dispatch. Honor an active mission
+        # bound to this DM before allowlist default-deny. Groups unchanged.
+        chat_type = getattr(source, "chat_type", None)
+        if chat_type in (None, "", "dm"):
+            try:
+                from plugins.missions import find_active_mission_for_chat
+            except Exception:
+                logger.debug("mission contact authz: plugin unavailable", exc_info=True)
+            else:
+                identifiers = []
+                uid = str(getattr(source, "user_id", None) or "").strip()
+                if uid:
+                    identifiers.append(uid)
+                cid = str(getattr(source, "chat_id", None) or "").strip()
+                if cid and cid != uid:
+                    identifiers.append(cid)
+                for identifier in identifiers:
+                    try:
+                        mission = find_active_mission_for_chat(identifier)
+                    except Exception:
+                        # Fail closed: any store error aborts the whole grant,
+                        # so a broken user_id lookup cannot authorize via a
+                        # later chat_id hit. Falling through skips only this
+                        # grant — the normal deny paths below still run.
+                        logger.debug(
+                            "mission contact authz: lookup failed for %s",
+                            identifier,
+                            exc_info=True,
+                        )
+                        break
+                    if not mission:
+                        continue
+                    if str(mission.get("platform") or "") == platform_name:
+                        return True
+
+        # Discord guild allowlist: DISCORD_ALLOWED_GUILDS admits every member
+        # of a listed server for guild traffic without enumerating users,
+        # roles, or channels. Read through ``_auth_env`` so a multiplexed
+        # profile consults its own scoped value, never another profile's
+        # first-writer process-env bridge (issue #72348). Evaluated before
+        # the per-user platform allowlist so a guild grant bypasses it for
+        # listed servers only; unset/empty changes nothing below. DM traffic
+        # never carries a guild_id, so it is untouched by this gate. Threads
+        # count as guild traffic too: the adapter stamps them
+        # chat_type="thread" but they carry guild_id like channels do.
+        if source.platform == Platform.DISCORD and source.chat_type in {
+            "group", "forum", "channel", "thread",
+        }:
+            source_guild_id = getattr(source, "guild_id", None)
+            if source_guild_id:
+                allowed_guilds = _coerce_allow_set(
+                    _auth_env("DISCORD_ALLOWED_GUILDS")
+                )
+                if allowed_guilds and (
+                    "*" in allowed_guilds or source_guild_id in allowed_guilds
+                ):
+                    return True
 
         platform_allowlist = _auth_env(platform_allow_env)
         group_user_allowlist = _auth_env(_GROUP_USER_ENV.get(source.platform, "")) if is_group_or_forum else ""

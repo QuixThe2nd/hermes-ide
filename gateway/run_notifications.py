@@ -758,40 +758,40 @@ class GatewayNotificationsMixin:
         finally:
             notify_path.unlink(missing_ok=True)
 
-    def _home_channel_transports(self):
-        """Yield ``(platform, platform_cfg, home, transport)`` for every home channel with a live transport."""
+    def _notification_channel_transports(self):
+        """Yield ``(platform, platform_cfg, channel, transport)`` for every notification channel with a live transport."""
         from gateway.delivery import resolve_delivery_transport
         for platform, platform_cfg in self.config.platforms.items():
-            home = platform_cfg.home_channel
-            if not home or not home.chat_id:
+            channel = platform_cfg.notification_channel
+            if not channel or not channel.chat_id:
                 continue
             transport = resolve_delivery_transport(platform, self.config, self.adapters)
             if transport is None:
                 continue
-            yield platform, platform_cfg, home, transport
+            yield platform, platform_cfg, channel, transport
 
-    async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
-        """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
+    async def _send_notification_channel_message(self, platform, channel, transport, message: str, failure_fmt: str) -> bool:
+        """Best-effort send to one notification channel; True on success, failures logged with ``failure_fmt``."""
         from gateway.run import _non_conversational_metadata
         try:
-            metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)
+            metadata = self._thread_metadata_for_target(platform, channel.chat_id, channel.thread_id, adapter=transport.adapter)
             if transport.is_relay:
                 metadata = dict(metadata or {})
-                if home.user_id:
-                    metadata["user_id"] = home.user_id
-                if home.scope_id:
-                    metadata["scope_id"] = home.scope_id
+                if channel.user_id:
+                    metadata["user_id"] = channel.user_id
+                if channel.scope_id:
+                    metadata["scope_id"] = channel.scope_id
             send_metadata = _non_conversational_metadata(metadata, platform=platform)
             if send_metadata is not None or transport.is_relay:
-                result = await transport.send(platform, str(home.chat_id), message, metadata=send_metadata)
+                result = await transport.send(platform, str(channel.chat_id), message, metadata=send_metadata)
             else:
-                result = await transport.adapter.send(str(home.chat_id), message)
+                result = await transport.adapter.send(str(channel.chat_id), message)
             if _send_failed(result):
-                logger.warning(failure_fmt, platform.value, home.chat_id, _send_error(result))
+                logger.warning(failure_fmt, platform.value, channel.chat_id, _send_error(result))
                 return False
             return True
         except Exception as exc:
-            logger.warning(failure_fmt, platform.value, home.chat_id, exc)
+            logger.warning(failure_fmt, platform.value, channel.chat_id, exc)
             return False
 
     def _free_tier_startup_line(self) -> Optional[str]:
@@ -816,7 +816,7 @@ class GatewayNotificationsMixin:
 
     _planned_restart_notice_lock: Optional[asyncio.Lock] = None
 
-    async def _replay_pending_planned_restart_notification(self) -> None:
+    async def _replay_pending_planned_restart_notification(self) -> set[tuple[str, str, Optional[str]]]:
         """Send the planned-restart online notice to every home channel still owed one; clear
         ``.restart_pending.json`` only once all of them were reached.
 
@@ -825,6 +825,8 @@ class GatewayNotificationsMixin:
         targets are recorded in the marker so neither a later replay nor the next process (if this
         one restarts first) notifies a home twice. The lock serializes a boot pass that outlived the
         restore gate against a concurrent reconnect replay.
+
+        Returns the set of targets the boot notice reached (for comeback dedup).
         """
         from gateway.run import _planned_restart_notification_path
         from utils import atomic_json_write
@@ -838,29 +840,46 @@ class GatewayNotificationsMixin:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
-                # Owed targets come from config, not live transports: a removed home or an opt-out
-                # (gateway_restart_notification=false) must not keep the marker alive forever.
+                # Resolve obligations from configuration, never from the currently live transports.
+                # Removed homes and explicit notification opt-outs no longer owe a notice.
                 owed = {
-                    _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
+                    _notice_target_key(platform.value, cfg.notification_channel.chat_id, cfg.notification_channel.thread_id)
                     for platform, cfg in self.config.platforms.items()
-                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
+                    if cfg.notification_channel and cfg.notification_channel.chat_id and cfg.gateway_restart_notification
                 }
-                delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
+
+                pending = set(owed) - delivered
+
+                def _checkpoint(target):
+                    delivered.add(target)
+                    pending.discard(target)
+                    data["delivered_targets"] = [list(t) for t in delivered]
+                    data["pending_targets"] = [list(t) for t in pending]
+                    atomic_json_write(path, data, indent=None)
+
+                delivered |= await self._send_notification_channel_startup_notifications(
+                    skip_targets=delivered, on_delivered=_checkpoint,
+                )
                 if owed <= delivered:
                     path.unlink(missing_ok=True)
-                    return
-                data["delivered_targets"] = [list(target) for target in delivered]
-                atomic_json_write(path, data, indent=None)
+                else:
+                    data["delivered_targets"] = [list(t) for t in delivered]
+                    data["pending_targets"] = [list(t) for t in pending]
+                    atomic_json_write(path, data, indent=None)
+                return delivered
             except Exception:
                 logger.warning("Planned-restart notification remains pending", exc_info=True)
+                return set()
 
-    async def _send_home_channel_startup_notifications(
-        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
+    async def _send_notification_channel_startup_notifications(
+        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        on_delivered: Optional[Callable[[tuple[str, str, Optional[str]]], None]] = None,
     ) -> set[tuple[str, str, Optional[str]]]:
-        """Notify configured home channels that the gateway is back online.
+        """Notify configured notification channels that the gateway is back online.
 
-        Best-effort, once per connected platform home channel. ``skip_targets`` lets startup avoid
+        Best-effort, once per configured notification channel. ``skip_targets`` lets startup avoid
         duplicate messages when a more specific restart notification is queued for the same chat.
+        ``on_delivered`` persists each acknowledgment before attempting the next transport.
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
@@ -868,25 +887,34 @@ class GatewayNotificationsMixin:
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"
-        for platform, platform_cfg, home, transport in self._home_channel_transports():
+        any_channel = any(
+            (cfg.notification_channel and cfg.notification_channel.chat_id)
+            for cfg in self.config.platforms.values()
+        )
+        if not any_channel:
+            logger.info("Gateway online: no notification channel configured — skipping startup broadcast")
+        for platform, platform_cfg, channel, transport in self._notification_channel_transports():
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
-                    "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
+                    "Startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,
                 )
                 continue
-            target = _notice_target_key(platform.value, home.chat_id, home.thread_id)
+            target = _notice_target_key(platform.value, channel.chat_id, channel.thread_id)
             if target in skipped or target in delivered:
                 continue
-            if await self._send_home_channel_message(
-                platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
+            if await self._send_notification_channel_message(
+                platform, channel, transport, message, "Notification-channel startup notification failed for %s:%s: %s",
             ):
                 delivered.add(target)
-                logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
+                if on_delivered is not None:
+                    on_delivered(target)
+                logger.info("Sent notification-channel startup notification to %s:%s", platform.value, channel.chat_id)
         return delivered
 
+
     async def _send_session_db_warning_notifications(self) -> None:
-        """Broadcast a state.db failure warning to all home channels.
+        """Broadcast a state.db failure warning to all notification channels.
 
         When SessionDB init fails at gateway startup, messages may flow but nothing is persisted
         — /resume, /history, and session_search all silently break. Best-effort: failures are
@@ -948,12 +976,12 @@ class GatewayNotificationsMixin:
                 f"empty. Cause: {failure.gloss}. Run `hermes {profile_arg}doctor --fix` on the "
                 f"gateway machine, then `hermes {profile_arg}gateway restart`."
             )
-        logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
+        logger.warning("Broadcasting state.db failure warning to notification channels: %s", error)
         from gateway.warning_notifications import present_notification
-        for platform, _platform_cfg, home, transport in self._home_channel_transports():
+        for platform, _platform_cfg, channel, transport in self._notification_channel_transports():
             await present_notification(
-                lambda: self._send_home_channel_message(
-                    platform, home, transport, message, "state.db warning notification failed for %s:%s: %s"),
+                lambda: self._send_notification_channel_message(
+                    platform, channel, transport, message, "state.db warning notification failed for %s:%s: %s"),
                 platform=platform)
 
     def _build_process_event_source(self, evt: dict):

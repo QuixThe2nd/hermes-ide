@@ -124,7 +124,7 @@ class GatewayInboundMixin:
 
     async def _hm_send_unauthorized_decline(self, source: SessionSource) -> None:
         """``decline`` behavior: one short refusal per sender per DECLINE_DEDUPE_SECONDS, then silence
-        (#88028). The stamp is written BEFORE the send so a delivery
+        (port of qwibitai/nanoclaw#3260, #88028). The stamp is written BEFORE the send so a delivery
         hiccup cannot become a decline storm; without a store there is no dedupe state → stay silent."""
         from gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
         platform_name = source.platform.value if source.platform else "unknown"
@@ -1250,8 +1250,9 @@ class GatewayInboundMixin:
             if _rescued is None:
                 return event, source, is_internal
             # Into the slot when the chain was a single orphan (post-turn drain picks it up),
-            # otherwise into overflow behind the already-staged next orphan.
-            self._enqueue_fifo(_quick_key, event, _orphan_adapter)
+            # otherwise into overflow behind the already-staged next orphan. A re-delivered
+            # copy of the rescued (or any queued) message id is dropped, never parked twice.
+            self._rescue_park_incoming_event(_quick_key, event, _orphan_adapter, _rescued)
             # Same session key by construction; carry the orphan's own source so reply anchors /
             # thread metadata point at the message actually being answered.
             _rescued_source = getattr(_rescued, "source", None)
