@@ -763,6 +763,7 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
 
 _VERTEX_NAMES = ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai")
 _LOCAL_BYPASS_CLOUD_HOSTS = ("openrouter.ai", "anthropic.com", "openai.com")
+_LOCAL_ENDPOINT_ALIASES = frozenset({"ollama", "vllm"})
 
 
 def _raise_if_provider_disabled(requested_provider: str) -> None:
@@ -774,6 +775,32 @@ def _raise_if_provider_disabled(requested_provider: str) -> None:
     if isinstance(block, dict) and not _config_mod.is_provider_enabled(block):
         raise ValueError(f"provider {requested_provider!r} is disabled in config "
                          f"(providers.{requested_provider}.enabled: false)")
+
+
+def _raise_if_local_alias_missing_endpoint(requested_provider: str, explicit_base_url: Optional[str]) -> None:
+    """Fail local aliases before the OpenRouter fallback when no endpoint was selected.
+
+    ``ollama`` and ``vllm`` are aliases for the OpenAI-compatible custom
+    provider. Without an endpoint, their old path continued through the
+    generic resolver and could spend an unrelated cloud credential at
+    OpenRouter. A named custom entry, ``model.base_url``, and explicit endpoint
+    inputs remain valid ways to provide that endpoint.
+    """
+    if requested_provider not in _LOCAL_ENDPOINT_ALIASES:
+        return
+    if str(explicit_base_url or "").strip() or get_secret_str("CUSTOM_BASE_URL", "").strip():
+        return
+    model_cfg = _get_model_config()
+    cfg_base_url = str(model_cfg.get("base_url") or "").strip()
+    if _config_base_url_trustworthy_for_bare_custom(cfg_base_url, _cfg_provider(model_cfg)):
+        return
+    if _get_named_custom_provider(requested_provider) is not None:
+        return
+    raise AuthError(
+        f"Local provider '{requested_provider}' needs a base_url. Configure model.base_url or select a configured provider endpoint.",
+        provider=requested_provider,
+        code="missing_base_url",
+    )
 
 
 def _resolve_vertex_runtime(requested_provider: str) -> Dict[str, Any]:
@@ -855,6 +882,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
+    _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
     return runtime
