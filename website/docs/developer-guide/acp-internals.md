@@ -125,6 +125,13 @@ prompt(..., session_id)
   -> emit final agent message chunk
 ```
 
+A turn that ends in a terminal failure (provider refusal, non-retryable error, exhausted
+retries, interrupt before any reply) is closed by the core loop with a Hermes-authored
+assistant row ("Your request was not processed…" / "This turn did not complete…") so the
+durable transcript never ends on an open `user` row. Without it the next prompt would be
+merged into the failed request and replayed. Context-overflow failures are exempt: their
+repair is session rotation, not another row.
+
 ### Cancelation
 
 `cancel(session_id)`:
