@@ -10,6 +10,7 @@ it), and ``ContentModified`` (-32801) errors are retried with exponential backof
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -33,7 +34,7 @@ DIAGNOSTICS_DOCUMENT_WAIT = 5.0
 DIAGNOSTICS_FULL_WAIT = 10.0
 DIAGNOSTICS_REQUEST_TIMEOUT = 3.0
 PUSH_DEBOUNCE = 0.15
-SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
+SHUTDOWN_GRACE = 1.0  # seconds after `exit` before SIGTERM, and between SIGTERM and SIGKILL
 # Retry policy for transient ContentModified errors: 0.5, 1.0, 2.0s.
 MAX_CONTENT_MODIFIED_RETRIES = 3
 RETRY_BASE_DELAY = 0.5
@@ -309,7 +310,8 @@ class LSPClient:
             await self._send_notification("workspace/didChangeConfiguration", {"settings": self._init_options})
 
     async def shutdown(self) -> None:
-        """Best-effort graceful shutdown: ``shutdown`` + ``exit``, then SIGTERM/SIGKILL.  Idempotent."""
+        """Best-effort graceful shutdown: ``shutdown`` + ``exit``, wait ``SHUTDOWN_GRACE`` for the
+        server to honour ``exit``, then SIGTERM/SIGKILL.  Idempotent."""
         if self._stopping:
             return
         self._stopping = True
@@ -323,6 +325,11 @@ class LSPClient:
                     await self._send_notification("exit", None)
                 except Exception:  # noqa: BLE001
                     pass
+                # Signalling right after ``exit`` races the server's own exit: needless SIGTERM
+                # noise for well-behaved servers and, on Darwin, a reaped-and-reused PID target.
+                if (proc := self._proc) is not None and proc.returncode is None:
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
         finally:
             self._state = "stopped"
             await self._cleanup_process()

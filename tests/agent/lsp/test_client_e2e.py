@@ -36,7 +36,7 @@ def _client(workspace: Path, script: str = "clean") -> LSPClient:
 async def test_client_lifecycle_clean(tmp_path: Path):
     """Full lifecycle: spawn, initialize, open, get clean diagnostics, shutdown."""
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, "clean")
     await client.start()
@@ -55,7 +55,7 @@ async def test_client_lifecycle_clean(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_client_receives_published_errors(tmp_path: Path):
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, "errors")
     await client.start()
@@ -98,7 +98,7 @@ async def test_reader_failure_retires_client_and_rejects_later_work(
     tmp_path: Path, script: str
 ):
     f = tmp_path / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     client = _client(tmp_path, script)
     await client.start()
@@ -124,3 +124,22 @@ async def test_reader_failure_retires_client_and_rejects_later_work(
             )
     finally:
         await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_never_signals_a_server_that_honours_exit(tmp_path: Path):
+    """A server that exits on the protocol ``exit`` must not be SIGTERMed on top of it (#72944:
+    on Darwin the reaped PID can already belong to another process)."""
+    client = _client(tmp_path, "clean")
+    await client.start()
+    proc = client._proc
+    assert proc is not None
+    signals: list[str] = []
+    real_terminate, real_kill = proc.terminate, proc.kill
+    proc.terminate = lambda: (signals.append("terminate"), real_terminate())  # type: ignore[method-assign]
+    proc.kill = lambda: (signals.append("kill"), real_kill())  # type: ignore[method-assign]
+
+    await client.shutdown()
+
+    assert signals == []
+    assert proc.returncode == 0

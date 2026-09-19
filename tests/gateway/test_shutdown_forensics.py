@@ -127,13 +127,17 @@ class TestArgvFreePersistence:
 # ---------------------------------------------------------------------------
 
 class TestSpawnAsyncDiagnostic:
-    # The diagnostic wraps its script in GNU coreutils ``timeout`` and the script
-    # body is Linux-only (``ps -eo ... comm``, ``/proc/loadavg``, ``dmesg``,
-    # ``pstree``). On hosts without ``timeout`` (macOS) Popen raises and the
-    # producer returns None by design (fail-soft), so the spawn can only be
-    # observed on Linux.
     @pytest.mark.linux_only
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
+        self._assert_diagnostic_written(tmp_path)
+
+    @pytest.mark.macos_only
+    def test_spawns_without_gnu_timeout_on_macos(self, tmp_path):
+        """Stock macOS has no ``timeout`` binary and BSD ``ps``; the diagnostic still lands."""
+        self._assert_diagnostic_written(tmp_path)
+
+    @staticmethod
+    def _assert_diagnostic_written(tmp_path):
         log_path = tmp_path / "diag.log"
         pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)
         assert pid is not None and pid > 0
