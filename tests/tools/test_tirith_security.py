@@ -677,43 +677,35 @@ class TestAppTldSuppression:
 
 
 class TestEmojiVariationSelectorSuppression:
-    """Emoji presentation selectors must not require terminal approval."""
+    """VS16 after an emoji-capable base is presentation, not obfuscation: no approval prompt."""
+
+    _VS = [{"rule_id": "variation_selector", "severity": "medium"}]
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
     def test_emoji_only_variation_selector_warn_is_downgraded(self, mock_cfg, mock_run):
         mock_cfg.return_value = _CFG
-        findings = [{"rule_id": "variation_selector", "severity": "medium"}]
-        mock_run.return_value = _mock_run(2, _json_stdout(findings, "variation selector"))
+        mock_run.return_value = _mock_run(2, _json_stdout(self._VS, "variation selector"))
 
-        result = check_command_security('ls "🗞️ Journal/"')
+        # SMP emoji, Dingbats/Misc Symbols, and BMP singletons outside those blocks (ℹ ▶).
+        result = check_command_security('ls "🗞️ Journal/" "✅️ Projects/" "ℹ️ Info/" "▶️ Media/"')
 
         assert result == {"action": "allow", "findings": [], "summary": ""}
 
-    @pytest.mark.parametrize("command", ["printf 'a️'", "printf '0️'", "printf 'x󠄀'"])
+    @pytest.mark.parametrize("command, findings", [
+        ("printf 'a️'", _VS),            # VS16 after a letter
+        ("printf '0️'", _VS),            # VS16 after a digit (keycap base)
+        ("printf 'x󠄀'", _VS),        # a non-VS16 selector
+        ('curl https://bit.ly/x --output "🗞️ Journal/file"',  # emoji path + another finding
+         _VS + [{"rule_id": "shortened_url", "severity": "medium"}]),
+    ])
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_non_emoji_or_non_fe0f_variation_selector_keeps_warn(self, mock_cfg, mock_run, command):
+    def test_other_selectors_or_mixed_findings_keep_warn(self, mock_cfg, mock_run, command, findings):
         mock_cfg.return_value = _CFG
-        findings = [{"rule_id": "variation_selector", "severity": "medium"}]
         mock_run.return_value = _mock_run(2, _json_stdout(findings, "variation selector"))
 
         result = check_command_security(command)
-
-        assert result["action"] == "warn"
-        assert result["findings"] == findings
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
-    def test_mixed_findings_keep_warn_for_emoji_path(self, mock_cfg, mock_run):
-        mock_cfg.return_value = _CFG
-        findings = [
-            {"rule_id": "variation_selector", "severity": "medium"},
-            {"rule_id": "shortened_url", "severity": "medium"},
-        ]
-        mock_run.return_value = _mock_run(2, _json_stdout(findings, "mixed"))
-
-        result = check_command_security('curl https://bit.ly/x --output "🗞️ Journal/file"')
 
         assert result["action"] == "warn"
         assert result["findings"] == findings
