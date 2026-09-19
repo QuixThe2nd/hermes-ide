@@ -1331,6 +1331,7 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
     """gateway <- cmd.exe <- svchost.exe(Schedule) <- services.exe: the Task Scheduler host is not the
     gateway's supervisor, so a task-launched gateway is a plain process (#97208); the same tree under a
     Hermes-owned service (by binary path) stays SCM-supervised."""
+    import psutil
     import hermes_cli.gateway_windows as gateway_windows
 
     monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
@@ -1359,13 +1360,24 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
 
     def run(service):
         return gateway.find_windows_gateway_services(
-            psutil_module=SimpleNamespace(win_service_iter=lambda: [service], Process=FakeProcess),
+            psutil_module=SimpleNamespace(
+                win_service_iter=lambda: [service], Process=FakeProcess, AccessDenied=psutil.AccessDenied),
             profile_processes=[profile],
         )
 
     assert run(FakeService("Schedule", r"C:\Windows\system32\svchost.exe -k netsvcs -p -s Schedule")) == []
     owned = run(FakeService("gw", r'"C:\hermes\hermes-agent\venv\Scripts\hermes.exe" gateway run'))
     assert [(s.name, s.service_pid, s.gateway_pid) for s in owned] == [("gw", 2360, 18480)]
+
+    # QueryServiceConfig denied to this user (hardened third-party service): not Hermes's, and never a
+    # reason to abort the whole enumeration; a Hermes-NAMED service is settled without asking binpath.
+    class DeniedConfigService(FakeService):
+        def binpath(self):
+            raise psutil.AccessDenied(2360, self._name)
+
+    assert run(DeniedConfigService("Hardened", "")) == []
+    named = run(DeniedConfigService("HermesGateway", ""))
+    assert [(s.name, s.service_pid, s.gateway_pid) for s in named] == [("HermesGateway", 2360, 18480)]
 
 
 def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypatch):

@@ -823,8 +823,17 @@ def find_windows_gateway_services(
                 # Ownership before state: an OS service above the gateway (Task Scheduler's svchost for a
                 # task-launched gateway, BITS mid-transition) is never its supervisor, so neither its
                 # PID nor its status may steer the pause. Only Hermes-owned services reach the guards below.
-                service_binpath = str(_scm_service_field(service, "binpath") or "")
-                if not hermes_owns_windows_service(service_name, service_binpath, hermes_roots):
+                # The name alone settles Hermes-named services; binpath (QueryServiceConfig) is asked only
+                # for the rest, and a service that refuses even that to this user is one this user could
+                # not `sc stop` either — never Hermes's, never a reason to abort the enumeration.
+                owned = hermes_owns_windows_service(service_name, "", hermes_roots)
+                if not owned:
+                    try:
+                        service_binpath = str(_scm_service_field(service, "binpath") or "")
+                    except psutil_module.AccessDenied:
+                        continue
+                    owned = hermes_owns_windows_service(service_name, service_binpath, hermes_roots)
+                if not owned:
                     continue
                 service_status = _scm_service_field(service, "status")
                 service_pid = int(_scm_service_field(service, "pid") or 0)
