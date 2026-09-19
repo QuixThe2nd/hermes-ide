@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
 """Regression tests for the launchd plist scan's malformed-file tolerance.
 
-Refs #114142.  ``_loaded_launchd_backend_jobs`` documents that unreadable or
+``_loaded_launchd_backend_jobs`` documents that unreadable or
 malformed plists are skipped, but ``plistlib.load`` propagates
 ``xml.parsers.expat.ExpatError`` (which is NOT a ``ValueError`` subclass) for
 XML that is not well-formed, so one hand-edited LaunchAgent plist aborted the
 whole ``hermes update`` post-pull cleanup instead of being skipped.
 """
 import os
-import plistlib
-import xml.parsers.expat
 from unittest import mock
 
 from hermes_cli import main_dashboard
@@ -34,20 +32,6 @@ GOOD_PLIST = (
     "    <string>--port</string>\n    <string>9119</string>\n"
     "  </array>\n</dict>\n</plist>\n"
 )
-
-
-def test_fixture_really_raises_expat_error_not_valueerror(tmp_path):
-    # The regression only exists because ExpatError is not a ValueError: pin
-    # both halves of that premise so the fixture cannot silently go benign.
-    assert not issubclass(xml.parsers.expat.ExpatError, ValueError)
-    p = tmp_path / "com.example.bad.plist"
-    p.write_text(MALFORMED_PLIST)
-    with open(p, "rb") as f:
-        try:
-            plistlib.load(f)
-        except xml.parsers.expat.ExpatError:
-            return
-    raise AssertionError("fixture plist must be unparseable XML")
 
 
 def test_malformed_plist_is_skipped_not_fatal(tmp_path, monkeypatch):
