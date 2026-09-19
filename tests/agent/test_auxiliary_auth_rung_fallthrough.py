@@ -69,6 +69,11 @@ class _FakeClient:
     base_url = "https://%s/v1" % NOUS_HOST
 
 
+class _ExplicitProviderClient:
+    api_key = "stale-key"
+    base_url = "https://vertex.example/v1"
+
+
 def _ladder(base_info=("https://%s/v1" % NOUS_HOST), resolved_provider="nous"):
     return aux._aux_recovery_ladder(
         _auth_error(),
@@ -154,6 +159,84 @@ def test_post_refresh_retry_owns_the_ladder_outcome(
     assert hermetic, "the configured fallback chain must be consulted"
     assert "requires available credits" in str(hermetic[0])
     assert result == "chain-response"
+
+
+def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch):
+    """An explicit route may leave a 401 only through its own configured chain."""
+    fallback_client = _FakeClient()
+    configured_chain_calls = []
+    monkeypatch.setattr(
+        aux,
+        "_get_auxiliary_task_config",
+        lambda task: {"fallback_chain": [{"provider": "custom:backup", "model": FALLBACK_MODEL}]},
+    )
+    monkeypatch.setattr(aux, "_auth_refresh_provider_for_route", lambda *args, **kwargs: "vertex")
+    monkeypatch.setattr(aux, "_refresh_provider_credentials", lambda *args, **kwargs: False)
+    monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *args, **kwargs: None)
+
+    def configured_chain(*args, **kwargs):
+        configured_chain_calls.append((args, kwargs))
+        return fallback_client, FALLBACK_MODEL, "fallback_chain[0](custom:backup)"
+
+    monkeypatch.setattr(aux, "_try_configured_fallback_chain", configured_chain)
+    ladder = aux._aux_recovery_ladder(
+        _auth_error(),
+        client=_ExplicitProviderClient(),
+        kwargs={"model": AUX_MODEL},
+        task="compression",
+        async_mode=False,
+        base_info="https://vertex.example/v1",
+        resolved_provider="vertex",
+        resolved_model=AUX_MODEL,
+        resolved_base_url=None,
+        resolved_api_key=None,
+        resolved_api_mode=None,
+        final_model=AUX_MODEL,
+        max_tokens=None,
+        main_runtime=None,
+        route_info={},
+    )
+
+    def perform(step):
+        assert step.kind == "fallback"
+        assert step.args == (fallback_client, FALLBACK_MODEL, "fallback_chain[0](custom:backup)")
+        return "fallback-response"
+
+    assert aux._drive_ladder(ladder, perform) == "fallback-response"
+    assert configured_chain_calls
+
+
+def test_explicit_provider_auth_never_uses_an_unconfigured_fallback(monkeypatch):
+    """A 401 without a task chain preserves the explicit-provider boundary."""
+    monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: {})
+    monkeypatch.setattr(aux, "_auth_refresh_provider_for_route", lambda *args, **kwargs: "vertex")
+    monkeypatch.setattr(aux, "_refresh_provider_credentials", lambda *args, **kwargs: False)
+    monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        aux,
+        "_try_main_agent_model_fallback",
+        lambda *args, **kwargs: pytest.fail("explicit auth must not use the main-agent fallback"),
+    )
+    ladder = aux._aux_recovery_ladder(
+        _auth_error(),
+        client=_ExplicitProviderClient(),
+        kwargs={"model": AUX_MODEL},
+        task="compression",
+        async_mode=False,
+        base_info="https://vertex.example/v1",
+        resolved_provider="vertex",
+        resolved_model=AUX_MODEL,
+        resolved_base_url=None,
+        resolved_api_key=None,
+        resolved_api_mode=None,
+        final_model=AUX_MODEL,
+        max_tokens=None,
+        main_runtime=None,
+        route_info={},
+    )
+
+    with pytest.raises(_ApiError, match="Unauthorized"):
+        aux._drive_ladder(ladder, lambda step: pytest.fail("no fallback request expected"))
 
 
 @pytest.fixture
