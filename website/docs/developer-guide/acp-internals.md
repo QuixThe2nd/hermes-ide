@@ -79,6 +79,12 @@ Bridged callbacks:
 - `thinking_callback` (currently set to `None` in the ACP bridge — reasoning is forwarded through `step_callback` instead)
 - `step_callback`
 
+Every ACP tool call reaches a terminal status: `tool.completed` closes the call with its own
+result (`completed` / `failed`), the `step_callback` `prev_tools` pass is only a fallback for
+runtimes that never project a completion, and anything still open when the turn ends —
+a denied or blocked call, an interrupted one — is marked `failed` before the response is
+returned.
+
 Because `AIAgent` runs in a worker thread while ACP I/O lives on the main event loop, the bridge uses:
 
 ```python
