@@ -343,6 +343,14 @@ export function TreeGroup({
   const paneLifecycle = lifecycleRef.current.entries
   const keptPanes = shown.filter(id => paneLifecycle[id] && paneLifecycle[id].lifecycle !== 'parked')
 
+  // HIDE ≠ CLOSE for stateful guests: a minimized zone keeps only its
+  // keep-alive panes mounted (the embedded Browser's <webview> would otherwise
+  // be destroyed and rebuilt on restore — fresh document, lost automation
+  // target). Every other pane parks on hide exactly as before.
+  const mountedPanes = node.minimized
+    ? keptPanes.filter(id => Boolean(paneChrome(paneFor(id)).lifecycleKeepAlive))
+    : keptPanes
+
   // ONE header style: the app's compact pane-header. Whether this zone shows
   // it is the resolver's call, not this component's — see strip-visibility.ts
   // for the precedence. The same resolver answers for the toggle command, so
@@ -748,54 +756,58 @@ export function TreeGroup({
           scroll positions and measurements survive the round-trip — which also
           makes a hidden layer's rect identical to the visible one's, hence the
           marker document-wide lookups filter on (see pane-visibility.ts). */}
-      <PaneBody hidden={Boolean(node.minimized)}>
-        {isEmpty ? (
-          <div className="grid h-full place-items-center">
-            {/* Same decode primitive as the CONNECTING boot overlay. */}
-            <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="HERMES" />
-          </div>
-        ) : (
-          keptPanes.map(paneId => {
-            const pane = paneFor(paneId)
-            const isActive = paneId === activeId && !node.minimized
+      {(!node.minimized || mountedPanes.length > 0) && (
+        <PaneBody hidden={Boolean(node.minimized)}>
+          {isEmpty ? (
+            <div className="grid h-full place-items-center">
+              {/* Same decode primitive as the CONNECTING boot overlay. */}
+              <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="HERMES" />
+            </div>
+          ) : (
+            mountedPanes.map(paneId => {
+              const pane = paneFor(paneId)
+              const isActive = paneId === activeId && !node.minimized
 
-            return (
-              <div
-                aria-hidden={!isActive || undefined}
-                className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
-                inert={!isActive || undefined}
-                key={paneId}
-                {...hiddenPaneProps(!isActive)}
-              >
-                {pane?.render ? (
-                  // Visibility flows to the pane so a kept-alive chat surface
-                  // can gate its hot (per-token) subscriptions while hidden;
-                  // the group id identifies the ZONE it lives in, for state
-                  // that is per-zone rather than per-tab (composer pop-out).
-                  // The reload epoch keys the CONTENT, not this layer: a
-                  // Reload remounts the contribution (effects re-run, state
-                  // resets) while the layer — and every other tab — stays.
-                  <PaneGroupContext.Provider value={node.id}>
-                    <PaneLifecycleContext.Provider value={isActive ? 'visible' : 'hot-hidden'}>
-                      <PaneVisibleContext.Provider value={isActive}>
-                        <ContribBoundary id={pane.id} key={paneEpochs[paneId] ?? 0}>
-                          <ContribRender render={pane.render} />
-                        </ContribBoundary>
-                      </PaneVisibleContext.Provider>
-                    </PaneLifecycleContext.Provider>
-                  </PaneGroupContext.Provider>
-                ) : (
-                  isActive && (
-                    <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">
-                      {t.zones.missingPane(paneId)}
-                    </div>
-                  )
-                )}
-              </div>
-            )
-          })
-        )}
-      </PaneBody>
+              return (
+                <div
+                  aria-hidden={!isActive || undefined}
+                  className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
+                  inert={!isActive || undefined}
+                  key={paneId}
+                  {...hiddenPaneProps(!isActive)}
+                >
+                  {pane?.render ? (
+                    // Visibility flows to the pane so a kept-alive chat surface
+                    // can gate its hot (per-token) subscriptions while hidden;
+                    // the group id identifies the ZONE it lives in, for state
+                    // that is per-zone rather than per-tab (composer pop-out).
+                    // The reload epoch keys the CONTENT, not this layer: a
+                    // Reload remounts the contribution (effects re-run, state
+                    // resets) while the layer — and every other tab — stays.
+                    <PaneGroupContext.Provider value={node.id}>
+                      <PaneLifecycleContext.Provider
+                        value={node.minimized ? 'hot-hidden' : (paneLifecycle[paneId]?.lifecycle ?? 'visible')}
+                      >
+                        <PaneVisibleContext.Provider value={isActive}>
+                          <ContribBoundary id={pane.id} key={paneEpochs[paneId] ?? 0}>
+                            <ContribRender render={pane.render} />
+                          </ContribBoundary>
+                        </PaneVisibleContext.Provider>
+                      </PaneLifecycleContext.Provider>
+                    </PaneGroupContext.Provider>
+                  ) : (
+                    isActive && (
+                      <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">
+                        {t.zones.missingPane(paneId)}
+                      </div>
+                    )
+                  )}
+                </div>
+              )
+            })
+          )}
+        </PaneBody>
+      )}
 
       {/* Edit-mode veil: the BODY is a drag handle for the active pane. It
           starts below the header so tabs/headers stay directly interactive
