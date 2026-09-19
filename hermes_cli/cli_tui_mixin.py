@@ -631,7 +631,10 @@ class CLITuiMixin:
         panel.blank()
         for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
-            lead = '❯ ' if idx == selected else indent
+            # The cursor cell is always two columns wide, so unselected rows get two spaces
+            # regardless of ``indent`` (the palette's continuation indent is four) — otherwise
+            # the selected label starts two columns left of its neighbours.
+            lead = '❯ ' if idx == selected else '  '
             for wrapped in _prefix_wrapped_rows(
                 _wrap_panel_text, labels[idx], label_width, lead, indent
             ):
