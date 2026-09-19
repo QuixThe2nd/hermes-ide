@@ -378,25 +378,37 @@ def test_supervised_task_platforms_keep_warning_only_default():
         assert cfg.hard_stop_enabled is True, platform
 
 
-def test_a_harness_refusal_is_not_counted_as_a_tool_failure():
-    """The read-dedup block carries `"error"` for the model's benefit, which is
-    exactly what `classify_tool_failure`'s substring test keys on. Counting it
-    let a refusal raise the failure streak that produces the next, harder
-    refusal -- an escalation to `repeated_exact_failure_block` reporting N
-    failures that never happened. Observed on a real session: 13 of 14 results
-    classified as failed were this block, against one genuine tool failure."""
-    from tools.file_tools import _dedup_stub_or_block
+def test_harness_refusals_are_not_tool_failures_on_either_classifier(tmp_path):
+    """Every loop refusal the file tools emit (read dedup block, consecutive-read block,
+    repeated-search block) carries `"error"` for the model's benefit -- exactly what the
+    substring tests key on. Neither `classify_tool_failure` nor the executor's live seam
+    `_detect_tool_failure` may count them, or the cheap refusal feeds the streak that
+    fires `repeated_exact_failure_block` over calls that never failed."""
+    from agent.display import _detect_tool_failure
+    from tools.file_tools import _dedup_stub_or_block, read_file_tool, search_tool
 
-    task_data = {"dedup_hits": {}}
-    key = ("/repo/responses.ts", 1, 999)
+    target = tmp_path / "responses.ts"
+    target.write_text("export const x = 1;\n" * 30, encoding="utf-8")
+
+    task = {"dedup_hits": {}}
     for _ in range(3):
-        blocked = _dedup_stub_or_block(task_data, key, "/repo/responses.ts")
+        dedup_block = _dedup_stub_or_block(task, (str(target), 1, 999), str(target))
+    consecutive_block = [read_file_tool(str(target), offset=1, limit=5, task_id="t-read") for _ in range(4)][-1]
+    search_block = [search_tool("const x", path=str(tmp_path), task_id="t-search") for _ in range(4)][-1]
 
-    assert json.loads(blocked)["guardrail_refusal"] is True
-    assert classify_tool_failure("read_file", blocked) == (False, "")
+    for refusal in (dedup_block, consecutive_block, search_block):
+        assert json.loads(refusal)["error"].startswith("BLOCKED"), refusal
+        assert classify_tool_failure("read_file", refusal) == (False, ""), refusal
+        assert _detect_tool_failure("read_file", refusal) == (False, ""), refusal
 
 
 def test_a_real_tool_error_is_still_a_failure():
     """The exemption is keyed on the marker, not on the word: a body that
     genuinely failed still counts, or the streak that stops a real loop is gone."""
-    assert classify_tool_failure("read_file", '{"error": "ENOENT: no such file"}')[0] is True
+    from agent.display import _detect_tool_failure
+
+    real = '{"error": "ENOENT: no such file"}'
+    assert classify_tool_failure("read_file", real)[0] is True
+    assert _detect_tool_failure("read_file", real)[0] is True
+    # The marker is only honoured as the literal boolean, never as truthy prose.
+    assert classify_tool_failure("read_file", '{"error": "x", "guardrail_refusal": "yes"}')[0] is True
