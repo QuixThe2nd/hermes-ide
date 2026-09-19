@@ -314,12 +314,23 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     await vi.waitFor(() => expect(sockets[2].lastRequest().method).toBe('session.events.since'))
 
     const request = sockets[2].lastRequest()
+    expect(request.params).toEqual({ session_id: 's1', last_seen: 1 })
+
+    // A live frame racing the new replay is parked by the NEW hold; the stale
+    // replay's cleanup must neither flush it nor advance the watermark past
+    // the gap it never recovered.
+    sockets[2].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 3 } })
+    await Promise.resolve()
+    expect(seen).toEqual([1])
+    expect(client.getSeqWatermarks()).toEqual({ s1: 1 })
+
     sockets[2].serverFrame({
       jsonrpc: '2.0', id: request.id,
       result: { events: [{ type: 'message.delta', session_id: 's1', seq: 2 }], latest_seq: 2, truncated: false, count: 1 }
     })
 
-    await vi.waitFor(() => expect(seen).toEqual([1, 2]))
+    await vi.waitFor(() => expect(seen).toEqual([1, 2, 3]))
+    expect(client.getSeqWatermarks()).toEqual({ s1: 3 })
     client.close()
   })
 
