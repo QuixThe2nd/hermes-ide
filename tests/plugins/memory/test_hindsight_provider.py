@@ -5,6 +5,7 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -70,6 +71,11 @@ def _clean_env(tmp_path, monkeypatch):
     # The retain-operation path imports this exception solely to classify a
     # fake client's response. Supply the smallest matching SDK surface so the
     # mocked tests remain runnable without the optional Hindsight extra.
+    # Only when the real SDK is absent: shadowing an installed SDK with a
+    # fake (no ``__path__``) breaks ``import hindsight_client`` and turns the
+    # pinned-client test into a permanent skip.
+    if importlib.util.find_spec("hindsight_client_api") is not None:
+        return
     client_api = ModuleType("hindsight_client_api")
     exceptions = ModuleType("hindsight_client_api.exceptions")
 
