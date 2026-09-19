@@ -10,7 +10,13 @@ whole ``hermes update`` post-pull cleanup instead of being skipped.
 import os
 from unittest import mock
 
+import pytest
+
 from hermes_cli import main_dashboard
+
+# ``_loaded_launchd_backend_jobs`` reads ``sys.platform`` directly (no host seam), so
+# the scan runs only on a real macOS host — never by faking the platform.
+pytestmark = pytest.mark.macos_only
 
 
 # A plist that is not well-formed XML yet launchd itself tolerates: a raw `&&`
@@ -34,10 +40,9 @@ GOOD_PLIST = (
 )
 
 
-def test_malformed_plist_is_skipped_not_fatal(tmp_path, monkeypatch):
+def test_malformed_plist_is_skipped_not_fatal(tmp_path):
     p = tmp_path / "com.example.bad.plist"
-    p.write_text(MALFORMED_PLIST)
-    monkeypatch.setattr(main_dashboard.sys, "platform", "darwin")
+    p.write_text(MALFORMED_PLIST, encoding="utf-8")
     with mock.patch(
         "hermes_cli.gateway._launchd_print_service_pid", return_value=(False, None)
     ) as probe:
@@ -45,17 +50,16 @@ def test_malformed_plist_is_skipped_not_fatal(tmp_path, monkeypatch):
     probe.assert_not_called()  # the malformed job never reaches the launchctl probe
 
 
-def test_malformed_sibling_does_not_hide_the_good_job(tmp_path, monkeypatch):
-    (tmp_path / "com.example.bad.plist").write_text(MALFORMED_PLIST)
-    (tmp_path / "ai.hermes.dashboard.test.plist").write_text(GOOD_PLIST)
-    monkeypatch.setattr(main_dashboard.sys, "platform", "darwin")
+def test_malformed_sibling_does_not_hide_the_good_job(tmp_path):
+    (tmp_path / "com.example.bad.plist").write_text(MALFORMED_PLIST, encoding="utf-8")
+    (tmp_path / "ai.hermes.dashboard.test.plist").write_text(GOOD_PLIST, encoding="utf-8")
     with mock.patch(
         "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 4321)
     ) as probe:
         jobs = main_dashboard._loaded_launchd_backend_jobs([("agent", tmp_path)])
     assert jobs == [
         (
-            f"gui/{os.getuid()}",
+            f"gui/{os.getuid()}",  # windows-footgun: ok — macos_only file
             "ai.hermes.dashboard.test",
             ["/usr/local/bin/hermes", "dashboard", "--port", "9119"],
             4321,
