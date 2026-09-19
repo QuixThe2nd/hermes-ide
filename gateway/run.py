@@ -44,6 +44,7 @@ import threading
 import time
 import traceback
 import uuid
+import weakref
 from collections import OrderedDict
 from contextvars import Context, copy_context
 from pathlib import Path
@@ -29167,6 +29168,14 @@ class GatewayRunner(
                 profile=getattr(adapter, "_owner_profile", None),
             )
 
+        # Serialization drops transport provenance; auth must still follow the receiving bot.
+        source._transport_adapter_ref = weakref.ref(adapter)
+
+        # Cached source still carries the previous speaker's routed profile.
+        if not self._stamp_routed_profile(source, getattr(adapter, "_owner_profile", None)):
+            logger.warning("Dropping voice input: its profile route targets an unserved profile")
+            return
+
         # Check authorization before processing voice input
         if not self._is_user_authorized(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
@@ -34742,7 +34751,7 @@ class GatewayRunner(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
                 parent_chat_id=getattr(source, "parent_chat_id", None),
-                adapter_profile=adapter_profile, user_id=source.user_id)
+                adapter_profile=adapter_profile, user_id=getattr(source, "user_id", None))
         except Exception:
             logger.warning(
                 "Profile route matching failed for %s/%s, falling back to default",
@@ -34769,9 +34778,9 @@ class GatewayRunner(
                 raise ProfileRouteRejected(matched.name)
             return matched.profile
         logger.debug(
-            "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s user_id=%s",
+            "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
             source.platform.value, source.chat_id,
-            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None), source.user_id,
+            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),
         )
         return None
 
