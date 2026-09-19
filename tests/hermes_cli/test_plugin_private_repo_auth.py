@@ -119,12 +119,14 @@ def test_public_clone_attempts_anonymously_when_credential_resolves(tmp_path, mo
 
 
 @pytest.mark.parametrize("verb", ["fetch", "pull"])
-@pytest.mark.parametrize("refused", [False, True])
+@pytest.mark.parametrize("outcome", ["ok", "refused", "not_found"])
 def test_ref_fetch_and_update_pull_attach_credential_only_after_anonymous_refusal(
-        tmp_path, monkeypatch, verb, refused):
+        tmp_path, monkeypatch, verb, outcome):
     """The pinned-ref fetch (``--ref`` install) and ``hermes plugins update``'s pull are the
     clone's siblings: with a stored GitHub credential resolvable they still run anonymously
-    against a public remote, and attach the credential only after the remote refuses."""
+    against a public remote, attach the credential only after the remote refuses, and surface a
+    failure that is not about credentials (missing repo, bad commit, network) as-is — the stored
+    credential is then never even resolved, let alone sent."""
     _seed_bare_upstream(tmp_path)
     repo = tmp_path / "checkout"
     subprocess.run(["git", "clone", "-q", str(tmp_path / "upstream.git"), str(repo)], check=True)
@@ -140,40 +142,34 @@ def test_ref_fetch_and_update_pull_attach_credential_only_after_anonymous_refusa
         if verb not in argv:
             return real_run(argv, *a, **kw)
         attempts.append(_auth_headers_for(kw.get("env") or {}, "https://github.com"))
-        if refused and len(attempts) == 1:
+        if outcome == "refused" and len(attempts) == 1:
             return subprocess.CompletedProcess(
                 argv, 128, stdout="",
                 stderr="fatal: could not read Username for 'https://github.com': terminal prompts disabled\n")
+        if outcome == "not_found":
+            return subprocess.CompletedProcess(
+                argv, 128, stdout="", stderr=f"fatal: repository '{public_url}/' not found\n")
         return subprocess.CompletedProcess(argv, 0, stdout="Already up to date.\n", stderr="")
 
     monkeypatch.setattr(plugins_cmd.subprocess, "run", spy_run)
-    monkeypatch.setattr(git_credentials, "resolve_git_basic_auth", lambda url: ("x-access-token", "ghp_fake"))
+    if outcome == "not_found":
+        monkeypatch.setattr(git_credentials, "resolve_git_basic_auth",
+                            lambda url: pytest.fail("credential must not be resolved for a non-credential failure"))
+    else:
+        monkeypatch.setattr(git_credentials, "resolve_git_basic_auth", lambda url: ("x-access-token", "ghp_fake"))
 
-    if verb == "fetch":
+    if verb == "fetch" and outcome == "not_found":
+        with pytest.raises(plugins_cmd.PluginOperationError, match="not found"):
+            plugins_cmd._checkout_exact_revision(repo, "git", revision, source_url=public_url)
+    elif verb == "fetch":
         plugins_cmd._checkout_exact_revision(repo, "git", revision, source_url=public_url)
     else:
-        assert plugins_cmd._git_pull_plugin_dir(repo)[0] is True
+        ok, message = plugins_cmd._git_pull_plugin_dir(repo)
+        assert ok is (outcome != "not_found"), message
+        assert ("not found" in message) is (outcome == "not_found")
 
     expected = base64.b64encode(b"x-access-token:ghp_fake").decode()
-    assert attempts == ([[], [f"Authorization: basic {expected}"]] if refused else [[]])
-
-
-def test_non_credential_failure_is_returned_without_an_authenticated_retry(monkeypatch):
-    """A failure that is not about credentials (missing repo, bad commit, network) must surface
-    as-is: the stored credential is never even resolved, let alone sent."""
-    calls: list = []
-    monkeypatch.setattr(git_credentials.subprocess, "run", lambda argv, **kw: (
-        calls.append(kw["env"]) or subprocess.CompletedProcess(
-            argv, 128, stdout="", stderr="fatal: repository 'https://github.com/acme/nope.git/' not found\n")))
-    monkeypatch.setattr(git_credentials, "resolve_git_basic_auth",
-                        lambda url: pytest.fail("credential must not be resolved for a non-credential failure"))
-
-    result = git_credentials.run_git_with_credential_fallback(
-        ["git", "clone", "https://github.com/acme/nope.git"], "https://github.com/acme/nope.git",
-        env=noninteractive_git_env(), capture_output=True, text=True)
-
-    assert result.returncode == 128 and len(calls) == 1
-    assert _auth_headers_for(calls[0], "https://github.com") == []
+    assert attempts == ([[], [f"Authorization: basic {expected}"]] if outcome == "refused" else [[]])
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell stub credential helper")
