@@ -538,6 +538,30 @@ describe('gateway mirror', () => {
     expect(snapshot.rooms['name:Unicode'].log.at(-1)?.thread).toBe('thread-15')
   })
 
+  // #114341: the mirror is the only on-disk copy of a room. A head trim —
+  // by message count or by the byte budget — must say how many earlier
+  // entries it dropped, or a reader concludes the user never said it.
+  it('counts the head entries the mirror does not carry', async () => {
+    const { chat } = await loadRoom()
+    const entry = (index: number, text: string) => ({ at: index, from: { kind: 'user', name: 'You' }, text })
+
+    const snapshot = chat.groupChatSyncSnapshot({
+      Fits: { log: Array.from({ length: 3 }, (_, index) => entry(index, `short ${index}`)) },
+      ByCount: { log: Array.from({ length: 40 }, (_, index) => entry(index, `m${index}`)) },
+      ByBytes: { log: Array.from({ length: 16 }, (_, index) => entry(index, `${index} ${'🧠'.repeat(1200)}`)) }
+    } as unknown as Record<string, GroupChat>)
+
+    const byCount = snapshot.rooms['name:ByCount']
+    const byBytes = snapshot.rooms['name:ByBytes']
+
+    expect(snapshot.rooms['name:Fits'].omitted).toBeUndefined()
+    expect(byCount.log).toHaveLength(16)
+    expect(byCount.omitted).toBe(24)
+    expect(byBytes.log.length).toBeLessThan(16)
+    expect(byBytes.omitted).toBe(16 - byBytes.log.length)
+    expect(chat.groupChatGatewayJsonSize(snapshot)).toBeLessThanOrEqual(48000)
+  })
+
   it('omits empty runtime rooms', async () => {
     const { chat } = await loadRoom()
 

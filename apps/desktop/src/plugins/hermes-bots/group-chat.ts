@@ -63,6 +63,9 @@ interface GroupChatSyncRoom {
   log: GroupMessage[]
   members?: GroupMember[]
   name?: string
+  /** At least this many earlier room entries exist that the projection does
+   *  not carry (head-trimmed to the message/byte budget). */
+  omitted?: number
   revision?: number
   roomId?: string
 }
@@ -108,6 +111,17 @@ export function compactGroupChatSyncText(text: string, limit = GROUP_CHAT_SYNC_T
   return {
     text: `${raw.slice(0, budget)}${GROUP_CHAT_SYNC_TRUNCATION_MARK}`,
     truncated: true as const
+  }
+}
+
+/** #114341: the ui_meta mirror is the only on-disk copy of a room, so a
+ *  head-trimmed log must say how many earlier entries it does not carry —
+ *  a bare slice reads as "the user never said it". */
+function noteGroupChatSyncOmitted(room: GroupChatSyncRoom, total: number) {
+  const omitted = total - room.log.length
+
+  if (omitted > 0) {
+    room.omitted = omitted
   }
 }
 
@@ -315,9 +329,11 @@ export function groupChatSyncSnapshot(
 
     const key = groupChatRoomKey(name, room)
     rooms[key] = compact
+    noteGroupChatSyncOmitted(compact, room.log.length)
 
     while (compact.log.length > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       compact.log.shift()
+      noteGroupChatSyncOmitted(compact, room.log.length)
     }
 
     if (compact.image && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
@@ -447,6 +463,8 @@ export function mergeGroupChatSyncSnapshots(
     }
 
     const remoteRevision = Math.max(0, Number(remoteRoom?.revision || 0))
+    // Either writer's head trim is a lower bound on what the union still lacks.
+    const omitted = Math.max(Number(remoteRoom?.omitted || 0), Number(localRoom?.omitted || 0))
 
     const localRevision = changed.has(key)
       ? Math.max(0, Number(writeRevision || 0))
@@ -502,6 +520,11 @@ export function mergeGroupChatSyncSnapshots(
       }),
       members,
       revision: Math.max(remoteRevision, localRevision),
+      ...(omitted > 0
+        ? {
+            omitted
+          }
+        : {}),
       ...(typeof image === 'string' && image
         ? {
             image
@@ -560,6 +583,7 @@ function groupChatSyncEnvelope(
   for (const [key, room] of ranked) {
     while ((room.log?.length || 0) > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       room.log.shift()
+      room.omitted = (room.omitted || 0) + 1
     }
 
     if (room.image && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
