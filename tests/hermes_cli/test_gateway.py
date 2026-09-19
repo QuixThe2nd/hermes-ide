@@ -1326,39 +1326,46 @@ def test_find_windows_gateway_services_rejects_transitional_ancestor(monkeypatch
         )
 
 
+@pytest.mark.windows_only
 def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypatch):
-    """A task-launched gateway is not owned by the Schedule SCM service."""
-    monkeypatch.setattr(gateway.sys, "platform", "win32")
-    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+    """gateway <- cmd.exe <- svchost.exe(Schedule) <- services.exe: the Task Scheduler host is not the
+    gateway's supervisor, so a task-launched gateway is a plain process (#97208); the same tree under a
+    Hermes-owned service (by binary path) stays SCM-supervised."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
+    profile = SimpleNamespace(profile="default", pid=18480, create_time=18480.0)
 
     class FakeService:
+        def __init__(self, name, binpath):
+            self._name, self._binpath = name, binpath
+
         def as_dict(self):
-            return {"name": "Schedule", "pid": 100, "status": "running"}
+            return {"name": self._name, "binpath": self._binpath, "pid": 2360, "status": "running"}
 
     class FakeProcess:
         def __init__(self, pid):
             self.pid = pid
 
         def parents(self):
-            return [FakeProcess(200), FakeProcess(100)]
+            return [FakeProcess(12296), FakeProcess(2360), FakeProcess(4)]
 
         def children(self, recursive=False):
-            assert self.pid == 100
-            assert recursive is True
-            return [FakeProcess(200), FakeProcess(300)]
+            assert self.pid == 2360 and recursive is True
+            return [FakeProcess(12296), FakeProcess(18480)]
 
         def create_time(self):
             return float(self.pid)
 
-    fake_psutil = SimpleNamespace(
-        win_service_iter=lambda: [FakeService()],
-        Process=FakeProcess,
-    )
+    def run(service):
+        return gateway.find_windows_gateway_services(
+            psutil_module=SimpleNamespace(win_service_iter=lambda: [service], Process=FakeProcess),
+            profile_processes=[profile],
+        )
 
-    assert gateway.find_windows_gateway_services(
-        psutil_module=fake_psutil,
-        profile_processes=[profile],
-    ) == []
+    assert run(FakeService("Schedule", r"C:\Windows\system32\svchost.exe -k netsvcs -p -s Schedule")) == []
+    owned = run(FakeService("gw", r'"C:\hermes\hermes-agent\venv\Scripts\hermes.exe" gateway run'))
+    assert [(s.name, s.service_pid, s.gateway_pid) for s in owned] == [("gw", 2360, 18480)]
 
 
 def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypatch):
