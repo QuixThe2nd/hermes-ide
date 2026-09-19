@@ -668,3 +668,17 @@ def test_prologue_survives_missing_missions_plugin(handoff_home, monkeypatch):
     ctx = _build(agent)  # must not raise
     monkeypatch.setattr(builtins, "__import__", real_import)
     assert ctx.user_message == "hello"
+
+
+def test_prologue_forwards_the_submit_title_preview_to_the_titler():
+    """A paste-shrunk ``display_metadata.title_preview`` from prompt.submit is the text the
+    titler should read, not the full pasted body."""
+    from agent import turn_context
+
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent("desktop"),
+            [{"role": "user", "content": "x" * 5000,
+              "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
+        )
+    assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"
