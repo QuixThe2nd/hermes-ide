@@ -161,22 +161,31 @@ def test_post_refresh_retry_owns_the_ladder_outcome(
     assert result == "chain-response"
 
 
-def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch):
-    """An explicit route may leave a 401 only through its own configured chain."""
-    fallback_client = _FakeClient()
-    configured_chain_calls = []
+@pytest.mark.parametrize("spare_survives", [True, False])
+def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, spare_survives):
+    """An explicit route may leave a 401 only through its own configured chain — including the
+    re-walk after a chain entry is quarantined mid-request; an exhausted chain raises the primary
+    error instead of spilling onto discovery / the main model."""
+    dead_client, fallback_client = _ExplicitProviderClient(), _FakeClient()
+    chain = [("fallback_chain[0](custom:dead)", dead_client)]
+    if spare_survives:
+        chain.append(("fallback_chain[1](custom:backup)", fallback_client))
     monkeypatch.setattr(
         aux,
         "_get_auxiliary_task_config",
-        lambda task: {"fallback_chain": [{"provider": "custom:backup", "model": FALLBACK_MODEL}]},
+        lambda task: {"fallback_chain": [{"provider": "custom:dead"}, {"provider": "custom:backup"}]},
     )
     monkeypatch.setattr(aux, "_auth_refresh_provider_for_route", lambda *args, **kwargs: "vertex")
     monkeypatch.setattr(aux, "_refresh_provider_credentials", lambda *args, **kwargs: False)
     monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *args, **kwargs: None)
+    for name in ("_try_payment_fallback", "_try_main_fallback_chain", "_try_main_agent_model_fallback"):
+        monkeypatch.setattr(aux, name, lambda *a, _n=name, **k: pytest.fail(f"{_n} must stay gated for explicit auth"))
 
     def configured_chain(*args, **kwargs):
-        configured_chain_calls.append((args, kwargs))
-        return fallback_client, FALLBACK_MODEL, "fallback_chain[0](custom:backup)"
+        if not chain:
+            return None, None, ""
+        label, client = chain.pop(0)
+        return client, FALLBACK_MODEL, label
 
     monkeypatch.setattr(aux, "_try_configured_fallback_chain", configured_chain)
     ladder = aux._aux_recovery_ladder(
@@ -199,11 +208,17 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch):
 
     def perform(step):
         assert step.kind == "fallback"
-        assert step.args == (fallback_client, FALLBACK_MODEL, "fallback_chain[0](custom:backup)")
+        if step.args[0] is dead_client:
+            return None  # quarantined mid-request → the ladder re-walks the chain
+        assert step.args == (fallback_client, FALLBACK_MODEL, "fallback_chain[1](custom:backup)")
         return "fallback-response"
 
-    assert aux._drive_ladder(ladder, perform) == "fallback-response"
-    assert configured_chain_calls
+    if spare_survives:
+        assert aux._drive_ladder(ladder, perform) == "fallback-response"
+    else:
+        with pytest.raises(_ApiError, match="Unauthorized"):
+            aux._drive_ladder(ladder, perform)
+    assert not chain
 
 
 def test_explicit_provider_auth_never_uses_an_unconfigured_fallback(monkeypatch):
