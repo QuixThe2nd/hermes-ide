@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Collection, Optional
 
 from hermes_cli.update_cmd_common import _best_effort
 from hermes_constants import project_venv_dir
@@ -29,8 +29,11 @@ _ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
 # its own node_modules (electron itself), and the dashboard assets. The dirty-tree guard admits them and
 # `_stage_entries` grafts the live copies into the staged tree so the swap keeps them (#90495).
 _ZIP_PRESERVED_NESTED = {
-    "apps": ("desktop/release", "desktop/dist", "desktop/node_modules"),
+    "apps": ("desktop/release", "desktop/dist", "desktop/node_modules", "desktop/build"),
     "hermes_cli": ("web_dist",),
+    "scripts": ("whatsapp-bridge/node_modules",),
+    "ui-tui": ("dist", "node_modules", "packages/hermes-ink/dist"),
+    "web": ("node_modules",),
 }
 
 _STASH_HINT = "  Stash or commit your changes, then rerun `hermes update`."
@@ -125,13 +128,17 @@ def _commit_staged_replacements(staged) -> None:
             _remove_path(backup, ignore_errors=True)
 
 
-def _zip_overlay_block_reason(root: Path, *, ignore_staging_artifacts: bool = False) -> Optional[str]:
+def _zip_overlay_block_reason(
+    root: Path, *, ignore_staging_artifacts: bool = False, shipped: Optional[Collection[str]] = None,
+) -> Optional[str]:
     """Why overlaying a ZIP onto ``root`` would destroy work, or None if safe.
 
     The swap replaces every top-level entry (minus a tiny preserve set) and deletes backups, so uncommitted
     edits and untracked files are gone. Fails closed when git status cannot run. ``ignore_staging_artifacts``
     is for the pre-swap re-check: phase 1 leaves our own ``*.hermes-update-staging`` siblings that git
-    reports as untracked; without the filter the re-check always refuses.
+    reports as untracked; without the filter the re-check always refuses. ``shipped`` is the extracted
+    ZIP's top-level entry set once known (the re-check); before the download the tracked root entries stand
+    in for it. A gitignored path under a root entry the ZIP does not ship is never touched by the swap.
 
     Fail closed when git status cannot run: unknown dirtiness is not a license to clobber the tree (#87304).
     """
@@ -147,6 +154,15 @@ def _zip_overlay_block_reason(root: Path, *, ignore_staging_artifacts: bool = Fa
         git_cmd + ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
         cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
+    if result.returncode == 0 and shipped is None:
+        # Before the download the ZIP's entry set is unknown; the tracked root entries stand in for it (the
+        # pre-swap re-check gets the real set), so an ignored root entry the swap never touches cannot refuse.
+        tracked = subprocess.run(
+            git_cmd + ["ls-tree", "--name-only", "HEAD"],
+            cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        shipped = set(tracked.stdout.splitlines()) if tracked.returncode == 0 else None
+        result.returncode = tracked.returncode
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         return f"could not check the working tree{f' ({detail[0]})' if detail else ''}"
@@ -154,7 +170,7 @@ def _zip_overlay_block_reason(root: Path, *, ignore_staging_artifacts: bool = Fa
     # swap, so they must not cause a false refusal. Everything else — including ignored files — blocks.
     dirty = any(
         line.strip()
-        and not _is_zip_preserved_entry_status_line(line)
+        and not _is_zip_preserved_entry_status_line(line, shipped)
         and not (ignore_staging_artifacts and _is_zip_staging_artifact_status_line(line))
         for line in (result.stdout or "").splitlines()
     )
@@ -165,11 +181,14 @@ def _status_top_level(path: str) -> str:
     return path.strip().strip('"').replace("\\", "/").rstrip("/").split("/", 1)[0]
 
 
-def _is_zip_preserved_entry_status_line(line: str) -> bool:
-    """True when every path on a porcelain status line sits under a preserved top-level entry, or the
-    line is a gitignored (``!!``) build output the swap keeps (`_ZIP_PRESERVED_NESTED`) or regenerates
-    (``__pycache__``) — every real install has both, and blocking on them made the ZIP fallback refuse
-    all of them. Tracked edits, renames and other untracked/ignored user files still block.
+def _is_zip_preserved_entry_status_line(line: str, shipped: Optional[Collection[str]] = None) -> bool:
+    """True when the swap would not destroy what a porcelain status line names: every path sits under a
+    preserved top-level entry; or the line is gitignored (``!!``) and under a root entry the ZIP does not
+    ship (``.bytecode-fingerprint``, ``.hermes-bootstrap-complete``, ``hermes_agent.egg-info/`` — the swap
+    replaces ``shipped`` entries only); or a ``!!`` build output nested under a shipped dir that the swap
+    keeps (`_ZIP_PRESERVED_NESTED`) or regenerates (``__pycache__``, ``node_modules``). Every real install
+    has all of these, and blocking on them made the ZIP fallback refuse every install. Tracked edits,
+    renames and other untracked/ignored user files still block.
 
     The ``" -> "`` split applies ONLY to R/C codes: porcelain v1 doesn't quote plain names with spaces, so
     ``venv -> node_modules`` on a ``!!``/``??`` line is ONE path and splitting would fail-open. Requiring
@@ -183,7 +202,9 @@ def _is_zip_preserved_entry_status_line(line: str) -> bool:
         return False
     path = payload.strip().strip('"').replace("\\", "/").rstrip("/")
     top, _, nested = path.partition("/")
-    return path.rsplit("/", 1)[-1] == "__pycache__" or any(
+    if shipped is not None and top not in shipped:
+        return True
+    return path.rsplit("/", 1)[-1] in ("__pycache__", "node_modules") or any(
         nested == keep or nested.startswith(f"{keep}/") for keep in _ZIP_PRESERVED_NESTED.get(top, ()))
 
 
@@ -326,7 +347,8 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
         try:
             # TOCTOU re-check right before the swap: download + extract + staging can take minutes and
             # work created meanwhile would be destroyed. Our own staging siblings are filtered out.
-            recheck_reason = _zip_overlay_block_reason(_m().PROJECT_ROOT, ignore_staging_artifacts=True)
+            recheck_reason = _zip_overlay_block_reason(
+                _m().PROJECT_ROOT, ignore_staging_artifacts=True, shipped=entries)
             if recheck_reason is not None:
                 _discard_staged(staged)
                 print(f"✗ ZIP fallback aborted before the swap: {recheck_reason}.")
