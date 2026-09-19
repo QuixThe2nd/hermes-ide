@@ -393,9 +393,9 @@ The adapter receives and caches the following media types from users:
 | **Video** | .mp4, .mov, .avi, .mkv, .webm, .m4v, .3gp | Downloaded and cached as documents |
 | **Files** | .pdf, .doc, .docx, .xls, .xlsx, .ppt, .pptx, and more | Downloaded and cached as documents |
 
-Media from rich-text (post) messages, including inline images and file attachments, is also extracted and cached.
+Media from rich-text (post) messages is also extracted and cached — both inline images/files inside the post body and attachments the composer sends in the top-level `files` list (a caption plus a file in one bubble). Every attachment is collected; folder entries are skipped, and each one leaves an `[Attachment: <name>]` marker in the text.
 
-For small text-based documents (.txt, .md), the file content is automatically injected into the message text so the agent can read it directly without needing tools.
+For small text-based documents (.txt, .md), the file content is automatically appended after the message text so the agent can read it directly without needing tools — the caption you typed alongside the file stays in place.
 
 ### Outbound (sending)
 
