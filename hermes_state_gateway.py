@@ -558,6 +558,11 @@ class SessionGatewayMixin:
         def _do(conn):
             existing = {row[0] for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            topic_columns = {
+                table: {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
+                for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
+                if table in existing
+            }
             collision = conn.execute(
                 "SELECT old.scope, ? || substr(old.session_key, ?) "
                 "FROM gateway_routing AS old JOIN gateway_routing AS target "
@@ -573,7 +578,7 @@ class SessionGatewayMixin:
                 ("telegram_dm_topic_mode", ("chat_id",)),
                 ("telegram_dm_topic_bindings", ("chat_id", "thread_id")),
             ):
-                if table not in existing:
+                if "profile_name" not in topic_columns.get(table, set()):
                     continue
                 equality = " AND ".join(
                     f"target.{column} = old.{column}" for column in columns)
@@ -616,11 +621,11 @@ class SessionGatewayMixin:
                     "WHERE substr(session_key, 1, ?) = ?",
                     (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
             for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings"):
-                if table in existing:
+                if "profile_name" in topic_columns.get(table, set()):
                     counts[f"{table}_profile_name"] = conn.execute(
                         f"UPDATE {table} SET profile_name = ? WHERE profile_name = ?",
                         (new, old)).rowcount
-            if "telegram_dm_topic_bindings" in existing:
+            if "session_key" in topic_columns.get("telegram_dm_topic_bindings", set()):
                 counts["telegram_dm_topic_bindings_session_key"] = conn.execute(
                     "UPDATE telegram_dm_topic_bindings "
                     "SET session_key = ? || substr(session_key, ?) "
@@ -686,6 +691,11 @@ class SessionGatewayMixin:
         def _do(conn):
             existing = {row[0] for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            topic_columns = {
+                table: {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
+                for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
+                if table in existing
+            }
             if "gateway_routing" in existing:
                 counts["gateway_routing"] = conn.execute(
                     "DELETE FROM gateway_routing WHERE substr(session_key, 1, ?) = ?",
@@ -702,16 +712,23 @@ class SessionGatewayMixin:
                     "WHERE (adapter_profile = ? OR substr(session_key, 1, ?) = ?) "
                     "AND state NOT IN ('delivered', 'abandoned')",
                     (time.time(), name, ns_len, ns)).rowcount
-            if "telegram_dm_topic_mode" in existing:
+            if "profile_name" in topic_columns.get("telegram_dm_topic_mode", set()):
                 counts["telegram_dm_topic_mode"] = conn.execute(
                     "DELETE FROM telegram_dm_topic_mode WHERE profile_name = ?", (name,)).rowcount
-            if "telegram_dm_topic_bindings" in existing:
+            binding_columns = topic_columns.get("telegram_dm_topic_bindings", set())
+            if "session_key" in binding_columns:
                 # A rename rewrites a binding's session_key namespace as well as its profile_name
                 # (:meth:`rekey_profile_state`), so matching on one alone leaves the other behind.
-                counts["telegram_dm_topic_bindings"] = conn.execute(
-                    "DELETE FROM telegram_dm_topic_bindings "
-                    "WHERE profile_name = ? OR substr(session_key, 1, ?) = ?",
-                    (name, ns_len, ns)).rowcount
+                if "profile_name" in binding_columns:
+                    counts["telegram_dm_topic_bindings"] = conn.execute(
+                        "DELETE FROM telegram_dm_topic_bindings "
+                        "WHERE profile_name = ? OR substr(session_key, 1, ?) = ?",
+                        (name, ns_len, ns)).rowcount
+                else:
+                    counts["telegram_dm_topic_bindings"] = conn.execute(
+                        "DELETE FROM telegram_dm_topic_bindings "
+                        "WHERE substr(session_key, 1, ?) = ?",
+                        (ns_len, ns)).rowcount
 
         self._execute_write(_do)
         return counts

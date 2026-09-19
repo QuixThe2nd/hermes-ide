@@ -21,6 +21,29 @@ def db(tmp_path):
     database.close()
 
 
+def _create_legacy_v2_topic_tables(db):
+    """Create the supported pre-profile-name topic schema without migrating it."""
+    db._write_sql("""
+        CREATE TABLE telegram_dm_topic_mode (
+            chat_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            activated_at REAL NOT NULL, updated_at REAL NOT NULL,
+            has_topics_enabled INTEGER, allows_users_to_create_topics INTEGER,
+            capability_checked_at REAL, intro_message_id TEXT, pinned_message_id TEXT
+        )
+    """)
+    db._write_sql("""
+        CREATE TABLE telegram_dm_topic_bindings (
+            chat_id TEXT NOT NULL, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
+            session_key TEXT NOT NULL,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            managed_mode TEXT NOT NULL DEFAULT 'auto',
+            linked_at REAL NOT NULL, updated_at REAL NOT NULL,
+            PRIMARY KEY (chat_id, thread_id)
+        )
+    """)
+
+
 class TestRekeyProfileState:
     def test_rekeys_session_key_namespace_and_profile_columns(self, db):
         # A session owned by the old profile, keyed in its namespace.
@@ -137,3 +160,37 @@ class TestRekeyProfileState:
             "WHERE chat_id = ? AND thread_id = ?", ("chatA", "threadA"))
         assert binding["profile_name"] == "newname"
         assert binding["session_key"] == "agent:newname:telegram:dm:chatA"
+
+    def test_rekeys_legacy_v2_topic_binding_by_session_key(self, db):
+        """Legacy v2 tables have no profile_name, but bindings retain profile namespaces."""
+        db.create_session(
+            "sess_old", "telegram", session_key="agent:oldname:telegram:dm:chatA",
+            profile_name="oldname", chat_id="chatA", chat_type="dm")
+        db.create_session(
+            "sess_keep", "telegram", session_key="agent:keepme:telegram:dm:chatB",
+            profile_name="keepme", chat_id="chatB", chat_type="dm")
+        _create_legacy_v2_topic_tables(db)
+        db._write_sql(
+            "INSERT INTO telegram_dm_topic_mode "
+            "(chat_id, user_id, enabled, activated_at, updated_at) VALUES (?, ?, 1, 1, 1)",
+            ("chatA", "userA"))
+        db._write_sql(
+            "INSERT INTO telegram_dm_topic_bindings "
+            "(chat_id, thread_id, user_id, session_key, session_id, linked_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, 1)",
+            ("chatA", "threadA", "userA", "agent:oldname:telegram:dm:chatA", "sess_old"))
+        db._write_sql(
+            "INSERT INTO telegram_dm_topic_bindings "
+            "(chat_id, thread_id, user_id, session_key, session_id, linked_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, 1)",
+            ("chatB", "threadB", "userB", "agent:keepme:telegram:dm:chatB", "sess_keep"))
+
+        counts = db.rekey_profile_state("oldname", "newname")
+
+        assert counts["telegram_dm_topic_bindings_session_key"] == 1
+        assert db._read_one(
+            "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatA",)
+        )["session_key"] == "agent:newname:telegram:dm:chatA"
+        assert db._read_one(
+            "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatB",)
+        )["session_key"] == "agent:keepme:telegram:dm:chatB"
