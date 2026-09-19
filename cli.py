@@ -4172,7 +4172,7 @@ def _run_quiet_single_query(cli, effective_query):
     from agent.turn_author import take_turn_author_from_env
     from hermes_cli.quiet_single_query import (
         adopt_unanswered_turn, bind_quiet_session_key, continue_quiet_notify_completions,
-        quiet_notify_linger_seconds, take_turn_report_path, write_turn_report,
+        exit_single_query, quiet_notify_linger_seconds, take_turn_report_path, write_turn_report,
     )
 
     author = take_turn_author_from_env()
@@ -4189,8 +4189,10 @@ def _run_quiet_single_query(cli, effective_query):
             )
         except KeyboardInterrupt:
             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+            if emitter is not None:
+                exit_single_query(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-            sys.exit(130)
+            exit_single_query(130)
         # The exit line below reports session_id to stderr for automation wrappers;
         # without this sync it would point at the ended parent after compression.
         _sync_cli_session_id_from_agent(cli)
@@ -4254,7 +4256,9 @@ def _run_quiet_single_query(cli, effective_query):
     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
     _exit_code = _single_query_exit_code(result)
-    sys.exit(_exit_code)
+    if emitter is not None:
+        _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
+    exit_single_query(_exit_code)
 
 
 def _route_single_query_images(cli, query, effective_query, single_query_images, single_query_image_urls):
@@ -4552,8 +4556,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
     # isn't engaged) and takes the deterministic approvals.single_query_mode path instead of waiting the
     # full timeout. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
+    from hermes_cli.quiet_single_query import exit_single_query
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
-        sys.exit(1)
+        exit_single_query(1)
     try:
         query, single_query_images = _collect_query_images(query, image)
         single_query_image_urls = _collect_kanban_task_images(single_query_images)
@@ -4575,7 +4580,10 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
                     _configure_quiet_agent(cli.agent)
                     _run_quiet_single_query(cli, effective_query)
 
-            sys.exit(1)  # credentials or agent init failed
+            if emitter is not None:
+                emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
+                                    session_id=cli.session_id or "", exit_code=1)
+            exit_single_query(1)  # credentials or agent init failed
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
         if _query_label:
@@ -4593,7 +4601,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         cli._print_exit_summary(clear_screen=False)
         # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
         # the exit code. This path used to fall through to an implicit 0 for every outcome.
-        sys.exit(_single_query_exit_code(cli._last_turn_result))
+        exit_single_query(_single_query_exit_code(cli._last_turn_result))
     finally:
         _finalize_single_query(cli)
 
