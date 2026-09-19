@@ -195,6 +195,12 @@ when it only mirrored a token file the pool has just cleared — until you sign 
 and Nous OAuth logins alike. A dead credential never re-enters rotation on a timer, so a lost login
 shows up once in the log instead of failing quietly every hour.
 
+**A cooling-down or dead credential is not a blank install.** When a configured profile starts the
+CLI while its only credential is benched or quarantined, startup prints the failure and, for a bench,
+the remaining cooldown (or the `hermes auth add <provider>` re-login for a dead one) — the first-run
+"No inference provider is configured yet" wizard is offered only when the resolver finds nothing
+configured at all.
+
 ## Custom Endpoint Pools
 
 Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from the `providers:` dict in config.yaml (or the legacy `custom_providers` list, which is auto-migrated).

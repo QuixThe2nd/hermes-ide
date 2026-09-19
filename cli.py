@@ -3678,10 +3678,13 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._show_browser_backend_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
-        # a chat that spins ~30s and fails with a provider-specific error. TTY only.
+        # a chat that spins ~30s and fails with a provider-specific error. TTY only. A
+        # configured profile whose credential is benched or signed out gets the reason instead.
         try:
-            if sys.stdin.isatty() and not self._runtime_credentials_ready():
-                self._offer_first_run_setup()
+            if sys.stdin.isatty():
+                ready, error = self._probe_runtime_credentials()
+                if not ready and not self._explain_unusable_credentials(error):
+                    self._offer_first_run_setup()
         except Exception:
             logger.debug("first-run setup offer failed", exc_info=True)
 

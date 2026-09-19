@@ -270,3 +270,59 @@ def test_empty_key_error_names_actual_provider(monkeypatch, capsys):
     assert "fireworks" in out
     assert "OPENROUTER_API_KEY" not in out
     assert "hermes model" in out or "hermes setup" in out
+
+
+# ---------------------------------------------------------------------------
+# Configured-but-unusable credential: reason + cooldown, never the wizard (#113720)
+# ---------------------------------------------------------------------------
+
+
+def test_benched_credential_prints_cooldown_instead_of_wizard(monkeypatch, capsys):
+    """A profile whose only credential is cooling down is not a blank install: the startup notice
+    names the failure and the remaining cooldown, and the first-run wizard is not offered."""
+    import time
+    from agent.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
+
+    cli = _import_cli()
+    shell = _make_shell(cli, monkeypatch)
+    shell.requested_provider = "nous"
+
+    def _raise(**kwargs):
+        raise AuthError("Hermes is not logged into Nous Portal.", provider="nous",
+                        code="nous_auth_missing", relogin_required=True)
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise)
+    benched = PooledCredential(id="e1", provider="nous", auth_type="oauth", access_token="x",
+                               refresh_token="r", label="portal", source="manual:device_code",
+                               priority=0, last_status=STATUS_EXHAUSTED, last_status_at=time.time() - 5)
+    pool = CredentialPool.__new__(CredentialPool)
+    monkeypatch.setattr(pool, "has_credentials", lambda: True, raising=False)
+    monkeypatch.setattr(pool, "has_available", lambda **kw: False, raising=False)
+    monkeypatch.setattr(pool, "next_available_at", lambda **kw: time.time() + 55, raising=False)
+    monkeypatch.setattr(pool, "entries", lambda: [benched], raising=False)
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model",
+                        lambda: (_ for _ in ()).throw(AssertionError("wizard must not run")))
+
+    ready, error = shell._probe_runtime_credentials()
+    assert ready is False
+    assert shell._explain_unusable_credentials(error) is True
+    out = capsys.readouterr().out
+    assert "No inference provider is configured yet" not in out
+    assert "not logged into Nous Portal" in out
+    assert "cooling down" in out and "about 1m" in out
+
+
+def test_nothing_configured_still_reaches_wizard(monkeypatch):
+    """Control: the resolver's ``no_provider_configured`` is the blank-install signal — nothing
+    to explain, so the first-run wizard is offered as before."""
+    cli = _import_cli()
+    shell = _make_shell(cli, monkeypatch)
+
+    def _raise(**kwargs):
+        raise AuthError("Hermes is not connected to any AI provider yet.", code="no_provider_configured")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise)
+    ready, error = shell._probe_runtime_credentials()
+    assert ready is False
+    assert shell._explain_unusable_credentials(error) is False
