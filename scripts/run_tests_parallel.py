@@ -29,6 +29,9 @@ Usage:
     (e.g. ``-q``, ``-v``, ``-x``, ``--tb=long``, ``-k 'pattern'``, ``--lf``)
     with no special separator — a bare ``-q`` "just works". Anything after
     a literal ``--`` is also passed through, and stacks with bare flags.
+    ``-h``/``--help`` prints this usage; a bare flag pytest does not know
+    (a typo like ``--jbs``) is a usage error here rather than a per-file
+    pytest failure. Tokens after ``--`` are never validated.
 
 Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
@@ -771,6 +774,30 @@ def _make_stdio_glyph_safe() -> None:
                 pass
 
 
+def _unknown_pytest_flags(tokens: List[str]) -> List[str]:
+    """Return the bare passthrough tokens pytest itself would reject.
+
+    A mistyped flag (``--jbs``) that is not one of OUR options used to be
+    forwarded to every per-file pytest, so the run discovered the whole suite
+    and each file died with ``unrecognized arguments`` — an hours-long way to
+    learn about a typo. Ask pytest's own argparse parser (with the installed
+    plugins loaded, so ``-n``/``--timeout`` count) which tokens it does not
+    know; argparse handles the attached-value (``-rA``), combined-flag
+    (``-xvs``) and ``-k expr`` forms for us. If the parser cannot be built
+    the check is skipped and tokens are forwarded as before.
+    """
+    try:
+        from _pytest.config import get_config
+
+        config = get_config()
+        config.pluginmanager.load_setuptools_entrypoints("pytest11")
+        parser = config._parser.optparser
+        _, unknown = parser.parse_known_args(tokens)
+    except Exception:
+        return []
+    return [tok for tok in unknown if tok.startswith("-")]
+
+
 def main() -> int:
     _make_stdio_glyph_safe()
     parser = argparse.ArgumentParser(
@@ -926,6 +953,14 @@ def main() -> int:
         i += 1
 
     args = parser.parse_args(our_args)
+
+    # Bare tokens are validated against pytest's option set so a typo fails
+    # here with usage instead of once per discovered file. Anything after a
+    # literal ``--`` is the caller's explicit choice and is forwarded as-is.
+    if bare_passthrough:
+        unknown = _unknown_pytest_flags(bare_passthrough)
+        if unknown:
+            parser.error(f"unrecognized arguments: {' '.join(unknown)}")
 
     # ── Node-id selectors → file + ``-k`` filter ────────────────────────────
     # This runner is FILE-granular: it spawns one ``pytest <file>`` per test

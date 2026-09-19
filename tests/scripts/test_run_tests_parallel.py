@@ -293,6 +293,25 @@ def test_help_prints_usage_without_discovering_or_running_tests(
     assert "Discovered" not in proc.stdout
 
 
+def test_unknown_bare_flag_errors_with_usage_instead_of_sweeping(tmp_path: Path) -> None:
+    """A typo'd flag fails once, up front, and never reaches a per-file pytest.
+
+    Bare tokens are checked against pytest's own option set, so real pytest
+    forms (attached short value ``-rA``, bare ``-x``) still pass through and
+    run, while ``--jbs`` is rejected with this runner's usage before discovery.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+
+    proc = _run_runner(probe_dir, "--jbs")
+    assert proc.returncode == 2, proc.stdout
+    assert "usage:" in proc.stdout and "unrecognized arguments: --jbs" in proc.stdout
+    assert "Discovered" not in proc.stdout
+
+    proc = _run_runner(probe_dir, "-rA", "-x")
+    assert proc.returncode == 0, proc.stdout
+    assert "2✓" in proc.stdout or "2 passed" in proc.stdout, proc.stdout
+
+
 
 
 def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
