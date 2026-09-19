@@ -445,7 +445,7 @@ async def run_codex_hygiene_compaction(
             history,
             "",
             approx_tokens=approx_tokens,
-            task_id=session_id,
+            task_id=session_id or "default",
         ),
     )
     track_worker = getattr(gateway, "_track_deferred_agent_worker", None)
@@ -26190,7 +26190,7 @@ class GatewayRunner(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
                                             commit_fence=_hyg_commit_fence,
-                                            task_id=session_entry.session_id,
+                                            task_id=session_entry.session_id or "default",
                                         ),
                                     )
                                     # Discord episode card (presentation-only,
