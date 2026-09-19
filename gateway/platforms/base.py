@@ -3574,6 +3574,15 @@ class BasePlatformAdapter(ABC):
         failures fall back to a plain-text send, exhausted retries notify the user."""
         async def _send(text: str) -> "SendResult":
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+
+        async def _send_again(previous: "SendResult") -> "Optional[SendResult]":
+            """Retry: the whole payload normally; only the undelivered remainder after a partial split
+            delivery (``raw_response["partial_overflow"]``). ``None`` when the adapter cannot resume — the
+            caller then keeps the partial failure rather than re-sending the already-visible head."""
+            if not self._is_partial_delivery(previous):
+                return await _send(content)
+            return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
+
         result = await _send(content)
         if result.success or self._send_retry_is_final(result):
             return result
@@ -3616,7 +3625,13 @@ class BasePlatformAdapter(ABC):
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
                                attempt, max_retries, delay, error_str)
                 await asyncio.sleep(delay)
-                result = await _send(content)
+                resumed = await _send_again(result)
+                if resumed is None:
+                    logger.warning(
+                        "[%s] Split send partly delivered and the remainder cannot be resumed safely; "
+                        "not re-sending the whole payload (would duplicate the visible head): %s", self.name, error_str)
+                    return result
+                result = resumed
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
@@ -3666,6 +3681,10 @@ class BasePlatformAdapter(ABC):
         # Non-network / post-retry formatting failure: try plain text as fallback. A
         # rate-limited error never reaches here: it classifies as network above and the
         # loop only breaks on a non-transient, non-rate-limited error.
+        if self._is_partial_delivery(result):
+            # Part of a split payload is already on screen; a plain-text re-send of the whole would duplicate it.
+            logger.warning("[%s] Send failed after partial delivery: %s — not re-sending as plain text", self.name, error_str)
+            return result
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self._send_plain_fallback(chat_id, content, reply_to=reply_to, metadata=metadata)
         if not fallback_result.success:
@@ -3676,6 +3695,21 @@ class BasePlatformAdapter(ABC):
         """True when a failed send must be returned as-is: neither a retry nor the plain-text
         fallback can fix it (a structured auth/target refusal). Default: never."""
         return False
+
+    @staticmethod
+    def _is_partial_delivery(result: "SendResult") -> bool:
+        """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
+        contract Telegram's send/edit-overflow paths set and the stream consumer reads): the visible
+        head must never be sent again."""
+        raw = getattr(result, "raw_response", None)
+        return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+
+    async def _resume_partial_send(
+        self, chat_id: str, result: "SendResult", *, reply_to: Optional[str], metadata: Any) -> "Optional[SendResult]":
+        """Deliver only the remainder of a partially delivered split payload. ``None`` (the default) means
+        this adapter cannot resume; ``_send_with_retry`` then returns the partial failure instead of
+        re-sending the whole payload. Override only where non-delivery of the remainder is CERTAIN."""
+        return None
 
     async def _send_plain_fallback(
             self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> "SendResult":
