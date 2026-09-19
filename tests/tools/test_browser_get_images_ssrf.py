@@ -83,3 +83,27 @@ def test_guard_does_not_block_on_failed_eval(monkeypatch):
     result = json.loads(browser_tool.browser_get_images(task_id="test"))
     assert result["success"] is False
     assert "eval failed" in result["error"]
+
+
+def test_get_images_sends_single_line_eval_and_parses_images(monkeypatch):
+    """Regression for #113838: Windows CLI transport must receive one eval argument."""
+    captured = {}
+
+    def _run(task_id, command, args=None, **kwargs):
+        captured["task_id"] = task_id
+        captured["command"] = command
+        captured["args"] = args
+        return {"success": True, "data": {"result": IMAGES_JS_RESULT}}
+
+    monkeypatch.setattr(bt_session, "_run_browser_command", _run)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: False)
+
+    result = json.loads(browser_tool.browser_get_images(task_id="test"))
+
+    assert captured["command"] == "eval"
+    assert "\n" not in captured["args"][0]
+    assert result == {
+        "success": True,
+        "images": json.loads(IMAGES_JS_RESULT),
+        "count": 1,
+    }
