@@ -422,14 +422,10 @@ class BaseEnvironment(ABC):
         # The drain thread exits promptly after bash does (~300ms idle check);
         # a long join here would itself indicate a bug in the drain loop.
         drain_thread.join(timeout=2)
-        # Windows: close() serializes on the CRT's per-fd lock that a drain thread still
-        # inside os.read() holds, so it would block until the grandchild exits (#67362).
-        # Leave the fd to the daemon thread / Popen.__del__ in that case.
-        if not (os.name == "nt" and drain_thread.is_alive()):
-            try:
-                proc.stdout.close()
-            except Exception:
-                pass
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
         trace.natural_exit(proc.returncode)
 
         # Join the stdin writer before reading its error list: a child that exits without
