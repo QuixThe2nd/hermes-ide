@@ -464,7 +464,12 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     request argument supplied: reasoning_effort", #112781) or a standalone "unsupported" next to the
     field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none' unsupported;
     use minimal|low|medium|high|xhigh", #114460). The route default is the right answer for such a
-    model, so both the main loop and the auxiliary ladder retry once without the disable."""
+    model, so both the main loop and the auxiliary ladder retry once without the disable.
+
+    Known trade-off: a 400 about a thinking *state* ("Function calling is not supported when
+    thinking is enabled") also matches — the marker sits right next to the token, so no proximity
+    rule separates it from the forward wordings. Cost is one dropped-disable retry before the
+    spent path takes the fallback chain; the auxiliary ladder already treated it this way."""
     msg = (error_msg or "").lower()
     token = _REASONING_FIELD_TOKEN.search(msg)
     if token is None:

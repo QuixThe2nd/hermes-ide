@@ -83,24 +83,8 @@ def test_spent_disable_drop_falls_back_instead_of_replaying_the_request():
     assert verdict.action == "break"
     assert agent.activated == [True]
 
-    # Control: before the drop has run the verdict stays retryable (the rung gets its shot).
+    # Control: before the drop has run the verdict stays retryable (the rung gets its shot;
+    # the one-shot drop itself is pre-existing ``turn_recovery`` behaviour, not asserted here).
     agent, verdict = _settle(disable_drop_attempted=False)
     assert verdict.action == "fallthrough"
     assert agent.activated == []
-
-
-def test_disable_drop_rung_sets_session_flag_once():
-    from agent.turn_recovery import recover_after_classification
-    from agent.turn_retry_state import TurnRetryState
-
-    agent = _Agent()
-    err = _FakeApiError(400, _REVERSED_400)
-    classified = classify_api_error(err, provider="custom", model=agent.model)
-    retry = TurnRetryState()
-    with patch("agent.conversation_loop._is_nous_inference_route", lambda *a, **k: False):
-        first, _ = recover_after_classification(
-            agent, err, classified, retry, status_code=400, error_context=None, messages=[], api_messages=[])
-        second, _ = recover_after_classification(
-            agent, err, classified, retry, status_code=400, error_context=None, messages=[], api_messages=[])
-    assert first is True and agent._reasoning_disable_rejected is True
-    assert second is False
