@@ -4,6 +4,7 @@
 Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle.
 """
 
+import base64
 import json
 import logging
 import os
@@ -106,6 +107,19 @@ def _agent_browser_argv(browser_cmd: str) -> list:
         _npx_bin = _install._resolve_npx_bin() or "npx"
         return [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", _bt.AGENT_BROWSER_NPX_SPEC]
     return [browser_cmd]
+
+
+def _shim_safe_eval_args(argv0: str, command: str, args: List[str]) -> List[str]:
+    """``eval`` scripts that reach a ``.cmd``/``.bat`` shim (``npx.cmd``, npm's ``agent-browser.cmd``
+    on Windows) go through cmd.exe, which re-parses the child command line: a newline ends the
+    argument and ``%VAR%`` expands even inside quotes, so a multi-line script arrives as its first
+    line only (``SyntaxError: Unexpected end of input``). Send the script base64-encoded
+    (``agent-browser eval -b``, present since the 0.26 floor) so it arrives byte-identical;
+    every other spawn target gets the raw argv."""
+    if command != "eval" or not args or not argv0.lower().endswith((".cmd", ".bat")):
+        return args
+    script, *rest = args
+    return ["--base64", base64.b64encode(script.encode("utf-8")).decode("ascii"), *rest]
 
 
 def _prepare_session_socket_dir(session_name: str) -> str:
@@ -592,7 +606,8 @@ def _run_browser_command(
         if engine != "auto" and not _bt._is_camofox_mode():
             backend_args += ["--engine", engine]
 
-    cmd_parts = _agent_browser_argv(browser_cmd) + backend_args + ["--json", command] + args
+    argv = _agent_browser_argv(browser_cmd)
+    cmd_parts = argv + backend_args + ["--json", command] + _shim_safe_eval_args(argv[0], command, args)
 
     try:
         result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
