@@ -411,6 +411,47 @@ def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypa
     assert web_server.app.state.auth_required is True
 
 
+def test_desktop_ssh_backend_serves_session_token_requests_despite_public_url(monkeypatch):
+    """A Desktop-SSH isolated backend on a host that also declares a public
+    ``dashboard.public_url`` must keep answering session-token REST calls.
+
+    Pinned at the request layer, not the predicate: the reporter's failure was
+    the post-bootstrap ``/api/profiles`` call coming back
+    ``401 {"reason": "no_cookie"}`` while ``/api/status`` still passed (#94119,
+    #96490). The gate predicate alone cannot catch a middleware-order or
+    ``auth_required`` plumbing regression that re-engages the cookie gate.
+    """
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dashboard.example.test:9443")
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    clear_providers()
+    register_provider(StubAuthProvider())
+    _stub_uvicorn_run(monkeypatch)
+    _restore_app_state_after_test(
+        monkeypatch, "auth_required", "bound_host", "bound_port", "trusted_public_hosts",
+    )
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", web_server._SESSION_TOKEN)
+    ssh_token = "a" * 64
+    try:
+        web_server.start_server(
+            host="127.0.0.1", port=0,
+            open_browser=False, allow_public=False,
+            ssh_session_token=ssh_token,
+        )
+        client = TestClient(web_server.app, base_url="http://127.0.0.1")
+        with_token = client.get("/api/profiles", headers={"X-Hermes-Session-Token": ssh_token})
+        assert with_token.status_code == 200, with_token.text
+        without_token = client.get("/api/profiles")
+        assert without_token.status_code == 401
+        # Loopback token mode, never the cookie gate's redirect envelope.
+        assert without_token.json().get("reason") != "no_cookie"
+    finally:
+        clear_providers()
+
+
 def test_loopback_public_url_fail_closed_message_is_actionable(monkeypatch):
     """The refusal must name public_url, print its value, and give both exits.
 
