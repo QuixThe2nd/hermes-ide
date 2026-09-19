@@ -786,7 +786,9 @@ def refresh_nous_oauth_from_state(
                 if current_invoke_jwt_status is not None:
                     raise _unusable_invoke_jwt_error(
                         current_invoke_jwt_status, no_refresh_token=True)
-                raise _nous_err("No refresh token is available for Nous Portal.", relogin=True)
+                raise _nous_err(
+                    "No refresh token is available for Nous Portal.", "nous_auth_missing_refresh_token",
+                    relogin=True)
             refreshed = _refresh_access_token(
                 client=client, portal_base_url=state["portal_base_url"],
                 client_id=state["client_id"], refresh_token=refresh_token_value)
@@ -996,7 +998,8 @@ class _NousRuntimeResolve:
                 if self.merge_shared():
                     self.persist("runtime_shared_merge_missing_access_token")
         if not self.has_access_token():
-            raise _nous_err("No access token found for Nous Portal login.", relogin=True)
+            raise _nous_err(
+                "No access token found for Nous Portal login.", "nous_auth_missing_access_token", relogin=True)
         invoke_jwt_status = self.invoke_jwt_status()
         self.skip_refresh_if_peer_rotated()
         if not (self.force_refresh or invoke_jwt_status is not None):
@@ -1054,7 +1057,7 @@ def _resolve_nous_runtime_credentials(
         _tls_state_from_verify)
     with _provider_state_transaction("nous") as (auth_store, state, state_source_path):
         if not state:
-            raise _nous_err("Hermes is not logged into Nous Portal.", relogin=True)
+            raise _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing", relogin=True)
         run = _NousRuntimeResolve(
             auth_store, state, state_source_path, force_refresh=force_refresh,
             stale_access_token=stale_access_token, timeout_seconds=timeout_seconds)

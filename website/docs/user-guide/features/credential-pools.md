@@ -188,7 +188,8 @@ cooldown. Billing (`402`, usage-limit) and auth (`401`) failures still bench the
 
 **A dead OAuth login is reported, not benched.** When a refresh token is rejected for good
 (`invalid_grant`, `invalid_token`, `refresh_token_reused` — the token was revoked, or another program
-holding the same login rotated it first), the pool logs one WARNING naming the entry and the repair
+holding the same login rotated it first — or, for Nous, the profile holds no Portal login or token
+pair to refresh with), the pool logs one WARNING naming the entry and the repair
 command (`hermes auth add <provider>`), and the credential leaves rotation — marked `dead`, or dropped
 when it only mirrored a token file the pool has just cleared — until you sign in again. This applies to Anthropic, Codex, xAI
 and Nous OAuth logins alike. A dead credential never re-enters rotation on a timer, so a lost login

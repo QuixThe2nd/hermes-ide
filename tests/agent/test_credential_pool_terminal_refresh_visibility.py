@@ -117,20 +117,21 @@ def test_surviving_manual_entry_is_marked_dead_after_terminal_refresh(monkeypatc
     assert [e.id for e in pool._entries] == ["e1"]  # manual rows are never dropped by the quarantine
     assert pool._entries[0].last_status == STATUS_DEAD
 
-def test_nous_relogin_required_without_code_clears_state(monkeypatch, caplog):
-    """A Nous refresh failure demanding relogin is terminal even when the provider
-    supplied no dead code: benching it for an hour hides a lost login (#113718)."""
-    from hermes_cli.auth_constants import AuthError
+def test_nous_login_missing_refresh_failure_is_terminal(monkeypatch, caplog):
+    """The resolver's "not logged in" raise (``nous_auth_missing``, relogin_required) is terminal:
+    retrying cannot succeed, so the row leaves rotation with a WARNING naming the fix and the
+    reason recorded, instead of an hour-long bench with null error fields (#113718)."""
+    from hermes_cli.auth_constants import _nous_err
 
     pool = _pool("nous")
-    entry = _entry("nous")
+    entry = _entry("nous", source="manual:device_code")
     pool._entries = [entry]
     cleared: list = []
     monkeypatch.setattr(pool, "_sync_nous_entry_from_auth_store", lambda e: e)
     monkeypatch.setattr(pool, "_clear_terminal_nous_state", lambda e, exc: cleared.append(e.id))
     monkeypatch.setattr(pool, "_quarantine_sources", lambda e, sources: None)
 
-    exc = AuthError("session expired", provider="nous", code=None, relogin_required=True)
+    exc = _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing", relogin=True)
     with caplog.at_level(logging.INFO, logger=cp.logger.name):
         result = pool._recover_failed_refresh(entry, exc)
 
@@ -138,10 +139,13 @@ def test_nous_relogin_required_without_code_clears_state(monkeypatch, caplog):
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "terminally invalid" in r.getMessage()]
     assert len(warnings) == 1
     assert "hermes auth add nous" in warnings[0].getMessage()
+    row = pool._entries[0]
+    assert row.last_status == STATUS_DEAD
+    assert (row.last_error_reason, row.last_error_message) == ("nous_auth_missing", str(exc))
 
 
 def test_nous_transient_error_still_benched(monkeypatch, caplog):
-    """Without relogin_required the failure stays transient: benched, not cleared."""
+    """A failure that says nothing about the login stays transient: benched, not cleared."""
     pool = _pool("nous")
     entry = _entry("nous")
     pool._entries = [entry]
