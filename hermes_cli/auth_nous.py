@@ -1272,13 +1272,19 @@ def _pool_first_oauth_status(
 
     Pool first (where `hermes auth` / `hermes model` store device_code tokens), then
     *on_pool_miss* for a pool-derived degraded status, then the legacy state via *resolve*.
+
+    The pool read is an observation (``peek``), not a lease: ``select()`` refreshes an expiring
+    single-use token and, when that speculative POST fails transiently, benches the entry with a
+    persisted cooldown — every credential-gated listing (``/model`` picker, doctor) then shows the
+    provider as unconfigured while the runtime resolver still serves it. Refreshing stays with the
+    runtime resolver reached through *resolve*, whose failures persist nothing.
     """
     from hermes_cli.auth import _auth_file_path
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider_id)
         if pool and pool.has_credentials():
-            entry = pool.select()
+            entry = pool.peek()
             if entry is not None:
                 api_key = (
                     getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", ""))

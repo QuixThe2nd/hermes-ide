@@ -142,7 +142,10 @@ position when that rule changes it. Other strategies may override priority, and
 reordering does not rebind credentials already held by a running session.
 
 Every successful pool selection increments `request_count`, regardless of strategy.
-Refresh-only lookups and peeks do not count. These are selection counters, not
+Refresh-only lookups and peeks do not count. Status reads (`hermes doctor`, the `/model`
+picker's provider rows, dashboard auth cards) are peeks: they never refresh, rotate, or
+bench a pool credential, so a token endpoint hiccup while the picker is open cannot hide
+a provider that is still serving requests. These are selection counters, not
 billing totals or a count of every inference request: a cached credential can serve
 multiple requests. Counts remain in memory until the next existing pool write
 (for example rotation, exhaustion, refresh, or an administrative change); this does
