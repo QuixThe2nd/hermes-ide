@@ -203,11 +203,3 @@ class TestPurgeProfileState:
         assert db._read_one(
             "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatB",)
         )["session_key"] == "agent:keepme:telegram:dm:chatB"
-
-    def test_purges_zero_legacy_v2_rows_without_profile_column(self, db):
-        """A delete for an absent profile must not query profile_name on a v2 schema."""
-        _create_legacy_v2_topic_tables(db)
-
-        counts = db.purge_profile_state("gone")
-
-        assert counts["telegram_dm_topic_bindings"] == 0

@@ -128,6 +128,25 @@ _ORPHAN_CONTIGUITY_DONORS_SQL = f"""
                         ORDER BY last_active DESC
                         LIMIT 2
                         """
+_TOPIC_TABLE_NAMES = ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
+
+
+def _topic_table_columns(conn) -> Dict[str, Set[str]]:
+    """Live column sets of the Telegram topic tables that exist (``{}`` when none do).
+
+    ``apply_telegram_topic_migration`` runs only on explicit ``/topic`` opt-in, so a store
+    can hold supported v1/v2 tables without ``profile_name`` for its whole life. Identity
+    settlement must gate its ``profile_name`` SQL on the column actually being there rather
+    than on table existence, and must not force that migration (#113757).
+    """
+    existing = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?)", _TOPIC_TABLE_NAMES)}
+    return {
+        table: {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
+        for table in _TOPIC_TABLE_NAMES if table in existing
+    }
+
+
 _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error = ? WHERE "
 
 
@@ -558,11 +577,7 @@ class SessionGatewayMixin:
         def _do(conn):
             existing = {row[0] for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            topic_columns = {
-                table: {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
-                for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
-                if table in existing
-            }
+            topic_columns = _topic_table_columns(conn)
             collision = conn.execute(
                 "SELECT old.scope, ? || substr(old.session_key, ?) "
                 "FROM gateway_routing AS old JOIN gateway_routing AS target "
@@ -691,11 +706,7 @@ class SessionGatewayMixin:
         def _do(conn):
             existing = {row[0] for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            topic_columns = {
-                table: {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
-                for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
-                if table in existing
-            }
+            topic_columns = _topic_table_columns(conn)
             if "gateway_routing" in existing:
                 counts["gateway_routing"] = conn.execute(
                     "DELETE FROM gateway_routing WHERE substr(session_key, 1, ?) = ?",
@@ -719,16 +730,13 @@ class SessionGatewayMixin:
             if "session_key" in binding_columns:
                 # A rename rewrites a binding's session_key namespace as well as its profile_name
                 # (:meth:`rekey_profile_state`), so matching on one alone leaves the other behind.
-                if "profile_name" in binding_columns:
-                    counts["telegram_dm_topic_bindings"] = conn.execute(
-                        "DELETE FROM telegram_dm_topic_bindings "
-                        "WHERE profile_name = ? OR substr(session_key, 1, ?) = ?",
-                        (name, ns_len, ns)).rowcount
-                else:
-                    counts["telegram_dm_topic_bindings"] = conn.execute(
-                        "DELETE FROM telegram_dm_topic_bindings "
-                        "WHERE substr(session_key, 1, ?) = ?",
-                        (ns_len, ns)).rowcount
+                # Legacy v1/v2 bindings have no profile_name but keep the ``agent:<name>:`` namespace
+                # in session_key, so the namespace match alone is the exact cleanup there.
+                by_profile = "profile_name = ? OR " if "profile_name" in binding_columns else ""
+                params = (name, ns_len, ns) if by_profile else (ns_len, ns)
+                counts["telegram_dm_topic_bindings"] = conn.execute(
+                    "DELETE FROM telegram_dm_topic_bindings "
+                    f"WHERE {by_profile}substr(session_key, 1, ?) = ?", params).rowcount
 
         self._execute_write(_do)
         return counts
