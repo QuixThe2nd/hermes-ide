@@ -291,8 +291,8 @@ export interface Translations {
       gatewayAuthFailed: string
       methodNotAllowed: string
       microphonePermission: string
-      openaiRejectedApiKeyWithStatus: (status: string) => string
       openaiRejectedApiKey: string
+      openaiRejectedApiKeyWithStatus: (status: string) => string
       openaiTtsNeedsKey: string
       codeSkewRestartRequired: string
       restartHermesFailed: string
@@ -1789,7 +1789,7 @@ export interface Translations {
     archivedChats: string
     sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
     sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    nav: Record<'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts', { title: string; detail: string }>
+    nav: Record<'newChat' | 'settings' | 'capabilities' | 'messaging' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string
