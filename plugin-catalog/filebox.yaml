@@ -1,6 +1,7 @@
 name: filebox
 repo: https://github.com/AndreasHiltner/hermes-filebox
-sha: 9d3bab57ae6f468968f295de9fd53a46db79ca1d
+sha: 0210dcc8e27fcd90e92719d03c910130b0b074b9
+version: "0.3.0"
 description: Dual-panel commander file browser for Hermes Desktop — whitelist-guarded file CRUD, copy/move/symlink, media preview, multi-select, rename, and trash. No network I/O, no model tokens.
 maintainer: Andreas Hiltner
 tier: community
