@@ -14,7 +14,7 @@ const { saveBotMeta, storage } = vi.hoisted(() => ({
 
 vi.mock('./data', async () => {
   const { atom } = await import('nanostores')
-  const $botMeta = atom<Record<string, { sectionId?: null | string }>>({})
+  const $botMeta = atom<Record<string, { sectionId?: null | string; sectionName?: null | string }>>({})
 
   saveBotMeta.mockImplementation(async (bot: { name: string }, patch: Record<string, unknown>) => {
     $botMeta.set({ ...$botMeta.get(), [bot.name]: { ...$botMeta.get()[bot.name], ...patch } })
@@ -42,11 +42,13 @@ import { $botMeta } from './data'
 import type { RosterRow } from './types'
 import {
   $botSections,
+  adoptBotSectionsFromMeta,
   createBotSection,
   deleteBotSection,
   groupRowsBySection,
   loadBotSections,
   moveBotsToSection,
+  renameBotSection,
   UNASSIGNED_SECTION_KEY
 } from './user-sections'
 
@@ -66,7 +68,7 @@ describe('user sections', () => {
 
     // Membership rides the bot's own meta write (profile ui_meta), one per bot.
     await vi.waitFor(() => expect(saveBotMeta).toHaveBeenCalledTimes(2))
-    expect(saveBotMeta).toHaveBeenCalledWith(bot('nanox'), { sectionId: section.id })
+    expect(saveBotMeta).toHaveBeenCalledWith(bot('nanox'), { sectionId: section.id, sectionName: 'Clients' })
 
     // A no-op move (already there) writes nothing.
     await moveBotsToSection([bot('nanox')], section.id)
@@ -119,5 +121,43 @@ describe('user sections', () => {
     undo()
     expect($botSections.get().map(s => s.name)).toEqual(['Clients', 'Team'])
     await vi.waitFor(() => expect($botMeta.get().nanox?.sectionId).toBe(section.id))
+  })
+
+  it('a second desktop rebuilds sections it never created from the id + name on each member', () => {
+    // This machine has no section records, only the members' synced ui_meta.
+    const meta = {
+      nanox: { sectionId: 'sec-clients', sectionName: 'Clients' },
+      scout: { sectionId: 'sec-clients', sectionName: 'Clients' },
+      ghost: { sectionId: 'sec-legacy' } // filed before names rode along: nothing to draw
+    }
+
+    adoptBotSectionsFromMeta([bot('nanox'), bot('scout'), bot('ghost')], meta)
+    expect($botSections.get()).toEqual([{ id: 'sec-clients', name: 'Clients' }])
+    expect(storage.get('bot-sections-v1')).toEqual([{ id: 'sec-clients', name: 'Clients' }])
+
+    // A known section takes the members' name only once every member agrees
+    // on it — a rename elsewhere, fully stamped. A half-stamped rename leaves
+    // the local name alone.
+    adoptBotSectionsFromMeta([bot('nanox'), bot('scout')], {
+      nanox: { sectionId: 'sec-clients', sectionName: 'Customers' },
+      scout: { sectionId: 'sec-clients', sectionName: 'Clients' }
+    })
+    expect($botSections.get()).toEqual([{ id: 'sec-clients', name: 'Clients' }])
+    adoptBotSectionsFromMeta([bot('nanox'), bot('scout')], {
+      nanox: { sectionId: 'sec-clients', sectionName: 'Customers' },
+      scout: { sectionId: 'sec-clients', sectionName: 'Customers' }
+    })
+    expect($botSections.get()).toEqual([{ id: 'sec-clients', name: 'Customers' }])
+  })
+
+  it('renaming re-stamps the members so the new name reaches other desktops', async () => {
+    const section = createBotSection('Clients', [bot('nanox')])!
+    await vi.waitFor(() => expect($botMeta.get().nanox?.sectionName).toBe('Clients'))
+    saveBotMeta.mockClear()
+
+    renameBotSection(section.id, 'Customers', [bot('nanox'), bot('scout')])
+    await vi.waitFor(() => expect(saveBotMeta).toHaveBeenCalledTimes(1))
+    expect(saveBotMeta).toHaveBeenCalledWith(bot('nanox'), { sectionId: section.id, sectionName: 'Customers' })
+    expect($botSections.get()).toEqual([{ id: section.id, name: 'Customers' }])
   })
 })

@@ -41,7 +41,7 @@ Sections are folders you make yourself — **Clients**, **Team**, whatever fits 
 - **Rename, reorder, or delete** a section from its heading's right-click menu (or the **⋯** that appears on hover); double-click a heading to rename. Headings fold like the gateway headings do.
 - **Deleting a section never deletes Bots** — they return to **Unassigned**, and the toast offers **Undo**. No confirmation is asked.
 
-Membership is stored in each Bot's profile metadata (`ui_meta`), so a Bot's section follows it to every desktop connected to that backend. When the roster shows more than one gateway, sections nest inside each gateway's bucket.
+Membership — the section's id **and name** — is stored in each Bot's profile metadata (`ui_meta`), so a Bot's section follows it to every desktop connected to that backend: a second desktop rebuilds the section headings from its members the first time it loads the roster, and a rename made on one desktop reaches the others the same way. The section list itself (order, empty sections) is kept per desktop, so deleting a section on one machine leaves an empty heading on the others until you delete it there too. Bots filed before this shipped carry only the id; re-file them once (or rename the section) to stamp the name. When the roster shows more than one gateway, sections nest inside each gateway's bucket.
 
 ## Creating a Bot
 
