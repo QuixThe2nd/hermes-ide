@@ -431,7 +431,9 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
 @_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins')."""
+    (skills' message wins, then quick commands', then plugins'). Skill discovery is bound to the calling
+    session's profile and workspace (``_completion_cwd``: its record, else the cwd a new session would be
+    seeded with) so project-local skills register for the repo the session is actually in (#114359)."""
     cat = _Catalog()
     _catalog_registry(cat)
     warning = ""
@@ -445,7 +447,8 @@ def _(rid, params: dict) -> dict:
         warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
     try:
-        _catalog_skills(cat, skills)
+        with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+            _catalog_skills(cat, skills)
     except Exception as e:
         warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {
@@ -515,18 +518,27 @@ def _run_plugin_command(handler, arg: str) -> str:
 
 
 @contextlib.contextmanager
-def _session_home_scope(session):
-    """Bind HERMES_HOME to the session's profile for the block (no-op for the launch profile).
+def _session_home_scope(session, cwd: str | None = None):
+    """Bind HERMES_HOME and the logical cwd to the session for the block.
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
     ``quick_commands`` all live in the profile's config/home); nothing upstream of these RPC handlers
-    binds it, so an unscoped call resolves against the launch profile (#110695)."""
+    binds it, so an unscoped call resolves against the launch profile (#110695). Project-local skills
+    are cwd-keyed (``find_project_root`` reads the session-bound cwd first): these RPCs run on the socket
+    thread with no session context, where the terminal scope resolves a placeholder ``terminal.cwd`` to
+    ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
+    record (a session-less catalog request binds the workspace a new session would be seeded with)."""
     hc = _tools_mod("hermes_constants")
+    rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
+    cwd = cwd or (str(session.get("cwd") or "") if session else "")
     token = hc.set_hermes_home_override(profile_home) if profile_home else None
+    cwd_token = rc.set_session_cwd(cwd) if cwd else None
     try:
         yield
     finally:
+        if cwd_token is not None:
+            rc.reset_session_cwd(cwd_token)
         if token is not None:
             hc.reset_hermes_home_override(token)
 

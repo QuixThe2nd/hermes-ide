@@ -3124,6 +3124,57 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
     assert server._expand_skill_invocation_for_replay("/status", "t") == "/status"
 
 
+def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cwd(tmp_path, monkeypatch):
+    # TUI/desktop: the RPC thread has no session context and the terminal scope / process env resolve a
+    # placeholder ``terminal.cwd`` to $HOME, so project skills of the session's repo never registered and
+    # ``/<name>`` died with "not a quick/plugin/bundle/skill command". Two sessions in two trusted repos
+    # in ONE process must each catalog and dispatch their own repo's skill (the cached registry is
+    # keyed by project root, not just platform + home).
+    import agent.skill_commands as skill_commands
+    import agent.skill_utils as skill_utils
+    import tools.skills_tool as skills_tool
+
+    def repo(name: str, skill: str) -> Path:
+        r = tmp_path / name
+        (r / ".git").mkdir(parents=True)
+        (r / ".hermes" / "skills" / skill).mkdir(parents=True)
+        (r / ".hermes" / "skills" / skill / "SKILL.md").write_text(
+            f"---\nname: {skill}\ndescription: from {name}\n---\n\n# {skill}\n\nBODY OF {skill.upper()}\n")
+        return r
+
+    repo_a, repo_b = repo("proj-a", "alpha-skill"), repo("proj-b", "beta-skill")
+    home = tmp_path / "hermes-home"
+    (home / "skills").mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        f"skills:\n  external_dirs: []\n  trusted_project_dirs: ['{repo_a}', '{repo_b}']\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", home / "skills")
+    monkeypatch.setattr(skill_utils, "_skills_cfg", lambda: {
+        "external_dirs": [], "trusted_project_dirs": [str(repo_a), str(repo_b)]})
+    skill_utils._external_dirs_cache_clear()
+    monkeypatch.setattr(skill_commands, "_skill_commands", {})
+    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    # Launch shape: process cwd and TERMINAL_CWD both point at a non-project dir (the resolved placeholder).
+    elsewhere = tmp_path / "home-dir"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("TERMINAL_CWD", str(elsewhere))
+    monkeypatch.setattr(server, "_sessions", {
+        "sid-a": {"session_key": "key-a", "cwd": str(repo_a)},
+        "sid-b": {"session_key": "key-b", "cwd": str(repo_b)}})
+
+    for sid, own, other in (("sid-a", "alpha-skill", "beta-skill"), ("sid-b", "beta-skill", "alpha-skill")):
+        catalog = server._methods["commands.catalog"]("c", {"session_id": sid})["result"]
+        assert f"/{own}" in catalog["skills"] and f"/{other}" not in catalog["skills"]
+        res = server._methods["command.dispatch"]("d", {"name": own, "arg": "go", "session_id": sid})
+        assert res["result"]["type"] == "skill", res
+        assert f"BODY OF {own.upper()}" in res["result"]["message"]
+        miss = server._methods["command.dispatch"]("m", {"name": other, "arg": "", "session_id": sid})
+        assert miss["error"]["code"] == 4018
+    # Nothing leaks past the RPC: the thread's logical cwd is unbound again.
+    assert skill_utils.find_project_root() is None
+
+
 def test_history_to_messages_types_a_legacy_auto_continue_row():
     # A crash-interrupted turn used to be typed only AFTER it finished, so a
     # turn killed a second time (or any row written before turn-start typing
