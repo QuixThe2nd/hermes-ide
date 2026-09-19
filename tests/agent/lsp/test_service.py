@@ -146,14 +146,10 @@ def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
         svc.shutdown()
 
 
-def test_snapshot_baseline_scales_join_budget_past_8s(mock_pyright_silent):
-    """The outer join budget must scale with ``wait_timeout`` instead of
-    capping at 8s.
-
-    With wait_timeout=10.0 the inner wait takes 10s; an 8s outer cap
-    would fire first, falsely mark the server broken, and truncate the
-    snapshot.  The elapsed time must land between the inner budget and
-    the (now scaled) outer budget, with the server still healthy.
+def test_snapshot_baseline_honors_wait_timeout_above_default(mock_pyright_silent):
+    """A ``wait_timeout`` above the 5s client default must also reach the
+    baseline wait (it was silently truncated to 5s), and the outer join
+    budget must scale with it so the slow-but-alive server is not marked broken.
     """
     repo = mock_pyright_silent
     f = repo / "x.py"
@@ -162,7 +158,7 @@ def test_snapshot_baseline_scales_join_budget_past_8s(mock_pyright_silent):
     svc = LSPService(
         enabled=True,
         wait_mode="document",
-        wait_timeout=10.0,
+        wait_timeout=7.0,
         install_strategy="manual",
     )
     try:
@@ -170,8 +166,8 @@ def test_snapshot_baseline_scales_join_budget_past_8s(mock_pyright_silent):
         svc.snapshot_baseline(str(f))
         elapsed = time.monotonic() - start
 
-        assert elapsed >= 9.5, f"baseline cut short by the outer cap: {elapsed:.2f}s"
-        assert elapsed < 12.5, f"baseline overran the scaled join budget: {elapsed:.2f}s"
+        assert elapsed >= 6.5, f"baseline truncated to the 5s client default: {elapsed:.2f}s"
+        assert elapsed < 9.5, f"baseline overran the scaled join budget: {elapsed:.2f}s"
         # A slow-but-alive server must not be marked broken.
         assert svc.get_status()["broken"] == []
     finally:

@@ -151,8 +151,9 @@ lsp:
 
   # How long to wait for diagnostics after each write.
   wait_mode: document      # "document" or "full"
-  # Max seconds to wait for the server to re-check the file after an
-  # edit. Only *fresh* diagnostics (produced for the post-edit
+  # Max seconds to wait for the server on each of the two waits an
+  # edit makes: the pre-edit baseline snapshot and the post-edit
+  # re-check. Only *fresh* diagnostics (produced for the post-edit
   # content) are ever reported; if the server doesn't finish within
   # this budget, the edit reports "no LSP data" rather than stale
   # errors from before the edit. Raise this for slow servers on big
@@ -220,7 +221,9 @@ The LSP layer adds a few milliseconds to clean writes when no
 diagnostics are emitted. When diagnostics are emitted, the wait
 budget is `wait_timeout` seconds — typically the server responds in
 tens of milliseconds for pyright/tsserver and a few seconds for
-rust-analyzer mid-indexing.
+rust-analyzer mid-indexing. Each edit waits twice (a pre-edit
+baseline snapshot for the delta, then the post-edit re-check), so a
+server that never answers costs at most `2 × wait_timeout` per edit.
 
 Diagnostics are **freshness-gated**: a result only counts when the
 server produced it for the content of the current edit (a

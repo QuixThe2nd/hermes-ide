@@ -202,11 +202,8 @@ class LSPService:
         if not self.enabled_for(file_path):
             return
         try:
-            # Outer join budget must exceed the inner wait budget or a
-            # slow-but-alive server gets falsely marked broken.  The
-            # floor keeps the default behavior (8s with default config)
-            # while letting larger user-configured wait_timeout values
-            # scale the join budget instead of capping it at 8s.
+            # Outer join budget must exceed the inner wait or a slow-but-alive server gets falsely
+            # marked broken; it is a ceiling only — the inner wait returns as soon as it completes.
             t = max(DIAGNOSTICS_DOCUMENT_WAIT + 3.0, self._wait_timeout + 3.0)
             diags = self._loop.run(self._snapshot_async(file_path), timeout=t)
         except Exception as e:  # noqa: BLE001
@@ -336,7 +333,7 @@ class LSPService:
         """Open + wait for FRESH diagnostics: ``[]`` = checked clean, ``None`` = no verdict in budget.
 
         Callers must not substitute stale data for either.  ``snapshot`` mode
-        (pre-write baseline) skips didSave and uses the default wait budget.
+        (pre-write baseline) skips didSave; both modes wait at most ``lsp.wait_timeout``.
         """
         client = await self._get_or_spawn(file_path)
         if client is None:
