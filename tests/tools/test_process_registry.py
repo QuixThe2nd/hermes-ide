@@ -2197,7 +2197,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         # _build_systemd_scope_argv calls shutil.which — point it at a stub.
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
@@ -2265,7 +2265,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
 
         with (
@@ -2292,7 +2292,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: False,
+            lambda environ=None: False,
         )
 
         with (
@@ -2418,7 +2418,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2453,7 +2453,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2503,7 +2503,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2540,7 +2540,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2899,7 +2899,7 @@ class TestSystemdCgroupIsolation:
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
         monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
         monkeypatch.setattr(
-            "gateway.restart.is_gateway_supervisor_process", lambda: True
+            "gateway.restart.is_gateway_supervisor_process", lambda environ=None: True
         )
         # If any branch consults the probe or builds a scope argv on darwin,
         # fail loudly.
