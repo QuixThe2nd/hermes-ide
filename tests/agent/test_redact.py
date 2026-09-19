@@ -19,26 +19,41 @@ def _ensure_redaction_enabled(monkeypatch):
 
 class TestKnownPrefixes:
 
-    def test_dotted_sk_and_zhipu_keys_are_fully_redacted(self):
-        """Provider keys with internal dots must not leave a cleartext tail (#113901)."""
+    def test_dotted_sk_and_prefixless_zhipu_keys_fully_masked_on_every_surface(self):
+        """A key whose body carries dots must never leave a cleartext tail, and the
+        prefix-less Zhipu ``id.secret`` shape must mask at all: on the terminal
+        ``cat``/``grep`` path (code_file=True, the reporter's surface) and on the
+        file-read path, where the mask must be the non-reusable sentinel."""
+        from agent.redact import redact_terminal_output
+
         dotted_sk = "sk-sp-" + "ABCDEFGH1234567890" + "." + "abcdefgh1234567890_XYZ-0987654321"
+        multi_dot_sk = "sk-ws-" + "H.EEPXREE.pFau.MEUCIQC6UnD-jj2a" + "ABCDEFGHIJKLMNOP"
         zhipu = "50aaedFAKE1234567890abcdef1234567890abc" + "." + "ZpSh99"
+        yaml = f"a:\n  api_key: {dotted_sk}\nb:\n  api_key: {zhipu}\nc:\n  api_key: {multi_dot_sk}\n"
 
-        result = redact_sensitive_text(f"dotted={dotted_sk} zhipu={zhipu}")
+        term = redact_terminal_output(yaml, "cat /tmp/keys.yaml")
+        for secret_tail in ("abcdefgh1234567890_XYZ", "ZpSh99", "MEUCIQC6UnD", "EEPXREE"):
+            assert secret_tail not in term, term
 
-        assert dotted_sk not in result
-        assert "abcdefgh1234567890_XYZ" not in result
-        assert zhipu not in result
+        read = redact_sensitive_text(yaml, file_read=True)
+        assert "«redacted:sk-…»" in read and "«redacted-secret»" in read, read
+        for secret_tail in ("abcdefgh1234567890_XYZ", "ZpSh99", "MEUCIQC6UnD", "EEPXREE"):
+            assert secret_tail not in read, read
 
-    def test_zhipu_matcher_keeps_nearby_non_key_text(self):
-        """The provider-specific id.secret shape must not become a generic dotted-token sweep."""
-        text = "release=" + "a" * 31 + ".ZpSh99"
+    def test_dotted_and_prefixless_matchers_leave_benign_tokens_alone(self):
+        """The Zhipu matcher is provider-shaped, not a generic dotted-token sweep:
+        content-hash filenames, bare git shas, short ``sk-`` fragments and a
+        31-char id must stay byte-identical."""
+        from agent.redact import redact_terminal_output
 
-        assert redact_sensitive_text(text) == text
-
-    def test_short_sk_token_remains_unredacted(self):
-        assert redact_sensitive_text("sk-short") == "sk-short"
-
+        benign = (
+            "blob 0123456789abcdef0123456789abcdef.png\n"
+            "commit 0123456789abcdef0123456789abcdef01234567\n"
+            "sk-short sk-abc.def\n"
+            "release=" + "a" * 31 + ".ZpSh99\n"
+        )
+        assert redact_terminal_output(benign, "git log --stat") == benign
+        assert redact_sensitive_text(benign, file_read=True) == benign
 
 
 

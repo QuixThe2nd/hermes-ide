@@ -133,8 +133,12 @@ def _redact_enabled() -> bool:
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
 _PREFIX_PATTERNS = [
-    # Some provider-issued ``sk-`` keys contain dot-delimited body segments.
-    r"sk-(?=[A-Za-z0-9_.-]{10,}(?![A-Za-z0-9_.-]))[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*",
+    # Some provider-issued ``sk-`` keys carry dot-delimited body segments (Alibaba
+    # ``sk-sp-…``/``sk-ws-…``). The lookahead sets the 10-char floor over the whole
+    # dotted body; the body then runs to its last non-dot char so sentence
+    # punctuation after a key is never consumed. Kept free of nested unbounded
+    # repeats so the pattern passes the same structural gate plugins must.
+    r"sk-(?=[A-Za-z0-9_.-]{10,}(?![A-Za-z0-9_.-]))[A-Za-z0-9_.-]*[A-Za-z0-9_-]",
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token
