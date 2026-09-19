@@ -209,6 +209,27 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
     return _loader.load_named(name, provider_dir, _load, kind="Memory provider", noun="provider", logger=logger)
 
 
+def import_memory_provider_module(name: str) -> bool:
+    """Import the configured provider's module WITHOUT constructing a provider — the
+    later ``load_memory_provider`` then hits ``sys.modules`` instead of a fresh native
+    extension load. Exists so ``hermes acp`` can pay the heavy import (numpy / ML stack)
+    on the main thread before any other thread starts: on Windows a first-time native
+    import racing another thread's import chain deadlocked ``session/new`` (#58083).
+    False when the provider is unknown or its import fails (agent init reports that)."""
+    try:
+        if provider_dir := find_provider_dir(name):
+            return _loader.load_plugin_module(
+                _module_name(provider_dir, name), provider_dir, parents=("plugins", "plugins.memory"),
+                logger=logger, synthetic_namespace=None if _is_bundled(provider_dir) else _USER_NAMESPACE,
+            ) is not None
+        if (entry_point := find_provider_entry_point(name)) is not None:
+            entry_point.load()
+            return True
+    except Exception:
+        logger.debug("memory provider '%s' warm-up import failed", name, exc_info=True)
+    return False
+
+
 def _instantiate_subclass(namespace) -> Optional["MemoryProvider"]:
     """First instantiable ``MemoryProvider`` subclass found among *namespace*'s attributes."""
     from agent.memory_provider import MemoryProvider
