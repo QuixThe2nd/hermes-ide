@@ -316,9 +316,10 @@ def _not_configured_error(platform_name, platform, entry):
         if env_path.exists() else "missing"
     try:
         from hermes_cli.config_effective import load_user_config_effective
-        block = (load_user_config_effective(config_path) or {}).get("platforms", {}).get(platform_name)
+        user_config = load_user_config_effective(config_path) or {}
+        block = user_config.get("platforms", {}).get(platform_name)
     except Exception:
-        block = None
+        user_config, block = {}, None
     if not config_path.exists():
         config_state = "missing"
     elif not isinstance(block, dict):
@@ -329,18 +330,42 @@ def _not_configured_error(platform_name, platform, entry):
         config_state = f"platforms.{platform_name} has no token"
     env_state = f"{names} set" if any(_getenv(n) for n in env_names) else f"{names} unset"
     msg = (f"Platform '{platform_name}' is not configured. Looked in: {env_path} ({dotenv_state}), "
-           f"{config_path} ({config_state}), environment ({env_state}).")
-    # The gateway can hold a token only in its own process environment; a fresh CLI cannot see it.
+           f"{config_path} ({config_state}), environment ({env_state}), "
+           f"external secret sources ({_secret_sources_state(user_config)}).")
+    # The gateway can hold a token only in its own process environment; a fresh CLI cannot see it. A
+    # gateway started from the default root (the reporter's shell had HERMES_HOME=<root>/profiles/<p>)
+    # never reads this profile's .env at all.
     try:
         from gateway.status import read_runtime_status, runtime_status_pid_is_live
-        record = read_runtime_status()
-        state = ((record or {}).get("platforms") or {}).get(platform_name, {}).get("state")
-        if state == "connected" and "present" not in dotenv_state and runtime_status_pid_is_live(record):
-            msg += (f" A gateway (pid {record.get('pid')}) running from {home} has {platform_name} connected, "
-                    f"so its credentials live only in that process's environment; add {names} to {env_path}.")
+        from hermes_constants import get_default_hermes_root, hermes_home_key
+        root = get_default_hermes_root()
+        gateways = [(home, read_runtime_status())]
+        if hermes_home_key(root) != hermes_home_key(home):
+            gateways.append((root, read_runtime_status(root / "gateway_state.json")))
+        for gw_home, record in gateways:
+            state = ((record or {}).get("platforms") or {}).get(platform_name, {}).get("state")
+            if state != "connected" or "present" in dotenv_state or not runtime_status_pid_is_live(record):
+                continue
+            msg += f" A gateway (pid {record.get('pid')}) running from {gw_home} has {platform_name} connected"
+            msg += (f", so its credentials live only in that process's environment; add {names} to {env_path}."
+                    if gw_home is home else
+                    f"; this shell is scoped to profile home {home} whose .env has no {names}.")
     except Exception:
         pass
     return msg
+
+
+def _secret_sources_state(user_config):
+    """``name: enabled|disabled`` for every registered secret source with a ``secrets.<name>`` section,
+    or ``none configured``; names only, never values."""
+    try:
+        from agent.secret_sources.registry import list_sources
+        secrets_cfg = user_config.get("secrets") if isinstance(user_config.get("secrets"), dict) else {}
+        states = [f"{s.name}: {'enabled' if s.is_enabled(secrets_cfg[s.name]) else 'disabled'}"
+                  for s in list_sources() if isinstance(secrets_cfg.get(s.name), dict)]
+    except Exception:
+        states = []
+    return ", ".join(states) or "none configured"
 
 
 def _slack_dm_chat_id(pconfig, chat_id):

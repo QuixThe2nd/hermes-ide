@@ -407,3 +407,31 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert str(home / "channel_directory.json") in out
     assert "~/.hermes" not in out
+
+
+def test_empty_list_hint_names_default_root_directory_under_profile_home(tmp_path, monkeypatch, capsys):
+    """Under ``HERMES_HOME=<root>/profiles/<p>`` the ``--list`` empty state says the default root already holds
+    a ``channel_directory.json`` (written by a gateway running from that root), so the user knows which home
+    the gateway is serving (#114272 step 5)."""
+    import sys
+    import types
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    (root / "channel_directory.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: [])
+    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
+    fake_dir = types.ModuleType("gateway.channel_directory")
+    fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
+    fake_dir.format_directory_for_display = lambda platforms=None: ""
+    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
+
+    assert send_cmd._list_targets(None, json_mode=False) == 0
+    out = capsys.readouterr().out
+    assert f"channel discovery can populate {profile / 'channel_directory.json'}." in out
+    assert f"A gateway running from {root} already has {root / 'channel_directory.json'}" in out
+    assert f"scoped to profile home {profile}" in out

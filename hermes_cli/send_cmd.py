@@ -111,8 +111,13 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     if not platforms:
         print("No messaging platforms configured or no channels discovered yet.")
         print("Set one up with `hermes gateway setup`, or run the gateway once so")
-        from hermes_constants import get_hermes_home
-        print(f"channel discovery can populate {get_hermes_home() / 'channel_directory.json'}.")
+        from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+        home, root = get_hermes_home(), get_default_hermes_root()
+        print(f"channel discovery can populate {home / 'channel_directory.json'}.")
+        # A gateway started from the default root writes that root's directory, never this profile's.
+        if hermes_home_key(root) != hermes_home_key(home) and (root / "channel_directory.json").exists():
+            print(f"A gateway running from {root} already has {root / 'channel_directory.json'}; "
+                  f"this shell is scoped to profile home {home}, which has none.")
         return _SUCCESS_EXIT
 
     # Unfiltered: the shared formatter over the merged view. Filtered: a minimal view of our own.
