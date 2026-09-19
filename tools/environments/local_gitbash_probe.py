@@ -93,6 +93,11 @@ def _bash_starts(bash: str) -> bool:
         # killed bash holding the pipe write ends — the ACP host then wedged for minutes (#73403).
         # The probe's tree is killed and the drain bounded, so a slow host fails the probe fast
         # and _find_bash falls through to its last-resort candidate instead of hanging.
+        # stdin=DEVNULL (inside bounded_probe_run) is also what keeps the probe off the ACP
+        # host's stdin pipe: cygwin init's handle_to_fn/NtQueryObject stalls ~22 s on a pipe
+        # file object with a read pending on it, and the host's stdin reader always has one
+        # (@Aaaarminn's strace on #73403). stderr stays captured: the Mandatory-ASLR
+        # remediation keys off bash's dofork:/child_copy: text.
         result = bounded_probe_run(
             [bash, "--noprofile", "--norc", "-c", _BASH_EXTERNAL_PROGRAM_PROBE],
             timeout=_BASH_PROBE_TIMEOUT, raise_on_spawn_failure=True)
