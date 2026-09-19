@@ -840,10 +840,14 @@ function Install-Uv {
             if ($existingUv) {
                 Write-Info "Salvaging existing uv from $existingUv"
                 try {
-                    Copy-Item $existingUv $managedUv -Force
                     # Verify the salvaged binary actually runs before
                     # trusting it as the managed uv.
-                    $null = & $managedUv --version
+                    Copy-Item $existingUv $managedUv -Force
+                    $salvagedVersion = & $managedUv --version
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Info "Copied uv at $managedUv failed validation; continuing fallback"
+                        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                    }
                 } catch {
                     Write-Info "Existing uv at $existingUv could not be salvaged: $_"
                     Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
