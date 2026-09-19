@@ -24,6 +24,15 @@ _ZIP_STAGING_ARTIFACT_SUFFIXES = ".hermes-update-staging", ".hermes-update-old"
 # Single source of truth for entries the ZIP swap preserves — used by the dirty-tree filter and the swap loop.
 _ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
 
+# Gitignored build outputs the source ZIP never ships, nested under top-level entries the swap replaces
+# (so `_ZIP_PRESERVED_TOP_LEVEL` cannot shield them): the packaged Desktop app, its renderer bundle and
+# its own node_modules (electron itself), and the dashboard assets. The dirty-tree guard admits them and
+# `_stage_entries` grafts the live copies into the staged tree so the swap keeps them (#90495).
+_ZIP_PRESERVED_NESTED = {
+    "apps": ("desktop/release", "desktop/dist", "desktop/node_modules"),
+    "hermes_cli": ("web_dist",),
+}
+
 _STASH_HINT = "  Stash or commit your changes, then rerun `hermes update`."
 
 
@@ -157,7 +166,10 @@ def _status_top_level(path: str) -> str:
 
 
 def _is_zip_preserved_entry_status_line(line: str) -> bool:
-    """True when every path on a porcelain status line sits under a preserved top-level entry.
+    """True when every path on a porcelain status line sits under a preserved top-level entry, or the
+    line is a gitignored (``!!``) build output the swap keeps (`_ZIP_PRESERVED_NESTED`) or regenerates
+    (``__pycache__``) — every real install has both, and blocking on them made the ZIP fallback refuse
+    all of them. Tracked edits, renames and other untracked/ignored user files still block.
 
     The ``" -> "`` split applies ONLY to R/C codes: porcelain v1 doesn't quote plain names with spaces, so
     ``venv -> node_modules`` on a ``!!``/``??`` line is ONE path and splitting would fail-open. Requiring
@@ -165,7 +177,14 @@ def _is_zip_preserved_entry_status_line(line: str) -> bool:
     """
     status, payload = (line[:2], line[3:]) if len(line) >= 3 else ("", line)
     paths = payload.split(" -> ") if any(code in "RC" for code in status) else [payload]
-    return all(_status_top_level(path) in _ZIP_PRESERVED_TOP_LEVEL for path in paths)
+    if all(_status_top_level(path) in _ZIP_PRESERVED_TOP_LEVEL for path in paths):
+        return True
+    if status != "!!":
+        return False
+    path = payload.strip().strip('"').replace("\\", "/").rstrip("/")
+    top, _, nested = path.partition("/")
+    return path.rsplit("/", 1)[-1] == "__pycache__" or any(
+        nested == keep or nested.startswith(f"{keep}/") for keep in _ZIP_PRESERVED_NESTED.get(top, ()))
 
 
 def _is_zip_staging_artifact_status_line(line: str) -> bool:
@@ -242,6 +261,28 @@ def _require_staging_space(extracted: str, entries: list[str], project_root: str
         )
 
 
+def _link_or_copy_artifact(source: str, destination: str) -> None:
+    """Hardlink where the filesystem allows (apps/desktop/node_modules is hundreds of MB, and a link stays
+    valid after the swap unlinks the old tree; on Windows a link also succeeds on a locked Hermes.exe
+    where copy2 raises); byte copy otherwise."""
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def _graft_nested_artifacts(item: str, live: str, staging: str) -> None:
+    """Clone the live build outputs under *item* into its staged copy so the swap keeps them.
+    A path the ZIP ships wins over the live copy; a never-built install has nothing to graft."""
+    for nested in _ZIP_PRESERVED_NESTED.get(item, ()):
+        source = os.path.join(live, *nested.split("/"))
+        destination = os.path.join(staging, *nested.split("/"))
+        if os.path.lexists(destination) or not os.path.isdir(source):
+            continue
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        shutil.copytree(source, destination, symlinks=True, copy_function=_link_or_copy_artifact)
+
+
 def _stage_entries(extracted: str, entries: list[str], project_root: str) -> list[tuple[str, str]]:
     """Phase 1 for every entry; on failure nothing is live yet, so drop partial staging copies so a retry
     starts from the same free space."""
@@ -250,17 +291,10 @@ def _stage_entries(extracted: str, entries: list[str], project_root: str) -> lis
         for item in entries:
             dst = os.path.join(project_root, item)
             staged.append((_stage_replacement(os.path.join(extracted, item), dst), dst))
-            # The source ZIP lacks apps/desktop/release/ (the BUILT desktop app); swapping `apps` without
-            # it deletes the build and breaks the shortcut. Graft the live release dir in BEFORE the swap.
-            # #70337/#87331: the GitHub source ZIP contains only source — apps/desktop/release/ (the BUILT
-            # desktop app, win-unpacked/ Hermes.exe) exists only in the LIVE tree. Graft the live release
-            # dir into the staged copy BEFORE the swap so the commit preserves it atomically.
-            if item == "apps":
-                live_release = os.path.join(dst, "desktop", "release")
-                staged_release = os.path.join(staged[-1][0], "desktop", "release")
-                if os.path.isdir(live_release) and not os.path.exists(staged_release):
-                    os.makedirs(os.path.dirname(staged_release), exist_ok=True)
-                    shutil.copytree(live_release, staged_release)
+            # The source ZIP carries only source; the built outputs (#70337/#87331 release/, then
+            # dist/, apps/desktop/node_modules and web_dist — #90495) exist only in the LIVE tree. Graft
+            # them into the staged copy BEFORE the swap so the commit preserves them atomically.
+            _graft_nested_artifacts(item, dst, staged[-1][0])
     except Exception:
         _discard_staged(staged)
         raise
