@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from tools.mcp_tool_common import _core, _parse_boolish
 from tools import mcp_tool_config as _config
@@ -48,6 +49,30 @@ def _enabled(cfg: dict) -> bool:
     return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
+async def _install_owner_secret_scope():
+    """Bind the connection OWNER's profile secret scope when the caller has none; else None.
+
+    ``MCPServerTask.start`` ensure_futures the run task, which copies THIS context, so one
+    binding covers transport bring-up (``_build_safe_env`` stdio child env, ``${VAR}`` refs) and
+    every later revival inside that task; unscoped, those ``get_secret`` reads fail closed under
+    multiplexing and the server parks with zero tools (#113746). The owner is the profile the
+    connection is keyed under (``_mcp_registry_scope()``), never the ambient one, so a served
+    profile is never handed another profile's token (#111151). Scope key ``None`` (single-profile
+    process) binds nothing.
+    """
+    from agent.secret_scope import build_profile_secret_scope, current_secret_scope, set_secret_scope
+    if current_secret_scope() is not None:
+        return None
+    scope_key = _core._mcp_registry_scope()
+    if scope_key is None:
+        return None
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    home = Path(scope_key)
+    # Off-loop: an external source runs a helper subprocess (once per home, then cached).
+    await asyncio.to_thread(hydrate_profile_secret_sources, home)
+    return set_secret_scope(build_profile_secret_scope(home))
+
+
 async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
     """Create an MCPServerTask, start it, return once ready (tear down with ``server.shutdown()``
     on the same loop). Raises on bad config, missing HTTP support or connect failure."""
@@ -57,6 +82,7 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         claim(server)
     # The run task copies this context: don't retain the discovery closure for its life.
     claim_token = _core._connect_server_claim.set(None) if claim is not None else None
+    scope_token = await _install_owner_secret_scope()
     try:
         await server.start(config)
     except asyncio.CancelledError:
@@ -70,6 +96,9 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
                 logger.debug("MCP server '%s' shutdown during orphan-reap failed: %s", name, shutdown_exc)
         raise
     finally:
+        if scope_token is not None:
+            from agent.secret_scope import reset_secret_scope
+            reset_secret_scope(scope_token)
         if claim_token is not None:
             _core._connect_server_claim.reset(claim_token)
     return server
