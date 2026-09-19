@@ -19,6 +19,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytest.importorskip("mcp", reason="MCP SDK not installed")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

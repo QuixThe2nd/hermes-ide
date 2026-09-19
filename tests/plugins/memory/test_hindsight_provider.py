@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -62,6 +62,25 @@ def _clean_env(tmp_path, monkeypatch):
     # Patch the actual API and keep all legacy profile writes in tmp_path.
     isolated_home = tmp_path / "user-home"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: isolated_home))
+
+    # These tests provide client doubles, so they must not attempt a network
+    # install merely because the optional SDK is absent from the test env.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    # The retain-operation path imports this exception solely to classify a
+    # fake client's response. Supply the smallest matching SDK surface so the
+    # mocked tests remain runnable without the optional Hindsight extra.
+    client_api = ModuleType("hindsight_client_api")
+    exceptions = ModuleType("hindsight_client_api.exceptions")
+
+    class NotFoundException(Exception):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args)
+
+    exceptions.NotFoundException = NotFoundException
+    client_api.exceptions = exceptions
+    monkeypatch.setitem(sys.modules, "hindsight_client_api", client_api)
+    monkeypatch.setitem(sys.modules, "hindsight_client_api.exceptions", exceptions)
 
 
 def _make_mock_client():
@@ -939,7 +958,11 @@ class TestPrefetchServerRetainVisibility:
 
     def test_operation_notfound_treated_as_complete(self, provider):
         """A NotFound (completed+evicted) op is treated as done, not pending."""
-        from hindsight_client_api.exceptions import NotFoundException
+        exceptions = pytest.importorskip(
+            "hindsight_client_api.exceptions",
+            reason="Hindsight SDK is not installed",
+        )
+        NotFoundException = exceptions.NotFoundException
 
         client = _make_mock_client()
         client.operations = MagicMock()

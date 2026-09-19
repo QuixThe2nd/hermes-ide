@@ -12,6 +12,11 @@ import pytest
 
 import asyncio
 
+pytest.importorskip(
+    "mcp.client.auth.oauth2",
+    reason="MCP SDK 1.26.0+ required for OAuth support",
+)
+
 from tools.mcp_oauth import (
     HermesTokenStorage,
     OAuthNonInteractiveError,
