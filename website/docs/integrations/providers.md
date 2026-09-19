@@ -1535,6 +1535,8 @@ model:
 PERPLEXITY_API_KEY=your-perplexity-key
 ```
 
+Perplexity's Agent API (`api: https://api.perplexity.ai/v1` with `api_mode: codex_responses`) reserves the function names `web_search`, `search_files`, `fetch_url`, `people_search` and `finance_search` for its own built-in tools. Hermes renames its client tools of the same name to `hermes_<name>` on the wire and maps them back before dispatch, for the main agent loop and auxiliary calls (title generation, compression, MoA aggregation) alike — the same treatment OpenCode's `/v1/responses` endpoints get.
+
 #### Multiple providers in one config
 
 The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:

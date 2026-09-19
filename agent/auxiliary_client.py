@@ -1364,9 +1364,11 @@ class _CodexCompletionsAdapter:
         from agent.codex_responses_adapter import (
             _chat_messages_to_responses_input,
             _classify_responses_issuer,
+            _responses_tools,
             _wire_model_identity,
             classify_responses_route,
         )
+        from agent.transports.codex import _alias_wire_tools
         model = kwargs.get("model", self._model)
         wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
@@ -1375,6 +1377,33 @@ class _CodexCompletionsAdapter:
         route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
         is_xai = route.is_xai_responses
         is_github = route.is_github_responses
+        tools = kwargs.get("tools")
+        if tools:
+            # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
+            # chat_completion_helpers.py parity. Deep-copy first — sanitizers mutate inner dicts
+            # in place and would strip the caller's tool registry.
+            try:
+                import copy as _copy
+                from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
+                tools = _copy.deepcopy(list(tools))
+                tools, _ = strip_pattern_and_format(tools)
+                tools, _ = strip_slash_enum(tools)
+            except Exception as exc:
+                logger.warning(
+                    "Auxiliary client: failed to sanitize tool schemas for "
+                    "Codex/xAI Responses path: %s", exc,
+                )
+        # Tool schemas go through the SAME converter (``strict: False``) and the SAME reserved-name
+        # aliasing (OpenCode / Perplexity / xAI) as agent/transports/codex.py::build_kwargs. A private
+        # list here sent raw names without ``strict``, so title/compression/MoA calls 400ed on routes
+        # where the main loop worked (#114260). The alias map is request-local: it rides on the payload
+        # (``_wire_aliases``, popped in ``create()``), never on the instance — aux adapters are shared.
+        wire_tools, wire_aliases = _alias_wire_tools(
+            _responses_tools(tools),
+            {"provider": getattr(self._client, "_hermes_aux_effective_provider", "") or None, "base_url": host},
+            is_xai,
+        )
+        renamed = {original: alias for alias, original in wire_aliases.items()}
         # System → ``instructions``; the rest goes through the SINGLE shared chat→Responses
         # converter (a private loop here once let role="tool" leak into input[]; the shared one
         # encodes tool history as function_call/function_call_output).
@@ -1384,8 +1413,15 @@ class _CodexCompletionsAdapter:
             content = msg.get("content") or ""
             if msg.get("role", "user") == "system":
                 instructions = content if isinstance(content, str) else str(content)
-            else:
-                replay_messages.append(msg)
+                continue
+            # Replayed history names each tool the way THIS request declares it.
+            if renamed and msg.get("tool_calls"):
+                msg = {**msg, "tool_calls": [
+                    {**tc, "function": {**tc["function"], "name": renamed[tc["function"]["name"]]}}
+                    if isinstance(tc, dict) and (tc.get("function") or {}).get("name") in renamed else tc
+                    for tc in msg["tool_calls"]
+                ]}
+            replay_messages.append(msg)
         # Copilot binds replayed codex_message_items ids to a backend connection that doesn't
         # survive credential rotation (401 on replay) — same guard as build_kwargs. Aux calls
         # never send ``context_management`` (main-turn feature): no compaction checkpoint.
@@ -1432,33 +1468,10 @@ class _CodexCompletionsAdapter:
                 )
                 resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
                 resp_kwargs["include"] = ["reasoning.encrypted_content"]
-        tools = kwargs.get("tools")
-        if tools:
-            # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
-            # chat_completion_helpers.py parity. Deep-copy first — sanitizers mutate inner dicts
-            # in place and would strip the caller's tool registry.
-            try:
-                import copy as _copy
-                from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
-                tools = _copy.deepcopy(list(tools))
-                tools, _ = strip_pattern_and_format(tools)
-                tools, _ = strip_slash_enum(tools)
-            except Exception as exc:
-                logger.warning(
-                    "Auxiliary client: failed to sanitize tool schemas for "
-                    "Codex/xAI Responses path: %s", exc,
-                )
-            converted = []
-            for t in tools:
-                fn = t.get("function", {}) if isinstance(t, dict) else {}
-                name = fn.get("name")
-                if name:
-                    converted.append({
-                        "type": "function", "name": name, "description": fn.get("description", ""),
-                        "parameters": fn.get("parameters", {}),
-                    })
-            if converted:
-                resp_kwargs["tools"] = converted
+        if wire_tools:
+            resp_kwargs["tools"] = wire_tools
+        if wire_aliases:
+            resp_kwargs["_wire_aliases"] = wire_aliases
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
@@ -1501,6 +1514,7 @@ class _CodexCompletionsAdapter:
         # from ``response.output_item.done``: the high-level ``responses.stream()`` rebuilds from
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
+        wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout)
         try:
@@ -1529,6 +1543,10 @@ class _CodexCompletionsAdapter:
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
             text_parts, tool_calls_raw, usage = _parse_codex_final_response(final)
+            # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
+            for tc in tool_calls_raw or ():
+                if tc.function.name in wire_aliases:
+                    tc.function.name = wire_aliases[tc.function.name]
         except Exception as exc:
             if guard.timed_out.is_set():
                 raise TimeoutError(guard.timeout_message()) from exc

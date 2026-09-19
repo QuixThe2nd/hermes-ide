@@ -4034,8 +4034,9 @@ class TestCodexAuxiliaryAdapterReservedToolAliases:
         )
         response = adapter.create(messages=[{"role": "user", "content": "find it"}], tools=self._TOOLS)
 
-        assert "_wire_aliases" not in sent
-        assert "hermes_search_files" in {t["name"] for t in sent["tools"]}
+        wire_tools = sent.get("tools") or sent.get("extra_body", {}).get("tools")  # SDK transform bypass moves bulk fields
+        assert "_wire_aliases" not in sent and "_wire_aliases" not in sent.get("extra_body", {})
+        assert "hermes_search_files" in {t["name"] for t in wire_tools}
         assert [tc.function.name for tc in response.choices[0].message.tool_calls] == ["search_files"]
 
 
