@@ -34778,13 +34778,15 @@ class GatewayRunner(
         """Resolve which profile's HERMES_HOME should serve this inbound source.
 
         Resolution order:
-          1. ``source.profile`` — set by /p/<profile>/ URL prefix, per-credential
+          1. A pinned ``RoutingIdentity`` (``identity_of``) — its runtime home wins outright.
+          2. ``source.profile`` — set by /p/<profile>/ URL prefix, per-credential
              adapter ownership, OR profile_routes matching at ``build_source`` time.
-          2. ``_profile_name_for_source`` — re-run routing here as a defensive
+          3. ``_profile_name_for_source`` — re-run routing here as a defensive
              fallback for sources that bypass ``build_source``.
-          3. The active profile (the multiplexer's own home).
+          4. The active profile (the multiplexer's own home).
         """
         from gateway.profile_routing import ProfileRouteRejected
+        from gateway.session_identity import identity_of
         from hermes_cli.profiles import (
             get_active_profile_name,
             get_profile_dir,
@@ -34792,6 +34794,9 @@ class GatewayRunner(
         )
         from hermes_constants import get_hermes_home
         
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.runtime_home
         # Track whether a profile was explicitly requested (vs. falling back to default)
         explicit_profile = None
         try:
