@@ -345,14 +345,15 @@ class TeamsAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
-        extra = config.extra or {}
+        # Kept on the instance: ``platforms.teams.extra.*`` keys are read after construction too.
+        self._extra: Dict[str, Any] = config.extra or {}
         self._client_id, self._client_secret, self._tenant_id = _credentials(config)
         # (token, expiry monotonic ts) for connector attachment auth; refreshed under
         # _bf_token_lock so concurrent attachments can't stampede the STS.
         self._bf_token_cache: Optional[tuple] = None
         self._bf_token_lock: Optional[asyncio.Lock] = None
-        self._port = coerce_port(extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
-        _raw_host = extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
+        self._port = coerce_port(self._extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
+        _raw_host = self._extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
@@ -362,7 +363,6 @@ class TeamsAdapter(BasePlatformAdapter):
         self._require_mention: bool = self._parse_require_mention(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
-        self._sent_id_set: set = set()
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
@@ -370,15 +370,10 @@ class TeamsAdapter(BasePlatformAdapter):
         default as TELEGRAM_REQUIRE_MENTION). Without RSC Teams only delivers mention activities to a
         group bot anyway, so the gate changes nothing until the app gains ChannelMessage.Read.Group /
         ChatMessage.Read.Chat and starts receiving every conversation message."""
-        configured = _extra_or_secret(
-            config.extra,
-            "require_mention",
-            "TEAMS_REQUIRE_MENTION",
-            False,
-        )
+        configured = _extra_or_secret(config.extra, "require_mention", "TEAMS_REQUIRE_MENTION", False)
         if isinstance(configured, bool):
             return configured
-        return str(configured).lower() not in {"false", "0", "no", "off"}
+        return str(configured).strip().lower() not in {"false", "0", "no", "off"}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Reconnect paths reach here without create_adapter()'s installer — re-run to bind SDK globals.
@@ -487,8 +482,12 @@ class TeamsAdapter(BasePlatformAdapter):
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         activity = ctx.activity
-        bot_id = self._app.id if self._app else None
-        if bot_id and getattr(activity.from_, "id", None) == bot_id:
+        # Teams writes the bot's conversation identity as ``28:<app id>`` (activity.recipient) while
+        # App.id is the bare app id — accept both when deciding "is this us".
+        recipient_id = getattr(getattr(activity, "recipient", None), "id", None)
+        bot_ids = {i for i in (self._app.id if self._app else None, recipient_id) if isinstance(i, str) and i}
+        bot_ids |= {f"28:{i}" for i in tuple(bot_ids) if not i.startswith("28:")}
+        if getattr(activity.from_, "id", None) in bot_ids:
             return
         msg_id = getattr(activity, "id", None)
         if msg_id and self._dedup.is_duplicate(msg_id):
@@ -498,17 +497,12 @@ class TeamsAdapter(BasePlatformAdapter):
         if conv_id:  # cache the conversation reference for proactive sends (approval cards, etc.)
             self._conv_refs[conv_id] = ctx.conversation_ref
         text = activity.text if hasattr(activity, "text") and activity.text else ""
-        mentioned_bot = self._activity_mentions_bot(activity, bot_id, text)
-        non_personal = getattr(conv, "conversation_type", None) != "personal"
-        if self._require_mention and non_personal:
-            # RSC-delivered history: every conversation message arrives. Keep the ones that
-            # @mention the bot or reply to one of its own messages, drop the rest before
-            # attachment downloads make a gated message cost anything.
-            reply_to_bot = getattr(activity, "reply_to_id", None) in self._sent_id_set
-            if not mentioned_bot and not reply_to_bot:
-                logger.debug(
-                    "[teams] Dropping non-personal message without a bot mention (chat=%s, msg=%s)",
-                    conv_id, msg_id)
+        if self._require_mention and getattr(conv, "conversation_type", None) != "personal":
+            # RSC-delivered history: every channel/groupChat message arrives. Keep the ones that
+            # @mention the bot or reply to one of its own messages; drop the rest BEFORE the
+            # attachment loop so a gated post never downloads anything onto the host.
+            if not self._activity_mentions_bot(activity, bot_ids, text) and getattr(activity, "reply_to_id", None) not in self._sent_ids:
+                logger.debug("[teams] Dropping non-personal message without a bot mention (chat=%s, msg=%s)", conv_id, msg_id)
                 return
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
@@ -529,19 +523,15 @@ class TeamsAdapter(BasePlatformAdapter):
             text=text, source=source, message_type=msg_type, message_id=msg_id,
             media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
 
-    def _activity_mentions_bot(
-        self, activity: Any, bot_id: Optional[str], text: str
-    ) -> bool:
-        """True when the activity carries a mention entity pointing at the bot, or — for payloads
-        where the entity list is absent — an ``<at>`` tag in the text (Teams' rendered mention form)."""
-        bot_id = bot_id or self._client_id
-        for entity in getattr(activity, "entities", None) or []:
-            if getattr(entity, "type", None) != "mention":
-                continue
-            mentioned = getattr(entity, "mentioned", None)
-            if mentioned and str(getattr(mentioned, "id", "")) == str(bot_id):
-                return True
-        return "<at>" in text
+    @staticmethod
+    def _activity_mentions_bot(activity: Any, bot_ids: set, text: str) -> bool:
+        """True when a ``mention`` entity points at the bot (``mentioned.id`` is ``28:<app id>`` on the
+        wire; ``bot_ids`` carries both spellings). A payload with no mention entities at all falls back
+        to the rendered ``<at>`` tag; one that mentions only other people does not."""
+        mentions = [e for e in getattr(activity, "entities", None) or [] if getattr(e, "type", None) == "mention"]
+        if not mentions:
+            return "<at>" in text
+        return any(str(getattr(getattr(e, "mentioned", None), "id", "")) in bot_ids for e in mentions)
 
     async def _cache_attachment(self, att: Any) -> Optional[tuple]:
         """Download + cache one inbound attachment → ``(path, media_type, kind)`` or ``None``."""
@@ -617,14 +607,10 @@ class TeamsAdapter(BasePlatformAdapter):
         return result
 
     def _remember_sent(self, result: Any) -> None:
-        """Track an outbound activity id (bounded) for the require_mention reply exemption."""
+        """Track an outbound activity id (bounded deque) for the require_mention reply exemption."""
         sent_id = getattr(result, "id", None)
-        if not sent_id:
-            return
-        if len(self._sent_ids) == self._sent_ids.maxlen:
-            self._sent_id_set.discard(self._sent_ids[0])
-        self._sent_ids.append(sent_id)
-        self._sent_id_set.add(sent_id)
+        if isinstance(sent_id, str) and sent_id:
+            self._sent_ids.append(sent_id)
 
     @staticmethod
     def _invoke_message(text: str) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":

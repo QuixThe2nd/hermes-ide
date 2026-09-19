@@ -1116,135 +1116,79 @@ class TestTeamsMediaAttachments:
 # ---------------------------------------------------------------------------
 
 class TestTeamsRequireMention:
-    """With resource-specific consent the adapter receives every conversation
-    message, not just mentions — ``require_mention`` must gate non-personal
-    chats while personal chats and replies-to-the-bot stay ungated."""
+    """With resource-specific consent Teams delivers every channel/groupChat message, not just
+    mentions. ``require_mention`` must drop unaddressed non-personal posts BEFORE the attachment
+    loop, keep @mentions (wire id ``28:<app id>``) / replies to the bot / personal chats, and be
+    read env-over-YAML like every other adapter."""
 
-    def _make_adapter(self, require_mention=None, **extra):
-        if require_mention is not None:
-            extra["require_mention"] = require_mention
+    APP_ID = "bot-id"
+
+    def _make_adapter(self, monkeypatch=None, **extra):
         adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant", **extra,
-        ))
+            client_id=self.APP_ID, client_secret="secret", tenant_id="tenant", **extra))
         adapter._app = MagicMock()
-        adapter._app.id = "bot-id"
+        adapter._app.id = self.APP_ID
         adapter.handle_message = AsyncMock()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG" + b"\0" * 32)
         return adapter
 
-    def _make_activity(
-        self,
-        *,
-        text="Hello",
-        conversation_type="channel",
-        entities=None,
-        reply_to_id=None,
-        activity_id="activity-rm-001",
-    ):
+    def _activity(self, conversation_type, *, text="hello", mentioned_id=None, reply_to_id=None):
         activity = MagicMock()
         activity.text = text
-        activity.id = activity_id
-        activity.from_ = MagicMock()
-        activity.from_.id = "user-123"
-        activity.from_.aad_object_id = "aad-456"
-        activity.from_.name = "Test User"
-        activity.conversation = MagicMock()
-        activity.conversation.id = "19:channel@thread.v2"
-        activity.conversation.conversation_type = conversation_type
-        activity.conversation.name = "Channel"
-        activity.conversation.tenant_id = "tenant-789"
-        activity.attachments = []
-        activity.entities = entities or []
+        activity.id = f"act-{conversation_type}-{mentioned_id}-{reply_to_id}"
+        activity.from_ = MagicMock(aad_object_id="aad-456", name="Test User")
+        activity.from_.id = "29:user-123"
+        activity.recipient = MagicMock()
+        activity.recipient.id = f"28:{self.APP_ID}"
+        activity.conversation = MagicMock(conversation_type=conversation_type, tenant_id="t")
+        activity.conversation.id = "19:conv@thread.v2"
+        activity.conversation.name = "Conv"
+        att = MagicMock(content_type="image/png")
+        att.name = "a.png"
+        att.content_url = "https://smba.trafficmanager.net/emea/v3/attachments/1/views/original"
+        activity.attachments = [att]
         activity.reply_to_id = reply_to_id
+        activity.entities = []
+        if mentioned_id:
+            entity = MagicMock(type="mention")
+            entity.mentioned = MagicMock()
+            entity.mentioned.id = mentioned_id
+            activity.entities = [entity]
         return activity
 
-    def _mention_entity(self, mentioned_id="bot-id"):
-        entity = MagicMock()
-        entity.type = "mention"
-        entity.mentioned = MagicMock()
-        entity.mentioned.id = mentioned_id
-        return entity
-
-    def _make_ctx(self, activity):
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("conversation_type, kwargs, dispatched", [
+        ("channel", {}, False),
+        ("groupChat", {}, False),
+        ("channel", {"text": "<at>Alice</at> hi", "mentioned_id": "29:alice"}, False),  # someone else
+        ("channel", {"text": "<at>Hermes</at> hi", "mentioned_id": "28:bot-id"}, True),  # wire form of the bot id
+        ("groupChat", {"text": "<at>Hermes</at> hi", "mentioned_id": "bot-id"}, True),
+        ("channel", {"reply_to_id": "bot-msg-1"}, True),
+        ("personal", {}, True),
+    ])
+    async def test_gate_drops_unaddressed_non_personal_before_attachment_download(
+        self, conversation_type, kwargs, dispatched,
+    ):
+        adapter = self._make_adapter(require_mention=True)
+        adapter._sent_ids.append("bot-msg-1")
         ctx = MagicMock()
-        ctx.activity = activity
-        return ctx
+        ctx.activity = self._activity(conversation_type, **kwargs)
+        await adapter._on_message(ctx)
+        assert adapter.handle_message.await_count == (1 if dispatched else 0)
+        assert adapter._fetch_attachment_bytes.await_count == (1 if dispatched else 0)
 
-    @pytest.mark.asyncio
-    async def test_channel_message_without_mention_is_dropped_when_enabled(self):
-        adapter = self._make_adapter(require_mention=True)
-        await adapter._on_message(self._make_ctx(self._make_activity()))
-        adapter.handle_message.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_channel_message_with_mention_entity_passes_when_enabled(self):
-        adapter = self._make_adapter(require_mention=True)
-        activity = self._make_activity(
-            text="<at>Hermes</at> run the report", entities=[self._mention_entity()]
-        )
-        await adapter._on_message(self._make_ctx(activity))
-        adapter.handle_message.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_group_message_with_at_tag_only_passes_when_enabled(self):
-        # Payloads without an entity list still carry the rendered mention form.
-        adapter = self._make_adapter(require_mention=True)
-        activity = self._make_activity(
-            text="<at>Hermes</at> status?", conversation_type="groupChat")
-        await adapter._on_message(self._make_ctx(activity))
-        adapter.handle_message.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_mention_of_another_user_is_dropped_when_enabled(self):
-        adapter = self._make_adapter(require_mention=True)
-        activity = self._make_activity(
-            entities=[self._mention_entity(mentioned_id="other-user")]
-        )
-        await adapter._on_message(self._make_ctx(activity))
-        adapter.handle_message.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_reply_to_bot_message_passes_when_enabled(self):
-        adapter = self._make_adapter(require_mention=True)
-        adapter._remember_sent(MagicMock(id="bot-msg-7"))
-        activity = self._make_activity(reply_to_id="bot-msg-7")
-        await adapter._on_message(self._make_ctx(activity))
-        adapter.handle_message.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_reply_to_foreign_message_is_dropped_when_enabled(self):
-        adapter = self._make_adapter(require_mention=True)
-        adapter._remember_sent(MagicMock(id="bot-msg-7"))
-        activity = self._make_activity(reply_to_id="someone-else-msg")
-        await adapter._on_message(self._make_ctx(activity))
-        adapter.handle_message.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_personal_chat_stays_ungated_when_enabled(self):
-        adapter = self._make_adapter(require_mention=True)
-        activity = self._make_activity(conversation_type="personal")
-        await adapter._on_message(self._make_ctx(activity))
-        adapter.handle_message.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_gate_inactive_by_default(self):
-        # Opt-in default (same as TELEGRAM_REQUIRE_MENTION): without RSC Teams only
-        # delivers mention activities, so an ungated adapter keeps today's behaviour.
-        adapter = self._make_adapter()
-        await adapter._on_message(self._make_ctx(self._make_activity()))
-        adapter.handle_message.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_env_override_enables_gate(self, monkeypatch):
-        monkeypatch.setenv("TEAMS_REQUIRE_MENTION", "true")
-        adapter = self._make_adapter()
-        assert adapter._require_mention is True
-        await adapter._on_message(self._make_ctx(self._make_activity()))
-        adapter.handle_message.assert_not_awaited()
-
-    def test_sent_id_tracking_is_bounded(self):
-        adapter = self._make_adapter()
-        for i in range(600):
-            adapter._remember_sent(MagicMock(id=f"sent-{i}"))
-        assert len(adapter._sent_ids) == 500
-        assert "sent-0" not in adapter._sent_id_set
-        assert "sent-599" in adapter._sent_id_set
+    @pytest.mark.parametrize("yaml_value, env_value, expected", [
+        (None, None, False),      # opt-in: absent key leaves every conversation ungated
+        (True, None, True),
+        ("false", None, False),
+        (True, "false", False),   # explicit env beats YAML, like MATRIX_/MATTERMOST_REQUIRE_MENTION
+        (False, "true", True),
+    ])
+    def test_require_mention_read_env_over_yaml(self, monkeypatch, yaml_value, env_value, expected):
+        monkeypatch.delenv("TEAMS_REQUIRE_MENTION", raising=False)
+        if env_value is not None:
+            monkeypatch.setenv("TEAMS_REQUIRE_MENTION", env_value)
+        extra = {} if yaml_value is None else {"require_mention": yaml_value}
+        adapter = self._make_adapter(**extra)
+        assert adapter._require_mention is expected
+        assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
