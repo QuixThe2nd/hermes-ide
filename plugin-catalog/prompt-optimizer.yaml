@@ -1,6 +1,6 @@
 name: prompt-optimizer
 repo: https://github.com/Sahil-SS9/hermes-multichannel-prompt-optimizer
-sha: de70769efa9d4d1118de5915f38e63925e681771
+sha: 3ec7f45fcc2a76cc10d79e4a7c7e924d79607cd1
 description: Model-aware prompt rewriting with quality scoring, analytics, and coaching.
 maintainer: Sahil-SS9
 tier: community
@@ -15,6 +15,4 @@ capabilities:
     - pre_user_message
     - transform_llm_output
   provides_middleware: []
-  requires_env:
-    - OPENROUTER_API_KEY
-    - NOUS_API_KEY
+  requires_env: []
