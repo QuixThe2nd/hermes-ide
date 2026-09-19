@@ -356,7 +356,7 @@ def _windows_running_hermes_launcher_locked() -> bool:
 _UPDATE_REEXEC_ENV = "HERMES_UPDATE_REEXEC"
 
 
-def _reexec_dependency_sync_off_windows_shim() -> bool:
+def _reexec_dependency_sync_off_windows_shim(gateway_resume: dict | None = None) -> bool:
     """Hand the dependency sync to the venv interpreter, off the console shim.
 
     Returns True when a child was spawned and the caller must exit at once (releasing the
@@ -373,12 +373,10 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
     date" early return from swallowing the sync. ``.update-incomplete`` is already written, so
     a child that dies mid-install is finished by the next launch's recovery.
 
-    Called at the dependency-sync boundary, NOT at the top of the command — the same placement rule as the
-    native-module deferral beside it, and for the same reason (#86735): a hand-off that fires before the
-    fetch detaches every run, including the ``Already up to date!`` no-op that never touches the venv at
-    all, and it takes the interactive prompts with it. By the time we reach here the code swap is done and
-    every question — stash, branch switch, config migration — has already been asked and answered in the
-    user's own console.
+    The child owns the Windows gateway resume from the moment it exists: ``gateway_resume``
+    travels in its env and this process's copy is disarmed, so the parent exits at once instead
+    of relaunching gateways while it still holds the shim (#101600). The child waits for this
+    pid before its own pause/venv work (``update_handoff.wait_for_shim_parent_exit``).
     ``venv\\Scripts\\hermes.exe`` is a launcher that runs the interpreter with the shim as its script and
     holds it open without ``FILE_SHARE_DELETE`` for the whole command, so the quarantine rename is refused
     and uv fails to replace it with os error 32 (#88838, #89599).
@@ -389,12 +387,16 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
     if shim is None:
         return False
     from hermes_constants import venv_python_path
+    from hermes_cli.update_handoff import detached_shim_child_env
     python_exe = venv_python_path(shim.parent.parent, windows=True)
     cmd = [str(python_exe), "-m", "hermes_cli.main", *sys.argv[1:]]
     if python_exe.is_file():
         try:
             subprocess.Popen(
-                cmd, env={**os.environ, _UPDATE_REEXEC_ENV: "1"}, stdin=subprocess.DEVNULL)
+                cmd, env=detached_shim_child_env({**os.environ, _UPDATE_REEXEC_ENV: "1"}, gateway_resume),
+                stdin=subprocess.DEVNULL)
+            if gateway_resume is not None:
+                gateway_resume["resume_needed"] = False
             print(
                 f"→ Windows: {shim.name} cannot replace itself while it runs; "
                 "finishing the dependency install under the venv Python.")

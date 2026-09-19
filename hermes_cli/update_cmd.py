@@ -1634,6 +1634,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
     defer_restart, deferred_defects = getattr(opts, "defer_restart", False), getattr(opts, "deferred_defects", [])
 
+    # A child spawned off hermes.exe: the parent still holds the shim (and the venv python)
+    # until it exits — nothing below may scan holders, pause gateways or rename shims before.
+    from hermes_cli.update_handoff import adopt_handed_off_gateway_resume, wait_for_shim_parent_exit
+    wait_for_shim_parent_exit()
+
     if getattr(args, "post_swap", None):
         # Second half of a run whose pre-pull interpreter stopped at the code swap.
         _run_post_swap_phase(args, gateway_mode)
@@ -1654,7 +1659,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # safely, and a deferred run has no restart phase to bring them back on the new code. Skipping it
     # means the venv-holder guard refuses (nonzero) while a gateway holds the interpreter — the correct
     # outcome for a prepare-only pass on Windows.
-    _windows_gateway_resume = None if defer_restart else _m()._pause_windows_gateways_for_update()
+    # A legacy re-exec child resumes exactly the fleet its parent stopped; re-running discovery
+    # here found the parent's just-relaunched gateway and force-killed it (#101600). The fork's
+    # defer_restart still skips a fresh pause, but adopts a handed-off token (restoring the
+    # parent's fleet is not a restart).
+    _windows_gateway_resume = adopt_handed_off_gateway_resume() or (
+        None if defer_restart else _m()._pause_windows_gateways_for_update())
     if _windows_gateway_resume:
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)

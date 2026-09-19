@@ -210,6 +210,10 @@ A second, separate guard refuses to touch the venv while any process is running 
 
 Both guards, the Desktop update preflight, and the dependency repair steps look for the environment at `venv` first and then at the uv-default `.venv`, so a source checkout set up with `uv venv` / `uv sync` updates the same way an installer-created `venv` does. When both directories exist, `venv` is the one that gets updated.
 
+#### Windows: the update finishes under the venv Python
+
+`hermes.exe` itself cannot be replaced while it runs, so an update started from it stops after the code swap and prints `→ Windows: hermes.exe cannot replace itself while it runs; the update continues under the venv Python`. Your shell returns right away; a child interpreter finishes the dependency install and prints its own result. The child first waits (up to 30 s) for the `hermes.exe` process that started the update to exit, and it alone restarts the gateways the update paused — the process that launched it never resumes them while it still holds the shim. If the launcher is still alive after that wait, the child says so and continues; a shim that is still locked at install time is reported as before and the install is deferred to the next `hermes` run.
+
 #### Windows venv recreation is transactional
 
 When the Windows installer must recreate an existing `venv`, it first moves the old directory to a unique `venv.stale.*` name, then creates and verifies the replacement. The old tree is deleted only after the dependency install completes and the baseline imports pass in the new tree — until then it is the rollback source (recorded in `venv.pending-backup`).
