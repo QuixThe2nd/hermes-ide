@@ -102,6 +102,7 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
+from gateway.session_identity import transport_profile_of
 from utils import atomic_replace
 from agent.turn_context import extract_api_content_sidecar
 
@@ -959,6 +960,10 @@ class SessionEntry:
     # override is rehydrated after a restart and are never written to disk
     # (see sanitize_model_override / SessionStore.set_model_override).
     model_override: Optional[Dict[str, str]] = None
+    # Profile owning the bot that received this lane's traffic (``RoutingIdentity.transport_profile``,
+    # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
+    # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
+    transport_profile: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -1003,6 +1008,8 @@ class SessionEntry:
             # Defence-in-depth: strip credentials even if a caller stored an
             # unsanitized dict directly on the entry.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.transport_profile:
+            result["transport_profile"] = self.transport_profile
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -1061,6 +1068,7 @@ class SessionEntry:
                 "Invalid session_key: potential directory traversal detected"
             )
 
+        transport_profile = data.get("transport_profile")
         return cls(
             session_key=session_key,
             session_id=session_id,
@@ -1092,6 +1100,7 @@ class SessionEntry:
             reset_had_activity=data.get("reset_had_activity", False),
             prev_session_id=data.get("prev_session_id"),
             model_override=sanitize_model_override(data.get("model_override")),
+            transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
         )
 
 
@@ -2515,6 +2524,7 @@ class SessionStore:
             platform=source.platform,
             chat_type=source.chat_type,
             reset_had_activity=bool(had_activity),
+            transport_profile=transport_profile_of(source),
         )
 
     def _find_gateway_session_row(
@@ -2703,13 +2713,17 @@ class SessionStore:
         source: Optional[SessionSource],
         display_name: Optional[str] = None,
         include_compression_ancestors: bool = False,
+        transport_profile: Optional[str] = None,
     ) -> None:
-        """Persist the routing peer for an existing gateway session row."""
+        """Persist the routing peer for an existing gateway session row. ``transport_profile`` is the
+        entry's persisted receiving-bot profile; when the caller has no entry it is read off the
+        source's pinned identity (None = unknown, the column keeps whatever an earlier writer set)."""
         if not self._db_for_key(session_key) or not source:
             return
         recorder = getattr(self._db_for_key(session_key), "record_gateway_session_peer", None)
         if not callable(recorder):
             return
+        from gateway.session_identity import transport_profile_of
         try:
             origin_json = None
             try:
@@ -2727,6 +2741,7 @@ class SessionStore:
                 display_name=display_name or source.chat_name,
                 origin_json=origin_json,
                 include_compression_ancestors=include_compression_ancestors,
+                transport_profile=transport_profile or transport_profile_of(source),
             )
         except TypeError:
             # Older SessionDB without display_name/origin_json kwargs.
@@ -3320,6 +3335,7 @@ class SessionStore:
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
                 prev_session_id=prev_session_id,
+                transport_profile=transport_profile_of(source),
             )
             with self._lock:
                 current = self._entries.get(session_key)
@@ -3348,6 +3364,7 @@ class SessionStore:
                     "chat_type": source.chat_type,
                     "thread_id": source.thread_id,
                     "profile_name": source.profile,
+                    "transport_profile": transport_profile_of(source),
                     # Identity lands atomically in the INSERT (#82616): a
                     # crash after this write can no longer strand the row
                     # unroutable, and lineage survives resets (#12857).
@@ -3444,6 +3461,7 @@ class SessionStore:
             peer_session_id = entry.session_id
             peer_origin = entry.origin
             peer_display_name = entry.display_name
+            peer_transport = entry.transport_profile
         # Metadata-only change on one entry: single-row UPSERT instead of
         # the full index rewrite (see _save_entry). Both writes run outside
         # ``_lock`` so the SQLite commit never blocks routing lookups.
@@ -3453,6 +3471,7 @@ class SessionStore:
             session_key,
             peer_origin,
             display_name=peer_display_name,
+            transport_profile=peer_transport,
         )
 
     def get_session_metadata(
@@ -3846,6 +3865,7 @@ class SessionStore:
                 updated_at=now,
                 origin=old_entry.origin,
                 display_name=display_name if display_name is not None else old_entry.display_name,
+                transport_profile=old_entry.transport_profile,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,
@@ -3868,6 +3888,7 @@ class SessionStore:
                 "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
                 "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
                 "profile_name": old_entry.origin.profile if old_entry.origin else None,
+                "transport_profile": transport_profile_of(old_entry.origin),
                 # Identity + lineage land atomically in the INSERT (#82616,
                 # #12857) — see the get_or_create twin path.
                 "origin_json": _reset_origin_json,
@@ -4053,6 +4074,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                transport_profile=old_entry.transport_profile,
             )
 
             self._entries[session_key] = new_entry
@@ -4083,6 +4105,7 @@ class SessionStore:
                 new_entry.origin if new_entry else None,
                 display_name=new_entry.display_name if new_entry else None,
                 include_compression_ancestors=True,
+                transport_profile=new_entry.transport_profile if new_entry else None,
             )
 
         return new_entry
