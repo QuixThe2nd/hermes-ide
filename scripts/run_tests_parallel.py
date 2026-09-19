@@ -56,7 +56,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # Default test discovery roots.
@@ -774,8 +774,8 @@ def _make_stdio_glyph_safe() -> None:
                 pass
 
 
-def _unknown_pytest_flags(tokens: List[str]) -> List[str]:
-    """Return the bare passthrough tokens pytest itself would reject.
+def _pytest_flag_error(tokens: List[str]) -> Optional[str]:
+    """Return pytest's own complaint about the bare passthrough tokens, if any.
 
     A mistyped flag (``--jbs``) that is not one of OUR options used to be
     forwarded to every per-file pytest, so the run discovered the whole suite
@@ -783,19 +783,27 @@ def _unknown_pytest_flags(tokens: List[str]) -> List[str]:
     learn about a typo. Ask pytest's own argparse parser (with the installed
     plugins loaded, so ``-n``/``--timeout`` count) which tokens it does not
     know; argparse handles the attached-value (``-rA``), combined-flag
-    (``-xvs``) and ``-k expr`` forms for us. If the parser cannot be built
-    the check is skipped and tokens are forwarded as before.
+    (``-xvs``) and ``-k expr`` forms for us. A known flag with a bad or
+    missing value (``--tb`` alone) makes that parser raise ``UsageError``;
+    it is reported the same way instead of once per discovered file. Only
+    if the parser cannot be built is the check skipped and tokens forwarded
+    as before.
     """
     try:
-        from _pytest.config import get_config
+        from _pytest.config import UsageError, get_config
 
         config = get_config()
         config.pluginmanager.load_setuptools_entrypoints("pytest11")
         parser = config._parser.optparser
-        _, unknown = parser.parse_known_args(tokens)
     except Exception:
-        return []
-    return [tok for tok in unknown if tok.startswith("-")]
+        return None
+    try:
+        _, unknown = parser.parse_known_args(tokens)
+    except UsageError as exc:
+        # "usage: ...\n<prog>: error: argument --tb: expected one argument"
+        return str(exc).rsplit("error: ", 1)[-1].strip()
+    unknown = [tok for tok in unknown if tok.startswith("-")]
+    return f"unrecognized arguments: {' '.join(unknown)}" if unknown else None
 
 
 def main() -> int:
@@ -958,9 +966,9 @@ def main() -> int:
     # here with usage instead of once per discovered file. Anything after a
     # literal ``--`` is the caller's explicit choice and is forwarded as-is.
     if bare_passthrough:
-        unknown = _unknown_pytest_flags(bare_passthrough)
-        if unknown:
-            parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+        flag_error = _pytest_flag_error(bare_passthrough)
+        if flag_error:
+            parser.error(flag_error)
 
     # ── Node-id selectors → file + ``-k`` filter ────────────────────────────
     # This runner is FILE-granular: it spawns one ``pytest <file>`` per test

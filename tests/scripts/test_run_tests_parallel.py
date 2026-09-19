@@ -312,6 +312,20 @@ def test_unknown_bare_flag_errors_with_usage_instead_of_sweeping(tmp_path: Path)
     assert "2✓" in proc.stdout or "2 passed" in proc.stdout, proc.stdout
 
 
+def test_known_flag_missing_value_errors_with_usage_instead_of_sweeping(
+    tmp_path: Path,
+) -> None:
+    """``--tb`` with no value is a pytest UsageError, not a per-file sweep.
+
+    The flag itself is known, so an unknown-token check alone lets it through;
+    pytest's own parser must be allowed to reject it up front.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+
+    proc = _run_runner(probe_dir, "--tb")
+    assert proc.returncode == 2, proc.stdout
+    assert "usage:" in proc.stdout and "--tb: expected one argument" in proc.stdout
+    assert "Discovered" not in proc.stdout
 
 
 def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
