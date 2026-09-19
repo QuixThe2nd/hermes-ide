@@ -277,9 +277,13 @@ def make_step_cb(
                     continue
                 tc_id = queue.popleft()
                 meta = tool_call_meta.pop(tc_id, {})
+                # ``prev_tools`` carries the wire ``arguments`` JSON *string*; the content
+                # builders index it as a dict, so an uncoerced string raised inside this
+                # (swallowed) callback and the bubble never closed.
                 _send_update(conn, session_id, loop, build_tool_complete(
                     tc_id, tool_name, result=str(result) if result is not None else None,
-                    function_args=function_args or meta.get("args"), snapshot=meta.get("snapshot"),
+                    function_args=coerce_tool_args(function_args) if function_args else meta.get("args"),
+                    snapshot=meta.get("snapshot"),
                 ))
                 if not queue:
                     tool_call_ids.pop(tool_name, None)
