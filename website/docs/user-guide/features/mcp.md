@@ -99,6 +99,30 @@ Catalog entries can require:
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at
   `hermes auth <provider>` if you haven't authenticated already.
 
+### n8n's official MCP server
+
+The `n8n-official` catalog entry connects directly to your n8n Cloud or
+self-hosted instance over HTTP with browser OAuth. No local bridge or n8n
+API key is required.
+
+1. Ask an owner or admin to enable **Settings > Instance-level MCP** in n8n.
+2. Open **Connect** and copy the full **Server URL** ending in
+   `/mcp-server/http`, not the editor URL. Older versions show the endpoint
+   directly on the MCP settings page.
+3. Run `hermes mcp install n8n-official` and enter that URL when prompted.
+4. Complete browser OAuth. If needed, run `hermes mcp login n8n-official`
+   or use **Authorize** on the configured server in Desktop or the dashboard.
+5. Review tools with `hermes mcp configure n8n-official`, then start a new
+   session or use `/reload-mcp`.
+
+The Hermes backend must be able to reach the URL. n8n controls permissions
+and workflow exposure; some tools modify or run workflows. See
+[n8n's connection guide](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
+
+This entry uses the existing catalog setup and storage behavior. It is
+separate from the retired `n8n` bridge, so existing connections, credentials,
+installed files, and tool selections are not replaced.
+
 ### Tool selection at install time
 
 After credentials are configured, Hermes probes the MCP server to list every
