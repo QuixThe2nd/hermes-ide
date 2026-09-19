@@ -15,6 +15,7 @@ import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 # ``app.state``) — the marker name is shared across all dashboard-auth test
 # files that gate the app.
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import web_server
 
@@ -448,6 +449,21 @@ def test_desktop_ssh_backend_serves_session_token_requests_despite_public_url(mo
         assert without_token.status_code == 401
         # Loopback token mode, never the cookie gate's redirect envelope.
         assert without_token.json().get("reason") != "no_cookie"
+        # The renderer's gateway session rides the same token on the WS leg (#94119 step 4): the
+        # upgrade is admitted, the backend announces itself and answers a session-list RPC.
+        monkeypatch.setattr(web_server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        loopback = {"host": "127.0.0.1"}  # TestClient's WS default Host is "testserver"
+        with client.websocket_connect(f"/api/ws?token={ssh_token}", headers=loopback) as ws:
+            assert ws.receive_json()["params"]["type"] == "gateway.ready"
+            ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "session.list", "params": {}})
+            reply = ws.receive_json()
+            while reply.get("id") != 1:  # events may interleave before the response
+                reply = ws.receive_json()
+            assert "result" in reply, reply
+        with pytest.raises(WebSocketDisconnect) as rejected:
+            with client.websocket_connect("/api/ws", headers=loopback):
+                pass
+        assert rejected.value.code == 4401
     finally:
         clear_providers()
 
