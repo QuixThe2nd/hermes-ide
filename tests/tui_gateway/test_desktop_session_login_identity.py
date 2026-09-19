@@ -69,10 +69,14 @@ def test_desktop_session_row_records_the_logged_in_user(monkeypatch, tmp_path):
         assert record["auth_user_id"] == _LOGIN
         # What prompt.submit does before the agent exists (the first row write).
         assert server._ensure_session_db_row(record) is True
+        # A branch is a Desktop session too — the child row names the same human.
+        server._seed_branch_row(record, "branch-key", key, [{"role": "user", "content": "hi"}],
+                                "desktop", None)
     finally:
         server._sessions.pop(sid, None)
 
     assert db.get_session(key)["user_id"] == _LOGIN
+    assert db.get_session("branch-key")["user_id"] == _LOGIN
 
 
 def test_anonymous_desktop_session_row_stays_identity_less(monkeypatch, tmp_path):
@@ -86,17 +90,3 @@ def test_anonymous_desktop_session_row_stays_identity_less(monkeypatch, tmp_path
         server._sessions.pop(sid, None)
 
     assert not (db.get_session(key)["user_id"] or "").strip()
-
-
-def test_branch_child_row_carries_the_creators_login(monkeypatch, tmp_path):
-    """A branch is a Desktop session too — the child row names the same human."""
-    db = _real_db(monkeypatch, tmp_path)
-    record, sid, key = _create_desktop_session(_LoginSocket(), tmp_path)
-    try:
-        assert server._ensure_session_db_row(record) is True  # parent row the child FKs to
-        server._seed_branch_row(record, "branch-key", key, [{"role": "user", "content": "hi"}],
-                                "desktop", None)
-    finally:
-        server._sessions.pop(sid, None)
-
-    assert db.get_session("branch-key")["user_id"] == _LOGIN
