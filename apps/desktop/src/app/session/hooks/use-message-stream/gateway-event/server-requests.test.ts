@@ -42,17 +42,10 @@ describe('connection request routing', () => {
 })
 
 describe('preview action request routing', () => {
-  it('waits one turn for a replayed scoped request while the active-session binding resumes', () => {
+  it('retries a replayed scoped request only while no session is bound yet', () => {
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: null })).toBe('retry')
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: 'session-a' })).toBe('run')
-  })
-
-  it('leaves scoped preview requests for another window unanswered', () => {
-    expect(previewSessionRoute({ replayed: false, sessionId: 'session-a', activeSessionId: 'session-b' })).toBe('ignore')
     expect(previewSessionRoute({ replayed: true, sessionId: 'session-a', activeSessionId: 'session-b' })).toBe('ignore')
-  })
-
-  it('keeps unscoped preview requests on the existing fail-fast path', () => {
     expect(previewSessionRoute({ replayed: true, sessionId: '', activeSessionId: null })).toBe('run')
   })
 
@@ -64,12 +57,17 @@ describe('preview action request routing', () => {
     expect(fail).not.toHaveBeenCalled()
   })
 
-  it('leaves a scoped read request unanswered in a window showing another session', async () => {
-    const { respond } = deliver('preview.read', { session_id: 'session-a' }, 'session-b')
+  it('leaves scoped pane reads unanswered in a window showing another session', async () => {
+    const reads = ['preview.read', 'terminal.read', 'window.read'].map(method =>
+      deliver(method, { session_id: 'session-a' }, 'session-b')
+    )
 
     await Promise.resolve()
 
-    expect(respond).not.toHaveBeenCalled()
+    for (const { handled, respond } of reads) {
+      expect(handled).toBe(true)
+      expect(respond).not.toHaveBeenCalled()
+    }
   })
 
   it('fails fast for an unscoped request with no session in view', () => {

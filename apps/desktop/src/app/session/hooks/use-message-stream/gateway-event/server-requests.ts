@@ -58,7 +58,16 @@ type Handler = (ctx: ServerRequestContext) => void
 type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
 
 /**
- * Preview panes are local to one desktop window, while gateway requests fan out
+ * Bridges answered from THIS window's panes (preview tab, xterm buffer, the
+ * native window below). Every attached window sees the request; one showing
+ * another session has no pane for it and its empty answer would win the race,
+ * so the tool reports "no preview tab / no terminal" while the owner's pane is
+ * open (#113348).
+ */
+const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read'])
+
+/**
+ * Panes are local to one desktop window, while gateway requests fan out
  * to every connected window. A scoped request may only be answered by the
  * window showing its session. During reconnect, however, an open request can
  * replay one event-loop turn before the resumed session becomes active; retry
@@ -434,7 +443,7 @@ export function handleServerRequest(
 
   const sessionId = str(request.params.session_id)
 
-  if (request.method === 'preview.act' || request.method === 'preview.read') {
+  if (WINDOW_OWNED_REQUESTS.has(request.method)) {
     const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
 
     if (route === 'ignore') {
