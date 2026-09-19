@@ -765,6 +765,19 @@ function Get-PowerShellHostExe {
     return "powershell"
 }
 
+function Test-ManagedUvBinary {
+    # Native nonzero exits do not enter `catch`. Probe $LASTEXITCODE after
+    # `--version` so Chocolatey relative shims and other broken copies are
+    # not trusted just because the file exists.
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $global:LASTEXITCODE = 0
+    $version = & $Path --version
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+    return $version
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -773,10 +786,14 @@ function Install-Uv {
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
 
     if (Test-Path $managedUv) {
-        $script:UvCmd = $managedUv
-        $version = & $managedUv --version
-        Write-Success "Managed uv found ($version)"
-        return $true
+        $existingVersion = Test-ManagedUvBinary $managedUv
+        if ($existingVersion) {
+            $script:UvCmd = $managedUv
+            Write-Success "Managed uv found ($existingVersion)"
+            return $true
+        }
+        Write-Info "Existing managed uv at $managedUv failed validation; removing and reinstalling"
+        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
     }
 
     Write-Info "Installing managed uv into $HermesHome\bin ..."
@@ -843,8 +860,8 @@ function Install-Uv {
                     # Verify the salvaged binary actually runs before
                     # trusting it as the managed uv.
                     Copy-Item $existingUv $managedUv -Force
-                    $salvagedVersion = & $managedUv --version
-                    if ($LASTEXITCODE -ne 0) {
+                    $salvagedVersion = Test-ManagedUvBinary $managedUv
+                    if (-not $salvagedVersion) {
                         Write-Info "Copied uv at $managedUv failed validation; continuing fallback"
                         Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
                     }
@@ -858,10 +875,14 @@ function Install-Uv {
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
-            $script:UvCmd = $managedUv
-            $version = & $managedUv --version
-            Write-Success "Managed uv installed ($version)"
-            return $true
+            $version = Test-ManagedUvBinary $managedUv
+            if ($version) {
+                $script:UvCmd = $managedUv
+                Write-Success "Managed uv installed ($version)"
+                return $true
+            }
+            Write-Info "Installer output at $managedUv failed validation; removing"
+            Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
         }
 
         Write-Err "uv installed but not found at $managedUv"
