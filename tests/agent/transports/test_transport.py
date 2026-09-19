@@ -132,6 +132,20 @@ class TestAnthropicTransport:
         assert nr.tool_calls is None or nr.tool_calls == []
         assert nr.finish_reason == "stop"
 
+    def test_normalize_response_refusal_surfaces_stop_details(self, transport):
+        """stop_reason=refusal maps to content_filter and carries the message's stop_details (the
+        SDK exposes it only as an extra field); a plain end_turn adds no stop_details key."""
+        refusal = SimpleNamespace(
+            content=[], stop_reason="refusal", usage=None, model="claude",
+            stop_details={"type": "refusal", "category": "general_harms", "explanation": "classifier halt"},
+        )
+        nr = transport.normalize_response(refusal)
+        assert nr.finish_reason == "content_filter"
+        assert nr.provider_data["stop_details"]["explanation"] == "classifier halt"
+        plain = transport.normalize_response(
+            SimpleNamespace(content=[SimpleNamespace(type="text", text="ok")], stop_reason="end_turn", usage=None, model="claude"))
+        assert "stop_details" not in (plain.provider_data or {})
+
     def test_normalize_response_tool_calls(self, transport):
         """Test normalization of a tool-use response."""
         r = SimpleNamespace(

@@ -3172,6 +3172,11 @@ class _StreamingCall(StreamingWaitMonitor):
             if not self.agent._interrupt_requested and raw_stream is not None:
                 try:
                     base_final_message = raw_stream.get_final_message()
+                    # The SDK snapshot keeps only stop_reason/stop_sequence from message_delta; the
+                    # refusal's stop_details (category/explanation) survives only in our accumulator.
+                    _stop_details = accumulator.finalize().get("stop_details")
+                    if _stop_details is not None and getattr(base_final_message, "stop_details", None) is None:
+                        base_final_message.stop_details = _stop_details
                 except AssertionError:
                     if not saw_stream_event:
                         raise EmptyStreamError(
