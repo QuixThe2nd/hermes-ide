@@ -487,6 +487,12 @@ def _try_dispatch_background_run(
         — dispatch pool was at capacity; the run executed inline (the claim
         was already taken and must not be stranded).
     """
+    job_id = job["id"]
+    job_name = str(job.get("name") or job_id)
+    # Reap BEFORE the async/sync branch: the one-shot `hermes cron run` path returns early
+    # below, and this is the only moment it heals a stale claim left by a killed prior run (#113923).
+    _reap_stale_executions(job_name)
+
     # Finite sessions cannot route a detached result back after the turn
     # ends — mirror delegate_agent's gate and fall back to sync execution.
     try:
@@ -495,10 +501,6 @@ def _try_dispatch_background_run(
             return None
     except Exception:
         pass
-
-    job_id = job["id"]
-    job_name = str(job.get("name") or job_id)
-    _reap_stale_executions(job_name)
 
     # Routing capture BEFORE the claim: no routable session = no durable consumer for a detached
     # completion, so don't claim-and-dispatch (direct callers like `hermes cron run` exit right after).
