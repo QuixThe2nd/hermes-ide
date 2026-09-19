@@ -313,6 +313,23 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert '$(and this is not shell)' in content
 
 
+def test_cli_runner_ack_is_a_dispatch_ack_that_names_the_completion_notification(tmp_path, monkeypatch):
+    """``status: sent`` is returned before the background runner has delivered anything; the
+    detail (and the schema text the model reads) must say the completion notification carries
+    the outcome, so a runner that dies at exec is never read as a delivered message."""
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
+
+    assert result["status"] == "sent"
+    assert "not a delivery receipt" in result["detail"]
+    assert "completion notification" in result["detail"]
+    assert "delivery failure" in result["detail"]
+    description = bot_mode_dm.message_agent_tool_schema()["function"]["description"]
+    assert "dispatch acknowledgement" in description and "not a delivery receipt" in description
+
+
 def _rename(home: Path, folder: str, *, display_name: str = "", title: str = "") -> None:
     lines = ["description: teammate for tests", "ui_meta:", "  hermes-bots:", "    shape: cloud"]
     if title:
