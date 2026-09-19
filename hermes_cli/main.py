@@ -35,6 +35,10 @@ if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 from hermes_cli import _startup_fast  # noqa: E402
 
+# A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute
+# before the first reader — otherwise it resolves against cwd and scaffolds <cwd>/~/.hermes.
+_startup_fast.normalize_hermes_home_env()
+
 # Early venv self-heal — MUST run before any third-party import below. A prior
 # ``hermes update`` may have left a recovery marker with a core package wiped;
 # the hermes_cli.config/env_loader imports further down would then crash before

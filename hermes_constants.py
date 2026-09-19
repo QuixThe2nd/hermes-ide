@@ -875,7 +875,7 @@ def _profile_home_path(env: dict[str, str] | None = None) -> str | None:
     hermes_home = get_hermes_home_override() or (env or {}).get("HERMES_HOME") or os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
-    profile_home = os.path.join(hermes_home, "home")
+    profile_home = str(_expand_hermes_home(hermes_home) / "home")
     return profile_home if os.path.isdir(profile_home) else None
 
 
