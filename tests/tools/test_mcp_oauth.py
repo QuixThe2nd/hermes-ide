@@ -543,6 +543,7 @@ class TestCallbackHandlerErrorEscaping:
 # TOCTOU port reservation (#22161)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("require_mcp_2_sdk")
 class TestCallbackPortReservation:
     """The socket picked at selection time stays bound until callback bind.
 
