@@ -296,11 +296,51 @@ def _resolve_platform_config(platform_name, config):
     if not pconfig or not pconfig.enabled:
         pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
     if pconfig is None:
-        from hermes_constants import get_hermes_home
-        config_path = get_hermes_home() / "config.yaml"
-        return None, None, None, (f"Platform '{platform_name}' is not configured. Set up credentials in "
-                                  f"{config_path} or environment variables.")
+        return None, None, None, _not_configured_error(platform_name, platform, entry)
     return platform, pconfig, entry, None
+
+
+def _not_configured_error(platform_name, platform, entry):
+    """Name the resolved home and what each credential source held, so the user edits the file this
+    process actually read (a hardcoded ``~/.hermes`` does not exist on a Windows or profile home)."""
+    from agent.secret_scope import load_env_file
+    from gateway.config import _getenv
+    from gateway.config_env import _ENV_ENABLE_CREDENTIALS
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    env_names = list(_ENV_ENABLE_CREDENTIALS.get(platform) or (entry.required_env if entry else ()))
+    names = "/".join(env_names) or "credentials"
+    env_path, config_path = home / ".env", home / "config.yaml"
+    dotenv_keys = load_env_file(env_path)
+    dotenv_state = (f"{names} present" if any(n in dotenv_keys for n in env_names) else f"no {names}") \
+        if env_path.exists() else "missing"
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        block = (load_user_config_effective(config_path) or {}).get("platforms", {}).get(platform_name)
+    except Exception:
+        block = None
+    if not config_path.exists():
+        config_state = "missing"
+    elif not isinstance(block, dict):
+        config_state = f"no platforms.{platform_name} block"
+    elif block.get("enabled") is False:
+        config_state = f"platforms.{platform_name}.enabled: false"
+    else:
+        config_state = f"platforms.{platform_name} has no token"
+    env_state = f"{names} set" if any(_getenv(n) for n in env_names) else f"{names} unset"
+    msg = (f"Platform '{platform_name}' is not configured. Looked in: {env_path} ({dotenv_state}), "
+           f"{config_path} ({config_state}), environment ({env_state}).")
+    # The gateway can hold a token only in its own process environment; a fresh CLI cannot see it.
+    try:
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        record = read_runtime_status()
+        state = ((record or {}).get("platforms") or {}).get(platform_name, {}).get("state")
+        if state == "connected" and "present" not in dotenv_state and runtime_status_pid_is_live(record):
+            msg += (f" A gateway (pid {record.get('pid')}) running from {home} has {platform_name} connected, "
+                    f"so its credentials live only in that process's environment; add {names} to {env_path}.")
+    except Exception:
+        pass
+    return msg
 
 
 def _slack_dm_chat_id(pconfig, chat_id):

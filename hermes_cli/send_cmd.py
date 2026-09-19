@@ -133,7 +133,7 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
 
 
 def _load_hermes_env() -> None:
-    """Populate the credential environment from ``~/.hermes/.env`` AND bridge top-level ``config.yaml``
+    """Populate the credential environment from ``<HERMES_HOME>/.env`` AND bridge top-level ``config.yaml``
     keys into it so the gateway config loader sees platform credentials and home channels.
 
     The target is ``os.environ`` for the standalone CLI. Inside a multi-profile host (dashboard console

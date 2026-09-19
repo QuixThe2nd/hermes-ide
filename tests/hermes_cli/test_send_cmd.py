@@ -376,3 +376,34 @@ def test_load_hermes_env_bom_only_env_is_noop(tmp_path, monkeypatch):
 
     added = {k: v for k, v in os.environ.items() if k not in before}
     assert "\ufeff" not in "".join(added)
+
+
+def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, capsys):
+    """``--help`` and the ``--list`` empty-state hint derive their paths from the resolved home instead of a
+    hardcoded ``~/.hermes`` (absent on a Windows install or under a profile home)."""
+    import argparse
+    import sys
+    import types
+
+    home = tmp_path / "AppData" / "Local" / "hermes"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    send_parser = send_cmd.register_send_subparser(parser.add_subparsers(dest="command"))
+    help_text = send_parser.format_help()
+    assert str(home / ".env") in help_text and str(home / "config.yaml") in help_text
+    assert "~/.hermes" not in help_text
+
+    fake_gw_config = types.ModuleType("gateway.config")
+    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: [])
+    monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
+    fake_dir = types.ModuleType("gateway.channel_directory")
+    fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}
+    fake_dir.format_directory_for_display = lambda platforms=None: ""
+    monkeypatch.setitem(sys.modules, "gateway.channel_directory", fake_dir)
+
+    assert send_cmd._list_targets(None, json_mode=False) == 0
+    out = capsys.readouterr().out
+    assert str(home / "channel_directory.json") in out
+    assert "~/.hermes" not in out
