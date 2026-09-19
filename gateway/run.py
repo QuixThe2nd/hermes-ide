@@ -445,6 +445,7 @@ async def run_codex_hygiene_compaction(
             history,
             "",
             approx_tokens=approx_tokens,
+            task_id=session_id,
         ),
     )
     track_worker = getattr(gateway, "_track_deferred_agent_worker", None)
@@ -26181,10 +26182,15 @@ class GatewayRunner(
                                     _hyg_future = loop.run_in_executor(
                                         None,
                                         copy_context().run,
+                                        # task_id is the session row id: the live turn
+                                        # scopes skill_view/read_file dedup to it, and the
+                                        # boundary reset must hit the same bucket or a
+                                        # post-compaction re-read stubs (#98206).
                                         lambda: _hyg_agent._compress_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
                                             commit_fence=_hyg_commit_fence,
+                                            task_id=session_entry.session_id,
                                         ),
                                     )
                                     # Discord episode card (presentation-only,
