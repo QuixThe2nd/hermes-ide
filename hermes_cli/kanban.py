@@ -676,11 +676,18 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                                   tuple(diags_by_task.keys())):
                 meta[r["id"]] = {k: r[k] for k in ("title", "status", "assignee")}
 
+    # What this home believes it may claim on a shared board (#113620).
+    allowlist = kbd.dispatch_profile_allowlist_summary()
+
     if getattr(args, "json", False):
-        _print_json([{"task_id": tid, **meta.get(tid, {}), "diagnostics": [d.to_dict() for d in dl]}
-                     for tid, dl in diags_by_task.items()])
+        _print_json({
+            "dispatch_profiles": allowlist,
+            "tasks": [{"task_id": tid, **meta.get(tid, {}), "diagnostics": [d.to_dict() for d in dl]}
+                      for tid, dl in diags_by_task.items()],
+        })
         return 0
 
+    print(f"kanban.dispatch_profiles: {allowlist}")
     if not diags_by_task:
         print("No active diagnostics on this board.")
         return 0

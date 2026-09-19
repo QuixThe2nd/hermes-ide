@@ -113,3 +113,26 @@ def test_allowlist_config_read_failure_skips_all_cards(
         res = kbd.dispatch_once(conn, dry_run=True)
     assert res.spawned == []
     assert res.skipped_nonspawnable == [tid]
+
+
+@pytest.mark.parametrize("config, expected", [
+    ("", "any"),
+    ("kanban:\n  dispatch_profiles: [researcher, sage]\n", "researcher, sage"),
+    ("kanban:\n  dispatch_profiles: []\n", "none (fail-closed"),
+], ids=["absent", "listed", "empty_list"])
+def test_diagnostics_reports_resolved_allowlist(kanban_home, capsys, config, expected):
+    """`hermes kanban diagnostics` (text and --json) shows what this home may claim."""
+    import argparse
+    import json
+
+    from hermes_cli import kanban as kanban_cli
+
+    if config:
+        (kanban_home / "config.yaml").write_text(config, encoding="utf-8")
+    assert kanban_cli._cmd_diagnostics(argparse.Namespace(task=None, severity=None, json=False)) == 0
+    text = capsys.readouterr().out
+    assert f"kanban.dispatch_profiles: {expected}" in text
+    assert kanban_cli._cmd_diagnostics(argparse.Namespace(task=None, severity=None, json=True)) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dispatch_profiles"].startswith(expected)
+    assert payload["tasks"] == []

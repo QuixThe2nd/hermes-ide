@@ -1570,6 +1570,26 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
     return frozenset(allowed)
 
 
+def dispatch_profile_allowlist_summary() -> str:
+    """Human-readable resolution of ``kanban.dispatch_profiles`` for this home.
+
+    Surfaced by ``hermes kanban diagnostics`` so an operator on a shared board
+    can see what a home believes it may claim (#113620): ``any`` (key absent),
+    the sorted allowed names, or ``none (fail-closed: ...)``.
+    """
+    try:
+        from hermes_cli.profiles import normalize_profile_name
+    except Exception as exc:
+        return f"none (fail-closed: profiles unavailable: {exc})"
+    allowlist = _dispatch_profile_allowlist(normalize_profile_name)
+    if allowlist is None:
+        return "any"
+    if allowlist:
+        return ", ".join(sorted(allowlist))
+    return ("none (fail-closed: kanban.dispatch_profiles is present but names no valid "
+            "profile, or the config could not be read — omit the key to allow any)")
+
+
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
