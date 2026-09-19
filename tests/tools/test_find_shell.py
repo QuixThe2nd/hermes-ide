@@ -271,7 +271,7 @@ class TestMacosLoginShellSwallowRegression:
         # A .bash_profile that exec's zsh — the reported macOS shape.
         home = tmp_path / "home"
         home.mkdir()
-        (home / ".bash_profile").write_text("exec /bin/zsh -l\n")
+        (home / ".bash_profile").write_text("exec /bin/zsh -l\n", encoding="utf-8")
 
         # Use /bin/zsh explicitly rather than $SHELL. The reported bug is
         # specifically "system bash 3.2 swallows, zsh does not", and $SHELL is
