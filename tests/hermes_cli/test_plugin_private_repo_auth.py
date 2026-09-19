@@ -172,6 +172,54 @@ def test_ref_fetch_and_update_pull_attach_credential_only_after_anonymous_refusa
     assert attempts == ([[], [f"Authorization: basic {expected}"]] if outcome == "refused" else [[]])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell askpass stub + local HTTP server")
+def test_anonymous_attempt_fails_fast_under_inherited_askpass(tmp_path, monkeypatch):
+    """With an inherited ``GIT_ASKPASS`` (VS Code terminal, ksshaskpass) the anonymous attempt
+    against a remote answering 401 must still fail fast with the classifiable "could not read
+    Username" refusal so the credential fallback fires, instead of handing the prompt to an
+    askpass helper nobody answers and dying on the timeout with no second attempt."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Unauthorized(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="probe"')
+            self.end_headers()
+
+        do_POST = do_GET
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Unauthorized)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/acme/private.git"
+        askpass = tmp_path / "askpass.sh"
+        askpass.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+        askpass.chmod(0o755)
+        monkeypatch.setenv("GIT_ASKPASS", str(askpass))
+        # Plain-http local remote: stand in for the https credential lookup so the fallback's
+        # second attempt is observable without a TLS fixture.
+        monkeypatch.setattr(git_credentials, "with_git_auth",
+                            lambda env, u: {**env, "HERMES_TEST_AUTH_ATTACHED": "1"})
+        attempts: list[dict] = []
+        real_run = subprocess.run
+        monkeypatch.setattr(git_credentials.subprocess, "run",
+                            lambda argv, **kw: attempts.append(kw["env"]) or real_run(argv, **kw))
+
+        result = git_credentials.run_git_with_credential_fallback(
+            ["git", "clone", url, str(tmp_path / "dest")], url, env=noninteractive_git_env(),
+            capture_output=True, text=True, timeout=10)
+    finally:
+        server.shutdown()
+
+    assert result.returncode != 0 and "could not read Username" in result.stderr
+    assert len(attempts) == 2, "anonymous refusal must be classified and the credential fallback must fire"
+    assert all("GIT_ASKPASS" not in env for env in attempts)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell stub credential helper")
 def test_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypatch):
     helper = tmp_path / "helper.sh"

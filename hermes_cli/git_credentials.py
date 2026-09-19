@@ -163,6 +163,11 @@ def run_git_with_credential_fallback(
     the refusal can be classified. Empty *url* means no fallback (local verbs)."""
     run_kwargs.setdefault("stdin", subprocess.DEVNULL)
     env = dict(env)
+    # An inherited askpass (VS Code terminal, ksshaskpass) would swallow the remote's 401 into a
+    # dialog nobody answers: the run hits its timeout instead of failing with "could not read
+    # Username", and the refusal below is never classified. Same drop _credential_fill does.
+    env.pop("GIT_ASKPASS", None)
+    env.pop("SSH_ASKPASS", None)
     result = subprocess.run(argv, env=env, **run_kwargs)
     if result.returncode == 0 or not url or not is_credential_required_error(result):
         return result
