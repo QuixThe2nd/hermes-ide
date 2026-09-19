@@ -170,7 +170,7 @@ Cursor-style context variables are also substituted (case-sensitive):
 `${userHome}` (home directory), `${workspaceFolder}` (session workspace
 root), `${workspaceFolderBasename}`, and `${pathSeparator}` / `${/}`
 (the OS path separator). See the
-[MCP config reference](/docs/reference/mcp-config-reference) for details.
+[MCP config reference](../../reference/mcp-config-reference.md) for details.
 
 Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
@@ -1003,7 +1003,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 
 ## Related docs
 
-- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
-- [CLI Commands](/reference/cli-commands)
-- [Slash Commands](/reference/slash-commands)
-- [FAQ](/reference/faq)
+- [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md)
+- [CLI Commands](../../reference/cli-commands.md)
+- [Slash Commands](../../reference/slash-commands.md)
+- [FAQ](../../reference/faq.md)

@@ -82,7 +82,7 @@ cronjob(
 )
 ```
 
-Or from a shell script with the [`hermes send` CLI](/guides/pipe-script-output):
+Or [`hermes send` CLI](../../guides/pipe-script-output.md)
 
 ```bash
 hermes send ntfy:alerts-channel "Done!"
