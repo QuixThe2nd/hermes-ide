@@ -624,6 +624,8 @@ class TestValidateConfigKey:
         ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
+        # A typo of an _EXTRA_KNOWN_ROOT_KEYS root points at the real root, not a near-miss.
+        ("platform_toolset.cli", "platform_toolsets.cli"),
     ])
     def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
         from hermes_cli.config import _validate_config_key
