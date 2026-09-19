@@ -283,6 +283,13 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     out: dict[str, str] = {}
     for items, unwrap_force in parts:
         _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
+    # Declared names the bound profile scope holds but the process env never did (a routed
+    # profile's own .env / sources) — the filter above can only see names already present.
+    try:
+        from tools.env_passthrough import scoped_passthrough_additions
+        out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
+    except Exception:
+        logger.debug("Could not resolve scope-only passthrough names", exc_info=True)
     path_key = _path_env_key(out)
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment
@@ -637,8 +644,11 @@ def _path_env_key(run_env: dict) -> str | None:
 
 
 def _make_run_env(env: dict) -> dict:
-    """Build a run environment with a sane PATH and provider-var stripping."""
-    return _scrubbed_env([(dict(os.environ | env), True)], frozenset(),
+    """Build a run environment with a sane PATH and provider-var stripping. The process env is
+    the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
+    (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
+    and the served profile's declared passthrough names are what the child sees."""
+    return _scrubbed_env([(dict(strip_launch_profile_env(os.environ.copy()) | env), True)], frozenset(),
                          lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
 
 

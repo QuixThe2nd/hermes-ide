@@ -252,6 +252,32 @@ class TestTerminalIntegration:
 
         assert "SERVICE_TOKEN" not in child_env
 
+    def test_scope_only_declared_name_reaches_every_local_child(self, monkeypatch):
+        """A routed profile's declared secret lives only in its scope (its .env never enters the
+        process env), so it must be added from the scope on every local spawn surface; an
+        undeclared scope entry stays out. No scope bound -> byte-identical single-profile env."""
+        from tools.code_execution_env import _scrub_child_env
+        from tools.environments.local import _sanitize_subprocess_env
+
+        register_env_passthrough(["SERVICE_TOKEN"])
+        monkeypatch.delenv("SERVICE_TOKEN", raising=False)
+        base = {"PATH": "/usr/bin", "HOME": "/home/user"}
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-routed-profile",
+                                     "UNDECLARED_TOKEN": "never-forwarded"})
+        try:
+            terminal_env = _sanitize_subprocess_env(dict(base))
+            sandbox_env = _scrub_child_env(dict(base))
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        for child_env in (terminal_env, sandbox_env):
+            assert child_env["SERVICE_TOKEN"] == "token-for-routed-profile"
+            assert "UNDECLARED_TOKEN" not in child_env
+        assert "SERVICE_TOKEN" not in _sanitize_subprocess_env(dict(base))
+        assert "SERVICE_TOKEN" not in _scrub_child_env(dict(base))
+
     def test_shared_local_snapshot_re_resolves_current_profile(self, monkeypatch, tmp_path):
         """A persistent shell snapshot must not retain the previous profile's value."""
         from tools.environments.local import LocalEnvironment
