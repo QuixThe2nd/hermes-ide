@@ -5,15 +5,8 @@ import socket
 import httpcore
 import pytest
 
+import hermes_bootstrap
 from agent import process_bootstrap
-
-# Captured at import time, before any test can construct an AIAgent (whose
-# init_agent now installs the process-level racer) — the restore fixture below
-# needs the pristine originals regardless of test ordering.
-from urllib3.util import connection as _urllib3_connection_util
-
-_STOCK_SOCKET_CREATE_CONNECTION = socket.create_connection
-_STOCK_URLLIB3_CREATE_CONNECTION = _urllib3_connection_util.create_connection
 
 
 @pytest.fixture
@@ -117,7 +110,7 @@ def test_connection_staggers_past_blackholed_ipv6(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        process_bootstrap.socket,
+        hermes_bootstrap.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [
             (
@@ -136,22 +129,22 @@ def test_connection_staggers_past_blackholed_ipv6(monkeypatch):
             ),
         ],
     )
-    monkeypatch.setattr(process_bootstrap.socket, "socket", FakeSocket)
+    monkeypatch.setattr(hermes_bootstrap.socket, "socket", FakeSocket)
     monkeypatch.setattr(
-        process_bootstrap.selectors, "DefaultSelector", FakeSelector
+        hermes_bootstrap.selectors, "DefaultSelector", FakeSelector
     )
     monkeypatch.setattr(
-        process_bootstrap.time, "monotonic", lambda: clock[0]
+        hermes_bootstrap.time, "monotonic", lambda: clock[0]
     )
 
-    winner = process_bootstrap._happy_eyeballs_create_connection(
+    winner = hermes_bootstrap._happy_eyeballs_create_connection(
         ("chatgpt.com", 443),
         timeout=10.0,
     )
 
     assert winner.family == socket.AF_INET
     assert winner.timeout == 10.0
-    assert clock[0] == process_bootstrap._HAPPY_EYEBALLS_DELAY_SECONDS
+    assert clock[0] == hermes_bootstrap._HAPPY_EYEBALLS_DELAY_SECONDS
     assert sockets[0].closed is True
     assert sockets[1].closed is False
 
@@ -331,172 +324,3 @@ def test_codex_auth_http_client_uses_happy_eyeballs_backend(no_proxy_env):
         )
     finally:
         client.close()
-
-
-@pytest.fixture
-def restored_socket_connect():
-    yield
-    socket.create_connection = _STOCK_SOCKET_CREATE_CONNECTION
-    _urllib3_connection_util.create_connection = _STOCK_URLLIB3_CREATE_CONNECTION
-    process_bootstrap._SOCKET_CONNECT_RACER_INSTALLED = False
-
-
-def test_install_happy_eyeballs_socket_connect_patches_both_stacks(restored_socket_connect):
-    process_bootstrap.install_happy_eyeballs_socket_connect()
-
-    assert socket.create_connection is not _STOCK_SOCKET_CREATE_CONNECTION
-    assert _urllib3_connection_util.create_connection is not _STOCK_URLLIB3_CREATE_CONNECTION
-
-    # Idempotent: a second install must not wrap the racer again.
-    first_socket_racer = socket.create_connection
-    first_urllib3_racer = _urllib3_connection_util.create_connection
-    process_bootstrap.install_happy_eyeballs_socket_connect()
-    assert socket.create_connection is first_socket_racer
-    assert _urllib3_connection_util.create_connection is first_urllib3_racer
-
-
-def test_installed_socket_connect_races_past_blackholed_ipv6(
-        monkeypatch, restored_socket_connect):
-    clock = [0.0]
-    sockets = []
-
-    class FakeSocket:
-        def __init__(self, family, socktype, proto):
-            self.family = family
-            self.closed = False
-            self.timeout = None
-            sockets.append(self)
-
-        def setsockopt(self, *_args):
-            pass
-
-        def setblocking(self, _blocking):
-            pass
-
-        def settimeout(self, timeout):
-            self.timeout = timeout
-
-        def bind(self, _address):
-            pass
-
-        def connect_ex(self, _address):
-            if self.family == socket.AF_INET6:
-                return errno.EINPROGRESS
-            return 0
-
-        def close(self):
-            self.closed = True
-
-    class FakeSelector:
-        def __init__(self):
-            self.registered = set()
-
-        def register(self, fileobj, _events):
-            self.registered.add(fileobj)
-
-        def unregister(self, fileobj):
-            self.registered.discard(fileobj)
-
-        def select(self, timeout):
-            clock[0] += timeout or 0.0
-            return []
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        process_bootstrap.socket,
-        "getaddrinfo",
-        lambda *_args, **_kwargs: [
-            (
-                socket.AF_INET6,
-                socket.SOCK_STREAM,
-                socket.IPPROTO_TCP,
-                "",
-                ("2001:db8::1", 443, 0, 0),
-            ),
-            (
-                socket.AF_INET,
-                socket.SOCK_STREAM,
-                socket.IPPROTO_TCP,
-                "",
-                ("192.0.2.1", 443),
-            ),
-        ],
-    )
-    monkeypatch.setattr(process_bootstrap.socket, "socket", FakeSocket)
-    monkeypatch.setattr(
-        process_bootstrap.selectors, "DefaultSelector", FakeSelector
-    )
-    monkeypatch.setattr(
-        process_bootstrap.time, "monotonic", lambda: clock[0]
-    )
-
-    process_bootstrap.install_happy_eyeballs_socket_connect()
-
-    # http.client passes the module timeout sentinel through positionally.
-    winner = socket.create_connection(
-        ("example.com", 443), socket._GLOBAL_DEFAULT_TIMEOUT, None
-    )
-
-    assert winner.family == socket.AF_INET
-    assert winner.timeout is None  # sentinel resolves to the process default (None here), like stock
-    assert clock[0] == process_bootstrap._HAPPY_EYEBALLS_DELAY_SECONDS
-    assert sockets[0].closed is True
-    assert sockets[1] is winner
-
-
-def test_installed_racer_serves_http_client_and_urllib3_connects(restored_socket_connect):
-    import http.client
-
-    import urllib3
-
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(4)
-    port = listener.getsockname()[1]
-
-    process_bootstrap.install_happy_eyeballs_socket_connect()
-    http_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    urllib3_conn = urllib3.connection.HTTPConnection("127.0.0.1", port, timeout=5)
-    try:
-        http_conn.connect()
-        urllib3_conn.connect()  # exercises the socket_options kwarg of the urllib3 racer
-        assert http_conn.sock is not None
-        assert urllib3_conn.sock is not None
-    finally:
-        http_conn.close()
-        urllib3_conn.close()
-        listener.close()
-
-
-def test_installed_racer_honours_process_default_timeout_on_sentinel(restored_socket_connect):
-    # Stock create_connection leaves the sentinel alone, so the socket keeps the
-    # process default set by socket.setdefaulttimeout(); the racer re-applies the
-    # timeout on the winner and must resolve the sentinel to that same default
-    # instead of forcing a blocking socket.
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(4)
-    port = listener.getsockname()[1]
-
-    process_bootstrap.install_happy_eyeballs_socket_connect()
-    socket.setdefaulttimeout(5.0)
-    try:
-        winner = socket.create_connection(("127.0.0.1", port), socket._GLOBAL_DEFAULT_TIMEOUT)
-        try:
-            assert winner.gettimeout() == 5.0
-        finally:
-            winner.close()
-    finally:
-        socket.setdefaulttimeout(None)
-        listener.close()
-
-
-def test_installed_racer_accepts_all_errors_keyword(restored_socket_connect):
-    # socket.create_connection gained the keyword-only all_errors parameter in
-    # Python 3.11 (the repo floor); forwarding it through the installed racer must
-    # not fail with a TypeError before the connect is even attempted.
-    process_bootstrap.install_happy_eyeballs_socket_connect()
-    with pytest.raises(OSError):
-        socket.create_connection(("127.0.0.1", 1), 1.0, None, all_errors=True)

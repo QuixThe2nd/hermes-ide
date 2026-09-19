@@ -2,28 +2,24 @@
 
 Lazy OpenAI SDK import (``_OpenAIProxy`` keeps ``isinstance`` and
 ``patch("agent.process_bootstrap.OpenAI")`` working), crash-resistant stdio
-(``_SafeWriter``), env-only HTTP proxy resolution, and Codex dual-stack
-(Happy Eyeballs) connection racing.
+(``_SafeWriter``), env-only HTTP proxy resolution, and the httpcore backend that
+runs sync httpx connects through the process-wide Happy Eyeballs racer
+(``hermes_bootstrap``).
 """
 
 from __future__ import annotations
 
-import errno
-import os
-import selectors
 import socket
 import sys
 import threading
-import time
 from typing import Any, Optional
 
+from hermes_bootstrap import _happy_eyeballs_create_connection
 from utils import base_url_hostname, normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
 
 
 _OPENAI_CLS_CACHE = None
-_HAPPY_EYEBALLS_DELAY_SECONDS = 0.25
-_SOCKET_CONNECT_RACER_INSTALLED = False
 
 # Process-wide pool of sync ``httpx.HTTPTransport`` objects shared by every
 # keepalive client with the same (verify, proxy, happy-eyeballs) identity.
@@ -37,122 +33,6 @@ _SHARED_TRANSPORTS_MAX = 32
 # the socket-abort walker in agent_runtime_helpers uses it to find only the
 # owning client's in-flight connections on a shared pool.
 HERMES_TRANSPORT_OWNER_EXT = "hermes_transport_owner"
-
-
-def _interleave_addrinfos(addrinfos: list[tuple]) -> list[tuple]:
-    """Round-robin the resolved address families (deduped), preserving resolver order within each."""
-    queues: dict[int, list[tuple]] = {}
-    seen: set[tuple] = set()
-    for addrinfo in addrinfos:
-        family, socktype, proto, _canonname, sockaddr = addrinfo
-        if (family, socktype, proto, sockaddr) not in seen:
-            seen.add((family, socktype, proto, sockaddr))
-            queues.setdefault(family, []).append(addrinfo)
-    interleaved: list[tuple] = []
-    while any(queues.values()):
-        interleaved.extend(queue.pop(0) for queue in queues.values() if queue)
-    return interleaved
-
-
-def _quiet_unregister(selector, sock) -> None:
-    try:
-        selector.unregister(sock)
-    except Exception:
-        pass
-
-
-def _happy_eyeballs_create_connection(address: tuple[str, int], timeout: Optional[float],
-                                      source_address: Optional[tuple[str, int]] = None, socket_options=()):
-    """RFC 8305-style connect: staggered non-blocking attempts across families.
-
-    ``socket.create_connection`` tries addresses serially, so broken-but-
-    advertised IPv6 can burn the whole timeout per AAAA record before IPv4.
-    """
-    host, port = address
-    addrinfos = _interleave_addrinfos(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
-    if not addrinfos:
-        raise OSError(f"getaddrinfo returned no addresses for {host}")
-
-    selector = selectors.DefaultSelector()
-    active: set[socket.socket] = set()
-    winner = None
-    last_error: Optional[OSError] = None
-    deadline = None if timeout is None else time.monotonic() + max(timeout, 0.0)
-    next_launch = time.monotonic()
-    pending = list(addrinfos)
-    in_progress = {0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY, errno.EINTR, getattr(errno, "WSAEWOULDBLOCK", 10035)}
-
-    def start_attempt(addrinfo):
-        family, socktype, proto, _canonname, sockaddr = addrinfo
-        candidate = socket.socket(family, socktype, proto)
-        try:
-            if source_address is not None:
-                local_infos = socket.getaddrinfo(source_address[0], source_address[1], family=family, type=socktype)
-                if not local_infos:
-                    raise OSError(f"getaddrinfo returned no local {family} address for {source_address[0]}")
-                candidate.bind(local_infos[0][4])
-            candidate.setblocking(False)
-            result = candidate.connect_ex(sockaddr)
-            if result in (0, errno.EISCONN):
-                return candidate
-            if result not in in_progress:
-                raise OSError(result, os.strerror(result))
-            selector.register(candidate, selectors.EVENT_WRITE)
-            active.add(candidate)
-            return None
-        except Exception:
-            candidate.close()
-            raise
-
-    try:
-        while pending or active:
-            now = time.monotonic()
-            if deadline is not None and now >= deadline:
-                raise socket.timeout("timed out")
-            if pending and now >= next_launch:
-                try:
-                    winner = start_attempt(pending.pop(0))
-                except OSError as exc:
-                    last_error = exc
-                    if not active:
-                        next_launch = now
-                    continue
-                if winner is not None:
-                    break
-                next_launch = now + _HAPPY_EYEBALLS_DELAY_SECONDS
-            wait_timeout = None if deadline is None else max(0.0, deadline - now)
-            if pending:
-                until_launch = max(0.0, next_launch - now)
-                wait_timeout = until_launch if wait_timeout is None else min(wait_timeout, until_launch)
-            for key, _mask in selector.select(wait_timeout):
-                candidate = key.fileobj
-                error_code = candidate.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
-                selector.unregister(candidate)
-                active.discard(candidate)
-                if error_code == 0:
-                    winner = candidate
-                    break
-                candidate.close()
-                last_error = OSError(error_code, os.strerror(error_code))
-            if winner is not None:
-                break
-            if not active and pending:
-                next_launch = time.monotonic()
-
-        if winner is None:
-            raise last_error if last_error is not None else OSError(f"Could not connect to {host}:{port}")
-        _quiet_unregister(selector, winner)
-        active.discard(winner)
-        winner.settimeout(timeout)
-        for option in socket_options or ():
-            winner.setsockopt(*option)
-        winner.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        return winner
-    finally:
-        for candidate in active:
-            _quiet_unregister(selector, candidate)
-            candidate.close()
-        selector.close()
 
 
 class _HappyEyeballsSyncBackend:
@@ -224,62 +104,6 @@ def enable_happy_eyeballs_on_client(client) -> None:
         return
     for transport in (getattr(client, "_transport", None), *(getattr(client, "_mounts", None) or {}).values()):
         _enable_happy_eyeballs(transport, proxy_pool_types)
-
-
-def install_happy_eyeballs_socket_connect() -> None:
-    """Race IPv6/IPv4 for every sync TCP connect in the process (RFC 8305, #114265).
-
-    The startup path does not build its HTTP clients in one place: the model catalog
-    fetch goes through ``urllib``/``http.client``, provider warm through
-    ``requests``/``urllib3``, and sync LLM clients through httpcore. All three funnel
-    their TCP connect into ``socket.create_connection`` (``http.client`` re-reads it
-    per connection; httpcore looks it up at call time; urllib3 re-exports its own
-    serial copy in ``urllib3.util.connection``), and the stock implementation walks the
-    ``getaddrinfo`` results serially — on a network whose advertised IPv6 route is
-    blackholed, each AAAA record burns the full connect timeout before IPv4 answers.
-    Patches both entry points with the racer from this module; idempotent, best-effort.
-    """
-    global _SOCKET_CONNECT_RACER_INSTALLED
-    if _SOCKET_CONNECT_RACER_INSTALLED:
-        return
-    _SOCKET_CONNECT_RACER_INSTALLED = True
-
-    _socket_original = socket.create_connection
-
-    def _socket_racer(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *, all_errors=False):
-        # Stock create_connection leaves the sentinel alone, so the socket keeps the
-        # process default from socket.setdefaulttimeout(); the racer re-applies the
-        # timeout on the winner, so it must resolve the sentinel the same way.
-        effective = socket.getdefaulttimeout() if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
-        try:
-            return _happy_eyeballs_create_connection(address, effective, source_address=source_address)
-        except OSError:
-            raise  # every candidate failed — identical semantics to the serial original
-        except Exception:
-            return _socket_original(address, timeout, source_address=source_address, all_errors=all_errors)
-
-    socket.create_connection = _socket_racer
-
-    try:
-        from urllib3.util import connection as _urllib3_connection
-        from urllib3.util.timeout import _DEFAULT_TIMEOUT as _urllib3_sentinel
-        _urllib3_original = _urllib3_connection.create_connection
-
-        def _urllib3_racer(address, timeout=_urllib3_sentinel, source_address=None, socket_options=None):
-            effective = socket.getdefaulttimeout() if timeout is _urllib3_sentinel else timeout
-            try:
-                return _happy_eyeballs_create_connection(
-                    address, effective, source_address=source_address,
-                    socket_options=tuple(socket_options or ()))
-            except OSError:
-                raise
-            except Exception:
-                return _urllib3_original(
-                    address, timeout, source_address=source_address, socket_options=socket_options)
-
-        _urllib3_connection.create_connection = _urllib3_racer
-    except Exception:
-        pass  # requests warm keeps its serial connect; the socket/http.client/httpcore paths still race
 
 
 def _load_openai_cls() -> type:
@@ -561,5 +385,5 @@ OpenAI = _OpenAIProxy()
 __all__ = [
     "OpenAI", "_OpenAIProxy", "_load_openai_cls", "_SafeWriter", "_install_safe_stdio", "_get_proxy_from_env",
     "_get_proxy_for_base_url", "build_keepalive_http_client", "close_shared_transports",
-    "enable_happy_eyeballs_on_client", "install_happy_eyeballs_socket_connect",
+    "enable_happy_eyeballs_on_client",
 ]
