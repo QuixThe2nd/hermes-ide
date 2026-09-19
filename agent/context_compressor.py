@@ -3973,7 +3973,18 @@ Write only the summary body. Do not include any preamble or prefix."""
         # this regex on the next compaction (deleting every following section).
         replacement = f"{HISTORICAL_TASK_HEADING}\n{snapshot}\n\n"
         if _HISTORICAL_TASK_SECTION_RE.search(body):
-            return _HISTORICAL_TASK_SECTION_RE.sub(lambda _m: replacement, body, count=1).strip()
+            # Replace the first task section and drop every later one: a summarizer that emits both the
+            # canonical heading and the legacy alias would otherwise leave a second, undisclaimed task section.
+            seen = False
+
+            def _collapse(_m: re.Match) -> str:
+                nonlocal seen
+                if seen:
+                    return ""
+                seen = True
+                return replacement
+
+            return _HISTORICAL_TASK_SECTION_RE.sub(_collapse, body).strip()
         return f"{replacement}{body}".strip()
 
     @classmethod
