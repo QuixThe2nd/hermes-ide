@@ -339,7 +339,8 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
 
 
 def _prune_dead(
-    entries: list[dict[str, Any]], *, strict: bool = False, target_session_id: str | None = None,
+    entries: list[dict[str, Any]], *, strict: bool = False,
+    target_session_id: str | None = None, target_pid: int | None = None,
 ) -> list[dict[str, Any]]:
     """Keep entries whose owner is alive; tracked/strict entries must be provably so.
 
@@ -348,7 +349,10 @@ def _prune_dead(
     unreadable — an LXC ``/proc`` after a backend restart) stays in the live set,
     so it still fences its own session and still counts toward capacity, but no
     longer refuses every claim/release for a different session id. See #113683.
+    ``target_pid`` scopes the same way by owner pid (the orphan sweep only ever
+    reclaims this process's own leases).
     """
+    targeted = target_session_id is not None or target_pid is not None
     live: list[dict[str, Any]] = []
     for entry in entries:
         tracked = strict or bool(entry.get("track_liveness"))
@@ -356,7 +360,12 @@ def _prune_dead(
             entry.get("pid"), entry.get("process_start_time"), lenient=not tracked
         )
         if state is None:
-            if target_session_id is None or str(entry.get("session_id") or "") == str(target_session_id):
+            if (
+                not targeted
+                or (target_session_id is not None
+                    and str(entry.get("session_id") or "") == str(target_session_id))
+                or (target_pid is not None and entry.get("pid") == target_pid)
+            ):
                 raise ActiveSessionRegistryError("active session owner liveness is unknown")
             state = True
         if state:
@@ -405,7 +414,8 @@ def _holds_session(entries: list[dict[str, Any]], session_id: str) -> bool:
 
 
 def _read_live_entries(
-    state_path: Path, *, track_liveness: bool, warn: str, target_session_id: str | None = None,
+    state_path: Path, *, track_liveness: bool, warn: str,
+    target_session_id: str | None = None, target_pid: int | None = None,
 ) -> Optional[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
     """``(raw, pruned)`` from the registry, or None when it is unreadable.
 
@@ -417,7 +427,8 @@ def _read_live_entries(
     try:
         raw_entries = _read_entries(state_path, strict=True)
         return raw_entries, _prune_dead(
-            raw_entries, strict=track_liveness, target_session_id=target_session_id
+            raw_entries, strict=track_liveness,
+            target_session_id=target_session_id, target_pid=target_pid,
         )
     except ActiveSessionRegistryError:
         if track_liveness:
@@ -640,6 +651,7 @@ def _release_orphaned_leases_in_home(registry_home: Path, live_lease_ids: set[st
         loaded = _read_live_entries(
             state_path, track_liveness=False,
             warn="Active-session registry is unavailable; skipping orphaned-lease sweep",
+            target_pid=os.getpid(),
         )
         if loaded is None:
             return 0
@@ -697,7 +709,9 @@ def active_session_liveness_guard(
     new backend can acquire a lease between the check and the caller's ``end_session``."""
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
-        entries = _prune_dead(_read_entries(state_path, strict=True), strict=True)
+        entries = _prune_dead(
+            _read_entries(state_path, strict=True), strict=True, target_session_id=session_id,
+        )
         entries = _drop_self_orphans(entries, own_live_lease_ids)
         _write_entries(state_path, entries)
         yield _holds_session(entries, session_id)
@@ -719,7 +733,9 @@ def release_active_session_liveness_guard(
 
     state_path, lock_path = _lease_paths(lease)
     with _FileLock(lock_path):
-        entries = _prune_dead(_read_entries(state_path, strict=True), strict=True)
+        entries = _prune_dead(
+            _read_entries(state_path, strict=True), strict=True, target_session_id=session_id,
+        )
         kept = [e for e in entries if str(e.get("lease_id") or "") != lease.lease_id]
         kept = _drop_self_orphans(kept, own_live_lease_ids)
         if len(kept) != len(entries):

@@ -520,6 +520,45 @@ def test_unknown_sibling_liveness_only_fences_its_own_session(tmp_path, monkeypa
     assert [e["lease_id"] for e in remaining] == ["stale-sibling"]
 
 
+def test_unknown_sibling_does_not_block_guarded_release_or_orphan_sweep(tmp_path, monkeypatch):
+    """Desktop automatic cleanup (orphan reap, disconnect, idle timeout) releases its
+    lease through ``release_active_session_liveness_guard``; that path and the
+    orphan sweep must tolerate an unknowable, unrelated sibling as well (#113683)."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state_path = home / "runtime" / "active_sessions.json"
+    active_sessions._write_entries(state_path, [{
+        "lease_id": "stale-sibling", "session_id": "old-chat", "surface": "desktop",
+        "pid": 1, "process_start_time": 1234.5, "track_liveness": True,
+    }])
+    original_start = active_sessions._process_start_time
+    monkeypatch.setattr(
+        active_sessions, "_process_start_time",
+        lambda pid: None if int(pid) == 1 else original_start(pid),
+    )
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="new-chat", surface="desktop", config={}, track_liveness=True,
+    )
+    assert lease is not None and message is None
+
+    with active_sessions.release_active_session_liveness_guard(
+        lease, "new-chat", own_live_lease_ids=set()
+    ) as active:
+        assert active is False
+    assert lease.released is True
+    with active_sessions.active_session_liveness_guard("new-chat") as active:
+        assert active is False
+    assert [e["lease_id"] for e in active_sessions._read_entries(state_path)] == ["stale-sibling"]
+
+    orphan, _ = active_sessions.try_acquire_active_session(
+        session_id="orphaned", surface="desktop", config={}, track_liveness=True,
+    )
+    assert orphan is not None
+    _backdate_leases(home)
+    assert active_sessions._release_orphaned_leases_in_home(home, set()) == 1
+    assert [e["lease_id"] for e in active_sessions._read_entries(state_path)] == ["stale-sibling"]
+
+
 def test_liveness_release_failure_is_retryable(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
