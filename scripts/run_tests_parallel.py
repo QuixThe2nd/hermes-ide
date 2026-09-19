@@ -883,7 +883,7 @@ def main() -> int:
     # it never reaches our positional ``paths``. ``=``-joined forms
     # (``-k=expr``, ``--tb=long``) are self-contained and need no lookahead.
     OUR_FLAGS = {
-        "-j", "--jobs", "--paths", "--include-integration",
+        "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
     }
     # pytest short flags that consume the NEXT token as their value.

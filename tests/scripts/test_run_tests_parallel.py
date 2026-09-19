@@ -270,6 +270,29 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
     )
 
 
+@pytest.mark.parametrize("help_flag", ["-h", "--help"])
+def test_help_prints_usage_without_discovering_or_running_tests(
+    tmp_path: Path, help_flag: str
+) -> None:
+    """Runner help stays in argparse instead of becoming a pytest sweep."""
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+
+    proc = subprocess.run(
+        [sys.executable, str(runner), "--paths", str(tmp_path / "no-tests"), help_flag],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "usage:" in proc.stdout
+    assert "Discovered" not in proc.stdout
+
+
 
 
 def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
