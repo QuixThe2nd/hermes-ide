@@ -122,11 +122,11 @@ Your existing providers stay configured. You can switch between them with `/mode
 
 OAuth needs a browser, but the loopback callback runs on the machine where Hermes is running. For remote hosts, see [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) — the same patterns work for the Portal as for any other OAuth-based provider (`ssh -L` port forwarding).
 
-### Profile setup
+### Profile setup {#profile-setup}
 
-If you use [Hermes profiles](/user-guide/profiles), the Portal refresh token is shared across profiles via a shared token store — but the store **refreshes an existing login, it does not create one**. Profiles are independent islands ([#111724](https://github.com/NousResearch/hermes-agent/issues/111724)), so a profile that has never signed in to the Portal has no Nous credentials of its own: at boot it fails closed and asks you to set one up (`hermes -p <name> portal`) rather than silently adopting another profile's session.
+If you use [Hermes profiles](/user-guide/profiles), the Portal refresh token is shared across profiles via a shared token store — but the store **refreshes an existing login, it does not create one**. Profiles are independent islands ([#111724](https://github.com/NousResearch/hermes-agent/issues/111724)), so a profile that has never signed in to the Portal has no Nous credentials of its own: at boot it fails closed with `Profile '<name>' is not connected to any AI provider yet` rather than silently adopting another profile's session.
 
-Sign in **once per profile**. After a profile has completed the OAuth flow, the shared store keeps its token current whenever any profile re-logs in — you don't repeat the interactive OAuth flow to stay signed in, but you do run it once on each profile you want connected.
+Sign in **once per profile** with `hermes -p <name> portal` (alias for `hermes -p <name> auth add nous --type oauth`). When a shared Portal session already exists on the machine, that command offers to import it — one confirmation, no browser round-trip. After that first import the profile keeps its own state, and the shared store keeps its token current whenever any profile refreshes or re-logs in. `hermes profile create <name> --clone-all` from a signed-in profile also carries the Portal login (only single-use grants such as Anthropic/Codex are stripped from clones).
 
 ## Using the Portal day-to-day
 
