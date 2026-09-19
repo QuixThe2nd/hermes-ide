@@ -1533,14 +1533,23 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
         kanban:
           dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
 
-    Returns ``None`` when the key is unset (upstream behavior: any existing
-    profile is claimable). A present value is fail-closed: an empty list,
-    ``null``, or a failed config read claims nothing.
+    Returns ``None`` only when the key is absent from the user config (upstream
+    behavior: any existing profile is claimable). A present value is
+    fail-closed: an empty list, ``null`` or a bare ``dispatch_profiles:`` claims
+    nothing. The user layer is read without the ``DEFAULT_CONFIG`` merge (whose
+    ``None`` placeholder would make the key look present in every home), and a
+    config read that raises also claims nothing — a corrupt config on a shared
+    board must never widen this home's claim scope silently (#113620).
     """
     try:
         from hermes_cli.config_effective import load_user_config_effective
         kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
-    except Exception:
+    except Exception as exc:
+        _kb._log.warning(
+            "kanban: could not read kanban.dispatch_profiles (%s: %s) — "
+            "this home claims no cards until the config is readable",
+            type(exc).__name__, exc,
+        )
         return frozenset()
     if not isinstance(kanban, Mapping) or "dispatch_profiles" not in kanban:
         return None

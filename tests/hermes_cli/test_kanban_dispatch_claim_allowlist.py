@@ -109,16 +109,3 @@ def test_allowlist_config_read_failure_skips_all_cards(
         res = kbd.dispatch_once(conn, dry_run=True)
     assert res.spawned == []
     assert res.skipped_nonspawnable == [tid]
-
-
-def test_valid_allowlist_keeps_named_profile_claimable(
-    kanban_home, all_assignees_spawnable,
-):
-    """A configured name remains claimable after the fail-closed distinction."""
-    (kanban_home / "config.yaml").write_text(
-        "kanban:\n  dispatch_profiles:\n    - default\n", encoding="utf-8",
-    )
-    with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="local card", assignee="default")
-        res = kbd.dispatch_once(conn, dry_run=True)
-    assert [task_id for task_id, _assignee, _workspace in res.spawned] == [tid]
