@@ -163,6 +163,7 @@ import {
   PROJECT_PREVIEW_COUNT,
   ProjectBackRow,
   ProjectMenu,
+  projectOwnerBySessionId,
   projectTreeCwd,
   reconcileEnteredProjectSessions,
   sessionBucketId,
@@ -1050,7 +1051,7 @@ export function ChatSidebar({
             enteredProject,
             enteredProjectOverlaySessions,
             removedSessionIds,
-            projectOwnerBySessionId(agentProjectTree)
+            projectOwnerBySessionId(agentProjectTree ?? [])
           )
         : undefined,
     [enteredProject, enteredProjectOverlaySessions, removedSessionIds, agentProjectTree]

@@ -616,35 +616,44 @@ describe('sessionProjectColor', () => {
 })
 
 describe('overlayLiveLanes', () => {
-  it('does not inject a backend-owned sibling worktree session into an ancestor project', () => {
-    const sibling = makeCwdSession('/work/repos/app-2/src', { id: 'sibling', git_repo_root: null })
+  // Issue layout: explicit "work" (/work) + explicit "app" (/work/repos/app);
+  // the session's cwd is the SIBLING linked worktree /work/repos/app-2, which
+  // the backend's git common-root probe assigns to "app" while the renderer's
+  // cwd walk alone only finds "work".
+  it.each([null, '/work/repos/app'])(
+    'entering an ancestor project does not inject a backend-owned sibling worktree session (git_repo_root=%s)',
+    gitRepoRoot => {
+      const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
+      const ancestor = projectNode({
+        id: 'p_work',
+        path: '/work',
+        repos: [{ id: '/work', label: 'work', path: '/work', groups: [], sessionCount: 0 }]
+      })
+      const appRepo = {
+        id: '/work/repos/app',
+        label: 'app',
+        path: '/work/repos/app',
+        groups: [lane({ id: '/work/repos/app-2', label: 'app-2', path: '/work/repos/app-2', sessions: [] })],
+        sessionCount: 0
+      }
+      // Overview snapshot: the row sits beyond the preview window, so only the
+      // backend's claimed-id set knows the owner.
+      const repo = projectNode({ id: 'p_app', path: '/work/repos/app', previewSessions: [], sessionIds: ['sibling'] })
+      const owners = projectOwnerBySessionId([ancestor, repo])
 
-    const ancestor = projectNode({
-      id: 'p_work',
-      path: '/work',
-      repos: [{ id: '/work', label: 'work', path: '/work', groups: [], sessionCount: 0 }]
-    })
+      const enteredAncestor = overlayLiveLanes(ancestor, [sibling], new Set(), owners)
+      const enteredRepo = overlayLiveLanes({ ...repo, repos: [appRepo] }, [sibling], new Set(), owners)
 
-    const repo = projectNode({
-      id: 'p_app',
-      path: '/work/repos/app',
-      repos: [
-        {
-          id: '/work/repos/app',
-          label: 'app',
-          path: '/work/repos/app',
-          groups: [lane({ id: '/work/repos/app-2', label: 'app-2', path: '/work/repos/app-2', sessions: [sibling] })],
-          sessionCount: 1
-        }
-      ],
-      previewSessions: [sibling],
-      sessionCount: 1
-    })
+      expect(enteredAncestor.sessionCount).toBe(0)
+      expect(enteredRepo.repos[0].groups.find(g => g.id === '/work/repos/app-2')?.sessions.map(s => s.id)).toEqual([
+        'sibling'
+      ])
+      // A row the tree does not know yet (just created) still lands by cwd.
+      const fresh = makeCwdSession('/work/notes', { id: 'fresh', git_repo_root: null })
 
-    const overlaid = overlayLiveLanes(ancestor, [sibling], new Set(), projectOwnerBySessionId([ancestor, repo]))
-
-    expect(overlaid.sessionCount).toBe(0)
-  })
+      expect(overlayLiveLanes(ancestor, [fresh], new Set(), owners).sessionCount).toBe(1)
+    }
+  )
 
   it('keeps an overview preview visible when the hydrated drill-in is stale', () => {
     const staleHistory = makeCwdSession('/www/app', {
@@ -1116,19 +1125,30 @@ describe('overlayLiveLanes', () => {
 })
 
 describe('overlayLivePreviews', () => {
-  it('keeps a backend-owned sibling worktree session out of an ancestor preview when git_repo_root is null', () => {
-    const sibling = makeCwdSession('/work/repos/app-2/src', { id: 'sibling', git_repo_root: null })
-    const ancestor = projectNode({ id: 'p_work', path: '/work', previewSessions: [], sessionCount: 0 })
-    const repo = projectNode({ id: 'p_app', path: '/work/repos/app', previewSessions: [sibling], sessionCount: 1 })
+  it.each([null, '/work/repos/app'])(
+    'shows a backend-owned sibling worktree session only under its repo project (git_repo_root=%s)',
+    gitRepoRoot => {
+      const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
+      const ancestor = projectNode({ id: 'p_work', path: '/work', previewSessions: [], sessionCount: 0 })
+      const repo = projectNode({
+        id: 'p_app',
+        path: '/work/repos/app',
+        previewSessions: [sibling],
+        sessionCount: 1,
+        sessionIds: ['sibling']
+      })
 
-    const previews = overlayLivePreviews([ancestor, repo], [sibling], [
-      makeProject('p_work', ['/work']),
-      makeProject('p_app', ['/work/repos/app'])
-    ], 3)
+      const previews = overlayLivePreviews(
+        [ancestor, repo],
+        [sibling],
+        [makeProject('p_work', ['/work']), makeProject('p_app', ['/work/repos/app'])],
+        3
+      )
 
-    expect(previews.p_work).toBeUndefined()
-    expect(previews.p_app?.map(session => session.id)).toEqual(['sibling'])
-  })
+      expect(previews.p_work).toBeUndefined()
+      expect(previews.p_app?.map(session => session.id)).toEqual(['sibling'])
+    }
+  )
   it('merges live sessions into a project preview, live first, capped to the limit', () => {
     const project = projectNode({
       id: '/www/app',

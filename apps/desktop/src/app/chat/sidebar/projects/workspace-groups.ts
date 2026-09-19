@@ -69,6 +69,9 @@ export interface SidebarProjectTree {
   lastActive?: number
   // Up to N most-recent sessions for the overview preview (set by `projects.tree`).
   previewSessions?: SessionInfo[]
+  // Every session id the backend assigned to this project — the authoritative
+  // owner set the live overlay keys on (complete, unlike `previewSessions`).
+  sessionIds?: string[]
 }
 
 /** Path split into segments, ignoring trailing slashes and mixed separators. */
@@ -487,13 +490,15 @@ export function projectOwnerBySessionId(projects: SidebarProjectTree[]): Readonl
   const owners = new Map<string, string>()
 
   for (const project of projects) {
-    const sessions = [
-      ...(project.previewSessions ?? []),
-      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+    const ids = [
+      ...(project.sessionIds ?? []),
+      // Older backends only carry the rows themselves.
+      ...(project.previewSessions ?? []).map(session => session.id),
+      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions.map(session => session.id)))
     ]
 
-    for (const session of sessions) {
-      owners.set(session.id, project.id)
+    for (const id of ids) {
+      owners.set(id, project.id)
     }
   }
 
