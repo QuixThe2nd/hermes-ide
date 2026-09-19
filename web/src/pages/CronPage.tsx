@@ -21,7 +21,9 @@ import type {
 import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
+  cronAgoLabel,
   cronNextRunOverdueMs,
+  cronSchedulerStaleAgeS,
   cronJobFormFromJob,
   cronLastResult,
   focusCronField,
@@ -542,6 +544,7 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
+  const schedulerStaleAgeS = cronSchedulerStaleAgeS(jobs);
   const [triggeringJobKeys, setTriggeringJobKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -898,6 +901,15 @@ export default function CronPage() {
           detail={jobsLoadError}
           onRetry={() => loadJobs(selectedProfile)}
         />
+      )}
+
+      {schedulerStaleAgeS !== null && (
+        <p className="text-sm text-warning font-medium" data-testid="cron-scheduler-stale">
+          {(t.cron.schedulerLastTicked ?? en.cron.schedulerLastTicked!).replace(
+            "{when}",
+            cronAgoLabel(schedulerStaleAgeS),
+          )}
+        </p>
       )}
 
       <Segmented
