@@ -250,6 +250,8 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
     # ESC[27;2;<cp>~ -> chr(cp) is layout-safe on every tilde-form emitter; the
     # unshifted-codepoint concern belongs to Kitty CSI-u, which never uses this spelling.
     # Existing entries (Shift+Enter \x1b[27;2;13~, Shift+Tab, Shift+Space) win via setdefault.
+    # xterm/Ghostty only use this encoding for produced codepoints 0x40-0x7E (`IsControlInput`);
+    # '!' '#' '$' still arrive as plain text, so the 33-63 rows are inert there but harmless.
     for cp in range(33, 127):
         _put(f"\x1b[27;2;{cp}~", chr(cp))
 
