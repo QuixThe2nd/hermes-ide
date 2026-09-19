@@ -310,6 +310,26 @@ def _windows_shim_in_process_chain() -> Path | None:
 
     See #88838, #89599.
     """
+    _match = _venv_shim_matcher()
+    if _match is None:
+        return None
+
+    main_mod = sys.modules.get("__main__")
+    candidates = [*sys.argv[:1], *filter(None, (
+        getattr(main_mod, "__file__", None),
+        getattr(getattr(main_mod, "__spec__", None), "origin", None)))]
+    for candidate in candidates:
+        matched = _match(candidate)
+        if matched is not None:
+            return matched
+
+    ancestor = _windows_shim_ancestor(_match)
+    return None if ancestor is None else ancestor[0]
+
+
+def _venv_shim_matcher():
+    """``candidate -> shim | None`` against the project venv's own console shims, or ``None`` when
+    there is nothing to match (not Windows, no venv, no shims)."""
     if not _is_windows():
         return None
     scripts_dir = _venv_scripts_dir()
@@ -325,15 +345,11 @@ def _windows_shim_in_process_chain() -> Path | None:
             path = path.parent
         return shims.get(_norm_exe_path(path))
 
-    main_mod = sys.modules.get("__main__")
-    candidates = [*sys.argv[:1], *filter(None, (
-        getattr(main_mod, "__file__", None),
-        getattr(getattr(main_mod, "__spec__", None), "origin", None)))]
-    for candidate in candidates:
-        matched = _match(candidate)
-        if matched is not None:
-            return matched
+    return _match
 
+
+def _windows_shim_ancestor(_match) -> tuple[Path, int] | None:
+    """``(shim, pid)`` of the nearest process in our chain (self first) whose executable IS a shim."""
     with contextlib.suppress(Exception):
         import psutil
         me = psutil.Process()
@@ -343,8 +359,17 @@ def _windows_shim_in_process_chain() -> Path | None:
             except Exception:
                 continue
             if matched is not None:
-                return matched
+                return matched, proc.pid
     return None
+
+
+def _windows_shim_holder_pid() -> int:
+    """Pid a detached child must outwait before touching the venv: the ``hermes.exe`` launcher
+    ancestor that holds the shim image open (it spawns this interpreter and exits only after
+    reaping it), else this process — argv names the shim but it is the launcher that locks it."""
+    _match = _venv_shim_matcher()
+    ancestor = _windows_shim_ancestor(_match) if _match is not None else None
+    return os.getpid() if ancestor is None else ancestor[1]
 
 
 def _windows_running_hermes_launcher_locked() -> bool:

@@ -51,8 +51,8 @@ def _fake_psutil(monkeypatch, ancestor_exes: list[str]):
     """Stand in for psutil with a fixed self+ancestor executable chain."""
 
     class _Proc:
-        def __init__(self, exe=None):
-            self._exe = exe
+        def __init__(self, exe=None, pid=os.getpid()):
+            self._exe, self.pid = exe, pid
 
         def exe(self):
             if self._exe is None:
@@ -60,7 +60,7 @@ def _fake_psutil(monkeypatch, ancestor_exes: list[str]):
             return self._exe
 
         def parents(self):
-            return [_Proc(exe) for exe in ancestor_exes]
+            return [_Proc(exe, 1000 + i) for i, exe in enumerate(ancestor_exes)]
 
     monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(Process=_Proc))
 
@@ -108,6 +108,8 @@ def test_detects_shim_in_ancestor_chain(venv, monkeypatch):
     """The launcher is usually a separate parent process, not argv[0]."""
     _fake_psutil(monkeypatch, [str(venv / "hermes.exe")])
     assert main_install_repair._windows_shim_in_process_chain() == venv / "hermes.exe"
+    # ...and it is that launcher's pid, not ours, a detached child must outwait (#101600).
+    assert main_install_repair._windows_shim_holder_pid() == 1000
 
 
 def test_ignores_hermes_exe_outside_the_project_venv(venv, monkeypatch, tmp_path):

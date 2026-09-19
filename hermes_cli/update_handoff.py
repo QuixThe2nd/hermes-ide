@@ -33,8 +33,9 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 
 # Set on the post-swap child: the receipt header says "continued", the lock is the parent's.
 POST_SWAP_ENV = "HERMES_UPDATE_POST_SWAP"
-# Set on a child spawned DETACHED off the Windows console shim: the pid of the interpreter
-# that still holds ``hermes.exe`` open. The child waits for it before it touches the venv —
+# Set on a child spawned DETACHED off the Windows console shim: the pid of the process that
+# still holds ``hermes.exe`` open (the launcher, or the interpreter it ran). The child waits
+# for it before it touches the venv —
 # the shim quarantine is a single rename with sub-second retries, and the reporter's runs
 # (#101600) reached it while the parent was still alive (relaunching gateways, or just
 # tearing down), so the rename failed and the whole install was deferred.
@@ -118,9 +119,12 @@ def post_swap_child_env() -> dict[str, str]:
 
 
 def detached_shim_child_env(env: dict[str, str], gateway_resume: dict | None = None) -> dict[str, str]:
-    """Env for a child that outlives this shim-run process: names us as the shim holder and, for
-    the legacy re-exec (no hand-off file), carries the Windows pause token."""
-    env = {**env, SHIM_PARENT_PID_ENV: str(os.getpid())}
+    """Env for a child that outlives this shim-run process: names the process holding the shim
+    open (the ``hermes.exe`` launcher above us when psutil sees it, else this interpreter) and,
+    for the legacy re-exec (no hand-off file), carries the Windows pause token."""
+    from hermes_cli.main_install_repair import _windows_shim_holder_pid
+
+    env = {**env, SHIM_PARENT_PID_ENV: str(_windows_shim_holder_pid())}
     if gateway_resume is not None:
         env[GATEWAY_RESUME_ENV] = json.dumps(gateway_resume, default=_json_default)
     return env

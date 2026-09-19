@@ -2374,6 +2374,15 @@ def cmd_update(args):
         describe_holder,
     )
 
+    # A child spawned off hermes.exe: the parent still holds the shim (and the venv python)
+    # until it exits — nothing below may scan holders, pause gateways or rename shims before.
+    # Waiting BEFORE the lock matters: the parent's exit releases ITS marker, so a child that
+    # merely ran under the parent's claim would finish the install with no lock at all
+    # (#101600); once the parent is gone the child claims a marker of its own.
+    from hermes_cli.update_handoff import wait_for_shim_parent_exit
+
+    wait_for_shim_parent_exit()
+
     _update_lock = UpdateLock()
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
