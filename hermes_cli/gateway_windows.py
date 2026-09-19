@@ -404,9 +404,20 @@ def _write_task_script() -> Path:
 
 
 def _atomic_write(path: Path, content: str, tmp: Path) -> None:
-    """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``."""
-    tmp.write_text(content, encoding="utf-8", newline="")
-    tmp.replace(path)
+    """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``.
+
+    The staging file is removed even when the rename fails: the Startup-folder caller stages
+    inside the Startup folder itself, and Windows opens every file there at login — a leftover
+    ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
+    """
+    try:
+        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ── Install / uninstall
