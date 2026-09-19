@@ -1534,16 +1534,19 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
           dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
 
     Returns ``None`` when the key is unset (upstream behavior: any existing
-    profile is claimable). A set value is fail-closed: an empty list claims
-    nothing. Config read is fail-open like the sibling ``kanban.*`` readers.
+    profile is claimable). A present value is fail-closed: an empty list,
+    ``null``, or a failed config read claims nothing.
     """
     try:
-        from hermes_cli.config import load_config_readonly
-        raw = (load_config_readonly() or {}).get("kanban", {}).get("dispatch_profiles")
+        from hermes_cli.config_effective import load_user_config_effective
+        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
     except Exception:
+        return frozenset()
+    if not isinstance(kanban, Mapping) or "dispatch_profiles" not in kanban:
         return None
+    raw = kanban["dispatch_profiles"]
     if raw is None:
-        return None
+        return frozenset()
     names = [str(n) for n in raw] if isinstance(raw, (list, tuple)) else str(raw).split(",")
     allowed = set()
     for n in names:

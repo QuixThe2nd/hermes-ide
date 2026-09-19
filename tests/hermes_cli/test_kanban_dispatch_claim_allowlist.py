@@ -76,3 +76,49 @@ def test_unset_allowlist_keeps_default_claimable(kanban_home, all_assignees_spaw
         res = kbd.dispatch_once(conn, dry_run=True)
     assert [t for t, _a, _w in res.spawned] == [tid]
     assert res.skipped_nonspawnable == []
+
+
+@pytest.mark.parametrize("value", ["", None], ids=["blank", "null"])
+def test_present_blank_or_null_allowlist_skips_all_cards(
+    kanban_home, all_assignees_spawnable, value,
+):
+    """A present key with no names must not fall back to unrestricted claims."""
+    rendered = "" if value is None else ' ""'
+    (kanban_home / "config.yaml").write_text(
+        f"kanban:\n  dispatch_profiles:{rendered}\n", encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+
+
+def test_allowlist_config_read_failure_skips_all_cards(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A broken config read must not make this shared home claim every profile."""
+    from hermes_cli import config_effective
+
+    def raise_read_error(**_kwargs):
+        raise OSError("config unavailable")
+
+    monkeypatch.setattr(config_effective, "load_user_config_effective", raise_read_error)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+
+
+def test_valid_allowlist_keeps_named_profile_claimable(
+    kanban_home, all_assignees_spawnable,
+):
+    """A configured name remains claimable after the fail-closed distinction."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles:\n    - default\n", encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="local card", assignee="default")
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert [task_id for task_id, _assignee, _workspace in res.spawned] == [tid]
