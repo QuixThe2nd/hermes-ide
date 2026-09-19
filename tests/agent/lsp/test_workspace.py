@@ -23,8 +23,6 @@ def _clear():
     clear_cache()
 
 
-
-
 def test_find_git_worktree_finds_dotgit(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -32,12 +30,6 @@ def test_find_git_worktree_finds_dotgit(tmp_path: Path):
     sub = repo / "src" / "deep"
     sub.mkdir(parents=True)
     assert find_git_worktree(str(sub)) == str(repo)
-
-
-
-
-
-
 
 
 def test_nearest_root_finds_first_marker(tmp_path: Path):
@@ -62,10 +54,6 @@ def test_nearest_root_skips_package_dirs(tmp_path: Path):
     assert found == str(root)
 
 
-
-
-
-
 def test_resolve_workspace_for_file_uses_cwd_first(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
@@ -86,32 +74,17 @@ def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeyp
     (repo / ".git").mkdir(parents=True)
     file_path = repo / "x.py"
     file_path.write_text("")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.chdir(scratch)
+    scratch.rmdir()
+    with pytest.raises(OSError):
+        os.getcwd()
 
-    def _deleted_cwd():
-        raise FileNotFoundError(2, "No such file or directory")
-
-    monkeypatch.setattr("agent.lsp.workspace.os.getcwd", _deleted_cwd)
-    # cwd argument absent → the process cwd is consulted and raises
     root, gated = resolve_workspace_for_file(str(file_path))
-    # falls through to the file's own worktree
+
     assert root == str(repo)
     assert gated is True
-
-
-def test_current_dir_none_when_cwd_unreadable(monkeypatch):
-    from agent.lsp.workspace import _current_dir
-
-    def _deleted_cwd():
-        raise FileNotFoundError(2, "No such file or directory")
-
-    monkeypatch.setattr("agent.lsp.workspace.os.getcwd", _deleted_cwd)
-    assert _current_dir() is None
-    monkeypatch.setattr("agent.lsp.workspace.os.getcwd", lambda: "/somewhere")
-    assert _current_dir() == "/somewhere"
-
-
-
-
 
 
 def test_normalize_path_expands_tilde(monkeypatch):
