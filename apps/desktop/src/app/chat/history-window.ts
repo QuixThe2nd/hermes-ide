@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { capabilityScoped, hermesApi, type ProfileScope } from '@/api/client'
+import { previousPromptRowId } from '@/components/assistant-ui/thread/timeline-index'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import type { SessionMessagesResponse } from '@/types/hermes'
+
+import { mergeOlderTranscriptPage } from './transcript-backfill'
 
 export const HISTORY_WINDOW_LIMIT = 120
 
@@ -66,11 +69,12 @@ interface HistoryWindowOptions {
 /** A single replaceable display page, never merged into the live message store. */
 export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: HistoryWindowOptions) {
   const lifetime = useMemo(() => ({ scopeKey }), [scopeKey])
-  const latest = useRef({ lifetime, storedId, scope, isCurrent })
-  latest.current = { lifetime, storedId, scope, isCurrent }
+  const latest = useRef({ lifetime, page: null as HistoryPage | null, storedId, scope, isCurrent })
   const pending = useRef<AbortController | null>(null)
   const [selection, setSelection] = useState<{ lifetime: object; page: HistoryPage } | null>(null)
   const page = selection?.lifetime === lifetime ? selection.page : null
+
+  latest.current = { lifetime, page, storedId, scope, isCurrent }
 
   const cancel = useCallback(() => {
     pending.current?.abort()
@@ -130,5 +134,63 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
     }
   }, [cancel])
 
-  return { page, revealRow, returnToLatest }
+  /**
+   * Prepend the page before this window's first prompt. The anchor's
+   * predecessor comes from the same prompt index the rail draws, so the
+   * transcript's entry point and the rail page one range. `beforePrepend` is
+   * spent in the same commit as the prepend, exactly like a live-page grow.
+   */
+  const revealOlder = useCallback(async (beforePrepend?: () => void): Promise<boolean> => {
+    const captured = latest.current
+    const current = captured.page
+
+    // No older rows before this page's first row, or nothing to anchor on yet.
+    if (!current?.olderAvailable || !captured.storedId || !captured.isCurrent()) {
+      return false
+    }
+
+    const anchor = current.messages.find(message => message.role === 'user' && message.rowId !== undefined)?.rowId
+
+    cancel()
+    const controller = new AbortController()
+    pending.current = controller
+
+    try {
+      const rowId = await previousPromptRowId(captured.storedId, captured.scope, anchor)
+
+      if (rowId === null || controller.signal.aborted) {
+        return false
+      }
+
+      const next = await fetchHistoryWindow(captured.storedId, rowId, captured.scope, controller.signal)
+      const messages = mergeOlderTranscriptPage(current.messages, next.messages)
+
+      // A window replaced while this one was in flight owns the display page.
+      if (
+        controller.signal.aborted ||
+        messages === current.messages ||
+        latest.current.lifetime !== captured.lifetime ||
+        latest.current.page !== current
+      ) {
+        return false
+      }
+
+      beforePrepend?.()
+      setSelection({
+        lifetime: captured.lifetime,
+        page: { messages, olderAvailable: next.olderAvailable, newerAvailable: current.newerAvailable }
+      })
+
+      return true
+    } catch {
+      // Missing/older backend, unreadable page, and an index that cannot name
+      // the predecessor all leave the page untouched; the caller reports
+      // failure and can retry explicitly.
+      return false
+    } finally {
+      if (pending.current === controller) {pending.current = null}
+    }
+  }, [cancel])
+
+  return { page, revealRow, returnToLatest, revealOlder }
 }

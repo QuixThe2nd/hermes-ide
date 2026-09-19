@@ -168,3 +168,59 @@ describe('bounded direct history runtime', () => {
     }
   })
 })
+
+/** A complete metadata page: prompt marks are all the range a reader can walk. */
+const index = (rowIds: number[]) => ({
+  entries: rowIds.map(rowId => ({ row_id: rowId, preview: `prompt ${rowId}` })),
+  pagination: { next_cursor: null, has_more: false }
+})
+
+describe('paging earlier from an open history window', () => {
+  it('keeps earlier messages reachable after a jump to an older mark', async () => {
+    const api = vi
+      .spyOn(window.hermesDesktop, 'api')
+      .mockResolvedValueOnce(page(4000))
+      .mockResolvedValueOnce(index([3880, 4000]))
+      .mockResolvedValueOnce({ ...page(3880), pagination: { ...page(3880).pagination, has_older: false } })
+    const mounted = mount()
+    const live = mounted.view.$messages.get()
+
+    await act(async () => { await mounted.window.revealRow(4000, new AbortController().signal) })
+    // The row was reached from the rail, but everything before it is still
+    // back there: the transcript's own entry point must not retire.
+    expect(mounted.window.olderAvailable).toBe(true)
+
+    let grew = false
+    await act(async () => { grew = (await mounted.window.expandWindow()) === true })
+    expect(grew).toBe(true)
+
+    const rows = mounted.window.currentMessages?.map(message => message.rowId) ?? []
+
+    expect(rows[0]).toBe(3880)
+    expect(rows).toHaveLength(240)
+    expect(new Set(rows).size).toBe(240)
+    // The prepended page started at the session's first prompt: now retire.
+    expect(mounted.window.olderAvailable).toBe(false)
+    expect(await mounted.window.expandWindow()).toBe(false)
+    expect(mounted.view.$messages.get()).toBe(live)
+    expect(api.mock.calls.map(call => call[0].path)).toEqual([
+      expect.stringContaining('around?row_id=4000'),
+      expect.stringContaining('/timeline?limit=500'),
+      expect.stringContaining('around?row_id=3880')
+    ])
+  })
+
+  it('still retires the entry point when the open window starts at the session top', async () => {
+    const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue({
+      ...page(1),
+      pagination: { ...page(1).pagination, has_older: false }
+    })
+    const mounted = mount()
+
+    await act(async () => { await mounted.window.revealRow(1, new AbortController().signal) })
+    expect(mounted.window.olderAvailable).toBe(false)
+    expect(await mounted.window.expandWindow()).toBe(false)
+    // Nothing older to walk to: the lookup never even reaches the backend.
+    expect(api).toHaveBeenCalledTimes(1)
+  })
+})
