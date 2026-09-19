@@ -3,7 +3,7 @@ import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
-import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
+import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
@@ -92,6 +92,31 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     // By the layout phase the scope must already be B's (empty) — a submit
     // fired the instant B renders must never ship session A's attachment.
     expect(snapshots[0]).toEqual([])
+  })
+
+  it('moves a new-chat draft into the assigned session when its id arrives (#114122)', () => {
+    const preSessionAttachment: ComposerAttachment = { id: 'file:new', kind: 'file', label: 'new.txt' }
+    stashSessionDraft(null, 'do not lose this draft', [preSessionAttachment])
+
+    const { rerender } = render(
+      <ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />
+    )
+
+    act(() => {
+      rerender(
+        <ProbeHarness
+          activeQueueSessionKey="session-created"
+          onLayoutSnapshot={() => undefined}
+          sessionId="session-created"
+        />
+      )
+    })
+
+    expect(takeSessionDraft('session-created')).toEqual({
+      attachments: [preSessionAttachment],
+      text: 'do not lose this draft'
+    })
+    expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
   })
 
   it('applies a delayed image preview when it resolves while its attachment draft is inactive', async () => {

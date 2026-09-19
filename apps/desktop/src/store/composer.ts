@@ -408,15 +408,16 @@ export const clearSessionDraft = (scope: string | null | undefined) => stashSess
  *
  * Auto-compression rotates the live stored tip id (root → continuation) while
  * the user may still be typing. Drafts keyed on the obsolete tip would otherwise
- * vanish from the composer when selection follows the new tip. No-op unless both
- * keys resolve, differ, and the source has content. Does not overwrite a
+ * vanish from the composer when selection follows the new tip. A new chat is
+ * stored under the pre-session key until its first session id arrives. No-op
+ * unless the destination resolves, the keys differ, and the source has content. Does not overwrite a
  * non-empty destination draft.
  */
 export function migrateSessionDraft(fromKey: string | null | undefined, toKey: string | null | undefined): boolean {
   const from = draftKey(fromKey)
   const to = draftKey(toKey)
 
-  if (!fromKey || !toKey || from === to) {
+  if (!toKey?.trim() || from === to) {
     return false
   }
 

@@ -280,15 +280,30 @@ describe('session drafts', () => {
     clearSessionDraft(tipAfter)
   })
 
-  it('does not overwrite a non-empty destination draft during migration', () => {
-    stashSessionDraft('from', 'old tip draft', [])
-    stashSessionDraft('to', 'already typed on new tip', [])
+  it('migrates a pre-session draft onto its assigned session key', () => {
+    stashSessionDraft(null, 'typed before the session existed', [attachment({ id: 'file:new' })])
 
-    expect(migrateSessionDraft('from', 'to')).toBe(false)
+    expect(migrateSessionDraft(null, 'session-created')).toBe(true)
+    expect(takeSessionDraft('session-created')).toEqual({
+      attachments: [attachment({ id: 'file:new' })],
+      text: 'typed before the session existed'
+    })
+    expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
+
+    clearSessionDraft('session-created')
+  })
+
+  it('does not overwrite a destination draft or its attachments during migration', () => {
+    const destinationAttachment = attachment({ id: 'file:destination' })
+    stashSessionDraft(null, 'new chat draft', [attachment({ id: 'file:source' })])
+    stashSessionDraft('to', 'already typed on new tip', [destinationAttachment])
+
+    expect(migrateSessionDraft(null, 'to')).toBe(false)
     expect(takeSessionDraft('to').text).toBe('already typed on new tip')
-    expect(takeSessionDraft('from').text).toBe('old tip draft')
+    expect(takeSessionDraft('to').attachments).toEqual([destinationAttachment])
+    expect(takeSessionDraft(null).text).toBe('new chat draft')
 
-    clearSessionDraft('from')
+    clearSessionDraft(null)
     clearSessionDraft('to')
   })
 })
