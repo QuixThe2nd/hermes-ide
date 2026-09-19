@@ -588,3 +588,24 @@ class TestSlashCronListLastStatus:
 
         out = self._run_list(tmp_cron_dir, capsys)
         assert "(ok)" in out
+
+
+class TestSlashCronRunSkipped:
+    """``/cron run`` on a job whose claim is refused (paused here; a live claim held by another
+    run is the same shape) must print the refusal, never ``Triggered … next scheduler tick``."""
+
+    def test_refused_run_prints_reason_not_triggered(self, tmp_cron_dir, capsys):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        job = create_job(prompt="Nightly brief", schedule="every 1h", deliver="local")
+        jobs = load_jobs()
+        jobs[0]["enabled"] = False
+        save_jobs(jobs)
+
+        _Host()._handle_cron_command(f"/cron run {job['id']}")
+        out = capsys.readouterr().out
+        assert "Job is paused/disabled; resume it before running." in out
+        assert "Triggered" not in out and "next scheduler tick" not in out
