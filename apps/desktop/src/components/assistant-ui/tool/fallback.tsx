@@ -44,6 +44,7 @@ import { useI18n } from '@/i18n'
 import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { resolveMediaDisplaySrc } from '@/lib/media'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -111,6 +112,41 @@ const TOOL_SECTION_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0
 
 // Raw args/result dump — reference material, so a notch smaller than a body.
 const TOOL_PAYLOAD_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.65rem] leading-relaxed')
+
+function ToolActivityImage({ alt, src }: { alt: string; src: string }) {
+  const [resolvedSrc, setResolvedSrc] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+
+    setResolvedSrc('')
+    void resolveMediaDisplaySrc(src)
+      .then(value => {
+        if (!cancelled) {
+          setResolvedSrc(value)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setResolvedSrc('')
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [src])
+
+  if (!resolvedSrc) {
+    return null
+  }
+
+  return (
+    <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
+      <ZoomableImage alt={alt} className="h-auto w-full object-cover" src={resolvedSrc} />
+    </div>
+  )
+}
 
 /**
  * Technical-mode raw payload, behind a chevron disclosure.
@@ -624,11 +660,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           {part.toolName === 'terminal' && toolViewMode !== 'technical' && (
             <TerminalTranscript command={view.terminalCommand} exitCode={view.terminalExitCode} />
           )}
-          {view.imageUrl && (
-            <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <ZoomableImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
-            </div>
-          )}
+          {view.imageUrl && <ToolActivityImage alt={copy.outputAlt} src={view.imageUrl} />}
           {hasSearchHits && view.searchHits && (
             <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
               {view.searchQuery && (
