@@ -28,6 +28,32 @@ def stamp_failure(result: Dict[str, Any], reason: str, retryable: bool) -> Dict[
     return result
 
 
+# ---- failed-turn transcript boundary ----------------------------------------------------------
+# The Hermes-authored assistant row that closes a durable turn which ended without one. A
+# transcript boundary, NOT the model's answer: no provider/model error or refusal detail is
+# ever interpolated (that rides ``final_response``). Owned here so the core closer
+# (``agent/conversation_loop.py::run_conversation``) and the gateway's own writer
+# (``gateway/run_turn.py::_hmwa_close_failed_turn``) say the same thing.
+
+FAILED_TURN_NOTICE = (
+    "Your request was not processed. Send it again if you still want me to carry it out."
+)
+PARTIAL_FAILED_TURN_NOTICE = (
+    "This turn did not complete. Some actions may already have run; verify their effects "
+    "before resending."
+)
+
+
+def failed_turn_notice(turn_messages: Any) -> str:
+    """Boundary copy for a failed turn: never claim "not processed" when a tool may have run."""
+    for row in turn_messages or ():
+        if isinstance(row, dict) and (
+            row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
+        ):
+            return PARTIAL_FAILED_TURN_NOTICE
+    return FAILED_TURN_NOTICE
+
+
 def provider_label_for(provider: Any) -> str:
     """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…)."""
     from hermes_cli.models import provider_label
