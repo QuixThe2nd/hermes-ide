@@ -158,16 +158,11 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
 
 
 def _warm_memory_provider_import(logger: logging.Logger) -> None:
-    """Import ``memory.provider``'s module (no provider instance) before any thread exists."""
-    try:
-        from hermes_cli.config import load_config
-        from plugins.memory import import_memory_provider_module
+    """Import ``memory.provider``'s module + numpy (no provider instance) before the ACP threads start."""
+    from plugins.memory import import_memory_provider_module
 
-        name = str(((load_config() or {}).get("memory") or {}).get("provider") or "").strip()
-        if name and not import_memory_provider_module(name):
-            logger.debug("memory provider %r not warmed; agent init will report the real error", name)
-    except Exception:
-        logger.debug("memory provider warm-up skipped", exc_info=True)
+    if not import_memory_provider_module():
+        logger.debug("memory provider not warmed (none configured or import failed; agent init reports that)")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -195,11 +190,12 @@ def main(argv: list[str] | None = None) -> None:
     import acp
     from .server import HermesACPAgent
 
-    # Windows: import the configured memory provider on the main thread while it is still
-    # the ONLY thread. A first-time native-extension import (numpy via holographic /
-    # mnemosyne / hindsight) racing the MCP-discovery or ACP stdin-reader thread's import
-    # chain deadlocked in create_module and session/new never answered (#58083). After
-    # this the off-loop agent build finds the module in sys.modules.
+    # Windows: import the configured memory provider (and numpy) on the main thread before
+    # the MCP-discovery and ACP stdin-reader threads start (hermes_cli's ~150 ms
+    # plugin-discovery thread is the only one already running). A first-time
+    # native-extension import (numpy via holographic / mnemosyne / hindsight) racing another
+    # thread's import chain deadlocked in create_module and session/new never answered
+    # (#58083). After this the off-loop agent build finds the modules in sys.modules.
     if sys.platform == "win32":
         _warm_memory_provider_import(logger)
 
