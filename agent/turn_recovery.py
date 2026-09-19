@@ -677,12 +677,13 @@ def _print_nonretryable_auth_guidance(
         return
     if provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
         if provider == "openai-codex":
+            from agent.turn_failure_copy import oauth_relogin_command
+
             _vlines(
                 agent,
                 "   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been",
-                "      refreshed by another client (Codex CLI, VS Code). To fix:",
-                "      1. Run `codex` in your terminal to generate fresh tokens.",
-                "      2. Then run `hermes auth` to re-authenticate.",
+                "      refreshed by another client (Codex CLI, VS Code) or another Hermes profile.",
+                f"      Sign this profile in again: `{oauth_relogin_command(provider)}`",
             )
         elif provider == "xai-oauth":
             _vlines(
