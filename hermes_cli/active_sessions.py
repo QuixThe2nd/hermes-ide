@@ -338,8 +338,17 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
     return abs(current_start - expected_start) < 0.001
 
 
-def _prune_dead(entries: list[dict[str, Any]], *, strict: bool = False) -> list[dict[str, Any]]:
-    """Keep entries whose owner is alive; tracked/strict entries must be provably so."""
+def _prune_dead(
+    entries: list[dict[str, Any]], *, strict: bool = False, target_session_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Keep entries whose owner is alive; tracked/strict entries must be provably so.
+
+    With ``target_session_id`` only THAT session's owner has to be provable: an
+    unrelated sibling whose liveness is unknowable (pid present, start time
+    unreadable — an LXC ``/proc`` after a backend restart) stays in the live set,
+    so it still fences its own session and still counts toward capacity, but no
+    longer refuses every claim/release for a different session id. See #113683.
+    """
     live: list[dict[str, Any]] = []
     for entry in entries:
         tracked = strict or bool(entry.get("track_liveness"))
@@ -347,7 +356,9 @@ def _prune_dead(entries: list[dict[str, Any]], *, strict: bool = False) -> list[
             entry.get("pid"), entry.get("process_start_time"), lenient=not tracked
         )
         if state is None:
-            raise ActiveSessionRegistryError("active session owner liveness is unknown")
+            if target_session_id is None or str(entry.get("session_id") or "") == str(target_session_id):
+                raise ActiveSessionRegistryError("active session owner liveness is unknown")
+            state = True
         if state:
             live.append(entry)
     return live
@@ -394,16 +405,20 @@ def _holds_session(entries: list[dict[str, Any]], session_id: str) -> bool:
 
 
 def _read_live_entries(
-    state_path: Path, *, track_liveness: bool, warn: str,
+    state_path: Path, *, track_liveness: bool, warn: str, target_session_id: str | None = None,
 ) -> Optional[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
     """``(raw, pruned)`` from the registry, or None when it is unreadable.
 
     Liveness-tracked callers re-raise instead (they must not proceed on an unprovable
     registry); untracked callers get ``warn`` logged and decide how to degrade.
+    ``target_session_id`` is the session the caller is about to claim/release (see
+    ``_prune_dead``).
     """
     try:
         raw_entries = _read_entries(state_path, strict=True)
-        return raw_entries, _prune_dead(raw_entries, strict=track_liveness)
+        return raw_entries, _prune_dead(
+            raw_entries, strict=track_liveness, target_session_id=target_session_id
+        )
     except ActiveSessionRegistryError:
         if track_liveness:
             raise
@@ -473,6 +488,7 @@ def try_acquire_active_session(
             state_path, track_liveness=track_liveness,
             warn="Active-session registry is unavailable; refusing the session "
                  "rather than risking a concurrent writer",
+            target_session_id=key,
         )
         if loaded is None:
             return None, ActiveSessionRefusal(
@@ -538,6 +554,7 @@ def release_active_session(lease: ActiveSessionLease) -> None:
             state_path, track_liveness=lease.track_liveness,
             warn="Active-session registry is unavailable; preserving it while "
                  "releasing an untracked lease",
+            target_session_id=lease.session_id,
         )
         if loaded is not None:
             _drop_lease(state_path, loaded[1], lease.lease_id)
@@ -565,6 +582,7 @@ def transfer_active_session(
             state_path, track_liveness=lease.track_liveness,
             warn="Active-session registry is unavailable; refusing to overwrite "
                  "it during lease transfer",
+            target_session_id=lease.session_id,
         )
         if loaded is None:
             return False
