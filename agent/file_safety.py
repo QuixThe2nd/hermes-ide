@@ -69,11 +69,6 @@ def _resolve_target(path: str) -> Optional[Path]:
     return None
 
 
-def _home_and_resolved(path: str) -> tuple[str, str]:
-    """``(realpath(~), realpath(expanduser(path)))`` — the write-guard coordinate pair."""
-    return tuple(os.path.realpath(os.path.expanduser(p)) for p in ("~", str(path)))
-
-
 def _guard_homes(path: str = "") -> set[str]:
     """Every home the write guards must cover. Process ``~`` alone is wrong whenever the
     process HOME is not the OS user's real home — ``TERMINAL_HOME_MODE=profile``,
@@ -98,6 +93,11 @@ def _guard_homes(path: str = "") -> set[str]:
             if not expanded.startswith("~"):
                 homes.add(expanded)
     return {os.path.realpath(h) for h in homes}
+
+
+def _homes_and_resolved(path: str) -> tuple[set[str], str]:
+    """``(guard homes, realpath(expanduser(path)))`` — the write-guard coordinate pair."""
+    return _guard_homes(path), os.path.realpath(os.path.expanduser(str(path)))
 
 
 # ---------------------------------------------------------------------------
@@ -255,11 +255,10 @@ def _classify_write_denial(path: str) -> Optional[str]:
     # prefixes defeat string-prefix denylist comparison after normalization.
     if is_nt_namespace_path(path):
         return "nt_namespace"
-    _home, resolved = _home_and_resolved(path)
+    homes, resolved = _homes_and_resolved(path)
 
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    homes = _guard_homes(path)
     if any(resolved in build_write_approval_paths(home) for home in homes):
         return None
 
@@ -305,8 +304,8 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
 def is_write_approval_required(path: str) -> bool:
     """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
     prompt, callers without a channel treat it as a block (fail closed)."""
-    _home, resolved = _home_and_resolved(path)
-    return any(resolved in build_write_approval_paths(home) for home in _guard_homes(path))
+    homes, resolved = _homes_and_resolved(path)
+    return any(resolved in build_write_approval_paths(home) for home in homes)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.

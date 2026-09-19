@@ -9,6 +9,7 @@ drifted: ``auth/google_oauth.json``, the plaintext Bitwarden cache, ``vault/`` a
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -58,12 +59,9 @@ def test_control_files_and_lookalikes_outside_home_stay_writable(hermes_layout, 
 
 
 class TestProfileHomeProcessHome:
-    """The write guard must cover the OS user's real home even when the process HOME is
-    pinned to ``{HERMES_HOME}/home`` (TERMINAL_HOME_MODE=profile / container / spawned
-    worker). Anchoring the deny and approval lists on ``expanduser("~")`` alone left the
-    real home's credential paths writable via absolute paths — while file tools resolve
-    ``~`` through ``get_subprocess_home()`` and can land a ``~``-spelled write on the real
-    home too."""
+    """With the process HOME pinned to ``{HERMES_HOME}/home`` (TERMINAL_HOME_MODE=profile,
+    containers, spawned workers) the write guards must still cover every home a write can
+    land in: the OS user's real home, the profile home and ``~name`` accounts."""
 
     @pytest.fixture()
     def profile_home_env(self, tmp_path, monkeypatch):
@@ -75,29 +73,24 @@ class TestProfileHomeProcessHome:
         monkeypatch.setattr(fs, "_hermes_root_path", lambda: profile.parent)
         return profile
 
-    def test_real_home_credentials_denied(self, profile_home_env):
+    def test_every_home_is_guarded(self, profile_home_env):
         import pwd
 
-        real_home = Path(pwd.getpwuid(__import__("os").getuid()).pw_dir)
+        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
         for rel in (".aws/credentials", ".ssh/id_ed25519", ".netrc", ".config/gh/hosts.yml"):
             assert fs.is_write_denied(str(real_home / rel)), rel
+            assert fs.is_write_denied(str(profile_home_env / "home" / rel)), rel
+        assert fs.is_write_denied("~/.aws/credentials")
+        assert fs.is_write_denied("~root/.ssh/authorized_keys")
+        # ``~/.ssh/config`` stays approval-gated (not hard-denied) on the real home too.
+        assert fs.is_write_approval_required(str(real_home / ".ssh" / "config"))
+        assert fs.is_write_denied(str(real_home / ".ssh" / "config")) is False
 
-    def test_real_home_ssh_config_still_approval_gated(self, profile_home_env):
+    def test_benign_paths_stay_writable(self, profile_home_env, tmp_path):
         import pwd
 
-        real_home = Path(pwd.getpwuid(__import__("os").getuid()).pw_dir)
-        assert fs.is_write_approval_required(str(real_home / ".ssh" / "config"))
-
-    def test_profile_home_credentials_also_denied(self, profile_home_env):
-        """A pinned-HOME process still guards the profile home children see as ``~``."""
-        for rel in (".aws/credentials", ".ssh/id_rsa"):
-            assert fs.is_write_denied(str(profile_home_env / "home" / rel)), rel
-
-    def test_tilde_spelling_still_gated(self, profile_home_env):
-        assert fs.is_write_denied("~/.aws/credentials")
-        assert fs.is_write_approval_required("~/.ssh/config")
-
-    def test_benign_path_unaffected(self, profile_home_env, tmp_path):
-        benign = tmp_path / "scratch" / "notes.txt"
-        assert fs.is_write_denied(str(benign)) is False
-        assert fs.is_write_approval_required(str(benign)) is False
+        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        for benign in (tmp_path / "scratch" / "notes.txt", real_home / "projects" / "notes.md"):
+            assert fs.is_write_denied(str(benign)) is False, benign
+            assert fs.is_write_approval_required(str(benign)) is False, benign
+        assert fs.is_write_denied("~nosuchuser-hopefully/.ssh/authorized_keys") is False
