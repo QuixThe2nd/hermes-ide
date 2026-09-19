@@ -3254,6 +3254,26 @@ class TestCompressionChainProjection:
         assert ordered_ids.count("reset1") == 1
         assert ordered_ids.index("solo") < ordered_ids.index("tip1")
 
+    def test_reset_fork_of_compressed_parent_is_not_a_lineage_member(self, db):
+        """The Python lineage walk (``get_compression_lineage`` / ``_is_compression_child_row``)
+        must agree with the SQL chain step: a reset fork hanging off a compression-ended parent is
+        its own conversation, so the true tip keeps its ancestors and the fork never enters the
+        lineage even when it started first."""
+        import time as _time
+        t0 = _time.time() - 3600
+        db.create_session("root1", "cli")
+        db._conn.execute("UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?", (t0 + 10, "root1"))
+        db.create_session("reset1", "cli", parent_session_id="root1", model_config={"_reset_from": "root1"})
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 11, "reset1"))
+        db.create_session("tip1", "cli", parent_session_id="root1")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 20, "tip1"))
+        db._conn.commit()
+
+        assert db._is_compression_child_row(db.get_session("reset1")) is False
+        assert db.get_compression_lineage("root1") == ["root1", "tip1"]
+        assert db.get_compression_lineage("tip1") == ["root1", "tip1"]
+        assert db.get_compression_lineage("reset1") == ["reset1"]
+
     def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
         """The projected tip row must carry every chain id. Root and tip
         alone are not enough client-side: a persisted tile or route can hold

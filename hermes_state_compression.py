@@ -503,7 +503,7 @@ class SessionCompressionMixin:
         seen = {session_id}
         while current:
             parent_id = current.get("parent_session_id")
-            if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current):
+            if not parent_id or parent_id in seen or self._is_explicit_fork_child_row(current, include_reset=True):
                 break
             parent = _row(parent_id)
             if not parent or parent.get("end_reason") != "compression":
@@ -678,7 +678,8 @@ class SessionCompressionMixin:
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
-        if not parent_id or self._is_explicit_fork_child_row(child):
+        # A reset fork of a compression-ended parent is its own conversation, not the continuation (#114271).
+        if not parent_id or self._is_explicit_fork_child_row(child, include_reset=True):
             return False
         parent = self.get_session(parent_id)
         return bool(parent and parent.get("end_reason") == "compression")
