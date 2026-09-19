@@ -1,6 +1,6 @@
 name: umt
 repo: https://github.com/Markgatcha/universal-mcp-toolkit
-sha: b062608b903f81e6e4cf8baa36d30f95e6077644
+sha: b6eb997c316de472318ca658d6d7b57b62ca13d0
 subdir: plugin
 description: 'Connect 28 production-ready MCP servers to any coding agent. Portable Agent
   Plugins v1 package (mcp.json + skills/): three zero-config stdio servers out of the box
