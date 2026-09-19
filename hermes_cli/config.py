@@ -11,7 +11,6 @@ drop_stale_root_modules()
 
 import copy
 import difflib
-import errno
 import json
 import logging
 import os
@@ -25,6 +24,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -634,36 +634,6 @@ def _ensure_default_soul_md(home: Path) -> None:
     """Seed DEFAULT_SOUL_MD on first run; upgrade a legacy comment-only scaffold in place.
     A SOUL.md the user actually customized is never touched."""
     soul_path = home / "SOUL.md"
-    if soul_path.is_symlink():
-        try:
-            soul_path.stat()
-        except OSError as exc:
-            # A cyclic link chain is the only failure this branch handles; a dangling link
-            # (missing target) or an unresolvable mount keeps the existing behaviour below.
-            if exc.errno == errno.ELOOP:
-                # ``stat`` refuses a cyclic chain, so the seeding write below would follow the
-                # link and raise ELOOP — an OSError initialize_home turns into
-                # HomeInitializationError, leaving the gateway unable to boot (exit-75 relaunch
-                # loop, #114592). A cyclic link cannot resolve to content: seed the default as a
-                # regular file IN PLACE OF the link, never through it. A unique temp name keeps
-                # concurrent boot attempts off one shared path; a failure here leaves the link
-                # alone instead of killing home initialization.
-                try:
-                    fd, tmp_name = tempfile.mkstemp(prefix=".SOUL.md.", suffix=".seed", dir=str(home))
-                except OSError:
-                    return
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                        handle.write(DEFAULT_SOUL_MD)
-                    os.replace(tmp_name, soul_path)
-                except OSError:
-                    try:
-                        os.unlink(tmp_name)
-                    except OSError:
-                        pass
-                    return
-                _secure_file(soul_path)
-                return
     if soul_path.exists():
         try:
             existing = soul_path.read_text(encoding="utf-8")
@@ -671,7 +641,26 @@ def _ensure_default_soul_md(home: Path) -> None:
             return
         if not is_legacy_template_soul(existing):
             return
-    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    try:
+        soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    except OSError:
+        if not soul_path.is_symlink():
+            raise
+        # A symlink the seed cannot write through — cyclic (``SOUL.md -> SOUL.md``, ELOOP) or
+        # dangling into a missing directory (ENOENT) — can never hold an identity file, and the
+        # OSError became HomeInitializationError on EVERY boot (launchd exit-75 relaunch storm,
+        # #114592). Seed the default IN PLACE OF the link, never through it; mkstemp + replace
+        # keeps concurrent gateway boots off one shared path. A working link is never reached
+        # here: the write above succeeds through it.
+        fd, tmp_name = tempfile.mkstemp(prefix=".SOUL.md.", suffix=".seed", dir=str(home))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(DEFAULT_SOUL_MD)
+            os.replace(tmp_name, soul_path)
+        except OSError:
+            with suppress(OSError):
+                os.unlink(tmp_name)
+            raise
     _secure_file(soul_path)
 
 
