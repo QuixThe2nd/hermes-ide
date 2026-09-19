@@ -439,6 +439,30 @@ export function migrateSessionDraft(fromKey: string | null | undefined, toKey: s
   return true
 }
 
+/**
+ * The stored id the pre-session chat is about to be re-homed onto, announced
+ * by the site that assigns it (first-send `session.create`, cold-start
+ * resume-last-session) and consumed by the composer's scope swap.
+ *
+ * The swap cannot tell an assignment apart from the user opening another
+ * session from a new chat — both flip the scope from the `__new__` bucket to
+ * a concrete id — and only the assignment may carry the draft along: a
+ * sidebar click keeps per-scope drafts where they were typed.
+ */
+let announcedNewSessionDraftKey: string | null = null
+
+export function announceNewSessionDraftKey(toKey: string | null | undefined): void {
+  announcedNewSessionDraftKey = toKey?.trim() || null
+}
+
+/** Consume the announcement; move the `__new__` draft when it names `toKey`. */
+export function adoptNewSessionDraft(toKey: string | null | undefined): boolean {
+  const announced = announcedNewSessionDraftKey
+  announcedNewSessionDraftKey = null
+
+  return !!announced && announced === toKey?.trim() && migrateSessionDraft(null, toKey)
+}
+
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)
 }

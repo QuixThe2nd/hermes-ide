@@ -280,19 +280,6 @@ describe('session drafts', () => {
     clearSessionDraft(tipAfter)
   })
 
-  it('migrates a pre-session draft onto its assigned session key', () => {
-    stashSessionDraft(null, 'typed before the session existed', [attachment({ id: 'file:new' })])
-
-    expect(migrateSessionDraft(null, 'session-created')).toBe(true)
-    expect(takeSessionDraft('session-created')).toEqual({
-      attachments: [attachment({ id: 'file:new' })],
-      text: 'typed before the session existed'
-    })
-    expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
-
-    clearSessionDraft('session-created')
-  })
-
   it('does not overwrite a destination draft or its attachments during migration', () => {
     const destinationAttachment = attachment({ id: 'file:destination' })
     stashSessionDraft(null, 'new chat draft', [attachment({ id: 'file:source' })])

@@ -14,9 +14,9 @@ import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import {
+  adoptNewSessionDraft,
   type ComposerAttachment,
   type ComposerDraftSyncMode,
-  migrateSessionDraft,
   onComposerDraftSyncRequest,
   reloadPersistedDrafts,
   stashSessionDraft,
@@ -128,9 +128,6 @@ export function useComposerDraft({
   const draftScopeRef = useRef(activeQueueSessionKey)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
-  // Updated by the draft-swap layout effect so it remains the previous committed
-  // id during the render where a new chat receives its first session id.
-  const committedSessionIdRef = useRef(sessionId)
   const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
   queueEditStateRef.current = queueEditRef.current
 
@@ -457,19 +454,19 @@ export function useComposerDraft({
     // fire later would just clobber with an older snapshot.
     window.clearTimeout(draftPersistTimerRef.current)
     pendingDraftPersistRef.current = null
-    const previousDraftScope = draftScopeRef.current
-    const previousSessionId = committedSessionIdRef.current
 
-    // A new chat writes to the shared pre-session bucket until its first
-    // runtime session id arrives. Move that draft at this handoff, before the
-    // incoming scope is restored. Do not consume the bucket on an ordinary
-    // initial mount of an existing session or on a cross-session switch.
-    if (!previousSessionId && sessionId && !previousDraftScope && activeQueueSessionKey) {
-      migrateSessionDraft(previousDraftScope, activeQueueSessionKey)
+    // A new chat writes to the shared pre-session bucket until its stored id
+    // arrives; the assigning site announces that id (store/composer.ts). Move
+    // the bucket at this handoff — after the outgoing cleanup stashed the live
+    // editor text under it, before the incoming scope is restored — so the
+    // text the user kept typing follows the chat instead of vanishing.
+    // Keyed on the scope alone: the runtime id can land a resume later than
+    // the route flips the scope, so it is not a usable signal here.
+    if (!draftScopeRef.current && activeQueueSessionKey) {
+      adoptNewSessionDraft(activeQueueSessionKey)
     }
 
     draftScopeRef.current = activeQueueSessionKey
-    committedSessionIdRef.current = sessionId
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
     loadIntoComposer(text, attachments)
