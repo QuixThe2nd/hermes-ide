@@ -38,17 +38,6 @@ def guard_disabled() -> bool:
     return _disabled()
 
 
-def _writer_ttl_seconds() -> float:
-    # TTL for _last_writer entries to bound concurrent conflict detection window
-    raw = os.environ.get("HERMES_FILE_STATE_WRITER_TTL")
-    if raw:
-        try:
-            return float(raw)
-        except ValueError:
-            pass
-    return 3600.0  # default: 1 hour
-
-
 def _mtime_or_none(resolved: str) -> Optional[float]:
     try:
         return os.path.getmtime(resolved)
@@ -143,11 +132,6 @@ class FileStateRegistry:
         with self._state_lock:
             stamp = self._reads.get(task_id, {}).get(resolved)
             last_writer = self._last_writer.get(resolved)
-            if last_writer is not None:
-                ttl = _writer_ttl_seconds()
-                if ttl > 0 and (time.time() - last_writer[1]) > ttl:
-                    self._last_writer.pop(resolved, None)
-                    last_writer = None
 
         if stamp is None and last_writer is None:  # net-new file / first touch
             return None
@@ -213,15 +197,15 @@ class FileStateRegistry:
             return list(self._reads.get(task_id, {}).keys())
 
     def forget_task(self, task_id: str) -> None:
-        """Release read stamps and writer claims owned by a task after its lifecycle ends."""
+        """Release read stamps and writer claims owned by a task after its lifecycle ends.
+
+        A finished task is not a concurrent sibling: leaving its writer claims behind makes
+        the next run of the same job (a fresh ``cron:<job>:<uuid>`` id) refuse to write the
+        same scratch path as "modified by sibling subagent" hours after the writer exited."""
         with self._state_lock:
             self._reads.pop(task_id, None)
-            stale_paths = [
-                p for p, (writer_tid, _) in self._last_writer.items()
-                if writer_tid == task_id
-            ]
-            for p in stale_paths:
-                self._last_writer.pop(p, None)
+            for p in [p for p, (writer_tid, _ts) in self._last_writer.items() if writer_tid == task_id]:
+                del self._last_writer[p]
 
     def clear(self) -> None:
         """Reset all state. Intended for tests only."""
