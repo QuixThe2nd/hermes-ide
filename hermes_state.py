@@ -5485,6 +5485,7 @@ class SessionDB(
         "api_server",
         "subagent",
         "tool",
+        "recovered",
     )
 
     # ── Write-contention tuning ──
