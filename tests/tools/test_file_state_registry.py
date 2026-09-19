@@ -182,7 +182,7 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         registry = file_state.get_registry()
         self.assertEqual(registry._last_writer[p][0], "cron:JOB:run1")
 
-        file_state.forget_task("cron:JOB:run1")
+        registry.forget_task("cron:JOB:run1")
 
         self.assertNotIn(p, registry._last_writer)
         self.assertIsNone(file_state.check_stale("cron:JOB:run2", p))

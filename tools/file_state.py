@@ -249,10 +249,6 @@ def known_reads(task_id: str) -> List[str]:
     return _registry.known_reads(task_id)
 
 
-def forget_task(task_id: str) -> None:
-    _registry.forget_task(task_id)
-
-
 __all__ = [
     "FileStateRegistry",
     "get_registry",
@@ -261,5 +257,4 @@ __all__ = [
     "check_stale",
     "lock_path",
     "writes_since",
-    "known_reads",
-    "forget_task"]
+    "known_reads"]
