@@ -3928,7 +3928,7 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
         raise exc
     label = get_launchd_label()
     if _launchctl_label_supervising_process(label):
-        print(f"⚠ launchctl {what} failed (exit {exc.returncode}), but launchd still supervises {label}")
+        print(f"⚠ {what} failed (exit {exc.returncode}), but launchd still supervises {label}")
         print("  Not switching to the detached fallback — this host manages the job.")
         print("  Apply the definition with: hermes gateway stop && hermes gateway install --force")
         raise exc
