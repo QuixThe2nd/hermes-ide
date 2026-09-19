@@ -1360,9 +1360,11 @@ class GatewayTurnMixin:
 
     def _hmwa_apply_message_timestamp(self, event, message_text):
         """Capture the platform event time as message metadata and keep the persisted transcript
-        clean (strip any leading timestamp prefix) regardless of the toggle; only the in-context
+        clean — strip any leading timestamp prefix and the Discord triggering-message note (a
+        model instruction, not authored text) — regardless of the toggle; only the in-context
         RENDER is gated behind gateway.message_timestamps.enabled (default OFF)."""
         from gateway.run import _load_gateway_config, _message_timestamps_enabled
+        from gateway.run_inbound import strip_discord_triggering_note
         persist_user_message = None
         persist_user_timestamp = None
         try:
@@ -1375,7 +1377,7 @@ class GatewayTurnMixin:
             _evt_tz = _get_evt_tz()
             if message_text and isinstance(message_text, str):
                 _clean_message_text, _embedded_ts = _strip_msg_ts(message_text, tz=_evt_tz)
-                persist_user_message = _clean_message_text
+                persist_user_message = strip_discord_triggering_note(event, _clean_message_text)
                 _event_epoch = _coerce_msg_ts(getattr(event, "timestamp", None), tz=_evt_tz)
                 persist_user_timestamp = _event_epoch if _event_epoch is not None else _embedded_ts
                 if _message_timestamps_enabled(_load_gateway_config()):
@@ -3676,6 +3678,8 @@ class GatewayTurnMixin:
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
+        # Queued Discord turns carry the same routing note as first turns; persist the authored text.
+        next_persist_message = None
         next_display_kind = display_kind_for_event(pending_event)
         # See #60671.
         if pending_event is not None:
@@ -3700,6 +3704,8 @@ class GatewayTurnMixin:
             )
             if next_message is None:
                 return result
+            from gateway.run_inbound import strip_discord_triggering_note
+            next_persist_message = strip_discord_triggering_note(pending_event, next_message)
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
@@ -3749,6 +3755,7 @@ class GatewayTurnMixin:
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
+                persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
                 persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
             )

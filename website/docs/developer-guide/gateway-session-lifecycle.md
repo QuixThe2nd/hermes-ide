@@ -48,7 +48,7 @@ incoming `MessageEvent` and used for routing, isolation, and context injection.
 | `is_bot` | `bool` | `False` | True when the message author is a bot or webhook (Discord bots). |
 | `guild_id` | `Optional[str]` | `None` | Discord guild / Slack workspace / Matrix server scope identifier. |
 | `parent_chat_id` | `Optional[str]` | `None` | Parent channel when `chat_id` refers to a thread. |
-| `message_id` | `Optional[str]` | `None` | ID of the triggering message. Used for pin/reply/react operations and Discord ID injection. |
+| `message_id` | `Optional[str]` | `None` | ID of the triggering message. Used for pin/reply/react operations and Discord ID injection (the injected `[Triggering message id: …]` note rides the API-bound message only; the persisted user row keeps the authored text). |
 | `role_authorized` | `bool` | `False` | True when adapter granted access via a platform role (not individual user ID). |
 
 ### Key Methods
