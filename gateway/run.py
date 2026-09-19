@@ -29171,8 +29171,11 @@ class GatewayRunner(
         # Serialization drops transport provenance; auth must still follow the receiving bot.
         source._transport_adapter_ref = weakref.ref(adapter)
 
-        # Cached source still carries the previous speaker's routed profile.
-        if not self._stamp_routed_profile(source, getattr(adapter, "_owner_profile", None)):
+        # The cached source still carries the previous speaker's identity (per-sender routes,
+        # #106019): drop the pin so the seam re-resolves for THIS speaker.
+        from gateway.session_identity import clear_identity
+        clear_identity(source)
+        if self._canonicalize(source, transport_profile=getattr(adapter, "_owner_profile", None)) is None:
             logger.warning("Dropping voice input: its profile route targets an unserved profile")
             return
 
