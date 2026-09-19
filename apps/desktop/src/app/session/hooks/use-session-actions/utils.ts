@@ -1487,11 +1487,17 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
       return (existing._lineage_root_id ?? existing.id) !== lineage
     })
   ]
+
   // A resolve can observe a source move (cross-room /resume rewrites the row to
   // source='matrix', #113827): the row belongs to its current slice, and the
   // stale copy in every other slice must go or the session shows twice.
+  // Identity-stable when nothing matched — every sidebar memo keys on these
+  // arrays, and a resolve runs on each row open.
   const evict = (prev: SessionInfo[]) =>
-    prev.filter(existing => !sessionMatchesStoredId(existing, storedSessionId))
+    prev.some(existing => sessionMatchesStoredId(existing, storedSessionId))
+      ? prev.filter(existing => !sessionMatchesStoredId(existing, storedSessionId))
+      : prev
+
   const target = listedSliceTarget(session)
 
   setSessions(target === 'sessions' ? prepend : evict)
