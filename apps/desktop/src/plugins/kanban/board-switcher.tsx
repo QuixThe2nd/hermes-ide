@@ -1,5 +1,6 @@
 /**
- * Board switcher projected through `titleBar.center` (permanent titlebar slot).
+ * Board switcher projected through `WORKSPACE_PAGE_HEADER_AREA` into the
+ * workspace panel's tab-header space while the board page is mounted.
  */
 
 import {
