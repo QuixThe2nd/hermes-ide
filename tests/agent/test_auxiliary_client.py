@@ -2500,6 +2500,31 @@ class TestStaleBaseUrlWarning:
 
 
 class TestAuxiliaryTaskExtraBody:
+    def test_disabled_caller_reasoning_suppresses_task_reasoning_for_profile_wire(self, monkeypatch):
+        """A profile-owned ``reasoning_effort=none`` must not ship with task reasoning."""
+        import agent.auxiliary_client as aux
+
+        projection = aux._ProfileProjection({}, {}, {"reasoning_effort": "none"}, True)
+        monkeypatch.setattr(aux, "_project_provider_profile", lambda *_args: projection)
+        monkeypatch.setattr(
+            aux,
+            "_get_auxiliary_task_config",
+            lambda _task: {"reasoning_effort": "low", "extra_body": {"metadata": {"task": "title"}}},
+        )
+
+        kwargs = aux._build_call_kwargs(
+            provider="custom",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=aux._get_task_extra_body("title_generation"),
+            reasoning_config={"enabled": False},
+            task="title_generation",
+        )
+
+        assert kwargs["reasoning_effort"] == "none"
+        assert "reasoning" not in kwargs["extra_body"]
+        assert kwargs["extra_body"]["metadata"] == {"task": "title"}
+
     @pytest.mark.parametrize("task", ["session_search", "moa_reference", "moa_aggregator"])
     def test_generic_reasoning_fallback_clamps_ultra_for_auxiliary_and_moa_calls(self, task, monkeypatch):
         """The OpenAI-compatible fallback must never put Hermes-only ``ultra`` on the wire."""
