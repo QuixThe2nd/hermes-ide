@@ -1255,26 +1255,33 @@ function drainPendingConnectionRedial(entry: Secondary): boolean {
   const wasActive = g.activeKey === entry.scope
   disposeSecondary(entry)
   g.secondaries.delete(entry.scope)
+  reopenAfterRedial(entry, wasActive)
 
+  return true
+}
+
+// Re-open a redialed scope after its entry left the map. An active scope's
+// re-activation is asynchronous, and until it lands
+// restoreActiveToPrimaryIfEvicted sees an active scope with no entry, calls
+// setActive(primary) and bumps the activation epoch — which turns this redial's
+// own applyActive(epoch) into a no-op. The window would then sit on the primary
+// backend with the redial silently discarded, after nothing more than an edit
+// to the connection being viewed. Mark the scope for the pruner while the
+// re-activation is in flight; the finally clears it on both outcomes so a
+// redial that never lands still falls back.
+function reopenAfterRedial(entry: Secondary, wasActive: boolean): void {
   if (!wasActive) {
     void openGatewayForAgent(entry.connectionId, entry.profile).catch(() => undefined)
 
-    return true
+    return
   }
 
-  // The re-activation is asynchronous and the entry is already out of the map. Until it lands,
-  // restoreActiveToPrimaryIfEvicted sees an active scope with no entry, calls setActive(primary)
-  // and bumps the activation epoch — which turns this redial's own applyActive(epoch) into a
-  // no-op. The window would then sit on the primary backend with the redial silently discarded,
-  // after nothing more than an edit to the connection being viewed.
   reactivatingScopes().add(entry.scope)
   void ensureGatewayForAgent(entry.connectionId, entry.profile)
     .catch(() => undefined)
     .finally(() => {
       reactivatingScopes().delete(entry.scope)
     })
-
-  return true
 }
 
 /**
@@ -2208,11 +2215,7 @@ export function disposeSecondariesForConnection(connectionId: string, opts: { re
     g.secondaries.delete(key)
 
     if (opts.redial) {
-      const reopen = wasActive
-        ? ensureGatewayForAgent(entry.connectionId, entry.profile)
-        : openGatewayForAgent(entry.connectionId, entry.profile)
-
-      void reopen.catch(() => undefined)
+      reopenAfterRedial(entry, wasActive)
     }
   }
 

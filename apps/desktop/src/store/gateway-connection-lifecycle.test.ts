@@ -134,6 +134,25 @@ describe('a redial of the active route', () => {
       expect(activeGateway()).toBe(gatewayMocks.instances.at(-1))
     })
   })
+
+  it('survives a prune when the edit redials immediately (no lease to drain)', async () => {
+    // Same window, sibling entry point: an unleased active scope is disposed and re-activated
+    // straight from disposeSecondariesForConnection instead of the drain.
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        descriptorFor(connectionId, profile)
+      )
+    })
+
+    await ensureGatewayForAgent('homelab', 'writer')
+
+    disposeSecondariesForConnection('homelab', { redial: true }) // dispose, evict, re-activate
+    pruneSecondaryGateways(new Set()) // the steal, while the redial is still suspended
+
+    await vi.waitFor(() => {
+      expect(activeGateway()).toBe(gatewayMocks.instances.at(-1))
+    })
+  })
 })
 
 describe('disposeSecondariesForConnection', () => {
