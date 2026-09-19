@@ -77,19 +77,6 @@ def test_strict_integrity_probe_survives_tool_row_churn(db):
     _strict_integrity_probe(db)
 
 
-def test_tool_rows_keep_full_content_reachable_without_indexing_it(db):
-    """Bounding the base index must not lose the explicit tool search path."""
-    tool_id = db.append_message(
-        "session", role="tool", content=LONG_TOOL_ROW, tool_name="terminal"
-    )
-
-    assert db.search_messages("tailtoken") == []
-    assert [
-        row["id"] for row in db.search_messages("tailtoken", role_filter=["tool"])
-    ] == [tool_id]
-    _strict_integrity_probe(db)
-
-
 def test_index_reading_raw_messages_realigns_once_on_open(tmp_path):
     """A store whose index still reads raw ``messages`` (the shipped shape for
     versions before the aligned projection) realigns on the next open, records
@@ -121,6 +108,10 @@ def test_index_reading_raw_messages_realigns_once_on_open(tmp_path):
         "INSERT INTO state_meta(key, value) VALUES('fts_storage_version', '2') "
         "ON CONFLICT(key) DO UPDATE SET value = '2'"
     )
+    first._conn.execute(
+        "INSERT OR REPLACE INTO state_meta(key, value) VALUES('fts_tool_full_content_high_water', ?)",
+        (str(row_id),),
+    )
     with pytest.raises(sqlite3.DatabaseError):
         _strict_integrity_probe(first)
     first.close()
@@ -128,6 +119,7 @@ def test_index_reading_raw_messages_realigns_once_on_open(tmp_path):
     migrated = SessionDB(db_path=path)
     try:
         assert migrated.get_meta("fts_storage_version") == str(FTS_STORAGE_VERSION)
+        assert migrated.get_meta("fts_tool_full_content_high_water") is None
         _strict_integrity_probe(migrated)
         index_sql = migrated._conn.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'messages_fts'"

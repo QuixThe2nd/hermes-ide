@@ -133,6 +133,9 @@ _STATE_META_UPSERT_SQL = (
     "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 )
 _CLEAR_REBUILD_MARKERS_SQL = "DELETE FROM state_meta WHERE key IN ('fts_rebuild_high_water', 'fts_rebuild_progress')"
+# FTS_STORAGE_VERSION < 3 truncated tool rows only above a moving state_meta mark; the aligned
+# projection truncates by role alone, so the retired marker is dropped with the realign.
+_DROP_RETIRED_TOOL_HIGH_WATER_SQL = "DELETE FROM state_meta WHERE key = 'fts_tool_full_content_high_water'"
 
 
 def _legacy_inline_reinsert_sql(table: str, indent: int, *, delete_first: bool = False) -> str:
@@ -350,35 +353,29 @@ class SessionSchemaMixin:
         if not self._fts_index_is_misaligned_source(cursor):
             return
         has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
+
+        def do_align() -> None:
+            for name in _FTS_BASE_TRIGGERS:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+            cursor.execute("DROP TABLE IF EXISTS messages_fts")
+            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+            if has_messages:
+                cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+            cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
+            cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
+            cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
+
         if not has_messages:
-            # Nothing indexed and nothing to index: just swap the shape in place.
+            # Nothing indexed and nothing to index: swap the shape in place, no rebuild authority needed.
             cursor.execute("SAVEPOINT fts_align_empty")
             try:
-                for name in _FTS_BASE_TRIGGERS:
-                    cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
-                cursor.execute("DROP TABLE IF EXISTS messages_fts")
-                self._execute_ddl_script_transactional(cursor, FTS_SQL)
-                cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
+                do_align()
                 cursor.execute("RELEASE SAVEPOINT fts_align_empty")
             except BaseException:
                 cursor.execute("ROLLBACK TO SAVEPOINT fts_align_empty")
                 cursor.execute("RELEASE SAVEPOINT fts_align_empty")
                 raise
             return
-        self._fts_tool_prefix_migration_requires_rebuild = True
-
-        def do_align() -> None:
-            self._execute_ddl_script_transactional(cursor, f"""
-DROP TRIGGER IF EXISTS messages_fts_insert;
-DROP TRIGGER IF EXISTS messages_fts_delete;
-DROP TRIGGER IF EXISTS messages_fts_update;
-""")
-            cursor.execute("DROP TABLE IF EXISTS messages_fts")
-            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
-            cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
-            cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
-            cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
-
         self._run_admitted_startup_rebuild(cursor, do_align)
 
     @staticmethod
@@ -1184,10 +1181,9 @@ DROP TRIGGER IF EXISTS messages_fts_update;
             base_sql, trigram_sql = _FTS_DDL[legacy_fts]
             # Measure before any DDL. Publishing missing base triggers before rebuild admission lets
             # another process write through an index whose bootstrap/repair has no owner (#105790).
-            base_triggers_missing = self._fts_triggers_missing(cursor, _FTS_BASE_TRIGGERS) or (
-                getattr(self, "_fts_tool_prefix_migration_requires_rebuild", False)
-                and self._fts_index_is_misaligned_source(cursor)
-            ) or "messages_fts" in orphan_repaired
+            base_triggers_missing = (
+                self._fts_triggers_missing(cursor, _FTS_BASE_TRIGGERS) or "messages_fts" in orphan_repaired
+            )
             trigram_triggers_missing = (
                 self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS) or "messages_fts_trigram" in orphan_repaired
             )
