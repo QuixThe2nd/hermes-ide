@@ -107,6 +107,24 @@ def test_aux_sync_legacy_tail_follows_lowered_threshold():
     assert compressor.tail_token_budget == int(compressor.threshold_tokens * compressor.summary_target_ratio)
 
 
+def test_fallback_activation_on_never_probed_session_stays_lazy():
+    """A session that never ran the feasibility probe does not resolve an auxiliary client while a
+    fallback is being activated; the compaction-time probe still owns the first verdict (#114707)."""
+    from agent.chat_completion_helpers import _update_fallback_context_compressor
+
+    agent = _make_agent(main_context=200_000)
+    agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=200_000, threshold_percent=0.50, quiet_mode=True,
+    )
+    agent._config_context_length = None
+    agent.model = "fallback-model"
+    with patch("agent.auxiliary_client.get_text_auxiliary_client") as aux_client, \
+         patch("agent.model_metadata.get_model_context_length", return_value=1_000_000):
+        _update_fallback_context_compressor(agent)
+    aux_client.assert_not_called()
+    assert getattr(agent, "_compression_feasibility_checked", False) is False
+
+
 def test_fallback_activation_reprobes_aux_ceiling_and_keeps_it_durable():
     """Every main-runtime change re-probes the summariser and the clamp survives later window
     corrections; a failed probe leaves the latch unset for the lazy compaction-time probe (#114707)."""
