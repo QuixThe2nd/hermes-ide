@@ -5677,7 +5677,7 @@ class SessionDB(
         # several SessionDB objects on the same state.db (#98573). See
         # _PathReadBudget.
         self._read_budget = _read_budget_for(self.db_path)
-        self._read_budget.register(self)
+        self._read_budget_registered = False
         # Bound to the semaphore itself so every release site
         # (_close_read_conn and the _get_read_conn failure paths) is unchanged.
         self._read_permits = self._read_budget.permits
@@ -5791,6 +5791,10 @@ class SessionDB(
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
             else:
+                # Only a successfully opened handle owns a writer connection. Failed
+                # construction must not leave a diagnostic member behind.
+                self._read_budget.register(self)
+                self._read_budget_registered = True
                 # Test-isolation runs only (gated inside the helper): register
                 # for the suite-level leak sweep in tests/conftest.py.
                 _register_test_instance(self)
@@ -7491,6 +7495,10 @@ class SessionDB(
                     # Only a clean close ends the generation; retain the recorded
                     # identity when retiring an unsafe handle.
                     self._db_sidecar_identity = {}
+
+        if self._read_budget_registered:
+            self._read_budget.unregister(self)
+            self._read_budget_registered = False
 
     def __del__(self) -> None:
         """Safety net: close the connection if the caller forgot.
