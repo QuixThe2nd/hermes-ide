@@ -601,6 +601,40 @@ class TestSweepOrphanedSessions:
         assert second["pruned"] == 1
         assert db.get_session("recovered-0") is None
 
+    def test_real_recovery_placeholders_age_out_but_fresh_one_stays_open(self, db, tmp_path):
+        """Through the real `_reconstruct_missing_sessions` path: a stale placeholder is closed
+        then deleted; a fresh one is left open (source survives as 'recovered')."""
+        import sqlite3
+
+        from hermes_cli.session_recovery import _reconstruct_missing_sessions
+
+        stale = time.time() - 200 * 86400
+        for sid in ("lost-old", "lost-fresh"):
+            db.create_session(sid, source="cli")
+            db.append_message(sid, role="user", content="salvaged")
+        db.close()
+        raw = sqlite3.connect(tmp_path / "state.db")
+        raw.execute("PRAGMA foreign_keys=OFF")
+        raw.execute("DELETE FROM sessions WHERE id IN ('lost-old', 'lost-fresh')")
+        assert _reconstruct_missing_sessions(raw)["sessions_reconstructed"] == 2
+        raw.execute("UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = 'lost-old'", (stale, stale))
+        raw.execute("UPDATE messages SET timestamp = ? WHERE session_id = 'lost-old'", (stale,))
+        raw.commit()
+        raw.close()
+
+        db = SessionDB(tmp_path / "state.db")
+        first = db.maybe_auto_prune_and_vacuum(retention_days=90, min_interval_hours=0, vacuum=False)
+        assert first["closed"] == 1
+        assert db.get_session("lost-old")["end_reason"] == "startup_orphan_reap"
+        assert db.get_session("lost-fresh")["ended_at"] is None
+
+        db._conn.execute("UPDATE sessions SET ended_at = ended_at - 91 * 86400 WHERE id = 'lost-old'")
+        db._conn.commit()
+        second = db.maybe_auto_prune_and_vacuum(retention_days=90, min_interval_hours=0, vacuum=False)
+        assert second["pruned"] == 1
+        assert db.get_session("lost-old") is None
+        assert db.get_session("lost-fresh")["source"] == "recovered"
+
     def test_zero_ttl_is_noop(self, db):
         stale = time.time() - 8 * 3600
         _make_session(db, "stale-tui", source="tui", started_at=stale, message_at=stale)

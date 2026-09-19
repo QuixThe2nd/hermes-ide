@@ -5477,6 +5477,8 @@ class SessionDB(
     # Only these state-owned producers participate in automatic stale-open
     # reconciliation. Messaging-platform and UI/desktop sources have separate
     # lifecycle owners; unknown/future sources fail closed (#60609).
+    # `recovered` = placeholders `hermes sessions recover` synthesizes for
+    # orphaned messages (no live owner, never stamped ended_at); without it they are immortal.
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
         "cli",
         "cron",
