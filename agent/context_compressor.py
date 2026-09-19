@@ -1041,7 +1041,12 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 # MEDIA delivery directives must not reach the summarizer — if one leaks into the summary, the downstream
 # model may re-emit it as an active directive on the next turn, triggering bogus attachment sends (#14665).
 _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
-_HISTORICAL_TASK_SECTION_RE = re.compile(rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n.*?(?=^## |\Z)")
+# Pre-#44454 alias. A summarizer that still emits it must be replaced, not prepended.
+_LEGACY_ACTIVE_TASK_HEADING = "## Active Task"
+_TASK_SNAPSHOT_HEADINGS = (HISTORICAL_TASK_HEADING, _LEGACY_ACTIVE_TASK_HEADING)
+_HISTORICAL_TASK_SECTION_RE = re.compile(
+    rf"(?ms)^(?:{'|'.join(re.escape(heading) for heading in _TASK_SNAPSHOT_HEADINGS)})\s*\n.*?(?=^## |\Z)"
+)
 
 
 def _redact_compaction_text(text: Any) -> str:
@@ -3846,8 +3851,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Reject user attribution when the source transcript has no user."""
         if has_user_turn:
             return
-        match = re.search(rf"(?ms)^{re.escape(HISTORICAL_TASK_HEADING)}\s*\n(.*?)(?=\n##\s|\Z)", summary)
-        task_snapshot = match.group(1).strip() if match else ""
+        match = _HISTORICAL_TASK_SECTION_RE.search(summary)
+        task_snapshot = match.group(0).split("\n", 1)[-1].strip() if match else ""
         # The "User asked:" scan can false-positive on quoted tool output; acceptable, since
         # the RuntimeError only costs one retry on the existing fallback path.
         if task_snapshot != _NO_USER_TASK_SENTINEL or re.search(r"\bUser\s+asked\s*:", summary, re.IGNORECASE):
