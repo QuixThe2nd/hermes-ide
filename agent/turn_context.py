@@ -201,9 +201,13 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
 
         # Turn's user message as text; image-only turns yield "" and are skipped.
         user_text = ""
+        title_preview = None
         for msg in reversed(messages or []):
             if isinstance(msg, dict) and msg.get("role") == "user":
                 user_text = flatten_message_text(msg.get("content")).strip()
+                metadata = msg.get("display_metadata")
+                if isinstance(metadata, dict) and isinstance(metadata.get("title_preview"), str):
+                    title_preview = metadata["title_preview"]
                 break
         if not user_text:
             return
@@ -239,6 +243,7 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 getattr(agent, "model", None) == main_runtime["model"]
                 and getattr(agent, "provider", None) == main_runtime["provider"]
             ),
+            title_preview=title_preview,
         )
     except Exception:
         logger.debug("Turn-start auto-title dispatch failed", exc_info=True)

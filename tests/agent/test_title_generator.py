@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 
 from agent.title_generator import (
+    MAX_TITLE_INPUT_CHARS,
+    build_title_input,
     generate_title,
     auto_title_session,
     maybe_auto_title,
@@ -16,6 +18,36 @@ from hermes_state import SessionDB
 
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
+
+    @pytest.mark.parametrize(
+        ("instruction", "paste_preview", "expected_parts"),
+        [
+            ("", "Quarterly incident analysis for the database migration", ["Quarterly incident analysis"]),
+            ("Analyze this", "Quarterly incident analysis for the database migration", ["Analyze this", "Quarterly incident analysis"]),
+            ("Prepare the deployment follow-up", "Quarterly incident analysis", ["Prepare the deployment follow-up", "Quarterly incident analysis"]),
+        ],
+    )
+    def test_title_input_includes_only_generated_paste_preview(
+        self, instruction, paste_preview, expected_parts
+    ):
+        """Regression for #114124: a generated paste remains an attachment for the turn but informs its title."""
+        title_input = build_title_input(instruction, paste_preview)
+
+        assert all(part in title_input for part in expected_parts)
+        assert "@file:" not in title_input
+
+    def test_title_input_keeps_manual_attachment_and_preview_out_of_title_context(self):
+        title_input = build_title_input("Summarize @file:notes.txt", None)
+
+        assert title_input == "Summarize @file:notes.txt"
+        assert "Pasted content:" not in title_input
+
+    def test_title_input_budgets_instruction_and_generated_paste_preview(self):
+        title_input = build_title_input("Describe the release plan", "p" * MAX_TITLE_INPUT_CHARS)
+
+        assert len(title_input) == MAX_TITLE_INPUT_CHARS
+        assert title_input.startswith("Describe the release plan")
+        assert title_input.endswith("p" * 20)
 
 
 
