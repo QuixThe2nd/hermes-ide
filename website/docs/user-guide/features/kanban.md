@@ -229,6 +229,16 @@ All dashboard API endpoints accept `?board=<slug>` for board scoping. The
 events WebSocket is pinned to a board at connection time; switching in
 the UI opens a fresh WS against the new board.
 
+### Switching boards in the Desktop app
+
+In the Desktop app the board switcher lives in the window title bar while
+the Kanban pane is open: a **Board** control showing the current board's
+name and task count, with a chevron — hover it for "Switch board". Click
+it to pick another board, or to rename, configure, export, import,
+create, or archive boards. Like the dashboard, the desktop keeps its own
+selection (persisted locally) and does not move the CLI's `current`
+pointer.
+
 
 ## File attachments
 
