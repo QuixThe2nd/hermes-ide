@@ -2324,6 +2324,18 @@ def _prior_timeout_failures(agent: Any) -> int:
     return count if isinstance(count, int) and not isinstance(count, bool) else 0
 
 
+def request_exceeds_model_window(agent: Any, request_tokens: Any) -> Optional[bool]:
+    """Whether a ~``request_tokens`` request cannot be sent at all (above the model's context window).
+    ``None`` when either side is unknown (no compressor / unresolvable window / no estimate), so callers
+    keep their conservative default instead of treating "unknown" as "fits"."""
+    window = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        return None
+    if isinstance(request_tokens, bool) or not isinstance(request_tokens, int):
+        return None
+    return request_tokens > window
+
+
 def _retry_compression_on_fallback_chain(
     *,
     worker: Callable[[CompressionCommitFence], Tuple[list, str]],
@@ -2410,7 +2422,7 @@ def _run_pinned_compression_retry(
     deterministic = route.get("deterministic") is True
     if deterministic:
         logger.warning(
-            "Context compression stalled again after a stall backoff — committing the %s (no summary model) "
+            "Context compression stalled on every summary route — committing the %s (no summary model) "
             "before continuing without compression", route["label"],
         )
     else:
@@ -2481,6 +2493,7 @@ def run_compress_context_with_progress_timeout(
     stall_fallback: bool = True,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
     fallback_worker: Optional[Callable[[CompressionCommitFence], Tuple[list, str]]] = None,
+    request_exceeds_window: bool = False,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware timeout.
 
@@ -2527,6 +2540,10 @@ def run_compress_context_with_progress_timeout(
     fence for hard-interrupt admission pass a factory that publishes the new
     one too, so a ``/stop`` during the retry serializes against the retry's
     commit boundary rather than the aborted attempt's.
+
+    ``request_exceeds_window``: the request this compaction must shrink is above the model's context
+    window, so "continue without compression" is not an option — a stall escalates to the deterministic
+    fallback summary on the FIRST timeout instead of waiting for a prior stall in the session (#114594).
     """
     if idle_timeout_seconds <= 0:
         raise ValueError(
@@ -2545,8 +2562,11 @@ def run_compress_context_with_progress_timeout(
     fence.set_total_ceiling_seconds(ceiling)
     # Read BEFORE this attempt runs: the host's ``stalled`` record and the cancelled worker's
     # ``stall_interrupted`` record both land during the unwind below, and this stall must not count as
-    # its own prior. One prior timeout-class failure = the route already burned a full idle window.
-    escalate_deterministic = stall_fallback and _prior_timeout_failures(telemetry_agent) >= 1
+    # its own prior. One prior timeout-class failure = the route already burned a full idle window. An over-window request
+    # cannot be sent unchanged, so it earns the deterministic fallback on its first stall (#114594).
+    escalate_deterministic = stall_fallback and (
+        request_exceeds_window or _prior_timeout_failures(telemetry_agent) >= 1
+    )
     # Sync mirror of gateway session-hygiene's run_in_executor(None, ...) +
     # wait_for loop (gateway/run.py): offload compress_context onto the shared
     # daemon pool, poll with an inactivity budget + total ceiling, then

@@ -3442,6 +3442,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _aux_call_start = time.monotonic()
         _latency_info: Dict[str, int] = {"prompt_build_ms": max(0, int((_aux_call_start - prompt_started_at) * 1000))}
         call_kwargs["latency_info"] = _latency_info
+        # Per-attempt observable (#114594): with this line a stalled attempt is distinguishable from a slow
+        # one — silence before it is prompt build, silence after it is the summary provider.
+        logger.info(
+            "Compression summary call dispatched: model=%s prompt_chars=%s prompt_build_ms=%s",
+            self.summary_model or self.model, f"{len(prompt):,}", _latency_info["prompt_build_ms"],
+        )
         try:
             # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
             with aux_interrupt_protection():

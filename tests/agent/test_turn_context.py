@@ -216,7 +216,8 @@ def test_returns_turn_context_with_user_message_appended():
 
 
 def test_preflight_timeout_stops_turn_before_provider_boundary():
-    """An unchanged oversized payload must not escape turn construction."""
+    """An unchanged payload above the model window must not escape turn construction (a request that
+    still fits its window is sent uncompressed instead — see test_preflight_compression_timeout_fail_closed)."""
     agent = _FakeAgent()
     agent.compression_enabled = True
     agent.max_compression_attempts = 3
@@ -224,7 +225,7 @@ def test_preflight_timeout_stops_turn_before_provider_boundary():
         protect_first_n=2,
         protect_last_n=2,
         threshold_tokens=1_000,
-        context_length=4_000,
+        context_length=1_500,
         summary_target_ratio=0.3,
         last_prompt_tokens=0,
         should_compress=lambda tokens=None: True,

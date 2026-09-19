@@ -643,7 +643,9 @@ DEFAULT_CONFIG = {
         "hygiene_max_turn_hold_seconds": 10,
         # Inactivity budget for in-agent compress_context (loop, /compress, preflight); same
         # progress-aware semantics as hygiene_timeout_seconds. 0 = disable the owned wrapper
-        # (callers passing commit_fence, e.g. gateway hygiene, never use it).
+        # (callers passing commit_fence, e.g. gateway hygiene, never use it). Floored at the auxiliary
+        # compression request timeout (auxiliary.compression.timeout, min 300s): the host never judges
+        # silence before the summary request itself would time out.
         "context_timeout_seconds": 120,
         # Absolute cap on the *pre-commit* compress_context wait (summary/stream phase) even while
         # tokens move. Clamped >= context_timeout_seconds when that is > 0. A started SessionDB
