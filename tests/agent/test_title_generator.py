@@ -608,6 +608,38 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") == "Existing name"
         mock_auto.assert_not_called()
 
+    def test_upgrades_a_provisional_greeting_on_a_substantive_second_turn(self, tmp_path):
+        """A canned greeting title must not prevent the next real request from naming the session."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        greeting = MagicMock()
+        greeting.choices[0].message.content = "Friendly greeting"
+        with patch("agent.title_generator.call_llm", return_value=greeting):
+            auto_title_session(db, "sess-1", "hi how are you")
+
+        assert db.get_session_title("sess-1") == "Friendly greeting"
+        assert db.get_session_title_source("sess-1") == "derived"
+
+        history = [
+            {"role": "user", "content": "hi how are you"},
+            {"role": "assistant", "content": "I'm well, thanks."},
+        ]
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            import threading
+            called = threading.Event()
+            mock_auto.side_effect = lambda *a, **k: called.set()
+            maybe_auto_title(db, "sess-1", "help me debug the scheduler", history)
+            assert called.wait(timeout=10), "auto-title upgrade thread never ran"
+            mock_auto.assert_called_once()
+
+        substantive = MagicMock()
+        substantive.choices[0].message.content = "Debug scheduler failures"
+        with patch("agent.title_generator.call_llm", return_value=substantive):
+            auto_title_session(db, "sess-1", "help me debug the scheduler")
+
+        assert db.get_session_title("sess-1") == "Debug scheduler failures"
+        assert db.get_session_title_source("sess-1") == "llm"
+
     def test_instant_title_declines_a_name_collision(self, tmp_path):
         """A colliding derived title is skipped, not scanned into 'hi #2'.
 

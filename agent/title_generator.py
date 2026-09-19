@@ -81,6 +81,12 @@ _EXAMPLE_ECHO_REJECT = frozenset(
     t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly greeting"
 ) | {_PROMPT_VAGUE_EXAMPLE.lower()}
 
+# A generic greeting is intentionally offered as a title for a conversation
+# with no topic yet. Keep it at derived authority so the first substantive
+# follow-up can replace it with an LLM title.
+_PROVISIONAL_GREETING_TITLES = frozenset({"friendly greeting", "friendly greeting in chat"})
+
+
 _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
     "that lets them find this conversation again in a list.\n\n"
@@ -423,6 +429,18 @@ def _has_upgraded_title(session_db, session_id: str) -> bool:
         return True
 
 
+def _has_provisional_greeting_title(session_db, session_id: str) -> bool:
+    """Whether the stored title is the generic greeting placeholder."""
+    try:
+        return (
+            session_db.get_session_title_source(session_id) == "derived"
+            and str(session_db.get_session_title(session_id) or "").strip().lower()
+            in _PROVISIONAL_GREETING_TITLES
+        )
+    except Exception:
+        return False
+
+
 def _persist_session_title(session_db, session_id, title, *, source, dedupe=True):
     """Persist at *source* authority via ``set_auto_title`` (precedence check + write in one
     transaction, so a manual ``/title`` is never overwritten); None when a higher authority held the row.
@@ -503,6 +521,8 @@ def auto_title_session(
         title, source = generate_title(
             user_message, failure_callback=failure_callback, main_runtime=main_runtime, runtime_validator=runtime_validator,
         ), "llm"
+        if title and title.strip().lower() in _PROVISIONAL_GREETING_TITLES:
+            source = "derived"
         if not title:  # the inline attempt declined collisions; off the critical path the lineage scan is affordable
             title, source = derive_title(user_message), "derived"
         if not title:
@@ -579,7 +599,8 @@ def maybe_auto_title(
     # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
     # left a machinery-opened session nameless; title alone never titles on an old store.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
-    if user_msg_count > 1 and not _session_is_untitled(session_db, session_id):
+    if (user_msg_count > 1 and not _session_is_untitled(session_db, session_id)
+            and not _has_provisional_greeting_title(session_db, session_id)):
         return
     kanban_title = _kanban_task_title()
     if kanban_title:
