@@ -476,6 +476,30 @@ export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[
   return projects.find(project => project.id === projectId)?.color ?? null
 }
 
+/**
+ * Membership in a project-tree snapshot is backend-resolved: in particular,
+ * the git probe can identify a sibling worktree even while its persisted row
+ * has not yet been backfilled with `git_repo_root`. Keep that answer when the
+ * live cache refreshes the same row instead of re-inferring ownership from its
+ * cwd (which can make an umbrella project claim it as well).
+ */
+export function projectOwnerBySessionId(projects: SidebarProjectTree[]): ReadonlyMap<string, string> {
+  const owners = new Map<string, string>()
+
+  for (const project of projects) {
+    const sessions = [
+      ...(project.previewSessions ?? []),
+      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+    ]
+
+    for (const session of sessions) {
+      owners.set(session.id, project.id)
+    }
+  }
+
+  return owners
+}
+
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
   [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => sessionRecency(b) - sessionRecency(a))
 
@@ -746,7 +770,8 @@ export function excludeProjectSessions(
 export function overlayLiveLanes(
   project: SidebarProjectTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string> = NO_REMOVED
+  removed: ReadonlySet<string> = NO_REMOVED,
+  authoritativeOwners: ReadonlyMap<string, string> = new Map()
 ): SidebarProjectTree {
   if (project.isNoProject) {
     return overlayHomeLane(project, live, removed)
@@ -754,8 +779,14 @@ export function overlayLiveLanes(
 
   let changed = false
 
+  const projectLive = live.filter(session => {
+    const owner = authoritativeOwners.get(session.id)
+
+    return !owner || owner === project.id
+  })
+
   const repos = project.repos.map(repo => {
-    const next = overlayRepoLanes(repo, live, removed)
+    const next = overlayRepoLanes(repo, projectLive, removed)
 
     changed ||= next !== repo
 
@@ -804,13 +835,14 @@ export function overlayLivePreviews(
   { removed = NO_REMOVED, rankIds }: PreviewOverlayOptions = {}
 ): Record<string, SessionInfo[]> {
   const byProject = new Map<string, SessionInfo[]>()
+  const authoritativeOwners = projectOwnerBySessionId(projects)
 
   for (const session of live) {
     if (removed.has(session.id)) {
       continue
     }
 
-    const projectId = sessionBucketId(session, explicitProjects)
+    const projectId = authoritativeOwners.get(session.id) ?? sessionBucketId(session, explicitProjects)
 
     if (!projectId) {
       continue

@@ -13,6 +13,7 @@ import {
   NO_PROJECT_ID,
   overlayLiveLanes,
   overlayLivePreviews,
+  projectOwnerBySessionId,
   reconcileEnteredProjectSessions,
   sessionMatchesProjectFilter,
   sessionProjectColor,
@@ -615,6 +616,36 @@ describe('sessionProjectColor', () => {
 })
 
 describe('overlayLiveLanes', () => {
+  it('does not inject a backend-owned sibling worktree session into an ancestor project', () => {
+    const sibling = makeCwdSession('/work/repos/app-2/src', { id: 'sibling', git_repo_root: null })
+
+    const ancestor = projectNode({
+      id: 'p_work',
+      path: '/work',
+      repos: [{ id: '/work', label: 'work', path: '/work', groups: [], sessionCount: 0 }]
+    })
+
+    const repo = projectNode({
+      id: 'p_app',
+      path: '/work/repos/app',
+      repos: [
+        {
+          id: '/work/repos/app',
+          label: 'app',
+          path: '/work/repos/app',
+          groups: [lane({ id: '/work/repos/app-2', label: 'app-2', path: '/work/repos/app-2', sessions: [sibling] })],
+          sessionCount: 1
+        }
+      ],
+      previewSessions: [sibling],
+      sessionCount: 1
+    })
+
+    const overlaid = overlayLiveLanes(ancestor, [sibling], new Set(), projectOwnerBySessionId([ancestor, repo]))
+
+    expect(overlaid.sessionCount).toBe(0)
+  })
+
   it('keeps an overview preview visible when the hydrated drill-in is stale', () => {
     const staleHistory = makeCwdSession('/www/app', {
       id: 'stale-history',
@@ -1085,6 +1116,19 @@ describe('overlayLiveLanes', () => {
 })
 
 describe('overlayLivePreviews', () => {
+  it('keeps a backend-owned sibling worktree session out of an ancestor preview when git_repo_root is null', () => {
+    const sibling = makeCwdSession('/work/repos/app-2/src', { id: 'sibling', git_repo_root: null })
+    const ancestor = projectNode({ id: 'p_work', path: '/work', previewSessions: [], sessionCount: 0 })
+    const repo = projectNode({ id: 'p_app', path: '/work/repos/app', previewSessions: [sibling], sessionCount: 1 })
+
+    const previews = overlayLivePreviews([ancestor, repo], [sibling], [
+      makeProject('p_work', ['/work']),
+      makeProject('p_app', ['/work/repos/app'])
+    ], 3)
+
+    expect(previews.p_work).toBeUndefined()
+    expect(previews.p_app?.map(session => session.id)).toEqual(['sibling'])
+  })
   it('merges live sessions into a project preview, live first, capped to the limit', () => {
     const project = projectNode({
       id: '/www/app',

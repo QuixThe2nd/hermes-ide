@@ -1045,8 +1045,15 @@ export function ChatSidebar({
   // overlay always has a lane to place a missing in-project session into.
   const enteredProjectContent = useMemo(
     () =>
-      enteredProject ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds) : undefined,
-    [enteredProject, enteredProjectOverlaySessions, removedSessionIds]
+      enteredProject
+        ? overlayLiveLanes(
+            enteredProject,
+            enteredProjectOverlaySessions,
+            removedSessionIds,
+            projectOwnerBySessionId(agentProjectTree)
+          )
+        : undefined,
+    [enteredProject, enteredProjectOverlaySessions, removedSessionIds, agentProjectTree]
   )
 
   const scopedRepoPaths = useMemo(
