@@ -116,11 +116,20 @@ bundle is missing you'll see a one-time warning in the logs with the
 download link.
 
 A few servers are installed alongside a peer dependency that npm
-won't auto-pull. The current case is `typescript-language-server`,
-which requires the `typescript` SDK importable from the same
-`node_modules` tree — Hermes installs both packages together when you
-run `hermes lsp install typescript` or auto-install fires on first
-use.
+won't auto-pull. `typescript-language-server` and `@vue/language-server`
+require the `typescript` SDK importable from the same `node_modules`
+tree — Hermes installs `typescript@6` (the last JavaScript-based line;
+TypeScript 7 is the Go port and ships no `tsserver.js`) together with
+the server when you run `hermes lsp install typescript` /
+`hermes lsp install vue-language-server` or auto-install fires on first use.
+
+Vue is pinned to `@vue/language-server@2`, started with
+`vue.hybridMode: false` so it hosts its own TypeScript service. The 3.x
+line only works behind a client-hosted `tsserver` tunnel (the VS Code /
+Neovim setup) that Hermes's generic client does not run, so it never
+publishes diagnostics. If an earlier Hermes installed 3.x, the log shows a
+one-time `vue-language-server: ... 3.x` warning; reinstall with
+`npm install --prefix <HERMES_HOME>/lsp @vue/language-server@2 typescript@6`.
 
 ## CLI
 

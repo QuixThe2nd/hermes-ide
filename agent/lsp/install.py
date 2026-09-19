@@ -36,6 +36,10 @@ def _manual(bin_name: str) -> Dict[str, Any]:
     return _recipe("manual", "", bin_name)
 
 
+# TypeScript 7+ is the Go-native port and ships no ``lib/tsserver.js`` /
+# ``lib/typescript.js``, so JS-based servers cannot load it as their SDK.
+TYPESCRIPT_SDK_PKG = "typescript@6"
+
 # Recipe key → {strategy, pkg, bin[, extra_pkgs]}.  After install we look for
 # ``bin`` in ``<HERMES_HOME>/lsp/bin/`` first, then on PATH.  ``extra_pkgs``
 # are sibling npm packages a server needs in the same node_modules tree.
@@ -43,8 +47,12 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     "pyright": _npm("pyright", "pyright-langserver"),
     # tsserver must be importable from the same node_modules tree or
     # initialize() fails with "Could not find a valid TypeScript installation".
-    "typescript-language-server": _npm("typescript-language-server", "typescript-language-server", extra_pkgs=["typescript"]),
-    "@vue/language-server": _npm("@vue/language-server", "vue-language-server"),
+    "typescript-language-server": _npm("typescript-language-server", "typescript-language-server", extra_pkgs=[TYPESCRIPT_SDK_PKG]),
+    # 3.x forwards every TypeScript request to a client-hosted tsserver
+    # (``tsserver/request`` tunnel) that a generic LSP client does not run, so
+    # it never publishes diagnostics; 2.x self-hosts TypeScript from
+    # ``initializationOptions.typescript.tsdk`` (see servers._spawn_vue).
+    "@vue/language-server": _npm("@vue/language-server@2", "vue-language-server", extra_pkgs=[TYPESCRIPT_SDK_PKG]),
     "svelte-language-server": _npm("svelte-language-server", "svelteserver"),
     "@astrojs/language-server": _npm("@astrojs/language-server", "astro-ls"),
     "yaml-language-server": _npm("yaml-language-server", "yaml-language-server"),

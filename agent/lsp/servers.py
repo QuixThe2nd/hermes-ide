@@ -192,6 +192,64 @@ def _spawn_bash_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     return _make_spec(root, ctx, "bash-language-server", [bin_path, "start"])
 
 
+_VUE_TUNNEL_MSG = (
+    "vue-language-server: the installed @vue/language-server is 3.x, which only works behind a client-hosted "
+    "tsserver tunnel Hermes does not run — no diagnostics will arrive. Reinstall the self-hosting 2.x line: "
+    "npm install --prefix <HERMES_HOME>/lsp @vue/language-server@2 typescript@6"
+)
+_VUE_TSDK_MSG = (
+    "vue-language-server: no JavaScript TypeScript SDK (typescript/lib/typescript.js) next to the server or under "
+    "the project's node_modules — diagnostics are skipped. Install one: npm install --prefix <HERMES_HOME>/lsp typescript@6"
+)
+
+
+def _node_modules_trees(bin_path: str, root: str) -> List[str]:
+    """``node_modules`` trees that may hold the Vue server and its TypeScript SDK:
+    the launcher's own tree (symlinks resolved), Hermes staging, then the project's."""
+    from agent.lsp.install import hermes_lsp_bin_dir
+    trees = [str(hermes_lsp_bin_dir().parent / "node_modules"), os.path.join(root, "node_modules")]
+    real = os.path.realpath(bin_path)
+    marker = f"{os.sep}node_modules{os.sep}"
+    if (idx := real.rfind(marker)) >= 0:
+        trees.insert(0, real[: idx + len(marker) - 1])
+    return trees
+
+
+def _vue_server_major(trees: Sequence[str]) -> int:
+    """Major version of the first ``@vue/language-server`` found in ``trees``; 0 when unreadable."""
+    import json
+    for tree in trees:
+        try:
+            with open(os.path.join(tree, "@vue", "language-server", "package.json"), encoding="utf-8") as fh:
+                return int(str(json.load(fh).get("version", "")).split(".")[0])
+        except (OSError, ValueError):
+            continue
+    return 0
+
+
+def _typescript_sdk_dir(trees: Sequence[str]) -> Optional[str]:
+    """First ``typescript/lib`` in ``trees`` holding a JS ``typescript.js`` (TypeScript 7+ ships none)."""
+    cands = (os.path.join(tree, "typescript", "lib") for tree in trees)
+    return next((c for c in cands if os.path.isfile(os.path.join(c, "typescript.js"))), None)
+
+
+def _spawn_vue(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    """Spawn @vue/language-server 2.x self-hosting TypeScript (``hybridMode`` off, explicit ``tsdk``)."""
+    bin_path = _find_binary(ctx, "vue-language-server", ("vue-language-server",), "@vue/language-server")
+    if bin_path is None:
+        return None
+    trees = _node_modules_trees(bin_path, root)
+    if _vue_server_major(trees) >= 3:
+        _warn_once("vue-tunnel", _VUE_TUNNEL_MSG)
+        return None
+    tsdk = _typescript_sdk_dir(trees)
+    if tsdk is None:
+        _warn_once("vue-tsdk", _VUE_TSDK_MSG)
+        return None
+    return _make_spec(root, ctx, "vue-language-server", [bin_path, "--stdio"],
+                      {"typescript": {"tsdk": tsdk}, "vue": {"hybridMode": False}})
+
+
 def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
     """Locate the PowerShellEditorServices bundle dir (release zip, manual install).  Resolution order:
     ``lsp.servers.powershell.command[0]`` when a directory, ``init_overrides["powershell"]["bundlePath"]``,
@@ -285,7 +343,7 @@ SERVERS: List[ServerDef] = [
             "JavaScript/TypeScript — typescript-language-server", resolve_root=_root_typescript,
             which=("typescript-language-server",), args=("--stdio",), install_pkg="typescript-language-server", seed=True),
     _server("vue-language-server", (".vue",), "Vue.js — @vue/language-server", resolve_root=_root_typescript,
-            args=("--stdio",), install_pkg="@vue/language-server"),
+            build_spawn=_spawn_vue),
     _server("svelte-language-server", (".svelte",), "Svelte — svelte-language-server", resolve_root=_root_typescript,
             which=("svelteserver", "svelte-language-server"), args=("--stdio",), install_pkg="svelte-language-server"),
     _server("astro-language-server", (".astro",), "Astro — @astrojs/language-server", resolve_root=_root_typescript,
