@@ -2,6 +2,21 @@
 
 This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
 
+> **Reading the docs on GitHub?** The Markdown under `docs/` is authored for the rendered site at
+> <https://hermes-agent.nousresearch.com/docs/>. Most cross-page links are Docusaurus site routes
+> (`/getting-started/installation`), which GitHub's file viewer resolves as repository paths and 404s.
+> Every page has an **Edit this page** link on the site that opens the source file here.
+
+## Authoring links in `docs/`
+
+- Link to another page with a doc-root route (`[Profiles](/user-guide/profiles)`) or a relative
+  Markdown path (`[Profiles](../user-guide/profiles.md)`). Both render on the site; only the
+  relative form also resolves on GitHub.
+- Never write `/docs/...` in a link: `baseUrl` is already `/docs/`, so the zh-Hans build emits
+  `/docs/zh-Hans/docs/...` 404s.
+- Cross-section links with an anchor use the route form (`/section/page#anchor`); pin `{#anchor}`
+  on the target heading so the zh-Hans mirror keeps the same id.
+
 ## Installation
 
 ```bash
