@@ -1366,8 +1366,12 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         st.api_key, st.base_url = st.current_api_key, st.current_base_url
         st.api_mode = determine_api_mode(st.target_provider, st.base_url)
     else:
+        # A URL-bearing direct alias supplies its endpoint HERE as well as in
+        # _apply_direct_alias_endpoint: the resolver refuses a local alias (ollama, vllm) with no
+        # endpoint configured anywhere, and this alias does have one.
+        da = DIRECT_ALIASES.get(st.resolved_alias) if st.resolved_alias else None
         try:
-            st.resolve_runtime(requested=st.target_provider)
+            st.resolve_runtime(requested=st.target_provider, explicit_base_url=(da.base_url if da else None) or None)
         except Exception as e:
             return st.fail_on_target(
                 f"{st.provider_label} is not connected: no API key or login was found for it. Add one with "

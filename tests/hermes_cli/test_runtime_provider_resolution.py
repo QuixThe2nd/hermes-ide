@@ -1105,7 +1105,7 @@ def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypa
     assert error.value.provider == "custom"
     assert error.value.code == "missing_api_key"
 
-    with pytest.raises(rp.AuthError, match="Local provider 'ollama'.*base_url") as alias_error:
+    with pytest.raises(rp.AuthError, match="provider 'ollama' has no endpoint") as alias_error:
         rp.resolve_runtime_provider(requested="ollama")
     assert alias_error.value.provider == "ollama"
     assert alias_error.value.code == "missing_base_url"
@@ -1117,69 +1117,47 @@ def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypa
 
 
 @pytest.mark.parametrize("alias", ("ollama", "vllm"))
-@pytest.mark.parametrize("key_name", ("OPENROUTER_API_KEY", "OPENAI_API_KEY"))
-def test_local_alias_without_endpoint_does_not_fall_back_to_openrouter(monkeypatch, alias, key_name):
-    """#113703: local aliases need an endpoint before cloud credentials can resolve."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setenv(key_name, "test-cloud-key")
+def test_local_alias_without_any_endpoint_never_reaches_openrouter(monkeypatch, alias):
+    """#113703: a local alias with no endpoint configured anywhere must raise a typed AuthError
+    naming the alias instead of walking the ladder to the OpenRouter fallback with a cloud key.
+    Neither ``OPENROUTER_BASE_URL`` (a mirror, not the alias endpoint) nor an explicit api_key
+    (meant for the alias's own server) lifts the guard; bare ``custom`` keeps its own contract."""
+    for name in ("OPENAI_API_KEY", "CUSTOM_BASE_URL", "OPENROUTER_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-cloud-key")
     monkeypatch.setattr(rp, "load_config", lambda: {"model": {"provider": alias}})
     monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
 
-    with pytest.raises(rp.AuthError, match=rf"Local provider '{alias}'.*base_url") as error:
+    with pytest.raises(rp.AuthError, match=rf"provider '{alias}' has no endpoint.*providers\.{alias}\.base_url") as error:
         rp.resolve_runtime_provider(requested=alias)
+    assert (error.value.provider, error.value.code) == (alias, "missing_base_url")
 
-    assert error.value.provider == alias
-    assert error.value.code == "missing_base_url"
+    bare = rp.resolve_runtime_provider(requested="custom")
+    assert bare["provider"] == "custom" and bare["api_key"] == "sk-or-v1-cloud-key"
+
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example/api/v1")
+    with pytest.raises(rp.AuthError, match="has no endpoint"):
+        rp.resolve_runtime_provider(requested=alias, explicit_api_key="key-for-my-local-server")
 
 
-@pytest.mark.parametrize("alias", ("ollama", "vllm"))
-def test_local_alias_with_configured_model_endpoint_still_resolves(monkeypatch, alias):
-    """#113703 control: model.base_url remains a valid local-alias endpoint."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-cloud-key")
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {"model": {"provider": alias, "base_url": "http://127.0.0.1:8000/v1"}},
-    )
+@pytest.mark.parametrize("configured", ("providers", "model", "explicit"))
+def test_local_alias_with_an_endpoint_anywhere_still_resolves_to_it(monkeypatch, configured):
+    """#113703 control: every place an ollama endpoint can be configured keeps resolving to that
+    URL with the local placeholder key — the guard keys on the absence of an endpoint, not on the
+    alias name (the name-keyed version broke ``/model <direct-alias>``; see a9fabe43c4)."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-cloud-key")
+    url = "http://192.168.1.5:11434/v1"
+    config = {
+        "providers": {"providers": {"ollama": {"base_url": url}}},
+        "model": {"model": {"provider": "ollama", "base_url": url}},
+        "explicit": {"model": {"provider": "ollama"}},
+    }[configured]
+    monkeypatch.setattr(rp, "load_config", lambda: config)
     monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
 
-    resolved = rp.resolve_runtime_provider(requested=alias)
+    resolved = rp.resolve_runtime_provider(requested="ollama", explicit_base_url=url if configured == "explicit" else None)
 
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "http://127.0.0.1:8000/v1"
-    assert resolved["api_key"] == "no-key-required"
-
-
-@pytest.mark.parametrize("alias", ("ollama", "vllm"))
-def test_local_alias_with_explicit_endpoint_still_resolves(monkeypatch, alias):
-    """#113703 control: one-off explicit endpoints bypass the missing-endpoint guard."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-cloud-key")
-    monkeypatch.setattr(rp, "load_config", lambda: {"model": {"provider": alias}})
-
-    resolved = rp.resolve_runtime_provider(requested=alias, explicit_base_url="http://127.0.0.1:8000/v1")
-
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "http://127.0.0.1:8000/v1"
-    assert resolved["api_key"] == "no-key-required"
-
-
-@pytest.mark.parametrize("alias", ("ollama", "vllm"))
-def test_local_alias_with_named_custom_provider_still_resolves(monkeypatch, alias):
-    """#113703 control: a named endpoint may keep a local-alias name."""
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {"providers": {alias: {"api": "http://127.0.0.1:8000/v1"}}},
-    )
-
-    resolved = rp.resolve_runtime_provider(requested=alias)
-
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "http://127.0.0.1:8000/v1"
-    assert resolved["api_key"] == "no-key-required"
+    assert (resolved["provider"], resolved["base_url"], resolved["api_key"]) == ("custom", url, "no-key-required")
 
 
 def test_bare_custom_without_credentials_keeps_loopback_noauth(monkeypatch):
