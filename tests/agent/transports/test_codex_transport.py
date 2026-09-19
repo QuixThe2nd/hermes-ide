@@ -1149,7 +1149,7 @@ class TestResponsesReservedToolAliases:
         )
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(SimpleNamespace(output=[], status="completed"))
         assert [tc.name for tc in normalized.tool_calls] == ["search_files"]
