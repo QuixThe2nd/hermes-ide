@@ -212,18 +212,21 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
-    try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
+    # Bit-level POSIX wait-status decode instead of os.WIFEXITED/WEXITSTATUS/
+    # WIFSIGNALED/WTERMSIG: those helpers do not exist on Windows, where the
+    # registry is fed by reap_worker_zombies' Popen poll. Low 7 bits = signal
+    # (0 = normal exit, 0x7F = stopped), bits 8-15 = exit code.
+    raw = int(raw)
+    signal_number = raw & 0x7F
+    if signal_number == 0:
+        code = (raw >> 8) & 0xFF
+        if code == 0:
+            return ("clean_exit", 0)
+        if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
+            return ("rate_limited", code)
+        return ("nonzero_exit", code)
+    if signal_number != 0x7F:
+        return ("signaled", signal_number)
     return ("unknown", None)
 
 
