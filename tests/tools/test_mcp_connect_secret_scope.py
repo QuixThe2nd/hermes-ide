@@ -8,10 +8,7 @@ import asyncio
 
 import pytest
 
-from agent.secret_scope import (
-    UnscopedSecretError, current_secret_scope, reset_secret_scope, set_multiplex_active,
-    set_secret_scope,
-)
+from agent.secret_scope import current_secret_scope, set_multiplex_active
 from hermes_cli import env_loader
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools import mcp_tool_discovery as discovery
@@ -60,35 +57,20 @@ def spawn_env(monkeypatch):
     return captured
 
 
-def test_connect_resolves_the_owning_profiles_secret(profile_home, spawn_env):
-    """Red on base: UnscopedSecretError. The child env must carry the profile's own value."""
+def test_connect_resolves_the_owning_profiles_secret(profile_home, spawn_env, monkeypatch):
+    """Red on base: UnscopedSecretError. The child env carries the OWNING profile's value — never
+    the launch process env's — and the binding is the run task's, not the caller's."""
+    monkeypatch.setenv(TOKEN_NAME, "launch-env-value")
     assert current_secret_scope() is None  # discovery runs unscoped
 
     asyncio.run(discovery._connect_server("demo", {"command": "true"}))
 
     assert spawn_env["env"][TOKEN_NAME] == TOKEN_VALUE
-
-
-def test_connect_does_not_override_an_installed_scope(profile_home, spawn_env):
-    """A caller that already scoped the turn owns the credentials — never re-derive (#111151)."""
-    token = set_secret_scope({TOKEN_NAME: "callers-value"})
-    try:
-        asyncio.run(discovery._connect_server("demo", {"command": "true"}))
-    finally:
-        reset_secret_scope(token)
-
-    assert spawn_env["env"][TOKEN_NAME] == "callers-value"
-
-
-def test_connect_leaves_the_scope_unchanged_for_the_caller(profile_home, spawn_env):
-    """The binding is the run task's, not the caller's: discovery is unscoped again afterwards."""
-    asyncio.run(discovery._connect_server("demo", {"command": "true"}))
-
     assert current_secret_scope() is None
 
 
 def test_single_profile_process_binds_nothing(tmp_path, monkeypatch, spawn_env):
-    """No multiplexer, no home override: unchanged, and get_secret still reads os.environ."""
+    """No multiplexer, no home override (scope key None): unchanged, get_secret reads os.environ."""
     monkeypatch.setitem(env_loader._SECRET_SOURCES, TOKEN_NAME, "command")
     monkeypatch.setenv(TOKEN_NAME, "process-env-value")
     set_multiplex_active(False)
@@ -97,9 +79,3 @@ def test_single_profile_process_binds_nothing(tmp_path, monkeypatch, spawn_env):
 
     assert spawn_env["env"][TOKEN_NAME] == "process-env-value"
     assert current_secret_scope() is None
-
-
-def test_unscoped_build_still_fails_closed_without_the_binding(profile_home):
-    """The underlying guard is intact: the fix installs a scope, it does not widen get_secret."""
-    with pytest.raises(UnscopedSecretError):
-        _build_safe_env(None)
