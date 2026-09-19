@@ -542,6 +542,10 @@ class TestSchemaValidation:
         # from an unseeded key, so it is written too — the user gets the sibling suggestion
         # (``agent.max_turns``) instead of a refusal.
         ("agent.max_turnz", "50", 50, "agent.max_turns"),
+        # ``filter_silence_narration`` is an _EXTRA_KNOWN_ROOT_KEYS top-level form of a nested
+        # gateway setting (gateway/config_loader.py bridge). Its presence in the known roots
+        # must not turn the nested path into a wrong-prefix refusal.
+        ("gateway.filter_silence_narration", "false", False, None),
     ])
     def test_unknown_leaf_under_known_section_is_written_with_notice(
         self, key, value, expected, suggestion, _isolated_hermes_home, capsys
@@ -613,7 +617,6 @@ class TestValidateConfigKey:
         # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
         # key" notice with a bogus near-miss suggestion (platform_hints.cli).
         "platform_toolsets.cli",
-        "smart_model_routing.enabled",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
