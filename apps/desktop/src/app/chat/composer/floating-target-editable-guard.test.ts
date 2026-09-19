@@ -3,12 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerFloatingComposer } from './floating-target'
 
-/** The owner's composer host plus a chat surface that holds a text-entry field
- * outside every composer — the clarify card's "Other" answer box lives here, in
- * the transcript, inside the pane that carries `data-chat-surface`. */
-function mount() {
+/** One pane: its composer host plus the chat surface the transcript lives in.
+ * The clarify card's "Other" answer box is a textarea inside that surface,
+ * outside every composer host. */
+function mountPane(id: string) {
   const host = document.createElement('div')
-  host.dataset.composerOwner = 'surface-1'
+  host.dataset.composerOwner = id
   const editor = document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.tabIndex = -1
@@ -17,17 +17,15 @@ function mount() {
 
   const surface = document.createElement('div')
   surface.dataset.chatSurface = ''
-  surface.dataset.composerSurfaceId = 'surface-1'
-  const answer = document.createElement('textarea')
-  surface.appendChild(answer)
+  surface.dataset.composerSurfaceId = id
   document.body.appendChild(surface)
 
-  return { answer, editor, surface }
+  return { editor, surface }
 }
 
 /** Button-up movement over the surface: the gesture the focus-follow reacts to. */
-function movePointerOver(target: Element) {
-  target.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 0, clientX: 43, clientY: 44 }))
+function movePointerOver(target: Element, x: number) {
+  target.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 0, clientX: x, clientY: 44 }))
 }
 
 /** A caret in a clarify answer box (a transcript textarea, not a composer
@@ -35,52 +33,44 @@ function movePointerOver(target: Element) {
  * focus of that field was swallowed before a character could land — the
  * focus-follow only exempted composer editors and the inline edit (#114245). */
 describe('floating composer focus-follow vs a focused transcript text field', () => {
-  let unregister: (() => void) | undefined
+  const unregister: Array<() => void> = []
 
   afterEach(() => {
-    unregister?.()
-    unregister = undefined
+    unregister.splice(0).forEach(fn => fn())
     document.body.innerHTML = ''
   })
 
-  it('keeps the caret in a clarify answer box when the pointer moves', () => {
-    const { answer, editor } = mount()
-    unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
+  it('keeps the caret in a clarify answer box on programmatic focus and on pointermove', () => {
+    const { editor, surface } = mountPane('surface-1')
+    const answer = document.createElement('textarea')
+    surface.appendChild(answer)
+    unregister.push(registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' }))
 
-    answer.focus()
-    expect(document.activeElement).toBe(answer)
-
-    movePointerOver(answer)
-
-    expect(document.activeElement).toBe(answer)
-    expect(document.activeElement).not.toBe(editor)
-  })
-
-  it('does not swallow a programmatically focused answer box, leaving its focusin visible to React', () => {
-    const { answer, editor } = mount()
-    unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
-
+    // focusin branch: the "Other" row focuses the field without a pointerdown on it;
+    // the refused redirect must not swallow the field's focusin from root listeners.
     const focusin = vi.fn()
     document.addEventListener('focusin', focusin)
     answer.focus()
     document.removeEventListener('focusin', focusin)
+    expect(document.activeElement).toBe(answer)
+    expect(focusin).toHaveBeenCalledTimes(1)
 
+    // pointermove branch: moving the mouse over the card must not redirect either.
+    movePointerOver(answer, 43)
     expect(document.activeElement).toBe(answer)
     expect(document.activeElement).not.toBe(editor)
-    expect(focusin).toHaveBeenCalledTimes(1)
   })
 
-  it('still focuses the composer on pointermove when nothing editable outside it is focused', () => {
-    const { editor, surface } = mount()
-    unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
+  it('still moves the caret to the hovered pane composer when it sits in another pane composer', () => {
+    const a = mountPane('surface-a')
+    const b = mountPane('surface-b')
+    unregister.push(registerFloatingComposer('surface-a', { groupId: 'ga', target: 'main' }))
+    unregister.push(registerFloatingComposer('surface-b', { groupId: 'gb', target: 'main' }))
 
-    // Focus a non-editable control in the surface so the guard must not fire.
-    const button = document.createElement('button')
-    surface.appendChild(button)
-    button.focus()
+    a.editor.focus()
+    expect(document.activeElement).toBe(a.editor)
 
-    movePointerOver(surface)
-
-    expect(document.activeElement).toBe(editor)
+    movePointerOver(b.surface, 200)
+    expect(document.activeElement).toBe(b.editor)
   })
 })
