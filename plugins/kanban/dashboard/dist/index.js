@@ -1263,6 +1263,10 @@
           onSwitch: switchBoard,
           onNewClick: function () { setShowNewBoard(true); },
           onSettingsClick: function () { setShowBoardSettings(true); },
+          onUnbindProject: function () {
+            updateBoard(board, { project_id: "" })
+              .catch(function (e) { setError(String(e.message || e)); });
+          },
           onDeleteBoard: deleteBoard,
           requestDialog: function (req) { return kanbanDialogs.request(req); },
         }),
@@ -2065,6 +2069,30 @@
     );
   }
 
+  // Readout of the board's project binding (GET /boards annotates every
+  // board with project_id + project_name). The × sends PATCH
+  // {project_id: ""} — the same clear the settings dialog uses — so the
+  // binding is visible and removable without opening Settings.
+  function BoardProjectBadge(props) {
+    const { t } = useI18n();
+    const b = props.board;
+    if (!b || !b.project_id) return null;
+    return h(Badge, {
+      variant: "outline",
+      className: "hermes-kanban-board-project text-xs font-normal gap-1",
+      title: tx(t, "boardProjectBadgeTitle", "New tasks on this board inherit this project"),
+    },
+      tx(t, "boardProjectBadge", "Project: {name}", { name: b.project_name || b.project_id }),
+      h("button", {
+        type: "button",
+        className: "hermes-kanban-board-project-unbind",
+        "aria-label": tx(t, "unbindProject", "Unbind project"),
+        title: tx(t, "unbindProject", "Unbind project"),
+        onClick: props.onUnbind,
+      }, "×"),
+    );
+  }
+
   function BoardSwitcher(props) {
     const { t } = useI18n();
     const list = props.boardList || [];
@@ -2097,6 +2125,7 @@
           title: tx(t, "boardSettingsTitle",
             "Board settings — name, description, and the default project directory new tasks inherit"),
         }, tx(t, "boardSettings", "Settings")),
+        h(BoardProjectBadge, { board: current, onUnbind: props.onUnbindProject }),
         h(DocsLink, null),
       );
     }
@@ -2122,6 +2151,7 @@
             ),
             h("span", { className: "text-xs text-muted-foreground" },
               `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
+            h(BoardProjectBadge, { board: current, onUnbind: props.onUnbindProject }),
           ),
         ),
         h("div", { className: "flex-1" }),
@@ -2378,15 +2408,19 @@
       setErr(null);
       // Send default_workdir unconditionally: "" clears it on the server,
       // a path sets it (validated server-side: absolute + existing dir).
+      // Exception: a blank directory next to a chosen project is omitted
+      // so the server mirrors the project's primary folder into
+      // default_workdir — the same seeding the create dialog gets.
       // project_id mirrors that only when the selector was rendered
       // (projects loaded): "" clears the binding, an id scopes the board.
       // When the projects store is unreachable the field is omitted so
       // saving unrelated settings never wipes an existing binding.
+      const boundProject = projects.length ? projectId : undefined;
       props.onSave({
         name: name.trim() || undefined,
         description: description.trim() || undefined,
-        default_workdir: projectDirectory.trim(),
-        project_id: projects.length ? projectId : undefined,
+        default_workdir: projectDirectory.trim() || (boundProject ? undefined : ""),
+        project_id: boundProject,
       }).catch(function (e) {
         setErr(parseApiErrorMessage(e));
         setSubmitting(false);

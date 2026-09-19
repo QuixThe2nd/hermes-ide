@@ -908,37 +908,31 @@ def test_dashboard_dependency_selects_use_value_change_handler():
 
 
 def test_dashboard_board_project_binding_is_exposed_in_ui():
-    """Regression for #114652: the board create/settings dialogs must
-    expose the board↔project binding the REST API already supports
-    (POST/PATCH ``project_id``, validated against the projects store).
+    """The board create/settings dialogs and the board switcher expose the
+    board<->project binding the REST API already supports (POST/PATCH
+    ``project_id``; ``""`` clears it).
 
-    The bundle has no build step, so the wiring is pinned textually, in
-    the same style as the dependency-select regression above:
-    1. both dialogs fetch the live project list via GET /projects;
-    2. the selectors land on React state through the shared
-       ``selectChangeHandler`` helper (the exact bug class salvaged from
-       #20019: value-only selects that never update state);
-    3. create sends ``project_id`` only when the selector rendered and a
-       project was picked, while settings PATCHes mirror
-       ``default_workdir`` — send unconditionally when the selector
-       rendered, where ``""`` clears the binding — and omit the field
-       when the projects store is unreachable so saving unrelated
-       settings can never wipe an existing binding.
+    The bundle has no build step, so the wiring is pinned textually like
+    the dependency-select regression above: both dialogs load the live
+    list from GET /projects and drive React state through the shared
+    ``selectChangeHandler``; create sends ``project_id`` only when a
+    project was picked; settings sends it whenever the selector rendered
+    (``""`` clears) and omits it when the projects store is unreachable so
+    saving unrelated settings never wipes a binding; the switcher shows the
+    bound project as a badge whose unbind action PATCHes ``project_id: ""``.
     """
     repo_root = Path(__file__).resolve().parents[2]
     bundle = (
         repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
-    assert "function useBoardProjects()" in bundle
     assert "`${API}/projects`" in bundle
-    assert "selectChangeHandler(setProjectId)" in bundle
-    assert "useState(b.project_id || \"\")" in bundle
-
-    create_payload = "project_id: (projects.length && projectId) || undefined,"
-    patch_payload = "project_id: projects.length ? projectId : undefined,"
-    assert create_payload in bundle
-    assert patch_payload in bundle
+    assert bundle.count("selectChangeHandler(setProjectId)") == 2
+    assert "project_id: (projects.length && projectId) || undefined," in bundle
+    assert "const boundProject = projects.length ? projectId : undefined;" in bundle
+    assert "project_id: boundProject," in bundle
+    assert "hermes-kanban-board-project-unbind" in bundle
+    assert 'updateBoard(board, { project_id: "" })' in bundle
 
 
 def test_bulk_archive(client):

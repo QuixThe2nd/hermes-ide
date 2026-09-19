@@ -203,13 +203,23 @@ matters.
   shifting the CLI's `current` pointer out from under a terminal you left
   open.
 - **+ New board** — opens a modal asking for slug, display name,
-  description, and icon. Option to auto-switch to the new board.
+  description, icon, project directory, and (when any Project exists) a
+  **Project** selector. Option to auto-switch to the new board.
 - **Settings** — opens a modal for editing the current board's display
   name, description, and **project directory** (`default_workdir`). The
   project directory is the board-level workspace default every new task
   inherits (git repo → preserved worktree, plain dir → preserved
   directory); each task can still override it at creation time. Clearing
   the field reverts new tasks to disposable scratch workspaces.
+- **Project** (in both modals) — binds the board to a Hermes Project
+  (the board's `project_id`).
+  Tasks created on a bound board inherit the Project; picking a project
+  while the directory field is blank also seeds the project directory
+  with the Project's primary folder. The bound project shows as a
+  `Project: <name>` badge next to the board dropdown; its `×` unbinds the
+  board (sends `project_id: ""`) without touching the project directory,
+  and `No binding` in Settings does the same on save. The selector only
+  appears when at least one Project exists.
 - **Archive** — only shown on non-`default` boards. Confirms, then moves
   the board dir to `boards/_archived/`.
 
