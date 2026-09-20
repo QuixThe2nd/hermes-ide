@@ -97,39 +97,25 @@ class TestCodexCloudflareHeaders:
         assert headers["originator"] == "hermes-agent"
         assert "ChatGPT-Account-ID" not in headers
 
-    def test_residency_header_from_data_residency_claim(self):
-        """chatgpt_data_residency claim should populate x-openai-internal-codex-residency."""
+    def test_residency_header_from_jwt_claims(self):
+        """#23896: residency-enforced workspaces 401 without x-openai-internal-codex-residency.
+        chatgpt_data_residency wins; chatgpt_compute_residency is the fallback; every Codex
+        header builder derives it from the same JWT."""
+        from agent.account_usage import _codex_headers
         from agent.auxiliary_client import _codex_cloudflare_headers
-        headers = _codex_cloudflare_headers(_make_codex_jwt(data_residency="us"))
-        assert headers["x-openai-internal-codex-residency"] == "us"
+        both = _make_codex_jwt(data_residency="us", compute_residency="eu")
+        assert _codex_cloudflare_headers(both)["x-openai-internal-codex-residency"] == "us"
+        compute_only = _make_codex_jwt(compute_residency="eu")
+        assert _codex_cloudflare_headers(compute_only)["x-openai-internal-codex-residency"] == "eu"
+        assert _codex_headers(compute_only, None)["x-openai-internal-codex-residency"] == "eu"
 
-    def test_residency_header_from_compute_residency_fallback(self):
-        """When data_residency is absent, compute_residency should be used."""
+    def test_no_residency_claim_omits_header(self):
+        """Control: tokens without the claim, and malformed tokens, never carry the header."""
         from agent.auxiliary_client import _codex_cloudflare_headers
-        headers = _codex_cloudflare_headers(_make_codex_jwt(compute_residency="eu"))
-        assert headers["x-openai-internal-codex-residency"] == "eu"
-
-    def test_data_residency_takes_precedence_over_compute(self):
-        """When both claims exist, data_residency should win."""
-        from agent.auxiliary_client import _codex_cloudflare_headers
-        headers = _codex_cloudflare_headers(
-            _make_codex_jwt(data_residency="us", compute_residency="eu"),
-        )
-        assert headers["x-openai-internal-codex-residency"] == "us"
-
-    def test_no_residency_claims_omits_header(self):
-        """When neither residency claim exists, the header should be absent."""
-        from agent.auxiliary_client import _codex_cloudflare_headers
-        headers = _codex_cloudflare_headers(_make_codex_jwt())
-        assert "x-openai-internal-codex-residency" not in headers
-
-    def test_malformed_token_drops_residency_without_raising(self):
-        """Malformed tokens should not raise; residency header should be absent."""
-        from agent.auxiliary_client import _codex_cloudflare_headers
-        for bad in ["not-a-jwt", "", "only.one", "  ", "...."]:
-            headers = _codex_cloudflare_headers(bad)
-            assert headers["originator"] == "codex_cli_rs"
+        for token in [_make_codex_jwt(), "not-a-jwt", "", "only.one", "  ", "...."]:
+            headers = _codex_cloudflare_headers(token)
             assert "x-openai-internal-codex-residency" not in headers
+            assert headers["originator"] == "hermes-agent"
 
 
 # ---------------------------------------------------------------------------
