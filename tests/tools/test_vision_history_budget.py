@@ -135,3 +135,32 @@ class TestEmbedTargetBytes:
     def test_bad_or_extreme_values_are_clamped_to_the_safe_range(self, raw, expected):
         _write_config(f"vision:\n  embed_target_bytes: {raw}\n")
         assert budget.resolve_embed_target_bytes() == expected
+
+
+class TestNativeTurnDedupe:
+    """An image the surface already attached natively to the active user turn must not be embedded
+    a second time by ``vision_analyze`` in the same request (#76411)."""
+
+    def test_same_image_in_active_turn_returns_text_not_a_second_embed(self, tmp_path):
+        from agent.image_routing import build_native_content_parts
+        same, other = _png(tmp_path / "same.png"), _png(tmp_path / "other.png", noisy=True)
+        parts, skipped = build_native_content_parts("look", [same])
+        assert not skipped
+        with budget.native_turn_images(parts):
+            result = _load(same)
+            assert not _embedded(result)
+            assert json.loads(result)["already_in_context"] is True
+            # New detail (a crop) and a different file still embed.
+            assert _embedded(_load(same, region=[0, 0, 8, 8]))
+            assert _embedded(_load(other))
+
+    def test_scope_ends_with_the_turn(self, tmp_path):
+        from agent.image_routing import build_native_content_parts
+        same = _png(tmp_path / "same.png")
+        parts, _ = build_native_content_parts("look", [same])
+        with budget.native_turn_images(parts):
+            pass
+        assert _embedded(_load(same))
+        # A plain-text turn (no native parts) scopes nothing.
+        with budget.native_turn_images("look at " + same):
+            assert _embedded(_load(same))
