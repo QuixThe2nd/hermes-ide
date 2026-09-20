@@ -71,7 +71,11 @@ def _tc_name(tool_call: Any) -> str:
 def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -> None:
     """Record the spillover file path so a later result-reference stub can't dangle (best-effort)."""
     try:
-        path = extract_persisted_path(function_result) if isinstance(function_result, str) else None
+        candidates = [function_result] if isinstance(function_result, str) else [
+            function_result.get("text_summary"),
+            *(p.get("text") for p in function_result.get("content") or [] if isinstance(p, dict)),
+        ] if _is_multimodal_tool_result(function_result) else []
+        path = next((p for p in map(extract_persisted_path, candidates) if p), None)
         if path:
             agent._tool_guardrails.record_persisted_result(tool_call_id, path)
     except Exception as exc:
@@ -1188,22 +1192,24 @@ def _persist_multimodal_text_parts(result: dict, tool_name: str, tool_call_id: s
     entirely and ride every later request inline. Image parts are left untouched (their size is
     governed by the vision embed budget); a fresh dict is returned so history is never mutated."""
     parts = result.get("content") or []
-    bounded_parts, changed = [], False
+    bounded_parts, first_replacement = [], None
     for part in parts:
         text = part.get("text") if isinstance(part, dict) and part.get("type") == "text" else None
         if isinstance(text, str):
             replaced = maybe_persist_tool_result(content=text, tool_name=tool_name, tool_use_id=tool_call_id,
                                                  env=env, config=budget)
             if replaced != text:
-                part, changed = {**part, "text": replaced}, True
+                part = {**part, "text": replaced}
+                first_replacement = first_replacement or replaced
         bounded_parts.append(part)
-    if not changed:
+    if first_replacement is None:
         return result
     bounded = {**result, "content": bounded_parts}
     summary = bounded.get("text_summary")
-    if isinstance(summary, str):
-        bounded["text_summary"] = maybe_persist_tool_result(content=summary, tool_name=tool_name,
-                                                            tool_use_id=tool_call_id, env=env, config=budget)
+    # The summary is a subset of the (already spilled) part text: reuse that bounded reference instead
+    # of a second persist under the same id, which would overwrite the spill file with the summary.
+    if isinstance(summary, str) and len(summary) > budget.resolve_threshold(tool_name):
+        bounded["text_summary"] = first_replacement
     return bounded
 
 
