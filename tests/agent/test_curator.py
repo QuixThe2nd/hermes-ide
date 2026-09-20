@@ -946,6 +946,44 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     assert captured["kwargs"]["request_overrides"] == fake_overrides
 
 
+def test_review_fork_receives_configured_reasoning(curator_env, monkeypatch):
+    """#85153 class: the curator's review fork is an ``AIAgent()`` built from config, so ``agent.reasoning_effort``
+    must reach it through the shared ``resolve_reasoning_config`` chokepoint (resolved against the review model)."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    captured = {}
+    cfg = {"model": {"provider": "openai-api", "default": "gpt-4o-mini"}, "agent": {"reasoning_effort": "none"}}
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            captured["kwargs"] = kwargs
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 0
+            self._skill_nudge_interval = 0
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {"provider": "openai-api", "api_key": "k", "base_url": "https://api.openai.com/v1",
+                          "api_mode": "codex_responses"},
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert captured["kwargs"]["reasoning_config"] == {"enabled": False}
+
+
 def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch):
     curator = curator_env["curator"]
     import importlib
