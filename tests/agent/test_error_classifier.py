@@ -1441,6 +1441,20 @@ class TestProviderCodeOnlyErrors:
         e = MockAPIError("UNAVAILABLE", body={"error": {"code": "UNAVAILABLE"}})
         assert classify_api_error(e, provider="openai").reason == FailoverReason.unknown
 
+    def test_gemini_wire_body_numeric_code_falls_back_to_status(self):
+        """Gemini's real body carries the HTTP status in ``error.code`` and the
+        symbolic code in ``error.status``; the numeric code must not shadow it."""
+        body = {"error": {"code": 503, "status": "UNAVAILABLE", "message": "Service unavailable."}}
+        e = MockAPIError("Service unavailable.", body=body)
+        assert classify_api_error(e, provider="gemini").reason == FailoverReason.overloaded
+
+    def test_anthropic_rate_limit_error_code_rotates_credential(self):
+        e = MockAPIError("rate limited", body={"error": {"code": "rate_limit_error"}})
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
 
 class TestRateLimitErrorWithoutStatusCode:
     """Regression tests for the Copilot/GitHub Models edge case where the

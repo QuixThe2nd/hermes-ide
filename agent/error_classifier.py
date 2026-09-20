@@ -1281,12 +1281,16 @@ def _extract_error_body(error: Exception) -> dict:
 def _code_from_payload(payload: Any, top_keys: Sequence[str], peek_message: bool) -> str:
     """Code/type from ``payload.error`` or a top-level key; ``"400"`` is not a code.
     ``peek_message`` also parses a JSON ``error.message`` for a nested code
-    (Responses API surfaces ``invalid_encrypted_content`` this way)."""
+    (Responses API surfaces ``invalid_encrypted_content`` this way). Gemini
+    puts the HTTP status in ``error.code`` and the symbolic code
+    (``UNAVAILABLE``) in ``error.status``, so a numeric code defers to it."""
     if not isinstance(payload, dict):
         return ""
     error_obj = payload.get("error", {})
     if isinstance(error_obj, dict):
         code = error_obj.get("code") or error_obj.get("type") or ""
+        if not isinstance(code, str):
+            code = error_obj.get("status") or code
         if isinstance(code, str) and code.strip() and code.strip() != "400":
             return code.strip()
         message = error_obj.get("message")
