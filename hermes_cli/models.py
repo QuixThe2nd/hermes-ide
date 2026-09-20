@@ -1502,6 +1502,31 @@ def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
         return None
 
 
+def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    """Live ``GET <base>/models`` of the configured Azure Foundry resource (#27989).
+
+    Deployments are per-resource, so the static catalog is intentionally empty and the plugin
+    profile ships ``base_url=""`` — which is why the generic profile fetch never fires. Resolve
+    through the runtime resolver so the picker targets the same resource inference hits
+    (``model.base_url`` / ``AZURE_FOUNDRY_BASE_URL``) with the same credential: an API key string,
+    or the Entra ID token-provider callable that ``azure_detect`` already accepts. Anthropic-style
+    ``/anthropic`` routes serve no ``/models``; the probe never raises, so any miss keeps ``[]``.
+    """
+    try:
+        from hermes_cli.azure_detect import _probe_openai_models
+        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+
+        runtime = _resolve_azure_foundry_runtime(requested_provider=normalized, model_cfg=_get_model_config_dict())
+        base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+        credential = runtime.get("api_key")
+        if not (base_url and credential):
+            return None
+        ok, ids = _probe_openai_models(base_url, credential)
+        return ids if ok and ids else None
+    except Exception:
+        return None
+
+
 # Per-provider catalog sources tried before the generic profile fetch. A fetcher returning None
 # falls through to the profile/curated path; a list is returned as-is (even empty).
 _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
@@ -1521,7 +1546,8 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openai": _openai_catalog,
     "openai-api": _openai_catalog,
     "custom": _custom_catalog,
-    "bedrock": _bedrock_catalog}
+    "bedrock": _bedrock_catalog,
+    "azure-foundry": _azure_foundry_catalog}
 
 
 # ``-free`` slugs the relay still LISTS but no longer serves: the Go-only twin (``ox-alpha-free``)
