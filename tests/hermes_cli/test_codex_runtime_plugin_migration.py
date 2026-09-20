@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 
 import pytest
 
@@ -425,3 +426,50 @@ class TestHermesHomeLeakGuard:
             f"HERMES_HOME should not be set when env var is unset, got: "
             f"{env.get('HERMES_HOME')!r}"
         )
+
+
+# ---- same-name user-owned [mcp_servers.X] tables (issue #79023) ----
+
+
+class TestSameNameUserMcpTable:
+    """Issue #79023: a Hermes server whose name the user already declares outside the managed
+    block must not be emitted twice (duplicate table header = TOML codex refuses to load)."""
+
+    def test_user_table_wins_and_output_stays_valid_toml(self, tmp_path):
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text('[mcp_servers.gbrain]\ncommand = "existing-gbrain"\n', encoding="utf-8")
+        report = migrate(
+            {"mcp_servers": {"gbrain": {"command": "projected-gbrain"}, "other": {"command": "o"}}},
+            codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False,
+            default_permission_profile=None)
+        text = target.read_text(encoding="utf-8")
+        parsed = tomllib.loads(text)  # would raise "Cannot declare ... twice" before the fix
+        assert text.count("[mcp_servers.gbrain]") == 1
+        assert parsed["mcp_servers"]["gbrain"]["command"] == "existing-gbrain"
+        assert "other" in parsed["mcp_servers"]
+        assert report.preserved_user_servers == ["gbrain"]
+        assert report.migrated == ["other"]
+        assert "gbrain" in report.summary()
+
+    def test_cli_migrate_dry_run_json_reports_without_writing(self, tmp_path, monkeypatch, capsys):
+        """`hermes codex-runtime migrate --dry-run --json` is the supported automation seam."""
+        import json
+
+        from hermes_cli.subcommands import codex_runtime as mod
+
+        (tmp_path / ".codex").mkdir()
+        target = tmp_path / ".codex" / "config.toml"
+        target.write_text('[mcp_servers.gbrain]\ncommand = "existing-gbrain"\n', encoding="utf-8")
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"mcp_servers": {"gbrain": {"command": "projected"}, "other": {"command": "o"}}})
+        rc = mod.cmd_codex_runtime_migrate(argparse.Namespace(dry_run=True, json=True))
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert payload["dry_run"] is True and payload["written"] is False
+        assert payload["preserved_user_servers"] == ["gbrain"]
+        assert payload["target_path"] == str(target)
+        assert target.read_text(encoding="utf-8") == '[mcp_servers.gbrain]\ncommand = "existing-gbrain"\n'

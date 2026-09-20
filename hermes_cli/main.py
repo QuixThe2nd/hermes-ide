@@ -392,6 +392,7 @@ from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
 from hermes_cli.subcommands.browser import build_browser_parser
 from hermes_cli.subcommands.secrets import build_secrets_parser
+from hermes_cli.subcommands.codex_runtime import build_codex_runtime_parser
 from hermes_cli.subcommands.egress import build_egress_parser
 from hermes_cli.subcommands.migrate import build_migrate_parser
 from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
@@ -2729,7 +2730,7 @@ def cmd_console(args):
 # entry would let a plugin command silently fail to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
@@ -3313,6 +3314,7 @@ def _build_cli_parser():
     # OUTBOUND egress firewall; ``hermes proxy`` (gateway group) is the INBOUND one.
     build_egress_parser(subparsers)
     build_migrate_parser(subparsers)
+    build_codex_runtime_parser(subparsers)
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )

@@ -313,7 +313,7 @@ default_permissions = ":workspace"
 # end hermes-agent managed section
 ```
 
-Anything **outside** that block is yours. Re-running migration (via `/codex-runtime codex_app_server` or whenever you toggle the runtime on) replaces the managed block in place but preserves user content above and below it verbatim. This means you can:
+Anything **outside** that block is yours. Re-running migration (via `/codex-runtime codex_app_server`, whenever you toggle the runtime on, or `hermes codex-runtime migrate`) replaces the managed block in place but preserves user content above and below it verbatim. This means you can:
 
 - Add your own MCP servers Hermes doesn't know about
 - Override `default_permissions` to `:read-only` if you prefer to be prompted
@@ -321,6 +321,19 @@ Anything **outside** that block is yours. Re-running migration (via `/codex-runt
 - Add user-defined permission profiles in `[permissions.<name>]` tables
 
 Anything you add **inside** the managed block will get clobbered on the next migration. If you need a tweak that requires editing the managed block, file an issue and we'll add the knob.
+
+**Same-name servers.** If your own `[mcp_servers.<name>]` table (outside the block) uses the same name as a server in Hermes' `mcp_servers`, your table wins: Hermes skips its projection for that name instead of emitting a second `[mcp_servers.<name>]` header (which is invalid TOML and would stop codex from starting). The migration report lists such names under "Kept N user-owned MCP server(s)". To let Hermes manage the server, delete your table and re-run the migration. The rendered file is parsed as TOML before it replaces `config.toml`; an unparsable result is reported and the existing file is left untouched.
+
+### Running the migration from a script
+
+```bash
+hermes codex-runtime migrate            # rewrite the managed block for the active profile
+hermes codex-runtime migrate --dry-run  # report only, no write
+hermes codex-runtime migrate --json     # machine-readable report (migrated, preserved_user_servers, errors, …)
+hermes -p work codex-runtime migrate    # a named profile's mcp_servers
+```
+
+This is the same migration `/codex-runtime codex_app_server` runs; it is idempotent, writes atomically, and exits non-zero when the report contains errors.
 
 ## Multi-profile / multi-tenant setups
 
