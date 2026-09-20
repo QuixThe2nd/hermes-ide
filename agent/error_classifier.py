@@ -734,6 +734,11 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # ``codex_reasoning_items`` — a genuine block with nothing to strip behaves as before.
     if _is_codex_masked_replay_rejection(c):
         return _v(_R.invalid_encrypted_content, **_ABORT_FALLBACK)
+    # OpenAI Responses rejects a stale encrypted-reasoning replay with this code (#70595). It contains
+    # both "thinking" and "signature", so it must beat the Anthropic heuristic below: that recovery
+    # strips Anthropic thinking blocks and resends the same encrypted item forever.
+    if status == 400 and (c.code == "thinking_signature_invalid" or "thinking_signature_invalid" in msg):
+        return _V_INVALID_ENCRYPTED
     # Anthropic thinking-block 400s (signature mismatch after transcript
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
@@ -1124,16 +1129,24 @@ def _is_server_injected_param_rejection(error_msg: str, provider: str) -> bool:
 
 
 _CODEX_MASKED_REPLAY_MESSAGE = "request blocked."
+_CODEX_UNSUPPORTED_CONTENT_DETAIL = "unsupported content type"
 
 
 def _is_codex_masked_replay_rejection(c: "_Ctx") -> bool:
     """HTTP 400 / status-less ``{code: invalid_prompt, message: "Request blocked."}`` from
     ``openai-codex`` — as an SDK error body, a Responses ``error`` SSE frame, or the
-    ``response.failed`` text ``"invalid_prompt: Request blocked."``."""
+    ``response.failed`` text ``"invalid_prompt: Request blocked."`` — or the bare
+    ``{"detail": "Unsupported content type"}`` envelope the same backend returns for a rejected
+    encrypted-reasoning replay (#51512). Both are exact envelopes, provider-gated."""
     if c.provider_slug != "openai-codex" or c.status_code not in (None, 400):
         return False
+    body = c.body if isinstance(c.body, dict) else {}
+    if str(body.get("detail") or "").strip().lower() == _CODEX_UNSUPPORTED_CONTENT_DETAIL or (
+        not body and _CODEX_UNSUPPORTED_CONTENT_DETAIL in c.msg and "detail" in c.msg
+    ):
+        return True
     # The OpenAI SDK unwraps ``body["error"]`` on status errors; stream frames keep the envelope.
-    body_msg = next((str(m).strip().lower() for m in _body_message_candidates(c.body or {}) if m), "")
+    body_msg = next((str(m).strip().lower() for m in _body_message_candidates(body) if m), "")
     return (c.code == "invalid_prompt" and body_msg == _CODEX_MASKED_REPLAY_MESSAGE) or (
         c.msg.strip() == f"invalid_prompt: {_CODEX_MASKED_REPLAY_MESSAGE}"
     )

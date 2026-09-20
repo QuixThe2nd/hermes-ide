@@ -858,6 +858,26 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
+    @pytest.mark.parametrize(("provider", "expected"), [
+        ("openai-codex", FailoverReason.invalid_encrypted_content),
+        ("openai", FailoverReason.format_error),  # same envelope elsewhere is a genuine request-shape 400
+    ], ids=["codex", "other-provider"])
+    def test_codex_unsupported_content_type_detail_reaches_replay_strip(self, provider, expected):
+        """#51512: the ChatGPT Codex backend rejects a replayed encrypted-reasoning item as a bare
+        ``{"detail": "Unsupported content type"}`` 400; only the codex provider maps it to the replay strip."""
+        e = MockAPIError("Error code: 400 - {'detail': 'Unsupported content type'}", status_code=400,
+                         body={"detail": "Unsupported content type"})
+        assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
+
+    def test_thinking_signature_invalid_uses_encrypted_replay_recovery(self):
+        """#70595: the OpenAI code contains "thinking" + "signature", so it must beat the Anthropic
+        thinking-block heuristic and reach the one-shot encrypted-replay strip (retry, no fallback)."""
+        body = {"error": {"code": "thinking_signature_invalid", "message": "The reasoning signature is no longer valid."}}
+        e = MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body)
+        result = classify_api_error(e, provider="openai", model="gpt-5.5")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True and result.should_fallback is False
+
     @pytest.mark.parametrize(("provider", "model", "message", "code"), [
         ("azure-foundry", "gpt-6-astra", "Conflicting authenticated continuation identities.", "invalid_value"),
         # Custom Responses endpoint wraps the replay rejection in a generic bad_request (#95834).
