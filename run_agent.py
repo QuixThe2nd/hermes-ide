@@ -3819,6 +3819,9 @@ class AIAgent(
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
         self._close_request_clients("cache_evict")
+        # The Codex app-server child is an LLM client, not session tool state: the evicted instance is popped
+        # from the cache and a rebuilt agent spawns its own child, so an unclosed one leaks for the gateway's life.
+        _quietly(self._close_codex_session)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
