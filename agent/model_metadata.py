@@ -1368,6 +1368,7 @@ _OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
     ("output limit",),
+    ("limited to",),  # Scaleway: "max_completion_tokens is limited to 16384 for <model>" (#67453)
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
