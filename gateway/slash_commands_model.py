@@ -195,8 +195,12 @@ class GatewayModelCommandsMixin:
 
     async def _record_model_switch(
         self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool
-    ) -> None:
-        """Persist a committed switch: session DB, next-turn note, override map, config write-through."""
+    ) -> Optional[str]:
+        """Persist a committed switch: session DB, next-turn note, config write-through, override map.
+
+        Returns the config-write error for a ``--global`` switch whose ``config.yaml`` write failed
+        (the switch then stays a session override), else ``None``.
+        """
         from hermes_cli.model_switch import format_model_for_display
 
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
@@ -237,6 +241,23 @@ class GatewayModelCommandsMixin:
             self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)
+        # A --global switch has ONE durable authority: config.yaml. Write it first; on success drop
+        # the session override (memory + store) — a redundant copy would shadow every later global
+        # change after a restart (#100314: a stale override resumed `gpt-5.6-sol-900k` as the base
+        # 272K model). On failure keep the override so the switch truthfully survives as session-only.
+        global_error: Optional[str] = None
+        if ctx.persist_global:
+            try:
+                await _persist_model_switch_to_config(result, ctx.config_path)
+            except Exception as e:
+                logger.warning("Failed to persist model switch: %s", e)
+                global_error = str(e) or type(e).__name__
+        if ctx.persist_global and global_error is None:
+            self._session_model_overrides.pop(ctx.session_key, None)
+            try:
+                await self.async_session_store.set_model_override(ctx.session_key, None)
+            except Exception:
+                logger.debug("Failed to clear persisted session model override", exc_info=True)
         # Non-secret write-through so the override survives a restart (api_key/api_mode are
         # re-resolved on rehydration); a --once override must NOT outlive a restart.
         # Write-through the non-secret parts (model/provider/base_url) to the session store so the override
@@ -246,7 +267,7 @@ class GatewayModelCommandsMixin:
         # pre-once state (the prior session override, or nothing), which is exactly what the finally-restore
         # reverts the in-memory dict to. (#29923 review defect: the original implementation wrote through,
         # so a crash before the restore rehydrated the once-model permanently.)
-        if not one_turn:
+        elif not one_turn:
             try:
                 await self.async_session_store.set_model_override(
                     ctx.session_key, self._session_model_overrides[ctx.session_key]
@@ -254,14 +275,11 @@ class GatewayModelCommandsMixin:
             except Exception:
                 logger.debug("Failed to persist session model override", exc_info=True)
         self._evict_cached_agent(ctx.session_key)  # next turn builds fresh from the override
-        if ctx.persist_global:
-            try:
-                await _persist_model_switch_to_config(result, ctx.config_path)
-            except Exception as e:
-                logger.warning("Failed to persist model switch: %s", e)
+        return global_error
 
     async def _model_switch_confirmation(
-        self, result, ctx: _ModelSwitchContext, *, one_turn: bool, picker: bool
+        self, result, ctx: _ModelSwitchContext, *, one_turn: bool, picker: bool,
+        global_error: Optional[str] = None,
     ) -> str:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
         from gateway.run import _load_gateway_config
@@ -303,7 +321,11 @@ class GatewayModelCommandsMixin:
             lines.append(t("gateway.model.prompt_caching_enabled"))
         if result.warning_message:
             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
-        if ctx.persist_global:
+        if ctx.persist_global and global_error is not None:
+            # Never claim a clean global commit the disk did not take (#100314).
+            lines.append(t("gateway.model.warning_prefix", warning=f"config.yaml not updated ({global_error})"))
+            lines.append(t("gateway.model.session_only_hint"))
+        elif ctx.persist_global:
             lines.append(t("gateway.model.saved_global"))
         elif one_turn:
             lines.append("    (next turn only — restores after one response)")
@@ -320,15 +342,17 @@ class GatewayModelCommandsMixin:
         error = self._switch_cached_agent_model(result, ctx, picker)
         if error is not None:
             return error
-        await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
-        reply = await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
+        reply = await self._model_switch_confirmation(
+            result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
+        )
         if ctx.reasoning_effort and not one_turn:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.
             from gateway.run import _platform_config_key
             reply += "\n" + self._apply_reasoning_selection(
                 ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
-                persist_global=ctx.persist_global)
+                persist_global=ctx.persist_global and global_error is None)
         return reply
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
