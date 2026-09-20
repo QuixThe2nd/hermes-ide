@@ -59,13 +59,16 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 def _runner_scratch_root() -> str:
-    """Per-run temp roots live on disk under the user's cache dir, never the system temp dir:
-    a full-suite run writes gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on
-    many Linux hosts. Not under the Hermes home (conftest refuses a basetemp inside the live
-    install and would relocate it), and kept as short as the old /tmp root because tests that
-    bind AF_UNIX sockets under ``tempfile.mkdtemp()`` must stay within sun_path."""
-    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
-    root = os.path.join(cache, "hermes-pytest")
+    """Per-run temp roots live on DISK, never the system temp dir: a full-suite run writes
+    gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on many Linux hosts. /var/tmp is
+    the FHS disk-backed temp root and is used because the alternatives fail tests that assume
+    the root's shape: under the Hermes home conftest relocates the basetemp; under a dot-dir
+    (~/.cache) the hidden-dir search tests see every fixture as hidden; anything longer than
+    the old /tmp root pushes AF_UNIX test sockets past sun_path."""
+    if os.name == "nt" or not os.path.isdir("/var/tmp"):  # no-tmp: ok — probing the disk-backed FHS root
+        root = os.path.join(tempfile.gettempdir(), "hermes-pytest")
+    else:
+        root = "/var/tmp/hermes-pytest"  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
     os.makedirs(root, exist_ok=True)
     return root
 
