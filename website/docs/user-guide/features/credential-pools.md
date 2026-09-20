@@ -40,6 +40,10 @@ Your request
   → 400 "model is not supported when using Codex with a ChatGPT account"?
       → Bench this key for that model only, rotate to the next key (other models stay usable)
       → Every key rejects the model → fallback_model; the model is skipped for the session
+  → HTTP 200 but `response.status: failed` (ChatGPT/Codex reports usage limits this way)?
+      → Same rules as above, keyed on the embedded error code/message:
+        quota/billing/auth → pool rotation first, provider fallback only once the pool is exhausted;
+        content-policy and other failures → no rotation
   → Success → continue normally
 ```
 
