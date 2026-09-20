@@ -478,7 +478,7 @@ class TestSameNameUserMcpTable:
         target.write_text('[mcp_servers.gbrain]\ncommand = "a"\n[mcp_servers.gbrain]\ncommand = "b"\n',
                           encoding="utf-8")
         monkeypatch.setattr(crpm, "_query_codex_plugins",
-                            lambda codex_home=None, timeout=8.0, codex_bin="codex": ([], "plugin/list query failed"))
+                            lambda codex_home=None, timeout=8.0, **_kw: ([], "plugin/list query failed"))
         report = migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
         assert "re-run `hermes codex-runtime migrate` to migrate plugins" in (report.plugin_query_error or "")
         assert "existing config.toml was unloadable" in report.summary()
