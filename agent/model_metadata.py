@@ -1321,6 +1321,8 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         r'available\s+tokens[:\s]+(\d+)',
         # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
         r'output limit (?:of|is)\s*(\d+)',
+        # Scaleway: "max_completion_tokens is limited to 16384 for glm-5.2".
+        r'(?:max_tokens|max_completion_tokens) is limited to\s*(\d+)',
         r'=\s*(\d+)\s*$',
     ):
         match = re.search(pattern, error_lower)
@@ -1385,6 +1387,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("maximum context length", "in the completion"), ("maximum context length", "for the completion"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
     ("output limit",),
+    ("limited to",),
 )
 
 
