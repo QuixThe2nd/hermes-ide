@@ -385,6 +385,7 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_last_summary_empty_content_failure",
     "_last_summary_truncated_failure",
     "_last_aux_model_failure_error",
+    "_last_summary_overload_failure",
     "_last_aux_model_failure_model",
     "_summary_model_fallen_back",
     "summary_model",
