@@ -217,13 +217,7 @@ class CodexAppServerClient:
             return
         synthetic = {"error": {"code": _TRANSPORT_LOST_CODE, "message": reason}, "transportLost": True}
         for _rid, pending in pending_items:
-            try:
-                pending.put_nowait(synthetic)
-            except queue.Full:
-                # A real reply already landed in this queue at the same
-                # moment (the reader thread raced us) — the blocked
-                # request() call gets that instead, which is fine.
-                pass
+            pending.put_nowait(synthetic)
 
     def __enter__(self) -> "CodexAppServerClient":
         return self
@@ -329,6 +323,11 @@ class CodexAppServerClient:
                 self._dispatch(msg)
         except Exception as exc:
             self._append_stderr(f"<stdout reader error> {exc}")
+        finally:
+            # EOF (codex died) or a reader failure: nobody will ever answer the
+            # requests still waiting, so fail them now instead of letting each
+            # ride out its per-call timeout.
+            self._fail_pending_requests("codex app-server stdout closed")
 
     def _dispatch(self, msg: dict) -> None:
         if "id" in msg and ("result" in msg or "error" in msg):  # reply
