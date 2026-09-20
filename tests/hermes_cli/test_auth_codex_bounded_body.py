@@ -2,8 +2,9 @@
 
 A hostile or broken auth endpoint/proxy answering 200 with megabytes of "JSON" used to be
 fully buffered and parsed by every ``client.post(...).json()`` in the CLI device-code flow,
-the dashboard login worker and ``refresh_codex_oauth_pure``. All of them build their client via
-``auth_codex._codex_http_client``, whose response hook cuts the read off at the cap.
+the dashboard login worker and ``refresh_codex_oauth_pure``. The CLI builds its client via
+``auth_codex._codex_http_client`` and the dashboard via ``web_routers.oauth._codex_client``; both
+install the response hook that cuts the read off at the cap.
 """
 from __future__ import annotations
 
@@ -56,6 +57,12 @@ def test_oversized_200_auth_body_is_rejected_before_being_buffered(monkeypatch):
 
     with pytest.raises(AuthError, match="exceeded 1024 KiB"):
         web_oauth._codex_exchange_tokens(httpx, {"authorization_code": "c", "code_verifier": "v"})
+
+    # The dashboard poll loop holds its own long-lived client; it must be built with the same cap.
+    monkeypatch.setattr(web_oauth.time, "sleep", lambda *_: None)
+    sess = {"expires_in": 900, "device_auth_id": "dev", "user_code": "ABCD-EFGH", "interval": 3}
+    with pytest.raises(AuthError, match="exceeded 1024 KiB"):
+        web_oauth._codex_poll_authorization(httpx, sess, "sid")
 
 
 def test_normal_auth_body_still_parses(monkeypatch):

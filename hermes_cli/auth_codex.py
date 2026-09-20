@@ -346,9 +346,7 @@ def _codex_http_client(**kwargs: Any) -> "httpx.Client":
     token refresh / device login / usage probes time out where the official Codex CLI (which races families
     per RFC 8305) works.
     """
-    hooks = dict(kwargs.pop("event_hooks", None) or {})
-    hooks["response"] = [_cap_codex_response_body, *hooks.get("response", [])]
-    client = httpx.Client(event_hooks=hooks, **kwargs)
+    client = httpx.Client(event_hooks={"response": [_cap_codex_response_body]}, **kwargs)
     with suppress(Exception):
         from agent.process_bootstrap import enable_happy_eyeballs_on_client
         enable_happy_eyeballs_on_client(client)
