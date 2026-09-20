@@ -454,7 +454,11 @@ class TestRunStatus:
                 assert status["status"] == "completed"
                 # Top-level model still echoes the request; the served pair is disclosed alongside.
                 assert status["model"] == "deepseek-v4-pro"
-                assert status["runtime"] == {"provider": "openai-codex", "model": "gpt-5.6-luna"}
+                # Canonical api_server runtime shape (same as /v1/chat/completions), not a thinner twin.
+                assert status["runtime"] == {
+                    "provider": "openai-codex", "model": "gpt-5.6-luna", "route_source": "raw_request",
+                    "requested": {"provider": "", "model": "deepseek-v4-pro"},
+                }
                 assert status["usage"] == {
                     "input_tokens": 100, "output_tokens": 5, "total_tokens": 105,
                     "cache_read_tokens": 84, "cache_write_tokens": 11,
@@ -556,7 +560,9 @@ class TestRunEvents:
                             completed = payload
                             break
                 assert completed is not None, "run.completed event missing from stream"
-                assert completed["runtime"] == {"provider": "openai-codex", "model": "gpt-5.6-luna"}
+                assert completed["runtime"]["provider"] == "openai-codex"
+                assert completed["runtime"]["model"] == "gpt-5.6-luna"
+                assert completed["runtime"]["requested"]["model"] == "deepseek-v4-pro"
                 assert completed["usage"]["cache_read_tokens"] == 650000
                 assert completed["usage"]["cache_write_tokens"] == 42
 

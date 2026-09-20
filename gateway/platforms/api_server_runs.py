@@ -1190,7 +1190,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             # Non-retryable client errors (401/400) return failed=True rather than raising.
             _finish("failed", fields, error=_redact_api_error_text(result.get("error") or "agent run failed"))
         else:
-            # ``runtime`` rides on both the pollable status and the run.completed event via _finish.
+            # ``runtime`` rides on both the pollable status and the run.completed event via _finish, in the
+            # canonical shape every other api_server surface emits (route_source/requested, cleaned ids).
+            requested = {k: run.agent_kwargs.get(f"requested_{k}") for k in ("provider", "model")}
+            served_runtime = self._sanitize_runtime_metadata(
+                runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
+                route_source=("model_routes" if run.agent_kwargs.get("route")
+                              else "raw_request" if any(requested.values()) else "global"))
             _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
     except asyncio.CancelledError:
         _finish("cancelled")
