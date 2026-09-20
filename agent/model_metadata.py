@@ -416,6 +416,21 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return bool(name) and any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+# OpenAI chat-era families served on api.openai.com that 400 on ANY ``reasoning`` field
+# ("Unsupported parameter: 'reasoning.effort' is not supported with this model"): gpt-3.5,
+# gpt-4 / gpt-4-turbo / gpt-4o / gpt-4.1 / gpt-4.5 and the chatgpt-* snapshots. A denylist so
+# an unknown future OpenAI model keeps its effort dial (fail-open); ``ft:`` fine-tune ids are
+# ``ft:<base>:<org>::<id>`` and inherit the base model's contract.
+_OPENAI_NON_REASONING_RE = re.compile(r"^(?:ft:)?(?:gpt-3\.5|gpt-4(?![0-9])|chatgpt-)")
+
+
+def openai_model_rejects_reasoning(model: str) -> bool:
+    """True for an OpenAI model id (aggregator ``openai/`` prefix stripped) that rejects the
+    Responses ``reasoning`` parameter outright, so callers send no ``reasoning`` key at all."""
+    name = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bool(_OPENAI_NON_REASONING_RE.match(name))
+
+
 def is_grok_46_family(model: str) -> bool:
     """Whether *model* is a Grok 4.6 family identifier."""
     name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]

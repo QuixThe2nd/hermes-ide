@@ -1865,3 +1865,32 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+class TestOpenAIReasoningWireProjection:
+    """Explicit ``reasoning_effort: none`` and non-reasoning OpenAI models on the Responses wire
+    (#75227, #76255): a disable is sent as ``effort: none`` where the model accepts it — omitting the
+    field leaves the model's default effort on — and chat-era models on api.openai.com, which 400 on any
+    ``reasoning`` key, get no ``reasoning`` field at all."""
+
+    OPENAI = "https://api.openai.com/v1"
+
+    def _reasoning(self, transport, model, reasoning_config, base_url=OPENAI):
+        kw = transport.build_kwargs(model=model, messages=[{"role": "user", "content": "Hi"}], tools=[],
+                                    base_url=base_url, reasoning_config=reasoning_config)
+        return kw.get("reasoning")
+
+    def test_explicit_none_is_sent_and_unset_keeps_the_default(self, transport):
+        assert self._reasoning(transport, "gpt-5.6-sol", {"enabled": False}) == {"effort": "none"}
+        assert self._reasoning(transport, "gpt-5.6-sol", None) == {"effort": "medium", "summary": "auto"}
+        # Astra's vocabulary has no ``none``: nothing to send, never an escalated level.
+        assert self._reasoning(transport, "gpt-6-astra", {"enabled": False}) is None
+
+    @pytest.mark.parametrize("model", ["gpt-4o-mini", "gpt-4.1-mini", "openai/gpt-4o", "ft:gpt-4o-mini:acme::abc1"])
+    def test_chat_era_openai_models_get_no_reasoning_field_on_the_official_origin(self, transport, model):
+        for rc in (None, {"enabled": True, "effort": "high"}, {"enabled": False}):
+            assert self._reasoning(transport, model, rc) is None, (model, rc)
+        # Reasoning models on the same origin and the same id on a relay keep the dial (the relay may translate).
+        assert self._reasoning(transport, "o4-mini", None) == {"effort": "medium", "summary": "auto"}
+        assert self._reasoning(transport, model, {"enabled": True, "effort": "high"},
+                               base_url="https://relay.example.com/v1") == {"effort": "high", "summary": "auto"}

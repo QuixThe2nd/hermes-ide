@@ -1844,6 +1844,10 @@ The dict form is set by editing `config.yaml` directly: the `/reasoning` menus, 
 Model ids contain dots (`claude-opus-4.5`, `qwen3.6:27b`), which `hermes config set` treats as nesting separators. Escape them with a backslash to write the literal key — `hermes config set 'agent.reasoning_overrides.ollama-local/qwen3\.6:27b-q4_k_m' low` — or edit the YAML directly. See [Dots inside key names](../reference/cli-commands.md#dots-inside-key-names).
 :::
 
+:::note OpenAI Responses (`openai-api`, `openai-codex`)
+`reasoning_effort: none` is sent explicitly as `reasoning.effort: "none"` on models that accept it (GPT-5.x): omitting the field would leave the model's default effort on (GPT-5.6 defaults to `medium`). An unset effort is the only state that omits the field. Chat-era models on `api.openai.com` (`gpt-4o`, `gpt-4.1`, their `-mini` variants and fine-tunes) reject any `reasoning` parameter, so Hermes sends none for them regardless of the configured effort instead of failing with `400 Unsupported parameter: 'reasoning.effort'`. If a model rejects `none`, Hermes warns, drops the disable for the session and retries with the model's default.
+:::
+
 :::note Local OpenAI-compatible endpoints
 A custom `base_url` (`http://localhost:11434/v1`, a vLLM, SGLang or router endpoint) receives the resolved effort — `agent.reasoning_effort` or the matching per-model override — as the standard top-level `reasoning_effort` request field, clamped to the values the OpenAI-compatible wire accepts (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). The nested `reasoning` object is reserved for endpoints known to accept it (Nous Portal, OpenRouter reasoning-capable models, GitHub Models) because arbitrary servers reject unknown fields with HTTP 400. If your server reads its thinking budget from a different field (Ollama's `think`, vLLM's `chat_template_kwargs`, a router-specific key), set it under the custom provider's [`extra_body`](../integrations/providers.md#named-custom-providers), which is merged into every request routed there.
 :::
@@ -1855,7 +1859,7 @@ A custom `base_url` (`http://localhost:11434/v1`, a vLLM, SGLang or router endpo
 3. Global `agent.reasoning_effort`
 4. Provider default
 
-The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches (including a switch issued before the first message), session resume (`--resume`, `/resume`), `/new`, and fallback model activation.
+The override applies automatically everywhere: CLI startup, `hermes -p` one-shots, messaging gateway, Desktop/TUI, ACP sessions, cron jobs, `/model` mid-session switches (including a switch issued before the first message), session resume (`--resume`, `/resume`), `/new`, and fallback model activation.
 
 ## Fast Mode
 

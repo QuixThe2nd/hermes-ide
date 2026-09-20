@@ -3294,6 +3294,23 @@ class TestCodexAdapterReasoningTranslation:
         )
         assert captured.get("reasoning") == {"effort": "low", "summary": "auto"}
 
+    def test_disabled_reasoning_is_sent_as_none_and_chat_era_models_get_no_field(self):
+        """#75227 / #76255 on the auxiliary Responses path: ``enabled: False`` goes on the wire as
+        ``effort: none`` (omitting it keeps the model's default effort on); a chat-era OpenAI model on
+        api.openai.com gets no ``reasoning`` key at all, since it 400s on the field."""
+        adapter, captured = self._build_adapter()
+        adapter._client.base_url = "https://api.openai.com/v1"
+        adapter.create(messages=[{"role": "user", "content": "hi"}], extra_body={"reasoning": {"enabled": False}})
+        assert captured.get("reasoning") == {"effort": "none"}
+        assert "include" not in captured
+
+        adapter, captured = self._build_adapter()
+        adapter._client.base_url = "https://api.openai.com/v1"
+        adapter._model = "gpt-4o-mini"
+        adapter.create(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}],
+                       extra_body={"reasoning": {"effort": "medium"}})
+        assert "reasoning" not in captured
+
 
 
 

@@ -223,8 +223,11 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
 def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     """``(effort, enabled)`` for the request, effort clamped (never escalated) to the endpoint's vocabulary.
 
-    A profile-declared ``()`` means "no reasoning parameters accepted" (400 on any
-    reasoning field) and disables reasoning outright.
+    A profile-declared ``()`` (or a model that takes no ``reasoning`` field on its route) means "no
+    reasoning parameters accepted" (400 on any reasoning field) and disables reasoning outright:
+    ``(None, False)``. An explicit ``reasoning_effort: none`` on a route whose vocabulary has ``none``
+    resolves to ``("none", False)`` so the disable goes on the wire instead of being omitted — omitting
+    it re-enables the model's default effort (gpt-5.6 defaults to ``medium``, #75227).
     """
     reasoning_effort, reasoning_enabled = "medium", True
     reasoning_config = params.get("reasoning_config")
@@ -252,9 +255,13 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         declared = None
         if not (is_codex_backend or _is_openai_api_origin(base_url)):
             declared = _profile_declared_efforts(params.get("provider"), model, base_url)
-        if declared is not None and not declared:
-            reasoning_enabled = False
-        supported = declared or _codex_efforts_for_route(model, base_url, is_codex_backend=is_codex_backend)
+        supported = declared if declared is not None else _codex_efforts_for_route(
+            model, base_url, is_codex_backend=is_codex_backend)
+        if not supported:
+            return None, False
+    if not reasoning_enabled:
+        has_none = any(str(level).strip().lower() == "none" for level in supported)
+        return ("none" if has_none else None), False
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 
@@ -303,7 +310,17 @@ def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
 
 
 def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
-    """Keep Astra's new vocabulary off unrelated Responses-compatible endpoints."""
+    """Effort vocabulary for a Responses route; ``()`` when the model takes no ``reasoning`` field at all.
+
+    Keeps Astra's new vocabulary off unrelated Responses-compatible endpoints, and sends nothing for the
+    chat-era OpenAI families (gpt-4o, gpt-4.1, ...) on api.openai.com, which 400 on any ``reasoning``
+    key (#76255). Only the exact OpenAI origin is judged: a relay serving those ids may translate.
+    """
+    if not is_codex_backend and _is_openai_api_origin(base_url):
+        from agent.model_metadata import openai_model_rejects_reasoning
+
+        if openai_model_rejects_reasoning(str(model or "")):
+            return ()
     if is_astra_model(model) and not (
         is_codex_backend or _is_official_openai_responses_route(model, base_url)
     ):
@@ -493,7 +510,9 @@ def _reasoning_fields(
     """``reasoning`` / ``include`` request fields for the endpoint family.
 
     xAI 400s on ``reasoning.effort`` outside its allowlist; GitHub Models takes a
-    verbatim ``github_reasoning_extra`` and never ``include``.
+    verbatim ``github_reasoning_extra`` and never ``include``. A disabled ask resolved to
+    ``effort="none"`` is sent as ``{"effort": "none"}`` — the wire has no other way to switch
+    a reasoning model's default effort off (#75227).
     """
     include = ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
     fields: dict[str, Any] = {}
@@ -512,6 +531,8 @@ def _reasoning_fields(
             fields["include"] = include
     elif not is_github_responses and not is_xai_responses:
         fields["include"] = []
+        if effort == "none":
+            fields["reasoning"] = {"effort": "none"}
     return fields
 
 

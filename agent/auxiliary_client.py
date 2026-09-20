@@ -1464,18 +1464,23 @@ class _CodexCompletionsAdapter:
             if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
                 resp_kwargs["service_tier"] = service_tier.strip()
             reasoning_cfg = extra_body.get("reasoning")
-            # ``enabled: False`` leaves reasoning/include unset (Codex still thinks by default).
-            if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
-                # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
-                # per-model clamp with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra" rejected).
+            if isinstance(reasoning_cfg, dict):
+                # Shared per-model vocabulary with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra"
+                # rejected; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
+                # #76255). ``enabled: False`` goes on the wire as ``effort: none`` where the vocabulary has it,
+                # since an omitted field leaves the model's default effort on (#75227).
                 from agent.reasoning_effort import clamp_effort
                 from agent.transports.codex import _codex_efforts_for_route
-                effort = clamp_effort(
-                    reasoning_cfg.get("effort") or "medium",
-                    _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend),
-                )
-                resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
-                resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                supported = _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend)
+                if not supported:
+                    pass
+                elif reasoning_cfg.get("enabled") is not False:
+                    # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default.
+                    effort = clamp_effort(reasoning_cfg.get("effort") or "medium", supported)
+                    resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
+                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                elif "none" in supported and not is_xai:
+                    resp_kwargs["reasoning"] = {"effort": "none"}
         if wire_tools:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:
