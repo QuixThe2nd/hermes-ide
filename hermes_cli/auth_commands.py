@@ -84,7 +84,8 @@ _PROVIDER_ALIASES = {
 
 def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
-    return _PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized) or normalized
+    return (_PROVIDER_ALIASES.get(normalized) or _resolve_custom_provider_input(normalized)
+            or auth_mod._plugin_aliases().get(normalized) or normalized)
 
 
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
