@@ -1254,7 +1254,9 @@ def _reasoning_config_for_wire(agent):
         ):
             if getattr(agent, "_reasoning_floor_required", False):
                 from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
-                return {**cfg, "enabled": True, "effort": REASONING_FLOOR_EFFORT}
+                floored = {**cfg, "enabled": True, "effort": REASONING_FLOOR_EFFORT}
+                agent._wire_reasoning_config = floored
+                return floored
             agent._wire_reasoning_config = None
             return None
         agent._wire_reasoning_config = cfg
