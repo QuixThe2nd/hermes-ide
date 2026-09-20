@@ -439,3 +439,14 @@ def test_pool_selection_throttles_failing_pre_probe_refresh(tmp_path, monkeypatc
     assert attempts == ["rf-old"]
     assert len(http_calls) <= 1
 
+
+def test_probe_counts_additional_rate_limits(monkeypatch):
+    """#97315: a model-scoped allowance at 100% still 429s that model; the account-wide
+    windows being open must not report the quota as restored."""
+    payload = _usage_payload(0.0, 0.0)
+    payload["additional_rate_limits"] = [
+        {"limit_name": "codex_model_scoped",
+         "rate_limit": {"primary_window": {"used_percent": 100.0}}}]
+    _patch_httpx(monkeypatch, _StubResponse(200, payload))
+
+    assert _probe_codex_quota_restored(_jwt({"exp": time.time() + 3600})) is False

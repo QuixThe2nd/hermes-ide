@@ -667,12 +667,19 @@ def _probe_codex_quota_restored(
         with _codex_http_client(timeout=10.0) as client:
             response = client.get(_codex_usage_probe_url(base_url), headers=headers)
         if response.status_code == 200:
-            rate_limit = (response.json() or {}).get("rate_limit") or {}
+            payload = response.json() or {}
+            # A model-scoped allowance (``additional_rate_limits``) at 100% still 429s that
+            # model, so it counts against "restored" like the account-wide windows (#97315).
+            windows = [payload.get("rate_limit") or {}] + [
+                extra.get("rate_limit") or {}
+                for extra in (payload.get("additional_rate_limits") or [])
+                if isinstance(extra, dict)]
             worst_used: Optional[float] = None
-            for key in ("primary_window", "secondary_window"):
-                used = (rate_limit.get(key) or {}).get("used_percent")
-                if isinstance(used, (int, float)):
-                    worst_used = max(worst_used or 0.0, float(used))
+            for rate_limit in windows:
+                for key in ("primary_window", "secondary_window"):
+                    used = (rate_limit.get(key) or {}).get("used_percent")
+                    if isinstance(used, (int, float)):
+                        worst_used = max(worst_used or 0.0, float(used))
             if worst_used is not None:
                 result = worst_used < 100.0
         elif response.status_code == 429:
