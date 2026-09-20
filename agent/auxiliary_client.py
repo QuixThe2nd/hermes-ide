@@ -6396,11 +6396,8 @@ def _routes_to_custom_endpoint(provider_norm: str) -> bool:
     name = _normalize_aux_provider(provider_norm)
     if name == "custom":
         return True
-    with contextlib.suppress(Exception):
-        from hermes_cli.runtime_provider import _get_named_custom_provider
-        if _get_named_custom_provider(name) is not None:
-            return True
-    return False
+    from hermes_cli.runtime_provider import _get_named_custom_provider
+    return _get_named_custom_provider(name) is not None
 
 
 def _project_provider_profile(
