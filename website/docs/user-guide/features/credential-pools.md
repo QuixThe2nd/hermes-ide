@@ -125,7 +125,7 @@ Type [1/2]:
 | `hermes auth add <provider> --priority 0` | Add a credential and place it first in the `fill_first` order |
 | `hermes auth priority <provider> <target> <n>` | Move a credential to priority `n` (0 = tried first); the rest are renumbered |
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
-| `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status |
+| `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status (applies to running sessions too: a live gateway or chat picks the reset up on its next request instead of writing its stale cooldown back) |
 | `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |
 | `hermes auth refresh <provider> [target]` | Refresh one OAuth credential's tokens and return it to rotation (proves the grant is alive; the next request re-checks quota) |
 

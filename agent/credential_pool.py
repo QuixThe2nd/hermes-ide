@@ -217,6 +217,9 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
+    # Epoch of the last deliberate ``hermes auth reset`` of this entry. Sticky: a later exhaustion
+    # stamps a newer ``last_status_at``, so "reset postdates status" stays decidable across processes.
+    status_cleared_at: Optional[float] = None
     base_url: Optional[str] = None
     expires_at: Optional[str] = None
     expires_at_ms: Optional[int] = None
@@ -1727,14 +1730,32 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         for entry in pending:
             self._refresh_entry(entry, force=False)
 
+    def _reset_cleared_after(self, entry: PooledCredential) -> Optional[float]:
+        """Epoch of a ``hermes auth reset`` persisted by another process AFTER *entry*'s status, else None."""
+        try:
+            row = next((p for p in read_credential_pool(self.provider)
+                        if isinstance(p, dict) and p.get("id") == entry.id), None)
+            cleared = _parse_absolute_timestamp((row or {}).get("status_cleared_at"))
+        except Exception as exc:
+            logger.debug("Pool entry %s: could not read reset marker: %s", entry.id, exc)
+            return None
+        return cleared if cleared and cleared > (entry.last_status_at or 0.0) else None
+
     def _resync_stale_entry(self, entry: PooledCredential) -> PooledCredential:
         """Re-read an exhausted/DEAD singleton-seeded entry from its token authority.
 
         The user may have re-authed (``hermes model`` / ``hermes auth``, the
         Claude Code CLI, another profile) leaving fresh tokens on disk while
-        the pool entry is frozen behind ``last_error_reset_at``.
+        the pool entry is frozen behind ``last_error_reset_at``. A ``hermes auth
+        reset`` run from another process while this pool is live is honoured the
+        same way (#89415): the in-memory cooldown would otherwise outlive it.
         """
-        if entry.source != _RESYNC_SOURCE.get(self.provider) or entry.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}:
+        if entry.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}:
+            return entry
+        cleared_at = self._reset_cleared_after(entry)
+        if cleared_at is not None:
+            return self._adopt(entry, persist=False, **_MARK_OK, status_cleared_at=cleared_at)
+        if entry.source != _RESYNC_SOURCE.get(self.provider):
             return entry
         if self.provider == "anthropic":
             return self._sync_anthropic_entry_from_credentials_file(entry)
