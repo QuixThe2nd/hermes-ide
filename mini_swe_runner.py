@@ -107,7 +107,7 @@ def create_environment(env_type: str = "local", image: str = "python:3.11-slim",
         return LocalEnvironment(cwd=cwd or tempfile.gettempdir(), timeout=timeout)
     if env_type not in ("docker", "modal"):
         raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', or 'modal'")
-    cwd = cwd or "/tmp"  # container-side path, not the host temp dir
+    cwd = cwd or "/tmp"  # container-side path, not the host temp dir  # no-tmp: ok — container-side path, not the host temp dir
     module = importlib.import_module(f"tools.environments.{env_type}")
     return getattr(module, f"{env_type.capitalize()}Environment")(image=image, cwd=cwd, timeout=timeout, **kwargs)
 

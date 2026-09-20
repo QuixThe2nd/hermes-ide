@@ -354,7 +354,7 @@ def _last_session_key(task_id: str) -> str:
 def _socket_safe_tmpdir() -> str:
     """Short temp dir for Unix sockets: macOS ``TMPDIR`` + ``agent-browser-hermes_…``
     exceeds the 104-byte AF_UNIX limit (silent screenshot failures), so use /tmp there."""
-    return "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+    return "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()  # no-tmp: ok — AF_UNIX 104-byte socket path limit on darwin
 
 
 # Active sessions keyed by "session key": the bare task_id, or f"{task_id}::local"
