@@ -2069,6 +2069,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)
+            # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
+            # the record from the stale-error re-arm while no longer describing where it is
+            # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
+            from cron.quota_hold import clear_state as _clear_quota_hold
+            _clear_quota_hold(updated)
         if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.

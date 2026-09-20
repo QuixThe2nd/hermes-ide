@@ -105,3 +105,11 @@ def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_r
     j = get_job(job_id)
     assert qh.STATE_KEY not in j
     assert datetime.fromisoformat(j["next_run_at"]) - now < timedelta(hours=1)
+
+    # Editing the schedule recomputes next_run_at from the new cadence; the stale marker must
+    # not linger on a record that is no longer parked where it says.
+    assert mark_job_run(job_id, False, QUOTA_MSG, quota_hold_seconds=123518)
+    assert qh.STATE_KEY in get_job(job_id)
+    j = update_job(job_id, {"schedule": "every 15m"})
+    assert qh.STATE_KEY not in j
+    assert datetime.fromisoformat(j["next_run_at"]) - now < timedelta(hours=1)
