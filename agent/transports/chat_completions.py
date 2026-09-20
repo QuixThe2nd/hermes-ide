@@ -122,8 +122,21 @@ def _has_positive_completion_tokens(usage: Any) -> bool:
     return False
 
 
-def _is_router_timeout_shim(response: Any) -> bool:
-    """Recognize a router failure encoded as a successful ChatCompletion."""
+def router_timeout_shim_may_follow(text: str) -> bool:
+    """True while streamed text is still a prefix of the shim sentinel (hold it back until judged)."""
+    return bool(text) and _ROUTER_TIMEOUT_SHIM.startswith(text.lstrip())
+
+
+def is_router_timeout_shim(response: Any) -> bool:
+    """Recognize a router failure encoded as a successful ChatCompletion (#68396).
+
+    Some OpenAI-compatible routers answer an upstream connect timeout with HTTP 200 and the
+    sentinel as the sole assistant message. Only the exact sentinel, with no tool calls and no
+    positive ``completion_tokens``/``output_tokens`` proof of generation, is a shim — a model
+    that really produced those words keeps its usage evidence. Shared by every consumer of an
+    OpenAI-compatible response: ``validate_response``, the stream assembler, the
+    iteration-limit summary and the auxiliary ``_validate_llm_response``.
+    """
     choices = getattr(response, "choices", None)
     if not isinstance(choices, list) or len(choices) != 1:
         return False
@@ -632,7 +645,7 @@ class ChatCompletionsTransport(ProviderTransport):
         """Check that response has valid choices and is not a router failure shim."""
         if response is None or not getattr(response, "choices", None):
             return False
-        return not _is_router_timeout_shim(response)
+        return not is_router_timeout_shim(response)
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:
         """Cache stats from prompt_tokens_details (OpenRouter/OpenAI) or DeepSeek's top-level prompt_cache_hit_tokens."""
