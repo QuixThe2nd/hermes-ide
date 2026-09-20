@@ -96,7 +96,6 @@ _ASSISTANT_IMAGE_PLACEHOLDER = "[Assistant image omitted during replay]"
 # Inline data-URL subtypes the Responses backends accept as ``input_image``. Anything else
 # (SVG source, BMP, TIFF, ...) 400s the WHOLE request — and, once baked into history, every
 # later turn too — so it is downgraded to a text placeholder at this converging seam (#29711).
-_RESPONSES_INLINE_IMAGE_SUBTYPES = frozenset({"jpeg", "png", "gif", "webp"})
 _INCOMPLETE_STATUSES = {"queued", "in_progress", "incomplete"}
 _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 
@@ -213,16 +212,6 @@ def _iter_content_parts(content: list) -> Iterator[tuple[str, Any]]:
                 yield "image", part
 
 
-def _unsupported_inline_image_subtype(url: str) -> Optional[str]:
-    """``image/<subtype>`` of a ``data:image/...`` URL the Responses backends reject; None for
-    accepted rasters and for non-data URLs (the provider owns remote-URL validation)."""
-    header = url.partition(",")[0].lower()
-    if not header.startswith("data:image/"):
-        return None
-    subtype = header[len("data:image/"):].split(";", 1)[0].strip()
-    return None if subtype in _RESPONSES_INLINE_IMAGE_SUBTYPES else f"image/{subtype or 'unknown'}"
-
-
 def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_url: bool) -> Optional[Dict[str, Any]]:
     """Responses image part from a chat/Responses image part (``image_url`` may be a str or
     ``{url, detail}``). Assistant → text placeholder (an assistant ``input_image`` 400s every
@@ -237,11 +226,12 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
     if not _nonempty_str(url) and not keep_empty_url:
         return None
     url = str(url or "")
-    mime = _unsupported_inline_image_subtype(url)
+    # Lazy import: the prep module only depends on hermes_constants at import time (no cycle).
+    from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
+    mime = unsupported_inline_image_media_type(url)
     if mime == "image/svg+xml":
         # Rasterize so the model still sees the drawing; the placeholder is the fallback only
         # when no rasterizer (cairosvg / svglib / rsvg-convert / inkscape) is available.
-        from tools.vision_tools_image_prep import rasterize_svg_data_url
         png_url = rasterize_svg_data_url(url)
         if png_url is not None:
             url, mime = png_url, None

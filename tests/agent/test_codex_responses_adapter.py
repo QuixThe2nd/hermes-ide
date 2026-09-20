@@ -126,6 +126,9 @@ def test_unsupported_inline_image_downgrades_to_text_in_message_and_tool_output(
     assert tool_output["type"] == "function_call_output"
     assert [p["type"] for p in tool_output["output"]] == ["input_text", "input_text"]
     assert "image/svg+xml" in tool_output["output"][1]["text"]
+    # ``image/jpg`` is the JPEG alias every other image site accepts — it must still go as input_image.
+    jpg = _chat_content_to_responses_parts([{"type": "image_url", "image_url": "data:image/jpg;base64,/9j/4AAQ"}])
+    assert jpg == [{"type": "input_image", "image_url": "data:image/jpg;base64,/9j/4AAQ"}]
 
 
 def test_inline_svg_is_rasterized_to_png_when_a_rasterizer_exists(monkeypatch):
