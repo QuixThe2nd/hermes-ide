@@ -1092,7 +1092,12 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
         if value and value != ours:
             return False
     home = env.get("HERMES_HOME", "").strip()
-    scratch = str(get_scratch_dir(_expand_hermes_home(home) if home else get_process_hermes_home()))
+    try:
+        scratch = str(get_scratch_dir(_expand_hermes_home(home) if home else get_process_hermes_home()))
+    except (RuntimeError, OSError):
+        # No HERMES_HOME and no resolvable user home (a child env built from nothing on
+        # Windows): there is no scratch dir to point at; the child keeps the OS default.
+        return False
     for key in SCRATCH_TMP_ENV_VARS:
         env[key] = scratch
     env[SCRATCH_DIR_MARKER_ENV] = scratch
