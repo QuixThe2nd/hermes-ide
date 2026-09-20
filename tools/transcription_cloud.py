@@ -45,13 +45,13 @@ def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, l
     subclass) so timeouts report as connection errors, as they always have."""
     try:
         from openai import OpenAI
-        from tools.transcription_common import _config_number
+        from tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number
         from tools.transcription_tools import _load_stt_config
         openai_config = _get_stt_section(_load_stt_config(), "openai")
         client = OpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=_config_number(openai_config, "timeout", 60.0),
+            timeout=_config_number(openai_config, "timeout", DEFAULT_STT_TIMEOUT),
             max_retries=_config_number(openai_config, "max_retries", 1, cast=int),
         )
         try:
