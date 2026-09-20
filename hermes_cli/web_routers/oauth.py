@@ -150,6 +150,17 @@ def _codex_cancelled(sess: Dict[str, Any], session_id: str, stage: str = "") -> 
     return True
 
 
+def _codex_body_cap() -> Dict[str, list]:
+    """``event_hooks`` applying the CLI flow's 1 MiB auth-body cap to the dashboard's own client (#55253).
+
+    The helpers take the ``httpx`` module as a parameter (tests inject a scripted one), so the
+    dashboard keeps building its client here and only shares the hook, not the client factory.
+    """
+    from hermes_cli.auth_codex import _cap_codex_response_body
+
+    return {"response": [_cap_codex_response_body]}
+
+
 def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
     """One 15s POST for the device-login flow, mirroring ``auth_codex._codex_login_post``.
 
@@ -162,7 +173,7 @@ def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
     attempt, attempts = 1, 3
     while True:
         try:
-            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            with httpx.Client(timeout=httpx.Timeout(15.0), event_hooks=_codex_body_cap()) as client:
                 return client.post(url, **kwargs)
         except Exception as exc:
             if attempt == attempts or not _is_transient_transport_error(exc):
@@ -196,7 +207,7 @@ def _codex_poll_authorization(httpx, sess: Dict[str, Any], session_id: str) -> A
     payload = {"device_auth_id": sess["device_auth_id"], "user_code": sess["user_code"]}
     max_consecutive_blips = 6  # same cap as the CLI poll loop: survives drops, fails fast on a dead network
     consecutive_blips = 0
-    with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+    with httpx.Client(timeout=httpx.Timeout(15.0), event_hooks=_codex_body_cap()) as client:
         while time.monotonic() < deadline:
             if _codex_cancelled(sess, session_id):
                 return _CANCELLED

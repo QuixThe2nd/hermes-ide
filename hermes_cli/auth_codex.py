@@ -294,8 +294,48 @@ def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "
             attempt += 1
 
 
+_CODEX_AUTH_BODY_MAX_BYTES = 1024 * 1024  # real OAuth/device-auth payloads are a few hundred bytes
+
+
+class _CappedByteStream(httpx.SyncByteStream):
+    """Body stream that raises once more than ``_CODEX_AUTH_BODY_MAX_BYTES`` came off the wire.
+
+    httpx type-checks ``response.stream`` against ``SyncByteStream``, so the cap has to be a
+    stream subclass rather than a bare generator.
+    """
+
+    def __init__(self, response: "httpx.Response") -> None:
+        self._response, self._raw = response, response.stream
+
+    def __iter__(self) -> Iterator[bytes]:
+        total = 0
+        for chunk in self._raw:  # type: ignore[union-attr]  # sync client only
+            total += len(chunk)
+            if total > _CODEX_AUTH_BODY_MAX_BYTES:
+                self.close()
+                raise _codex_err(
+                    f"Codex auth response from {self._response.url.host} exceeded "
+                    f"{_CODEX_AUTH_BODY_MAX_BYTES // 1024} KiB; refusing to parse it.",
+                    "codex_auth_response_too_large", relogin=False)
+            yield chunk
+
+    def close(self) -> None:
+        self._raw.close()  # type: ignore[union-attr]
+
+
+def _cap_codex_response_body(response: "httpx.Response") -> None:
+    """httpx response hook: refuse to buffer an auth body above ``_CODEX_AUTH_BODY_MAX_BYTES``.
+
+    Runs before ``client.post()`` reads the body, so a hostile or broken endpoint/proxy answering
+    200 with megabytes of "JSON" is cut off at the cap instead of being fully buffered and parsed
+    (#55253). Same cap for every status: error bodies are small diagnostics too.
+    """
+    response.stream = _CappedByteStream(response)
+
+
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
-    """Build an ``httpx.Client`` for Codex OAuth/probe endpoints with Happy-Eyeballs racing.
+    """Build an ``httpx.Client`` for Codex OAuth/probe endpoints with Happy-Eyeballs racing and a
+    1 MiB response-body cap (``_cap_codex_response_body``).
 
     A host advertising AAAA records but blackholing IPv6 makes each serial connect eat the full
     timeout before IPv4 is tried (same failure mode as the chat transport). Best-effort: if the
@@ -306,7 +346,9 @@ def _codex_http_client(**kwargs: Any) -> "httpx.Client":
     token refresh / device login / usage probes time out where the official Codex CLI (which races families
     per RFC 8305) works.
     """
-    client = httpx.Client(**kwargs)
+    hooks = dict(kwargs.pop("event_hooks", None) or {})
+    hooks["response"] = [_cap_codex_response_body, *hooks.get("response", [])]
+    client = httpx.Client(event_hooks=hooks, **kwargs)
     with suppress(Exception):
         from agent.process_bootstrap import enable_happy_eyeballs_on_client
         enable_happy_eyeballs_on_client(client)
