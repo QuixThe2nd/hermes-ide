@@ -58,6 +58,16 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+def _runner_scratch_root() -> str:
+    """Per-run temp roots live under the developer's Hermes scratch dir, never the system
+    temp dir: a full-suite run writes gigabytes of tmp_path fixtures, and /tmp is RAM-backed
+    tmpfs on many Linux hosts. Resolved without importing the tree under test."""
+    home = os.environ.get("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+    root = os.path.join(home, "cache", "scratch", "pytest")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
 
 # Default test discovery roots.
 _DEFAULT_ROOTS = ["tests"]
@@ -402,8 +412,11 @@ def _run_one_file_once(
     # One root for each subprocess removes the shared directory that the race
     # needs. The parent deletes the root after the attempt.
     env = os.environ.copy()
-    temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-")
+    temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-", dir=_runner_scratch_root())
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
+    # Every tempfile.* call inside the test process lands in the same per-run root, so the
+    # parent's cleanup of ``temproot`` removes them too instead of leaving them in /tmp.
+    env["TMPDIR"] = temproot
 
     subproc_start = time.monotonic()
     # launch the pytest process

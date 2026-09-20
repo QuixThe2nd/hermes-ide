@@ -978,6 +978,25 @@ _SCRATCH_PRUNE_STAMP = ".last_prune"
 _SCRATCH_PRUNE_INTERVAL_SECONDS = 3600
 _scratch_pruned_once = False
 
+# AF_UNIX socket paths cap at 104 bytes (macOS) / 108 (Linux). Chrome appends
+# ``com.google.Chrome.XXXXXX/SingletonSocket`` (~45) and the code kernel
+# ``hermes_rpc_<32 hex>.sock`` (~49) to the temp root, so a root longer than this budget
+# makes the bind fail (Chrome: "Socket path too long" at startup).
+SOCKET_TMPDIR_MAX_LEN = 50
+
+
+def socket_safe_tmpdir() -> str:
+    """Temp root short enough for AF_UNIX sockets. The scratch dir usually fits; macOS
+    ``TMPDIR`` never does and a deep profile home may not, so those fall back to the OS
+    default root for sockets only (everything else stays in the scratch dir)."""
+    import tempfile
+    if sys.platform == "darwin":
+        return "/tmp"  # no-tmp: ok — AF_UNIX 104-byte socket path limit on darwin
+    candidate = tempfile.gettempdir()
+    if len(candidate) <= SOCKET_TMPDIR_MAX_LEN or not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
+        return candidate
+    return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
+
 
 def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Path:
     """``<home>/cache/scratch`` (created, owner-only); *home* defaults to the active Hermes home.
