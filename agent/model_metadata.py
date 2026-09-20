@@ -1279,6 +1279,26 @@ def get_context_length_from_provider_error(error_msg: str, current_context_lengt
     return parsed_limit if parsed_limit is not None and parsed_limit < current_context_length else None
 
 
+# OpenAI's original overflow wording, copied by vLLM / llama-cpp-python: "(36865 in the messages,
+# 65536 in the completion)"; legacy completions: "(771 in your prompt; 4000 for the completion)".
+# The first figure is the prompt the server MEASURED, the second the requested max_tokens.
+_COMPLETION_SPLIT_RE = re.compile(
+    r'\((\d+)\s+(?:tokens\s+)?in (?:the messages|your prompt|the prompt)\s*[;,]\s*'
+    r'(\d+)\s+(?:tokens\s+)?(?:in|for) the completion\)'
+)
+
+
+def _completion_split_budget(error_lower: str) -> Optional[int]:
+    """window - measured prompt from the OpenAI-style parenthetical split, or None when the wording
+    is absent or the prompt alone fills the window (a genuine input overflow -> compress)."""
+    split = _COMPLETION_SPLIT_RE.search(error_lower)
+    ctx = re.search(r'maximum context length is (\d+)', error_lower)
+    if not split or not ctx:
+        return None
+    available = int(ctx.group(1)) - int(split.group(1))
+    return available if available >= 1 else None
+
+
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     """Available OUTPUT tokens from a "max_tokens too large" error, or None. Distinct from "prompt
     too long" (-> compress): here input + requested_output > window, so the fix is a smaller
@@ -1307,6 +1327,9 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         _available = int(_m_ctx.group(1)) - int(_m_parts.group(1)) - int(_m_parts.group(2))
         if _available >= 1:
             return _available
+    _split_available = _completion_split_budget(error_lower)
+    if _split_available is not None:
+        return _split_available
     # LM Studio / llama.cpp: window in tokens, prompt in CHARACTERS; ~3 chars/token over-reserves the input.
     _m_ctx_tok = re.search(r'maximum context length is (\d+)\s*token', error_lower)
     _m_chars = re.search(r'prompt contains (\d+)\s*character', error_lower)
@@ -1352,6 +1375,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("max_tokens", "available_tokens"), ("max_tokens", "available tokens"),
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
+    ("maximum context length", "in the completion"), ("maximum context length", "for the completion"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
     ("output limit",),
 )
@@ -1366,6 +1390,10 @@ def is_output_cap_error(error_msg: str) -> bool:
     output-cap 400 misclassified as context overflow death-loops the compressor (same max_tokens, same
     rejection). Signal: talks about max_tokens as a cap/range/limit and NOT about an oversized input."""
     error_lower = error_msg.lower()
+    # The OpenAI-style split names neither max_tokens nor "output tokens" and ends with "reduce the
+    # length", so it fails both gates below; the measured prompt decides instead (#90607).
+    if _completion_split_budget(error_lower) is not None:
+        return True
     # An error that ALSO describes an oversized INPUT is a genuine overflow — compression can fix it.
     return (
         any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens"))
