@@ -906,8 +906,8 @@ def nonretryable_client_error_result(
             agent,
             "   💡 The endpoint's firewall/CDN blocked the request before it reached the model — your key",
             "      and model access are probably fine. Relays often reject the SDK's default User-Agent:",
-            "      set `extra_headers: {User-Agent: HermesAgent/1.0}` on the custom_providers entry",
-            "      (or `model.default_headers`), or check the proxy/WAF rules and your network.",
+            "      set `extra_headers: {User-Agent: HermesAgent/1.0}` on the custom_providers entry,",
+            "      or check the proxy/WAF rules and your network.",
         )
     # Content-policy blocks: the provider refused this prompt, so recovery is a rephrase
     # or another model, not key/retry advice.
