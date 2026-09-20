@@ -8,9 +8,11 @@ arbitrary failure text.
 """
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+import cron.scheduler as sched
 from cron import quota_hold as qh
 from cron.jobs import (
     _job_is_stale_error_recurring, create_job, get_due_jobs, get_job, mark_job_run, update_job,
@@ -49,19 +51,46 @@ def test_hold_seconds_only_from_rate_limited_auth_error_in_cause_chain():
     assert qh.hold_seconds_from_failure(structured) == 900.0
 
 
+def _raise_quota(**_kw):
+    raise _quota_error()
+
+
+def _tick(job, home, deliveries, resolve):
+    """One real scheduler tick (preflight ON) with the provider resolver replaced by *resolve*."""
+    with patch("cron.scheduler._hermes_home", home), \
+         patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+         patch("hermes_state_registry.acquire", return_value=MagicMock()), \
+         patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+         patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
+         patch.object(sched, "_deliver_result",
+                      side_effect=lambda jb, content, **kw: deliveries.append(content)), \
+         patch("run_agent.AIAgent") as agent_cls:
+        agent_cls.return_value.run_conversation.side_effect = RuntimeError("model said no")
+        sched.run_one_job(dict(job))
+
+
 def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_reach(tmp_cron_home):
-    """A 30-minute job told 'retry after 123518s' does not fire again inside the window (not
-    even after the stale-error re-arm's cadence+grace), and the marker clears once a run
-    reaches the model."""
-    job = create_job("portfolio triage", "every 30m")
+    """A 30-minute job whose provider resolve raises the Codex quota AuthError ('retry after
+    123518s') is parked by the real scheduler tick: preflight lets the rate-limited AuthError
+    through (it is not a missing credential), the one delivered alert carries the hold notice,
+    and the job does not fire again inside the window (not even after the stale-error re-arm's
+    cadence+grace). The marker clears once a run reaches the model."""
+    job = create_job("portfolio triage", "every 30m", deliver="local")
     job_id = job["id"]
     now = datetime.now(timezone.utc)
+    deliveries: list = []
 
-    assert mark_job_run(job_id, False, QUOTA_MSG, quota_hold_seconds=123518)
+    _tick(get_job(job_id), tmp_cron_home, deliveries, _raise_quota)
     j = get_job(job_id)
+    assert j["last_status"] == "error"
+    assert len(deliveries) == 1 and "This job is held" in deliveries[0], deliveries
+    assert "provider credential missing" not in deliveries[0]
     parked = datetime.fromisoformat(j["next_run_at"])
     assert parked - now >= timedelta(seconds=123518), "next_run_at must land past the window"
     assert j[qh.STATE_KEY] == j["next_run_at"]
+    assert "_quota_hold_seconds" not in j
 
     # Two hours later the job looks like a wedged stale-error record (#62002) — the hold says
     # it is parked on purpose, so it is neither re-armed nor due.
