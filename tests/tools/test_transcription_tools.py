@@ -1559,29 +1559,19 @@ class TestTranscribeOpenaiFiveXxRetry:
         assert result["transcript"] == "retried transcript"
         assert mock_client.audio.transcriptions.create.call_count == 2
 
-    def test_container_400_still_transcodes(self, sample_wav, tmp_path):
-        """The original 400-with-container-hint path keeps working."""
-        converted = tmp_path / "retry.m4a"
-        converted.write_bytes(b"fake audio")
+    def test_server_error_without_transcode_keeps_provider_error(self, sample_wav):
+        """No ffmpeg: the 5xx surfaces as the provider's own error, not a transcode message,
+        and the file is not re-sent."""
         mock_client = MagicMock()
-        mock_client.audio.transcriptions.create.side_effect = [
-            self._status_error(
-                400, "Invalid file format: unsupported audio container"
-            ),
-            "retried transcript",
-        ]
+        mock_client.audio.transcriptions.create.side_effect = self._status_error(503, "503 system_error")
 
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client), \
-             patch(
-                 "tools.transcription_cloud._transcode_audio_for_stt",
-                 return_value=(str(converted), None),
-             ):
+             patch("tools.transcription_cloud._transcode_audio_for_stt",
+                   return_value=(None, "ffmpeg not found")):
             from tools.transcription_tools import _transcribe_openai
-            result = _transcribe_openai(
-                sample_wav, "whisper-1", api_key="sk-test"
-            )
+            result = _transcribe_openai(sample_wav, "whisper-1", api_key="sk-test")
 
-        assert result["success"] is True
-        assert result["transcript"] == "retried transcript"
-        assert mock_client.audio.transcriptions.create.call_count == 2
+        assert result["success"] is False
+        assert "503" in result["error"] and "ffmpeg" not in result["error"]
+        assert mock_client.audio.transcriptions.create.call_count == 1

@@ -149,19 +149,17 @@ def _transcribe_openai(
             try:
                 transcription = _create_transcription(file_path)
             except APIStatusError as exc:
-                message = str(exc).lower()
-                # 400s with a container hint mean the audio container was rejected. Some
-                # OpenAI-compatible endpoints (e.g. the gapgpt case in #81644) instead reject
-                # unsupported containers with a 5xx, which never reached this retry path. 5xx is
-                # otherwise ambiguous, but the transcode is cheap and the retry is a single
-                # attempt, so escalate to it whenever the provider hints at a bad container OR
-                # returned a 5xx.
+                # 400 + container hint is the documented rejection; some OpenAI-compatible endpoints
+                # reject a container with a bare 5xx instead (#81644). A 5xx is ambiguous, so it earns
+                # the same single transcode retry and, when no transcode is possible, its own error.
                 is_server_error = (exc.status_code or 0) >= 500
-                if not is_server_error and not any(k in message for k in ("unsupported", "corrupted", "invalid file")):
+                if not is_server_error and not any(k in str(exc).lower() for k in ("unsupported", "corrupted", "invalid file")):
                     raise
                 # Newer models reject containers whisper-1 accepted (Ogg/Opus voice notes): transcode, retry once.
                 converted_path, transcode_error = _transcode_audio_for_stt(file_path, work_dir)
                 if transcode_error:
+                    if is_server_error:
+                        raise
                     return _error_result(transcode_error)
                 logger.info("Retrying %s STT after transcoding %s to m4a (API rejected the original container)",
                             provider_label, Path(file_path).name)
