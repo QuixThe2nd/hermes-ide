@@ -866,6 +866,9 @@ describe('device-code poll expiry', () => {
   })
 })
 
+// The happy path (cross-provider pick reaches /api/model/set with the picked
+// model's provider) is covered from the ConfirmingModelPanel in
+// components/onboarding/flow.test.tsx so it exercises the onSelect wiring.
 describe('setOnboardingModel', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -890,44 +893,6 @@ describe('setOnboardingModel', () => {
       }
     })
   }
-
-  it('persists a cross-provider pick against the picked model provider, not the sign-in provider', async () => {
-    const calls: { body?: unknown; path: string }[] = []
-
-    const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
-      calls.push({ body, path })
-
-      if (path === '/api/model/set') {
-        return { ok: true, provider: 'nous', model: 'deepseek/deepseek-v4-flash-0731' }
-      }
-
-      throw new Error(`unexpected api path: ${path}`)
-    })
-
-    installApiMock(api)
-    $desktopOnboarding.set(confirmingModelState())
-
-    // The user signed in with OpenAI OAuth but picked a deepseek model that
-    // Nous Portal serves. The assignment must target `nous`, never `openai`.
-    await setOnboardingModel('deepseek/deepseek-v4-flash-0731', 'nous', 'Nous Portal')
-
-    const assign = calls.find(c => c.path === '/api/model/set')
-    expect(assign?.body).toMatchObject({
-      scope: 'main',
-      provider: 'nous',
-      model: 'deepseek/deepseek-v4-flash-0731'
-    })
-
-    const flow = $desktopOnboarding.get().flow
-    expect(flow.status).toBe('confirming_model')
-
-    if (flow.status === 'confirming_model') {
-      expect(flow.currentModel).toBe('deepseek/deepseek-v4-flash-0731')
-      expect(flow.providerSlug).toBe('nous')
-      expect(flow.label).toBe('Nous Portal')
-      expect(flow.saving).toBe(false)
-    }
-  })
 
   it('reverts the model, provider and label when persistence fails', async () => {
     installApiMock(async () => {
