@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import sys
+from collections.abc import MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -953,14 +954,136 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     return None
 
 
-def apply_subprocess_home_env(env: dict[str, str]) -> None:
-    """Apply Hermes' subprocess HOME contract to *env* in-place."""
+def apply_subprocess_home_env(env: MutableMapping[str, str]) -> None:
+    """Apply Hermes' subprocess HOME contract to *env* in-place: ``HOME``/``HERMES_REAL_HOME``
+    per the home mode, and the temp vars re-pointed at ``env["HERMES_HOME"]``'s scratch dir."""
     real_home = get_real_home(env)
     if real_home:
         env["HERMES_REAL_HOME"] = real_home
     home = get_subprocess_home(env)
     if home:
         env["HOME"] = home
+    apply_scratch_tmp_env(env)
+
+
+# --- Scratch dir: Hermes' own temp space, never the system /tmp ---
+# System temp is tmpfs on most Linux distros and containers, so browser profiles, PTY probes,
+# download spools and every ``tempfile.mkdtemp()`` a Hermes-launched script performs eat RAM
+# and vanish on reboot. ``HERMES_HOME/cache/scratch`` is real storage with a fixed retention.
+SCRATCH_TMP_ENV_VARS = ("TMPDIR", "TMP", "TEMP")
+SCRATCH_DIR_MARKER_ENV = "HERMES_SCRATCH_DIR"
+SCRATCH_MAX_AGE_HOURS = 72
+_SCRATCH_PRUNE_STAMP = ".last_prune"
+_SCRATCH_PRUNE_INTERVAL_SECONDS = 3600
+_scratch_pruned_once = False
+
+
+def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Path:
+    """``<home>/cache/scratch`` (created, owner-only); *home* defaults to the active Hermes home.
+
+    Every Hermes process and child gets ``TMPDIR``/``TMP``/``TEMP`` pointed here at boot (see
+    :func:`export_scratch_tmp_env`), so ``tempfile`` defaults land here without call sites
+    knowing. Entries older than ``SCRATCH_MAX_AGE_HOURS`` are pruned at most once per process
+    and once per hour across processes (stamp file), so a fan-out of children stays cheap.
+    """
+    base = Path(home) if home is not None else get_hermes_home()
+    scratch = base / "cache" / "scratch"
+    try:
+        scratch.mkdir(parents=True, exist_ok=True)
+        if sys.platform != "win32":
+            os.chmod(scratch, 0o700)
+    except OSError:
+        pass
+    if prune:
+        _prune_scratch_dir_once(scratch)
+    return scratch
+
+
+def prune_scratch_dir(scratch: Path | None = None, max_age_hours: float = SCRATCH_MAX_AGE_HOURS) -> int:
+    """Delete top-level scratch entries untouched for *max_age_hours*; return the count removed."""
+    import time
+    root = scratch if scratch is not None else get_scratch_dir(prune=False)
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        if entry.name == _SCRATCH_PRUNE_STAMP:
+            continue
+        try:
+            if entry.lstat().st_mtime >= cutoff:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _prune_scratch_dir_once(scratch: Path) -> None:
+    global _scratch_pruned_once
+    if _scratch_pruned_once:
+        return
+    _scratch_pruned_once = True
+    import time
+    stamp = scratch / _SCRATCH_PRUNE_STAMP
+    try:
+        if time.time() - stamp.stat().st_mtime < _SCRATCH_PRUNE_INTERVAL_SECONDS:
+            return
+    except OSError:
+        pass
+    with contextlib.suppress(Exception):
+        stamp.touch()
+        prune_scratch_dir(scratch)
+
+
+def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
+    """Total bytes under the scratch dir (for ``hermes doctor``); 0 when unreadable."""
+    root = scratch if scratch is not None else get_scratch_dir(prune=False)
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+        for name in filenames:
+            with contextlib.suppress(OSError):
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+    return total
+
+
+def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
+    """Point ``TMPDIR``/``TMP``/``TEMP`` in *env* at the scratch dir of ``env["HERMES_HOME"]``.
+
+    A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
+    respected and nothing changes. A value Hermes itself exported earlier — recognisable
+    because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
+    profile's home gets that home's scratch dir rather than its parent's. Returns True when
+    the vars were (re)written.
+    """
+    ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
+    for key in SCRATCH_TMP_ENV_VARS:
+        value = env.get(key, "").strip()
+        if value and value != ours:
+            return False
+    home = env.get("HERMES_HOME", "").strip()
+    scratch = str(get_scratch_dir(_expand_hermes_home(home) if home else get_process_hermes_home()))
+    for key in SCRATCH_TMP_ENV_VARS:
+        env[key] = scratch
+    env[SCRATCH_DIR_MARKER_ENV] = scratch
+    return True
+
+
+def export_scratch_tmp_env() -> bool:
+    """Boot hook: apply :func:`apply_scratch_tmp_env` to this process and reset ``tempfile``'s
+    cached default so ``tempfile.gettempdir()`` follows. Call again after anything that
+    re-homes the process (``--profile`` resolution); a user-set temp var is never overridden."""
+    changed = apply_scratch_tmp_env(os.environ)
+    if changed:
+        import tempfile
+        tempfile.tempdir = None
+    return changed
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
