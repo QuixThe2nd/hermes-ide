@@ -750,11 +750,15 @@ def _pool_codex_access_token() -> str:
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds.
     """
+    from agent.credential_pool import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
-            token, reset_at = entry.get("access_token"), entry.get("last_error_reset_at")
-            in_cooldown = isinstance(reset_at, (int, float)) and reset_at > time.time()
+            token = entry.get("access_token")
+            # Same normaliser as ``_codex_pool_rate_limit_status``: a millisecond epoch compared
+            # raw reads as far-future here and as elapsed there, hiding a usable entry (#103349).
+            reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
+            in_cooldown = reset_at is not None and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:
                 return token.strip()
     except Exception:
