@@ -681,9 +681,12 @@ class CLIInfoMixin:
         from cli import datetime, format_duration_compact
 
         def _credits_or(fallback: str) -> None:
+            # Account limits (e.g. Codex subscription windows) need only the configured provider
+            # plus on-disk credentials, so they render without a live agent too (#42904).
+            shown = self._print_account_limits()
             if self._print_nous_credits_block():
                 self._print_usage_cta()
-            else:
+            elif not shown:
                 print(fallback)
 
         if not self.agent:
@@ -730,25 +733,7 @@ class CLIInfoMixin:
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
 
-        # Account limits — fetched off-thread with a hard timeout so slow provider APIs don't
-        # hang the prompt. Lazy import: pulls the OpenAI SDK chain.
-        provider = self._agent_or_self("provider")
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
-        if provider:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                try:
-                    account_snapshot = _pool.submit(
-                        fetch_account_usage, provider, base_url=self._agent_or_self("base_url"),
-                        api_key=self._agent_or_self("api_key"),
-                    ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
-                    account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
-        if account_lines:
-            print()
-            for line in account_lines:
-                print(line)
+        self._print_account_limits()
 
         if self._print_nous_credits_block():
             self._print_usage_cta()
@@ -759,6 +744,35 @@ class CLIInfoMixin:
                 logging.getLogger(noisy).setLevel(logging.WARNING)
         else:
             logging.getLogger().setLevel(logging.INFO)
+
+    def _print_account_limits(self) -> bool:
+        """Provider account limits block for `/usage`; True if anything printed.
+
+        Uses the live agent's route when present, else the CLI's own configured provider (the
+        TUI/Desktop slash-worker runs without an agent). Fetched off-thread with a hard timeout so
+        slow provider APIs don't hang the prompt; failures are non-fatal. Lazy import: pulls the
+        OpenAI SDK chain.
+        """
+        provider = self._agent_or_self("provider")
+        if not provider:
+            return False
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+        account_snapshot = None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            try:
+                account_snapshot = _pool.submit(
+                    fetch_account_usage, provider, base_url=self._agent_or_self("base_url"),
+                    api_key=self._agent_or_self("api_key"),
+                ).result(timeout=10.0)
+            except (concurrent.futures.TimeoutError, Exception):
+                account_snapshot = None
+        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+        if not account_lines:
+            return False
+        print()
+        for line in account_lines:
+            print(line)
+        return True
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history (`--days N` / `N`, `--source`)."""
