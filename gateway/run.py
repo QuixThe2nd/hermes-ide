@@ -1912,15 +1912,19 @@ def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize the turn prerequisites a first turn needs.
 
     Runs on an executor thread from ``_warm_turn_prerequisites``.  Covers
-    exactly the lazy init observed inside skeleton turns (#99373):
+    exactly the lazy init observed inside skeleton turns (#99373), plus the
+    default route's context-window metadata (#105986) — a catalog HTTP probe
+    that must not sit between the first inbound turn and its inference request:
 
     * the ``run_agent`` heavy import graph (the gateway imports it lazily
       inside per-request handlers, so nothing else pulls it in at boot);
     * ``model_tools.get_tool_definitions`` — materializes tool schemas and
       primes the tool-registry ``check_fn`` TTL cache so availability
       probes don't run (and fail cold) inside the user's first turn;
+    * ``_resolve_gateway_model_context`` — primes the process-local model
+      catalog caches so first-turn AIAgent construction is a cache hit;
     Context files are deliberately NOT warmed here: building them needs the
-    active turn's agent and model context, so they stay lazy (upstream 87661da3).
+    active turn's agent, so they stay lazy (upstream 87661da3).
 
     Returns the number of tool schemas materialized (logged for
     diagnosability).
@@ -1929,6 +1933,14 @@ def _warm_turn_machinery_sync() -> int:
     import model_tools
 
     tool_defs = model_tools.get_tool_definitions(quiet_mode=True)
+    try:
+        # Same route/credential/profile rules as the turn itself; primes the process-local catalog
+        # caches (codex OAuth, OpenRouter) so AIAgent construction on the first turn is a cache hit
+        # (upstream 614f11d3f6a0, #105986). Failures stay non-fatal: lazy init unchanged.
+        ctx = _resolve_gateway_model_context()
+        logger.info("Model context warmed: %s -> %d tokens (%s)", ctx.model, ctx.context_length, ctx.context_source)
+    except Exception:
+        logger.debug("model-context warm-up failed (non-fatal)", exc_info=True)
     return len(tool_defs)
 
 
