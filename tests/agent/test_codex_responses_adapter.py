@@ -837,6 +837,8 @@ def _final_text_response(text):
 @pytest.mark.parametrize("text", [
     'Creating the PowerShell script now.\n{"cmd": "mkdir -p /c/Temp && cat > /c/Temp/x.ps1 <<\'EOF\'"}',
     'Sure, let me run the tests.\n{"cmd": "pytest -q", "workdir": "/repo", "timeout": 120}',
+    'Next, I\'ll create the script.\n{"cmd": "cat > x.sh"}',
+    'Okay — running the tests.\n{"cmd": "pytest -q"}',
     "Calling tool now to=functions.terminal {\"command\": \"ls\"}",
 ])
 def test_normalize_codex_response_treats_leaked_tool_call_text_as_incomplete(text):

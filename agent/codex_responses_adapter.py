@@ -67,7 +67,8 @@ _SHELL_JSON_LEAK_PATTERN = re.compile(
 )
 _ACTION_VERBS = r"creat(?:e|ing)|writ(?:e|ing)|runn?(?:ing)?|execut(?:e|ing)|check(?:ing)?|verif(?:y|ying)|updat(?:e|ing)|install(?:ing)?|edit(?:ing)?|mak(?:e|ing)"
 _SHELL_JSON_LEAK_LEADIN_PATTERN = re.compile(
-    rf"^(?:sure,\s*)?(?:now\s+)?(?:let\s+me\s+|i(?:'|’)?ll\s+|i\s+will\s+|i(?:'|’)?m\s+|i\s+am\s+)?(?:{_ACTION_VERBS})\b",
+    rf"^(?:(?:next|first|then|okay|ok|alright)\b[\s,—–-]*)?(?:sure,\s*)?(?:now\s+)?"
+    rf"(?:let\s+me\s+|i(?:'|’)?ll\s+|i\s+will\s+|i(?:'|’)?m\s+|i\s+am\s+)?(?:{_ACTION_VERBS})\b",
     re.IGNORECASE,
 )
 
