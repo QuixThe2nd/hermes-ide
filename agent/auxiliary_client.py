@@ -6386,12 +6386,12 @@ class _ProfileProjection(NamedTuple):
     messages_wire: bool = False
 
 
-def _routes_to_custom_endpoint(provider_norm: str, effective_base: str) -> bool:
+def _routes_to_custom_endpoint(provider_norm: str) -> bool:
     """True when a profile-less provider name is really a configured OpenAI-compatible custom endpoint.
 
     Keyed ``providers:`` / ``custom_providers`` entries (by bare key, or ``main``/``auto`` resolving to
-    one) and an explicit base_url on a name no provider catalog knows. Never true for a provider that
-    has its own profile (callers check that first) or a first-class catalog provider without a base_url.
+    one). An unconfigured name with only an explicit base_url keeps the generic nested fallback: the
+    operator declared nothing about that endpoint's wire, and the fireworks control contract pins it.
     """
     name = _normalize_aux_provider(provider_norm)
     if name == "custom":
@@ -6400,7 +6400,7 @@ def _routes_to_custom_endpoint(provider_norm: str, effective_base: str) -> bool:
         from hermes_cli.runtime_provider import _get_named_custom_provider
         if _get_named_custom_provider(name) is not None:
             return True
-    return bool(effective_base) and not _preserve_provider_with_base_url(name)
+    return False
 
 
 def _project_provider_profile(
@@ -6416,7 +6416,7 @@ def _project_provider_profile(
         from providers import get_provider_profile
         from providers.base import ProviderProfile
         profile = get_provider_profile(provider_norm)
-        if profile is None and _routes_to_custom_endpoint(provider_norm, effective_base):
+        if profile is None and _routes_to_custom_endpoint(provider_norm):
             # A keyed ``providers:`` entry referenced by its bare key (or via ``main``/``auto``) is
             # the same OpenAI-compatible custom endpoint the main path already projects with the
             # ``custom`` profile (``custom:<key>`` falls back inside get_provider_profile). Without
