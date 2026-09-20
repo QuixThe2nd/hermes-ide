@@ -198,3 +198,25 @@ class TestIssue78796NvidiaPrefixRepair:
             == "anthropic/claude-sonnet-4.6"
         )
 
+
+
+class TestColonProviderPrefixIsStrippedLikeSlash:
+    """Issue #64787: ``-m openai-codex:gpt-5.6-sol`` (Hermes's own ``provider:model`` switch syntax)
+    reached the Codex wire with the prefix attached and got HTTP 400. A matching ``provider:`` prefix
+    must normalize exactly like ``provider/``; a later colon (Ollama tags) is never a separator."""
+
+    @pytest.mark.parametrize("model,provider,expected", [
+        ("openai-codex:gpt-5.6-sol", "openai-codex", "gpt-5.6-sol"),
+        ("openai:gpt-5.4", "openai-codex", "gpt-5.4"),
+        ("zai:glm-5.1", "zai", "glm-5.1"),
+        ("custom:qwen3:8b", "custom", "qwen3:8b"),
+    ])
+    def test_matching_colon_prefix_stripped(self, model, provider, expected):
+        assert normalize_model_for_provider(model, provider) == expected
+
+    @pytest.mark.parametrize("model,provider", [
+        ("qwen3:8b", "custom"),            # bare Ollama tag: first colon is not a provider prefix
+        ("anthropic:claude-x", "openai-codex"),  # non-matching prefix passes through untouched
+    ])
+    def test_non_matching_colon_untouched(self, model, provider):
+        assert normalize_model_for_provider(model, provider) == model
