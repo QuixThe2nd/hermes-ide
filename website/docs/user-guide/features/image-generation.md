@@ -205,9 +205,7 @@ image_gen:
 ```
 
 Only the variable *name* is stored in `config.yaml`; the secret stays in `.env`
-or the process environment. The model catalog is unchanged: `gpt-image-2-medium`
-is sent as `model: gpt-image-2` + `quality: medium`, so the gateway must serve
-OpenAI's image model names. Availability checks and
+or the process environment. Availability checks and
 generation use the same resolution, so a configured `key_env` is enough — no
 `OPENAI_API_KEY` is required. Requests go through Hermes' own HTTP client, which
 honours `HTTP(S)_PROXY`/`NO_PROXY` but ignores macOS system proxies (whose
@@ -215,6 +213,39 @@ exception list is invisible to Python), so `localhost` endpoints connect directl
 The `OpenAI-Project` header is sent blank on image requests: an `OPENAI_PROJECT_ID`
 set for chat otherwise makes the image endpoint return 403 `model_not_found` on
 projects with a model allow-list, while the key itself already carries the project.
+
+**Gateway model names.** Catalog ids are mapped for OpenAI: `gpt-image-2-medium`
+is sent as `model: gpt-image-2` + `quality: medium`. Any other value of
+`image_gen.openai.model` (or `OPENAI_IMAGE_MODEL`) is sent verbatim as `model`
+with **no** `quality` field, so a gateway that serves its own image model names
+(`custom-image-model`, `grok-imagine-image`, ...) receives exactly that id and
+never sees a quality enum it might reject. The shared top-level `image_gen.model`
+is never passed through — it can hold another provider's id (a FAL path, for
+instance) from an earlier selection.
+
+**Reusing a named custom endpoint.** If the gateway is already declared under
+`providers:` for chat, point the image provider at it by *name* instead of
+repeating its URL and key:
+
+```yaml
+providers:
+  my-gateway:
+    name: My Gateway
+    api: https://gateway.example.com/v1
+    key_env: MY_GATEWAY_KEY
+
+image_gen:
+  provider: openai
+  openai:
+    provider: my-gateway        # inherits api + key_env from providers.my-gateway
+    model: grok-imagine-image   # sent verbatim, no quality
+```
+
+Resolution order is `image_gen.openai.base_url` → the named endpoint's URL →
+`OPENAI_BASE_URL`, and the variable named by `image_gen.openai.key_env` → the
+named endpoint's `api_key`/`key_env` → `OPENAI_API_KEY`; an explicit `base_url`
+or `key_env` next to `provider` therefore overrides that part of the endpoint. A
+name that matches no `providers:` entry is logged as a warning and ignored.
 
 ## Usage
 

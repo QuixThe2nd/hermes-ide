@@ -130,6 +130,45 @@ class TestEndpointConfig:
         assert kwargs["default_headers"]["OpenAI-Project"] == ""
         kwargs["http_client"].close()
 
+    def test_custom_model_id_passes_through_without_quality(self, monkeypatch, tmp_path):
+        """A non-catalog ``image_gen.openai.model`` reaches the gateway verbatim as ``model`` and no
+        ``quality`` is sent (gateways reject unknown enum values); a stale top-level ``image_gen.model``
+        from another provider never passes through (#97928)."""
+        import yaml
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {
+            "model": "fal-ai/flux-2/klein/9b", "openai": {"model": "custom-image-model"}}}))
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        with _patched_openai(fake_client):
+            result = openai_plugin.OpenAIImageGenProvider().generate("a cat")
+        assert result["success"] is True and result["model"] == "custom-image-model"
+        request = fake_client.images.generate.call_args.kwargs
+        assert request["model"] == "custom-image-model" and "quality" not in request
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {"model": "fal-ai/flux-2/klein/9b"}}))
+        assert openai_plugin._resolve_model()[0] == "gpt-image-2-medium"
+
+    def test_named_custom_endpoint_supplies_base_url_and_key(self, monkeypatch, tmp_path):
+        """``image_gen.openai.provider: <name>`` inherits that ``providers:`` entry's base_url and
+        key_env when ``base_url``/``key_env`` are unset; explicit values still win (#83080)."""
+        import yaml
+        for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("MY_GW_KEY", "gw-token")
+        monkeypatch.setenv("IMAGE_ONLY_KEY", "image-token")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "providers": {"my-gateway": {"name": "My Gateway", "api": "https://gw.example/v1", "key_env": "MY_GW_KEY"}},
+            "image_gen": {"openai": {"provider": "my-gateway"}}}))
+        assert openai_plugin._resolve_endpoint() == ("https://gw.example/v1", "gw-token")
+        assert openai_plugin.OpenAIImageGenProvider().is_available() is True
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "providers": {"my-gateway": {"name": "My Gateway", "api": "https://gw.example/v1", "key_env": "MY_GW_KEY"}},
+            "image_gen": {"openai": {"provider": "my-gateway", "key_env": "IMAGE_ONLY_KEY"}}}))
+        assert openai_plugin._resolve_endpoint() == ("https://gw.example/v1", "image-token")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {"openai": {"provider": "no-such"}}}))
+        assert openai_plugin._resolve_endpoint() == ("", "")
+
     def test_custom_base_url_ignores_system_proxy(self, monkeypatch):
         """httpx only sees macOS system proxies via ``urllib.request.getproxies()`` (ExceptionsList
         dropped); the plugin's client must carry no proxy mount when no proxy env var is set."""
