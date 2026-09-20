@@ -1607,3 +1607,15 @@ class TestAzureFoundryPickerCatalog:
 
         monkeypatch.setattr("hermes_cli.runtime_provider._resolve_azure_foundry_runtime", raising)
         assert _models_mod.provider_model_ids("azure-foundry", force_refresh=True) == []
+
+    def test_disk_cache_fingerprint_tracks_the_configured_resource(self, monkeypatch):
+        """The wizard writes only ``model.base_url``; switching resource with the same key must not
+        serve the previous resource's catalog for the TTL window (same rule as openai's effective_base)."""
+        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_BASE_URL", raising=False)
+        monkeypatch.setattr(_models_mod, "_get_model_config_dict",
+                            lambda: {"provider": "azure-foundry", "base_url": "https://a.openai.azure.com/openai/v1"})
+        fp_a = _models_mod._credential_fingerprint("azure-foundry")
+        monkeypatch.setattr(_models_mod, "_get_model_config_dict",
+                            lambda: {"provider": "azure-foundry", "base_url": "https://b.openai.azure.com/openai/v1"})
+        assert _models_mod._credential_fingerprint("azure-foundry") != fp_a

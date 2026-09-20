@@ -1726,6 +1726,15 @@ def _credential_fingerprint(provider: str) -> str:
         except Exception:
             pass
 
+    # Azure Foundry deployments are per-resource and the wizard writes only model.base_url, so a
+    # resource switch under the same key must not serve the previous resource's catalog (#27989).
+    if provider == "azure-foundry":
+        try:
+            from hermes_cli.runtime_provider import _config_base_url_for_provider
+            parts.append(f"effective_base={_config_base_url_for_provider(_get_model_config_dict(), 'azure-foundry')}")
+        except Exception:
+            pass
+
     if provider == "ollama":
         provider_cfg = _get_provider_config_dict("ollama")
         key_env = provider_cfg.get("key_env") or provider_cfg.get("api_key_env") or ""
