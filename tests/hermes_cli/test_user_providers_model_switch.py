@@ -658,3 +658,28 @@ def test_entra_only_azure_foundry_row_is_listed_without_api_key(monkeypatch, bas
     rows = list_authenticated_providers(current_provider="", max_models=50)
     assert ("azure-foundry" in [r["slug"] for r in rows]) is listed
     assert ("azure-foundry" in _collect_authed_provider_slugs({}, {}, [])) is listed
+
+
+def test_cli_picker_provider_select_reads_the_disk_cached_catalog(monkeypatch):
+    """Selecting a provider row with no curated models in the classic CLI picker must read the
+    disk-cached live catalog (like the gateway pickers), not the blocking ``provider_model_ids``
+    probe: azure-foundry's probe walks api-version fallbacks with a 6 s timeout each (#27989)."""
+    from types import SimpleNamespace
+    import cli as cli_mod
+
+    seen = []
+    monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids",
+                        lambda slug, *_a, **_k: seen.append(slug) or ["gpt-5.4"])
+    monkeypatch.setattr("hermes_cli.models.provider_model_ids",
+                        lambda *_a, **_k: pytest.fail("provider select must not run the live probe inline"))
+    self_ = SimpleNamespace(
+        _model_picker_state={"stage": "provider", "selected": 0,
+                             "providers": [{"slug": "azure-foundry", "name": "Azure Foundry", "models": []}]},
+        _invalidate=lambda **_k: None,
+        _close_model_picker=lambda: pytest.fail("picker closed"),
+    )
+    cli_mod.HermesCLI._handle_model_picker_selection.__get__(self_, SimpleNamespace)(persist_global=True)
+
+    assert seen == ["azure-foundry"]
+    assert self_._model_picker_state["stage"] == "model"
+    assert self_._model_picker_state["model_list"] == ["gpt-5.4"]
