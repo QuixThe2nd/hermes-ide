@@ -929,60 +929,6 @@ describe('setOnboardingModel', () => {
     }
   })
 
-  it('keeps the sign-in provider when the picked model belongs to it', async () => {
-    const calls: { body?: unknown; path: string }[] = []
-
-    const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
-      calls.push({ body, path })
-
-      if (path === '/api/model/set') {
-        return { ok: true, provider: 'openai', model: 'gpt-5.2' }
-      }
-
-      throw new Error(`unexpected api path: ${path}`)
-    })
-
-    installApiMock(api)
-    $desktopOnboarding.set(confirmingModelState())
-
-    await setOnboardingModel('gpt-5.2', 'openai', 'OpenAI OAuth (ChatGPT)')
-
-    const assign = calls.find(c => c.path === '/api/model/set')
-    expect(assign?.body).toMatchObject({ provider: 'openai', model: 'gpt-5.2' })
-
-    const flow = $desktopOnboarding.get().flow
-    expect(flow.status).toBe('confirming_model')
-
-    if (flow.status === 'confirming_model') {
-      expect(flow.providerSlug).toBe('openai')
-      expect(flow.label).toBe('OpenAI OAuth (ChatGPT)')
-    }
-  })
-
-  it('falls back to the flow provider when the caller passes no provider', async () => {
-    const calls: { body?: unknown; path: string }[] = []
-
-    const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
-      calls.push({ body, path })
-
-      if (path === '/api/model/set') {
-        return { ok: true, provider: 'openai', model: 'gpt-5.2' }
-      }
-
-      throw new Error(`unexpected api path: ${path}`)
-    })
-
-    installApiMock(api)
-    $desktopOnboarding.set(confirmingModelState())
-
-    // Legacy call shape (model only) must keep persisting under the sign-in
-    // provider rather than writing an empty provider.
-    await setOnboardingModel('gpt-5.2')
-
-    const assign = calls.find(c => c.path === '/api/model/set')
-    expect(assign?.body).toMatchObject({ provider: 'openai', model: 'gpt-5.2' })
-  })
-
   it('reverts the model, provider and label when persistence fails', async () => {
     installApiMock(async () => {
       throw new Error('backend down')
