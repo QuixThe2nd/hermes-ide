@@ -118,6 +118,7 @@ def aux_probe_mode():
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
+from hermes_cli.config_providers import _canonical_api_mode
 from agent.auxiliary_health import (
     _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_quarantine_ttl,
     fallback_candidate_unavailable_reason,
@@ -5274,6 +5275,7 @@ def resolve_provider_client(
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
     original_provider = (provider or "").strip().lower()
     provider = _normalize_aux_provider(provider)
+    api_mode = _canonical_api_mode(str(api_mode or "")).lower() or None
     # MoA chokepoint: "moa" is not an HTTP provider; resolve to the aggregator so direct callers don't
     # dead-end in unknown-provider. Unresolvable preset → leave untouched for the normal diagnostic.
     if provider == "moa":
@@ -5965,7 +5967,9 @@ def _resolve_task_provider_model(
             cfg_key_env = str(task_config.get("key_env") or task_config.get("api_key_env") or "").strip()
             if cfg_key_env:
                 cfg_api_key = _scoped_key_env(cfg_key_env) or None
-        resolved_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        # User-facing spellings (``responses``, ``anthropic``, …) canonicalize here so every
+        # branch downstream compares against the transport names only (#39750).
+        resolved_api_mode = _canonical_api_mode(str(task_config.get("api_mode") or "")).lower() or None
     # 'auto' is a sentinel ("inherit / auto-detect"), not a model id — leaking it to the wire
     # yields a 200 with an error-text body that consumers accept as output. The explicit `model`
     # kwarg needs the same normalization: MoA slots forward preset `model:` fields through it.
