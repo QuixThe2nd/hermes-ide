@@ -1472,9 +1472,7 @@ class _CodexCompletionsAdapter:
                 from agent.reasoning_effort import clamp_effort
                 from agent.transports.codex import _codex_efforts_for_route
                 supported = _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend)
-                if not supported:
-                    pass
-                elif reasoning_cfg.get("enabled") is not False:
+                if supported and reasoning_cfg.get("enabled") is not False:
                     # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default.
                     effort = clamp_effort(reasoning_cfg.get("effort") or "medium", supported)
                     resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}

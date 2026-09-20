@@ -9,6 +9,7 @@ from agent.error_classifier import (
     FailoverReason,
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     classify_api_error,
+    is_reasoning_field_rejection,
     _extract_status_code,
     _extract_error_body,
     _extract_error_code,
@@ -956,6 +957,19 @@ class TestClassifyApiError:
             provider="custom", model="m", approx_tokens=77, num_messages=3,
         )
         assert overflow.reason == FailoverReason.context_overflow and overflow.should_compress is True
+
+    def test_openai_unsupported_none_effort_body_is_reasoning_mandatory(self):
+        """OpenAI's real 400 for ``reasoning.effort: none`` on a model whose ladder has no ``none`` (o3/o4-mini,
+        gpt-5/gpt-5-codex; ``none`` is gpt-5.1+): the SDK message carries the body — ``param: reasoning.effort``
+        plus ``code: unsupported_value`` — and must take the drop-the-disable retry rung, not a format abort."""
+        body = {"error": {"message": "Unsupported value: 'none' is not supported with this model. Supported values "
+                                     "are: 'low', 'medium', and 'high'.",
+                          "type": "invalid_request_error", "param": "reasoning.effort", "code": "unsupported_value"}}
+        msg = f"Error code: 400 - {body}"
+        assert is_reasoning_field_rejection(msg)
+        result = classify_api_error(MockAPIError(msg, status_code=400, body=body), provider="openai-api", model="o4-mini")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True and result.should_fallback is False
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 
