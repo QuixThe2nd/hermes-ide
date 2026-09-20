@@ -65,3 +65,24 @@ def test_auxiliary_validation_rejects_router_timeout_shim():
     generated = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=SHIM, tool_calls=None))],
                                 usage=SimpleNamespace(completion_tokens=9), model="m")
     assert _validate_llm_response(generated, "title") is generated
+
+
+@patch("agent.process_bootstrap.OpenAI")
+def test_iteration_limit_summary_retries_past_router_timeout_shim(_mock_openai):
+    """The iteration-limit summary is the fourth consumer: a shim takes the retry slot and the
+    real summary from the second call is returned instead of the sentinel text."""
+    from run_agent import AIAgent
+
+    def _completion(content, completion_tokens):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None),
+                                                        finish_reason="stop")],
+                               usage=SimpleNamespace(completion_tokens=completion_tokens), model="m")
+
+    agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+                    skip_context_files=True, skip_memory=True, enabled_toolsets=[])
+    agent.api_mode = "chat_completions"
+    agent._cached_system_prompt = "You are helpful."
+    agent.client.chat.completions.create.side_effect = [_completion(SHIM, 0), _completion("Real summary.", 3)]
+
+    assert agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60) == "Real summary."
+    assert agent.client.chat.completions.create.call_count == 2

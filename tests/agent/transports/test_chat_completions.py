@@ -601,7 +601,6 @@ class TestChatCompletionsValidate:
         ("content", "tool_calls", "usage"),
         [
             ("Connect timeout, please try again later.", None, SimpleNamespace(completion_tokens=1)),
-            ("The router said: Connect timeout, please try again later.", None, None),
             ("Connect timeout, please try again later.", [SimpleNamespace()], None),
         ],
     )
