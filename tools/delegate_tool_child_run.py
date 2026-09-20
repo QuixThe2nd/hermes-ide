@@ -396,12 +396,14 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
-    from tools.delegate_tool_config import _entry_serves_endpoint
+    from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
     base_url = getattr(child, "base_url", None)
     leased_cred_id = child_pool.acquire_lease()
     if leased_cred_id is not None:
         with _quiet("Failed to bind child to leased credential: %s"):
-            leased_entry = child_pool.current()
+            # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
+            # mutable cursor that may already point at someone else's pick.
+            leased_entry = next((e for e in child_pool.entries() if e.id == leased_cred_id), None)
             if not _entry_serves_endpoint(leased_entry, base_url):
                 child_pool.release_lease(leased_cred_id)
                 leased_entry = next(

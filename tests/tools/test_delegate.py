@@ -1370,7 +1370,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child = MagicMock()
         child._credential_pool = MagicMock()
         child._credential_pool.acquire_lease.return_value = "cred-b"
-        child._credential_pool.current.return_value = leased_entry
+        child._credential_pool.entries.return_value = [leased_entry]  # bound by leased id, not the shared cursor
         child.run_conversation.return_value = {
             "final_response": "done",
             "completed": True,
