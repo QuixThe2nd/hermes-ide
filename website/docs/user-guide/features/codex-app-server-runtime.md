@@ -197,18 +197,19 @@ model:
   openai_runtime: codex_app_server   # default is "auto" (= Hermes runtime)
 ```
 
-If the Hermes process cannot resolve `codex` from `PATH` (common for gateway
-services and desktop-launched workers), configure the executable explicitly:
+If the Hermes process cannot resolve `codex` from `PATH` — typical for gateway services,
+cron and Kanban workers, or a desktop-bundled CLI — and the first turn fails with
+`No such file or directory: 'codex'`, point the runtime at the executable explicitly:
 
 ```yaml
 model:
   openai_runtime: codex_app_server
-  codex_bin: /Applications/Codex.app/Contents/Resources/codex
+  codex_bin: /Applications/Codex.app/Contents/Resources/codex   # default: "codex" from PATH
 ```
 
-The configured path is used consistently for the enablement check, native
-plugin discovery, and the long-lived app-server subprocess. Paths containing
-spaces are passed as a single subprocess argument; do not add shell quoting.
+`model.codex_bin` is used everywhere Hermes spawns codex: the `/codex-runtime` availability
+check, native plugin discovery during migration, and the long-lived app-server subprocess.
+The value is a single executable path, not a shell command — no quoting or extra arguments.
 
 ## Self-improvement loop (memory + skill nudges)
 
