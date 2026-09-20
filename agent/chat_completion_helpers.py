@@ -2070,6 +2070,8 @@ _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a
 def _iteration_summary_api_messages(agent, messages: list) -> list:
     """Wire-ready messages for the summary call, mirroring the main loop's api_messages build
     (sidecar substitution, tool-call repair, thinking-only drop, underscore-key sweep)."""
+    from agent.transports.chat_completions import _route_replays_reasoning_details
+
     needs_sanitize = agent._should_sanitize_tool_calls()
     sanitize_model = agent.model
     if needs_sanitize and agent.provider == "moa":
@@ -2082,6 +2084,8 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         agent._copy_reasoning_content_for_api(msg, api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
             api_msg.pop(key, None)
+        if not _route_replays_reasoning_details(getattr(agent, "base_url", None)):
+            api_msg.pop("reasoning_details", None)
         # Mirror of the transport's role-qualified strip: ``name`` is
         # schema-foreign on tool results only (strict providers reject with
         # "contains item with unknown key name"); it stays on user/assistant.

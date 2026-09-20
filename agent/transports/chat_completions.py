@@ -216,6 +216,22 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+def _route_replays_reasoning_details(base_url: Any) -> bool:
+    """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
+    reasoning array, also consumed by the Nous Portal).
+
+    Every other chat-completions endpoint either ignores the field or, when its schema is
+    strict (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
+    unsupported`` / ``Extra inputs are not permitted`` / ``no such field``), rejects the whole
+    request with HTTP 400/422 — so a reasoning turn produced earlier in the session wedges every
+    later turn once the model is switched (#70233). The stored history keeps the field; only the
+    wire copy drops it.
+    """
+    from utils import base_url_host_matches
+
+    return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
+
+
 def _has_replayable_thought_signature(extra_content: Any) -> bool:
     """Whether OpenRouter's Gemini sidecar contains a usable thought signature.
 
@@ -317,18 +333,21 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
     return api_kwargs
 
 
-def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
+def _sanitize_message(msg: Any, strip_extra_content: bool, strip_reasoning_details: bool = False) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
     Drops persistence sidecars, ``_``-prefixed scaffolding markers, tool-call ``call_id`` /
     ``response_item_id`` (and ``extra_content`` unless Gemini), an assistant
-    ``tool_calls: []`` / ``null`` (strict providers reject both), and ``name``
+    ``tool_calls: []`` / ``null`` (strict providers reject both), ``name``
     on tool results (schema-valid only on user/assistant messages; strict
-    providers reject it with ``contains item with unknown key name``).
+    providers reject it with ``contains item with unknown key name``), and
+    ``reasoning_details`` unless the route replays it (``_route_replays_reasoning_details``).
     """
     if not isinstance(msg, dict):
         return None
     strip_keys = [k for k in msg if k in _STRIP_MSG_KEYS or (isinstance(k, str) and k.startswith("_"))]
+    if strip_reasoning_details and "reasoning_details" in msg:
+        strip_keys.append("reasoning_details")
     # ``name`` is schema-valid on user/assistant messages, so the removal is
     # role-qualified: only tool results carry it illegally (strict providers
     # reject with "contains item with unknown key name").
@@ -375,7 +394,8 @@ class ChatCompletionsTransport(ProviderTransport):
         Returns the input list unchanged when nothing needs sanitizing.
         """
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
-        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content)) for m in messages]
+        strip_reasoning_details = not _route_replays_reasoning_details(kwargs.get("base_url"))
+        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning_details)) for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages
         return [m if s is None else s for m, s in sanitized_pairs]
@@ -392,7 +412,7 @@ class ChatCompletionsTransport(ProviderTransport):
         With ``provider_profile`` every quirk comes from the profile; the legacy flag
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
-        sanitized = self.convert_messages(messages, model=model)
+        sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"))
         _profile = params.get("provider_profile")
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
