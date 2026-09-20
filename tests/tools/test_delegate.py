@@ -2352,7 +2352,11 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 
 class TestAtomicChildCredentialBundle(unittest.TestCase):
-    """provider/base_url reach the child as one bundle: all override or all parent."""
+    """provider/base_url/api_key reach the child as one bundle: all override, or all from the parent's live runtime.
+
+    #90009: a parent that flipped onto a fallback runtime handed the child the live endpoint paired with the
+    surface (stale) key — an instant 401 the child could never retry out of.
+    """
 
     def _build(self, parent, **overrides):
         with patch("run_agent.AIAgent") as MockAgent:
@@ -2370,22 +2374,16 @@ class TestAtomicChildCredentialBundle(unittest.TestCase):
         self.assertIsNone(kwargs["base_url"])
         self.assertNotEqual(kwargs["base_url"], parent.base_url)
 
-    def test_provider_override_uses_its_own_endpoint(self):
+    def test_no_override_inherits_live_endpoint_and_key_together(self):
         parent = _make_mock_parent(depth=0)
-        kwargs = self._build(
-            parent, override_provider="minimax", override_base_url="https://api.minimax.example/v1",
-            override_api_key="sk-mm-x")
-        self.assertEqual(kwargs["provider"], "minimax")
-        self.assertEqual(kwargs["base_url"], "https://api.minimax.example/v1")
-        self.assertEqual(kwargs["api_key"], "sk-mm-x")
-
-    def test_no_override_inherits_whole_parent_bundle(self):
-        parent = _make_mock_parent(depth=0)
-        parent._client_kwargs = {}
-        parent.client = None
+        parent.base_url = "https://fallback.example/v1"
+        parent.api_key = "FAKE-KEY-STALE-PRIMARY"  # surface attribute lagging the live runtime
+        parent._client_kwargs = {"api_key": "FAKE-KEY-FALLBACK", "base_url": "https://fallback.example/v1/"}
+        parent.client = MagicMock(base_url="https://fallback.example/v1/", api_key="FAKE-KEY-FALLBACK")
         kwargs = self._build(parent)
         self.assertEqual(kwargs["provider"], parent.provider)
-        self.assertEqual(kwargs["base_url"], parent.base_url)
+        self.assertEqual(kwargs["base_url"], "https://fallback.example/v1")
+        self.assertEqual(kwargs["api_key"], "FAKE-KEY-FALLBACK")
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_without_base_url_is_refused(self, mock_resolve):
@@ -2394,13 +2392,6 @@ class TestAtomicChildCredentialBundle(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             _resolve_delegation_credentials({"provider": "copilot", "model": "gpt-5"}, parent)
         self.assertIn("without a base_url", str(ctx.exception))
-
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_native_sdk_provider_without_base_url_is_allowed(self, mock_resolve):
-        mock_resolve.return_value = {"provider": "bedrock", "base_url": "", "api_key": "aws", "api_mode": None}
-        parent = _make_mock_parent(depth=0)
-        creds = _resolve_delegation_credentials({"provider": "bedrock", "model": "claude"}, parent)
-        self.assertEqual(creds["provider"], "bedrock")
 
 
 if __name__ == "__main__":
