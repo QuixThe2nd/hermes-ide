@@ -1,0 +1,6 @@
+name: drift_watch
+default_enabled: true
+version: 0.1.0
+description: "Default-on uncommitted-drift detection, auto-capture, and auditd write attribution for the live Hermes checkout via a systemd timer (hermes drift_watch reconcile)."
+author: Hermes Agent
+kind: backend

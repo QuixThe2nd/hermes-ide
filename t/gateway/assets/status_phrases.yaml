@@ -1,0 +1,25 @@
+# Deterministic default heartbeat phrase — restore variety or custom text via
+# display.status_phrases (path/mode append or replace).
+status:
+- ⏳ still working
+generic:
+- on it
+- one sec
+- checking that now
+- give me a sec
+- looking into it
+- working through it
+- checking
+- still working
+- one moment
+- taking a look
+- got it, checking
+- give me a moment
+- looking now
+- sorting it
+- checking the useful bit
+- one sec, working on it
+- taking a proper look
+- checking the details
+- working it out
+- still looking

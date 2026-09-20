@@ -1,0 +1,27 @@
+[project]
+name = "hermes-discord-history"
+version = "0.1.0"
+description = "Owner-authorized Discord history recall for Hermes Agent"
+requires-python = ">=3.11"
+dependencies = [
+  "psycopg[binary]>=3.2.9,<4",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<7",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+branch = true
+source = ["discord_history"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85

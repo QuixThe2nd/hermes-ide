@@ -1,0 +1,21 @@
+# Schema for the `speed_channels:` section of HERMES_HOME/config.yaml.
+#
+# This file documents the shape — the plugin does NOT auto-load config from its
+# own directory. Copy the keys below into HERMES_HOME/config.yaml (same
+# convention as quota_channels). The home_server plugin writes guild_id,
+# category_id and channel_ids automatically after provisioning the Speeds
+# category, so hand-editing is only needed for a standalone setup.
+
+speed_channels:
+  guild_id: ""
+  category_id: ""
+
+  # Minimum seconds between downloader polls. The tick itself is meant to run
+  # every minute (renaming is cheap); this self-gates the qBittorrent/SABnzbd/
+  # slskd API calls so a 1-minute cron does not hammer them.
+  poll_interval_seconds: 300
+
+  channel_ids:
+    qbittorrent: ""
+    sabnzbd: ""
+    slskd: ""

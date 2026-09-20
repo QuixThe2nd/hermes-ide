@@ -1,0 +1,6 @@
+name: fallback_watch
+version: 1.0.0
+description: "Tail agent.log for primary-model fallback activations and alert a Discord channel, cooldown-deduped."
+author: Hermes Agent
+kind: backend
+default_enabled: false

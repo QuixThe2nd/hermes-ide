@@ -1,0 +1,13 @@
+{
+  "guild": {"id": "10000000000000001", "name": "Synthetic Guild"},
+  "channel": {"id": "20000000000000002", "name": "project-thread", "type": 11, "parentId": "20000000000000001", "threadMetadata": {"archived": false, "locked": false}},
+  "messages": [{
+    "id": "30000000000000003", "type": 0, "timestamp": "2026-07-17T01:02:03.000Z", "timestampEdited": "2026-07-17T02:03:04+00:00",
+    "content": "hello <@40000000000000004>", "isPinned": true,
+    "author": {"id": "40000000000000004", "name": "alice", "globalName": "Alice", "isBot": false},
+    "attachments": [{"id": "50000000000000005", "fileName": "proof.png", "contentType": "image/png", "size": 42, "url": "https://cdn.example/proof.png"}],
+    "embeds": [{"type": "rich", "title": "Evidence", "description": "details", "url": "https://example.test"}],
+    "mentions": [{"id": "40000000000000004"}], "mentionRoles": ["60000000000000006"],
+    "reference": {"messageId": "30000000000000002", "channelId": "20000000000000002", "guildId": "10000000000000001"}
+  }]
+}

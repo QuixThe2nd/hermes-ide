@@ -1,0 +1,8 @@
+name: gateway_restart
+default_enabled: true
+version: 1.0.0
+description: "Agent-callable gateway restart — same drain path as /restart."
+author: Hermes Agent
+kind: backend
+provides_tools:
+  - restart

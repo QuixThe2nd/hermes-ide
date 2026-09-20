@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+
+# Pinned official DiscordChatExporter release. Override destination only.
+VERSION="2.47.3"
+SHA256="8f86bd3a2c2f4412ffbbb2dcb9348642f8f929ad94a4f290ff0f78068c44fc86"
+DEST="${1:-${HERMES_HOME:-$HOME/.hermes}/discord-history/bin}"
+ARCHIVE="$(mktemp)"
+TMPDIR="$(mktemp -d)"
+STAGE=""
+OLD=""
+NEW_MOVED=0
+SUCCESS=0
+cleanup() {
+  rm -f "$ARCHIVE"
+  rm -rf "$TMPDIR"
+  [ -z "$STAGE" ] || rm -rf "$STAGE"
+  [ "$SUCCESS" -eq 1 ] || rm -f "$DEST/.current.new"
+  if [ "$SUCCESS" -eq 0 ] && [ "$NEW_MOVED" -eq 1 ]; then
+    rm -rf "$DEST/$VERSION"
+    if [ -n "$OLD" ] && [ -e "$OLD" ]; then mv "$OLD" "$DEST/$VERSION"; fi
+    NEW_MOVED=0
+    OLD=""
+  elif [ -n "$OLD" ] && [ -e "$OLD" ]; then
+    rm -rf "$OLD"
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+umask 077
+
+url="https://github.com/Tyrrrz/DiscordChatExporter/releases/download/${VERSION}/DiscordChatExporter.Cli.linux-x64.zip"
+curl --fail --location --silent --show-error "$url" --output "$ARCHIVE"
+printf '%s  %s\n' "$SHA256" "$ARCHIVE" | sha256sum --check --status || {
+  printf '%s\n' 'DiscordChatExporter checksum mismatch' >&2
+  exit 1
+}
+python3 -m zipfile -e "$ARCHIVE" "$TMPDIR"
+mkdir -p "$DEST"
+chmod 700 "$DEST"
+STAGE="$DEST/.${VERSION}.new.$$"
+OLD="$DEST/.${VERSION}.old.$$"
+mkdir -m 0700 "$STAGE"
+cp -R "$TMPDIR"/. "$STAGE"/
+chmod -R u=rwX,go= "$STAGE"
+chmod 0700 "$STAGE/DiscordChatExporter.Cli"
+[ ! -e "$STAGE/createdump" ] || chmod 0700 "$STAGE/createdump"
+"$STAGE/DiscordChatExporter.Cli" --version >/dev/null
+if [ -e "$DEST/$VERSION" ]; then
+  mv "$DEST/$VERSION" "$OLD"
+fi
+mv "$STAGE" "$DEST/$VERSION"
+NEW_MOVED=1
+ln -sfn "$VERSION" "$DEST/.current.new"
+mv -Tf "$DEST/.current.new" "$DEST/current"
+"$DEST/current/DiscordChatExporter.Cli" --version >/dev/null
+SUCCESS=1
+rm -rf "$OLD"
