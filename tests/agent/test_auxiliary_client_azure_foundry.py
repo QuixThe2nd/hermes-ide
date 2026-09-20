@@ -360,3 +360,44 @@ class TestResolveProviderClientAzureFoundry:
             "azure-foundry" in rec.message and "hermes doctor" in rec.message
             for rec in caplog.records
         )
+
+
+# ---------------------------------------------------------------------------
+# api_mode aliases — ``responses`` (user-facing spelling) must select the
+# Responses adapter exactly like ``codex_responses`` (#39750)
+# ---------------------------------------------------------------------------
+
+
+class TestAzureFoundryResponsesAlias:
+    _AUX_VISION = {
+        "provider": "azure-foundry", "model": "gpt-5.4-nano",
+        "base_url": "https://r.services.ai.azure.com/openai/v1", "api_mode": "responses",
+    }
+
+    def test_task_level_responses_alias_routes_vision_through_responses_adapter(self, monkeypatch):
+        """``auxiliary.vision.api_mode: responses`` on an azure-foundry route used to yield a
+        plain chat-completions client (401 from /chat/completions on a Responses-only
+        deployment, #39750); the alias must reach the Codex/Responses adapter and keep the
+        first-class provider identity."""
+        from agent import auxiliary_client as _aux
+
+        cfg = {"model": {"provider": "openrouter", "default": "x"}, "auxiliary": {"vision": dict(self._AUX_VISION)}}
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")
+
+        provider, client, model = _aux.resolve_vision_provider_client()
+        assert provider == "azure-foundry"
+        assert model == "gpt-5.4-nano"
+        assert isinstance(client, _aux.CodexAuxiliaryClient)
+
+    def test_explicit_responses_alias_kwarg_wraps_in_codex_adapter(self, monkeypatch, patch_load_config):
+        """A caller-supplied ``api_mode="responses"`` is canonicalized at the resolver chokepoint."""
+        from agent import auxiliary_client as _aux
+
+        patch_load_config({"provider": "azure-foundry", "base_url": "https://r.services.ai.azure.com/openai/v1"})
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")
+
+        client, model = _aux.resolve_provider_client("azure-foundry", "gpt-5.4-nano", api_mode="responses")
+        assert model == "gpt-5.4-nano"
+        assert isinstance(client, _aux.CodexAuxiliaryClient)
