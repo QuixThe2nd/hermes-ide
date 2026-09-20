@@ -12,6 +12,7 @@ and the guidance together.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -192,12 +193,19 @@ def _load_state() -> Dict[str, Any]:
         counter = data.get("counter", 0)
         if not isinstance(counter, int):
             counter = 0
+        # Junk here must not discard the rest of the state, so this parse is
+        # local: anything unparseable reads as 0 (no cooldown armed).
+        try:
+            last_start_epoch = int(data.get("last_start_epoch") or 0)
+        except (TypeError, ValueError):
+            last_start_epoch = 0
         return {
             "guild_id": str(data.get("guild_id") or ""),
             "channel_id": str(data.get("channel_id") or ""),
             "channel_name": str(data.get("channel_name") or ""),
             "welcome_message_id": str(data.get("welcome_message_id") or ""),
             "counter": counter,
+            "last_start_epoch": last_start_epoch,
         }
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return _empty_state()
@@ -212,6 +220,7 @@ def _save_state(state: Dict[str, Any]) -> None:
         "channel_name": str(state.get("channel_name") or ""),
         "welcome_message_id": str(state.get("welcome_message_id") or ""),
         "counter": int(state.get("counter") or 0),
+        "last_start_epoch": int(state.get("last_start_epoch") or 0),
     }
     with path.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, sort_keys=True)
@@ -633,6 +642,40 @@ def _quiet_hours_active(settings: Dict[str, Any], now=None) -> bool:
     return cur >= start or cur < end
 
 
+def _start_cooldown_seconds() -> int:
+    """Minimum seconds between verified starts.
+
+    Read live from plugins.entries.hermes_starts.settings.minimum_interval_minutes
+    (same config path as quiet hours). Unset, non-positive, or unparseable = 0
+    (guard off, current behavior). Never fails a start on config trouble.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        entry = ((cfg.get("plugins") or {}).get("entries") or {}).get("hermes_starts") or {}
+        raw = (entry.get("settings") or {}).get("minimum_interval_minutes")
+        return max(0, int(raw or 0)) * 60
+    except Exception:
+        return 0
+
+
+def _last_start_epoch() -> int:
+    try:
+        return int(_load_state().get("last_start_epoch") or 0)
+    except Exception:
+        return 0
+
+
+def _record_start_epoch() -> None:
+    try:
+        state = _load_state()
+        state["last_start_epoch"] = int(time.time())
+        _save_state(state)
+    except Exception:
+        pass
+
+
 def _mention_user_id() -> str:
     """Discord user ID to ping on new starts.
 
@@ -757,6 +800,21 @@ def _handle_start(args: Dict[str, Any], token: str) -> str:
             if not state["channel_id"]:
                 return json.dumps({"success": False, "error": "channel not provisioned"})
 
+        cooldown = _start_cooldown_seconds()
+        if cooldown > 0:
+            elapsed = time.time() - _last_start_epoch()
+            if elapsed < cooldown:
+                remaining = int(cooldown - elapsed)
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"start cooldown active: last start {int(elapsed)}s ago, "
+                        f"minimum interval {cooldown}s; retry in ~{remaining}s. "
+                        "Override by setting minimum_interval_minutes=0 in "
+                        "plugins.entries.hermes_starts.settings."
+                    ),
+                })
+
         number = int(state["counter"]) + 1
         state["counter"] = number
         _save_state(state)
@@ -842,6 +900,7 @@ def _handle_start(args: Dict[str, Any], token: str) -> str:
             result["thread_name"] = thread_name
             try:
                 _mark_participated_thread(thread_id)
+                _record_start_epoch()
             except Exception as exc:
                 warnings.append(f"thread listen mark failed: {exc}")
             seeded_key: Optional[str] = None
