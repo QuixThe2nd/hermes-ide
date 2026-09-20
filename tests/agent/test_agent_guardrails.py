@@ -122,6 +122,20 @@ class TestSanitizeApiMessages:
         assert stored_call["function"]["name"] == "multi_tool_use.parallel"
         assert out[1]["name"] == "multi_tool_use_parallel"
 
+    def test_invalid_sdk_object_tool_call_name_coerced_without_mutation(self):
+        """An SDK-object tool call with an invalid name is replaced by a dict copy on the per-call
+        copy; the stored object's ``function.name`` is never mutated in place."""
+        fn = types.SimpleNamespace(name="multi_tool_use.parallel", arguments='{"x": 1}')
+        tc_obj = types.SimpleNamespace(id="c1", function=fn)
+        stored = {"role": "assistant", "tool_calls": [tc_obj]}
+        out = AIAgent._sanitize_api_messages([dict(stored), tool_result("c1")])
+        assert out[0]["tool_calls"][0] == {
+            "id": "c1", "type": "function",
+            "function": {"name": "multi_tool_use_parallel", "arguments": '{"x": 1}'},
+        }
+        assert fn.name == "multi_tool_use.parallel"
+        assert stored["tool_calls"][0] is tc_obj
+
 
     def test_sdk_object_tool_calls(self):
         tc_obj = types.SimpleNamespace(id="c6", function=types.SimpleNamespace(

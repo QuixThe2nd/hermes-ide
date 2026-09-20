@@ -2702,8 +2702,8 @@ def _repair_invalid_tool_call_names(messages: List[Dict[str, Any]]) -> None:
     dispatch loop keeps for it); an invalid one (``multi_tool_use.parallel``, a shell command a weak
     fallback model put in ``name``) is coerced deterministically, because one such stored turn 400s
     every later request on a strict endpoint and pins the session to the fallback model (#51944).
-    Dict tool calls are rewritten copy-on-write so a shallow per-call copy never edits persisted
-    history; tool results follow via ``_realign_tool_result_names``."""
+    Tool calls are rewritten copy-on-write (an SDK object becomes a dict copy) so a shallow per-call
+    copy never edits persisted history; tool results follow via ``_realign_tool_result_names``."""
     for msg in messages:
         if msg.get("role") != "assistant":
             continue
@@ -2722,14 +2722,18 @@ def _repair_invalid_tool_call_names(messages: List[Dict[str, Any]]) -> None:
                 "Pre-call sanitizer: repairing tool_call with invalid function.name %r -> %r (id=%s)",
                 (name or "")[:80], coerced, _ra().AIAgent._get_tool_call_id_static(tc),
             )
+            if tcs is msg.get("tool_calls"):
+                tcs = msg["tool_calls"] = list(tcs)
             if isinstance(tc, dict):
-                if tcs is msg.get("tool_calls"):
-                    tcs = msg["tool_calls"] = list(tcs)
                 fn = {**fn, "name": coerced} if isinstance(fn, dict) else {"name": coerced, "arguments": "{}"}
                 tcs[idx] = {**tc, "function": fn}
-            elif fn is not None and hasattr(fn, "name"):
-                with contextlib.suppress(Exception):
-                    fn.name = coerced
+            else:
+                args = getattr(fn, "arguments", None) if fn is not None else None
+                tcs[idx] = {
+                    "id": _ra().AIAgent._get_tool_call_id_static(tc),
+                    "type": "function",
+                    "function": {"name": coerced, "arguments": args if isinstance(args, str) else "{}"},
+                }
 
 
 def _drop_results_without_ids(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
