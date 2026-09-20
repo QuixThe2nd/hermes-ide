@@ -69,3 +69,40 @@ class TestGatewayConnectionErrorReply:
         for reply in replies:
             assert any(cmd in reply for cmd in ("/login", "/retry", "/model")), reply
             assert "provider" not in reply.lower(), reply
+
+
+class TestQuotaExhaustedIsNotAnAuthFailure:
+    """A 429/quota envelope must never send the user to re-authenticate valid credentials, and a
+    long reset window must be named instead of "wait a moment" (#89401)."""
+
+    def test_quota_envelope_with_auth_preamble_names_reset_window(self):
+        reply = _gateway_provider_error_reply(
+            "⚠️ Provider authentication failed: Codex provider quota exhausted (429); "
+            "retry after 116168s. Credentials are still valid.")
+        assert "/login" not in reply and "resets in ~33h" in reply
+        body_reply = _gateway_provider_error_reply(
+            "API call failed after 3 retries: Error code: 429 - "
+            "{'error': {'type': 'usage_limit_reached', 'resets_in_seconds': 30995}}")
+        assert "resets in ~9h" in body_reply
+        # A bare 401 inside a timestamp is not a sign-in failure; a real 401 status still is.
+        assert "rate-limiting" in _gateway_provider_error_reply("API call failed at 05:14:15,401 status 429")
+        assert "/login" in _gateway_provider_error_reply("Error code: 401 - token rejected")
+
+    def test_api_server_resolution_failure_label_follows_cause(self):
+        from gateway.platforms.api_server import _ProviderAuthResolutionError
+        from hermes_cli.auth import AuthError
+        from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+
+        def _wrap(cause):
+            try:
+                raise RuntimeError(str(cause)) from cause
+            except RuntimeError as run_exc:
+                try:
+                    raise _ProviderAuthResolutionError(str(run_exc)) from run_exc
+                except _ProviderAuthResolutionError as typed:
+                    return typed
+
+        quota = AuthError("quota exhausted (429); retry after 5s. Credentials are still valid.",
+                          code=CODEX_RATE_LIMITED_CODE, relogin_required=False)
+        assert _wrap(quota).user_text().startswith("⚠️ Provider rate-limited: ")
+        assert _wrap(AuthError("token expired")).user_text().startswith("⚠️ Provider authentication failed: ")
