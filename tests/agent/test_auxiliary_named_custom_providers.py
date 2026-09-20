@@ -536,3 +536,46 @@ class TestBareNamedAuxCredentialSurvivesAsyncRebuild:
         headers = self._wire_headers(async_client)
         assert headers["authorization"] == "Bearer vk-test-1234"
         assert headers["x-gw-session"] == "aux-session-tag"
+
+
+class TestKeyedCustomProviderReasoningWire:
+    """Aux calls to a keyed ``providers:`` entry take the ``custom`` profile's reasoning wire (#75089).
+
+    Referenced by bare key or via ``main``, a keyed OpenAI-compatible endpoint must get top-level
+    ``reasoning_effort`` (what the main path sends), never the aggregator-only nested
+    ``extra_body.reasoning`` that strict gateways reject with 400.
+    """
+
+    _KEYED = {
+        "model": {"default": "vendor/model", "provider": "groq"},
+        "providers": {"groq": {"name": "groq", "api": "https://api.groq.com/openai/v1", "api_key": "k"}},
+    }
+
+    @pytest.mark.parametrize("provider", ["groq", "main", "custom:groq"])
+    def test_keyed_entry_sends_top_level_reasoning_effort(self, tmp_path, provider):
+        _write_config(tmp_path, self._KEYED)
+        from agent.auxiliary_client import _build_call_kwargs
+        kwargs = _build_call_kwargs(
+            provider, "vendor/model", [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://api.groq.com/openai/v1",
+        )
+        assert kwargs.get("reasoning_effort") == "medium"
+        assert "reasoning" not in (kwargs.get("extra_body") or {})
+
+    def test_profile_backed_and_unknown_providers_keep_their_wire(self, tmp_path):
+        _write_config(tmp_path, self._KEYED)
+        from agent.auxiliary_client import _build_call_kwargs
+        nested = {"reasoning": {"enabled": True, "effort": "medium"}}
+        # Aggregator profile: nested extra_body.reasoning is its wire; unchanged.
+        kwargs = _build_call_kwargs(
+            "openrouter", "vendor/model", [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"}, base_url="https://openrouter.ai/api/v1",
+        )
+        assert kwargs["extra_body"] == nested and "reasoning_effort" not in kwargs
+        # No keyed entry, no base_url, no profile: generic fallback, never the custom projection.
+        kwargs = _build_call_kwargs(
+            "someunknown", "vendor/model", [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kwargs["extra_body"] == nested and "reasoning_effort" not in kwargs
