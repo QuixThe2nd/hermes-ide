@@ -97,10 +97,16 @@ _SVG_DATA_URL = "data:image/svg+xml;base64,PHN2Zy8+"
 _PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgo="
 
 
-def test_unsupported_inline_image_downgrades_to_text_in_message_and_tool_output():
+def _no_rasterizer(monkeypatch):
+    import tools.vision_tools_image_prep as prep
+    monkeypatch.setattr(prep, "_rasterize_svg_to_png", lambda svg_path, out_path: False)
+
+
+def test_unsupported_inline_image_downgrades_to_text_in_message_and_tool_output(monkeypatch):
     """#29711: a data:image/svg+xml part 400s the whole Codex request ('does not represent a valid
     image') on every replay. Both carriers — user message content and the persisted vision_analyze
     function_call_output — must send a text placeholder while the valid PNG still goes as input_image."""
+    _no_rasterizer(monkeypatch)
     messages = [
         {"role": "user", "content": [
             {"type": "image_url", "image_url": {"url": _PNG_DATA_URL, "detail": "high"}},
@@ -122,9 +128,25 @@ def test_unsupported_inline_image_downgrades_to_text_in_message_and_tool_output(
     assert "image/svg+xml" in tool_output["output"][1]["text"]
 
 
-def test_preflight_downgrades_unsupported_inline_image_but_keeps_remote_urls():
+def test_inline_svg_is_rasterized_to_png_when_a_rasterizer_exists(monkeypatch):
+    """#29711 follow-up: with a rasterizer installed the model still sees the drawing — the SVG part
+    goes out as a PNG input_image instead of the text placeholder; the SVG itself is never sent."""
+    import tools.vision_tools_image_prep as prep
+
+    def fake_rasterize(svg_path, out_path):
+        assert svg_path.read_bytes() == b"<svg/>"
+        out_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return True
+    monkeypatch.setattr(prep, "_rasterize_svg_to_png", fake_rasterize)
+    parts = _chat_content_to_responses_parts(
+        [{"type": "image_url", "image_url": {"url": _SVG_DATA_URL, "detail": "high"}}], role="user")
+    assert parts == [{"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo=", "detail": "high"}]
+
+
+def test_preflight_downgrades_unsupported_inline_image_but_keeps_remote_urls(monkeypatch):
     """The preflight validator is the last seam before the wire: an svg data URL in already
     Responses-shaped input becomes text; https URLs are the provider's to validate and pass through."""
+    _no_rasterizer(monkeypatch)
     items = _preflight_codex_input_items([
         {"role": "user", "content": [
             {"type": "input_image", "image_url": _SVG_DATA_URL},

@@ -227,7 +227,8 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
     """Responses image part from a chat/Responses image part (``image_url`` may be a str or
     ``{url, detail}``). Assistant → text placeholder (an assistant ``input_image`` 400s every
     replay); user → ``input_image``, None for an empty url unless ``keep_empty_url``; an inline
-    image of an unsupported subtype (e.g. ``image/svg+xml``) → text placeholder."""
+    SVG is rasterized to PNG when a rasterizer is installed, any other unsupported inline
+    subtype (or an SVG with no rasterizer) → text placeholder."""
     if role == "assistant":
         return {"type": "output_text", "text": _ASSISTANT_IMAGE_PLACEHOLDER}
     url, detail = part.get("image_url"), part.get("detail")
@@ -236,7 +237,15 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
     if not _nonempty_str(url) and not keep_empty_url:
         return None
     url = str(url or "")
-    if (mime := _unsupported_inline_image_subtype(url)) is not None:
+    mime = _unsupported_inline_image_subtype(url)
+    if mime == "image/svg+xml":
+        # Rasterize so the model still sees the drawing; the placeholder is the fallback only
+        # when no rasterizer (cairosvg / svglib / rsvg-convert / inkscape) is available.
+        from tools.vision_tools_image_prep import rasterize_svg_data_url
+        png_url = rasterize_svg_data_url(url)
+        if png_url is not None:
+            url, mime = png_url, None
+    if mime is not None:
         return {"type": "input_text", "text": f"[image omitted: {mime} is not a supported image format]"}
     image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
     if _nonblank(detail):

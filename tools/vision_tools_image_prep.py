@@ -141,6 +141,34 @@ def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
     return False
 
 
+def rasterize_svg_data_url(url: str) -> Optional[str]:
+    """``data:image/svg+xml[;base64],...`` → ``data:image/png;base64,...`` through the same
+    soft-dependency rasterizers vision_analyze uses; None when the payload does not decode or no
+    rasterizer is available. Request-path callers decide the fallback (Responses backends 400 on
+    SVG source, so the caller must never forward the SVG itself)."""
+    import base64
+    from contextlib import suppress
+    from urllib.parse import unquote
+    header, _, payload = url.partition(",")
+    try:
+        raw = base64.b64decode(payload) if ";base64" in header.lower() else unquote(payload).encode()
+    except Exception:
+        return None
+    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = out_dir / f"inline_{uuid.uuid4()}"
+    svg_path, png_path = stem.with_suffix(".svg"), stem.with_suffix(".png")
+    try:
+        svg_path.write_bytes(raw)
+        if not _rasterize_svg_to_png(svg_path, png_path):
+            return None
+        return "data:image/png;base64," + base64.b64encode(png_path.read_bytes()).decode("ascii")
+    finally:
+        for path in (svg_path, png_path):
+            with suppress(OSError):
+                path.unlink()
+
+
 def _normalize_to_supported_image(
     image_path: Path, detected_mime: str) -> tuple[Optional[Path], Optional[str], Optional[str]]:
     """Ensure an image is in a provider-supported format. Returns ``(path, mime, error)``: the input
