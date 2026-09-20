@@ -393,6 +393,8 @@ def _ensure_codex_session(agent) -> None:
         return
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
+    from hermes_cli.codex_runtime_switch import get_configured_codex_binary
+    from hermes_cli.config import load_config
     # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
     approval_callback = None
     with suppress(Exception):
@@ -413,6 +415,7 @@ def _ensure_codex_session(agent) -> None:
     # narrower item/started-only bridge from #38835.
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
+        codex_bin=get_configured_codex_binary(load_config()),
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
     )

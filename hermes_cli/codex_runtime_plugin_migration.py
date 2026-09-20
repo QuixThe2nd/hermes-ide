@@ -277,7 +277,8 @@ def _strip_existing_managed_block(toml_text: str) -> str:
 
 
 def _query_codex_plugins(
-    codex_home: Optional[Path] = None, timeout: float = 8.0) -> tuple[list[dict], Optional[str]]:
+    codex_home: Optional[Path] = None, timeout: float = 8.0, codex_bin: str = "codex",
+) -> tuple[list[dict], Optional[str]]:
     """Spawn ``codex app-server`` briefly and return ``(installed plugins, error)`` from
     ``plugin/list``. Any failure yields ``([], error)`` and is non-fatal (servers and
     permissions still write). Plugins codex reports unavailable (broken install, missing OAuth,
@@ -289,7 +290,7 @@ def _query_codex_plugins(
     except Exception as exc:
         return [], f"transport unavailable: {exc}"
     try:
-        with CodexAppServerClient(codex_home=str(codex_home) if codex_home else None) as client:
+        with CodexAppServerClient(codex_bin=codex_bin, codex_home=str(codex_home) if codex_home else None) as client:
             client.initialize(client_name="hermes-migration")
             resp = client.request("plugin/list", {}, timeout=timeout)
     except Exception as exc:
@@ -434,7 +435,9 @@ def migrate(
     plugins: list[dict] = []
     plugin_query_succeeded = False
     if discover_plugins and not dry_run:
-        plugins, plugin_err = _query_codex_plugins(codex_home=codex_home)
+        from hermes_cli.codex_runtime_switch import get_configured_codex_binary
+        plugins, plugin_err = _query_codex_plugins(
+            codex_home=codex_home, codex_bin=get_configured_codex_binary(hermes_config))
         if plugin_err:
             report.plugin_query_error = plugin_err
         # An authoritative plugin/list (even an empty one) means we own [plugins.*] for this
