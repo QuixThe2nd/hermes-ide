@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 
 import pytest
 
@@ -166,14 +165,10 @@ class TestMigrate:
 
     def test_plugin_discovery_writes_plugin_blocks(self, tmp_path, monkeypatch):
         """Discovered curated plugins land as [plugins."<name>@<marketplace>"]
-        blocks. This is what OpenClaw calls 'migrate native codex plugins.'
-        The discovery spawn must use the configured ``model.codex_bin`` (#61360)."""
+        blocks. This is what OpenClaw calls 'migrate native codex plugins.'"""
         from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        seen: dict = {}
-
         def fake_query(codex_home=None, timeout=8.0, codex_bin="codex"):
-            seen["codex_bin"] = codex_bin
             return [
                 {"name": "google-calendar", "marketplace": "openai-curated",
                  "enabled": True},
@@ -182,15 +177,36 @@ class TestMigrate:
             ], None
         monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
 
-        report = migrate({"model": {"codex_bin": "/opt/codex-app/codex"}},
-                         codex_home=tmp_path, discover_plugins=True)
-        assert seen["codex_bin"] == "/opt/codex-app/codex"
+        report = migrate({}, codex_home=tmp_path, discover_plugins=True)
         text = (tmp_path / "config.toml").read_text()
         assert '[plugins."github@openai-curated"]' in text
         assert '[plugins."google-calendar@openai-curated"]' in text
         assert "enabled = true" in text
         assert "google-calendar@openai-curated" in report.migrated_plugins
         assert "github@openai-curated" in report.migrated_plugins
+
+    def test_plugin_discovery_uses_configured_codex_binary(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        captured = {}
+
+        def fake_query(codex_home=None, timeout=8.0, codex_bin="codex"):
+            captured["codex_bin"] = codex_bin
+            return [], None
+
+        monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
+        configured = "/Applications/Codex.app/Contents/Resources/codex"
+
+        migrate(
+            {"model": {"codex_bin": configured}},
+            codex_home=tmp_path,
+            discover_plugins=True,
+            expose_hermes_tools=False,
+        )
+
+        assert captured["codex_bin"] == configured
 
     def test_plugin_discovery_failure_non_fatal(self, tmp_path, monkeypatch):
         """If codex isn't installed or RPC fails, MCP migration still
@@ -479,7 +495,7 @@ class TestSameNameUserMcpTable:
         target.write_text('[mcp_servers.gbrain]\ncommand = "a"\n[mcp_servers.gbrain]\ncommand = "b"\n',
                           encoding="utf-8")
         monkeypatch.setattr(crpm, "_query_codex_plugins",
-                            lambda codex_home=None, timeout=8.0: ([], "plugin/list query failed"))
+                            lambda codex_home=None, timeout=8.0, codex_bin="codex": ([], "plugin/list query failed"))
         report = migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
         assert "re-run `hermes codex-runtime migrate` to migrate plugins" in (report.plugin_query_error or "")
         assert "existing config.toml was unloadable" in report.summary()
