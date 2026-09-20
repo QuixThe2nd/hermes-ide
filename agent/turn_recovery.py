@@ -381,16 +381,46 @@ def _refresh_credentials_after_401(
     return False
 
 
-def _is_lingering_codex_token_expired(agent: Any, api_error: Exception, _retry: TurnRetryState) -> bool:
-    """401 ``token_expired`` that survived the one-shot Codex OAuth refresh (#88510). The Codex
-    backend rejects a stale replayed ``encrypted_content`` blob with this auth signature, so a
-    persisted session loops on "sign in again" while a fresh session on the same bearer works.
-    Once the credential path has had its turn, the caller treats it like
+def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
+    """401 ``token_expired`` from the Codex backend (#88510). It rejects a stale replayed
+    ``encrypted_content`` blob with this auth signature, so a persisted session loops on "sign
+    in again" while a fresh session on the same bearer works. The caller treats it like
     ``invalid_encrypted_content`` — but only while cached reasoning items remain to strip."""
-    if getattr(api_error, "status_code", None) != 401 or not _retry.codex_auth_retry_attempted:
+    if getattr(api_error, "status_code", None) != 401:
         return False
     reason = agent._extract_api_error_context(api_error).get("reason")
     return isinstance(reason, str) and reason.strip().lower() == "token_expired"
+
+
+def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages: List[Dict[str, Any]]) -> bool:
+    """Stale ``codex_reasoning_items`` blob rejected by the provider: disable replay for the
+    session, strip cached items (mutates persisted ``messages``), retry once."""
+    if (
+        _retry.invalid_encrypted_content_retry_attempted
+        or agent.api_mode != "codex_responses"
+        or not bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
+        or not any(
+            isinstance(_m, dict)
+            and _m.get("role") == "assistant"
+            and isinstance(_m.get("codex_reasoning_items"), list)
+            and _m.get("codex_reasoning_items")
+            for _m in messages
+        )
+    ):
+        return False
+    _retry.invalid_encrypted_content_retry_attempted = True
+    replay_stats = agent._disable_codex_reasoning_replay(messages)
+    _vlines(
+        agent,
+        f"⚠️  Encrypted reasoning replay was rejected by the provider — "
+        f"disabled replay and stripped {replay_stats['items']} item(s) from "
+        f"{replay_stats['messages']} message(s), retrying...",
+    )
+    logger.warning(
+        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
+        agent.log_prefix, replay_stats["items"], replay_stats["messages"],
+    )
+    return True
 
 
 def _recover_format_errors(
@@ -418,37 +448,11 @@ def _recover_format_errors(
         )
         return True
 
-    # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob — or the same
-    # rejection wearing a 401 ``token_expired`` after the credential refresh changed nothing:
-    # disable replay for the session, strip cached items, retry once.
-    if (
-        (
-            classified.reason == FailoverReason.invalid_encrypted_content
-            or _is_lingering_codex_token_expired(agent, api_error, _retry)
-        )
-        and not _retry.invalid_encrypted_content_retry_attempted
-        and agent.api_mode == "codex_responses"
-        and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
-        and any(
-            isinstance(_m, dict)
-            and _m.get("role") == "assistant"
-            and isinstance(_m.get("codex_reasoning_items"), list)
-            and _m.get("codex_reasoning_items")
-            for _m in messages
-        )
+    # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob (the 401
+    # ``token_expired`` twin is taken ahead of the credential pool in the caller).
+    if classified.reason == FailoverReason.invalid_encrypted_content and _recover_stale_codex_reasoning(
+        agent, _retry, messages
     ):
-        _retry.invalid_encrypted_content_retry_attempted = True
-        replay_stats = agent._disable_codex_reasoning_replay(messages)
-        _vlines(
-            agent,
-            f"⚠️  Encrypted reasoning replay was rejected by the provider — "
-            f"disabled replay and stripped {replay_stats['items']} item(s) from "
-            f"{replay_stats['messages']} message(s), retrying...",
-        )
-        logger.warning(
-            "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
-            agent.log_prefix, replay_stats["items"], replay_stats["messages"],
-        )
         return True
 
     # Structured 400 naming ``context_management``: disable native compaction for the
@@ -556,13 +560,21 @@ def recover_after_classification(
 ) -> Tuple[bool, bool]:
     """One-shot recovery chain that runs AFTER ``classify_api_error`` and before the
     generic retry path. Order is load-bearing (each branch may ``return`` early):
-    Nous paid-entitlement refresh → credential-pool rotation → image shrink →
-    multimodal-tool-content strip → corrupt-image strip → Anthropic OAuth 1M-beta
-    disable → per-provider 401 credential refresh → format-recovery strips.
+    Nous paid-entitlement refresh → Codex stale-reasoning strip on 401 ``token_expired`` →
+    credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
+    strip → Anthropic OAuth 1M-beta disable → per-provider 401 credential refresh →
+    format-recovery strips.
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
     from agent.conversation_loop import _is_nous_inference_route
 
     if _recover_welcome_tier(agent, classified, _retry):
+        return True, False
+
+    # 401 ``token_expired`` while the transcript still carries ``codex_reasoning_items`` is a
+    # stale replayed blob far more often than a dead bearer (#88510): strip BEFORE the pool
+    # refreshes/benches every healthy entry over a session-state problem. A real expiry pays
+    # one extra round-trip and then takes the credential path below as before.
+    if _is_codex_token_expired(agent, api_error) and _recover_stale_codex_reasoning(agent, _retry, messages):
         return True, False
 
     if (
