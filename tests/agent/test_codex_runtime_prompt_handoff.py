@@ -14,6 +14,10 @@ from agent.transports import codex_app_server_session as sess_mod
 class _FakeClient:
     def __init__(self, **_kw):
         self.requests = []
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
 
     def initialize(self, **_kw):
         return {}
@@ -53,3 +57,19 @@ def test_runtime_omits_prompt_when_agent_has_none(monkeypatch):
     agent._codex_session.ensure_started()
     (_, params), = [(m, p) for (m, p) in client.requests if m == "thread/start"]
     assert "developerInstructions" not in params
+
+
+def test_runtime_retires_thread_when_prompt_composition_changes(monkeypatch):
+    """TUI/Desktop ``/personality`` mutates the live agent's ephemeral prompt in place; the next turn must
+    retire the thread started with the old composition and start one carrying the new developerInstructions."""
+    client = _FakeClient()
+    monkeypatch.setattr(sess_mod, "CodexAppServerClient", lambda **kw: client)
+    agent = _agent()
+    codex_runtime._ensure_codex_session(agent)
+    agent._codex_session.ensure_started()
+    agent.ephemeral_system_prompt = "Personality: pirate"
+    codex_runtime._ensure_codex_session(agent)
+    agent._codex_session.ensure_started()
+    starts = [p["developerInstructions"] for (m, p) in client.requests if m == "thread/start"]
+    assert starts == ["SOUL: you are Hermes\n\nAlways start with ZZZ", "SOUL: you are Hermes\n\nPersonality: pirate"]
+    assert client.closed == 1  # the stale thread's client was closed, not leaked
