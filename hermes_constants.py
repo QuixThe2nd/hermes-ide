@@ -922,7 +922,11 @@ def get_real_home(env: dict[str, str] | None = None) -> str:
         if not _is_profile_home(candidate, profile_home):
             return candidate
     import tempfile
-    return tempfile.gettempdir()
+    try:
+        return tempfile.gettempdir()
+    except (RuntimeError, OSError):
+        # no HOME/USERPROFILE at all (env-less child on Windows): tempfile cannot expand ``~``
+        return "/tmp"  # no-tmp: ok — last-resort fallback for an env with no home; not a write target we choose
 
 
 _HOME_MODE_ALIASES = {"isolated": "profile", "profile_home": "profile", "profile-home": "profile",

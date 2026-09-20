@@ -59,11 +59,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 def _runner_scratch_root() -> str:
-    """Per-run temp roots live under the developer's Hermes scratch dir, never the system
-    temp dir: a full-suite run writes gigabytes of tmp_path fixtures, and /tmp is RAM-backed
-    tmpfs on many Linux hosts. Resolved without importing the tree under test."""
-    home = os.environ.get("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
-    root = os.path.join(home, "cache", "scratch", "pytest")
+    """Per-run temp roots live on disk under the user's cache dir, never the system temp dir:
+    a full-suite run writes gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on
+    many Linux hosts. Not under the Hermes home (conftest refuses a basetemp inside the live
+    install and would relocate it), and kept as short as the old /tmp root because tests that
+    bind AF_UNIX sockets under ``tempfile.mkdtemp()`` must stay within sun_path."""
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    root = os.path.join(cache, "hermes-pytest")
     os.makedirs(root, exist_ok=True)
     return root
 
@@ -412,7 +414,7 @@ def _run_one_file_once(
     # One root for each subprocess removes the shared directory that the race
     # needs. The parent deletes the root after the attempt.
     env = os.environ.copy()
-    temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-", dir=_runner_scratch_root())
+    temproot = tempfile.mkdtemp(prefix="r-", dir=_runner_scratch_root())
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
     # Every tempfile.* call inside the test process lands in the same per-run root, so the
     # parent's cleanup of ``temproot`` removes them too instead of leaving them in /tmp.
