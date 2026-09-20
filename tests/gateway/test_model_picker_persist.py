@@ -361,3 +361,49 @@ async def test_concurrent_model_commands_commit_in_issue_order(tmp_path, monkeyp
     assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["model"]["default"] == "model-A"
     assert runner._session_model_override(session_key)["model"] == "model-B"
     assert runner.session_store.get_model_override(session_key)["model"] == "model-B"
+
+
+@pytest.mark.asyncio
+async def test_global_switch_keeps_session_override_under_channel_override(tmp_path, monkeypatch):
+    """Precedence is session /model > channel_overrides > config.yaml. In a chat whose
+    ``channel_overrides`` names a model, a ``--global`` pick must NOT drop the session override:
+    config.yaml alone would lose to the channel model on the next turn while the confirmation
+    claims the switch to gpt-5.5 (#100314 follow-up)."""
+    from gateway.config import ChannelOverride, GatewayConfig, PlatformConfig
+
+    _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
+    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(
+        enabled=True, channel_overrides={"12345": ChannelOverride(model="channel-model")})})
+    source = _make_event("x").source
+    runner.session_store.get_or_create_session(source)
+
+    confirmation = await _typed_global(runner)
+
+    assert "gpt-5.5" in confirmation
+    model, _runtime = runner._resolve_session_agent_runtime(source=source)
+    assert model == "gpt-5.5", f"next turn would run {model!r} while the confirmation says gpt-5.5"
+    assert runner.session_store.get_model_override(runner._session_key_for_source(source))["model"] == "gpt-5.5"
+
+
+@pytest.mark.asyncio
+async def test_global_switch_reports_failed_stale_override_cleanup(tmp_path, monkeypatch):
+    """config.yaml written but the stale session override could not be cleared from the store: the
+    in-memory override stays (memory agrees with the store's copy surviving) and the confirmation
+    warns instead of claiming a clean 'Saved to config.yaml' (#100314 acceptance)."""
+    _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
+    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    source = _make_event("x").source
+    session_key = runner._session_key_for_source(source)
+    runner.session_store.get_or_create_session(source)
+
+    def _locked(key, override):
+        raise OSError("store locked")
+
+    monkeypatch.setattr(runner.session_store, "set_model_override", _locked)
+
+    confirmation = await _typed_global(runner)
+
+    assert "store locked" in confirmation
+    assert "Saved to config.yaml" not in confirmation
+    assert runner._session_model_override(session_key)["model"] == "gpt-5.5"

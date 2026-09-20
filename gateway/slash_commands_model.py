@@ -198,8 +198,8 @@ class GatewayModelCommandsMixin:
     ) -> Optional[str]:
         """Persist a committed switch: session DB, next-turn note, config write-through, override map.
 
-        Returns the config-write error for a ``--global`` switch whose ``config.yaml`` write failed
-        (the switch then stays a session override), else ``None``.
+        Returns the warning for a ``--global`` switch whose ``config.yaml`` write or stale-override
+        cleanup failed (the switch then stays a session override), else ``None``.
         """
         from hermes_cli.model_switch import format_model_for_display
 
@@ -251,13 +251,18 @@ class GatewayModelCommandsMixin:
                 await _persist_model_switch_to_config(result, ctx.config_path)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
-                global_error = str(e) or type(e).__name__
-        if ctx.persist_global and global_error is None:
-            self._session_model_overrides.pop(ctx.session_key, None)
+                global_error = f"config.yaml not updated ({str(e) or type(e).__name__})"
+        # Precedence is session > channel_overrides > config.yaml: in a chat with a channel_overrides
+        # model/provider the session override must stay, or the next turn runs the channel model.
+        if ctx.persist_global and global_error is None and self._channel_override_for(source) is None:
             try:
                 await self.async_session_store.set_model_override(ctx.session_key, None)
-            except Exception:
-                logger.debug("Failed to clear persisted session model override", exc_info=True)
+            except Exception as e:
+                # Store still holds the stale copy: keep memory in agreement and report it (#100314).
+                logger.warning("Failed to clear persisted session model override: %s", e)
+                global_error = f"saved to config.yaml, but the stale session override was not cleared ({e})"
+            else:
+                self._session_model_overrides.pop(ctx.session_key, None)
         # Non-secret write-through so the override survives a restart (api_key/api_mode are
         # re-resolved on rehydration); a --once override must NOT outlive a restart.
         # Write-through the non-secret parts (model/provider/base_url) to the session store so the override
@@ -323,7 +328,7 @@ class GatewayModelCommandsMixin:
             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
         if ctx.persist_global and global_error is not None:
             # Never claim a clean global commit the disk did not take (#100314).
-            lines.append(t("gateway.model.warning_prefix", warning=f"config.yaml not updated ({global_error})"))
+            lines.append(t("gateway.model.warning_prefix", warning=global_error))
             lines.append(t("gateway.model.session_only_hint"))
         elif ctx.persist_global:
             lines.append(t("gateway.model.saved_global"))
@@ -343,6 +348,18 @@ class GatewayModelCommandsMixin:
         and take the switch lock themselves; the typed path already holds it."""
         async with self._model_switch_lock():
             return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
+
+    def _channel_override_for(self, source):
+        """This chat's ``channel_overrides`` entry (model/provider), or None."""
+        from gateway.run import _get_channel_override
+        cfg = getattr(self, "config", None)
+        if not cfg or source is None:
+            return None
+        return _get_channel_override(
+            cfg, source.platform, str(source.chat_id) if source.chat_id else "",
+            thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+            parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+        )
 
     def _model_switch_lock(self) -> asyncio.Lock:
         """Runner-wide lock over a /model command's read-resolve-commit. Slash commands bypass the busy
