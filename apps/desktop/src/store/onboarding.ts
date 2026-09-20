@@ -1166,7 +1166,15 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
 
 // User picked a different model from the dropdown on the confirm card.
 // Persists immediately so the displayed value is always what's on disk.
-export async function setOnboardingModel(model: string) {
+//
+// The picker can surface models from ANY configured provider, not just the
+// one the user just authenticated. The selection therefore carries the
+// model's real provider slug — persist against that, or a foreign model
+// gets paired with the sign-in provider (config says provider A serves a
+// model only provider B has; chat errors "provider doesn't have the
+// selected model"). Also keep the flow's providerSlug/label in sync so the
+// confirm card shows the provider that actually serves the picked model.
+export async function setOnboardingModel(model: string, providerSlug?: string, label?: string) {
   const generation = flowGeneration
   const { flow } = $desktopOnboarding.get()
 
@@ -1174,14 +1182,19 @@ export async function setOnboardingModel(model: string) {
     return
   }
 
+  // Fall back to the sign-in provider when the caller doesn't know the
+  // model's provider (back-compat) — the confirm card always has both.
+  const provider = (providerSlug || flow.providerSlug).trim() || flow.providerSlug
+  const displayLabel = label || flow.label
+
   // Optimistic update so the dropdown feels instant; revert on failure.
-  const previous = flow.currentModel
-  setFlow({ ...flow, currentModel: model, saving: true })
+  const previous = { currentModel: flow.currentModel, label: flow.label, providerSlug: flow.providerSlug }
+  setFlow({ ...flow, currentModel: model, providerSlug: provider, label: displayLabel, saving: true })
 
   try {
     await setMainModelAssignment(
       {
-        provider: flow.providerSlug,
+        provider,
         model
       },
       flowProfile ?? $desktopOnboarding.get().targetProfile
@@ -1194,7 +1207,7 @@ export async function setOnboardingModel(model: string) {
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {
-      setFlow({ ...current, currentModel: model, saving: false })
+      setFlow({ ...current, currentModel: model, providerSlug: provider, label: displayLabel, saving: false })
     }
   } catch (error) {
     if (generation !== flowGeneration) {
@@ -1205,7 +1218,7 @@ export async function setOnboardingModel(model: string) {
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {
-      setFlow({ ...current, currentModel: previous, saving: false })
+      setFlow({ ...current, ...previous, saving: false })
     }
   }
 }
