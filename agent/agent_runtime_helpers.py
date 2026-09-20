@@ -907,6 +907,11 @@ def recover_with_credential_pool(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,
         )
+    if effective_reason == FailoverReason.model_entitlement:
+        # The pool benches (credential, model) only and hands back the next entry that is not
+        # benched for this model; None once every entry rejected it, so the caller falls
+        # through to the single-credential handling in _mark_entitlement_rejected_model (#71970).
+        return _rotate_and_swap(400, "model entitlement"), has_retried_429
     if effective_reason == FailoverReason.auth:
         return _recover_auth_failure(
             agent, pool, status_code=status_code, has_retried_429=has_retried_429,

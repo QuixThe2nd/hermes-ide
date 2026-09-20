@@ -49,6 +49,7 @@ class FailoverReason(enum.Enum):
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
+    model_entitlement = "model_entitlement"  # This account cannot use the requested model — rotate credential (model-scoped), else fall back
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     role_alternation = "role_alternation"  # Strict chat template rejected adjacent same-role messages — merge them for this destination and retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
@@ -260,6 +261,9 @@ _CONTEXT_OVERFLOW_PATTERNS = (
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —
 # model_not_found triggers fallback instead of burning retries (#58446).
+# Codex ChatGPT-account entitlement 400 — the account can never use the named slug (#71970, #106475).
+CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER = "model is not supported when using codex with a chatgpt account"
+
 _MODEL_NOT_FOUND_PATTERNS = (
     "is not a valid model", "invalid model", "model not found", "model_not_found", "does not exist",
     "no such model", "unknown model", "unsupported model", "no endpoints found that support tool use",
@@ -435,6 +439,8 @@ _V_AUTH_ROTATE = _v(_R.auth, retryable=False, **_ROTATE_FALLBACK)
 _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
 _V_CONTENT_BLOCKED = _v(_R.content_policy_blocked, **_ABORT_FALLBACK)
+# Another account in the same pool may hold the entitlement; the credential itself is healthy.
+_V_MODEL_ENTITLEMENT = _v(_R.model_entitlement, retryable=False, **_ROTATE_FALLBACK)
 _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
 # A different provider (direct instead of the aggregator; another host's TLS chain) can fix these.
 _V_POLICY_BLOCKED = _v(_R.provider_policy_blocked, **_ABORT_FALLBACK)
@@ -1002,6 +1008,10 @@ def _classify_400(c: _Ctx) -> Verdict:
     verdict = _first_match(msg, _IMAGE_TOOL_RULES)
     if verdict is not None:
         return verdict
+    # Codex ChatGPT-account model rejection: exact normalized text only, so arbitrary 400s never
+    # rotate. Before request-validation, whose "not supported" wording would abort as format_error (#71970).
+    if CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER in msg:
+        return _V_MODEL_ENTITLEMENT
     # Invalid encrypted reasoning replay blob (OpenAI Responses); before
     # overflow because "encrypted content … could not be verified" trips it.
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
