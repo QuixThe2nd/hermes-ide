@@ -360,12 +360,17 @@ def _post_setup_openai_codex() -> None:
     _print_info("    OpenAI (Codex auth) needs credentials.")
     try:
         from hermes_cli.auth import _codex_device_code_login, _save_codex_tokens
-        from hermes_cli.setup import prompt_choice
+        from hermes_cli.setup import is_noninteractive, prompt_choice
     except Exception as exc:
         _print_warning(f"    Could not load setup helpers: {exc}")
         _info_lines(f"Run later: {relogin}")
         return
 
+    if is_noninteractive():
+        # Dashboard/Desktop spawn this hook with stdin=DEVNULL: nobody can finish a device-code
+        # login here, and the panel already shows the needs_auth pill.
+        _info_lines(f"No terminal to sign in from. Run: {relogin}")
+        return
     idx = prompt_choice(
         "    How do you want to sign in?", default=0,
         choices=["Sign in with ChatGPT/Codex OAuth — browser login",
