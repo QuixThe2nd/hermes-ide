@@ -19,7 +19,9 @@ from typing import Any, Callable, Optional
 
 from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
-from agent.transports.codex_app_server import CodexAppServerClient, CodexAppServerError
+from agent.transports.codex_app_server import (
+    CodexAppServerClient, CodexAppServerError, CodexAppServerTransportError,
+)
 from agent.transports.codex_event_projector import CodexEventProjector, ProjectionResult
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 
@@ -255,7 +257,8 @@ class CodexAppServerSession:
         return f"{base}\ncodex stderr (last {len(tail)} lines):\n{redact_sensitive_text(joined, force=True)}"
 
     def _stderr_blob(self, n: int) -> str:
-        return "\n".join(self._client.stderr_tail(n))
+        client = self._client
+        return "" if client is None else "\n".join(client.stderr_tail(n))
 
     @staticmethod
     def _retire(result: TurnResult, error: str) -> None:
@@ -286,6 +289,8 @@ class CodexAppServerSession:
         """Issue ``method``; on failure fill ``result.error`` and return None. A timeout always retires."""
         try:
             return self._client.request(method, params, timeout=10)
+        except CodexAppServerTransportError as exc:
+            self._retire(result, self._format_error_with_stderr(f"{label} failed", exc))
         except CodexAppServerError as exc:
             self._set_classified_error(result, f"{label} failed", exc.message, exc)
         except TimeoutError as exc:
@@ -293,9 +298,17 @@ class CodexAppServerSession:
             self._retire(result, hint or self._format_error_with_stderr(f"{label} timed out", exc))
         return None
 
-    def _subprocess_died(self, result: TurnResult) -> bool:
-        """Bail out early (rather than waiting on the deadline) when codex exited."""
-        if self._client.is_alive():
+    def _subprocess_died(self, result: TurnResult, client: CodexAppServerClient) -> bool:
+        """Bail out early (rather than waiting on the deadline) when codex exited or close() ran.
+
+        ``client`` is the loop's snapshot: close() on another thread nulls ``self._client``
+        mid-turn (session expiry), which must end the turn, not raise AttributeError.
+        """
+        if self._closed or self._client is not client:
+            result.interrupted = True
+            self._retire(result, "codex app-server session closed while the turn was in flight")
+            return True
+        if client.is_alive():
             return False
         hint = _classify_oauth_failure(stderr=self._stderr_blob(60))
         self._retire(result, hint or self._format_error_with_stderr("codex app-server subprocess exited unexpectedly", tail_lines=20))
@@ -366,6 +379,7 @@ class CodexAppServerSession:
     ) -> None:
         """Drive an accepted ``turn/start`` to completion: quiet warning, approvals, projection."""
         projector = CodexEventProjector()
+        client = self._client
         result.turn_id = (ts.get("turn") or {}).get("id")
         with self._active_turn_lock:
             self._active_turn_id = result.turn_id
@@ -390,7 +404,7 @@ class CodexAppServerSession:
             # current for the approval decision and display events still reach on_event.
             turn_complete = False
             for _ in range(8):
-                pending = self._client.take_notification(timeout=0)
+                pending = client.take_notification(timeout=0)
                 if pending is None:
                     break
                 if not _notification_belongs_to_turn(pending, thread_id=self._thread_id, turn_id=result.turn_id):
@@ -446,20 +460,25 @@ class CodexAppServerSession:
         """
         deadline = time.monotonic() + turn_timeout
         turn_complete = False
+        client = self._client
         while time.monotonic() < deadline and not turn_complete:
             if self._interrupt_event.is_set():
                 self._issue_interrupt(result.turn_id)
                 result.interrupted = True
                 break
-            if self._subprocess_died(result):
+            if client is None or self._subprocess_died(result, client):
                 break
             if before_poll is not None and before_poll():
                 break
-            sreq = self._client.take_server_request(timeout=0)
+            sreq = client.take_server_request(timeout=0)
             if sreq is not None:
-                turn_complete = on_server_request(sreq)
+                try:
+                    turn_complete = on_server_request(sreq)
+                except CodexAppServerTransportError as exc:
+                    self._retire(result, self._format_error_with_stderr("codex app-server request response failed", exc))
+                    break
                 continue
-            note = self._client.take_notification(timeout=notification_poll_timeout)
+            note = client.take_notification(timeout=notification_poll_timeout)
             if note is None:
                 continue
             method = note.get("method", "")
@@ -548,10 +567,11 @@ class CodexAppServerSession:
         return result
 
     def _issue_interrupt(self, turn_id: Optional[str]) -> None:
-        if self._client is None or self._thread_id is None or turn_id is None:
+        client = self._client
+        if client is None or self._thread_id is None or turn_id is None:
             return
         try:
-            self._client.request("turn/interrupt", {"threadId": self._thread_id, "turnId": turn_id}, timeout=5)
+            client.request("turn/interrupt", {"threadId": self._thread_id, "turnId": turn_id}, timeout=5)
         except CodexAppServerError as exc:
             # "no active turn to interrupt" is fine — already done.
             logger.debug("turn/interrupt non-fatal: %s", exc)
@@ -564,7 +584,8 @@ class CodexAppServerSession:
         Permission escalations are always declined (the user chose their profile in
         ~/.codex/config.toml); unknown methods get a JSON-RPC error so codex doesn't hang.
         """
-        if self._client is None:
+        client = self._client
+        if client is None:
             return
         method = req.get("method", "")
         rid = req.get("id")
@@ -572,9 +593,9 @@ class CodexAppServerSession:
         handler = self._SERVER_REQUEST_HANDLERS.get(method)
         if handler is None:
             logger.warning("Unknown codex server request: %s", method)
-            self._client.respond_error(rid, code=-32601, message=f"Unsupported method: {method}")
+            client.respond_error(rid, code=-32601, message=f"Unsupported method: {method}")
             return
-        self._client.respond(rid, handler(self, params))
+        client.respond(rid, handler(self, params))
 
     def _respond_elicitation(self, params: dict) -> dict:
         """MCP elicitation: auto-accept our own hermes-tools server (opted in by enabling the runtime;
