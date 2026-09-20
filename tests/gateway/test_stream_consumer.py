@@ -1396,6 +1396,32 @@ class TestStripOrphanCloseTags:
         assert GatewayStreamConsumer._strip_orphan_close_tags("") == ""
 
 
+class TestConfirmedFinalDeliveryConsultsCommentaryRecord:
+    """The gateway's final-send predicate must recognise a final reply the consumer already
+    delivered through the commentary path even when the runtime never set ``response_previewed``
+    (codex app-server final agentMessage, #74248 / #80519) — and must still send a distinct final."""
+
+    @staticmethod
+    def _consumer_after_commentary(text):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        c = GatewayStreamConsumer(adapter=adapter, chat_id="c1")
+        assert asyncio.run(c._send_commentary(text)) is True
+        return c
+
+    def test_same_text_delivered_as_commentary_is_confirmed_without_previewed_flag(self):
+        from gateway.run_turn import GatewayTurnMixin
+        c = self._consumer_after_commentary("Native compaction is active.")
+        assert GatewayTurnMixin._run_agent_stream_confirmed_final_delivery(
+            c, "Native compaction is active.", previewed=False) is True
+
+    def test_distinct_final_after_commentary_is_still_sent(self):
+        from gateway.run_turn import GatewayTurnMixin
+        c = self._consumer_after_commentary("Checking the compaction config first.")
+        assert GatewayTurnMixin._run_agent_stream_confirmed_final_delivery(
+            c, "Native compaction is active.", previewed=False) is False
+
+
 class TestHasDeliveredTextAfterSegmentBreak:
     """has_delivered_text must find a delivered segment after a segment break,
     but must not claim text from a failed delivery. (#65919 review)"""
