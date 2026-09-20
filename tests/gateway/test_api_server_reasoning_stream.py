@@ -50,23 +50,50 @@ def adapter():
     return APIServerAdapter(PlatformConfig(enabled=True, extra={}))
 
 
+def _stub_create_agent_runtime(monkeypatch, fake_agent_cls):
+    """Stub every external dependency of ``_create_agent`` so the real
+    ``_spawn_stream_agent -> _run_agent -> _create_agent -> AIAgent(...)`` wiring runs."""
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
+    monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {
+        "provider": "openrouter", "api_key": "sk-test", "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions"})
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {}))
+    monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+
 @pytest.mark.asyncio
-async def test_chat_completions_stream_forwards_reasoning_as_reasoning_content(adapter):
-    """Reasoning deltas ride ``delta.reasoning_content``; answer text stays in ``delta.content``."""
+async def test_chat_completions_stream_forwards_agent_reasoning_callback(adapter, monkeypatch):
+    """Production entry point: ``_spawn_stream_agent`` wires the agent's ``reasoning_callback``
+    through ``_run_agent`` / ``_create_agent`` into ``AIAgent(...)``; what the agent emits there
+    reaches the SSE writer as ``delta.reasoning_content`` while answer text stays in ``delta.content``."""
     import gateway.platforms.api_server as api_mod
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self._reasoning_callback = kwargs.get("reasoning_callback")
+            self._stream_delta_callback = kwargs.get("stream_delta_callback")
+            self.session_id = kwargs.get("session_id")
+
+        def run_conversation(self, **kwargs):
+            if self._reasoning_callback is not None:
+                self._reasoning_callback("thinking...")
+            self._stream_delta_callback("answer")
+            return {"final_response": "answer", "completed": True}
+
+    _stub_create_agent_runtime(monkeypatch, FakeAgent)
+    monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
     request, written, fake_response = _fake_writer_env()
     stream_q = ThreadSafeAsyncQueue()
-
-    async def _agent():
-        stream_q.put_nowait(("__reasoning__", "thinking..."))
-        stream_q.put_nowait("answer")
-        return {"final_response": "answer", "completed": True}, None
-
-    agent_task = asyncio.ensure_future(_agent())
-    agent_task.add_done_callback(lambda _f: stream_q.put_nowait(None))
+    agent_task, agent_ref = adapter._spawn_stream_agent(
+        stream_q, user_message="q", conversation_history=[], session_id="api-session")
     with patch.object(api_mod.web, "StreamResponse", return_value=fake_response):
         await adapter._write_sse_chat_completion(
-            request, "chatcmpl-x", "hermes-agent", int(time.time()), stream_q, agent_task, [None])
+            request, "chatcmpl-x", "hermes-agent", int(time.time()), stream_q, agent_task, agent_ref)
+    assert isinstance(agent_ref[0], FakeAgent)
     deltas = [d["choices"][0]["delta"] for _e, d in _frames(written)]
     assert [d.get("reasoning_content") for d in deltas if d.get("reasoning_content")] == ["thinking..."]
     assert "".join(d.get("content") or "" for d in deltas) == "answer"
