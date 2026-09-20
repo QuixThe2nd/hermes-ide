@@ -944,6 +944,9 @@ def _job_is_stale_error_recurring(
     """
     if job.get("last_status") != "error":
         return False
+    from cron.quota_hold import hold_active
+    if hold_active(job, now):
+        return False  # deliberately parked past a provider usage window, not wedged (#89376)
     if _job_running_in_this_process(str(job.get("id") or "")):
         return False
     # A fresh fire_claim means the job is running in ANOTHER process sharing this
@@ -2471,6 +2474,7 @@ def mark_job_run(
     *,
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
+    quota_hold_seconds: Optional[float] = None,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2484,6 +2488,10 @@ def mark_job_run(
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
     earlier per ``cron.unreachable_retry.RETRY_DELAYS_SECONDS`` — instead of waiting a full period
     (Cowork-style; see cron/unreachable_retry.py).
+
+    ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
+    ``retry after <N>s``). Recurring jobs are parked at their first occurrence after the window
+    instead of re-firing into it on every tick (cron/quota_hold.py, #89376).
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2496,6 +2504,7 @@ def mark_job_run(
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
         _advance_after_run(job, now)
+        from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
         if not success and model_unreachable and not is_terminal_job(job):
@@ -2503,6 +2512,10 @@ def mark_job_run(
         else:
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
+        if not success and quota_hold_seconds and not is_terminal_job(job):
+            quota_hold.plan_hold(job, quota_hold_seconds)
+        else:
+            quota_hold.clear_state(job)
         save_jobs(jobs)
         return True
 
