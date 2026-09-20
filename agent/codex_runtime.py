@@ -477,11 +477,19 @@ def _ensure_codex_session(agent) -> None:
     # _emit_interim_assistant_message). Without this, Discord/Telegram users see no live tool-progress or
     # interim commentary while codex_app_server is running — only the final answer (#33200). Supersedes the
     # narrower item/started-only bridge from #38835.
+    # Hermes owns the prompt: the same composition the standard loop sends as its system message
+    # (cached per-session prompt + ephemeral additions such as channel overrides) rides along ONCE per
+    # thread as developerInstructions. A retired/recreated session re-sends the current composition;
+    # conversation history is still not projected into the codex thread (#74712, #26035).
+    developer_instructions = getattr(agent, "_cached_system_prompt", None) or ""
+    if getattr(agent, "ephemeral_system_prompt", None):
+        developer_instructions = (developer_instructions + "\n\n" + agent.ephemeral_system_prompt).strip()
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         codex_bin=get_configured_codex_binary(load_config()),
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
+        developer_instructions=developer_instructions or None,
     )
 
 
