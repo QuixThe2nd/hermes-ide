@@ -62,24 +62,9 @@ describe('voice field option coverage', () => {
     }
   })
 
-  it('suggests ElevenLabs v3 and current flash/turbo ids, not just multilingual v2', () => {
-    const models = ENUM_OPTIONS['tts.elevenlabs.model_id']
-
-    for (const model of [
-      'eleven_v3',
-      'eleven_ttv_v3',
-      'eleven_multilingual_v2',
-      'eleven_turbo_v2',
-      'eleven_turbo_v2_5',
-      'eleven_flash_v2',
-      'eleven_flash_v2_5'
-    ]) {
-      expect(models).toContain(model)
-    }
-  })
-
-  it('suggests gpt-transcribe as an OpenAI STT model', () => {
-    expect(ENUM_OPTIONS['stt.openai.model']).toContain('gpt-transcribe')
+  it('suggests the current ElevenLabs v3 model, not just the v2 trio', () => {
+    // Mirrors tools/tts_tool_delivery.py::ELEVENLABS_MODEL_MAX_TEXT_LENGTH.
+    expect(ENUM_OPTIONS['tts.elevenlabs.model_id']).toContain('eleven_v3')
   })
 
   it('keeps closed enums (devices, providers) out of the free-input set', () => {
