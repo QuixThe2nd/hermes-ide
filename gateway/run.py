@@ -96,7 +96,6 @@ from agent.turn_context import (
     compression_made_progress,
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
-from hermes_cli.fallback_config import get_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -4114,54 +4113,71 @@ def _resolve_runtime_agent_kwargs() -> dict:
     not consult environment variables for behavioral config — config.yaml
     is authoritative.
 
-    If the primary provider fails with an authentication error, attempt to
-    resolve credentials using the fallback provider chain from config.yaml
-    before giving up.
+    An ``AuthError`` from the primary walks the configured fallback chain through the shared
+    ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own); the
+    shared resolver preserves the rate-limit vs auth-failure log distinction (#32790).
     """
     from hermes_cli.runtime_provider import (
-        resolve_runtime_provider,
+        resolve_runtime_with_fallback,
         format_runtime_provider_error,
         _get_model_config,
     )
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+
+    def _max_tokens_for(runtime: dict):
+        """Hermes fork: global model.max_tokens (or HERMES_MAX_TOKENS) wins; else a
+        per-provider custom_providers ``max_output_tokens`` cap from the resolved runtime."""
+        model_cfg = _get_model_config()
+        max_tokens = None
+        _env_mt = os.environ.get("HERMES_MAX_TOKENS")
+        if _env_mt:
+            try:
+                max_tokens = int(_env_mt)
+            except (ValueError, TypeError):
+                max_tokens = None
+        elif isinstance(model_cfg, dict):
+            mt = model_cfg.get("max_tokens")
+            if isinstance(mt, int):
+                max_tokens = mt
+        if max_tokens is None:
+            _runtime_mot = runtime.get("max_output_tokens")
+            if isinstance(_runtime_mot, int) and _runtime_mot > 0:
+                max_tokens = _runtime_mot
+        return max_tokens
 
     try:
-        runtime = resolve_runtime_provider()
-    except AuthError as auth_exc:
-        # Distinguish a transient rate-limit/quota cap (credentials are fine,
-        # re-auth cannot help) from a genuine auth failure (expired/revoked
-        # token). Both fall through to the fallback chain, but the log message
-        # must not mislabel a quota exhaustion as an auth failure (#32790).
-        if is_rate_limited_auth_error(auth_exc):
-            logger.warning("Primary provider rate-limited (429): %s — trying fallback", auth_exc)
-        else:
-            logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
-        fb_config = _try_resolve_fallback_provider()
-        if fb_config is not None:
-            return fb_config
-        raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+        runtime, fallback_entry = resolve_runtime_with_fallback(_load_gateway_config())
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    model_cfg = _get_model_config()
-    max_tokens = None
-    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
-    if _env_mt:
-        try:
-            max_tokens = int(_env_mt)
-        except (ValueError, TypeError):
-            max_tokens = None
-    elif isinstance(model_cfg, dict):
-        mt = model_cfg.get("max_tokens")
-        if isinstance(mt, int):
-            max_tokens = mt
-    # Fall back to a per-provider output cap (custom_providers max_output_tokens)
-    # only when the documented global model.max_tokens isn't set, so the global
-    # key always wins.
-    if max_tokens is None:
-        _runtime_mot = runtime.get("max_output_tokens")
-        if isinstance(_runtime_mot, int) and _runtime_mot > 0:
-            max_tokens = _runtime_mot
+    capabilities = runtime.get("capabilities")
+    capabilities = (
+        {
+            key: value
+            for key, value in capabilities.items()
+            if isinstance(key, str) and isinstance(value, bool)
+        }
+        if isinstance(capabilities, dict)
+        else {}
+    )
+
+    # AIAgent constructor kwargs; on the fallback path the entry's model is the
+    # one this agent must send (#112600).
+    kwargs = {
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider"),
+        "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
+        "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": runtime.get("request_overrides"),
+        "max_tokens": _max_tokens_for(runtime),
+        "capabilities": capabilities,
+    }
+    if fallback_entry is not None:
+        kwargs["model"] = fallback_entry["model"]
+    return kwargs
 
     capabilities = runtime.get("capabilities")
     capabilities = (
@@ -4387,60 +4403,6 @@ def _credential_pool_for_provider(provider: Optional[str]):
             exc_info=True,
         )
         return None
-
-
-def _try_resolve_fallback_provider() -> dict | None:
-    """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-    try:
-        # Canonical gateway loader: managed overlay + ${VAR} expansion +
-        # root-model normalization now reach the fallback chain too (a raw
-        # read here used to miss administrator-pinned fallback_providers).
-        cfg = _load_gateway_runtime_config()
-        fb_list = get_fallback_chain(cfg)
-        if not fb_list:
-            return None
-        for entry in fb_list:
-            try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
-
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"),
-                    explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=resolve_entry_api_key(entry),
-                    target_model=entry.get("model") or None,
-                )
-                # Log the literal `provider` key from config, not the resolved
-                # runtime category — an Ollama fallback resolves through the
-                # OpenAI-compatible path and would otherwise be logged as
-                # "openrouter", contradicting the operator's config (#32790).
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
-                # Named custom entries resolve to the bare "custom" billing class; persist the configured
-                runtime["provider"] = effective_runtime_provider(entry, runtime)
-                logger.info(
-                    "Fallback provider resolved: %s model=%s",
-                    entry.get("provider") or runtime.get("provider"),
-                    entry.get("model"),
-                )
-                return {
-                    "api_key": runtime.get("api_key"),
-                    "base_url": runtime.get("base_url"),
-                    "provider": runtime.get("provider"),
-                    "requested_provider": runtime.get("requested_provider"),
-                    "api_mode": runtime.get("api_mode"),
-                    "command": runtime.get("command"),
-                    "args": list(runtime.get("args") or []),
-                    "credential_pool": runtime.get("credential_pool"),
-                    "request_overrides": dict(runtime.get("request_overrides") or {}),
-                    "model": entry.get("model"),
-                    "request_overrides": runtime.get("request_overrides"),
-                }
-            except Exception as fb_exc:
-                logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
-                continue
-    except Exception:
-        pass
-    return None
 
 
 def _event_media_type_at(event, index: int) -> str:
