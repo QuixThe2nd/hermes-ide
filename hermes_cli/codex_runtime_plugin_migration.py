@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +32,7 @@ class MigrationReport:
     migrated_plugins: list[str] = field(default_factory=list)
     plugin_query_error: Optional[str] = None
     wrote_permissions_default: Optional[str] = None
+    preserved_user_servers: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     written: bool = False
     dry_run: bool = False
@@ -56,6 +58,10 @@ class MigrationReport:
             lines.append(f"Codex plugin discovery skipped: {self.plugin_query_error}")
         if self.wrote_permissions_default:
             lines.append(f"Wrote default_permissions = {self.wrote_permissions_default!r}")
+        if self.preserved_user_servers:
+            lines.append(
+                f"Kept {len(self.preserved_user_servers)} user-owned MCP server(s) already in "
+                f"config.toml (Hermes projection skipped): {', '.join(self.preserved_user_servers)}")
         lines.extend(f"⚠ {err}" for err in self.errors)
         return "\n".join(lines)
 
@@ -236,48 +242,30 @@ def _strip_unmanaged_plugin_tables(toml_text: str) -> str:
     return "".join(out)
 
 
-def _strip_unmanaged_mcp_tables(
-    toml_text: str, server_names: set[str]
-) -> str:
-    """Remove ``[mcp_servers.<name>]`` tables that live OUTSIDE the managed
-    block *and* whose name is about to be re-emitted by the migration.
+def _unmanaged_mcp_server_names(toml_text: str) -> set[str]:
+    """Names of ``[mcp_servers.<name>]`` tables the USER owns (text outside the managed block).
 
-    This prevents duplicate TOML table headers when a server name exists
-    both in the user's hand-edited codex config and in Hermes' mcp_servers
-    config.  Without this strip, the migration writes the name inside the
-    managed block while the user-owned copy survives outside it — Codex's
-    strict TOML parser then refuses to load the file.
-
-    Only names in *server_names* are stripped; user-owned
-    ``[mcp_servers.*]`` entries that Hermes does NOT know about are
-    preserved so manual additions are not lost.
+    Unlike ``[plugins.*]`` — where ``plugin/list`` is the source of truth and we own the
+    namespace — ``mcp_servers`` is shared: the docs promise that anything outside the managed
+    block is the user's. A Hermes server whose name is already declared by the user is therefore
+    NOT re-emitted (the user's table wins and is preserved verbatim); emitting both would be a
+    duplicate table header, which is invalid TOML that codex refuses to load (issue #79023).
     """
-    if not server_names:
-        return toml_text
-    lines = toml_text.splitlines(keepends=True)
-    out: list[str] = []
-    in_mcp_table = False
-    for line in lines:
+    names: set[str] = set()
+    for line in toml_text.splitlines():
         stripped = line.lstrip()
-        if _looks_like_table_header(stripped):
-            # Check if this is a [mcp_servers.<name>] header where <name>
-            # is in the set of servers we're about to re-emit.
-            if stripped.startswith("[mcp_servers."):
-                # Extract the server name: [mcp_servers.foo] → foo
-                # Handle quoted keys: [mcp_servers."foo bar"] → foo bar
-                inner = stripped[1:stripped.index("]")]  # mcp_servers.foo
-                name_part = inner[len("mcp_servers."):]
-                # Unquote if quoted
-                if name_part.startswith('"') and name_part.endswith('"'):
-                    name_part = name_part[1:-1]
-                if name_part in server_names:
-                    in_mcp_table = True
-                    continue
-            in_mcp_table = False
-        if in_mcp_table:
+        if not _looks_like_table_header(stripped) or not stripped.startswith("[mcp_servers."):
             continue
-        out.append(line)
-    return "".join(out)
+        # ``[mcp_servers.foo]`` -> ``foo``; ``[mcp_servers."foo bar"]`` -> ``foo bar``.
+        # Sub-tables (``[mcp_servers.foo.env]``) resolve to their server name ``foo``.
+        name_part = stripped[1:stripped.index("]")][len("mcp_servers."):].strip()
+        if name_part.startswith('"'):
+            name_part = name_part[1:name_part.index('"', 1)]
+        else:
+            name_part = name_part.split(".", 1)[0]
+        if name_part:
+            names.add(name_part)
+    return names
 
 
 def _looks_like_table_header(stripped_line: str) -> bool:
@@ -495,9 +483,7 @@ def migrate(
         translated[HERMES_TOOLS_MCP_SERVER_NAME] = _build_hermes_tools_mcp_entry()
         if HERMES_TOOLS_MCP_SERVER_NAME not in report.migrated:
             report.migrated.append(HERMES_TOOLS_MCP_SERVER_NAME)
-    managed_block = render_codex_toml_section(
-        translated, plugins=plugins, default_permission_profile=default_permission_profile)
-    new_text = managed_block
+    without_managed = ""
     if target.exists():
         try:
             existing = target.read_text(encoding="utf-8")
@@ -507,13 +493,21 @@ def migrate(
         without_managed = _strip_existing_managed_block(existing)
         if plugin_query_succeeded:
             without_managed = _strip_unmanaged_plugin_tables(without_managed)
-        # Strip user-owned [mcp_servers.*] tables for names we're about to
-        # re-emit inside the managed block, preventing duplicate TOML headers.
-        if translated:
-            without_managed = _strip_unmanaged_mcp_tables(
-                without_managed, set(translated.keys())
-            )
-        new_text = _insert_managed_block_at_top_level(without_managed, managed_block)
+        # Preserve-user policy: a name the user already declares outside the managed block is
+        # theirs; skip our projection for it instead of emitting a duplicate table header.
+        for name in sorted(_unmanaged_mcp_server_names(without_managed) & set(translated)):
+            del translated[name]
+            report.migrated.remove(name)
+            report.preserved_user_servers.append(name)
+    managed_block = render_codex_toml_section(
+        translated, plugins=plugins, default_permission_profile=default_permission_profile)
+    new_text = _insert_managed_block_at_top_level(without_managed, managed_block)
+    try:
+        tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as exc:
+        # Never replace a loadable config.toml with one codex would refuse to start on.
+        report.errors.append(f"refusing to write {target}: rendered config is not valid TOML ({exc})")
+        return report
     if dry_run:
         return report
     try:
