@@ -971,9 +971,20 @@ def parse_reasoning_effort(effort) -> dict | None:
 
     ``None`` for empty/unrecognized input (caller uses the default); ``{"enabled": False}`` for
     "none"/"false"/"disabled"/YAML False — ``reasoning_effort: false`` must mean disabled.
+
+    The dict form ``{"enabled": true, "effort": "<level>"}`` passes ``effort`` through verbatim so
+    providers with bespoke thinking tiers (``fast``/``thinking`` relays) can be asked for their real
+    level; bare strings stay strict so a typo like ``hgih`` never reaches the wire. The wire layer
+    already tolerates unknown names (``agent.reasoning_effort.clamp_effort``).
     """
     if effort is None or effort is True:
         return None
+    if isinstance(effort, dict):
+        if effort.get("enabled", True) is False:
+            return {"enabled": False}
+        # ``or ""``: a falsy effort (0/False) is "no level", never the string "0" on the wire.
+        level = str(effort.get("effort") or "").strip()
+        return {"enabled": True, "effort": level} if level else None
     effort = str(effort).strip().lower()  # False -> "false" -> disabled; "" matches neither set
     if effort in {"none", "false", "disabled"}:
         return {"enabled": False}

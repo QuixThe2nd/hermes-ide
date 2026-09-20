@@ -1221,12 +1221,17 @@ agent:
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
+  # Providers with bespoke thinking tiers (a relay serving fast/thinking): use the
+  # dict form and the level is sent verbatim. Bare strings stay strict (typo guard).
+  #   reasoning_effort:
+  #     enabled: true
+  #     effort: thinking
   reasoning_effort: "medium"
   
   # Per-model reasoning effort overrides (optional dict)
   # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,
   #      provider prefix optional). First match wins.
-  # Value: reasoning effort level (same options as reasoning_effort)
+  # Value: reasoning effort level (same options as reasoning_effort, dict form included)
   # Override the global reasoning_effort for that specific model.
   # NOTE: no `hermes config set` support for this key -- edit YAML directly.
   # reasoning_overrides:
