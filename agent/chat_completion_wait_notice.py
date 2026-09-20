@@ -13,6 +13,11 @@ from typing import Optional
 
 NEAR_DEADLINE_SECS = 15.0
 
+
+def _near_deadline(watchdog: Optional[tuple[str, float]]) -> bool:
+    return watchdog is not None and watchdog[1] <= NEAR_DEADLINE_SECS
+
+
 _PHASE_TEXT = {
     # Codex Responses (non-stream request path)
     "first_event": "{n}s waiting for the first provider event",
@@ -25,9 +30,9 @@ _PHASE_TEXT = {
 
 
 def wait_notice_text(model: str, silence_secs: float, phase: str,
-                     watchdog: Optional[tuple[str, float]] = None, *, near: bool = False) -> str:
+                     watchdog: Optional[tuple[str, float]] = None) -> str:
     """One neutral status line. ``watchdog`` is ``(label, seconds_until_it_fires)``."""
-    lead = "still waiting on" if near else "waiting on"
+    lead = "still waiting on" if _near_deadline(watchdog) else "waiting on"
     text = f"⏳ {lead} {model} — " + _PHASE_TEXT[phase].format(n=int(silence_secs))
     if watchdog is not None:
         label, remaining = watchdog
@@ -79,7 +84,7 @@ class WaitNoticeState:
 
     def should_emit(self, phase: str, watchdog: Optional[tuple[str, float]]) -> bool:
         label = watchdog[0] if watchdog is not None else None
-        near = watchdog is not None and watchdog[1] <= NEAR_DEADLINE_SECS
+        near = _near_deadline(watchdog)
         emit = self.phase != phase or self.watchdog_label != label or (near and not self.near_shown)
         self.phase, self.watchdog_label = phase, label
         if near:

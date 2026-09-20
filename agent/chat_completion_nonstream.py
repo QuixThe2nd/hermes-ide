@@ -160,12 +160,11 @@ class _NonStreamRequest:
                 elapsed=elapsed)
             # One neutral notice per silence; repeating it every heartbeat made
             # healthy long calls read as provider trouble (#92550).
-            near = watchdog is not None and watchdog[1] <= wn.NEAR_DEADLINE_SECS
             if not self.wait_notice.should_emit(phase, watchdog):
                 self.agent._touch_activity(f"waiting for provider response ({int(silence)}s, {phase})")
                 return
             self.agent._emit_wait_notice(wn.wait_notice_text(
-                self.api_kwargs.get('model', 'the provider'), silence, phase, watchdog, near=near))
+                self.api_kwargs.get('model', 'the provider'), silence, phase, watchdog))
             self.wait_notice_started_ts = self.call_start + elapsed
         except Exception:
             h.logger.debug("wait-notice construction failed", exc_info=True)

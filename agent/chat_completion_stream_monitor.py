@@ -10,7 +10,7 @@ from agent.model_metadata import is_local_endpoint
 class StreamingWaitMonitor:
     def _poll_local_load_notice(self, now: float) -> bool:
         """Managed local server: surface a cold model's weight-load progress
-        instead of the 60s "provider may be slow" copy. Polled ~1s only while no
+        instead of the 60s neutral "waiting on <model>" notice. Polled ~1s only while no
         REAL chunk arrived for 2s+ (never during healthy token flow); in-memory,
         no network. True while loading = heartbeat liveness, skip the rest of
         this iteration (the stale detector's local floor dwarfs any load)."""
@@ -46,13 +46,12 @@ class StreamingWaitMonitor:
             watchdog = ("stream stale", stale - waiting_secs) if stale is not None and stale != float("inf") else None
             diag = getattr(getattr(self, "clients", None), "diag", None)
             phase = "post_chunk" if isinstance(diag, dict) and diag.get("first_chunk_at") else "first_chunk"
-            near = watchdog is not None and watchdog[1] <= wn.NEAR_DEADLINE_SECS
             if not self._mon.wait_notice.should_emit(phase, watchdog):
                 self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, {phase})")
                 return
             self._mon.wait_notice_started_ts = self._mon.last_heartbeat
             self.agent._emit_wait_notice(wn.wait_notice_text(
-                self.api_kwargs.get('model', 'the provider'), waiting_secs, phase, watchdog, near=near))
+                self.api_kwargs.get('model', 'the provider'), waiting_secs, phase, watchdog))
         else:
             # Chunks are flowing — keep the tracker fresh, leave the display alone.
             self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, no chunks yet)")
