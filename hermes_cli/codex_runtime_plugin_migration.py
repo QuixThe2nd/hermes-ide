@@ -251,6 +251,12 @@ def _unmanaged_mcp_server_names(toml_text: str) -> set[str]:
     NOT re-emitted (the user's table wins and is preserved verbatim); emitting both would be a
     duplicate table header, which is invalid TOML that codex refuses to load (issue #79023).
     """
+    try:
+        parsed = tomllib.loads(toml_text).get("mcp_servers")
+    except tomllib.TOMLDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):  # covers inline tables, dotted keys, `[ mcp_servers.x ]`
+        return {str(name) for name in parsed}
     names: set[str] = set()
     for line in toml_text.splitlines():
         stripped = line.lstrip()
@@ -445,7 +451,8 @@ def migrate(
             codex doesn't have built in. Set False to opt out.
     """
     report = MigrationReport(dry_run=dry_run)
-    codex_home = codex_home or Path.home() / ".codex"
+    codex_home = codex_home or Path(
+        os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
     target = codex_home / "config.toml"
     report.target_path = target
     hermes_servers = (hermes_config or {}).get("mcp_servers") or {}
@@ -490,6 +497,14 @@ def migrate(
         except Exception as exc:
             report.errors.append(f"could not read {target}: {exc}")
             return report
+        if report.plugin_query_error:
+            try:
+                tomllib.loads(existing)
+            except tomllib.TOMLDecodeError:
+                # codex could not load the pre-broken file, so plugin/list failed for that reason.
+                report.plugin_query_error += (
+                    "; existing config.toml was unloadable — re-run `hermes codex-runtime migrate` "
+                    "to migrate plugins")
         without_managed = _strip_existing_managed_block(existing)
         if plugin_query_succeeded:
             without_managed = _strip_unmanaged_plugin_tables(without_managed)

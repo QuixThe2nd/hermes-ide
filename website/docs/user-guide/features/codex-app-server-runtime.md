@@ -333,7 +333,7 @@ hermes codex-runtime migrate --json     # machine-readable report (migrated, pre
 hermes -p work codex-runtime migrate    # a named profile's mcp_servers
 ```
 
-This is the same migration `/codex-runtime codex_app_server` runs; it is idempotent, writes atomically, and exits non-zero when the report contains errors.
+This is the same migration `/codex-runtime codex_app_server` runs; it is idempotent, writes atomically, and exits non-zero when the report contains errors. It writes `$CODEX_HOME/config.toml` when `CODEX_HOME` is set (see below), otherwise `~/.codex/config.toml`.
 
 ## Multi-profile / multi-tenant setups
 

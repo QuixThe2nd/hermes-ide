@@ -453,20 +453,57 @@ class TestSameNameUserMcpTable:
         assert report.migrated == ["other"]
         assert "gbrain" in report.summary()
 
+    def test_inline_table_user_server_is_preserved(self, tmp_path):
+        """User declarations in other valid TOML shapes (`[mcp_servers]` + inline table) are
+        theirs too: skip the projection instead of refusing to write on a duplicate key."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text('[mcp_servers]\ngbrain = { command = "existing-gbrain" }\n', encoding="utf-8")
+        report = migrate(
+            {"mcp_servers": {"gbrain": {"command": "projected-gbrain"}, "other": {"command": "o"}}},
+            codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False,
+            default_permission_profile=None)
+        parsed = tomllib.loads(target.read_text(encoding="utf-8"))
+        assert report.written and report.errors == []
+        assert report.preserved_user_servers == ["gbrain"]
+        assert parsed["mcp_servers"]["gbrain"]["command"] == "existing-gbrain"
+        assert parsed["mcp_servers"]["other"]["command"] == "o"
+
+    def test_unloadable_existing_config_explains_plugin_rerun(self, tmp_path, monkeypatch):
+        """Repairing a pre-broken config.toml: codex cannot load it, so plugin/list fails on this
+        run. The report must say plugins need a re-run instead of a bare discovery error."""
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        target = tmp_path / "config.toml"
+        target.write_text('[mcp_servers.gbrain]\ncommand = "a"\n[mcp_servers.gbrain]\ncommand = "b"\n',
+                          encoding="utf-8")
+        monkeypatch.setattr(crpm, "_query_codex_plugins",
+                            lambda codex_home=None, timeout=8.0: ([], "plugin/list query failed"))
+        report = migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
+        assert "re-run `hermes codex-runtime migrate` to migrate plugins" in (report.plugin_query_error or "")
+        assert "existing config.toml was unloadable" in report.summary()
+
     def test_cli_migrate_dry_run_json_reports_without_writing(self, tmp_path, monkeypatch, capsys):
-        """`hermes codex-runtime migrate --dry-run --json` is the supported automation seam."""
+        """`hermes codex-runtime migrate --dry-run --json` is the supported automation seam:
+        drive it through the real ``hermes`` argparse tree so the subcommand registration in
+        hermes_cli/main.py stays pinned, and honour ``CODEX_HOME`` like every codex sibling."""
         import json
 
-        from hermes_cli.subcommands import codex_runtime as mod
+        import hermes_cli.main as main
 
-        (tmp_path / ".codex").mkdir()
-        target = tmp_path / ".codex" / "config.toml"
+        codex_home = tmp_path / "alt-codex"
+        codex_home.mkdir()
+        target = codex_home / "config.toml"
         target.write_text('[mcp_servers.gbrain]\ncommand = "existing-gbrain"\n', encoding="utf-8")
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         monkeypatch.setattr(
             "hermes_cli.config.load_config",
             lambda: {"mcp_servers": {"gbrain": {"command": "projected"}, "other": {"command": "o"}}})
-        rc = mod.cmd_codex_runtime_migrate(argparse.Namespace(dry_run=True, json=True))
+        parser, _subparsers = main._build_cli_parser()
+        args = parser.parse_args(["codex-runtime", "migrate", "--dry-run", "--json"])
+        rc = args.func(args)
         payload = json.loads(capsys.readouterr().out)
         assert rc == 0
         assert payload["dry_run"] is True and payload["written"] is False
