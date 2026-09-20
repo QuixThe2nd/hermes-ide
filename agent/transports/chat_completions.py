@@ -110,6 +110,32 @@ def _add_prompt_cache_key(
         api_kwargs["prompt_cache_key"] = cache_key
 
 
+_ROUTER_TIMEOUT_SHIM = "Connect timeout, please try again later."
+
+
+def _has_positive_completion_tokens(usage: Any) -> bool:
+    """Return whether a response usage object proves text was generated."""
+    for field in ("completion_tokens", "output_tokens"):
+        value = usage.get(field) if isinstance(usage, dict) else getattr(usage, field, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return True
+    return False
+
+
+def _is_router_timeout_shim(response: Any) -> bool:
+    """Recognize a router failure encoded as a successful ChatCompletion."""
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, list) or len(choices) != 1:
+        return False
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    if not isinstance(content, str) or content.strip() != _ROUTER_TIMEOUT_SHIM:
+        return False
+    if getattr(message, "tool_calls", None):
+        return False
+    return not _has_positive_completion_tokens(getattr(response, "usage", None))
+
+
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
     """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
@@ -603,8 +629,10 @@ class ChatCompletionsTransport(ProviderTransport):
         )
 
     def validate_response(self, response: Any) -> bool:
-        """Check that response has valid choices."""
-        return bool(response is not None and getattr(response, "choices", None))
+        """Check that response has valid choices and is not a router failure shim."""
+        if response is None or not getattr(response, "choices", None):
+            return False
+        return not _is_router_timeout_shim(response)
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:
         """Cache stats from prompt_tokens_details (OpenRouter/OpenAI) or DeepSeek's top-level prompt_cache_hit_tokens."""
