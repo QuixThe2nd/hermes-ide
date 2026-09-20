@@ -352,8 +352,10 @@ def _codex_banked_resets(payload: dict) -> int:
 
 
 def _codex_headers(token: str, account_id: Optional[str]) -> dict[str, str]:
+    """auth.json's ``account_id`` wins over the JWT claim; the JWT still supplies the residency header."""
+    from agent.codex_headers import codex_account_headers
     return {"Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "codex-cli",
-            **({"ChatGPT-Account-Id": account_id} if account_id else {})}
+            **codex_account_headers(token), **({"ChatGPT-Account-ID": account_id} if account_id else {})}
 
 
 def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:

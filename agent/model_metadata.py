@@ -1720,19 +1720,6 @@ def _codex_oauth_token_fingerprint(access_token: str) -> str:
     return hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
 
 
-def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
-    """``chatgpt_account_id`` from the Codex OAuth JWT, or None on any parse error. Without the
-    ``ChatGPT-Account-Id`` header /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200)
-    and the probe silently falls back. Mirrors auxiliary_client.py."""
-    try:
-        payload_b64 = access_token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
-        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id") if isinstance(claims, dict) else None
-        return acct_id if isinstance(acct_id, str) and acct_id else None
-    except Exception:
-        return None
-
-
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[Dict[str, int], bool]:
     """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
     fingerprint (windows vary by entitlement). An in-process hit reports False: not a fresh
@@ -1742,10 +1729,10 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
     cached = _codex_oauth_context_cache.get(cache_key)
     if cached is not None and now - cached[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
         return cached[0], False
-    headers = {"Authorization": f"Bearer {access_token}"}
-    acct_id = _extract_chatgpt_account_id(access_token)
-    if acct_id:
-        headers["ChatGPT-Account-Id"] = acct_id
+    # Without ChatGPT-Account-ID /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200) and
+    # the probe silently falls back; residency-enforced workspaces 401 without the residency header.
+    from agent.codex_headers import codex_account_headers
+    headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
     try:
         _ensure_requests()
         resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())

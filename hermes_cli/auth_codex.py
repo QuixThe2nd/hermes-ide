@@ -617,15 +617,11 @@ def _probe_codex_quota_restored(
         _codex_quota_probe_cache[cache_key] = (now, None)
     result: Optional[bool] = None
     try:
+        # Account/residency headers from the JWT (required for some account shapes).
+        from agent.codex_headers import codex_account_headers
         headers = {
             "Authorization": f"Bearer {token}", "Accept": "application/json",
-            "User-Agent": "codex-cli"}
-        # Best-effort ChatGPT-Account-Id from the JWT (required for some account shapes).
-        auth_claims = _decode_jwt_claims(token).get("https://api.openai.com/auth")
-        account_id = (
-            auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None)
-        if _nonempty_str(account_id):
-            headers["ChatGPT-Account-Id"] = account_id.strip()
+            "User-Agent": "codex-cli", **codex_account_headers(token)}
         with _codex_http_client(timeout=10.0) as client:
             response = client.get(_codex_usage_probe_url(base_url), headers=headers)
         if response.status_code == 200:

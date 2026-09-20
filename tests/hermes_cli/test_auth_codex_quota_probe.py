@@ -121,7 +121,7 @@ def test_probe_sends_chatgpt_account_id_from_jwt(monkeypatch):
         }
     )
     assert _probe_codex_quota_restored(token) is True
-    assert calls[0]["headers"].get("ChatGPT-Account-Id") == "acct-123"
+    assert calls[0]["headers"].get("ChatGPT-Account-ID") == "acct-123"
 
 
 # ---------------------------------------------------------------------------

@@ -106,28 +106,6 @@ def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
     return [model for model in model_ids if not is_astra_model(model)]
 
 
-def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
-    """Best-effort ``chatgpt_account_id`` from the OAuth JWT; None on any parse error.
-
-    The Codex backend requires the ``ChatGPT-Account-Id`` header for the per-account catalog;
-    without it ``GET /backend-api/codex/models`` returns ``{"models":[]}`` with HTTP 200, which
-    masquerades as "no models" and silently degrades the picker to the curated fallback.
-    """
-    try:
-        parts = access_token.split(".")
-        if len(parts) < 2:
-            return None
-        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        acct_id = (
-            claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
-            if isinstance(claims, dict)
-            else None)
-        return acct_id if isinstance(acct_id, str) and acct_id else None
-    except Exception:
-        return None
-
-
 def _ranked_slugs(entries: object) -> List[str]:
     """Visible slugs from a Codex catalog ``models`` list, sorted by (priority, slug), deduped.
 
@@ -156,10 +134,10 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
         import httpx
-        headers = {"Authorization": f"Bearer {access_token}"}
-        acct_id = _extract_chatgpt_account_id(access_token)
-        if acct_id:
-            headers["ChatGPT-Account-Id"] = acct_id
+        # The per-account catalog needs ChatGPT-Account-ID (else ``{"models":[]}`` with HTTP 200
+        # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
+        from agent.codex_headers import codex_account_headers
+        headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
         from agent.model_metadata import CODEX_MODELS_CATALOG_URL
         resp = httpx.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=10)
         if resp.status_code != 200:

@@ -118,9 +118,9 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     assert snapshot.windows[1].label == "Weekly"
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer pooled-token"
-    # Pool creds have no account_id concept — the ChatGPT-Account-Id header must
+    # Pool creds have no account_id concept — the ChatGPT-Account-ID header must
     # be omitted rather than sent stale/wrong.
-    assert "ChatGPT-Account-Id" not in calls[0]["headers"]
+    assert "ChatGPT-Account-ID" not in calls[0]["headers"]
 
 
 
@@ -164,7 +164,7 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert snapshot is not None
     assert calls[0]["headers"]["Authorization"] == "Bearer singleton-token"
     # account_id read failed → header omitted, but the singleton token is kept.
-    assert "ChatGPT-Account-Id" not in calls[0]["headers"]
+    assert "ChatGPT-Account-ID" not in calls[0]["headers"]
 
 
 def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_payload):
