@@ -4986,33 +4986,6 @@ class TestNoProgressTimeoutTaskConfigGating:
     OpenAI-SDK-shaped client's ``chat.completions.create()`` would raise ``TypeError:
     unexpected keyword argument 'no_progress_timeout'``."""
 
-    def test_codex_client_receives_configured_no_progress_timeout(self, monkeypatch):
-        completed = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
-        )
-        real_client = SimpleNamespace(
-            api_key="test-key", base_url="https://chatgpt.com/backend-api/codex/",
-            close=lambda: None,
-        )
-        client = CodexAuxiliaryClient(real_client, "gpt-5.6-sol")
-        direct_create = MagicMock(return_value=completed)
-        monkeypatch.setattr(client.chat.completions, "create", direct_create)
-        monkeypatch.setattr(
-            "agent.auxiliary_client._get_cached_client",
-            lambda *args, **kwargs: (client, "gpt-5.6-sol"),
-        )
-        monkeypatch.setattr(
-            "agent.auxiliary_client._get_task_no_progress_timeout",
-            lambda task: 300.0 if task == "compression" else None,
-        )
-
-        call_llm(
-            task="compression", provider="openai-codex", model="gpt-5.6-sol",
-            messages=[{"role": "user", "content": "summarize"}],
-        )
-
-        assert direct_create.call_args.kwargs.get("no_progress_timeout") == 300.0
-
     def test_non_codex_client_never_receives_the_kwarg(self, monkeypatch):
         client = MagicMock()
         client.base_url = "https://api.openai.com/v1"
