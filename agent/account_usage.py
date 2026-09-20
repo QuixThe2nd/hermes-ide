@@ -42,6 +42,9 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    # Exact decoded provider response body (no headers/credentials) for integrations that need
+    # fields Hermes does not normalize yet. Only populated by providers that fetch a JSON body.
+    raw: Optional[dict] = None
 
     @property
     def available(self) -> bool:
@@ -436,7 +439,8 @@ def _fetch_codex_account_usage(
         details.append(f"Credits balance: ${float(balance):.2f}")
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
-    return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")))
+    return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")),
+                     raw=payload)
 
 
 @dataclass(frozen=True)

@@ -161,6 +161,23 @@ def test_codex_window_labels_follow_duration_with_positional_fallback(monkeypatc
     assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
 
 
+def test_codex_snapshot_exposes_exact_raw_payload_with_one_get(monkeypatch, codex_usage_payload):
+    """#79695: the decoded body rides along untouched (unknown fields included), from the single GET."""
+    codex_usage_payload["future_field"] = {"nested": [1, 2]}
+    snapshot, calls = _explicit_creds_snapshot(monkeypatch, codex_usage_payload)
+    assert snapshot.raw == codex_usage_payload
+    assert snapshot.raw["future_field"] == {"nested": [1, 2]}
+    assert len(calls) == 1
+    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]  # normalized limits unchanged
+    # Additive: existing constructor calls stay valid and default to no raw body.
+    assert account_usage.AccountUsageSnapshot(provider="anthropic", source="x", fetched_at=snapshot.fetched_at).raw is None
+
+
+def test_codex_invalid_payload_fails_closed(monkeypatch):
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, ["not", "a", "dict"])
+    assert snapshot is None
+
+
 def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, codex_usage_payload):
     """When the resolver succeeds but the separate account_id read raises, the
     working singleton token must still be used (best-effort account_id), NOT
