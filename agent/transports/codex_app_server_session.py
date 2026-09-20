@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -117,14 +118,17 @@ def _coerce_turn_input_text(user_input: Any) -> str:
     return "\n\n".join(p for p in parts if p).strip() or "What do you see in this image?"
 
 
-# Substrings in codex stderr / JSON-RPC errors signalling expired OAuth creds.
-# Conservative: only redirect to `codex login` on a strong signal.
+# Strong credential-failure signals: trusted whether they appear in the primary
+# JSON-RPC error or in ambient app-server stderr.
 _OAUTH_REFRESH_FAILURE_HINTS = (
     "invalid_grant", "invalid grant", "refresh token", "refresh_token", "token refresh", "token_refresh",
-    "token has expired", "expired_token", "expired token", "not authenticated", "unauthenticated", "unauthorized",
-    "401 unauthorized", "re-authenticate", "reauthenticate", "please log in", "please login", "auth profile",
-    "no auth profile", "oauth",
+    "token has expired", "expired_token", "token_expired", "expired token", "not authenticated", "unauthenticated",
+    "re-authenticate", "reauthenticate", "please log in", "please login", "no auth profile",
 )
+# Generic auth words are authoritative only in the primary error. codex writes
+# independent ChatGPT plugin prewarm failures ("HTTP 401 Unauthorized") to stderr,
+# so there they must not mask an unrelated RPC error or timeout (#75167).
+_PRIMARY_ONLY_OAUTH_HINTS = ("unauthorized", "oauth", "auth profile")
 
 _OAUTH_REAUTH_HINT = (
     "Codex authentication failed — your ChatGPT/Codex login looks expired or invalid. Run `codex login` to refresh, "
@@ -132,10 +136,13 @@ _OAUTH_REAUTH_HINT = (
 )
 
 
-def _classify_oauth_failure(*parts: str) -> Optional[str]:
-    """Re-auth hint if any part looks like a codex OAuth/token-refresh failure, else None."""
-    haystack = " ".join(p for p in parts if p).lower()
-    return _OAUTH_REAUTH_HINT if any(needle in haystack for needle in _OAUTH_REFRESH_FAILURE_HINTS) else None
+def _classify_oauth_failure(primary: str = "", *, stderr: str = "") -> Optional[str]:
+    """Re-auth hint when ``primary`` (the operation's own error) or ``stderr`` proves the codex login is broken."""
+    primary_l = (primary or "").lower()
+    stderr_l = (stderr or "").lower()
+    if any(n in primary_l for n in _OAUTH_REFRESH_FAILURE_HINTS + _PRIMARY_ONLY_OAUTH_HINTS) or re.search(r"\b401\b", primary_l):
+        return _OAUTH_REAUTH_HINT
+    return _OAUTH_REAUTH_HINT if any(n in stderr_l for n in _OAUTH_REFRESH_FAILURE_HINTS) else None
 
 
 @dataclass
@@ -259,7 +266,7 @@ class CodexAppServerSession:
 
     def _set_classified_error(self, result: TurnResult, prefix: str, classify_text: str, detail: Any) -> None:
         """OAuth failures -> re-auth hint AND retire (token store broken though JSON-RPC is fine); else stderr tail."""
-        hint = _classify_oauth_failure(classify_text, self._stderr_blob(40))
+        hint = _classify_oauth_failure(classify_text, stderr=self._stderr_blob(40))
         if hint is not None:
             self._retire(result, hint)
         else:
@@ -283,7 +290,7 @@ class CodexAppServerSession:
         except CodexAppServerError as exc:
             self._set_classified_error(result, f"{label} failed", exc.message, exc)
         except TimeoutError as exc:
-            hint = _classify_oauth_failure(self._stderr_blob(40))
+            hint = _classify_oauth_failure(stderr=self._stderr_blob(40))
             self._retire(result, hint or self._format_error_with_stderr(f"{label} timed out", exc))
         return None
 
@@ -291,7 +298,7 @@ class CodexAppServerSession:
         """Bail out early (rather than waiting on the deadline) when codex exited."""
         if self._client.is_alive():
             return False
-        hint = _classify_oauth_failure(self._stderr_blob(60))
+        hint = _classify_oauth_failure(stderr=self._stderr_blob(60))
         self._retire(result, hint or self._format_error_with_stderr("codex app-server subprocess exited unexpectedly", tail_lines=20))
         return True
 
