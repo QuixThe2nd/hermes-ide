@@ -237,7 +237,9 @@ class CodexAppServerSession:
         self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
-        params: dict[str, Any] = {"cwd": self._cwd}
+        # Hermes supplies the agent identity through its own system prompt; ``personality: "none"`` strips
+        # codex's built-in "# Personality" section from the base instructions so it cannot compete (#72104).
+        params: dict[str, Any] = {"cwd": self._cwd, "personality": "none"}
         if self._developer_instructions and self._developer_instructions.strip():
             params["developerInstructions"] = self._developer_instructions
         result = self._client.request("thread/start", params, timeout=15)
