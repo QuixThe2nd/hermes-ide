@@ -601,56 +601,38 @@ class TestSchemaConversion:
         assert set(props) == {"table", "required"}
         # The legitimately-named `required` parameter keeps its array schema.
         assert props["required"] == {"type": "array", "items": {"type": "string"}}
-        # No non-list `required` keyword was synthesised at the object level.
-        assert "required" not in normalized
+        # The object-level `required` keyword is the coerced empty list, not a schema
+        # synthesised from the same-named property.
+        assert normalized["required"] == []
 
 
-    def test_required_array_filters_entries_not_in_properties(self):
-        """``required`` entries absent from ``properties`` are pruned by repair.
+    def test_normalized_mcp_schema_keeps_required_as_list(self):
+        """``_normalize_mcp_input_schema`` (the production MCP entry) always emits a
+        ``required`` list.
 
-        Regression: when an MCP tool's input schema lists ``required`` keys
-        that do not appear in ``properties`` (common with loosely-defined
-        upstream MCP tools), the sanitizer used to silently drop the entire
-        ``required`` array, losing legitimately-required field metadata.
-        The fix preserves ``required`` but filters it to only entries that
-        actually exist in ``properties``.
+        Regression (#56123): when every ``required`` entry pointed at a property missing
+        from ``properties``, the repair pass pruned them all and dropped the key
+        entirely (partial pruning already worked). Strict OpenAI-compatible backends read
+        the missing key as ``null`` and reject the whole request with
+        ``null is not of type "array"``. The key now survives as ``[]``, and an object
+        node that never had a ``required`` key is coerced to ``[]`` too.
         """
-        from tools.mcp_tool_schema import _repair_object_shape
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
-        schema = {
+        stale = _normalize_mcp_input_schema({
+            "type": "object", "properties": {}, "required": ["stale"],
+        })
+        assert stale["required"] == []
+
+        partial = _normalize_mcp_input_schema({
             "type": "object",
-            "properties": {
-                "command": {"type": "string"},
-                "path": {"type": "string"},
-            },
+            "properties": {"command": {"type": "string"}, "path": {"type": "string"}},
             "required": ["command", "path", "missing_entry"],
-        }
+        })
+        assert partial["required"] == ["command", "path"]
 
-        repaired = _repair_object_shape(schema)
-
-        # valid entries are kept; entries not in properties are removed
-        assert repaired["required"] == ["command", "path"]
-        assert "missing_entry" not in repaired["required"]
-
-        # all entries valid: required is unchanged
-        schema_all_valid = {
-            "type": "object",
-            "properties": {
-                "a": {"type": "string"},
-                "b": {"type": "integer"},
-            },
-            "required": ["a", "b"],
-        }
-        assert _repair_object_shape(schema_all_valid)["required"] == ["a", "b"]
-
-        # all entries invalid: required becomes an empty list
-        schema_all_invalid = {
-            "type": "object",
-            "properties": {"x": {"type": "string"}},
-            "required": ["y", "z"],
-        }
-        result = _repair_object_shape(schema_all_invalid)
-        assert result["required"] == []
+        absent = _normalize_mcp_input_schema({"type": "object", "properties": {"a": {"type": "string"}}})
+        assert absent["required"] == []
 
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
@@ -2416,7 +2398,7 @@ class TestSamplingCallbackText:
             "function": {
                 "name": "ask",
                 "description": "Ask Crawl4AI",
-                "parameters": {"type": "object", "properties": {}},
+                "parameters": {"type": "object", "properties": {}, "required": []},
             },
         }]
 
