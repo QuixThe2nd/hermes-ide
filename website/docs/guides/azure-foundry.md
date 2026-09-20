@@ -278,6 +278,7 @@ What Hermes can do:
 - Azure OpenAI v1 endpoints (`<resource>.openai.azure.com/openai/v1`) expose `GET /models` with the resource's **available** model catalog. Hermes uses this list to prefill the setup wizard's model picker **and** the in-session `/model azure-foundry` picker (CLI, TUI, Desktop, gateway), so you can switch deployments without re-running `hermes setup`.
 - Microsoft Foundry `/anthropic` routes: detected via URL path, model name entered manually (no `/models` there — the `/model` picker shows only the current selection and any `providers.azure-foundry.models` you declare).
 - Private / firewalled endpoints: manual entry with a friendly "couldn't probe" message.
+- Entra ID (`model.auth_mode: entra_id`, no `AZURE_FOUNDRY_API_KEY`): the `/model` picker lists the provider as soon as `model.base_url` (or `AZURE_FOUNDRY_BASE_URL`) is set — no token is minted just to show the row.
 
 You can always type a deployment name directly — Hermes does not validate against the returned list.
 

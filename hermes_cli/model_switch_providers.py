@@ -355,7 +355,21 @@ def _overlay_has_env_creds(pid: str, hermes_slug: str, overlay, read_env) -> boo
             pcfg = PROVIDER_REGISTRY.get(key)
             if pcfg and pcfg.api_key_env_vars and _any_env(pcfg.api_key_env_vars, read_env):
                 return True
+    if not has_creds and hermes_slug == "azure-foundry":
+        has_creds = _azure_entra_configured(read_env)
     return has_creds
+
+
+def _azure_entra_configured(read_env=os.environ.get) -> bool:
+    """Azure Foundry under ``model.auth_mode: entra_id`` mints a per-request bearer, so no
+    ``AZURE_FOUNDRY_API_KEY`` ever exists; the row is configured once the runtime resolver's own
+    inputs are (provider + auth_mode + an endpoint). No token is minted here (#27989)."""
+    from hermes_cli.models import _get_model_config_dict
+    model_cfg = _get_model_config_dict()
+    if (str(model_cfg.get("provider") or "").strip().lower() != "azure-foundry"
+            or str(model_cfg.get("auth_mode") or "").strip().lower() != "entra_id"):
+        return False
+    return bool(str(model_cfg.get("base_url") or "").strip() or read_env("AZURE_FOUNDRY_BASE_URL"))
 
 
 def _has_fast_aws_sdk_signal() -> bool:

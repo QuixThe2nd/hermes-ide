@@ -634,3 +634,27 @@ def test_overlay_provider_row_merges_configured_models(monkeypatch):
     assert row["source"] == "hermes"
     assert row["models"] == ["gpt-5.5", "shared", "gpt-4.1-mini", "gpt-5.6-sol"]
     assert row["total_models"] == 4
+
+
+@pytest.mark.parametrize("base_url, listed", [("https://r.openai.azure.com/openai/v1", True), ("", False)])
+def test_entra_only_azure_foundry_row_is_listed_without_api_key(monkeypatch, base_url, listed):
+    """``model.auth_mode: entra_id`` mints a per-request bearer, so no ``AZURE_FOUNDRY_API_KEY``
+    ever exists; the picker and the prefetch scan must still treat the provider as configured
+    once its endpoint is set — and not before (#27989). No token is minted for the listing."""
+    from hermes_cli.model_switch_providers import _collect_authed_provider_slugs
+    from hermes_cli.providers import HERMES_OVERLAYS
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {"azure-foundry": HERMES_OVERLAYS["azure-foundry"]})
+    monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", lambda *_a, **_k: ["gpt-5.6-sol"])
+    monkeypatch.setattr("hermes_cli.models._get_model_config_dict",
+                        lambda: {"provider": "azure-foundry", "auth_mode": "entra_id", "base_url": base_url})
+    monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_FOUNDRY_BASE_URL", raising=False)
+    monkeypatch.setattr("hermes_cli.runtime_provider_backends._azure_entra_credentials",
+                        lambda *_a, **_k: pytest.fail("listing must not mint an Entra token"))
+
+    rows = list_authenticated_providers(current_provider="", max_models=50)
+    assert ("azure-foundry" in [r["slug"] for r in rows]) is listed
+    assert ("azure-foundry" in _collect_authed_provider_slugs({}, {}, [])) is listed
