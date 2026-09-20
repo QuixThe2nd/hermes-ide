@@ -2981,6 +2981,10 @@ class _StreamingCall(StreamingWaitMonitor):
                 usage_obj = chunk.usage
 
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream
+            # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
+            if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
+                reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(
