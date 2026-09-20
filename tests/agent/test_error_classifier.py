@@ -994,6 +994,22 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_compress is False
 
+    def test_openai_regex_lookaround_rejection_is_recoverable(self):
+        """Strict OpenAI-compatible endpoints reject ``pattern`` lookaround with a 400 (#42631);
+        it must reuse the strip-pattern/format retry instead of failing the turn."""
+        e = MockAPIError(
+            "Invalid JSON schema: regex lookaround is not supported. Found at $.properties.email.pattern.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="gpt-5.5")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+        assert result.retryable is True
+        # A generic schema 400 without the lookaround sentence stays a plain client error.
+        other = classify_api_error(
+            MockAPIError("Invalid JSON schema: regex syntax error in pattern", status_code=400), provider="custom"
+        )
+        assert other.reason != FailoverReason.llama_cpp_grammar_pattern
+
     def test_qwen_apply_prompt_template_no_user_query_not_llama_cpp_grammar(self):
         """Local engines wrap Qwen raise_exception as applyPromptTemplate 400.
 
