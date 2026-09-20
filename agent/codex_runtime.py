@@ -991,6 +991,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _codex_stream_created(_raw_stream: Any) -> None:
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
         writer_token["value"] = claim_stream_writer(agent)
+        writer_token["raw_stream"] = _raw_stream
 
     def _accept_codex_chunk(_chunk: Any) -> bool:
         token = writer_token["value"]
@@ -1031,6 +1032,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             "closing it and returning the completed response instead of retrying. %s",
             budget, agent._client_log_context(),
         )
+        # Under a live Relay loop the managed wrapper's close() cannot reach the provider response
+        # (the loop is still running the drain); close the raw stream captured at stream creation too.
+        raw_stream = writer_token.get("raw_stream")
+        if raw_stream is not None and raw_stream is not event_stream:
+            _close_event_stream(raw_stream)
         _close_event_stream(event_stream)
 
     def _close_event_stream(event_stream: Any) -> None:
@@ -1060,7 +1066,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             with watchdog_state.lock:
                 watchdog_state.retry_started_ts = time.time()
         intercepted_events: list = []
-        writer_token["value"] = event_stream = None
+        writer_token["value"] = writer_token["raw_stream"] = event_stream = None
         try:
             try:
                 event_stream = relay_llm.stream(

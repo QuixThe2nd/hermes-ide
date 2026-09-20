@@ -1142,6 +1142,68 @@ def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
     assert closed.wait(1.0)
 
 
+def test_run_codex_stream_drain_timeout_closes_raw_stream_when_managed_close_raises(monkeypatch):
+    """A Relay-managed wrapper whose close() raises (running loop) must not leak the provider stream."""
+    import threading
+
+    import agent.codex_runtime as codex_runtime
+    from agent import relay_llm
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message", status="completed", content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    raw_closed = threading.Event()
+
+    class _HeldOpenRawStream:
+        def __init__(self):
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(type="response.completed",
+                                response=SimpleNamespace(status="completed", usage=usage, id="resp_managed")),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raw_closed.wait(3.0)
+                raise
+
+        def close(self):
+            raw_closed.set()
+
+    class _ManagedWrapper:
+        final_response = None
+
+        def __init__(self, request, stream_factory, *, on_stream_created=None, **_kwargs):
+            raw = stream_factory(request)
+            on_stream_created(raw)
+            self._iter = iter(raw)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._iter)
+
+        def close(self):
+            raise RuntimeError("Cannot close a running event loop")
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: _HeldOpenRawStream()))
+    monkeypatch.setattr(relay_llm, "stream", _ManagedWrapper)
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.id == "resp_managed"
+    assert raw_closed.wait(1.0)
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
