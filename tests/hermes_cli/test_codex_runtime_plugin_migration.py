@@ -165,10 +165,14 @@ class TestMigrate:
 
     def test_plugin_discovery_writes_plugin_blocks(self, tmp_path, monkeypatch):
         """Discovered curated plugins land as [plugins."<name>@<marketplace>"]
-        blocks. This is what OpenClaw calls 'migrate native codex plugins.'"""
+        blocks. This is what OpenClaw calls 'migrate native codex plugins.'
+        The discovery spawn must use the configured ``model.codex_bin`` (#61360)."""
         from hermes_cli import codex_runtime_plugin_migration as crpm
 
+        seen: dict = {}
+
         def fake_query(codex_home=None, timeout=8.0, codex_bin="codex"):
+            seen["codex_bin"] = codex_bin
             return [
                 {"name": "google-calendar", "marketplace": "openai-curated",
                  "enabled": True},
@@ -177,7 +181,9 @@ class TestMigrate:
             ], None
         monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
 
-        report = migrate({}, codex_home=tmp_path, discover_plugins=True)
+        report = migrate({"model": {"codex_bin": "/opt/codex-app/codex"}},
+                         codex_home=tmp_path, discover_plugins=True)
+        assert seen["codex_bin"] == "/opt/codex-app/codex"
         text = (tmp_path / "config.toml").read_text()
         assert '[plugins."github@openai-curated"]' in text
         assert '[plugins."google-calendar@openai-curated"]' in text
