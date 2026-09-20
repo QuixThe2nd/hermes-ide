@@ -140,6 +140,7 @@ class _ResponsesStream:
         self.message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
         self.message_output_index: Optional[int] = None
         self.message_opened = False
+        self.reasoning_item: Optional[Dict[str, Any]] = None  # open ``reasoning`` output item
         self.final_response_text = ""
         self.agent_error: Optional[str] = None
         self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -214,6 +215,7 @@ class _ResponsesStream:
                      "role": "assistant", "content": []}})
 
     async def emit_text_delta(self, delta_text: str) -> None:
+        await self.close_reasoning_item()
         await self._open_message_item()
         self.final_text_parts.append(delta_text)
         await self.write_event("response.output_text.delta", {
@@ -221,8 +223,46 @@ class _ResponsesStream:
             "output_index": self.message_output_index, "content_index": 0, "delta": delta_text,
             "logprobs": []})
 
+    async def emit_reasoning_delta(self, delta_text: str) -> None:
+        """Responses reasoning-summary family (#99552): one ``reasoning`` output item per
+        thinking burst, closed before the next message/tool item opens."""
+        if self.reasoning_item is None:
+            item = {"id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning", "status": "in_progress",
+                    "summary": []}
+            self.reasoning_item = {"item": item, "output_index": self.output_index, "parts": []}
+            self.output_index += 1
+            await self.write_event("response.output_item.added", {
+                "type": "response.output_item.added",
+                "output_index": self.reasoning_item["output_index"], "item": item})
+            await self.write_event("response.reasoning_summary_part.added", {
+                "type": "response.reasoning_summary_part.added", "item_id": item["id"],
+                "output_index": self.reasoning_item["output_index"], "summary_index": 0,
+                "part": {"type": "summary_text", "text": ""}})
+        rs = self.reasoning_item
+        rs["parts"].append(delta_text)
+        await self.write_event("response.reasoning_summary_text.delta", {
+            "type": "response.reasoning_summary_text.delta", "item_id": rs["item"]["id"],
+            "output_index": rs["output_index"], "summary_index": 0, "delta": delta_text})
+
+    async def close_reasoning_item(self) -> None:
+        rs, self.reasoning_item = self.reasoning_item, None
+        if rs is None:
+            return
+        text = "".join(rs["parts"])
+        item = dict(rs["item"], status="completed", summary=[{"type": "summary_text", "text": text}])
+        base = {"item_id": item["id"], "output_index": rs["output_index"], "summary_index": 0}
+        await self.write_event("response.reasoning_summary_text.done", {
+            "type": "response.reasoning_summary_text.done", **base, "text": text})
+        await self.write_event("response.reasoning_summary_part.done", {
+            "type": "response.reasoning_summary_part.done", **base,
+            "part": {"type": "summary_text", "text": text}})
+        self.emitted_items.append({"type": "reasoning", "summary": item["summary"]})
+        await self.write_event("response.output_item.done", {
+            "type": "response.output_item.done", "output_index": rs["output_index"], "item": item})
+
     async def emit_tool_started(self, payload: Dict[str, Any]) -> None:
         """function_call ``output_item.added``; the agent's tool_call_id beats a generated call id."""
+        await self.close_reasoning_item()
         self.call_counter += 1
         call_id = payload.get("tool_call_id") or f"call_{self.response_id[5:]}_{self.call_counter}"
         args = payload.get("arguments", {})
@@ -274,6 +314,8 @@ class _ResponsesStream:
                 await self.emit_tool_started(payload)
             elif tag == "__tool_completed__":
                 await self.emit_tool_completed(payload)
+            elif tag == "__reasoning__":
+                await self.emit_reasoning_delta(payload)
         elif isinstance(item, str):
             self._batch_buf.append(item)
             if self._batch_timer is None:
@@ -322,6 +364,7 @@ class _ResponsesStream:
             self.agent_error = self._api._redact_api_error_text(e)
 
     async def close_message_item(self) -> None:
+        await self.close_reasoning_item()
         self.final_response_text = "".join(self.final_text_parts) or self.final_response_text
         if not self.message_opened:
             return
@@ -400,9 +443,16 @@ class OpenAICompatRoutesMixin:
             # the stream early. Called from the run_conversation worker thread: put_threadsafe.
             if delta is not None:
                 stream_q.put_threadsafe(delta)
+        def _on_reasoning(text):
+            # Structured reasoning deltas (#99552): the agent's reasoning_callback, not the
+            # lossy 500-char ``reasoning.available`` progress preview. Tagged so the writers
+            # keep them distinct from answer text.
+            if text:
+                stream_q.put_threadsafe(("__reasoning__", text))
         agent_ref = [None]
         agent_task = asyncio.ensure_future(self._run_agent(
-            stream_delta_callback=_on_delta, agent_ref=agent_ref, **run_kwargs))
+            stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning, agent_ref=agent_ref,
+            **run_kwargs))
         agent_task.add_done_callback(lambda _fut: stream_q.put_nowait(None))
         return agent_task, agent_ref
 
@@ -673,6 +723,10 @@ class OpenAICompatRoutesMixin:
                 if isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__tool_progress__":
                     # Custom event: tool lifecycle for frontends without markers in history.
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
+                elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__reasoning__":
+                    # DeepSeek-style ``delta.reasoning_content`` (#99552), the field Open WebUI,
+                    # opencode and the Vercel AI SDK render as a thinking block.
+                    await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
                 else:
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
@@ -724,7 +778,8 @@ class OpenAICompatRoutesMixin:
         """Write the SSE stream for POST /v1/responses.
 
         Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
-        (function_call / function_call_output) -> ``response.completed`` (non-streaming envelope)
+        (reasoning / function_call / function_call_output) + ``reasoning_summary_part/text.*``
+        -> ``response.completed`` (non-streaming envelope)
         or ``response.failed``. On disconnect the agent is interrupted and, with ``store=True``,
         an ``incomplete`` snapshot replaces ``in_progress`` so GET / chaining still work.
         """
