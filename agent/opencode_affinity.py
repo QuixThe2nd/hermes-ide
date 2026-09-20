@@ -35,11 +35,15 @@ def opencode_transport(provider: Optional[str], model: Optional[str], base_url: 
     hosts all count.
     """
     from hermes_cli.models import normalize_opencode_base_url, normalize_opencode_model_id, opencode_model_api_mode
-    from hermes_cli.runtime_provider_custom import _opencode_family_for_custom
+    from hermes_cli.runtime_provider_custom import _get_named_custom_provider, _opencode_family_for_custom
 
     url = str(base_url or "")
     family = _opencode_family_for_custom(str(provider or ""), url)
     if family is None:
+        return None, url
+    # A custom entry that declares its own api_mode keeps it, exactly like the main runtime
+    # (_resolve_named_custom_runtime only re-derives when the entry has none).
+    if (_get_named_custom_provider(str(provider or "")) or {}).get("api_mode"):
         return None, url
     # ``<provider>/<model>`` config ids are stripped against the entry name before the family lookup.
     api_mode = opencode_model_api_mode(family, normalize_opencode_model_id(provider, model))
