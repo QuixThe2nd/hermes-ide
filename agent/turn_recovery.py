@@ -380,6 +380,19 @@ def _refresh_credentials_after_401(
         _print_anthropic_401_diagnostics(agent, agent._anthropic_api_key)
     return False
 
+
+def _is_lingering_codex_token_expired(agent: Any, api_error: Exception, _retry: TurnRetryState) -> bool:
+    """401 ``token_expired`` that survived the one-shot Codex OAuth refresh (#88510). The Codex
+    backend rejects a stale replayed ``encrypted_content`` blob with this auth signature, so a
+    persisted session loops on "sign in again" while a fresh session on the same bearer works.
+    Once the credential path has had its turn, the caller treats it like
+    ``invalid_encrypted_content`` — but only while cached reasoning items remain to strip."""
+    if getattr(api_error, "status_code", None) != 401 or not _retry.codex_auth_retry_attempted:
+        return False
+    reason = agent._extract_api_error_context(api_error).get("reason")
+    return isinstance(reason, str) and reason.strip().lower() == "token_expired"
+
+
 def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
     messages: List[Dict[str, Any]], api_messages: Any,
@@ -405,10 +418,14 @@ def _recover_format_errors(
         )
         return True
 
-    # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob:
+    # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob — or the same
+    # rejection wearing a 401 ``token_expired`` after the credential refresh changed nothing:
     # disable replay for the session, strip cached items, retry once.
     if (
-        classified.reason == FailoverReason.invalid_encrypted_content
+        (
+            classified.reason == FailoverReason.invalid_encrypted_content
+            or _is_lingering_codex_token_expired(agent, api_error, _retry)
+        )
         and not _retry.invalid_encrypted_content_retry_attempted
         and agent.api_mode == "codex_responses"
         and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
