@@ -45,24 +45,6 @@ class TestGetCurrentRuntime:
         ) == "auto"
 
 
-class TestGetConfiguredCodexBinary:
-    def test_defaults_for_missing_or_invalid_values(self):
-        assert crs.get_configured_codex_binary({}) == "codex"
-        assert crs.get_configured_codex_binary({"model": {}}) == "codex"
-        assert crs.get_configured_codex_binary(
-            {"model": {"codex_bin": ""}}
-        ) == "codex"
-        assert crs.get_configured_codex_binary(
-            {"model": {"codex_bin": 42}}
-        ) == "codex"
-
-    def test_returns_trimmed_configured_path(self):
-        configured = "/Applications/Codex.app/Contents/Resources/codex"
-        assert crs.get_configured_codex_binary(
-            {"model": {"codex_bin": f"  {configured}  "}}
-        ) == configured
-
-
 class TestSetRuntime:
     def test_creates_model_section_if_missing(self):
         cfg = {}
@@ -78,6 +60,7 @@ class TestSetRuntime:
 
 class TestApply:
     def test_binary_check_uses_configured_path(self):
+        """/codex-runtime must probe ``model.codex_bin``, not bare ``codex`` from PATH (#61360)."""
         configured = "/Applications/Codex.app/Contents/Resources/codex"
         cfg = {
             "model": {

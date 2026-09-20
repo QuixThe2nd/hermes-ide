@@ -379,6 +379,7 @@ class TestRunConversationCodexPath:
         assert captured["cwd"] == str(tmp_path)
 
     def test_configured_codex_binary_seeds_app_server_session(self, monkeypatch):
+        """A codex_app_server turn spawns ``model.codex_bin``, not bare ``codex`` (#61360)."""
         configured = "/Applications/Codex.app/Contents/Resources/codex"
         captured: dict = {}
 
