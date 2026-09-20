@@ -235,7 +235,7 @@ local backend — background-process logs/pid/exit files, code-execution
 sandboxes, and spilled tool results. When it's empty (the default), Hermes
 honors an explicit `TMPDIR`/`TMP`/`TEMP` from the environment and otherwise
 uses a managed directory on real storage at `~/.hermes/cache/terminal`
-instead of `/tmp` — on many distros (Arch-based setups in particular) `/tmp`
+instead of `/tmp` — on many distros (Arch-based setups in particular) `/tmp` <!-- no-tmp: ok — explains why /tmp is avoided -->
 is a small RAM-backed tmpfs that Hermes session artifacts can fill under
 load. The managed directory is auto-pruned: artifacts older than 72 hours are
 swept hourly by gateway housekeeping and once per process on CLI-only
@@ -417,7 +417,7 @@ Parallel subagents spawned via `delegate_agent(tasks=[...])` share this one cont
 - `--cap-drop ALL` with only `DAC_OVERRIDE`, `CHOWN`, `FOWNER` added back
 - `--security-opt no-new-privileges`
 - `--pids-limit 256`
-- Size-limited tmpfs for `/tmp` (512MB), `/var/tmp` (256MB), `/run` (64MB)
+- Size-limited tmpfs for `/tmp` (512MB), `/var/tmp` (256MB), `/run` (64MB) <!-- no-tmp: ok — documents the sandbox's own tmpfs -->
 
 **Credential forwarding:** Env vars listed in `docker_forward_env` are resolved from your shell environment first, then `~/.hermes/.env`. Skills can also declare `required_environment_variables` which are merged automatically.
 
@@ -738,7 +738,7 @@ hermes config set terminal.persistent_shell false
 ```
 
 **What persists across commands:**
-- Working directory (`cd /tmp` sticks for the next command)
+- Working directory (`cd ~/project` sticks for the next command)
 - Exported environment variables (`export FOO=bar`)
 - Shell variables (`MY_VAR=hello`)
 
