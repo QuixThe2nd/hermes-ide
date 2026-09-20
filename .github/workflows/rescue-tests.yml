@@ -16,5 +16,5 @@ jobs:
         shell: bash
         run: |
           python -m pip install --quiet uv
-          uv sync --frozen --all-groups || uv sync --all-groups
-          uv run --frozen pytest tests/gateway/test_webhook_adapter.py tests/gateway/test_discord_plugin_setup.py tests/hermes_cli/test_send_cmd.py tests/gateway/test_discord_free_response.py -q
+          uv sync --extra dev --extra messaging || uv sync --extra dev --extra messaging
+          uv run pytest tests/gateway/test_webhook_adapter.py tests/gateway/test_discord_plugin_setup.py tests/hermes_cli/test_send_cmd.py tests/gateway/test_discord_free_response.py -q
