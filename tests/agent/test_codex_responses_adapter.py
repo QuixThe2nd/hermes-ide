@@ -93,6 +93,50 @@ def test_chat_content_keeps_images_on_user_role():
     }]
 
 
+_SVG_DATA_URL = "data:image/svg+xml;base64,PHN2Zy8+"
+_PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgo="
+
+
+def test_unsupported_inline_image_downgrades_to_text_in_message_and_tool_output():
+    """#29711: a data:image/svg+xml part 400s the whole Codex request ('does not represent a valid
+    image') on every replay. Both carriers — user message content and the persisted vision_analyze
+    function_call_output — must send a text placeholder while the valid PNG still goes as input_image."""
+    messages = [
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": _PNG_DATA_URL, "detail": "high"}},
+            {"type": "image_url", "image_url": {"url": _SVG_DATA_URL}},
+        ]},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_v1", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_v1", "content": [
+            {"type": "text", "text": "rendered"}, {"type": "image_url", "image_url": {"url": _SVG_DATA_URL}}]},
+    ]
+    items = _chat_messages_to_responses_input(messages)
+    user, tool_output = items[0], items[-1]
+    assert user["content"] == [
+        {"type": "input_image", "image_url": _PNG_DATA_URL, "detail": "high"},
+        {"type": "input_text", "text": "[image omitted: image/svg+xml is not a supported image format]"},
+    ]
+    assert tool_output["type"] == "function_call_output"
+    assert [p["type"] for p in tool_output["output"]] == ["input_text", "input_text"]
+    assert "image/svg+xml" in tool_output["output"][1]["text"]
+
+
+def test_preflight_downgrades_unsupported_inline_image_but_keeps_remote_urls():
+    """The preflight validator is the last seam before the wire: an svg data URL in already
+    Responses-shaped input becomes text; https URLs are the provider's to validate and pass through."""
+    items = _preflight_codex_input_items([
+        {"role": "user", "content": [
+            {"type": "input_image", "image_url": _SVG_DATA_URL},
+            {"type": "input_image", "image_url": "https://example.invalid/p.svg"},
+        ]},
+        {"type": "function_call_output", "call_id": "call_1", "output": [{"type": "input_image", "image_url": _SVG_DATA_URL}]},
+    ])
+    assert [p["type"] for p in items[0]["content"]] == ["input_text", "input_image"]
+    assert items[0]["content"][1]["image_url"] == "https://example.invalid/p.svg"
+    assert items[1]["output"] == [{"type": "input_text", "text": "[image omitted: image/svg+xml is not a supported image format]"}]
+
+
 @pytest.mark.parametrize("part_type", ["video_url", "video", "input_video"])
 def test_chat_content_rejects_video_instead_of_sending_text_only(part_type):
     content = [

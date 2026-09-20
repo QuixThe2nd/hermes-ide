@@ -205,6 +205,16 @@ When a user attaches an image — from the CLI clipboard, the gateway (Telegram/
 
 You don't configure this — Hermes looks up your current model's capability in the provider metadata and picks the right path automatically. The practical effect: you can switch between vision and non-vision models mid-session and image handling "just works" without changing your workflow. Text-only models get coherent context about the image rather than a broken multimodal payload they'd have to reject.
 
+To override the automatic choice, set `agent.image_input_mode` in `config.yaml`:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Native pixels when the model reports vision support, `vision_analyze` description otherwise. Configuring an explicit `auxiliary.vision` backend (a `provider` other than `auto`, or a `model` / `base_url`) also selects the description path, even for a vision-capable main model. |
+| `native` | Always attach pixels, even when the catalog says the model is text-only. |
+| `text` | Always route images through the `vision_analyze` describer, never attach pixels to the main request. |
+
+This is the knob to reach for when a backend accepts text but rejects native image input (for example an `openai-codex` account whose backend answers image requests with `server_error`): keep your main model and point `auxiliary.vision` at a different vision-capable provider and model (with `auxiliary.vision.provider: auto` the describer would auto-detect the same main model again). That alone switches images to the description path in `auto` mode; `agent.image_input_mode: text` makes the same choice explicit.
+
 Which auxiliary model handles the text-description path is configurable under `auxiliary.vision` — see [Auxiliary Models](../configuration.md#auxiliary-models).
 
 ### `vision_analyze` has the same dual behavior
