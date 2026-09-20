@@ -1302,3 +1302,22 @@ def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monk
     assert "Do NOT resend" in result["detail"]
     assert "approval" in result["notification_error"]
     assert list((bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR).glob("*.json")), "envelope still queued"
+
+
+def test_ack_names_poll_return_path_when_session_cannot_receive_completions(tmp_path, monkeypatch):
+    """#101142: on a non-push sender surface (api_server) terminal_tool refuses the
+    ``notify_on_complete`` promise, so the reply can never be injected later. The ack must not
+    promise a completion notification; it names the surface-supported return path instead."""
+    import tools.terminal_tool as terminal_tool_module
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kw: json.dumps({
+        "output": "Background process started", "session_id": "proc_np1", "notify_on_complete": False,
+        "notify_unsupported": "poll"}))
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target="researcher", message="hi", agent=_FakeAgent(home, title="Bot Chat")))
+
+    assert result["status"] == "queued"
+    assert result["reply_delivery"] == "poll"
+    assert "completion notification carries" not in result["detail"]
+    assert "process(action='wait', session_id='proc_np1')" in result["detail"]
