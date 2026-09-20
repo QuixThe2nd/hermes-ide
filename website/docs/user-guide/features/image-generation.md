@@ -189,6 +189,33 @@ accepts any `model` value (including nonexistent ids) and generates with its
 own server-managed engine, so a "selected" Flare or Sunburst tier would be a
 label with no effect. Pick the direct OpenAI API provider or FAL for 2.5.
 
+### Custom OpenAI-compatible image endpoint
+
+The **OpenAI** provider can point at any OpenAI-compatible `/v1/images/generations`
+endpoint (a local gateway, a task-scoped proxy, a third-party API gateway),
+independently of the chat provider, and take its key from a variable of your choice:
+
+```yaml
+image_gen:
+  provider: openai
+  openai:
+    model: gpt-image-2-medium
+    base_url: http://localhost:18081/v1   # → OPENAI_BASE_URL → api.openai.com
+    key_env: IMAGE_GATEWAY_TOKEN          # → OPENAI_API_KEY
+```
+
+Only the variable *name* is stored in `config.yaml`; the secret stays in `.env`
+or the process environment. The model catalog is unchanged: `gpt-image-2-medium`
+is sent as `model: gpt-image-2` + `quality: medium`, so the gateway must serve
+OpenAI's image model names. Availability checks and
+generation use the same resolution, so a configured `key_env` is enough — no
+`OPENAI_API_KEY` is required. Requests go through Hermes' own HTTP client, which
+honours `HTTP(S)_PROXY`/`NO_PROXY` but ignores macOS system proxies (whose
+exception list is invisible to Python), so `localhost` endpoints connect directly.
+The `OpenAI-Project` header is sent blank on image requests: an `OPENAI_PROJECT_ID`
+set for chat otherwise makes the image endpoint return 403 `model_not_found` on
+projects with a model allow-list, while the key itself already carries the project.
+
 ## Usage
 
 The agent-facing schema is intentionally minimal — the model picks up whatever you've configured:

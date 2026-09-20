@@ -104,6 +104,50 @@ class TestModelResolution:
         assert meta["quality"] == "low"
 
 
+# ── Endpoint / credential routing ───────────────────────────────────────────
+
+
+class TestEndpointConfig:
+    """``image_gen.openai.base_url`` / ``key_env`` reach the client and its request (#65309, #97928,
+    #13798); the project header is blanked (#60748); custom endpoints bypass system proxies (#64888)."""
+
+    def test_config_base_url_and_key_env_reach_client_and_availability(self, monkeypatch, tmp_path):
+        import yaml
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("IMAGE_GATEWAY_TOKEN", "gateway-token")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {"openai": {
+            "base_url": "http://localhost:18081/v1/", "key_env": "IMAGE_GATEWAY_TOKEN"}}}))
+        provider = openai_plugin.OpenAIImageGenProvider()
+        assert provider.is_available() is True  # same resolver as generate(); no OPENAI_API_KEY needed
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        with _patched_openai(fake_client):
+            assert provider.generate("a cat")["success"] is True
+            kwargs = __import__("sys").modules["openai"].OpenAI.call_args.kwargs
+        assert kwargs["base_url"] == "http://localhost:18081/v1"
+        assert kwargs["api_key"] == "gateway-token"
+        assert kwargs["default_headers"]["OpenAI-Project"] == ""
+        kwargs["http_client"].close()
+
+    def test_custom_base_url_ignores_system_proxy(self, monkeypatch):
+        """httpx only sees macOS system proxies via ``urllib.request.getproxies()`` (ExceptionsList
+        dropped); the plugin's client must carry no proxy mount when no proxy env var is set."""
+        import httpx
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                    "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        fake_openai = MagicMock()
+        with patch("urllib.request.getproxies", return_value={"https": "http://127.0.0.1:7890",
+                                                              "http": "http://127.0.0.1:7890"}):
+            openai_plugin._build_client(fake_openai, "http://localhost:18081/v1", "k")
+        http_client = fake_openai.OpenAI.call_args.kwargs["http_client"]
+        assert isinstance(http_client, httpx.Client)
+        assert not any(type(getattr(m, "_pool", None)).__name__ == "HTTPProxy"
+                       for m in http_client._mounts.values() if m is not None)
+        http_client.close()
+
+
 # ── Generate ────────────────────────────────────────────────────────────────
 
 
