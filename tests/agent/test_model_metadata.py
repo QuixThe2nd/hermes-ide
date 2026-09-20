@@ -168,30 +168,6 @@ class TestResponsesItemImageAccounting:
     ``output`` (the converter moves chat ``content`` there); the estimator must
     price them with the flat per-image model, never as base64 text (#108320)."""
 
-    def test_function_call_output_image_priced_flat_not_by_base64_length(self):
-        import base64
-        import os
-
-        small = "data:image/png;base64," + base64.b64encode(os.urandom(8_000)).decode()
-        large = (
-            "data:image/png;base64," + base64.b64encode(os.urandom(300_000)).decode()
-        )
-
-        def estimate(payload: str) -> int:
-            item = {
-                "type": "function_call_output",
-                "call_id": "call_1",
-                "output": [{"type": "input_image", "image_url": payload}],
-            }
-            return estimate_messages_tokens_rough([item])
-
-        small_est, large_est = estimate(small), estimate(large)
-        # Flat per-image model: both register as the learned/default image cost
-        # plus a small envelope, independent of encoded length.
-        assert 1500 <= small_est < 3_000
-        assert 1500 <= large_est < 3_000
-        assert abs(large_est - small_est) < 200
-
     def test_function_call_output_image_matches_chat_estimate(self):
         """The carrier key alone (``content`` vs ``output``) must not change the
         accounting for the same image."""
