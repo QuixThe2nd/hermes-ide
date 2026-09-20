@@ -8,10 +8,15 @@ out for the in-flight body read — the stale kill already shuts down the
 attempt's own socket, the interrupt path did not; (b) the abort fires during
 ``create()``'s connect/TLS window, before any socket exists, so nothing stops
 the request once headers arrive. Both stay shutdown-only (never a cross-thread
-``close()``, #30858).
+``close()``, #30858). Shape (b) is driven through the production entry
+(``interruptible_streaming_api_call`` -> monitor ``_abort_for_interrupt`` ->
+``on_stream_created`` wiring) on both streaming wires.
 """
 import socket as _socket
+import time
 from types import SimpleNamespace
+
+import pytest
 
 import run_agent
 from agent import chat_completion_helpers as helpers
@@ -61,13 +66,58 @@ def test_interrupt_abort_shuts_down_the_attempts_own_socket():
         writer.close()
 
 
-def test_stream_created_after_cancel_is_re_aborted():
+class _LateStream:
+    """A ``create()`` whose headers arrive only AFTER ``/stop`` was aborted during the connect
+    window: the socket did not exist when the monitor swept, so only the ``on_stream_created``
+    wiring can shut it down. Iterating raises like a reader on a shut-down socket."""
+
+    def __init__(self, call, reader):
+        self.response = _response_over(reader)
+        call.agent._interrupt_requested = True  # /stop lands while create() is connecting
+        deadline = time.time() + 5
+        while not call._request_cancelled["value"] and time.time() < deadline:
+            time.sleep(0.02)
+        assert call._request_cancelled["value"], "monitor never ran _abort_for_interrupt"
+
+    def __iter__(self):
+        import httpx
+        raise httpx.ReadError("socket shut down")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _run_interrupted_during_connect(monkeypatch, agent, reader, api_mode):
+    agent.api_mode = api_mode
+    if api_mode == "anthropic_messages":
+        holder = {}
+        _orig_wire = helpers._StreamingCall._call_wire
+
+        def _wire(self, stream_attempt_id):
+            holder["call"] = self
+            return _orig_wire(self, stream_attempt_id)
+
+        def _fake_anthropic_client(**_kw):
+            return SimpleNamespace(messages=SimpleNamespace(stream=lambda **_k: _LateStream(holder["call"], reader)),
+                                   close=lambda: None)
+        monkeypatch.setattr(helpers._StreamingCall, "_call_wire", _wire)
+        monkeypatch.setattr(agent, "_create_request_anthropic_client", _fake_anthropic_client)
+    else:
+        monkeypatch.setattr(helpers._StreamingCall, "_open_chat_stream",
+                            lambda self, stream_kwargs: _LateStream(self, reader))
+    with pytest.raises(InterruptedError):
+        helpers.interruptible_streaming_api_call(
+            agent, {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+
+
+@pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages"])
+def test_interrupt_during_connect_window_shuts_down_the_late_socket(monkeypatch, api_mode):
     reader, writer = _socket.socketpair()
     try:
-        call = _call(_agent())
-        call._request_cancelled["value"] = True  # abort fired while create() was still connecting
-        raw_stream = SimpleNamespace(response=_response_over(reader))
-        call._chat_stream_created(raw_stream)
+        _run_interrupted_during_connect(monkeypatch, _agent(), reader, api_mode)
         _assert_shut_down(reader, writer)
     finally:
         reader.close()

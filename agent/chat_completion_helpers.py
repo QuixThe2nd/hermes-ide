@@ -2883,8 +2883,11 @@ class _StreamingCall(StreamingWaitMonitor):
             return
         self._shutdown_stale_attempt_socket(response)
         if self._attempt_request_client is not None:
-            self.agent._abort_request_openai_client(
-                self._attempt_request_client, reason="cancelled_attempt_late_connect")
+            # Kind-aware: the anthropic_messages wire (incl. anthropic-compatible custom endpoints)
+            # runs on a request-local Anthropic client with its own slot sweep.
+            abort = (self.agent._abort_request_anthropic_client if self.agent.api_mode == "anthropic_messages"
+                     else self.agent._abort_request_openai_client)
+            abort(self._attempt_request_client, reason="cancelled_attempt_late_connect")
 
     def _accept_chat_chunk(self, stream_attempt_id: int, chunk: Any) -> bool:
         with contextlib.suppress(Exception):
@@ -3192,7 +3195,8 @@ class _StreamingCall(StreamingWaitMonitor):
         saw_stream_event = False
         self.last_chunk_time["t"] = time.time()
         _diag = self._new_diag()
-        self._writer_token = None
+        self._writer_token = self._attempt_stream_response = None
+        self._attempt_request_client = request_client
         _stream_context = {"manager": None, "stream": None}
         base_final_message = None
 
@@ -3209,10 +3213,13 @@ class _StreamingCall(StreamingWaitMonitor):
 
         def _anthropic_stream_created(raw_stream: Any) -> None:
             _stream_context["stream"] = raw_stream
+            # Same wiring as the chat_completions wire: MessageStream exposes the httpx response,
+            # so the interrupt/stale abort can shut down THIS attempt's socket (#98974).
+            response = self._attempt_stream_response = getattr(raw_stream, "response", None)
             # Snapshot response diagnostics now so they survive a stream dying before the first event.
-            self._quiet(
-                lambda: self.agent._stream_diag_capture_response(_diag, getattr(raw_stream, "response", None)))
+            self._quiet(lambda: self.agent._stream_diag_capture_response(_diag, response))
             self._writer_token = claim_stream_writer(self.agent)
+            self._reabort_if_cancelled(response)
 
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_anthropic_stream,
             **_relay_stream_identity(self.agent, "anthropic"), finalizer=accumulator.finalize,
