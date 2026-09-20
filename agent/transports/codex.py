@@ -220,6 +220,10 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
     return response_tools, wire_aliases
 
 
+# Models already warned that an explicit disable has no wire form on their route (one warning per process).
+_UNPROJECTABLE_DISABLE_WARNED: set[str] = set()
+
+
 def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     """``(effort, enabled)`` for the request, effort clamped (never escalated) to the endpoint's vocabulary.
 
@@ -261,6 +265,14 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
             return None, False
     if not reasoning_enabled:
         has_none = any(str(level).strip().lower() == "none" for level in supported)
+        if not has_none and model not in _UNPROJECTABLE_DISABLE_WARNED:
+            # #75227: report the unsupported configuration instead of silently falling back.
+            _UNPROJECTABLE_DISABLE_WARNED.add(model)
+            logger.warning(
+                "reasoning_effort: none cannot be sent for %s — its route accepts only %s, so the model's "
+                "default effort stays on (an omitted reasoning field does not disable it).",
+                model, ", ".join(str(level) for level in supported),
+            )
         return ("none" if has_none else None), False
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 

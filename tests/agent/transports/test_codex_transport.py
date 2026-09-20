@@ -1886,6 +1886,18 @@ class TestOpenAIReasoningWireProjection:
         # Astra's vocabulary has no ``none``: nothing to send, never an escalated level.
         assert self._reasoning(transport, "gpt-6-astra", {"enabled": False}) is None
 
+    def test_disable_the_route_cannot_express_is_reported_once(self, transport, caplog):
+        """#75227: a disable the vocabulary cannot carry (Astra has no ``none``) is reported as an unsupported
+        configuration — the model's default effort stays on — instead of silently omitted; once per model."""
+        import logging
+        from agent.transports import codex as codex_transport
+        codex_transport._UNPROJECTABLE_DISABLE_WARNED.discard("gpt-6-astra")
+        with caplog.at_level(logging.WARNING, logger="agent.transports.codex"):
+            for _ in range(2):
+                assert self._reasoning(transport, "gpt-6-astra", {"enabled": False}) is None
+        warned = [r.getMessage() for r in caplog.records if "reasoning_effort: none" in r.getMessage()]
+        assert len(warned) == 1 and "gpt-6-astra" in warned[0], caplog.text
+
     @pytest.mark.parametrize("model", ["gpt-4o-mini", "gpt-4.1-mini", "openai/gpt-4o", "ft:gpt-4o-mini:acme::abc1"])
     def test_chat_era_openai_models_get_no_reasoning_field_on_the_official_origin(self, transport, model):
         for rc in (None, {"enabled": True, "effort": "high"}, {"enabled": False}):
