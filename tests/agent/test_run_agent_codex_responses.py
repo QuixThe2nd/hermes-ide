@@ -1128,7 +1128,7 @@ def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
         return _HeldOpenAfterTerminalStream()
 
     agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
-    monkeypatch.setattr(codex_runtime, "_CODEX_POST_TERMINAL_DRAIN_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
 
     started = time.monotonic()
     response = agent._run_codex_stream(_codex_request_kwargs())

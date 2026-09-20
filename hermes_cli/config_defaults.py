@@ -134,6 +134,11 @@ DEFAULT_CONFIG = {
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
+        # Seconds the Codex/Responses stream may keep reading after its terminal frame so the relay
+        # finalizer can run. Relays that never close the SSE socket after response.completed would
+        # otherwise wedge the turn until the idle watchdog discards the already-billed response
+        # (#103864). 0 skips the drain. Well-behaved endpoints close immediately and never wait this long.
+        "stream_drain_timeout": 2.0,
         # Base delay (seconds) for the first API retry backoff. Default 2s.
         "retry_base_delay": 2.0,
         # Upper cap (seconds) on any single API retry backoff wait. Default 60s.

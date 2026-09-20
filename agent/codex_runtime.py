@@ -24,7 +24,26 @@ _codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.Cont
     "codex_watchdog_state", default=None
 )
 
-_CODEX_POST_TERMINAL_DRAIN_TIMEOUT_SECONDS = 2.0
+_DEFAULT_STREAM_DRAIN_TIMEOUT = 2.0
+
+
+def _stream_drain_timeout() -> float:
+    """``agent.stream_drain_timeout`` (seconds) — how long the post-terminal SSE drain may block.
+
+    The drain is a courtesy to Relay's finalizer, never a correctness requirement: ``final`` is fully
+    assembled before it starts. A relay that never closes the socket after ``response.completed`` would
+    otherwise wedge the turn until the idle watchdog discards the already-billed response (#103864).
+    ``0`` skips the drain entirely.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        agent_cfg = load_config_readonly().get("agent")
+        value = agent_cfg.get("stream_drain_timeout") if isinstance(agent_cfg, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return max(0.0, float(value))
+    except Exception:
+        pass
+    return _DEFAULT_STREAM_DRAIN_TIMEOUT
 
 
 def _call_guarded(fn: Callable | None, fail_msg: str, *fail_args: Any, args: tuple = (), kwargs: dict | None = None):
@@ -984,6 +1003,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _drain_for_finalizer(event_stream: Any) -> None:
         # ``final`` is already assembled; draining only lets Relay run its finalizer. A transport error
         # here must NOT discard the completed, already-billed response.
+        budget = _stream_drain_timeout()
+        if budget <= 0:
+            return  # the ``finally`` below closes the stream
         drained = threading.Event()
 
         def _drain() -> None:
@@ -1002,12 +1024,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 drained.set()
 
         threading.Thread(target=_drain, name="codex-post-terminal-drain", daemon=True).start()
-        if drained.wait(_CODEX_POST_TERMINAL_DRAIN_TIMEOUT_SECONDS):
+        if drained.wait(budget):
             return
         logger.warning(
-            "Codex Responses stream remained open %.1fs after a terminal response; closing it and returning the "
-            "completed response instead of retrying. %s",
-            _CODEX_POST_TERMINAL_DRAIN_TIMEOUT_SECONDS, agent._client_log_context(),
+            "Codex Responses stream remained open %.1fs after a terminal response (agent.stream_drain_timeout); "
+            "closing it and returning the completed response instead of retrying. %s",
+            budget, agent._client_log_context(),
         )
         _close_event_stream(event_stream)
 
