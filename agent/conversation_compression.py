@@ -376,6 +376,7 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_cooldown_persist_failed",
     "_last_summary_error",
     "_consecutive_timeout_failures",
+    "_consecutive_truncation_failures",
     "_last_summary_dropped_count",
     "_last_summary_fallback_used",
     "_last_compress_aborted",
