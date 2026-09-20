@@ -16,6 +16,7 @@ import threading
 
 from rich.markup import escape as _escape
 from utils import base_url_host_matches
+from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 # CLI-level fields describing the active model route; snapshotted before a switch / one-turn
 # override and restored wholesale on rollback. ``reasoning_config`` rides along because it is
@@ -919,7 +920,7 @@ class CLIModelSwitchMixin:
         self.api_key = "moa-virtual-provider"
         self.base_url = "moa://local"
         self.api_mode = "chat_completions"
-        self.agent = None
+        _retire_agent(self)
         self._pending_moa_disable_after_turn = True
         self._pending_agent_seed = payload
         _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")

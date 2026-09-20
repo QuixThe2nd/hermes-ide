@@ -31,6 +31,7 @@ from rich.panel import Panel
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
 from hermes_state_ids import new_session_id as mint_session_id
 from agent.turn_context import extract_api_content_sidecar
+from hermes_cli.cli_agent_setup_mixin import _retire_agent
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -1556,12 +1557,12 @@ class CLICommandsMixin:
                     cfg_get(read_raw_config(), "agent", "system_prompt", default=""))
             except Exception:
                 self.system_prompt = ""
-            self.agent = None  # Force re-init
+            _retire_agent(self)  # Force re-init
             _pr(f"{face} Personality cleared {scope}",
                 "  No personality overlay — using base agent behavior.")
         else:
             self.system_prompt = personality_prompt
-            self.agent = None  # Force re-init
+            _retire_agent(self)  # Force re-init
             _pr(f"{face} Personality set to '{name}' {scope}",
                 f"  \"{_ellipsize(personality_prompt, 60)}\"")
 
@@ -2597,7 +2598,7 @@ class CLICommandsMixin:
                        _dim_line('Display:      show, hide'),
                        _dim_line('Scope:        session-scoped by default, --global to persist'))
         self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
+        _retire_agent(self)  # Force agent re-init with new reasoning config
         saved = explicit_global and _save("agent.reasoning_effort", arg)
         if saved:
             if not isinstance(CLI_CONFIG.get("agent"), dict):
@@ -2654,7 +2655,7 @@ class CLICommandsMixin:
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
         self.service_tier, saved_value = _FAST_TIERS[arg]
-        self.agent = None  # Force agent re-init with new service-tier config
+        _retire_agent(self)  # Force agent re-init with new service-tier config
         saved = explicit_global and _save("agent.service_tier", saved_value)
         outcome = _scope_outcome(explicit_global, saved)
         _cp(_accent_line(f"✓ {feature_name} set to {saved_value.upper()} {outcome}"))

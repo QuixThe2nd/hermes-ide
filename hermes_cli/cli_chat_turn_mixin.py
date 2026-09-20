@@ -18,6 +18,8 @@ from rich import box as rich_box
 from rich.panel import Panel
 from typing import Optional
 
+from hermes_cli.cli_agent_setup_mixin import _retire_agent
+
 
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
@@ -51,7 +53,7 @@ class CLIChatTurnMixin:
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
-            self.agent = None
+            _retire_agent(self)
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
@@ -341,7 +343,7 @@ class CLIChatTurnMixin:
                 for _key, _value in _restore.items():
                     if _value is not None:
                         setattr(self, _key, _value)
-                self.agent = None
+                _retire_agent(self)
                 self._pending_moa_restore_model = None
                 self._pending_moa_disable_after_turn = False
         except Exception as exc:
