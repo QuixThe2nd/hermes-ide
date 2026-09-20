@@ -337,7 +337,25 @@ class GatewayModelCommandsMixin:
         self, result, ctx: _ModelSwitchContext, *, source, picker: bool = False
     ) -> str:
         """Apply a resolved switch (cached agent, session, config) and build the confirmation; shared
-        by the typed path and the picker callback (``picker=True`` never carries --once)."""
+        by the typed path and the picker callback (``picker=True`` never carries --once).
+
+        Entry for the picker / cost-confirm callbacks, which fire outside ``_handle_model_command``
+        and take the switch lock themselves; the typed path already holds it."""
+        async with self._model_switch_lock():
+            return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
+
+    def _model_switch_lock(self) -> asyncio.Lock:
+        """Runner-wide lock over a /model command's read-resolve-commit. Slash commands bypass the busy
+        guard while no agent runs, so a second /model on the same (or another) session otherwise
+        interleaves with the first's store/config awaits: two ``--global`` picks left config.yaml on
+        whichever thread wrote last and a ``--global`` cleanup wiped a session pick issued after it
+        (#100314). Lazy: the runner is built without __init__ in tests."""
+        lock = self.__dict__.get("_model_switch_lock_obj")
+        if lock is None:
+            lock = self.__dict__["_model_switch_lock_obj"] = asyncio.Lock()
+        return lock
+
+    async def _commit_model_switch_locked(self, result, ctx: _ModelSwitchContext, *, source, picker: bool) -> str:
         one_turn = False if picker else ctx.one_turn
         error = self._switch_cached_agent_model(result, ctx, picker)
         if error is not None:
@@ -461,7 +479,12 @@ class GatewayModelCommandsMixin:
         )
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /model command — switch model."""
+        """Handle /model command — switch model. Taken under the switch lock BEFORE the first await so
+        concurrent commands commit in issue order (see ``_model_switch_lock``)."""
+        async with self._model_switch_lock():
+            return await self._handle_model_command_locked(event)
+
+    async def _handle_model_command_locked(self, event: MessageEvent) -> Optional[str]:
         from gateway.run import _hermes_home
         from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
 
@@ -514,7 +537,7 @@ class GatewayModelCommandsMixin:
         guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
         if guard_fired:
             return guard_reply
-        return await self._commit_model_switch(result, ctx, source=source)
+        return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
 
     # -------------------------------------------------- /codex-runtime, /personality
 

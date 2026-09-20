@@ -19,6 +19,7 @@ callback and assert ``config.yaml`` is (or isn't) updated — exercising the exa
 closure the PR changed, against a real temp ``HERMES_HOME``.
 """
 
+import asyncio
 import types
 
 import yaml
@@ -331,3 +332,32 @@ async def test_global_switch_keeps_session_override_when_config_write_fails(tmp_
     assert "disk full" in confirmation
     assert runner._session_model_override(session_key)["model"] == "gpt-5.5"
     assert runner.session_store.get_model_override(session_key)["model"] == "gpt-5.5"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_model_commands_commit_in_issue_order(tmp_path, monkeypatch):
+    """Two /model commands on one session dispatched concurrently (a second slash command bypasses the
+    busy guard while no agent runs) must commit as if issued serially: a ``--global`` pick followed by
+    a session pick leaves config.yaml on the global model AND the session override on the later pick,
+    instead of the global cleanup wiping it; memory and durable store agree (#100314)."""
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    def _switch(**kw):
+        return ModelSwitchResult(success=True, new_model=kw["raw_input"], target_provider="openrouter",
+                                 provider_changed=False, api_key="sk-test", base_url="https://openrouter.ai/api/v1",
+                                 api_mode="chat_completions", provider_label="OpenRouter",
+                                 is_global=kw.get("is_global", False))
+
+    cfg_path = _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    source = _make_event("x").source
+    session_key = runner._session_key_for_source(source)
+    runner.session_store.get_or_create_session(source)
+
+    await asyncio.gather(runner._handle_model_command(_make_event("/model model-A --global")),
+                         runner._handle_model_command(_make_event("/model model-B")))
+
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["model"]["default"] == "model-A"
+    assert runner._session_model_override(session_key)["model"] == "model-B"
+    assert runner.session_store.get_model_override(session_key)["model"] == "model-B"
