@@ -661,11 +661,12 @@ _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ``401`` only as a standalone status token: a bare ``\b401\b`` also hit timestamp fragments
-# (``05:14:15,401``) and identifiers, mislabeling unrelated failures as sign-in problems (#89401).
+# ``401`` as a status token: not glued to a digit or a timestamp/identifier separator on the left
+# (``05:14:15,401``), but trailing punctuation is a real envelope (``HTTP 401: Unauthorized``,
+# ``returned 401.``) and must keep matching (#89401).
 _GATEWAY_AUTH_ERROR_RE = re.compile(
     r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key"
-    r"|(?<![\d:,.\-_])401(?![\d:,.\-_]))",
+    r"|(?<![\d:,.])401(?!\d))",
     re.IGNORECASE)
 
 _GATEWAY_RATE_LIMIT_RE = re.compile(
@@ -960,19 +961,15 @@ _CONTEXT_OVERFLOW_REPLY = (
     "Use /compress to shorten the history, or /new to start a fresh conversation.")
 
 
-# Reset window a quota 429 carries: ``resets_in_seconds`` (plan usage limit body) or the credential
-# pool's ``retry after Ns``. Rendered so a weekly-quota cap is not sold as "wait a moment" (#89401).
-_RATE_LIMIT_RESET_SECONDS_RE = re.compile(
-    r"(?:resets_in_seconds\W{1,4}|retry[\s-]+after\s+)(\d+)\s*s?\b", re.IGNORECASE)
-
-
 def _rate_limit_reply(text: str) -> str:
-    match = _RATE_LIMIT_RESET_SECONDS_RE.search(text)
-    seconds = int(match.group(1)) if match else 0
+    """Name the reset window a quota 429 carries (``resets_in_seconds`` body field, the credential
+    pool's ``retry after Ns``, ``resets in 4hr``) so a weekly cap is not sold as "wait a moment"
+    (#89401). One grammar table with the retry loop: ``agent.retry_utils.RETRY_DELAY_PATTERNS``."""
+    from agent.retry_utils import format_reset_window, reset_delay_from_message
+    seconds = reset_delay_from_message(text) or 0
     if seconds < 120:
         return "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
-    window = f"~{-(-seconds // 3600)}h" if seconds >= 3600 else f"~{-(-seconds // 60)} min"
-    return (f"⏱️ The AI model service's usage limit is reached; it resets in {window}. "
+    return (f"⏱️ The AI model service's usage limit is reached; it resets in {format_reset_window(seconds)}. "
             "Use /retry after that, or /model to switch models.")
 
 
