@@ -169,21 +169,34 @@ class TestEndpointConfig:
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {"openai": {"provider": "no-such"}}}))
         assert openai_plugin._resolve_endpoint() == ("", "")
 
-    def test_custom_base_url_ignores_system_proxy(self, monkeypatch):
-        """httpx only sees macOS system proxies via ``urllib.request.getproxies()`` (ExceptionsList
-        dropped); the plugin's client must carry no proxy mount when no proxy env var is set."""
+    def test_custom_base_url_ignores_system_proxy(self, monkeypatch, tmp_path):
+        """httpx only sees macOS system proxies via ``getproxies()`` (bound at import in
+        ``httpx._utils``; ExceptionsList dropped): with a system proxy visible and no proxy env var,
+        ``generate()`` must hand ``openai.OpenAI`` a client with no ``HTTPProxy`` mount, while a plain
+        ``httpx.Client()`` under the same conditions (control) does pick the proxy up (#64888)."""
         import httpx
+        import yaml
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
                     "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
-        fake_openai = MagicMock()
-        with patch("urllib.request.getproxies", return_value={"https": "http://127.0.0.1:7890",
-                                                              "http": "http://127.0.0.1:7890"}):
-            openai_plugin._build_client(fake_openai, "http://localhost:18081/v1", "k")
-        http_client = fake_openai.OpenAI.call_args.kwargs["http_client"]
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(
+            {"image_gen": {"openai": {"base_url": "http://localhost:18081/v1"}}}))
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        sys_proxy = {"http": "http://sysproxy:3128", "https": "http://sysproxy:3128"}
+
+        def proxy_mounts(client):
+            return [m for m in client._mounts.values()
+                    if type(getattr(m, "_pool", None)).__name__ == "HTTPProxy"]
+
+        with patch("httpx._utils.getproxies", return_value=sys_proxy), _patched_openai(fake_client):
+            with httpx.Client() as control:
+                assert len(proxy_mounts(control)) == 2  # the fake system proxy IS visible to httpx
+            assert openai_plugin.OpenAIImageGenProvider().generate("a cat")["success"] is True
+            http_client = __import__("sys").modules["openai"].OpenAI.call_args.kwargs["http_client"]
         assert isinstance(http_client, httpx.Client)
-        assert not any(type(getattr(m, "_pool", None)).__name__ == "HTTPProxy"
-                       for m in http_client._mounts.values() if m is not None)
+        assert proxy_mounts(http_client) == []
         http_client.close()
 
 
