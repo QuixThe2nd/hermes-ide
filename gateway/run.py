@@ -4139,6 +4139,12 @@ def _resolve_runtime_agent_kwargs() -> dict:
         _get_model_config,
     )
 
+    # Capture primary provider/model from config before the fallback walk so we
+    # can include it in the fallback notice if the primary fails (#74349).
+    _model_cfg = _get_model_config()
+    _primary_model = (_model_cfg.get("default") or "").strip()
+    _primary_provider = (_model_cfg.get("provider") or "").strip()
+
     def _max_tokens_for(runtime: dict):
         """Hermes fork: global model.max_tokens (or HERMES_MAX_TOKENS) wins; else a
         per-provider custom_providers ``max_output_tokens`` cap from the resolved runtime."""
@@ -4192,7 +4198,18 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "capabilities": capabilities,
     }
     if fallback_entry is not None:
+        # Carry fallback notice metadata so the gateway can surface a
+        # user-visible provider switch (#74349).  The caller must pop
+        # ``_fallback_notice`` before forwarding kwargs to AIAgent.
         kwargs["model"] = fallback_entry["model"]
+        fb_provider = kwargs.get("provider") or kwargs.get("requested_provider") or "unknown"
+        fb_model = kwargs.get("model") or "default"
+        primary_desc = "/".join(filter(None, [_primary_provider, _primary_model])) or "primary"
+        fallback_desc = "/".join(filter(None, [fb_provider, fb_model]))
+        kwargs["_fallback_notice"] = (
+            f"⚠️ Provider fallback: {primary_desc} unavailable; "
+            f"using {fallback_desc} for this response."
+        )
     return kwargs
 
     capabilities = runtime.get("capabilities")
@@ -7725,6 +7742,10 @@ class TurnRunner:
                 session_key=ctx.session_key,
                 user_config=ctx.user_config,
             )
+            # Stashed by _resolve_session_agent_runtime when the primary's credentials failed and a
+            # fallback was resolved before any agent exists (#74349); one-shot per turn.
+            pending_fallback_notice = getattr(self._runner, "_pre_agent_fallback_notice", None)
+            self._runner._pre_agent_fallback_notice = None
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -8141,6 +8162,9 @@ class TurnRunner:
         # subagent-failure notices must fire even on platforms with
         # tool_progress/thinking off — the None gate was exactly why a dead
         # subagent vanished silently there.
+        if pending_fallback_notice:
+            # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+            agent._pending_fallback_notice = pending_fallback_notice
         agent.tool_progress_callback = ctx.progress_callback
         # Compose ID-bearing lifecycle consumers: Discord's one-time voice
         # ack and Slack's native task cards both ride the authoritative
@@ -11376,6 +11400,9 @@ class GatewayRunner(
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
+        # runner surfaces it through the agent's one-shot fallback notice (#74349).
+        self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
