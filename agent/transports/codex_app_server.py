@@ -36,6 +36,20 @@ class CodexAppServerError(RuntimeError):
         return f"codex app-server error {self.code}: {self.message}"
 
 
+class CodexAppServerTransportError(CodexAppServerError):
+    """The JSON-RPC transport is gone: a write failed or close() drained the request.
+
+    Distinct from server-reported errors so session boundaries can retire the
+    session without swallowing unrelated ``RuntimeError`` programming defects.
+    """
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return self.message
+
+
+_TRANSPORT_LOST_CODE = -32000
+
+
 def _snapshot_descendants(pid: int) -> list[Any]:
     """psutil handles for ``pid``'s current descendants ([] when psutil is unavailable)."""
     try:
@@ -201,10 +215,10 @@ class CodexAppServerClient:
             self._pending.clear()
         if not pending_items:
             return
-        synthetic = {"error": {"code": -32000, "message": reason}}
+        synthetic = {"error": {"code": _TRANSPORT_LOST_CODE, "message": reason}, "transportLost": True}
         for _rid, pending in pending_items:
             try:
-                pending.queue.put_nowait(synthetic)
+                pending.put_nowait(synthetic)
             except queue.Full:
                 # A real reply already landed in this queue at the same
                 # moment (the reader thread raced us) — the blocked
@@ -223,7 +237,12 @@ class CodexAppServerClient:
         q: queue.Queue = queue.Queue(maxsize=1)
         with self._pending_lock:
             self._pending[rid] = q
-        self._send({"id": rid, "method": method, "params": params or {}})
+        try:
+            self._send({"id": rid, "method": method, "params": params or {}})
+        except CodexAppServerTransportError:
+            with self._pending_lock:
+                self._pending.pop(rid, None)
+            raise
         try:
             msg = q.get(timeout=timeout)
         except queue.Empty:
@@ -232,7 +251,8 @@ class CodexAppServerClient:
             raise TimeoutError(f"codex app-server method {method!r} timed out after {timeout}s")
         if "error" in msg:
             err = msg["error"]
-            raise CodexAppServerError(code=err.get("code", -1), message=err.get("message", ""), data=err.get("data"))
+            cls = CodexAppServerTransportError if msg.get("transportLost") else CodexAppServerError
+            raise cls(code=err.get("code", -1), message=err.get("message", ""), data=err.get("data"))
         return msg.get("result", {})
 
     def notify(self, method: str, params: Optional[dict] = None) -> None:
@@ -275,14 +295,16 @@ class CodexAppServerClient:
 
     def _send(self, obj: dict) -> None:
         if self._closed:
-            raise RuntimeError("codex app-server client is closed")
+            raise CodexAppServerTransportError(code=_TRANSPORT_LOST_CODE, message="codex app-server client is closed")
         if self._proc.stdin is None:
-            raise RuntimeError("codex app-server stdin not available")
+            raise CodexAppServerTransportError(code=_TRANSPORT_LOST_CODE, message="codex app-server stdin not available")
         try:
             self._proc.stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
             self._proc.stdin.flush()
-        except (BrokenPipeError, ValueError) as exc:
-            raise RuntimeError(f"codex app-server stdin closed unexpectedly: {exc}") from exc
+        except (OSError, ValueError) as exc:  # BrokenPipe, EINVAL on a torn-down pipe, write on closed file
+            raise CodexAppServerTransportError(
+                code=_TRANSPORT_LOST_CODE, message=f"codex app-server stdin closed unexpectedly: {exc}",
+            ) from exc
 
     def _append_stderr(self, line: str) -> None:
         with self._stderr_lock:
