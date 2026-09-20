@@ -299,6 +299,43 @@ class TestResolveProviderClientAzureFoundry:
         # → OpenAI(api_key=...).
         assert callable(received["api_key"])
 
+    def test_auto_route_forwards_main_runtime_entra_callable_intact(
+        self, monkeypatch, fake_azure_identity, patch_load_config,
+    ):
+        """#72421: ``provider: auto`` aux tasks (title generation, compression, smart approval)
+        re-resolve the main azure-foundry runtime with its api_key forwarded as
+        ``explicit_api_key``. That api_key is the Entra token-provider callable — it must reach
+        ``OpenAI(api_key=...)`` as the same object, never stringified into a function repr that
+        Azure rejects with 401."""
+        from agent import auxiliary_client as _aux
+
+        received = {}
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                received.update(kwargs)
+                self.api_key = kwargs.get("api_key", "")
+                self.base_url = kwargs.get("base_url", "")
+
+        monkeypatch.setattr(_aux, "OpenAI", _FakeOpenAI)
+        monkeypatch.setattr(_aux, "_is_provider_unhealthy", lambda *a, **k: False)
+        patch_load_config({
+            "provider": "azure-foundry",
+            "base_url": "https://r.openai.azure.com/openai/v1",
+            "api_mode": "chat_completions",
+            "auth_mode": "entra_id",
+            "default": "gpt-4o",
+        })
+        main_token_provider = lambda: "main-session-jwt"  # noqa: E731
+        client, resolved, effective = _aux._resolve_auto_route(main_runtime={
+            "provider": "azure-foundry", "model": "gpt-4o", "api_mode": "chat_completions",
+            "base_url": "https://r.openai.azure.com/openai/v1", "api_key": main_token_provider,
+        })
+        assert client is not None
+        assert (resolved, effective) == ("gpt-4o", "azure-foundry")
+        assert received["api_key"] is main_token_provider
+        assert received["api_key"]() == "main-session-jwt"
+
     def test_warns_and_returns_none_on_failure(
         self, monkeypatch, patch_load_config, caplog,
     ):

@@ -186,6 +186,8 @@ azure-foundry (Microsoft Entra ID):
   Status: configured; live token probe is skipped here
 ```
 
+Auxiliary tasks that follow the main model (`provider: auto` — session titles, context compression, smart approval) reuse the main session's Entra token provider instead of re-authenticating; a `--api-key` string on the CLI still overrides it for one-off testing.
+
 ### Limitations
 
 - **Anthropic-style endpoints use an httpx event hook.** The Anthropic Python SDK does not accept a callable `auth_token` natively (≤ 0.86.0). Hermes installs a request event hook on a custom `httpx.Client` that mints a fresh JWT per outbound request and rewrites `Authorization: Bearer <jwt>`. This is functionally equivalent to the OpenAI SDK's native `Callable[[], str]` contract but adds one indirection layer. If the Anthropic SDK adds first-class callable-auth support in a future release, Hermes will switch to it transparently.

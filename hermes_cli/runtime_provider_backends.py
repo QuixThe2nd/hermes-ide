@@ -10,6 +10,7 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from agent.azure_identity_adapter import is_token_provider
 from agent.secret_scope import get_secret_str
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches
@@ -69,7 +70,10 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
     ``.env``/env or a per-request Entra ID token, trailing ``/v1`` stripped for Anthropic-style
     endpoints (the Anthropic SDK appends /v1/messages itself)."""
     rp = _rp()
-    explicit_api_key = str(explicit_api_key or "").strip()
+    # Aux ``provider: auto`` forwards the main runtime's api_key — under entra_id that is the token
+    # provider callable; str() would turn it into a function repr sent as a static key (401, #72421).
+    forwarded_token_provider = explicit_api_key if is_token_provider(explicit_api_key) else None
+    explicit_api_key = "" if forwarded_token_provider else str(explicit_api_key or "").strip()
     explicit_base_url_clean = str(explicit_base_url or "").strip().rstrip("/")
     cfg_base_url, cfg_api_mode, cfg_auth_mode, cfg_entra = "", "chat_completions", "api_key", {}
     if rp._cfg_provider(model_cfg) == "azure-foundry":
@@ -97,9 +101,8 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
             api_key, source, auth_mode, entra = explicit_api_key, "explicit", "api_key", {}
         else:
             scope = str(cfg_entra.get("scope") or "").strip()
-            api_key, source, auth_mode, entra = _azure_entra_credentials(cfg_entra), "entra_id", "entra_id", (
-                {"scope": scope} if scope else {}
-            )
+            api_key = forwarded_token_provider or _azure_entra_credentials(cfg_entra)
+            source, auth_mode, entra = "entra_id", "entra_id", ({"scope": scope} if scope else {})
         return rp._runtime("azure-foundry", cfg_api_mode, base_url, api_key, auth_mode=auth_mode, entra=entra, source=source,
                            requested_provider=requested_provider)
     return rp._runtime("azure-foundry", cfg_api_mode, base_url, _azure_foundry_api_key(rp, explicit_api_key),
