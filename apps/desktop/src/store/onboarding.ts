@@ -1174,7 +1174,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
 // model only provider B has; chat errors "provider doesn't have the
 // selected model"). Also keep the flow's providerSlug/label in sync so the
 // confirm card shows the provider that actually serves the picked model.
-export async function setOnboardingModel(model: string, providerSlug?: string, label?: string) {
+export async function setOnboardingModel(model: string, providerSlug: string, label?: string) {
   const generation = flowGeneration
   const { flow } = $desktopOnboarding.get()
 
@@ -1182,19 +1182,18 @@ export async function setOnboardingModel(model: string, providerSlug?: string, l
     return
   }
 
-  // Fall back to the sign-in provider when the caller doesn't know the
-  // model's provider (back-compat) — the confirm card always has both.
-  const provider = (providerSlug || flow.providerSlug).trim() || flow.providerSlug
+  // The picker may not know the provider's display name yet (catalog still
+  // loading); keep the current label rather than blanking the card.
   const displayLabel = label || flow.label
 
   // Optimistic update so the dropdown feels instant; revert on failure.
   const previous = { currentModel: flow.currentModel, label: flow.label, providerSlug: flow.providerSlug }
-  setFlow({ ...flow, currentModel: model, providerSlug: provider, label: displayLabel, saving: true })
+  setFlow({ ...flow, currentModel: model, providerSlug, label: displayLabel, saving: true })
 
   try {
     await setMainModelAssignment(
       {
-        provider,
+        provider: providerSlug,
         model
       },
       flowProfile ?? $desktopOnboarding.get().targetProfile
@@ -1207,7 +1206,7 @@ export async function setOnboardingModel(model: string, providerSlug?: string, l
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {
-      setFlow({ ...current, currentModel: model, providerSlug: provider, label: displayLabel, saving: false })
+      setFlow({ ...current, currentModel: model, providerSlug, label: displayLabel, saving: false })
     }
   } catch (error) {
     if (generation !== flowGeneration) {
