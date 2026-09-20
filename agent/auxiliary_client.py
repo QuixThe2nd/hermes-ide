@@ -4786,6 +4786,12 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
         )
         client._hermes_aux_effective_provider = "actual"
         return client
+    # OpenCode relay targets pick the wire per model; a task/provider-level api_mode is stale for
+    # every other model (#98799), so it is re-derived here like the main runtime does.
+    from agent.opencode_affinity import opencode_transport
+    _oc_mode, _oc_base = opencode_transport(req.provider, final_model_str, base_url_str)
+    if _oc_mode:
+        req, base_url_str = req._replace(api_mode=_oc_mode), _oc_base
     needs_codex = not (
         isinstance(client_obj, CodexAuxiliaryClient) or req.raw_codex
     ) and (
@@ -5042,6 +5048,12 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         or "gpt-4o-mini",
         provider,
     )
+    # An OpenCode-family entry (``opencode-go-bridge``, #85589) persisted the api_mode of whichever
+    # model was selected at save time; the relay picks the wire per model (#98799).
+    from agent.opencode_affinity import opencode_transport
+    _oc_mode, _oc_base = opencode_transport(provider, final_model, custom_base)
+    if _oc_mode:
+        entry_api_mode, custom_base = _oc_mode, _oc_base
     logger.debug("resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                  provider, final_model, entry_api_mode or "chat_completions")
     # anthropic_messages: route via AnthropicAuxiliaryClient (mirrors _try_custom_endpoint);
