@@ -74,9 +74,13 @@ import pytest
     ("openai/o3-pro", 600.0),
     ("openai/o3-mini", 300.0),
     ("openai/o4-mini", 300.0),
-    # GPT-5.6 reasoning family; vendor prefixes and named variants inherit.
+    # OpenAI named reasoning lines (#103802); vendor prefixes and named/-pro/-900k variants
+    # inherit via the separator anchor.
     ("openai/gpt-5.6-sol", 600.0),
     ("gpt-5.6-terra", 600.0),
+    ("gpt-5.6-sol-900k", 600.0),
+    ("gpt-6-astra", 600.0),
+    ("gpt-6-astra-900k", 600.0),
     # Anthropic Claude 4.x thinking variants.
     ("anthropic/claude-opus-4-6", 240.0),
     ("anthropic/claude-opus-4-20250514", 240.0),
@@ -183,6 +187,10 @@ def test_gpt_5_6_floor_reaches_non_stream_and_stream_resolvers(monkeypatch, tmp_
     assert _cloud_stale_timeout(180.0, {"model": "gpt-5.6-sol", "input": "small"}) == 600.0
     assert get_reasoning_stale_timeout_floor("vendor/my-gpt-5.6-sol") is None
     assert get_reasoning_stale_timeout_floor("gpt-5.60-sol") is None
+    # Non-reasoning OpenAI chat line stays on the defaults (#103802 control case).
+    for chat_model in ("gpt-4.1", "gpt-4o", "gpt-5.1-chat-latest"):
+        assert get_reasoning_stale_timeout_floor(chat_model) is None
+        assert _cloud_stale_timeout(180.0, {"model": chat_model, "input": "small"}) == 180.0
 
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 900.0)
     assert agent._resolved_api_call_stale_timeout_base() == (900.0, False)
