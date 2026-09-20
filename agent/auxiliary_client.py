@@ -6152,12 +6152,20 @@ def _get_task_no_progress_timeout(task: str) -> Optional[float]:
     if not task:
         return None
     raw = _get_auxiliary_task_config(task).get("no_progress_timeout")
-    if raw is not None:
-        with contextlib.suppress(ValueError, TypeError):
-            value = float(raw)
-            if value > 0:
-                return value
-    return None
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (ValueError, TypeError):
+        value = 0.0
+    if isinstance(raw, bool) or value <= 0:
+        # Fail clearly: a typo here silently leaving the 60s default is exactly the
+        # "why did my 600s request abort after 60s" confusion the key exists to remove.
+        logger.warning(
+            "auxiliary.%s.no_progress_timeout=%r is not a positive number of seconds; "
+            "using the built-in %.0fs default", task, raw, _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS)
+        return None
+    return value
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:

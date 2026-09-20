@@ -5034,6 +5034,61 @@ class TestNoProgressTimeoutTaskConfigGating:
 
         assert "no_progress_timeout" not in client.chat.completions.create.call_args.kwargs
 
+    def test_real_config_value_reaches_the_stream_guard_per_task(self, tmp_path, monkeypatch, caplog):
+        """#108104: a REAL config.yaml ``auxiliary.compression.no_progress_timeout`` must set the
+        guard's substantive-progress window through the genuine call_llm -> _prepare_aux_request ->
+        CodexAuxiliaryClient path (both the first-output and between-output deadlines derive from
+        ``guard.no_progress_timeout``); other tasks keep the 60s default; a non-positive value
+        is rejected with a warning and falls back to the default."""
+        import yaml
+        from agent import auxiliary_client as aux
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        def _run(task):
+            captured = {}
+
+            class _Stop(Exception):
+                pass
+
+            def _start(self):
+                captured["window"] = self.no_progress_timeout
+                raise _Stop()
+
+            real_client = SimpleNamespace(
+                api_key="k", base_url="https://chatgpt.com/backend-api/codex/", close=lambda: None,
+                responses=SimpleNamespace(create=lambda **kw: None),
+            )
+            client = CodexAuxiliaryClient(real_client, "gpt-5.6-sol")
+            with (
+                patch.object(aux._CodexStreamGuard, "start", _start),
+                patch.object(aux, "_get_cached_client", lambda *a, **k: (client, "gpt-5.6-sol")),
+            ):
+                try:
+                    call_llm(task=task, provider="openai-codex", model="gpt-5.6-sol",
+                             messages=[{"role": "user", "content": "summarize"}])
+                except Exception:
+                    pass
+            return captured["window"]
+
+        (home / "config.yaml").write_text(yaml.safe_dump(
+            {"auxiliary": {"compression": {"timeout": 600, "no_progress_timeout": 5}}}))
+        assert _run("compression") == 5.0
+        # Per-task: the compression override does not leak into another task (timeout 600 so the
+        # min(window, total_timeout) clamp cannot mask the default).
+        (home / "config.yaml").write_text(yaml.safe_dump(
+            {"auxiliary": {"compression": {"timeout": 600, "no_progress_timeout": 5},
+                           "title_generation": {"timeout": 600}}}))
+        assert _run("title_generation") == 60.0
+
+        (home / "config.yaml").write_text(yaml.safe_dump(
+            {"auxiliary": {"compression": {"timeout": 600, "no_progress_timeout": -3}}}))
+        with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            assert _run("compression") == 60.0
+        assert any("no_progress_timeout=-3" in r.getMessage() for r in caplog.records)
+
 
 class TestMoaAggregatorStreamingBypass:
     def test_moa_aggregator_stream_bypasses_relay_for_codex_auxiliary_client(self, monkeypatch):
