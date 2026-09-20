@@ -492,7 +492,9 @@ def resolve_codex_runtime_credentials(
     read_error: Optional[AuthError] = None
     data = None
     try:
-        data = _read_codex_tokens()
+        # A read-only report takes no store lock: ``_save_auth_store`` replaces auth.json
+        # atomically, and materialising ``auth.lock`` is itself a write a diagnostic must not make.
+        data = _read_codex_tokens(_lock=not read_only)
     except AuthError as exc:
         read_error = exc
         if not read_only and exc.relogin_required and exc.code in {

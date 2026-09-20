@@ -132,15 +132,19 @@ def test_status_snapshot_never_adopts_codex_cli_tokens(tmp_path, monkeypatch):
     assert _singleton_tokens(home)["refresh_token"] == "cli-refresh"
 
 
-def test_status_snapshot_never_refreshes_an_expiring_singleton(tmp_path, monkeypatch):
-    """#68004: an expiring singleton token is reported as stored; only the runtime lease may spend
-    the refresh token (and ``read_only`` wins over ``force_refresh``)."""
+def test_status_snapshot_never_refreshes_an_expired_singleton(tmp_path, monkeypatch):
+    """#68004: an expired singleton token is reported as stored; only the runtime lease may spend
+    the refresh token (and ``read_only`` wins over ``force_refresh``).
+
+    The token is already expired (not merely expiring): ``load_pool`` mirrors the singleton as a
+    ``device_code`` pool entry and ``pool.peek`` would answer for a still-valid token, so only an
+    expired one drives ``get_codex_auth_status()`` down to the singleton resolver under test."""
     import hermes_cli.auth as auth
     from hermes_cli.auth import resolve_codex_runtime_credentials
 
-    expiring = {"access_token": _jwt_with_exp(30), "refresh_token": "singleton-refresh"}
+    expired = {"access_token": _jwt_with_exp(-60), "refresh_token": "singleton-refresh"}
     home = _singleton_only_codex_home(
-        tmp_path, monkeypatch, tokens=expiring, codex_cli_tokens={})
+        tmp_path, monkeypatch, tokens=expired, codex_cli_tokens={})
     refresh_calls: list = []
 
     def _rotate(access_token, refresh_token, *args, **kwargs):
@@ -150,13 +154,60 @@ def test_status_snapshot_never_refreshes_an_expiring_singleton(tmp_path, monkeyp
     monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rotate)
 
     status = get_codex_auth_status()
-    resolve_codex_runtime_credentials(force_refresh=True, read_only=True)
 
     assert refresh_calls == [], "a status read spent the single-use singleton refresh token"
-    assert status["logged_in"] is True and status["api_key"] == expiring["access_token"]
-    assert _singleton_tokens(home) == expiring
+    assert status["logged_in"] is True and status["api_key"] == expired["access_token"]
+    assert status["source"] == "hermes-auth-store", "the status read never reached the singleton resolver"
+    assert _singleton_tokens(home) == expired
+
+    # Secondary: read_only wins over force_refresh on the resolver itself.
+    resolve_codex_runtime_credentials(force_refresh=True, read_only=True)
+    assert refresh_calls == [] and _singleton_tokens(home) == expired
 
     # Control: the runtime path refreshes and persists the rotated pair.
     resolve_codex_runtime_credentials()
     assert refresh_calls == ["singleton-refresh"]
     assert _singleton_tokens(home)["refresh_token"] == "rotated-refresh"
+
+
+def test_status_snapshot_leaves_the_auth_store_manifest_byte_identical(tmp_path, monkeypatch):
+    """#68004: once the pool has mirrored the singleton, a status read creates no ``auth.lock`` and
+    rewrites no byte of ``auth.json`` — the read is lock-free because the writer replaces the file
+    atomically."""
+    expired = {"access_token": _jwt_with_exp(-60), "refresh_token": "singleton-refresh"}
+    home = _singleton_only_codex_home(tmp_path, monkeypatch, tokens=expired, codex_cli_tokens={})
+
+    get_codex_auth_status()  # first read: ``load_pool`` seeds the singleton into the pool (by design)
+    (home / "auth.lock").unlink(missing_ok=True)
+    manifest = {p.name: p.read_bytes() for p in home.iterdir() if p.is_file()}
+
+    status = get_codex_auth_status()
+
+    assert status["source"] == "hermes-auth-store"
+    assert {p.name: p.read_bytes() for p in home.iterdir() if p.is_file()} == manifest
+
+
+def test_model_picker_catalog_never_refreshes_the_stored_codex_login(tmp_path, monkeypatch):
+    """#68004: ``/model`` reports the stored login as-is — an expired token means the hardcoded
+    catalog, not a spent refresh token."""
+    import hermes_cli.auth as auth
+    import hermes_cli.codex_models as codex_models
+    from hermes_cli.models import _codex_catalog
+
+    expired = {"access_token": _jwt_with_exp(-60), "refresh_token": "singleton-refresh"}
+    home = _singleton_only_codex_home(tmp_path, monkeypatch, tokens=expired, codex_cli_tokens={})
+    refresh_calls: list = []
+    api_tokens: list = []
+
+    def _rotate(access_token, refresh_token, *args, **kwargs):
+        refresh_calls.append(refresh_token)
+        return {"access_token": _jwt_with_exp(86400), "refresh_token": "rotated-refresh"}
+
+    monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rotate)
+    monkeypatch.setattr(codex_models, "_fetch_models_from_api", lambda token: api_tokens.append(token) or [])
+
+    models = _codex_catalog("openai-codex", False)
+
+    assert models, "the hardcoded catalog is the fallback for an expired stored token"
+    assert refresh_calls == [] and api_tokens == []
+    assert _singleton_tokens(home) == expired
