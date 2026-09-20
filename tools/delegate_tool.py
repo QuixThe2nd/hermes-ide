@@ -56,6 +56,7 @@ _RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+from tools.delegate_tool_config import _get_oneshot_max_children  # noqa: F401; one-shot spawn budget knob (upstream a79d1d3a71)
 
 
 # Tools that children must never have access to
@@ -4056,6 +4057,26 @@ def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
+    """Charge *requested* children against the finite one-shot session's total (delegation.oneshot_max_children);
+    the error text tells the model to do the work inline. Interactive and gateway sessions are never charged."""
+    from agent.oneshot_footprint import is_single_query_session
+    if not is_single_query_session():
+        return None
+    cap = _get_oneshot_max_children()
+    if cap <= 0:
+        return None
+    spent = getattr(parent_agent, "_oneshot_children_spawned", 0)
+    if spent + requested > cap:
+        return (
+            f"Delegation budget for this one-shot run is exhausted ({spent}/{cap} subagents used; "
+            f"delegation.oneshot_max_children). Do the remaining work yourself in this session — reviewing "
+            f"your own diff and running the tests inline is expected here, not a delegated review."
+        )
+    parent_agent._oneshot_children_spawned = spent + requested
+    return None
+
+
 def delegate_agent(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -4285,6 +4306,12 @@ def delegate_agent(
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
         task_schemas.append(coerced_schema)
 
+    # One-shot runs: charge the whole batch against the finite session's total spawn
+    # budget before any child is built (delegation.oneshot_max_children); interactive
+    # and gateway sessions are never charged.
+    err = _oneshot_spawn_budget(parent_agent, len(task_list))
+    if err:
+        return tool_error(err)
     overall_start = time.monotonic()
     results = []
 
