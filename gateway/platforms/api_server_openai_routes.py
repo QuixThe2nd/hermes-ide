@@ -88,6 +88,37 @@ def _message_item(text: Any) -> Dict[str, Any]:
             "content": [{"type": "output_text", "text": text}]}
 
 
+def _reasoning_item(text: str) -> Dict[str, Any]:
+    """Completed Responses ``reasoning`` output item (same shape the SSE writer closes with)."""
+    return {"id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning", "status": "completed",
+            "summary": [{"type": "summary_text", "text": text}]}
+
+
+def _is_reasoning_input_item(item: Any) -> bool:
+    """Echoed-back ``reasoning`` output item: Responses SDK clients replay a prior response's
+    ``output`` list as the next ``input``. It carries no message content, so it must be
+    skipped rather than parsed into an empty ``user`` turn (#99552)."""
+    return isinstance(item, dict) and item.get("type") == "reasoning"
+
+
+def _turn_reasoning_text(
+        conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any]) -> str:
+    """Reasoning the model produced on this turn, joined for a non-streaming
+    ``message.reasoning_content``. Read from the assistant messages the agent already
+    persisted (``build_assistant_message`` stores the structured reasoning under
+    ``reasoning``) rather than re-accumulating callback deltas, so it is exactly what the
+    stream would have carried and cannot double-count the post-response fallback."""
+    messages = result.get("messages") if isinstance(result, dict) else None
+    if not isinstance(messages, list):
+        return ""
+    start = OpenAICompatRoutesMixin._response_messages_turn_start_index(
+        conversation_history, user_message, result)
+    parts = [m["reasoning"] for m in messages[start:]
+             if isinstance(m, dict) and m.get("role") == "assistant"
+             and isinstance(m.get("reasoning"), str) and m["reasoning"].strip()]
+    return "\n\n".join(parts)
+
+
 def _trim_tool_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Trim large tool payloads in place so response.completed stays under ~100KB (clients
     already received the full details via the incremental events)."""
@@ -256,7 +287,7 @@ class _ResponsesStream:
         await self.write_event("response.reasoning_summary_part.done", {
             "type": "response.reasoning_summary_part.done", **base,
             "part": {"type": "summary_text", "text": text}})
-        self.emitted_items.append({"type": "reasoning", "summary": item["summary"]})
+        self.emitted_items.append(item)
         await self.write_event("response.output_item.done", {
             "type": "response.output_item.done", "output_index": rs["output_index"], "item": item})
 
@@ -645,6 +676,10 @@ class OpenAICompatRoutesMixin:
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
                          "finish_reason": finish_reason}],
             "usage": _chat_usage_payload(usage)}
+        # Non-streaming twin of ``delta.reasoning_content`` (#99552).
+        reasoning_text = _turn_reasoning_text(history, user_message, result)
+        if reasoning_text and not presentation_muted:
+            response_data["choices"][0]["message"]["reasoning_content"] = reasoning_text
         if is_partial or is_failed or not completed:
             response_data["hermes"] = _hermes_extras(
                 completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
@@ -867,6 +902,8 @@ class OpenAICompatRoutesMixin:
             for idx, item in enumerate(raw_input):
                 if isinstance(item, str):
                     input_messages.append({"role": "user", "content": item})
+                elif _is_reasoning_input_item(item):
+                    continue
                 elif isinstance(item, dict):
                     try:
                         content = _normalize_multimodal_content(item.get("content", ""))
@@ -883,6 +920,8 @@ class OpenAICompatRoutesMixin:
             if not isinstance(raw_history, list):
                 return _error_response("'conversation_history' must be an array of message objects", 400)
             for i, entry in enumerate(raw_history):
+                if _is_reasoning_input_item(entry):
+                    continue
                 if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
                     return _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
                 try:
@@ -1096,6 +1135,11 @@ class OpenAICompatRoutesMixin:
             messages = messages[start_index:]
         for msg in messages:
             role = msg.get("role")
+            reasoning = msg.get("reasoning") if role == "assistant" else None
+            if isinstance(reasoning, str) and reasoning.strip():
+                # Precedes this message's function_call items, like the SSE writer closes a
+                # thinking burst before the next tool item opens (#99552).
+                items.append(_reasoning_item(reasoning))
             if role == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     func = tc.get("function", {})

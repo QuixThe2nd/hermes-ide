@@ -114,10 +114,12 @@ All SSE streams (Chat Completions, Responses, `/api/sessions/{id}/chat/stream`, 
 - **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
 
-**Model reasoning in streams** (emitted only when the model actually produces reasoning and the resolved `reasoning` config allows it; the input-side opt-out is `model_options.reasoning.enabled: false`):
+**Model reasoning** (emitted only when the model actually produces reasoning and the resolved `reasoning` config allows it; the input-side opt-out is `model_options.reasoning.enabled: false`):
 - **Chat Completions**: reasoning deltas arrive as `choices[0].delta.reasoning_content` chunks (the DeepSeek-style field Open WebUI, opencode and the Vercel AI SDK render as a thinking block); answer text stays in `delta.content`.
-- **Responses**: each thinking burst is a spec-native `reasoning` output item — `response.output_item.added` (`item.type: "reasoning"`), `response.reasoning_summary_part.added`, `response.reasoning_summary_text.delta` … `response.reasoning_summary_text.done`, `response.reasoning_summary_part.done`, `response.output_item.done` — closed before the next message or `function_call` item opens, and echoed in the `response.completed` output as `{"type": "reasoning", "summary": [{"type": "summary_text", "text": "…"}]}`. `sequence_number` stays monotonic across reasoning, text and tool events.
-- Support is advertised as `features.reasoning_streaming: true` on `GET /v1/capabilities`. Non-streaming responses do not carry reasoning.
+- **Responses**: each thinking burst is a spec-native `reasoning` output item — `response.output_item.added` (`item.type: "reasoning"`), `response.reasoning_summary_part.added`, `response.reasoning_summary_text.delta` … `response.reasoning_summary_text.done`, `response.reasoning_summary_part.done`, `response.output_item.done` — closed before the next message or `function_call` item opens, and echoed in the `response.completed` output as `{"id": "rs_…", "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": "…"}]}`. `sequence_number` stays monotonic across reasoning, text and tool events.
+- **Non-streaming**: `/v1/chat/completions` returns the turn's reasoning on `choices[0].message.reasoning_content`; `/v1/responses` returns the same `reasoning` output item(s) ahead of the message (and of that step's `function_call` items), also on `GET /v1/responses/{id}` replay.
+- Echoing a prior response's `output` list back as the next `input` (what Responses SDK clients do) is fine: `reasoning` items are ignored on input rather than parsed as empty user turns.
+- Support is advertised as `features.reasoning_streaming: true` on `GET /v1/capabilities`.
 
 ### POST /v1/responses
 
