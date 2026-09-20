@@ -382,6 +382,28 @@ def _usage_windows(
     return windows
 
 
+# Published Codex quota windows by ``limit_window_seconds``: 5h session and 7-day weekly.
+_CODEX_WINDOW_LABELS_BY_SECONDS = {18000: "Session", 604800: "Weekly"}
+_CODEX_WINDOW_POSITIONAL_LABELS = (("primary_window", "Session"), ("secondary_window", "Weekly"))
+
+
+def _codex_window_labels(rate_limit: dict) -> tuple[tuple[str, str], ...]:
+    """Label Codex windows by their published duration, not response position (#65387).
+
+    The usage API keys windows ``primary_window``/``secondary_window`` by position; when only the
+    weekly limit is returned it occupies ``primary_window`` and the positional mapping mislabeled it
+    ``Session``. Windows whose ``limit_window_seconds`` is missing or unrecognized keep the legacy
+    positional label so duration-less payloads render exactly as before.
+    """
+    labels = []
+    for key, fallback in _CODEX_WINDOW_POSITIONAL_LABELS:
+        window = rate_limit.get(key) or {}
+        seconds = window.get("limit_window_seconds") if isinstance(window, dict) else None
+        label = _CODEX_WINDOW_LABELS_BY_SECONDS.get(int(seconds), fallback) if _is_num(seconds) else fallback
+        labels.append((key, label))
+    return tuple(labels)
+
+
 def _plural(count: int) -> str:
     return "s" if count != 1 else ""
 
@@ -403,8 +425,8 @@ def _fetch_codex_account_usage(
         payload = _get_json(
             _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
         )
-    windows = _usage_windows(payload.get("rate_limit") or {}, (("primary_window", "Session"), ("secondary_window", "Weekly")),
-                             "used_percent", "reset_at")
+    rate_limit = payload.get("rate_limit") or {}
+    windows = _usage_windows(rate_limit, _codex_window_labels(rate_limit), "used_percent", "reset_at")
     details: list[str] = []
     count = _codex_banked_resets(payload)
     if count > 0:

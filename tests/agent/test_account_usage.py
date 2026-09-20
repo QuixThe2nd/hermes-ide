@@ -125,6 +125,42 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
 
 
 
+def _explicit_creds_snapshot(monkeypatch, payload):
+    calls = []
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: _FakeClient(calls, payload))
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex", base_url="https://chatgpt.com/backend-api/codex", api_key="live-agent-token",
+    )
+    return snapshot, calls
+
+
+def test_codex_weekly_only_primary_window_is_labeled_weekly(monkeypatch):
+    """#65387: a lone 604800s primary_window is the weekly limit, not the session one."""
+    payload = {"plan_type": "pro", "rate_limit": {
+        "primary_window": {"used_percent": 1, "limit_window_seconds": 604800},
+        "secondary_window": None,
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [(w.label, w.used_percent) for w in snapshot.windows] == [("Weekly", 1.0)]
+
+
+def test_codex_window_labels_follow_duration_with_positional_fallback(monkeypatch):
+    # Swapped positions: labels must follow limit_window_seconds.
+    payload = {"rate_limit": {
+        "primary_window": {"used_percent": 4, "limit_window_seconds": 604800},
+        "secondary_window": {"used_percent": 21, "limit_window_seconds": 18000},
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [w.label for w in snapshot.windows] == ["Weekly", "Session"]
+    # Missing / unrecognized durations keep the legacy positional labels.
+    payload = {"rate_limit": {
+        "primary_window": {"used_percent": 4},
+        "secondary_window": {"used_percent": 21, "limit_window_seconds": 12345},
+    }}
+    snapshot, _ = _explicit_creds_snapshot(monkeypatch, payload)
+    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
+
+
 def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, codex_usage_payload):
     """When the resolver succeeds but the separate account_id read raises, the
     working singleton token must still be used (best-effort account_id), NOT
