@@ -612,6 +612,30 @@ def test_chat_messages_to_responses_input_drops_foreign_id_for_codex_backend():
     assert xai_message["id"] == _FOREIGN_ITEM_ID
 
 
+def test_message_id_is_dropped_when_its_turn_replays_reasoning_without_id():
+    """#97427/#97442: a ``msg_*`` id bound to a stripped ``rs_*`` id is an orphan the API rejects with 400;
+    the message survives as content/status/phase. A reasoning-free turn keeps its id (prefix-cache affinity)."""
+    def _turn(text, *, reasoning):
+        msg = {
+            "role": "assistant",
+            "content": text,
+            "codex_message_items": [{
+                "type": "message", "role": "assistant", "status": "completed", "id": f"msg_{text}",
+                "phase": "final_answer", "content": [{"type": "output_text", "text": text}],
+            }],
+        }
+        if reasoning:
+            msg["codex_reasoning_items"] = [{"type": "reasoning", "id": "rs_1", "encrypted_content": "BLOB", "summary": []}]
+        return msg
+
+    items = _chat_messages_to_responses_input([_turn("linked", reasoning=True), _turn("alone", reasoning=False)])
+
+    reasoning, linked, alone = (i for i in items if i.get("type") in {"reasoning", "message"})
+    assert "id" not in reasoning and "id" not in linked
+    assert linked["phase"] == "final_answer" and linked["content"] == [{"type": "output_text", "text": "linked"}]
+    assert alone["id"] == "msg_alone"
+
+
 def _reasoning_history(item):
     return [
         {"role": "assistant", "content": "done", "codex_reasoning_items": [item]},
