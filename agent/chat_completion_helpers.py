@@ -3056,6 +3056,8 @@ class _StreamingCall(StreamingWaitMonitor):
         message = getattr(choices[0] if isinstance(choices, (list, tuple)) and choices else None, "message", None)
         if message is not None:
             reasoning_text = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+            if reasoning_text is None and isinstance(getattr(message, "model_extra", None), dict):
+                reasoning_text = message.model_extra.get("reasoning_content") or message.model_extra.get("reasoning")
             if isinstance(reasoning_text, str) and reasoning_text:
                 self._emit_reasoning(reasoning_text)
             content = getattr(message, "content", None)

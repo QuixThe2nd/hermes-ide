@@ -6851,6 +6851,19 @@ class TestStreamingApiCall:
         assert resp.choices[0].message.reasoning_content == "thinking only"
         assert resp.choices[0].finish_reason == "length"
 
+    def test_final_response_object_replays_reasoning_from_model_extra(self, agent):
+        """The 'completed response instead of an iterator' branch reads reasoning through the
+        same ``model_extra`` fallback as the delta path, so it is still shown (#56516)."""
+        message = SimpleNamespace(content="done", tool_calls=None, model_extra={"reasoning": "thought"})
+        final = SimpleNamespace(model="m", choices=[SimpleNamespace(message=message, finish_reason="stop")])
+        agent.client.chat.completions.create.return_value = final
+        agent.reasoning_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert resp is final
+        agent.reasoning_callback.assert_called_once_with("thought")
+
     def test_model_name_captured(self, agent):
         chunks = [
             _make_chunk(content="Hi", model="gpt-4o"),
