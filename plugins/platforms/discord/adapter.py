@@ -6136,6 +6136,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Return whether Discord channel messages require a bot mention."""
         return self._extra_or_env_flag("require_mention", "DISCORD_REQUIRE_MENTION", "true", truthy=False)
 
+    def _discord_free_response_auto_thread(self) -> bool:
+        """Free-response channels also auto-thread when opted in; default replies inline."""
+        return self._extra_or_env_flag(
+            "free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD", "false", truthy=True,
+        )
+
     def _discord_max_attachment_bytes(self) -> int:
         """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""
         configured = self.config.extra.get("max_attachment_bytes")
@@ -7822,6 +7828,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
         thread_id = None
         parent_channel_id = None
         is_thread = isinstance(message.channel, discord.Thread)
@@ -7890,8 +7897,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
             auto_thread = self._discord_auto_thread_enabled()
+            # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
+            skip_thread = bool(channel_keys & no_thread_channels) or (
+                is_free_channel and not self._discord_free_response_auto_thread()
+            )
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
@@ -9175,7 +9185,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     # precedence helper (_gate_raw: explicit env first, then config) honors
     # ``discord.auto_thread`` even when the env bridge is skipped
     # (multiplexed secondary profiles) or lost the first-writer race.
-    for key, env_key in (("auto_thread", "DISCORD_AUTO_THREAD"), ("reactions", "DISCORD_REACTIONS")):
+    for key, env_key in (
+        ("auto_thread", "DISCORD_AUTO_THREAD"),
+        ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),
+        ("reactions", "DISCORD_REACTIONS"),
+    ):
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]
             _env_default(env_key, str(discord_cfg[key]).lower())
@@ -9237,8 +9251,9 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env bridge: ``discord:`` config keys → ``DISCORD_*`` env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
-        # (require_mention, free_response_channels, auto_thread, reactions, ignored_channels,
-        # allowed_channels, no_thread_channels, allow_mentions.*, reply_to_mode, thread_require_mention)
+        # (require_mention, free_response_channels, auto_thread, free_response_auto_thread,
+        # reactions, ignored_channels, allowed_channels, no_thread_channels, allow_mentions.*,
+        # reply_to_mode, thread_require_mention)
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
         # block that used to live in ``gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,
