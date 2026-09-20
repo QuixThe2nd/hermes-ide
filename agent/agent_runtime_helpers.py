@@ -24,7 +24,8 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
-    STATUS_EXHAUSTED, credential_pool_matches_provider, resolve_runtime_pool_key
+    STATUS_EXHAUSTED, credential_pool_entry_serves_endpoint, credential_pool_matches_provider,
+    resolve_runtime_pool_key,
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
@@ -851,6 +852,14 @@ def recover_with_credential_pool(
             kwargs["model"] = model
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
+            return False
+        if not credential_pool_entry_serves_endpoint(next_entry, getattr(agent, "base_url", None)):
+            # Mixed same-provider pool (#68237): the entry serves another endpoint and _swap_credential
+            # would rebind this session to it. Treat as no recovery, like a rotation that yields nothing.
+            _ra().logger.info(
+                "Credential %s (%s) — pool entry %s serves another endpoint; not swapping",
+                rotate_status, label, getattr(next_entry, "id", "?"),
+            )
             return False
         _ra().logger.info(
             "Credential %s (%s) — rotated to pool entry %s",

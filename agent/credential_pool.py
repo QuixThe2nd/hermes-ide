@@ -641,6 +641,20 @@ def _legacy_custom_pool_matches(
     return False
 
 
+def credential_pool_entry_serves_endpoint(entry: Any, base_url: Any) -> bool:
+    """Whether a pooled credential may be bound to a session running at ``base_url``. ``_swap_credential``
+    adopts the entry's base_url too, so a same-provider entry for another endpoint (public OpenAI vs. an
+    Azure resource) would send the session's requests — and the entry's key — to the wrong host (#68237).
+    Entries or sessions without endpoint metadata (legacy adapters, test doubles) cannot rebind and are accepted."""
+    if not isinstance(base_url, str) or not base_url:
+        return True
+    entry_url = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
+    if not isinstance(entry_url, str) or not entry_url:
+        return True
+    from hermes_cli.route_identity import normalize_route_base_url
+    return normalize_route_base_url(entry_url) == normalize_route_base_url(base_url)
+
+
 def credential_pool_matches_provider(
     pool_or_provider: Any,
     provider: Optional[str],
