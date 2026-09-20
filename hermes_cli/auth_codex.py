@@ -557,9 +557,7 @@ def resolve_codex_runtime_credentials(
             # Before surfacing the persisted cooldown, ask the usage endpoint whether the quota
             # reset early (banked reset redeemed, plan upgraded): ``last_error_reset_at`` can be
             # days in the future while the account is already usable again.
-            stale_token = _stripped(pool_rate_limit.get("access_token"))
-            if stale_token and _probe_codex_quota_restored(
-                stale_token, base_url=pool_rate_limit.get("base_url")):
+            if _probe_codex_pool_entry_quota_restored(pool_rate_limit):
                 logger.info("Codex quota restored upstream — clearing stale pool cooldown(s).")
                 clear_codex_pool_quota_cooldowns()
                 pool_token = _pool_codex_access_token()
@@ -683,6 +681,49 @@ def _probe_codex_quota_restored(
     return result
 
 
+def _refresh_expired_codex_probe_token(
+    access_token: Any, refresh_token: Any) -> Optional[Dict[str, Any]]:
+    """Refresh an EXPIRED stored access token so the quota probe can get a real answer.
+
+    Exhausted pool entries are skipped by the proactive refresh chain (#44799), so by the time
+    anything probes with the stored token it has expired; the usage endpoint answers
+    ``401 token_expired``, the probe returns None, and the cooldown is kept until
+    ``last_error_reset_at`` no matter what happened upstream (top-up, plan upgrade) — #89415.
+    Returns the rotated token pair (callers MUST persist it: refresh tokens are single-use) or
+    None when no refresh was needed/possible. The cooldown itself is left untouched.
+    """
+    token, refresh = _stripped(access_token), _stripped(refresh_token)
+    if not token or not refresh or not _codex_access_token_is_expiring(token, 0):
+        return None
+    try:
+        return refresh_codex_oauth_pure(token, refresh)
+    except Exception:
+        logger.debug("Codex pre-probe token refresh failed", exc_info=True)
+        return None
+
+
+def _probe_codex_pool_entry_quota_restored(entry: Dict[str, Any]) -> Optional[bool]:
+    """``_probe_codex_quota_restored`` for a persisted pool entry, refreshing an expired token first."""
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+    token = _stripped(entry.get("access_token"))
+    fresh = _refresh_expired_codex_probe_token(token, entry.get("refresh_token"))
+    if fresh:
+        token = fresh["access_token"]
+        try:
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                for disk_entry in _codex_pool_dicts(_pool_entries(auth_store, "openai-codex")):
+                    if disk_entry.get("id") == entry.get("id"):
+                        disk_entry.update(fresh)
+                        _save_auth_store(auth_store)
+                        break
+        except Exception:
+            logger.debug("Failed to persist refreshed Codex pool tokens", exc_info=True)
+    if not token:
+        return None
+    return _probe_codex_quota_restored(token, base_url=entry.get("base_url"))
+
+
 def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     """Clear rate-limit cooldowns on persisted openai-codex pool entries.
 
@@ -732,6 +773,7 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
                     "label": entry.get("label"), "last_refresh": entry.get("last_refresh"),
                     "reset_at": reset_at, "reason": entry.get("last_error_reason"),
                     "message": entry.get("last_error_message"), "access_token": token.strip(),
+                    "refresh_token": entry.get("refresh_token"), "id": entry.get("id"),
                     "base_url": entry.get("base_url")}
     except Exception:
         logger.debug("Codex pool rate-limit lookup failed", exc_info=True)

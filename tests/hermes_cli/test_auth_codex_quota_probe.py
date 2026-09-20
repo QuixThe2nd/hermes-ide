@@ -316,3 +316,86 @@ def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# #89415 — the mid-cooldown probe must refresh an expired stored token first
+# ---------------------------------------------------------------------------
+
+
+def _expired_jwt_pool_store(now):
+    store = _pool_only_rate_limited_store(now)
+    entry = store["credential_pool"]["openai-codex"][0]
+    entry["access_token"] = _jwt({"exp": now - 7200})  # expired hours ago
+    entry["refresh_token"] = "rf-old"
+    return store
+
+
+class _ExpiryAwareClient(_StubClient):
+    """Behaves like the real usage endpoint: an expired bearer gets 401 token_expired."""
+
+    def get(self, url, headers=None):
+        token = (headers or {}).get("Authorization", "").removeprefix("Bearer ")
+        if auth_codex._codex_access_token_is_expiring(token, 0):
+            self._calls.append({"url": url, "headers": dict(headers or {})})
+            return _StubResponse(401, {"error": {"code": "token_expired"}})
+        return super().get(url, headers=headers)
+
+
+def _patch_expiry_aware_httpx(monkeypatch, response):
+    calls: list = []
+    monkeypatch.setattr(
+        auth_mod.httpx, "Client", lambda **kwargs: _ExpiryAwareClient(calls, response)
+    )
+    return calls
+
+
+def _fake_refresh(monkeypatch, fresh_token, calls):
+    def _refresh(access_token, refresh_token, **kw):
+        calls.append(refresh_token)
+        return {"access_token": fresh_token, "refresh_token": "rf-new", "last_refresh": "now"}
+
+    monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", _refresh)
+
+
+def test_resolver_refreshes_expired_token_before_probe(tmp_path, monkeypatch):
+    """Exhausted entries are skipped by the refresh chain, so the stored access token has
+    expired by the time the probe runs: /usage answers 401 -> None -> cooldown kept forever,
+    even after a top-up / plan upgrade. Refresh (keeping the cooldown) and probe live."""
+    now = time.time()
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(hermes_home, _expired_jwt_pool_store(now))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    fresh = _jwt({"exp": now + 3600})
+    refresh_calls: list = []
+    _fake_refresh(monkeypatch, fresh, refresh_calls)
+    http_calls = _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 0.0)))
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert refresh_calls == ["rf-old"]
+    assert http_calls[0]["headers"]["Authorization"] == f"Bearer {fresh}"
+    assert resolved["api_key"] == fresh
+    entry = json.loads((hermes_home / "auth.json").read_text())["credential_pool"]["openai-codex"][0]
+    assert entry["refresh_token"] == "rf-new"
+    assert entry["last_status"] is None
+
+
+def test_resolver_keeps_cooldown_when_fresh_probe_still_exhausted(tmp_path, monkeypatch):
+    """Control: refresh succeeds, live probe still says 100% -> cooldown stays, but the
+    rotated (single-use) token pair is persisted so the grant is not burned."""
+    now = time.time()
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(hermes_home, _expired_jwt_pool_store(now))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    fresh = _jwt({"exp": now + 3600})
+    _fake_refresh(monkeypatch, fresh, [])
+    _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 100.0)))
+
+    with pytest.raises(AuthError, match="quota exhausted"):
+        resolve_codex_runtime_credentials()
+
+    entry = json.loads((hermes_home / "auth.json").read_text())["credential_pool"]["openai-codex"][0]
+    assert entry["access_token"] == fresh
+    assert entry["refresh_token"] == "rf-new"
+    assert entry["last_status"] == "exhausted"

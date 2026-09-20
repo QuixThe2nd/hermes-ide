@@ -1670,6 +1670,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if not token:
             return False
         try:
+            # An exhausted entry is skipped by the refresh chain, so its stored token is usually
+            # expired by probe time (401 -> None -> cooldown kept, #89415): refresh it first.
+            fresh = auth_mod._refresh_expired_codex_probe_token(token, entry.refresh_token)
+            if fresh:
+                entry = self._adopt(
+                    entry, access_token=fresh["access_token"], refresh_token=fresh["refresh_token"],
+                )
+                token = entry.access_token or token
             return bool(auth_mod._probe_codex_quota_restored(token, base_url=entry.base_url))
         except Exception:
             logger.debug("Codex quota-restored probe failed", exc_info=True)
