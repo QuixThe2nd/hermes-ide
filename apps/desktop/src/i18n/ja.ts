@@ -632,7 +632,7 @@ export const ja = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
-      modelContextLength: 'コンテキストウィンドウ',
+      modelContextLength: 'メインのチャットモデルのみ、検出されたコンテキストウィンドウを上書きします（トークン数）。0 のままにすると、選択したモデルから検出された値を使用します。補助モデル/MoA モデルには影響しません。',
       fallbackProviders: 'フォールバックモデル',
       toolsets: '有効なツールセット',
       timezone: 'タイムゾーン',
@@ -781,6 +781,11 @@ export const ja = defineLocale({
         targetRatio: '圧縮目標',
         protectLastN: '保護する直近メッセージ'
       },
+      auxiliary: {
+        compression: {
+          timeout: '圧縮モデルのタイムアウト（秒）'
+        }
+      },
       delegation: {
         model: 'サブエージェントモデル',
         provider: 'サブエージェントプロバイダー',
@@ -841,6 +846,11 @@ export const ja = defineLocale({
       compression: {
         enabled: '会話が大きくなったとき、古いコンテキストを要約します。',
         codexGpt55Autoraise: '対応する ChatGPT Codex OAuth モデルの圧縮しきい値を 85% に引き上げます。'
+      },
+      auxiliary: {
+        compression: {
+          timeout: '補助圧縮モデルの呼び出しごとに待機する秒数（既定 120）。遅いローカルモデルでは値を上げてください。'
+        }
       },
       voice: {
         autoTts: 'アシスタントの応答を自動で読み上げます。'
