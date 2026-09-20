@@ -2289,3 +2289,48 @@ def test_removed_keyless_free_provider_points_at_its_replacements(name):
     assert excinfo.value.code == "invalid_provider"
     message = str(excinfo.value)
     assert "opencode-zen" in message and "opencode-go" in message
+
+
+# ── model.openai_runtime: codex_app_server on every ladder rung (#115169) ─────────────────
+
+_CODEX_STORE_CREDS = {"base_url": "https://chatgpt.com/backend-api/codex", "api_key": "tok",
+                      "source": "hermes-auth-store", "last_refresh": 1}
+
+
+def _codex_rung(monkeypatch, rung: str) -> dict:
+    """Isolate one openai-codex ladder rung; returns the kwargs for resolve_runtime_provider."""
+    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", lambda: dict(_CODEX_STORE_CREDS))
+    if rung == "pool":
+        entry = SimpleNamespace(api_key="tok", runtime_api_key="tok", base_url="", source="pool")
+        monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(
+            has_credentials=lambda: True, select=lambda model=None: entry))
+        monkeypatch.setattr(rp, "credential_pool_matches_provider", lambda *a, **k: True)
+        return {}
+    monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(has_credentials=lambda: False))
+    return {"explicit_api_key": "sk-explicit"} if rung == "explicit" else {}
+
+
+@pytest.mark.parametrize("rung", ["pool", "oauth", "explicit"])
+def test_openai_runtime_codex_app_server_applies_on_every_rung(monkeypatch, rung):
+    """#115169: the opt-in was applied only inside the credential-pool rung, so the OAuth-store
+    and explicit --api-key/--base-url rungs silently resolved codex_responses."""
+    kwargs = _codex_rung(monkeypatch, rung)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openai-codex", "default": "gpt-5.5", "openai_runtime": "codex_app_server"})
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex", **kwargs)
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["api_mode"] == "codex_app_server"
+
+
+@pytest.mark.parametrize("rung", ["pool", "oauth", "explicit"])
+@pytest.mark.parametrize("openai_runtime", [None, "auto"])
+def test_openai_runtime_unset_keeps_wire_api_mode(monkeypatch, rung, openai_runtime):
+    kwargs = _codex_rung(monkeypatch, rung)
+    model_cfg = {"provider": "openai-codex", "default": "gpt-5.5"}
+    if openai_runtime is not None:
+        model_cfg["openai_runtime"] = openai_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
+
+    assert rp.resolve_runtime_provider(requested="openai-codex", **kwargs)["api_mode"] == "codex_responses"
