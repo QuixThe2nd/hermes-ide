@@ -620,6 +620,61 @@ class TestErrorHandling:
         assert result["error"] == "user interrupted"
 
 
+class TestQuotaFailureFallsOverToConfiguredFallback:
+    """A codex app-server turn that ends in a usage-limit error must hand the same user turn to the
+    configured ``fallback_providers`` entry instead of failing outright (#71633). The fallback is a
+    local fake OpenAI-compatible server so the real classify -> activate -> retry path runs."""
+
+    def test_usage_limit_turn_completes_on_fallback_provider(self, monkeypatch):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        calls = []
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or b"{}"))
+                calls.append(self.path)
+                chunk = {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": body.get("model"),
+                         "choices": [{"index": 0, "delta": {"role": "assistant", "content": "fallback answered"},
+                                      "finish_reason": "stop"}]}
+                data = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        srv = HTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            def limit_turn(self, user_input, **kwargs):
+                return TurnResult(final_text="", projected_messages=[], tool_iterations=0, interrupted=False,
+                                  error="turn ended status=failed: You've hit your usage limit.",
+                                  turn_id="t1", thread_id="th1", should_retire=True)
+
+            monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th1")
+            monkeypatch.setattr(CodexAppServerSession, "run_turn", limit_turn)
+            agent = _make_codex_agent(fallback_model=[{
+                "provider": "custom", "model": "fake-fb", "api_key": "fb-key",
+                "base_url": f"http://127.0.0.1:{srv.server_port}/v1",
+            }])
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                result = agent.run_conversation("hello")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+        assert result["final_response"] == "fallback answered"
+        assert result["completed"] is True
+        assert "/v1/chat/completions" in calls
+        assert agent.api_mode != "codex_app_server"
+
+
 class TestSessionRetirementOnRunAgent:
     """run_agent.py side: when run_turn returns should_retire=True, the
     AIAgent must close + null _codex_session so the next turn respawns."""

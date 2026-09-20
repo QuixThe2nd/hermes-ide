@@ -1449,6 +1449,30 @@ def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_fail
     return "⚠️ Rate limited — switching to fallback provider..."
 
 
+_CODEX_APP_SERVER_FALLBACK_REASONS = frozenset({
+    FailoverReason.billing, FailoverReason.rate_limit, FailoverReason.upstream_rate_limit,
+})
+
+
+def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bool:
+    """The codex app-server runtime reports a failed turn as ``result["error"]`` text instead of
+    raising, so the generic classify -> ``fallback_providers`` chain never saw it (#71633).
+    Classify that text; on a billing / rate-limit verdict activate the configured fallback and
+    return True so the caller re-runs the same user turn on the generic loop."""
+    error = result.get("error")
+    if not error or result.get("interrupted") or not agent._has_pending_fallback():
+        return False
+    from agent.error_classifier import classify_api_error
+    classified = classify_api_error(
+        RuntimeError(str(error)), provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
+    )
+    if classified.reason not in _CODEX_APP_SERVER_FALLBACK_REASONS:
+        return False
+    agent._buffer_diagnostic_status(
+        _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False))
+    return bool(agent._try_activate_fallback(reason=classified.reason))
+
+
 def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context: Any, classified: Any = None) -> bool:
     """Record a genuine account-level Nous 429 to the cross-session breaker; upstream
     capacity 429s (no exhausted bucket in headers or last-known state) are left alone.
