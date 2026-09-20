@@ -1141,7 +1141,11 @@ def _commit_tool_result(
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
     persisted_result = function_result
-    if not _is_multimodal_tool_result(persisted_result):
+    if _is_multimodal_tool_result(persisted_result):
+        persisted_result = _persist_multimodal_text_parts(
+            persisted_result, function_name, tool_call_id, get_active_env(effective_task_id), budget,
+        )
+    else:
         persisted_result = maybe_persist_tool_result(
             content=persisted_result,
             tool_name=function_name,
@@ -1175,6 +1179,32 @@ def _commit_tool_result(
             "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
         )
     return persisted_result, function_result, tool_message.get("_tool_output_risk")
+
+
+def _persist_multimodal_text_parts(result: dict, tool_name: str, tool_call_id: str, env, budget: BudgetConfig) -> dict:
+    """Spill oversized TEXT parts of a multimodal envelope through the same persistence policy as
+    string results (#95429). A ``browser_exec`` call that captured a screenshot bakes its full
+    stdout into the envelope's text part, which used to bypass ``maybe_persist_tool_result``
+    entirely and ride every later request inline. Image parts are left untouched (their size is
+    governed by the vision embed budget); a fresh dict is returned so history is never mutated."""
+    parts = result.get("content") or []
+    bounded_parts, changed = [], False
+    for part in parts:
+        text = part.get("text") if isinstance(part, dict) and part.get("type") == "text" else None
+        if isinstance(text, str):
+            replaced = maybe_persist_tool_result(content=text, tool_name=tool_name, tool_use_id=tool_call_id,
+                                                 env=env, config=budget)
+            if replaced != text:
+                part, changed = {**part, "text": replaced}, True
+        bounded_parts.append(part)
+    if not changed:
+        return result
+    bounded = {**result, "content": bounded_parts}
+    summary = bounded.get("text_summary")
+    if isinstance(summary, str):
+        bounded["text_summary"] = maybe_persist_tool_result(content=summary, tool_name=tool_name,
+                                                            tool_use_id=tool_call_id, env=env, config=budget)
+    return bounded
 
 
 def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tools: int, budget: BudgetConfig) -> None:
