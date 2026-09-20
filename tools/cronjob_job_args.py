@@ -63,7 +63,16 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
         return None
     try:
         from cron.scheduler import _resolve_delivery_targets
-        if _resolve_delivery_targets(job):
+        targets = _resolve_delivery_targets(job)
+        if targets:
+            # _origin_from_env() dropped a non-push origin (api_server) and the job rerouted to a
+            # home channel: tell the creating client where the report goes (#69304).
+            from gateway.session_context import async_delivery_supported, get_session_env
+            fallback = [t for t in targets if t.get("_resolved_from") == "origin_fallback"]
+            if fallback and get_session_env("HERMES_SESSION_PLATFORM") and not async_delivery_supported():
+                return ("Note: this stateless HTTP API session cannot receive cron delivery, so this "
+                        f"job will report to the home channel {fallback[0]['platform']}:"
+                        f"{fallback[0]['chat_id']} instead of back here.")
             return None
     except Exception:  # resolution unavailable — fall back to the origin signal
         if job.get("origin"):

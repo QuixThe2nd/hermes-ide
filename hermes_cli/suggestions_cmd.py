@@ -28,19 +28,13 @@ def _fmt_pending(pending: list) -> str:
 
 
 def _resolve_origin() -> Optional[Dict[str, Any]]:
-    """Best-effort current-chat origin from session env (mirrors cron's ``_origin_from_env``) so an
-    accepted job delivers back to the accepting chat; None means no captured origin, so the job
-    must carry an explicit deliver target."""
+    """Best-effort current-chat origin from session env (cron's ``_origin_from_env``, which also
+    withholds non-push surfaces such as api_server) so an accepted job delivers back to the
+    accepting chat; None means no captured origin, so the job must carry an explicit deliver
+    target."""
     try:
-        from gateway.session_context import get_session_env
-        platform = get_session_env("HERMES_SESSION_PLATFORM")
-        chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
-        if platform and chat_id:
-            return {
-                "platform": platform,
-                "chat_id": chat_id,
-                "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
-                "thread_id": get_session_env("HERMES_SESSION_THREAD_ID") or None}
+        from tools.cronjob_job_args import _origin_from_env
+        return _origin_from_env()
     except Exception:
         pass
     return None
