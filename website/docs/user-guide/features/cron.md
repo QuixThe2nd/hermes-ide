@@ -687,7 +687,9 @@ Only the job's **own conversation** is ever touched:
 
 Broadcast expansions (`all`) are never made continuable. A job whose `deliver:
 origin` captured no origin (jobs created by scripts or the API rather than from
-a live gateway chat) records a delivery error instead of guessing a chat.
+a live gateway chat, or from a session on the request/response `api_server`
+platform, which cannot receive a delivery) records a delivery error instead of
+guessing a chat.
 After upgrading, existing jobs with `cron.mirror_delivery: true`
 can open a new thread per run on thread-capable platforms. Set `attach_to_session: false`
 on a job to opt out of this thread-per-run behaviour.
