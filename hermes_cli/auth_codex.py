@@ -617,6 +617,10 @@ _codex_quota_probe_cache: Dict[str, Tuple[float, Optional[bool]]] = {}
 _codex_quota_probe_lock = threading.Lock()
 
 
+def _codex_quota_probe_cache_key(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
 def _codex_usage_probe_url(base_url: Optional[str]) -> str:
     """Resolve the Codex usage endpoint for a probe.
 
@@ -645,7 +649,7 @@ def _probe_codex_quota_restored(
     # network calls for corrupt/placeholder entries (and keeps hermetic test fixtures offline).
     if not token or not _decode_jwt_claims(token):
         return None
-    cache_key = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    cache_key = _codex_quota_probe_cache_key(token)
     now = time.monotonic()
     with _codex_quota_probe_lock:
         cached = _codex_quota_probe_cache.get(cache_key)
@@ -682,7 +686,8 @@ def _probe_codex_quota_restored(
 
 
 def _refresh_expired_codex_probe_token(
-    access_token: Any, refresh_token: Any) -> Optional[Dict[str, Any]]:
+    access_token: Any, refresh_token: Any, *,
+    min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS) -> Optional[Dict[str, Any]]:
     """Refresh an EXPIRED stored access token so the quota probe can get a real answer.
 
     Exhausted pool entries are skipped by the proactive refresh chain (#44799), so by the time
@@ -691,14 +696,29 @@ def _refresh_expired_codex_probe_token(
     ``last_error_reset_at`` no matter what happened upstream (top-up, plan upgrade) — #89415.
     Returns the rotated token pair (callers MUST persist it: refresh tokens are single-use) or
     None when no refresh was needed/possible. The cooldown itself is left untouched.
+
+    Shares the probe's per-token throttle: a refresh that keeps failing (revoked grant, network
+    down) would otherwise POST to the token endpoint on every credential selection, while the
+    probe itself is capped at one call per ``min_interval_seconds``. A failed attempt reserves
+    the stale token's probe slot, so neither the refresh nor the doomed 401 probe fire again
+    until the interval has elapsed.
     """
+    from hermes_cli.auth import _codex_quota_probe_cache
     token, refresh = _stripped(access_token), _stripped(refresh_token)
     if not token or not refresh or not _codex_access_token_is_expiring(token, 0):
         return None
+    cache_key = _codex_quota_probe_cache_key(token)
+    now = time.monotonic()
+    with _codex_quota_probe_lock:
+        cached = _codex_quota_probe_cache.get(cache_key)
+        if cached is not None and (now - cached[0]) < min_interval_seconds:
+            return None
     try:
         return refresh_codex_oauth_pure(token, refresh)
     except Exception:
         logger.debug("Codex pre-probe token refresh failed", exc_info=True)
+        with _codex_quota_probe_lock:
+            _codex_quota_probe_cache[cache_key] = (now, None)
         return None
 
 

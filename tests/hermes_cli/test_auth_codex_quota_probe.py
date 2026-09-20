@@ -381,21 +381,61 @@ def test_resolver_refreshes_expired_token_before_probe(tmp_path, monkeypatch):
     assert entry["last_status"] is None
 
 
-def test_resolver_keeps_cooldown_when_fresh_probe_still_exhausted(tmp_path, monkeypatch):
-    """Control: refresh succeeds, live probe still says 100% -> cooldown stays, but the
-    rotated (single-use) token pair is persisted so the grant is not burned."""
+def test_pool_selection_refreshes_expired_token_before_probe(tmp_path, monkeypatch):
+    """Control at the pool's hot selection path: refresh succeeds, live probe still says 100%
+    -> cooldown stays, the rotated (single-use) pair is what the probe used and it is persisted
+    on BOTH sides (pool row + ``providers.openai-codex`` singleton) so the next selection's
+    auth-store sync cannot re-adopt the consumed pair and lift the cooldown with it."""
+    now = time.time()
+    hermes_home = tmp_path / "hermes"
+    store = _expired_jwt_pool_store(now)
+    stale = store["credential_pool"]["openai-codex"][0]
+    store["providers"]["openai-codex"] = {
+        "tokens": {"access_token": stale["access_token"], "refresh_token": "rf-old"}}
+    _write_auth_store(hermes_home, store)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    fresh = _jwt({"exp": now + 3600})
+    refresh_calls: list = []
+    _fake_refresh(monkeypatch, fresh, refresh_calls)
+    http_calls = _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 100.0)))
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+
+    assert pool.select() is None
+    assert pool.select() is None  # second pass: auth-store sync must not resurrect rf-old
+
+    assert refresh_calls == ["rf-old"]
+    assert [c["headers"]["Authorization"] for c in http_calls] == [f"Bearer {fresh}"]
+    entry = pool._entries[0]
+    assert (entry.access_token, entry.refresh_token, entry.last_status) == (fresh, "rf-new", "exhausted")
+    disk = json.loads((hermes_home / "auth.json").read_text())
+    assert disk["credential_pool"]["openai-codex"][0]["refresh_token"] == "rf-new"
+    assert disk["providers"]["openai-codex"]["tokens"]["refresh_token"] == "rf-new"
+
+
+def test_pool_selection_throttles_failing_pre_probe_refresh(tmp_path, monkeypatch):
+    """Regression control: a frozen entry whose refresh keeps failing (revoked grant, network
+    down) must not POST to the token endpoint on every selection — at most one attempt per
+    probe interval, the same budget the probe itself has (<= 1 network call per 5 min)."""
     now = time.time()
     hermes_home = tmp_path / "hermes"
     _write_auth_store(hermes_home, _expired_jwt_pool_store(now))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    fresh = _jwt({"exp": now + 3600})
-    _fake_refresh(monkeypatch, fresh, [])
-    _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 100.0)))
+    attempts: list = []
 
-    with pytest.raises(AuthError, match="quota exhausted"):
-        resolve_codex_runtime_credentials()
+    def _failing_refresh(access_token, refresh_token, **kw):
+        attempts.append(refresh_token)
+        raise RuntimeError("invalid_grant")
 
-    entry = json.loads((hermes_home / "auth.json").read_text())["credential_pool"]["openai-codex"][0]
-    assert entry["access_token"] == fresh
-    assert entry["refresh_token"] == "rf-new"
-    assert entry["last_status"] == "exhausted"
+    monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", _failing_refresh)
+    http_calls = _patch_expiry_aware_httpx(monkeypatch, _StubResponse(200, _usage_payload(0.0, 0.0)))
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    for _ in range(5):
+        assert pool.select() is None
+
+    assert attempts == ["rf-old"]
+    assert len(http_calls) <= 1
+

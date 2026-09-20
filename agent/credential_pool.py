@@ -1677,9 +1677,15 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # expired by probe time (401 -> None -> cooldown kept, #89415): refresh it first.
             fresh = auth_mod._refresh_expired_codex_probe_token(token, entry.refresh_token)
             if fresh:
+                # Persist the rotated pair on both sides the way ``_refresh_entry`` does:
+                # ``last_refresh`` plus the singleton write-back, or the next selection's
+                # auth-store sync re-adopts the consumed pair from ``providers.openai-codex``
+                # and clears the cooldown with it.
                 entry = self._adopt(
                     entry, access_token=fresh["access_token"], refresh_token=fresh["refresh_token"],
+                    last_refresh=fresh.get("last_refresh") or entry.last_refresh,
                 )
+                self._sync_device_code_entry_to_auth_store(entry)
                 token = entry.access_token or token
             return bool(auth_mod._probe_codex_quota_restored(token, base_url=entry.base_url))
         except Exception:
