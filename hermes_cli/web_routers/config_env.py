@@ -745,7 +745,9 @@ async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]
                 candidate_resp = await client.get(candidate + "/models", headers=headers)
             except Exception:
                 continue
-            if resp is None or candidate_resp.is_success:
+            # Keep the most telling failure: a 401/403 from the /v1 alternate says "server is
+            # there, key rejected", which beats the typed root's 404 (wrong path).
+            if resp is None or candidate_resp.is_success or resp.status_code == 404:
                 resolved, resp = candidate, candidate_resp
             if candidate_resp.is_success:
                 break
