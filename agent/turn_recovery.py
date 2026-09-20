@@ -1102,22 +1102,28 @@ def max_retries_exhausted_result(
 def log_api_error_attempt(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int,
     status_code: Optional[int], elapsed_time: float, api_messages: Any, approx_tokens: int,
+    retryable: bool = True,
 ) -> Tuple[str, str, Any, Any, Any]:
     """Log one failed API attempt (warning + buffered retry trace, OpenRouter "no tool
     endpoints" hint, bare-404 missing-vendor-prefix hint); the buffer only surfaces if every
-    retry+fallback exhausts. Returns ``(error_type, error_msg, provider, base_url, model)``."""
+    retry+fallback exhausts. Returns ``(error_type, error_msg, provider, base_url, model)``.
+
+    ``retryable=False`` (the classifier's verdict, e.g. a 401 on a static-key route) is
+    named on the line: a bare ``attempt 1/3`` promises a second attempt that never comes
+    and sends readers hunting for a retry bug (#73237)."""
     error_type = type(api_error).__name__
     error_msg = str(api_error).lower()
     _error_summary = agent._summarize_api_error(api_error)
+    _attempt = f"attempt {retry_count}/{max_retries}" + ("" if retryable else ", not retryable")
     logger.warning(
-        "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
-        retry_count, max_retries, error_type, agent._client_log_context(), _error_summary,
+        "API call failed (%s) error_type=%s %s summary=%s",
+        _attempt, error_type, agent._client_log_context(), _error_summary,
     )
 
     _provider = getattr(agent, "provider", "unknown")
     _base = getattr(agent, "base_url", "unknown")
     _model = getattr(agent, "model", "unknown")
-    _blines(agent, f"⚠️  Attempt {retry_count}/{max_retries} failed: {_error_summary}")
+    _blines(agent, f"⚠️  {_attempt[0].upper()}{_attempt[1:]} failed: {_error_summary}")
     # Exception class, endpoint, raw body and token counts are developer detail: verbose only.
     if getattr(agent, "verbose_logging", False):
         _status_code_str = f" [HTTP {status_code}]" if status_code else ""

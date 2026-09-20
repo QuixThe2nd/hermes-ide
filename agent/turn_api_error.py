@@ -141,6 +141,7 @@ def handle_api_error(
     error_type, error_msg, _provider, _base, _model = log_api_error_attempt(
         agent, api_error, retry_count=retry_count, max_retries=max_retries, status_code=status_code,
         elapsed_time=elapsed_time, api_messages=api_messages, approx_tokens=approx_tokens,
+        retryable=bool(classified.retryable),
     )
 
     if agent._interrupt_requested:
