@@ -92,3 +92,71 @@ def test_status_snapshot_leaves_round_robin_order_and_counts_untouched(tmp_path,
     # Control: a runtime selection still rotates and persists the new order.
     load_pool("openai-codex").select()
     assert _persisted_pool(home) != before
+
+
+def _singleton_only_codex_home(tmp_path, monkeypatch, *, tokens: dict, codex_cli_tokens: dict):
+    """HERMES_HOME whose Codex credentials are the ``providers.openai-codex`` singleton only, with a
+    valid Codex CLI login sitting beside it in ``CODEX_HOME``."""
+    home, codex_home = tmp_path / "hermes", tmp_path / "codex"
+    home.mkdir()
+    codex_home.mkdir()
+    (home / "auth.json").write_text(json.dumps({
+        "version": 1, "active_provider": "openai-codex",
+        "providers": {"openai-codex": {"tokens": tokens, "auth_mode": "chatgpt"}}}), encoding="utf-8")
+    (codex_home / "auth.json").write_text(json.dumps({"tokens": codex_cli_tokens}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    return home
+
+
+def _singleton_tokens(home) -> dict:
+    return json.loads((home / "auth.json").read_text(encoding="utf-8"))["providers"]["openai-codex"]["tokens"]
+
+
+def test_status_snapshot_never_adopts_codex_cli_tokens(tmp_path, monkeypatch):
+    """#68004: a Hermes store missing its refresh_token is recovery-eligible on the runtime path, but
+    ``hermes status`` / ``hermes doctor`` must not import the Codex CLI's single-use token family."""
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+
+    stale = {"access_token": _jwt_with_exp(-60)}
+    home = _singleton_only_codex_home(
+        tmp_path, monkeypatch, tokens=stale,
+        codex_cli_tokens={"access_token": _jwt_with_exp(86400), "refresh_token": "cli-refresh"})
+
+    get_codex_auth_status()
+
+    assert _singleton_tokens(home) == stale, "a status read persisted the Codex CLI login into auth.json"
+
+    # Control: the runtime resolver still self-heals from the CLI file.
+    assert resolve_codex_runtime_credentials()["source"] == "hermes-auth-store"
+    assert _singleton_tokens(home)["refresh_token"] == "cli-refresh"
+
+
+def test_status_snapshot_never_refreshes_an_expiring_singleton(tmp_path, monkeypatch):
+    """#68004: an expiring singleton token is reported as stored; only the runtime lease may spend
+    the refresh token (and ``read_only`` wins over ``force_refresh``)."""
+    import hermes_cli.auth as auth
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+
+    expiring = {"access_token": _jwt_with_exp(30), "refresh_token": "singleton-refresh"}
+    home = _singleton_only_codex_home(
+        tmp_path, monkeypatch, tokens=expiring, codex_cli_tokens={})
+    refresh_calls: list = []
+
+    def _rotate(access_token, refresh_token, *args, **kwargs):
+        refresh_calls.append(refresh_token)
+        return {"access_token": _jwt_with_exp(86400), "refresh_token": "rotated-refresh"}
+
+    monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rotate)
+
+    status = get_codex_auth_status()
+    resolve_codex_runtime_credentials(force_refresh=True, read_only=True)
+
+    assert refresh_calls == [], "a status read spent the single-use singleton refresh token"
+    assert status["logged_in"] is True and status["api_key"] == expiring["access_token"]
+    assert _singleton_tokens(home) == expiring
+
+    # Control: the runtime path refreshes and persists the rotated pair.
+    resolve_codex_runtime_credentials()
+    assert refresh_calls == ["singleton-refresh"]
+    assert _singleton_tokens(home)["refresh_token"] == "rotated-refresh"

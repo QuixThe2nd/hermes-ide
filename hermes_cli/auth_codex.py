@@ -468,8 +468,14 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
 
 def resolve_codex_runtime_credentials(
     *, force_refresh: bool = False, refresh_if_expiring: bool = True,
-    refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> Dict[str, Any]:
+    refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+    read_only: bool = False) -> Dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store.
+
+    ``read_only=True`` (status / doctor / pickers) reports the stored state as-is: no Codex CLI
+    adoption, no token refresh, no auth-store write — and it wins over ``force_refresh``. A
+    diagnostic that silently imports another program's rotating refresh token or spends one is a
+    mutation the user never asked for (#68004).
 
     Falls back to the credential pool when the singleton (``providers.openai-codex.tokens``) has no
     usable access_token but the pool (``credential_pool.openai-codex``) does.
@@ -489,7 +495,7 @@ def resolve_codex_runtime_credentials(
         data = _read_codex_tokens()
     except AuthError as exc:
         read_error = exc
-        if exc.relogin_required and exc.code in {
+        if not read_only and exc.relogin_required and exc.code in {
             "codex_auth_missing_access_token", "codex_auth_missing_refresh_token",
             "codex_auth_invalid_shape"}:
             imported = _recover_codex_tokens_from_cli(str(exc.code or "auth_error"))
@@ -497,7 +503,7 @@ def resolve_codex_runtime_credentials(
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
     if data is None:
         pool_token = _pool_codex_access_token()
-        if pool_token and force_refresh:
+        if pool_token and force_refresh and not read_only:
             # Pool-only setup: a forced refresh must rotate the pool entry, not resend its token.
             from agent.credential_pool import load_pool
             refreshed = load_pool("openai-codex").try_refresh_matching(api_key_hint=pool_token)
@@ -530,6 +536,8 @@ def resolve_codex_runtime_credentials(
     refresh_timeout_seconds = env_float("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", 20)
 
     def _should_refresh(token: str) -> bool:
+        if read_only:
+            return False
         return bool(force_refresh) or (
             refresh_if_expiring and _codex_access_token_is_expiring(token, refresh_skew_seconds))
 
