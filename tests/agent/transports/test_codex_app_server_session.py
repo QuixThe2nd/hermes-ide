@@ -1029,6 +1029,24 @@ class TestTransportLoss:
             assert result.interrupted and result.should_retire, run
             assert "closed" in (result.error or ""), run
 
+    def test_close_before_turn_loop_reports_session_closed_not_timeout(self):
+        """close() landing after turn/start was accepted but before _drive_turn snapshots the
+        client must retire as 'session closed', not be mislabelled a turn timeout."""
+        client = FakeClient()
+        client._closed = False
+        session = make_session(client)
+        started = session._run_started_turn
+
+        def close_then_run(result, ts, *args):
+            session.close()
+            return started(result, ts, *args)
+
+        session._run_started_turn = close_then_run
+        result = session.run_turn("hi", turn_timeout=3, notification_poll_timeout=0.001)
+        assert result.interrupted and result.should_retire
+        assert "session closed" in (result.error or "")
+        assert "timed out" not in (result.error or "")
+
     @pytest.mark.parametrize("run,fail_on", [
         ("run_turn", "turn/start"),
         ("compact_thread", "thread/compact/start"),

@@ -298,13 +298,14 @@ class CodexAppServerSession:
             self._retire(result, hint or self._format_error_with_stderr(f"{label} timed out", exc))
         return None
 
-    def _subprocess_died(self, result: TurnResult, client: CodexAppServerClient) -> bool:
+    def _subprocess_died(self, result: TurnResult, client: Optional[CodexAppServerClient]) -> bool:
         """Bail out early (rather than waiting on the deadline) when codex exited or close() ran.
 
         ``client`` is the loop's snapshot: close() on another thread nulls ``self._client``
-        mid-turn (session expiry), which must end the turn, not raise AttributeError.
+        mid-turn (session expiry), which must end the turn, not raise AttributeError. A
+        ``None`` snapshot means close() already landed before the loop started.
         """
-        if self._closed or self._client is not client:
+        if client is None or self._closed or self._client is not client:
             result.interrupted = True
             self._retire(result, "codex app-server session closed while the turn was in flight")
             return True
@@ -466,7 +467,7 @@ class CodexAppServerSession:
                 self._issue_interrupt(result.turn_id)
                 result.interrupted = True
                 break
-            if client is None or self._subprocess_died(result, client):
+            if self._subprocess_died(result, client) or client is None:  # `is None` narrows only; already retired
                 break
             if before_poll is not None and before_poll():
                 break
