@@ -734,7 +734,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     # skip the waterfall so egress logs do not fill with 404s for /api/tags, /v1/props, /version (#61421).
     # Local addresses are never in that table, and ollama.com is the one hosted host that does speak
     # Ollama's /api/tags, so it keeps the probe.
-    if not is_local_endpoint(normalized) and _infer_provider_from_url(normalized) not in (None, "ollama-cloud"):
+    if _infer_provider_from_url(normalized) not in (None, "ollama-cloud"):
         return None
     server_url = _server_root(normalized)
     lmstudio_url = _lmstudio_server_root(normalized)
