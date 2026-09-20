@@ -14,6 +14,10 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
 
+# A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the
+# (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
+MODEL_ENTITLEMENT_BENCH_SECONDS = 365 * 24 * 60 * 60
+
 
 def model_cooldown_until(entry: "PooledCredential", model: Optional[str]) -> Optional[float]:
     """Active cooldown blocking *entry* for *model*, or ``None``.
@@ -72,19 +76,25 @@ class CredentialPoolModelCooldownMixin:
 
     def _cool_down_model(
         self, entry: "PooledCredential", model: str, error_context: Optional[Dict[str, Any]],
+        failure_reason: Optional[str] = None,
     ) -> None:
         """Record a cooldown for *model* on *entry* and every sibling sharing its key.
 
         Same TTL policy as a credential-wide 429 (provider ``reset_at`` wins, a
-        sole credential keeps its short bench). Siblings matter because a
-        ``model_config`` twin seeded from the same key would otherwise be
-        re-selected for the very model that just failed. Caller holds the lock.
+        sole credential keeps its short bench), except a ``model_entitlement``
+        rejection, which stays benched until the explicit reset path clears it.
+        Siblings matter because a ``model_config`` twin seeded from the same key
+        would otherwise be re-selected for the very model that just failed.
+        Caller holds the lock.
         """
         from agent.credential_pool import _exhausted_ttl, _normalize_error_context
 
-        until = _normalize_error_context(error_context).get("reset_at") or (
-            time.time() + _exhausted_ttl(429, sole_credential=self._is_sole_credential())
-        )
+        if failure_reason == "model_entitlement":
+            until = time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS
+        else:
+            until = _normalize_error_context(error_context).get("reset_at") or (
+                time.time() + _exhausted_ttl(429, sole_credential=self._is_sole_credential())
+            )
         failed_key = entry.runtime_api_key
         for scoped in list(self._entries):
             if scoped.id != entry.id and not (failed_key and scoped.runtime_api_key == failed_key):

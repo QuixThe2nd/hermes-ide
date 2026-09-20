@@ -5,10 +5,13 @@ back; every other 400 stays a plain request failure. Once every entry rejects th
 single-credential handling from #106475 takes over.
 """
 import json
+import time
 import types
+from unittest.mock import MagicMock
 
 import pytest
 
+from agent.agent_runtime_helpers import recover_with_credential_pool
 from agent.error_classifier import FailoverReason, classify_api_error
 
 MODEL = "gpt-5.3-codex"
@@ -56,16 +59,26 @@ def test_entitlement_400_benches_only_that_model_and_rotates(pool):
     generic = classify_api_error(_Err(400, {"detail": "Invalid request: bad field"}), provider="openai-codex", model=MODEL)
     assert generic.reason == FailoverReason.format_error and not generic.should_rotate_credential
 
+    # Drive the production recovery entry point (turn recovery -> recover_with_credential_pool),
+    # not the pool directly: the classifier verdict must reach the model-scoped bench.
     assert pool.select(model=MODEL).id == "cred-0"
-    next_entry = pool.mark_exhausted_and_rotate(
-        status_code=400, api_key_hint=TOKENS[0], credential_id="cred-0",
-        failure_reason=verdict.reason.value, model=MODEL,
+    agent = types.SimpleNamespace(
+        provider="openai-codex", model=MODEL, base_url="https://chatgpt.com/backend-api/codex",
+        api_key=TOKENS[0], _credential_pool=pool, _credential_pool_entry_id="cred-0",
+        _swap_credential=MagicMock(return_value=True),
     )
-    assert next_entry is not None and next_entry.id == "cred-1"
+    assert recover_with_credential_pool(
+        agent, status_code=400, has_retried_429=False, classified_reason=verdict.reason,
+    ) == (True, False)
+    agent._swap_credential.assert_called_once()
+    assert agent._swap_credential.call_args.args[0].id == "cred-1"
     first = pool.entries()[0]
     assert first.last_status is None  # credential-wide state untouched: other models stay usable
     assert set(first.model_cooldowns) == {MODEL}
+    # An entitlement is a plan property, not a window: no hourly re-probe, only reset clears it.
+    assert first.model_cooldowns[MODEL] > time.time() + 24 * 3600
     assert pool.select(model=OTHER_MODEL).id == "cred-0"
+    assert pool.reset_statuses() >= 1 and not pool.entries()[0].model_cooldowns
 
 
 def test_all_entries_rejecting_falls_back_to_session_marker(pool):
