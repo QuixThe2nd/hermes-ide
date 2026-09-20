@@ -614,3 +614,23 @@ def test_current_custom_model_not_leaked_into_other_provider_rows(monkeypatch):
     for row in providers:
         if row["slug"] != "openrouter" and not row.get("is_current"):
             assert custom not in row.get("models", []), f"leaked into {row['slug']}"
+
+
+def test_overlay_provider_row_merges_configured_models(monkeypatch):
+    """A ``providers.<overlay>.models`` block extends a Hermes-overlay row (azure-foundry) the way
+    it already extends built-in rows; the picker used to show only the live/current id (#27989)."""
+    from hermes_cli.providers import HERMES_OVERLAYS
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {"azure-foundry": HERMES_OVERLAYS["azure-foundry"]})
+    monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", lambda *_a, **_k: ["gpt-5.6-sol", "shared"])
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "test-key")
+
+    rows = list_authenticated_providers(
+        current_provider="azure-foundry", max_models=50,
+        user_providers={"azure-foundry": {"models": ["gpt-5.5", "shared", "gpt-4.1-mini"]}})
+    row = next(r for r in rows if r["slug"] == "azure-foundry")
+    assert row["source"] == "hermes"
+    assert row["models"] == ["gpt-5.5", "shared", "gpt-4.1-mini", "gpt-5.6-sol"]
+    assert row["total_models"] == 4

@@ -275,11 +275,23 @@ Azure does **not** expose a pure-API-key endpoint to list your *deployed* model 
 
 What Hermes can do:
 
-- Azure OpenAI v1 endpoints (`<resource>.openai.azure.com/openai/v1`) expose `GET /models` with the resource's **available** model catalog. Hermes uses this list to prefill the model picker.
-- Microsoft Foundry `/anthropic` routes: detected via URL path, model name entered manually.
+- Azure OpenAI v1 endpoints (`<resource>.openai.azure.com/openai/v1`) expose `GET /models` with the resource's **available** model catalog. Hermes uses this list to prefill the setup wizard's model picker **and** the in-session `/model azure-foundry` picker (CLI, TUI, Desktop, gateway), so you can switch deployments without re-running `hermes setup`.
+- Microsoft Foundry `/anthropic` routes: detected via URL path, model name entered manually (no `/models` there — the `/model` picker shows only the current selection and any `providers.azure-foundry.models` you declare).
 - Private / firewalled endpoints: manual entry with a friendly "couldn't probe" message.
 
 You can always type a deployment name directly — Hermes does not validate against the returned list.
+
+To pin the picker to the deployments you actually use (the catalog can be long), or to list them for an endpoint without `/models`, declare them in `config.yaml`; they are listed first, ahead of the live catalog:
+
+```yaml
+providers:
+  azure-foundry:
+    models:
+      - gpt-5.4
+      - kimi-k2.6
+```
+
+The runtime picker resolves the endpoint from `model.base_url` while Azure Foundry is the active provider; set `AZURE_FOUNDRY_BASE_URL` as well if you want the row to stay populated after switching to another provider.
 
 ## Environment variables
 
