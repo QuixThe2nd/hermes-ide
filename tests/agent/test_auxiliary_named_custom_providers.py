@@ -553,14 +553,20 @@ class TestKeyedCustomProviderReasoningWire:
 
     @pytest.mark.parametrize("provider", ["groq", "main", "custom:groq"])
     def test_keyed_entry_sends_top_level_reasoning_effort(self, tmp_path, provider):
+        """api.groq.com takes top-level reasoning_effort only as 'none'/'default' (#75089), so the
+        configured 'medium' is clamped to 'default' — the bare-key case goes through ``call_llm``."""
         _write_config(tmp_path, self._KEYED)
-        from agent.auxiliary_client import _build_call_kwargs
-        kwargs = _build_call_kwargs(
-            provider, "vendor/model", [{"role": "user", "content": "hi"}],
-            reasoning_config={"enabled": True, "effort": "medium"},
-            base_url="https://api.groq.com/openai/v1",
-        )
-        assert kwargs.get("reasoning_effort") == "medium"
+        from agent.auxiliary_client import _build_call_kwargs, call_llm
+        common = dict(reasoning_config={"enabled": True, "effort": "medium"}, base_url="https://api.groq.com/openai/v1")
+        if provider == "groq":
+            client = MagicMock(base_url=common["base_url"])
+            with patch("agent.auxiliary_client._get_cached_client", return_value=(client, "vendor/model")), \
+                    patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _t, **_kw: resp):
+                call_llm(provider=provider, model="vendor/model", messages=[{"role": "user", "content": "hi"}], **common)
+            kwargs = client.chat.completions.create.call_args.kwargs
+        else:
+            kwargs = _build_call_kwargs(provider, "vendor/model", [{"role": "user", "content": "hi"}], **common)
+        assert kwargs.get("reasoning_effort") == "default"
         assert "reasoning" not in (kwargs.get("extra_body") or {})
 
     def test_profile_backed_and_unknown_providers_keep_their_wire(self, tmp_path):
