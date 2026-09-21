@@ -150,6 +150,12 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
         "delegate_task",
         "dispatch_assistant",
         "restart",
+        # A foreground ``terminal`` call supervises its own child with its own
+        # ``effective_timeout`` kill and structured timeout result, so the generic
+        # deadline must never preempt it. The schema advertises foreground waits up
+        # to ``FOREGROUND_MAX_TIMEOUT`` (default 600s); the 420s generic deadline
+        # killed those calls first, wasting the child's work.
+        "terminal",
     }
 )
 
@@ -878,14 +884,11 @@ def _resolve_sequential_tool_timeout() -> float | None:
     return resolve_timeout("tools.sequential_call", default=_resolve_concurrent_tool_timeout())
 
 
-# Tools whose call blocks on a long-running operation that supervises its own liveness: no generic
-# sequential deadline. ``delegate_task`` in a nested orchestrator blocks for the whole batch by design
-# (children carry heartbeats, the stale monitor, and ``delegation.child_timeout_seconds``); under the
-# 420 s deadline every real batch "timed out" while its children ran on as orphans, and the orchestrator
-# spent the following hours polling transcripts (measured: 332 timeouts, ~$4k of orchestrator turns in
-# one run).
 # ``manage_connections`` waits on the connection operation's own deadline; the generic deadline
 # would return tool_timeout while its approval card is still open.
+# Long blocking delegations are covered by ``tools.unbounded_tools``
+# (``_DEFAULT_UNBOUNDED_TOOLS``), which now also exempts ``terminal``: a foreground
+# terminal call supervises its own child and deadline.
 _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections"})
 
 
