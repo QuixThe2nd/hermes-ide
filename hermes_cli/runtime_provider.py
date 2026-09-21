@@ -1029,7 +1029,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
 def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested: Optional[str] = None,
                                   target_model: Optional[str] = None, explicit_base_url: Optional[str] = None,
                                   explicit_api_key: Optional[str] = None,
-                                  ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+                                  resolve=None) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     """``resolve_runtime_provider`` plus resolution-time fallback: ``(runtime, fallback_entry_or_None)``.
 
     Only an ``AuthError`` from the primary (missing/expired credentials, exhausted quota, cooled-down pool)
@@ -1037,12 +1037,13 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     resolution-time walker shared by the gateway and oneshot. ``ValueError``/other errors are genuine
     misconfiguration (unknown ``--provider`` ...) and propagate unchanged, so a typo is never silently
     rerouted onto a provider the operator did not ask for. When every entry fails, the *primary* error is
-    re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
+    re-raised: a fallback entry's failure is not what the operator configured first (#81209). ``resolve`` is the resolver to call (tests inject a fake); the entry's
     ``model`` is the model the caller must send.
     """
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    resolve = resolve or resolve_runtime_provider
     try:
-        return resolve_runtime_provider(requested=requested, target_model=target_model,
+        return resolve(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:
         from hermes_cli.fallback_config import effective_runtime_provider, get_fallback_chain, resolve_entry_api_key
@@ -1057,7 +1058,7 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
             if entry_key := resolve_entry_api_key(entry):
                 kwargs["explicit_api_key"] = entry_key
             try:
-                runtime = resolve_runtime_provider(**kwargs)
+                runtime = resolve(**kwargs)
             except AuthError as fb_exc:
                 logger.debug("Fallback entry %s/%s failed: %s", provider, model, fb_exc)
                 continue
