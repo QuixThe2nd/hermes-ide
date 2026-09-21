@@ -96,6 +96,7 @@ from agent.turn_context import (
     compression_made_progress,
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
+from hermes_cli.fallback_config import get_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -4205,40 +4206,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
         kwargs["model"] = fallback_entry["model"]
         kwargs["_fallback_notice"] = pre_agent_fallback_notice(
             _primary_provider, _primary_model,
-            kwargs.get("provider") or kwargs.get("requested_provider") or "unknown",
+            runtime.get("provider") or fallback_entry.get("provider") or "unknown",
             kwargs.get("model") or "default",
         )
     return kwargs
-
-    capabilities = runtime.get("capabilities")
-    capabilities = (
-        {
-            key: value
-            for key, value in capabilities.items()
-            if isinstance(key, str) and isinstance(value, bool)
-        }
-        if isinstance(capabilities, dict)
-        else {}
-    )
-
-    return {
-        "api_key": runtime.get("api_key"),
-        "base_url": runtime.get("base_url"),
-        "provider": runtime.get("provider"),
-        "requested_provider": runtime.get("requested_provider"),
-        "api_mode": runtime.get("api_mode"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"),
-        "request_overrides": dict(runtime.get("request_overrides") or {}),
-        "max_tokens": max_tokens,
-        # Per-provider request_overrides (e.g. a custom_providers ``extra_body``
-        # carrying ``chat_template_kwargs``) resolved by resolve_runtime_provider().
-        # Must flow through to the per-turn route or the provider's configured
-        # request body never reaches the model on the gateway path.
-        "request_overrides": runtime.get("request_overrides"),
-        "capabilities": capabilities,
-    }
 
 
 @dataclasses.dataclass(frozen=True)
