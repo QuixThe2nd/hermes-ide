@@ -9,8 +9,6 @@ import json
 import contextlib
 import threading
 
-from hermes_cli.config_defaults import DEFAULT_MAX_TURNS
-
 from .method_ctx import bind_module
 
 
@@ -289,7 +287,7 @@ def _apply_personality_to_session(
     return False, info
 
 
-def _cfg_max_turns(cfg: dict, default: int = DEFAULT_MAX_TURNS) -> int:
+def _cfg_max_turns(cfg: dict, default: int) -> int:
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
     # Env override wins; resolve_turn_limit makes "none"/"unlimited"/0 first-class spellings.
     if env_val := os.environ.get("HERMES_TUI_MAX_TURNS"):
@@ -318,16 +316,22 @@ def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
     Desktop/TUI chats keep one agent across turns, and ``_make_agent`` reads the chain once: a chat
     opened before ``hermes fallback add`` kept an empty chain forever and a provider-quota 429 ended in
     a provider error with a healthy fallback configured (#95066). Same per-turn contract the messaging
-    gateway applies to its cached agents; fail-open so a torn config read never blocks the turn.
+    gateway applies to its cached agents (``GatewayRunner._refresh_fallback_model``): the config is
+    read fail-closed, so a torn/invalid config.yaml keeps the agent's last known-good chain instead of
+    ``_load_cfg()``'s fail-open ``{}`` reading as "chain removed" and wiping it. Never blocks the turn.
     """
     agent = session.get("agent")
     if agent is None:
         return
     try:
         from gateway.run import GatewayRunner
-        GatewayRunner._apply_fallback_chain_to_agent(agent, _load_fallback_model())
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_cli.fallback_config import get_fallback_chain
+        chain = get_fallback_chain(load_user_config_effective(_active_config_path(), fail_closed=True))
     except Exception as e:
-        logger.warning("fallback chain sync failed for %s: %s", sid, e)
+        logger.warning("fallback chain sync skipped for %s (keeping current chain): %s", sid, e)
+        return
+    GatewayRunner._apply_fallback_chain_to_agent(agent, chain)
 
 
 def _background_agent_kwargs(agent, task_id: str) -> dict:
@@ -349,7 +353,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
                                      "acp_args", "ephemeral_system_prompt")},
         **{k: g(k) for k in ("providers_allowed", "providers_ignored", "providers_order", "provider_sort",
                              "provider_data_collection", "openrouter_min_coding_score")},
-        "model": g("model") or _resolve_model(), "max_iterations": _cfg_max_turns(cfg),
+        "model": g("model") or _resolve_model(), "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": g("enabled_toolsets") or _load_enabled_toolsets("tui"),
         "quiet_mode": True, "verbose_logging": False,
         "provider_require_parameters": g("provider_require_parameters", False), "session_id": task_id,
@@ -482,7 +486,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     # No live agent to inherit from (rebuild before the deferred build ran): open the profile's store the
     # same FAIL-CLOSED way _start_agent_build does rather than letting _make_agent reach for the launch db.
     opened = session_db is None and bool(profile_home)
-    scopes = _bind_build_profile_scopes(profile_home) if profile_home else None
+    scopes = _bind_build_profile_scopes(profile_home)
     try:
         # Resolve fallible config before allocating a replacement or moving its handle.
         config_model_seen = _config_model_target()
