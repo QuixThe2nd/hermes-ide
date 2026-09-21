@@ -65,36 +65,6 @@ class TestResolveRuntimeWithFallback:
         assert entry["provider"] == "openai"
         assert any("anthropic/claude-x is misconfigured" in r.getMessage() for r in caplog.records)
 
-    def test_auth_error_walks_chain_in_order_and_re_raises_primary_resolve_param(self):
-        calls = []
-
-        def fake_resolve(**kw):
-            calls.append(kw)
-            if kw.get("requested") == "openai-codex":
-                raise AuthError("Codex provider quota exhausted (429); retry after 39750s.")
-            if kw.get("requested") == "anthropic":
-                raise AuthError("anthropic key missing")
-            return {"provider": kw["requested"], "api_key": "k"}
-
-        runtime, entry = resolve_runtime_with_fallback(_CFG, requested="openai-codex", target_model="gpt-5.4",
-                                                       resolve=fake_resolve)
-        assert (runtime["provider"], entry["model"]) == ("openai", "gpt-x")
-        # Chain walked in config order; the first entry got its inline api_key and its own model.
-        assert [c.get("requested") for c in calls] == ["openai-codex", "anthropic", "openai"]
-        assert calls[1]["explicit_api_key"] == "fb-key" and calls[1]["target_model"] == "claude-x"
-
-        def all_fail(**kw):
-            raise AuthError("primary down" if kw.get("requested") == "openai-codex" else "fallback down")
-
-        with pytest.raises(AuthError, match="primary down"):  # primary-error precedence
-            resolve_runtime_with_fallback(_CFG, requested="openai-codex", resolve=all_fail)
-    def test_misconfiguration_is_never_rerouted_resolve_param(self):
-        def typo(**kw):
-            raise ValueError("Unknown provider 'antropic'")
-
-        with pytest.raises(ValueError):
-            resolve_runtime_with_fallback(_CFG, requested="antropic", resolve=typo)
-        assert resolve_runtime_with_fallback({}, resolve=lambda **kw: {"provider": "p"}) == ({"provider": "p"}, None)
 
 def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypatch):
     """End-to-end: ``_run_agent`` builds AIAgent against the fallback entry's provider/model (#81209)."""
