@@ -143,3 +143,14 @@ def test_acp_set_session_model_rejection_is_invalid_params_and_leaves_session_un
     with pytest.raises(RuntimeError, match="No Codex credentials"):
         agent._switch_model(state, "other")
     assert state.model == "claude-sonnet-5" and state.agent is old_agent
+
+    # A ValueError raised by the rebuild itself (disabled provider, context floor) is not a bad
+    # ``modelId``: it must escape as-is so acp maps it to -32603, not be relabelled -32602.
+    def _rebuild_value_error(**_kw):
+        raise ValueError("provider 'anthropic' is disabled in config")
+
+    agent.session_manager._make_agent = _rebuild_value_error
+    with pytest.raises(ValueError, match="disabled in config") as rebuild_exc:
+        asyncio.run(agent.set_session_model("other", "s1"))
+    assert not isinstance(rebuild_exc.value, RequestError)
+    assert state.model == "claude-sonnet-5" and state.agent is old_agent

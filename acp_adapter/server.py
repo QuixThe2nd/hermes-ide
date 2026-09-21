@@ -211,6 +211,10 @@ def _take_interrupted_prompt(state: SessionState) -> tuple[bool, str]:
         return True, text
 
 
+class ModelRejected(ValueError):
+    """``switch_model`` refused the requested model (no provider can serve it)."""
+
+
 @dataclass
 class _TurnCallbacks:
     """Per-turn ACP streaming callbacks; all None when no client is connected."""
@@ -333,7 +337,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
             custom_providers=get_compatible_custom_providers(cfg))
         if not result.success:
-            raise ValueError(result.error_message or f"Cannot switch to {raw_model}")
+            raise ModelRejected(result.error_message or f"Cannot switch to {raw_model}")
         target_provider, new_model = result.target_provider, result.new_model
         endpoint: dict[str, Any] = {}
         if keep_endpoint and not (current_provider and target_provider != current_provider):
@@ -1007,9 +1011,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             try:
                 _old, requested_provider, resolved_model = await asyncio.to_thread(
                     self._switch_model, state, model_id, keep_endpoint=True)
-            except ValueError as exc:
+            except ModelRejected as exc:
                 # A model no provider can serve is a bad ``modelId`` param (-32602), not an agent
                 # internal error (-32603): the client attributes it to the request, not to Hermes (#72439).
+                # Only the switch_model rejection maps here; a ValueError from the rebuild itself
+                # (disabled provider, context window below the floor) stays on the -32603 path.
                 from acp.exceptions import RequestError
                 raise RequestError.invalid_params({"details": str(exc)}) from exc
             logger.info(
