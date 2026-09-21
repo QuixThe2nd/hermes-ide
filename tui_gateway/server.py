@@ -2393,7 +2393,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         # credential-resolved provider's vendor-prefixed spelling, not the native xAI id.
         model = _apply_provider_scoped_silent_default(model, resolution.runtime)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
-    if overrides:
+    if any(overrides.values()):
         _rederive_per_model_route(model, resolution.runtime)
     return model, resolution.runtime
 
