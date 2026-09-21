@@ -4138,6 +4138,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         format_runtime_provider_error,
         _get_model_config,
     )
+    from hermes_cli.fallback_config import pre_agent_fallback_notice
 
     # Capture primary provider/model from config before the fallback walk so we
     # can include it in the fallback notice if the primary fails (#74349).
@@ -4202,13 +4203,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
         # user-visible provider switch (#74349).  The caller must pop
         # ``_fallback_notice`` before forwarding kwargs to AIAgent.
         kwargs["model"] = fallback_entry["model"]
-        fb_provider = kwargs.get("provider") or kwargs.get("requested_provider") or "unknown"
-        fb_model = kwargs.get("model") or "default"
-        primary_desc = "/".join(filter(None, [_primary_provider, _primary_model])) or "primary"
-        fallback_desc = "/".join(filter(None, [fb_provider, fb_model]))
-        kwargs["_fallback_notice"] = (
-            f"⚠️ Provider fallback: {primary_desc} unavailable; "
-            f"using {fallback_desc} for this response."
+        kwargs["_fallback_notice"] = pre_agent_fallback_notice(
+            _primary_provider, _primary_model,
+            kwargs.get("provider") or kwargs.get("requested_provider") or "unknown",
+            kwargs.get("model") or "default",
         )
     return kwargs
 
