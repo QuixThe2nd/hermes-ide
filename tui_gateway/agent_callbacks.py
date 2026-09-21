@@ -312,6 +312,24 @@ def _load_fallback_model():
     return get_fallback_chain(_load_cfg())
 
 
+def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
+    """Adopt ``fallback_providers`` edits into the cached agent at turn start.
+
+    Desktop/TUI chats keep one agent across turns, and ``_make_agent`` reads the chain once: a chat
+    opened before ``hermes fallback add`` kept an empty chain forever and a provider-quota 429 ended in
+    a provider error with a healthy fallback configured (#95066). Same per-turn contract the messaging
+    gateway applies to its cached agents; fail-open so a torn config read never blocks the turn.
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return
+    try:
+        from gateway.run import GatewayRunner
+        GatewayRunner._apply_fallback_chain_to_agent(agent, _load_fallback_model())
+    except Exception as e:
+        logger.warning("fallback chain sync failed for %s: %s", sid, e)
+
+
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
 
