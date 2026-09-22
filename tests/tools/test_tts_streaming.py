@@ -1047,14 +1047,12 @@ def _patch_openai_speech(monkeypatch, headers):
 
 def test_openai_streamer_honors_endpoint_reported_rate_in_wav_playback(monkeypatch):
     """Issue #76466: an OpenAI-compatible endpoint answering 44.1 kHz PCM (X-Audio-Sample-Rate)
-    must drive the WAV header written for playback, and the static ``pcm_sample_rate`` config is
-    the pre-request expectation; neither may stay pinned to 24 kHz."""
+    must drive the WAV header written for playback, not the construction-time expectation."""
     import wave
     from tools import tts_tool_speaker as sp
 
     _patch_openai_speech(monkeypatch, {"content-type": "audio/pcm", "x-audio-sample-rate": "44100"})
     streamer = ts.OpenAIStreamer({}, {"api_key": "sk-x", "pcm_sample_rate": "22050"})
-    assert streamer.sample_rate == 22050  # validated static expectation (from PR #74021)
 
     wav_rates = []
 
@@ -1070,9 +1068,24 @@ def test_openai_streamer_honors_endpoint_reported_rate_in_wav_playback(monkeypat
     assert streamer.sample_rate == 44100
     assert wav_rates == [44100]
 
-    assert ts.OpenAIStreamer({}, {"pcm_sample_rate": "bogus"}).sample_rate == 24000
-    assert ts._sample_rate_from_headers({"content-type": "audio/L16; rate=16000"}) == 16000
-    assert ts._sample_rate_from_headers({"content-type": "audio/pcm"}) is None
+
+@pytest.mark.parametrize(
+    ("config", "headers", "expected"),
+    [
+        ({"pcm_sample_rate": "22050"}, {}, 22050),  # validated static expectation (PR #74021)
+        ({"pcm_sample_rate": "bogus"}, {}, 24000),  # unparseable config falls back to the default
+        ({}, {"content-type": "audio/pcm", "x-audio-sample-rate": "44100"}, 44100),
+        ({}, {"content-type": "audio/L16; rate=16000"}, 16000),
+        ({}, {"content-type": "audio/pcm"}, None),
+    ],
+)
+def test_openai_pcm_sample_rate_resolution(config, headers, expected):
+    """Issue #76466: static ``pcm_sample_rate`` is the pre-request expectation; the endpoint's
+    response headers (explicit header or ``audio/L16; rate=``) are the post-request truth."""
+    if headers:
+        assert ts._sample_rate_from_headers(headers) == expected
+    else:
+        assert ts.OpenAIStreamer({}, {"api_key": "sk-x", **config}).sample_rate == expected
 
 
 @pytest.mark.skipif(
