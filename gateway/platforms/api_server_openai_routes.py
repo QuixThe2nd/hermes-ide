@@ -88,37 +88,6 @@ def _message_item(text: Any) -> Dict[str, Any]:
             "content": [{"type": "output_text", "text": text}]}
 
 
-def _reasoning_item(text: str) -> Dict[str, Any]:
-    """Completed Responses ``reasoning`` output item (same shape the SSE writer closes with)."""
-    return {"id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning", "status": "completed",
-            "summary": [{"type": "summary_text", "text": text}]}
-
-
-def _is_reasoning_input_item(item: Any) -> bool:
-    """Echoed-back ``reasoning`` output item: Responses SDK clients replay a prior response's
-    ``output`` list as the next ``input``. It carries no message content, so it must be
-    skipped rather than parsed into an empty ``user`` turn (#99552)."""
-    return isinstance(item, dict) and item.get("type") == "reasoning"
-
-
-def _turn_reasoning_text(
-        conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any]) -> str:
-    """Reasoning the model produced on this turn, joined for a non-streaming
-    ``message.reasoning_content``. Read from the assistant messages the agent already
-    persisted (``build_assistant_message`` stores the structured reasoning under
-    ``reasoning``) rather than re-accumulating callback deltas, so it is exactly what the
-    stream would have carried and cannot double-count the post-response fallback."""
-    messages = result.get("messages") if isinstance(result, dict) else None
-    if not isinstance(messages, list):
-        return ""
-    start = OpenAICompatRoutesMixin._response_messages_turn_start_index(
-        conversation_history, user_message, result)
-    parts = [m["reasoning"] for m in messages[start:]
-             if isinstance(m, dict) and m.get("role") == "assistant"
-             and isinstance(m.get("reasoning"), str) and m["reasoning"].strip()]
-    return "\n\n".join(parts)
-
-
 _TRANSCRIPT_IDENTITY_KEYS = ("role", "content", "tool_calls", "tool_call_id")
 
 
@@ -183,6 +152,37 @@ def _cap_history_tool_outputs(history: List[Dict[str, Any]], max_chars: int) -> 
             msg = {**msg, "tool_calls": capped_calls}
         out.append(msg)
     return out
+
+
+def _reasoning_item(text: str) -> Dict[str, Any]:
+    """Completed Responses ``reasoning`` output item (same shape the SSE writer closes with)."""
+    return {"id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning", "status": "completed",
+            "summary": [{"type": "summary_text", "text": text}]}
+
+
+def _is_reasoning_input_item(item: Any) -> bool:
+    """Echoed-back ``reasoning`` output item: Responses SDK clients replay a prior response's
+    ``output`` list as the next ``input``. It carries no message content, so it must be
+    skipped rather than parsed into an empty ``user`` turn (#99552)."""
+    return isinstance(item, dict) and item.get("type") == "reasoning"
+
+
+def _turn_reasoning_text(
+        conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any]) -> str:
+    """Reasoning the model produced on this turn, joined for a non-streaming
+    ``message.reasoning_content``. Read from the assistant messages the agent already
+    persisted (``build_assistant_message`` stores the structured reasoning under
+    ``reasoning``) rather than re-accumulating callback deltas, so it is exactly what the
+    stream would have carried and cannot double-count the post-response fallback."""
+    messages = result.get("messages") if isinstance(result, dict) else None
+    if not isinstance(messages, list):
+        return ""
+    start = OpenAICompatRoutesMixin._response_messages_turn_start_index(
+        conversation_history, user_message, result)
+    parts = [m["reasoning"] for m in messages[start:]
+             if isinstance(m, dict) and m.get("role") == "assistant"
+             and isinstance(m.get("reasoning"), str) and m["reasoning"].strip()]
+    return "\n\n".join(parts)
 
 
 def _trim_tool_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
