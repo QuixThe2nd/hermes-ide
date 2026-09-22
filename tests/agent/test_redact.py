@@ -1373,6 +1373,54 @@ class TestSecretFileAssignmentRedaction:
         assert time.perf_counter() - started < 1.0
 
 
+class TestUnclassifiedFileReadJsonCredentialSniff:
+    """pc_44352d33: a credential artifact whose filename gives no hint (e.g. a tool's
+    token cache or a deploy config JSON) must not render an opaque prefix-less
+    credential verbatim on an unclassified ``file_read``. Value-gated, JSON-only:
+    short values and prose fixtures stay readable (the #110567 passthrough contract
+    for YAML/ENV shapes is pinned by TestSecretFileAssignmentRedaction)."""
+
+    SYNTH = "3JcQ1UqZ8mNp4Rt6vWx2Yb9Ad0Ef7Gh5Ij2kS"  # 40-char opaque, no vendor prefix
+
+    def test_opaque_json_credential_masked_on_unclassified_file_read(self):
+        body = ('1|{"service": "billing", "token": "' + self.SYNTH + '", "retries": 3}\n'
+                '2|{"apiKey": "' + self.SYNTH + '"}\n')
+        out = redact_sensitive_text(body, force=True, file_read=True)
+        assert self.SYNTH not in out
+        assert out.count("«redacted-secret»") == 2
+        assert '"service": "billing"' in out and '"retries": 3' in out  # neighbours untouched
+
+    def test_short_and_fixture_values_untouched(self):
+        # The #110567 no-false-positive contract: `"apiKey": "test"` in a source/config
+        # dump, short values, prose, and the already-masked sentinel all survive.
+        body = ('{"apiKey": "test"}\n'
+                '{"token": "abc"}\n'
+                '{"password": "***"}\n'
+                '{"api_key": "«redacted:ghp_…»"}\n'
+                '{"secret": "os.getenv(\'SERVICE_SECRET\')"}\n')
+        assert redact_sensitive_text(body, force=True, file_read=True) == body
+
+    def test_yaml_and_env_shapes_still_passthrough(self):
+        # The pinned passthrough for non-JSON shapes on unclassified reads.
+        body = f"5|ADS_API_TOKEN: {self.SYNTH}\nexport FOO_API_KEY={self.SYNTH}\n"
+        assert redact_sensitive_text(body, force=True, file_read=True) == body
+
+    def test_secret_file_classification_still_masks_everything(self):
+        # The classified path (filename says secret-bearing) keeps its stronger,
+        # full-assignment behaviour; the new pass changes nothing there.
+        body = f'{{"token": "{self.SYNTH}"}}'
+        out = redact_sensitive_text(body, force=True, code_file=True, file_read=True, secret_file=True)
+        assert self.SYNTH not in out and "«redacted" in out
+
+    def test_terminal_and_plain_text_surfaces_unchanged(self):
+        # code_file=True without file_read (terminal ``cat``/``grep`` of source) never
+        # sees the new pass — quoted opaque values in code dumps survive as before.
+        # The no-flag plain-text surface already ran the assignment passes and masks
+        # this shape; unchanged by this pass (verified by the count of sentinels).
+        body = f'config = {{"token": "{self.SYNTH}"}}'
+        assert redact_sensitive_text(body, force=True, code_file=True) == body
+
+
 class TestHermesHomePathClassification:
     """``_is_secret_file_arg`` must see the RESOLVED Hermes home: a managed Windows home
     (``%LOCALAPPDATA%\\hermes``) has no ``.hermes`` segment and a resolved path never spells
