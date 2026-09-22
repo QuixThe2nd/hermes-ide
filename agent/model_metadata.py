@@ -1756,7 +1756,10 @@ def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
     return next((ctx for key, ctx in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES.items() if base == key or base.startswith((key + "-", key + "."))), None)
 
 
-_codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], Dict[str, int], float]] = {}
+_codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
+# ``{slug: max_context_window}`` from the same fetch, keyed by the same token fingerprint. Only the
+# opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
+_codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
 # hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
@@ -1785,16 +1788,16 @@ def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
         return None
 
 
-def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[Dict[str, int], Dict[str, int], bool]:
-    """Codex catalogue ``{slug: context_window}`` and ``{slug: max_context_window}`` plus whether it
-    came from HTTP. Cached per token fingerprint (windows vary by entitlement; the ``v2:`` key prefix
-    versions the cache shape so pre-max entries are never misread). An in-process hit reports False:
-    not a fresh provider confirmation, must not drive persistent writes."""
+def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[Dict[str, int], bool]:
+    """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
+    fingerprint (windows vary by entitlement); ``max_context_window`` lands in
+    ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
+    fresh provider confirmation, must not drive persistent writes."""
     now = time.time()
-    cache_key = "v2:" + _codex_oauth_token_fingerprint(access_token)
+    cache_key = _codex_oauth_token_fingerprint(access_token)
     cached = _codex_oauth_context_cache.get(cache_key)
-    if cached is not None and now - cached[2] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
-        return cached[0], cached[1], False
+    if cached is not None and now - cached[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+        return cached[0], False
     # Without ChatGPT-Account-ID /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200) and
     # the probe silently falls back; residency-enforced workspaces 401 without the residency header.
     from agent.codex_headers import codex_account_headers
@@ -1804,28 +1807,23 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
         resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", resp.status_code)
-            return {}, {}, False
+            return {}, False
         data = resp.json()
     except Exception as exc:
         logger.debug("Codex /models probe failed: %s", exc)
-        return {}, {}, False
+        return {}, False
     result: Dict[str, int] = {}
     max_result: Dict[str, int] = {}
     for item in data.get("models", []) if isinstance(data, dict) else []:
-        if not isinstance(item, dict):
-            continue
-        slug = item.get("slug")
-        if not isinstance(slug, str):
-            continue
-        ctx = item.get("context_window")
-        if isinstance(ctx, int) and ctx > 0:
+        slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
+        if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
             result[slug.strip()] = ctx
-        max_ctx = item.get("max_context_window")
-        if isinstance(max_ctx, int) and max_ctx > 0:
-            max_result[slug.strip()] = max_ctx
+            if isinstance(max_ctx, int) and max_ctx > 0:
+                max_result[slug.strip()] = max_ctx
     if result:
-        _codex_oauth_context_cache[cache_key] = (result, max_result, now)
-    return result, max_result, True
+        _codex_oauth_context_cache[cache_key] = (result, now)
+        _codex_oauth_max_context_cache[cache_key] = max_result
+    return result, True
 
 
 def _resolve_codex_oauth_context_length_with_source(model: str, access_token: str = "") -> Tuple[Optional[int], str]:
@@ -1835,10 +1833,12 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     model_bare = _strip_provider_prefix(model).strip()
     if not model_bare:
         return None, ""
-    def _apply_verified_bump(ctx: int, source: str) -> Tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only."""
+    def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> Tuple[int, str]:
+        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
+        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
         bumped = _verified_codex_ctx_for_slug(model_bare)
         if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+            bumped = min(bumped, catalog_max) if catalog_max else bumped
             logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
             return bumped, source
         return ctx, source
@@ -1849,21 +1849,12 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     # (#92797 review).
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
     if access_token:
-        live, live_max, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
+        live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
+        live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token), {})
         # Exact slug, then case-insensitive in case casing drifts.
-        hit = live.get(lookup_bare)
-        if hit is None:
-            hit = next((ctx for slug, ctx in live.items() if slug.lower() == lookup_bare.lower()), None)
-        if hit is not None:
-            ctx, source = _apply_verified_bump(hit, "live" if fresh_probe else "memory")
-            if ctx != hit:
-                # Opted-in ``-900k`` variant: never claim more than the authenticated catalogue
-                # maximum. ``max_context_window`` can sit below the hardcoded live-verified cap
-                # (e.g. 872K vs 900K, #105443); the hardcoded cap remains the offline fallback.
-                catalog_max = live_max.get(lookup_bare)
-                if catalog_max is not None and catalog_max < ctx:
-                    ctx = catalog_max
-            return ctx, source
+        slug = lookup_bare if lookup_bare in live else next((s for s in live if s.lower() == lookup_bare.lower()), None)
+        if slug is not None:
+            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", live_max.get(slug))
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
     return _apply_verified_bump(hit[1], "fallback") if hit else (None, "")
 
