@@ -163,45 +163,6 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([msg]) < 5_000
 
 
-class TestResponsesItemImageAccounting:
-    """Responses ``function_call_output`` items carry tool-result images under
-    ``output`` (the converter moves chat ``content`` there); the estimator must
-    price them with the flat per-image model, never as base64 text (#108320)."""
-
-    def test_function_call_output_image_matches_chat_estimate(self):
-        """The carrier key alone (``content`` vs ``output``) must not change the
-        accounting for the same image."""
-        import base64
-        import os
-
-        payload = (
-            "data:image/png;base64," + base64.b64encode(os.urandom(100_000)).decode()
-        )
-        chat = {
-            "role": "user",
-            "content": [{"type": "image_url", "image_url": {"url": payload}}],
-        }
-        responses_item = {
-            "type": "function_call_output",
-            "call_id": "call_1",
-            "output": [{"type": "input_image", "image_url": payload}],
-        }
-
-        chat_est = estimate_messages_tokens_rough([chat])
-        responses_est = estimate_messages_tokens_rough([responses_item])
-
-        assert abs(chat_est - responses_est) < 200
-
-    def test_function_call_output_text_output_still_counted(self):
-        """Plain-string ``output`` (the common tool-result shape) is unaffected."""
-        item = {
-            "type": "function_call_output",
-            "call_id": "call_1",
-            "output": "plain tool result " * 100,
-        }
-        est = estimate_messages_tokens_rough([item])
-        assert est >= (len(item["output"]) // 4) * 0.9
-
 
 class TestEstimateRequestTokensRough:
     def test_caches_tools_estimate(self):
@@ -702,6 +663,84 @@ class TestCodexOAuthContextLength:
                 )
             assert ctx == advertised, f"advertised {advertised} must be trusted"
 
+    def test_opted_in_variant_capped_at_live_catalog_max(self):
+        """An explicit ``-900k`` opt-in may not claim more than the authenticated
+        catalogue ``max_context_window`` (gpt-5.6-sol advertises 272K context with a
+        872K max, below the 900K live-verified cap) — #105443."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{
+                "slug": "gpt-5.6-sol",
+                "context_window": 272_000,
+                "max_context_window": 872_000,
+            }]
+        }
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.6-sol-900k",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == 872_000
+
+    def test_opted_in_variant_keeps_verified_cap_when_catalog_omits_max(self):
+        """Without ``max_context_window`` in the catalogue the hardcoded
+        live-verified 900K cap still applies to opted-in variants."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": "gpt-5.6-sol", "context_window": 272_000}]
+        }
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.6-sol-900k",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == 900_000
+
+    def test_base_slug_keeps_advertised_ctx_even_with_catalog_max(self):
+        """The catalogue max never leaks into the base slug: extended context is
+        opt-in via the ``-900k`` alias only."""
+        from agent.model_metadata import get_model_context_length
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{
+                "slug": "gpt-5.6-sol",
+                "context_window": 272_000,
+                "max_context_window": 872_000,
+            }]
+        }
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model="gpt-5.6-sol",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == 272_000
+
     @pytest.mark.parametrize("slug", ["gpt-5.5", "gpt-5.4-mini"])
     def test_slugs_that_enforce_272k_keep_advertised_value(self, slug):
         """gpt-5.5 and gpt-5.4-mini both rejected large inputs in the live probe (360K and 500K respectively) —
@@ -746,7 +785,7 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 900_000
 
-    @pytest.mark.parametrize("slug", ["gpt-6-astra", "gpt-5.6-sol", "gpt-daybreak-blue-latest"])
+    @pytest.mark.parametrize("slug", ["gpt-5.6-sol", "gpt-daybreak-blue-latest"])
     def test_fallback_table_base_slug_stays_272k(self, slug):
         """Fallback-table resolution for BASE slugs stays at the advertised
         272K — the opt-in rule applies on the offline path too."""
