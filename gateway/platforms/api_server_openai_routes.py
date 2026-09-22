@@ -119,6 +119,28 @@ def _turn_reasoning_text(
     return "\n\n".join(parts)
 
 
+_TRANSCRIPT_IDENTITY_KEYS = ("role", "content", "tool_calls", "tool_call_id")
+
+
+def _same_transcript_prefix(agent_messages: List[Any], prefix: List[Any]) -> bool:
+    """True when ``agent_messages`` starts with ``prefix`` by what each message *says*.
+
+    The API layer builds bare ``{"role", "content"}`` dicts while the agent stamps its copies
+    with ``timestamp`` / ``_db_persisted`` / ``reasoning`` / ``finish_reason``; whole-dict
+    equality therefore never matched and every chained turn re-appended the full prior
+    transcript (#95137, #101644, #82513)."""
+    if len(agent_messages) < len(prefix):
+        return False
+    for got, want in zip(agent_messages, prefix):
+        if not isinstance(got, dict) or not isinstance(want, dict):
+            if got != want:
+                return False
+            continue
+        if any(got.get(k) != want.get(k) for k in _TRANSCRIPT_IDENTITY_KEYS):
+            return False
+    return True
+
+
 def _trim_tool_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Trim large tool payloads in place so response.completed stays under ~100KB (clients
     already received the full details via the incremental events)."""
@@ -1092,9 +1114,9 @@ class OpenAICompatRoutesMixin:
             return 0
         prior = list(conversation_history)
         expected_prefix = prior + [{"role": "user", "content": user_message}]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
+        if _same_transcript_prefix(agent_messages, expected_prefix):
             return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
+        if prior and _same_transcript_prefix(agent_messages, prior):
             return len(prior)
         return 0
 
