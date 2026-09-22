@@ -77,6 +77,27 @@ def test_route_that_rejected_temperature_omits_it_next_call():
     assert _fixed_temperature_for_model("relay-model-y", "https://relay.example/v1", "custom") is None
 
 
+def test_route_memory_keyed_on_effective_base_url_when_client_has_none():
+    """The rejection is recorded under the same key the kwargs builder looks up: when the client
+    exposes no ``base_url`` but the task resolved one, the resolved URL is the effective key, so the
+    second call still omits temperature instead of paying the 400 again."""
+    client = MagicMock()
+    client.base_url = None
+    client.chat.completions.create.side_effect = [
+        RuntimeError("Error code: 400 - {'error': {'message': \"Unsupported value: 'temperature' does not support 0.1 with this model. Only the default (1) value is supported.\", 'param': 'temperature', 'code': 'unsupported_value'}}"),
+        _dummy_response(), _dummy_response(), _dummy_response()]
+    with (
+        patch("agent.auxiliary_client._resolve_task_provider_model",
+              return_value=("custom", "relay-model-x", "https://relay.example/v1", "k", None)),
+        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "relay-model-x")),
+        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+    ):
+        call_llm(task="compression", messages=[{"role": "user", "content": "a"}], temperature=0.1)
+        call_llm(task="compression", messages=[{"role": "user", "content": "b"}], temperature=0.1)
+    calls = client.chat.completions.create.call_args_list
+    assert [c.kwargs.get("temperature") for c in calls] == [0.1, None, None]
+
+
 class TestIsUnsupportedTemperatureError:
     """The detector must match the phrasings providers actually return."""
 
