@@ -3332,6 +3332,9 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
         reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in {None, ""}), None)
         if reset is not None:
             context["reset_at"] = reset
+        elif isinstance(payload.get("resets_in_seconds"), (int, float)):
+            # Codex/ChatGPT usage-limit bodies carry a relative window beside (or instead of) the epoch.
+            context["reset_at"] = time.time() + float(payload["resets_in_seconds"])
         _set_reset_from_retry_after(context, payload.get("retry_after"))
     headers = getattr(getattr(error, "response", None), "headers", None)
     if headers:
