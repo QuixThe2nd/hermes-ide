@@ -257,7 +257,7 @@ export function notifyHubActionFailed(err: unknown, fallbackTitle: string, skill
     action: {
       label: translateNow('skills.hub.viewScan'),
       onClick: () =>
-        void scanSkillHub(err.identifier, typeof profile === 'object' ? profile?.profile : profile)
+        void scanSkillHub(err.identifier, profile)
           .then(scan =>
             notify({
               kind: 'warning',

@@ -137,9 +137,9 @@ export function previewSkillHub(identifier: string, profile?: ProfileScope): Pro
   })
 }
 
-export function scanSkillHub(identifier: string, profile?: null | string): Promise<SkillHubScanResult> {
+export function scanSkillHub(identifier: string, profile?: ProfileScope): Promise<SkillHubScanResult> {
   return hermesApi<SkillHubScanResult>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     timeoutMs: HUB_REQUEST_TIMEOUT_MS
   })
