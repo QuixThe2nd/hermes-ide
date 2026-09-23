@@ -1,0 +1,92 @@
+# Fork-only workflow: scheduled silent-drop detector for the fork's main.
+# Do not upstream this file.
+#
+# fork-sync imports upstream one commit at a time and verifies ancestry —
+# which cannot see the one failure mode where a merge "completes" with a
+# bad conflict resolution: the upstream commit becomes an ancestor, but an
+# OLD version of the file lands on fork main. Ancestry-based sync then
+# has nothing to redo, and the content is gone silently. This checker
+# compares BLOBS against upstream main and alerts only on hard evidence
+# (fork carries an older imported blob / lacks imported content). Plain
+# lag, fork-only files, and deliberate fork edits never alert.
+#
+# The detection logic lives in .github/scripts/fork-sync-integrity.py so
+# the acceptance harness can drive the exact product file with real git
+# against local bare remotes (tests/scripts/test_fork_sync_integrity.py).
+# Exit codes: 0 clean, 2 drops found (step fails red; the script has
+# already POSTed the Discord alert by then — same DISCORD_SYNC_ALERT
+# funnel as fork-sync), 1 operational error.
+#
+# Scheduled at :53, offset from fork-sync's :23 so it runs after the
+# hourly import. Checkout uses FORK_SYNC_TOKEN for the same reason as
+# fork-sync (workflow-file changes in upstream history).
+name: Fork sync integrity check
+
+on:
+  schedule:
+    - cron: "53 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Detect drops but do not notify (checks the checker without side effects)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# One check at a time, never cancelled mid-run; a queued run just re-checks
+# the then-current refs when it starts.
+concurrency:
+  group: fork-sync-integrity
+  cancel-in-progress: false
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      INTEGRITY_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+      INTEGRITY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      # Explicit main ref (github.sha would be stale by the time the job
+      # starts); full history — the checker walks fork and upstream
+      # ancestry, so a shallow clone would break the imported-commit set.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: main
+          token: ${{ secrets.FORK_SYNC_TOKEN }}
+
+      - name: Fetch upstream main
+        run: |
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+
+      # The script POSTs the alert itself on its exit-2 path (single-line
+      # content, DiscordBot User-Agent — the fork-sync-sequential.sh
+      # send_alert convention) unless INTEGRITY_DRY_RUN=true. Exit 2 fails
+      # this step red on purpose; the artifact below still uploads.
+      - name: Check for silently dropped imported content
+        id: integrity
+        env:
+          DISCORD_SYNC_ALERT: ${{ secrets.DISCORD_SYNC_ALERT }}
+        run: |
+          python3 .github/scripts/fork-sync-integrity.py \
+            --fork-ref main \
+            --upstream-ref refs/remotes/upstream/main \
+            --json-out "$RUNNER_TEMP/fork-sync-integrity.json" \
+            --max-report 10
+
+      # Detail JSON either way — clean runs carry the totals, drop runs the
+      # full uncapped evidence list. Best-effort: an operational error
+      # (exit 1) writes no file, and that must not mask the failure.
+      - name: Upload integrity report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fork-sync-integrity-report
+          path: ${{ runner.temp }}/fork-sync-integrity.json
+          if-no-files-found: ignore
