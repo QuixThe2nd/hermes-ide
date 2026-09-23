@@ -1186,7 +1186,13 @@ export const ar = defineLocale({
     toolsetEnabled: 'تم تفعيل مجموعة الأدوات',
     toolsetDisabled: 'تم تعطيل مجموعة الأدوات',
     appliesToNewSessions: name => `ينطبق على الجلسات الجديدة في ${name}`,
-    failedToUpdate: name => `فشل تحديث ${name}`
+    failedToUpdate: name => `فشل تحديث ${name}`,
+    hub: {
+      installBlockedTitle: name => `تعذّر تثبيت ${name}`,
+      installBlockedMessage: (findings, unverified) =>
+        `أبلغت عملية الفحص الأمني عن ${findings > 0 ? `${findings} ${findings === 1 ? 'عنصر' : 'عناصر'}` : 'أنماط خطرة'} للمراجعة${unverified ? '، والمهارة من مصدر غير موثّق' : ''}. اقرأ نتائج الفحص قبل أن تقرر ما إذا كنت تثق بالمؤلف.`,
+      viewScan: 'عرض الفحص',
+    }
   },
   agents: {
     extendedTranscript: 'سجل موسّع',
