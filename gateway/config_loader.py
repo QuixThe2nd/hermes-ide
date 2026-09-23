@@ -219,6 +219,10 @@ _SHARED_KEYS: tuple = (
     ("group_allowed_chats", _TELEGRAM, None),
     ("allowed_topics", _TELEGRAM, None),
     *_plain("free_response_channels", "mention_patterns", "exclusive_bot_mentions"),
+    # Typed on PlatformConfig (gateway.config.ResponseGateConfig) but bridged verbatim so a
+    # root-level ``discord:`` block and a nested ``platforms.discord:`` block both deliver it
+    # to the adapter, which parses/validates it. See plugins/platforms/discord docs.
+    ("response_gate", None, None),
     ("observe_unmentioned_group_messages", _TELEGRAM, None),
     *_plain(
         "dm_policy", "allow_from", "allow_admin_from", "user_allowed_commands",

@@ -449,6 +449,36 @@ Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`
 
 `DISCORD_FREE_RESPONSE_AUTO_THREAD` wins over the `config.yaml` key when both are set — the YAML value only seeds the env var when it isn't already set, like every other `discord.*` bridge.
 
+#### `discord.response_gate`
+
+**Type:** mapping — **Default:** unset (gate off)
+
+An opt-in judge for *ambient* traffic — messages that ping no one. In the channels you list, a remote classifier decides whether an unprompted human message is worth waking the bot for, so a channel can surface the bot without everyone typing `@mention` first. The gate is off unless the block is present **and** `channels` names at least one channel; there is no wildcard and no inheritance from [`free_response_channels`](#discordfree_response_channels).
+
+```yaml
+discord:
+  response_gate:
+    provider: jev             # only provider; anything else refuses to load
+    channels:                 # explicit opt-in list — no "*"
+      - 1234567890
+    mode: shadow              # shadow (default) | enforce
+    threshold: 0.8            # score at or above this admits the message
+    timeout_seconds: 3.0      # per-request budget; over budget means deny
+    context_messages: 10      # recent same-channel messages sent as evidence
+    context_chars: 8000       # total character budget for that evidence block
+    model: typesafe/jev-1.13  # judge model; fixed default, no fallback chain
+```
+
+**Modes.** `shadow` runs the judge and logs the verdict but never changes behavior — use it to see what the gate *would* have done before trusting it. `enforce` makes the verdict binding: an approved ambient message wakes the bot normally, and every other message in the gated channels stays silent.
+
+**Explicit triggers never consult it.** `@mentions`, replies to the bot, `mention_patterns` wake words, slash commands, and DMs all keep their existing paths with no judge round-trip. Only unprompted text is judged, and text that pings another human is judged rather than preempted — it may be meant for someone else and still be worth answering.
+
+**Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel or thread — up to `context_messages` messages and `context_chars` characters. Nothing from other channels, and nothing beyond that window.
+
+**Fail-closed.** A timeout, a malformed answer, or a missing `OPENROUTER_API_KEY` means a silent deny in `enforce`; the gate never admits on failure. Because a silent deny is easy to miss, `enforce` without a usable key also logs one loud warning at startup — `shadow` does not. The key is read once at connect time from the profile environment, so it must be set before the gateway starts; it is not a `config.yaml` key.
+
+Values outside the documented ranges (threshold outside `0..1`, `timeout_seconds` above `30`, oversized context bounds) refuse to load rather than quietly degrading into "admit everything".
+
 #### `discord.auto_thread`
 
 **Type:** boolean — **Default:** `true`

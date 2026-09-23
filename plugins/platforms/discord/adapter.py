@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import traceback
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from contextlib import suppress
 from typing import Callable, Dict, List, NamedTuple, Optional, Any, Tuple
 from urllib.parse import quote, unquote, urljoin, urlparse
@@ -465,7 +465,8 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
+    MessageDeduplicator, ThreadParticipationTracker, compile_mention_patterns,
+    convert_table_to_bullets, is_discord_channel_obfuscated,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -1353,6 +1354,15 @@ class RestartPendingThreadTitle(NamedTuple):
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.response_gate import (
+    ChannelContextBuffer,
+    GateDecision,
+    GateRuntime,
+    JevDecisionClient,
+    ResponseGateError,
+    SHOULD_REPLY_KEY,
+    build_gate_instructions,
+)
 
 
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
@@ -1403,6 +1413,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Gate env snapshot captured in connect() inside the owning profile's scope; None until then.
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
         self._gate_env_snapshot: Optional[Dict[str, str]] = None
+        # Opt-in ambient response gate. The judge credential is captured HERE at startup from
+        # this profile's own secret scope and held on the adapter, so late event callbacks use
+        # the captured value instead of reading a secret from an unscoped (possibly
+        # other-profile) callback context. None ⇒ the gate is off and never consulted.
+        self._response_gate: Optional[Dict[str, Any]] = None
+        self._response_gate_credential: Optional[str] = None
+        self._response_gate_buffer: Optional[ChannelContextBuffer] = None
+        # Message ids this adapter's gate enforce-approved, waiting for _handle_message's own
+        # mention check. One-shot entries, bounded: approval never outlives the dispatch.
+        self._response_gate_admitted_ids: "OrderedDict[str, None]" = OrderedDict()
+        self._response_gate_warned: set = set()
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
@@ -1626,6 +1647,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # profile's runtime scope under multiplex, so the snapshot holds THIS adapter's values, immune
             # to the first-writer-wins process-global env bridge.
             self._snapshot_gate_env()
+            # Capture this profile's judge credential now, inside the owning profile's runtime
+            # scope (same discipline as the gate-env snapshot): event callbacks later run outside
+            # any scope we can trust, so they use the captured value and can never fall back to
+            # another profile's (first-writer-wins) key.
+            self._response_gate_credential = _scoped_gate_env("OPENROUTER_API_KEY") or None
+            self._response_gate_init()
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
             self._allowed_role_ids = self._get_allowed_roles()
@@ -1822,8 +1849,228 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return ("discord_intents_required", guidance, False)
         return ("discord_connect_error", f"Discord startup failed: {error}", True)
 
-    def _discord_message_admission(self, message: Any, *, claim: bool) -> tuple[bool, bool]:
-        """Return ``(admitted, role_authorized)`` for one Discord event."""
+    # --- opt-in ambient response gate (discord.response_gate) -----------------
+    #
+    # The gate only ever narrows or leaves alone what the existing admission gates decide:
+    # it is consulted exclusively for *ambient* (unpinged) human messages in explicitly
+    # opted-in channels. Mentions, replies to this bot, configured mention patterns,
+    # commands, DMs, the bot policy and the ignored/allowed-channel and allowed-user gates
+    # all keep their prior behavior and never reach the judge.
+
+    def _response_gate_init(self) -> None:
+        """Build the gate from validated config plus the credential captured at startup."""
+        gate_cfg = getattr(self.config, "response_gate", None)
+        if gate_cfg is None or not gate_cfg.enabled:
+            self._response_gate = None
+            return
+        bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
+        self._response_gate = GateRuntime.build(
+            gate_cfg, self._response_gate_credential, bot_name=bot_name, logger=logger,
+        )
+        if self._response_gate.client is None:
+            # Enforce mode with no credential denies every ambient message; say so once,
+            # loudly, instead of looking like a quiet disable.
+            logger.error(
+                "[%s] response_gate is enabled for %d channel(s) in %s mode but no OPENROUTER_API_KEY "
+                "was found in this profile's secrets: ambient messages in those channels will be denied",
+                self.name, len(gate_cfg.channels), gate_cfg.mode,
+            )
+
+    def _response_gate_scope_keys(self, message: Any) -> Optional[set]:
+        """Channel keys for a message, or None when the gate is off/not selected.
+
+        Scope is the gate's own channel opt-in narrowed by the allowed/ignored-channel rule
+        ``_handle_message`` already owns: a channel that rule ignores is never consulted, so
+        the judge costs no API call outside the channels this bot answers in.
+        """
+        gate = self._response_gate
+        if gate is None:
+            return None
+        if isinstance(message.channel, discord.DMChannel):
+            return None  # DMs are always explicit; the gate never sees them
+        parent_id = self._get_parent_channel_id(message.channel)
+        keys = self._discord_channel_keys(message, parent_id)
+        if not gate.selects(keys) or not self._discord_channel_policy_admits(keys):
+            return None
+        return keys
+
+    def _response_gate_bypass(self, message: Any) -> bool:
+        """Explicit triggers never consult the gate (identical behavior either way)."""
+        content = str(getattr(message, "content", "") or "").lstrip()
+        if content.startswith("/"):
+            return True  # commands are explicit
+        if self._self_is_explicitly_mentioned(message):
+            return True  # direct @mention (includes reply-pings of this bot)
+        if self._is_reply_to_self(message):
+            return True  # reply to one of this bot's own messages
+        if self._is_bot_tag_debounce_continuation(message):
+            return True  # continuation chunk of a bot the gate already admitted
+        if self._message_matches_mention_patterns(content):
+            return True  # configured wake patterns are explicit; keep their legacy handling
+        return False
+
+    def _discord_mention_patterns(self) -> List["re.Pattern"]:
+        """Compiled ``discord.mention_patterns`` wake words ([] when unset — no legacy behavior)."""
+        raw = self.config.extra.get("mention_patterns")
+        if raw is None:
+            return []
+        return compile_mention_patterns(
+            raw, log_prefix=self.name, platform_label="discord", display_label="Discord", logger_=logger,
+        )
+
+    def _message_matches_mention_patterns(self, text: str) -> bool:
+        """True when ``text`` hits a configured mention pattern (same rule as the wake path)."""
+        patterns = self._discord_mention_patterns()
+        return bool(text) and any(pattern.search(text) for pattern in patterns)
+
+    def _is_reply_to_self(self, message: Any) -> bool:
+        """True when the message replies to one of this bot's own messages."""
+        try:
+            reference = getattr(message, "reference", None)
+            resolved = getattr(reference, "resolved", None)
+            author = getattr(resolved, "author", None)
+            if author is not None and self._client and author == self._client.user:
+                return True
+        except Exception:  # pragma: no cover - defensive: unresolved references stay ambient
+            return False
+        return False
+
+    def _response_gate_probe(self) -> Optional[Dict[str, Any]]:
+        """Fresh out-param for ``_discord_message_admission``; None when the gate is off."""
+        return {} if self._response_gate is not None else None
+
+    async def _response_gate_apply(self, message: Any, probe: Optional[Dict[str, Any]]) -> Optional[bool]:
+        """Consult the gate for one dispatched message.
+
+        Returns ``True`` (admit), ``False`` (refuse) or ``None`` (legacy decision stands).
+        The message is buffered as future evidence *after* the evaluation, so the current
+        candidate is never also presented as its own history.
+        """
+        gate = self._response_gate
+        if gate is None or not probe:
+            return None
+        candidate = probe if probe.get("message_id") else None
+        verdict: Optional[bool] = None
+        if candidate is not None:
+            verdict = await self._response_gate_decide(message, candidate)
+        self._response_gate_observe(message)
+        return verdict
+
+    def _response_gate_candidate(self, message: Any, *, admitted: bool) -> Optional[Dict[str, Any]]:
+        """Build the probe payload for one ambient candidate, or None when never consultable.
+
+        Single definition of "reaches the judge": gate on, channel opted in, the existing
+        channel policy admits it, an explicit trigger (mention/reply/command/wake pattern)
+        did not author it and it is not bot chatter. Every caller — live dispatch, recovered
+        dispatch and the admission prefilters — goes through here, so they cannot disagree.
+        """
+        gate = self._response_gate
+        if gate is None:
+            return None
+        channel_keys = self._response_gate_scope_keys(message)
+        if channel_keys is None:
+            return None
+        if self._response_gate_bypass(message):
+            return None
+        if getattr(message.author, "bot", False):
+            return None  # bot chatter is never gated and never wakes us through it
+        return {
+            "message_id": str(getattr(message, "id", "")),
+            "channel_keys": set(channel_keys),
+            "conversation_id": GateRuntime.conversation_id(message.channel),
+            "admitted": bool(admitted),
+        }
+
+    def _response_gate_consults(self, message: Any) -> bool:
+        """True when the judge, not a legacy prefilter, decides this message."""
+        return self._response_gate_candidate(message, admitted=False) is not None
+
+    async def _response_gate_decide(self, message: Any, candidate: Dict[str, Any]) -> Optional[bool]:
+        """Run the gate for one candidate.
+
+        Returns ``True`` to admit an ambient message the legacy policy dropped, ``False``
+        to refuse one, and ``None`` when the legacy decision stands (shadow mode).
+        """
+        gate = self._response_gate
+        if gate is None:
+            return None
+        decision = await gate.evaluate(
+            message, channel=message.channel,
+            bot_name=str(getattr(getattr(self._client, "user", None), "display_name", "") or ""),
+            bot_id=getattr(getattr(self._client, "user", None), "id", None),
+        )
+        self._response_gate_log(decision, candidate)
+        if gate.mode != "enforce":
+            return None  # shadow: the legacy decision always stands
+        if not decision.allowed:
+            self._response_gate_forget(candidate)
+            return False
+        # Enforce approval is the decision that wakes us, so _handle_message's own mention
+        # check must let this one message through — whether admission had already admitted it
+        # or dropped it on the ambient (mention) policy the judge just overrode.
+        self._response_gate_remember(candidate)
+        return True
+
+    def _response_gate_remember(self, candidate: Dict[str, Any]) -> None:
+        """Mark one enforce-approved message id for _handle_message's ambient check."""
+        message_id = candidate.get("message_id") or ""
+        if not message_id:
+            return
+        while len(self._response_gate_admitted_ids) >= 256:
+            self._response_gate_admitted_ids.popitem(last=False)
+        self._response_gate_admitted_ids[message_id] = None
+
+    def _response_gate_forget(self, candidate: Dict[str, Any]) -> None:
+        self._response_gate_admitted_ids.pop(candidate.get("message_id") or "", None)
+
+    def _response_gate_admitted(self, message: Any) -> bool:
+        """One-shot check used by _handle_message: did the gate approve this message?"""
+        message_id = str(getattr(message, "id", "") or "")
+        if message_id not in self._response_gate_admitted_ids:
+            return False
+        self._response_gate_admitted_ids.pop(message_id, None)
+        return True
+
+    def _response_gate_log(self, decision: GateDecision, candidate: Dict[str, Any]) -> None:
+        """One line per consultation: ids, mode, outcome, score, sanitized reason, latency.
+
+        Never message content, credentials, headers or the remote response body.
+        """
+        logger.log(
+            logging.WARNING if decision.error else logging.INFO,
+            "[%s] response_gate mode=%s channel=%s message=%s outcome=%s %s=%.4f reason=%s error=%s latency_ms=%s",
+            self.name, decision.mode, candidate.get("conversation_id"), candidate.get("message_id"),
+            "allow" if decision.allowed else "deny", SHOULD_REPLY_KEY,
+            decision.score if decision.score is not None else -1.0,
+            decision.reason, decision.error or "none",
+            f"{decision.latency_ms:.0f}" if decision.latency_ms is not None else "n/a",
+        )
+
+    def _response_gate_observe(self, message: Any) -> None:
+        """Buffer one selected-channel message as future evidence (cheap, bounded)."""
+        gate = self._response_gate
+        if gate is None:
+            return
+        if self._response_gate_scope_keys(message) is None:
+            return
+        if getattr(getattr(message, "author", None), "bot", False):
+            return  # keep recursive bot chatter out of the evidence
+        author = getattr(message, "author", None)
+        gate.observe(
+            message.channel,
+            getattr(author, "display_name", None) or getattr(author, "name", ""),
+            getattr(message, "content", ""),
+        )
+
+    def _discord_message_admission(
+        self, message: Any, *, claim: bool, gate_probe: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, bool]:
+        """Return ``(admitted, role_authorized)`` for one Discord event.
+
+        ``gate_probe`` is an out-param the caller passes when the opt-in response gate is
+        active: admission fills it for messages the gate may consult and never changes its
+        own verdict — the async caller applies the gate's decision afterwards.
+        """
         message_id = str(getattr(message, "id", ""))
         if claim:
             if self._dedup.is_duplicate(message_id):
@@ -1886,7 +2133,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 free_channels = self._discord_free_response_channels()
                 channel_keys = self._discord_channel_keys(message, parent_id)
                 if "*" not in free_channels and not (channel_keys & free_channels):
+                    # Ambient text that pings a human (not us) would be dropped here by the
+                    # legacy prefilter. In a gate-selected channel the probe still records it
+                    # so the judge — not this prefilter — decides; the verdict is unchanged.
+                    candidate = self._response_gate_candidate(message, admitted=False)
+                    if candidate is not None:
+                        gate_probe.update(candidate)
                     return False, False
+        candidate = (
+            None if raw_self_mention else self._response_gate_candidate(message, admitted=True)
+        )
+        if gate_probe is not None and candidate is not None:
+            gate_probe.update(candidate)
         return True, role_authorized
 
     async def _dispatch_discord_message(self, message: Any) -> bool:
@@ -1896,8 +2154,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
             except asyncio.TimeoutError:
                 pass
-        admitted, role_authorized = self._discord_message_admission(message, claim=True)
-        if not admitted:
+        gate_probe = self._response_gate_probe()
+        admitted, role_authorized = self._discord_message_admission(
+            message, claim=True, gate_probe=gate_probe,
+        )
+        # The gate runs before any side effect and after admission recorded its verdict, so an
+        # enforce approval can also rescue an ambient message admission dropped on the mention
+        # policy (verdict True) while a deny still sends nothing anywhere.
+        verdict = await self._response_gate_apply(message, gate_probe)
+        if verdict is False:
+            return False  # enforce deny: no typing, thread, session or tool side effects
+        if not admitted and verdict is not True:
             return False
         self._record_bot_tag_debounce(message)
         return await self._handle_message(message, role_authorized=role_authorized)
@@ -2685,10 +2952,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 and not (channel_keys & free_channels)
                 and not self._in_bot_thread(message)
                 and not self._self_is_explicitly_mentioned(message)
+                # Same rule as live dispatch: in a gate-selected channel the judge decides
+                # for an ambient message, so this mention prefilter does not pre-empt it.
+                and not self._response_gate_consults(message)
             ):
                 return False
-        admitted, role_authorized = self._discord_message_admission(message, claim=False)
-        if not admitted:
+        gate_probe = self._response_gate_probe()
+        admitted, role_authorized = self._discord_message_admission(
+            message, claim=False, gate_probe=gate_probe,
+        )
+        verdict = await self._response_gate_apply(message, gate_probe)
+        if verdict is False:
+            return False
+        if not admitted and verdict is not True:
             return False
         return await self._handle_message(message, role_authorized=role_authorized, recovered=True)
 
@@ -6229,6 +6505,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile)."""
         return self._gate_csv_set(self._gate_raw("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS"))
 
+    def _discord_channel_policy_admits(self, channel_keys) -> bool:
+        """The allowed/ignored-channel rule ``_handle_message`` applies to every server message.
+
+        Shared rather than re-derived: ``_handle_message`` keeps ownership of the decision and
+        the response gate asks this same rule whether a channel is even worth consulting, so
+        the judge can never cost an API call in a channel the bot would ignore anyway.
+        """
+        allowed_channels = self._get_allowed_channels()
+        if allowed_channels and "*" not in allowed_channels and not (channel_keys & allowed_channels):
+            return False
+        ignored_channels = self._get_ignored_channels()
+        if "*" in ignored_channels or (channel_keys & ignored_channels):
+            return False
+        return True
+
     def _get_allowed_users(self) -> set:
         """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned)."""
         raw = self._gate_raw("allow_from", "DISCORD_ALLOWED_USERS")
@@ -7861,14 +8152,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
-            allowed_channels = self._get_allowed_channels()
-            if allowed_channels:
-                if "*" not in allowed_channels and not (channel_keys & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
-                    return False
-            ignored_channels = self._get_ignored_channels()
-            if "*" in ignored_channels or (channel_keys & ignored_channels):
-                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
+            if not self._discord_channel_policy_admits(channel_keys):
+                logger.debug("[%s] Ignoring message outside allowed/ignored channel policy: %s", self.name, channel_keys)
                 return False
             free_channels = self._discord_free_response_channels()
             require_mention = self._discord_require_mention()
@@ -7882,7 +8167,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 or is_voice_linked_channel
             )
             in_bot_thread = self._in_bot_thread(message)
-            if require_mention and not is_free_channel and not in_bot_thread:
+            # An enforce-approved ambient message was already admitted by the gate in
+            # _dispatch_discord_message; this is the same decision, not a new exemption.
+            gate_admitted = self._response_gate_admitted(message)
+            if require_mention and not is_free_channel and not in_bot_thread and not gate_admitted:
                 if (
                     not self._self_is_explicitly_mentioned(message)
                     and not mention_prefix
