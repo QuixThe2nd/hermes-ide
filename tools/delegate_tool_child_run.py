@@ -390,27 +390,14 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     _resweep_timer.start()
 
 def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
-    """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
-    serve the child's endpoint: on a mixed same-provider pool the least-leased pick may target another host, so it is
-    released and an endpoint-matching entry is leased by id instead (#68237)."""
+    """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``."""
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
-    from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
-    base_url = getattr(child, "base_url", None)
     leased_cred_id = child_pool.acquire_lease()
     if leased_cred_id is not None:
         with _quiet("Failed to bind child to leased credential: %s"):
-            # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
-            # mutable cursor that may already point at someone else's pick.
-            leased_entry = next((e for e in child_pool.entries() if e.id == leased_cred_id), None)
-            if not _entry_serves_endpoint(leased_entry, base_url):
-                child_pool.release_lease(leased_cred_id)
-                leased_entry = next(
-                    (e for e in child_pool.entries() if e.last_status != "dead" and _entry_serves_endpoint(e, base_url)),
-                    None,
-                )
-                leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None
+            leased_entry = child_pool.current()
             if leased_entry is not None and hasattr(child, "_swap_credential"):
                 child._swap_credential(leased_entry)
     return child_pool, leased_cred_id
@@ -534,11 +521,22 @@ def _build_result_entry(
         status, exit_reason = "failed", "error"
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
-        # failure = budget exhaustion. A declared schema still violated after the bounded retry makes the summary
-        # unusable under the contract, so status must not say completed (orchestrators reading only status/icon would
-        # accept an empty verdict).
+        # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the
+        # run: the child's raw final text is the deliverable (audits of up to 68 min were written off as "failed"
+        # over a stray code fence or one missing field); ``schema_valid: false`` + ``schema_errors`` carry the
+        # contract verdict, and the summary is prefixed with a notice so a status-only reader cannot mistake it
+        # for validated output.
         exit_reason = "completed" if result.get("completed", False) else "max_iterations"
-        status = "completed" if schema.valid is not False and usable_summary else "failed"
+        if schema.valid is False:
+            # Fork contract: a declared schema still violated after the bounded
+            # retry is unusable under the caller's contract. Upstream keeps
+            # status="completed" and a schema_note; we fail the entry so batch
+            # lines print ✗ and orchestrators that read only status/icon cannot
+            # accept an empty verdict. schema_valid/schema_errors still carry
+            # the detail. Schema-less runs never take this branch (valid is None).
+            status = "failed"
+        else:
+            status = "completed" if usable_summary else "failed"
 
     _cost = getattr(child, "session_estimated_cost_usd", 0.0)
     _cost_status = getattr(child, "session_cost_status", None)
@@ -570,9 +568,9 @@ def _build_result_entry(
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
     if status == "failed":
         if schema.valid is False and usable_summary:
-            # The child DID respond; name the contract violation instead of the generic "no response" error.
             entry["error"] = (
-                "Final answer does not satisfy the declared output_schema" + (" (after 1 retry)." if schema.retries else ".")
+                "Final answer does not satisfy the declared output_schema"
+                + (" (after 1 retry)." if schema.retries else ".")
             )
         else:
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -592,6 +590,13 @@ def _build_result_entry(
             entry["schema_retries"] = schema.retries
         if not schema.valid and schema.errors:
             entry["schema_errors"] = schema.errors
+        if schema.valid is False and usable_summary:
+            entry["schema_note"] = (
+                "Final answer does not satisfy the declared output_schema"
+                + (" (after 1 retry)" if schema.retries else "")
+                + "; `summary` is the child's raw, UNVALIDATED final text — extract what you need from it "
+                "yourself (see schema_errors) rather than re-running the task."
+            )
 
     # A steer queued after the final assistant turn had no tool batch to land
     # in; name it so the parent sees it was MISSED rather than silently absorbed.

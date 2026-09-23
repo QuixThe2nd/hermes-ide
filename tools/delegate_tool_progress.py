@@ -155,7 +155,7 @@ _COMPLETION_INSTRUCTIONS = (
 )
 _ORCHESTRATOR_BLOCK = (
     "\n## Subagent Spawning (Orchestrator Role)\n"
-    "You have access to the `delegate_task` tool and CAN spawn your own subagents to parallelize independent work.\n\n"
+    "You have access to the `delegate_agent` tool and CAN spawn your own subagents to parallelize independent work.\n\n"
     "WHEN to delegate:\n"
     "- The goal decomposes into 2+ independent subtasks that can run in parallel (e.g. research A and B simultaneously).\n"
     "- A subtask is reasoning-heavy and would flood your context with intermediate data.\n\n"
@@ -168,10 +168,10 @@ _ORCHESTRATOR_BLOCK = (
 )
 _LEAF_CHILDREN_NOTE = (
     "Your own children MUST be leaves (cannot delegate further) because they would be at the depth floor — you cannot "
-    "pass role='orchestrator' to your own delegate_task calls."
+    "pass role='orchestrator' to your own delegate_agent calls."
 )
 _NESTED_CHILDREN_NOTE = (
-    "Your own children can themselves be orchestrators or leaves, depending on the `role` you pass to delegate_task. "
+    "Your own children can themselves be orchestrators or leaves, depending on the `role` you pass to delegate_agent. "
     "Default is 'leaf'; pass role='orchestrator' explicitly when a child needs to further decompose its work."
 )
 
