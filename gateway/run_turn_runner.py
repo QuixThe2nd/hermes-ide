@@ -261,14 +261,18 @@ class TurnRunner:
     def _progress_build_message(self, tool_name, preview, args) -> Optional[str]:
         """Render the progress line. Verbose mode queues directly (no dedup) and returns None."""
         ctx = self._ctx
-        from agent.display import get_tool_emoji
+        from agent.display import get_tool_emoji, get_tool_preview_max_len
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
             adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
-        verbose = ctx.progress_mode == "verbose"
+        # Full rendering — explicit "verbose", or an unlimited preview budget
+        # (tool_preview_length <= 0): the whole command and ALL arguments, never
+        # a tool-specific builder summary. Explicit positive caps keep the
+        # compact "all"/"new" preview path below.
+        verbose = ctx.progress_mode == "verbose" or get_tool_preview_max_len() <= 0
         code = code_full if verbose else code_short
         ctx.last_was_terminal_block[0] = code is not None
         if verbose:

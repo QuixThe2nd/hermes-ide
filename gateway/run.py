@@ -6075,8 +6075,12 @@ class TurnRunner:
                 _cmd_short = _cmd_short + " ..."
             _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
-        # Verbose mode: show detailed arguments, respects tool_preview_length
-        if ctx.progress_mode == "verbose":
+        # Verbose mode: show detailed arguments, respects tool_preview_length.
+        # An unlimited preview budget (tool_preview_length <= 0) renders the
+        # same way in "all"/"new" modes: the whole command and ALL arguments,
+        # never a tool-specific builder summary.
+        from agent.display import get_tool_preview_max_len as _get_preview_max_len
+        if ctx.progress_mode == "verbose" or _get_preview_max_len() <= 0:
             if _code_block_full is not None:
                 ctx.last_was_terminal_block[0] = True
                 ctx.progress_queue.put(_code_block_full)
