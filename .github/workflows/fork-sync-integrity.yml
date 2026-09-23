@@ -2,24 +2,22 @@
 # Do not upstream this file.
 #
 # fork-sync imports upstream one commit at a time and verifies ancestry —
-# which cannot see the one failure mode where a merge "completes" with a
-# bad conflict resolution: the upstream commit becomes an ancestor, but an
-# OLD version of the file lands on fork main. Ancestry-based sync then
-# has nothing to redo, and the content is gone silently. This checker
-# compares BLOBS against upstream main and alerts only on hard evidence
-# (fork carries an older imported blob / lacks imported content). Plain
-# lag, fork-only files, and deliberate fork edits never alert.
+# which cannot see the failure mode where a merge "completes" with a bad
+# conflict resolution: the upstream commit becomes an ancestor, but an OLD
+# version of the file lands on fork main. Ancestry-based sync then has
+# nothing to redo and the content is gone silently. This workflow runs
+# .github/scripts/fork-sync-integrity.py, which reports missing-import
+# candidates, unresolved evidence, and observed fork-side changes as
+# separate things.
 #
-# The detection logic lives in .github/scripts/fork-sync-integrity.py so
-# the acceptance harness can drive the exact product file with real git
-# against local bare remotes (tests/scripts/test_fork_sync_integrity.py).
-# Exit codes: 0 clean, 2 drops found (step fails red; the script has
-# already POSTed the Discord alert by then — same DISCORD_SYNC_ALERT
-# funnel as fork-sync), 1 operational error.
+# Exit codes: 0 assessed and clean, 2 missing-import candidates, 3
+# unresolved evidence, 1 operational failure. Any nonzero fails the job red;
+# 2 and 3 reach the existing DISCORD_SYNC_ALERT funnel (same one as
+# fork-sync), 3 with no candidate paths listed inline.
 #
-# Scheduled at :53, offset from fork-sync's :23 so it runs after the
-# hourly import. Checkout uses FORK_SYNC_TOKEN for the same reason as
-# fork-sync (workflow-file changes in upstream history).
+# Scheduled at :53, offset from fork-sync's :23 so it runs after the hourly
+# import. Pinned actions, full history, 30-minute bound, artifact on every
+# outcome.
 name: Fork sync integrity check
 
 on:
@@ -28,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Detect drops but do not notify (checks the checker without side effects)"
+        description: "Detect and report but do not notify (checks the checker without side effects)"
         required: false
         default: false
         type: boolean
@@ -50,13 +48,15 @@ jobs:
       INTEGRITY_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
       INTEGRITY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      # Explicit main ref (github.sha would be stale by the time the job
-      # starts); full history — the checker walks fork and upstream
-      # ancestry, so a shallow clone would break the imported-commit set.
+      # No `ref:` here on purpose: the job must execute the checker bytes that
+      # shipped with the workflow revision GitHub selected, not whatever
+      # `main` holds by the time the job starts (older, newer, or missing the
+      # script entirely). Default checkout ref is github.sha, which is exactly
+      # that revision. Full history — the checker walks both ancestries, and
+      # it refuses a shallow clone outright.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          ref: main
           token: ${{ secrets.FORK_SYNC_TOKEN }}
 
       - name: Fetch upstream main
@@ -64,24 +64,45 @@ jobs:
           git remote add upstream https://github.com/NousResearch/hermes-agent.git
           git fetch --no-tags upstream main
 
-      # The script POSTs the alert itself on its exit-2 path (single-line
-      # content, DiscordBot User-Agent — the fork-sync-sequential.sh
-      # send_alert convention) unless INTEGRITY_DRY_RUN=true. Exit 2 fails
-      # this step red on purpose; the artifact below still uploads.
+      # The ref under examination is resolved explicitly to one immutable
+      # commit instead of trusting the name `main` to mean the same thing at
+      # checkout time and assessment time. Both SHAs go into the report, so a
+      # finding stays reproducible long after either side moved on. `set -euo
+      # pipefail` is deliberate: a ref that fails to resolve must fail this
+      # step, never hand the checker an empty string.
+      - name: Resolve the fork main under examination
+        id: resolve
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          FORK_SHA="$(git rev-parse --verify 'refs/remotes/origin/main^{commit}')"
+          UPSTREAM_SHA="$(git rev-parse --verify 'refs/remotes/upstream/main^{commit}')"
+          {
+            echo "fork_sha=$FORK_SHA"
+            echo "upstream_sha=$UPSTREAM_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      # Exit 2/3 fail this step red on purpose; the artifact below still
+      # uploads. The script POSTs its own single-line alert (DiscordBot
+      # User-Agent, allowed_mentions empty — the fork-sync-sequential.sh
+      # convention) unless dry_run, which suppresses the POST only.
       - name: Check for silently dropped imported content
         id: integrity
         env:
+          FORK_SHA: ${{ steps.resolve.outputs.fork_sha }}
+          UPSTREAM_SHA: ${{ steps.resolve.outputs.upstream_sha }}
           DISCORD_SYNC_ALERT: ${{ secrets.DISCORD_SYNC_ALERT }}
         run: |
           python3 .github/scripts/fork-sync-integrity.py \
-            --fork-ref main \
-            --upstream-ref refs/remotes/upstream/main \
+            --fork-ref "$FORK_SHA" \
+            --upstream-ref "$UPSTREAM_SHA" \
             --json-out "$RUNNER_TEMP/fork-sync-integrity.json" \
             --max-report 10
 
-      # Detail JSON either way — clean runs carry the totals, drop runs the
-      # full uncapped evidence list. Best-effort: an operational error
-      # (exit 1) writes no file, and that must not mask the failure.
+      # Detail JSON either way — clean runs carry the totals and the
+      # reconciliation, finding runs the full uncapped evidence. Best-effort:
+      # an operational error (exit 1) writes no file, and that must not mask
+      # the failure.
       - name: Upload integrity report
         if: always()
         continue-on-error: true
@@ -90,3 +111,12 @@ jobs:
           name: fork-sync-integrity-report
           path: ${{ runner.temp }}/fork-sync-integrity.json
           if-no-files-found: ignore
+
+# Remaining hosted-run boundary: this file only becomes dispatchable by
+# filename once it exists on the default branch — GitHub registers
+# workflow_dispatch from the default branch's copy, so `gh workflow run
+# fork-sync-integrity.yml` against this branch fails until it lands there.
+# The checkout/ref behaviour above is proven locally by
+# tests/scripts/test_fork_sync_integrity.py, which executes the resolve
+# step's commands against real local remotes; the hosted schedule itself is
+# not exercised from here.
