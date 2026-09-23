@@ -431,6 +431,148 @@ class ChannelOverride:
         return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
 
 
+@dataclass
+class ResponseGateConfig:
+    """Opt-in per-channel response gate (``<platform>.response_gate``).
+
+    A remote judge decides whether *ambient* (unpinged) human messages in the selected
+    channels wake this platform. Explicit triggers (mentions, replies to the bot, commands,
+    DMs) never consult it, and an omitted block means off. Deliberately narrow for the first
+    version: ``provider`` only supports ``jev`` and ``channels`` is an explicit opt-in list —
+    no wildcard and no global expansion.
+    """
+
+    #: Judge backend; ``jev`` (OpenRouter Decisions endpoint) is the only one.
+    provider: str = "jev"
+    #: Channel IDs (or exact channel names / ``#names``) opted in. Empty ⇒ gate off.
+    channels: tuple = ()
+    #: ``shadow`` computes and logs the decision but keeps the legacy admission result;
+    #: ``enforce`` lets an approved ambient message through and denies everything else.
+    mode: str = "shadow"
+    #: ``noul`` score at or above this allows ambient participation.
+    threshold: float = 0.8
+    #: Per-request budget; a timeout denies (enforce) rather than failing open.
+    timeout_seconds: float = 3.0
+    #: Bounded recent same-conversation messages sent as evidence (exact channel/thread only).
+    context_messages: int = 10
+    #: Total character budget for the buffered context block.
+    context_chars: int = 8000
+    #: Judge model; fixed default, no fallback chain.
+    model: str = "typesafe/jev-1.13"
+
+    # Validation bounds. Explicit config outside them raises at load time: a mistyped gate
+    # must never quietly degrade into "every ambient message is allowed".
+    MAX_TIMEOUT_SECONDS = 30.0
+    MAX_CONTEXT_MESSAGES = 200
+    MAX_CONTEXT_CHARS = 100_000
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "provider": self.provider,
+            "mode": self.mode,
+            "threshold": self.threshold,
+            "timeout_seconds": self.timeout_seconds,
+            "context_messages": self.context_messages,
+            "context_chars": self.context_chars,
+            "model": self.model,
+        }
+        if self.channels:
+            result["channels"] = list(self.channels)
+        return result
+
+    @property
+    def enabled(self) -> bool:
+        """True when the gate is configured AND has at least one opted-in channel."""
+        return self.provider == "jev" and bool(self.channels)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ResponseGateConfig":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError(
+                "response_gate must be a mapping with provider/mode/channels; got "
+                f"{type(data).__name__}"
+            )
+        provider = str(data.get("provider", "jev")).strip().lower()
+        if provider != "jev":
+            # An explicitly configured unknown provider is a config error, not "gate off":
+            # silently ignoring it would look enabled to the operator while doing nothing.
+            raise ValueError(f"response_gate: unsupported provider {provider!r} (only 'jev')")
+
+        mode = str(data.get("mode", "shadow")).strip().lower()
+        if mode not in {"shadow", "enforce"}:
+            # "Invalid mode must not act like enforce": refuse to load instead of guessing.
+            raise ValueError(f"response_gate: mode must be 'shadow' or 'enforce', got {mode!r}")
+
+        channels = _response_gate_channels(data.get("channels"))
+        threshold = _response_gate_float(
+            data, "threshold", 0.8, 0.0, 1.0, "response_gate.threshold"
+        )
+        timeout_seconds = _response_gate_float(
+            data, "timeout_seconds", 3.0, 0.0, cls.MAX_TIMEOUT_SECONDS, "response_gate.timeout_seconds",
+            exclusive_min=True,
+        )
+        context_messages = _response_gate_int(
+            data, "context_messages", 10, 1, cls.MAX_CONTEXT_MESSAGES, "response_gate.context_messages",
+        )
+        context_chars = _response_gate_int(
+            data, "context_chars", 8000, 1, cls.MAX_CONTEXT_CHARS, "response_gate.context_chars",
+        )
+        model = str(data.get("model", "typesafe/jev-1.13")).strip()
+        if not model:
+            raise ValueError("response_gate: model must be a non-empty model slug")
+        return cls(
+            provider=provider, channels=channels, mode=mode, threshold=threshold,
+            timeout_seconds=timeout_seconds, context_messages=context_messages,
+            context_chars=context_chars, model=model,
+        )
+
+
+def _response_gate_channels(raw: Any) -> tuple:
+    """Normalize ``channels`` into a tuple of non-empty strings; empty/None ⇒ ().
+
+    Accepts a YAML list or the legacy comma-separated string spelling used by the other
+    channel gates. Values are strings of the raw entry (YAML reads bare ids as ints).
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, (list, tuple, set)):
+        parts = [str(part).strip() for part in raw]
+    else:
+        parts = [part.strip() for part in str(raw).split(",")]
+    cleaned = tuple(dict.fromkeys(part for part in parts if part))
+    if "*" in cleaned:
+        # The other channel gates accept "*" as a wildcard; the gate must not silently
+        # become a global switch, so an operator has to list channels explicitly.
+        raise ValueError("response_gate: channels does not support '*'; list channel ids explicitly")
+    return cleaned
+
+
+def _response_gate_float(data: dict, key: str, default: float, low: float, high: float,
+                         label: str, *, exclusive_min: bool = False) -> float:
+    """Validated float field: finite, inside ``[low, high]``, else raise (never clamp)."""
+    raw = data.get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(f"{label} must be a number, got {raw!r}")
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"{label} must be finite, got {raw!r}")
+    if value < low or value > high or (exclusive_min and value <= low):
+        raise ValueError(f"{label} must be in the range {low} < value <= {high}, got {value}")
+    return value
+
+
+def _response_gate_int(data: dict, key: str, default: int, low: int, high: int, label: str) -> int:
+    """Validated integer field: inside ``[low, high]``, else raise (never clamp)."""
+    raw = data.get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(f"{label} must be an integer, got {raw!r}")
+    if raw < low or raw > high:
+        raise ValueError(f"{label} must be between {low} and {high}, got {raw}")
+    return raw
+
+
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token
 # warnings; multiplex primary-startup gate in ``gateway.run``). Platforms absent here
 # authenticate another way and must never be skipped for a missing token.
@@ -455,6 +597,9 @@ class PlatformConfig:
     # Dedicated target for gateway lifecycle broadcasts (shutdown/startup)
     # (e.g. a Discord "#gateway-restarts" channel).
     notification_channel: Optional[DeliveryTarget] = None
+
+    # Opt-in per-channel ambient response gate (Discord today); None ⇒ off.
+    response_gate: Optional[ResponseGateConfig] = None
 
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
@@ -499,6 +644,8 @@ class PlatformConfig:
         }
         if self.notification_channel:
             result["notification_channel"] = self.notification_channel.to_dict()
+        if self.response_gate is not None:
+            result["response_gate"] = self.response_gate.to_dict()
         if self.channel_overrides:
             result["channel_overrides"] = {cid: ov.to_dict() for cid, ov in self.channel_overrides.items()}
         return result
@@ -507,7 +654,7 @@ class PlatformConfig:
     # config and belongs in ``extra`` (see from_dict).
     _TYPED_KEYS = frozenset({
         "enabled", "token", "api_key", "home_channel", "notification_channel", "reply_to_mode", "channel_overrides", "extra",
-        "gateway_restart_notification", "typing_indicator", "typing_status_text",
+        "gateway_restart_notification", "typing_indicator", "typing_status_text", "response_gate",
     })
 
     @classmethod
@@ -541,11 +688,24 @@ class PlatformConfig:
             if isinstance(ov_data, dict)
         } if isinstance(raw_overrides, dict) else {}
 
+        # Validated opt-in gate block. Malformed explicit config is refused loudly rather
+        # than clamped: the gate stays off, so a bad threshold/mode can never load as
+        # "silently allow all ambient traffic". The error is contained here (not left to
+        # the platform-block-level ValueError swallow in GatewayConfig.from_dict), because
+        # that would silently drop this whole platform config — the operator would lose
+        # allowlists and the platform itself over a typo in one opt-in feature.
+        try:
+            response_gate = ResponseGateConfig.from_dict(toplevel_or_extra("response_gate"))
+        except ValueError as exc:
+            logger.warning("Ignoring invalid response_gate config (gate stays off): %s", exc)
+            response_gate = None
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             notification_channel=notification_channel,
+            response_gate=response_gate,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
