@@ -15,7 +15,14 @@ import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, resolveScreenWsUrl, VIEWER_ID } from './screen-connection'
+import {
+  type DisplayLease,
+  type DisplayObserveResult,
+  displayRequest,
+  type DisplayStatus,
+  resolveScreenWsUrl,
+  VIEWER_ID
+} from './screen-connection'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
 import type { RosterRow } from './types'
 
@@ -33,10 +40,16 @@ type RfbLike = {
 
 type ConnState = 'idle' | 'attaching' | 'live' | 'control-taken' | 'error'
 
-async function loadRfb(): Promise<new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike> {
+async function loadRfb(): Promise<
+  new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike
+> {
   const mod = (await import('@novnc/novnc')) as unknown as { default: new (...args: never[]) => RfbLike }
 
-  return mod.default as unknown as new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike
+  return mod.default as unknown as new (
+    target: HTMLElement,
+    socket: WebSocket,
+    options?: Record<string, unknown>
+  ) => RfbLike
 }
 
 export function BotScreenPane({ bot }: { bot: RosterRow }) {
@@ -187,7 +200,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     setBusy(true)
 
     try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: VIEWER_ID })
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', {
+        viewer_id: VIEWER_ID
+      })
       setScreenLease(bot, result.lease)
 
       if (conn !== 'live') {
@@ -204,7 +219,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     setBusy(true)
 
     try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.release', { viewer_id: VIEWER_ID })
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.release', {
+        viewer_id: VIEWER_ID
+      })
       setScreenLease(bot, result.lease)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -224,7 +241,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
           <div className="text-sm font-medium">{t.screen.notInstalledTitle}</div>
           <div className="text-xs text-muted-foreground">{t.screen.notInstalledBody}</div>
           {status.install_command ? (
-            <code className="select-text break-all rounded bg-muted px-2 py-1 text-left text-xs">{status.install_command}</code>
+            <code className="select-text break-all rounded bg-muted px-2 py-1 text-left text-xs">
+              {status.install_command}
+            </code>
           ) : null}
           <div className="text-xs text-muted-foreground">{t.screen.installHint}</div>
           <Button disabled={busy} onClick={() => void refresh()} size="sm" variant="secondary">
@@ -258,15 +277,24 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
         <Codicon name="device-desktop" />
         <span className="font-medium">{t.screen.title}</span>
-        {status?.display ? <span className="text-muted-foreground">{status.display} · {status.geometry}</span> : null}
+        {status?.display ? (
+          <span className="text-muted-foreground">
+            {status.display} · {status.geometry}
+          </span>
+        ) : null}
         <span className="grow" />
         {lease?.pending_handoff ? (
-          <span className="rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400" title={lease.pending_handoff}>
+          <span
+            className="rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400"
+            title={lease.pending_handoff}
+          >
             <Codicon name="bell" /> {t.screen.handoffRequested}
           </span>
         ) : null}
         {iHold ? (
-          <span className="rounded bg-red-500/15 px-2 py-0.5 font-medium text-red-600 dark:text-red-400">{t.screen.youControl}</span>
+          <span className="rounded bg-red-500/15 px-2 py-0.5 font-medium text-red-600 dark:text-red-400">
+            {t.screen.youControl}
+          </span>
         ) : humanOther ? (
           <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">{t.screen.otherControls}</span>
         ) : (
@@ -281,11 +309,21 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
             <Codicon name="record-keys" /> {t.screen.takeOver}
           </Button>
         )}
-        <Button disabled={conn === 'attaching'} onClick={() => void attach()} size="sm" title={t.screen.reconnect} variant="ghost">
+        <Button
+          disabled={conn === 'attaching'}
+          onClick={() => void attach()}
+          size="sm"
+          title={t.screen.reconnect}
+          variant="ghost"
+        >
           <Codicon name="refresh" />
         </Button>
       </div>
-      <div className={iHold ? 'relative min-h-0 grow bg-black ring-2 ring-inset ring-red-500/70' : 'relative min-h-0 grow bg-black'}>
+      <div
+        className={
+          iHold ? 'relative min-h-0 grow bg-black ring-2 ring-inset ring-red-500/70' : 'relative min-h-0 grow bg-black'
+        }
+      >
         {/* data-terminal: the same keyboard-ownership marker the terminal pane uses, so the app's
             type-to-focus / bare-key shortcuts never steal keystrokes meant for the remote screen. */}
         <div className="absolute inset-0" data-terminal="" ref={canvasHost} />
@@ -295,7 +333,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
           </div>
         ) : null}
         {conn === 'control-taken' ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60 text-xs text-white">{t.screen.controlTaken}</div>
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60 text-xs text-white">
+            {t.screen.controlTaken}
+          </div>
         ) : null}
         {conn === 'error' && error ? (
           <div className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200">{error}</div>

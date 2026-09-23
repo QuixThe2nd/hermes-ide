@@ -32,7 +32,12 @@ export function setScreenLease(bot: RosterRow, lease: DisplayLease): void {
   const current = $screenState.get()
   const prev = current[key]
 
-  if (prev?.lease && prev.lease.holder === lease.holder && prev.lease.viewer_id === lease.viewer_id && prev.lease.pending_handoff === lease.pending_handoff) {
+  if (
+    prev?.lease &&
+    prev.lease.holder === lease.holder &&
+    prev.lease.viewer_id === lease.viewer_id &&
+    prev.lease.pending_handoff === lease.pending_handoff
+  ) {
     return
   }
 
