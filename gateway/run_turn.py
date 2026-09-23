@@ -2895,6 +2895,37 @@ class GatewayTurnMixin:
         with self._profile_scope_for_source(source):
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 
+    @dataclasses.dataclass
+    class _RunAgentDisplay:
+        """Per-turn display-resolution result: every display/progress/status setting
+        ``_run_agent_inner`` resolved for THIS turn, snapshotted so the turn renders
+        against its own configuration for its whole lifetime (concurrent turns on
+        other platforms cannot change it). ``_DISPLAY_TO_TURN_CTX`` copies the
+        turn-facing fields onto the ``TurnContext``."""
+
+        user_config: Any = None
+        platform_key: str = ""
+        enabled_toolsets: Any = None
+        disabled_toolsets: Any = None
+        resolve_display_setting: Any = None
+        progress_mode: str = "all"
+        progress_grouping: str = "accumulate"
+        _display_surface_mode: Any = None
+        tool_progress_enabled: bool = False
+        # This turn's safely parsed tool_preview_length (0 = unlimited). The
+        # renderers read this turn-owned snapshot, never the process-global
+        # agent.display budget an interleaved turn may have overwritten.
+        tool_preview_max_len: int = 0
+        _live_status_mode: str = "off"
+        _live_status_adapter: Any = None
+        log_mode_enabled: bool = False
+        log_queue: Any = None
+        interim_assistant_messages_enabled: bool = False
+        _thinking_enabled: bool = False
+        _native_slack_task_cards: bool = False
+        needs_progress_queue: bool = False
+        _generic_status_phrase: Any = None
+
     def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
         """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""
         from gateway.run import (
@@ -2907,7 +2938,13 @@ class GatewayTurnMixin:
         platform_key = _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         adapter = self._delivery_adapter_for(source)
-        # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
+        # Tool preview length (0 = no limit), snapshotted on the turn below, and
+        # friendly tool labels (default on), per-platform. The legacy global write
+        # stays for non-turn consumers; interleaved turns read the snapshot.
+        tool_preview_max_len = 0
+        with suppress(Exception):
+            tool_preview_max_len = max(int(resolve_display_setting(
+                user_config, platform_key, "tool_preview_length", 0) or 0), 0)
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
             ("set_friendly_tool_labels", "friendly_tool_labels", True, bool),
@@ -2996,7 +3033,7 @@ class GatewayTurnMixin:
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
             progress_mode=progress_mode, progress_grouping=progress_grouping,
-            _display_surface_mode=_display_surface_mode,
+            _display_surface_mode=_display_surface_mode, tool_preview_max_len=tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
             log_queue=queue.Queue() if log_mode_enabled else None,
@@ -3009,9 +3046,10 @@ class GatewayTurnMixin:
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
-        "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
-        "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
-        "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
+        "progress_grouping", "tool_preview_max_len", "tool_progress_enabled", "log_queue",
+        "resolve_display_setting", "user_config", "enabled_toolsets", "disabled_toolsets",
+        "log_mode_enabled", "interim_assistant_messages_enabled", "needs_progress_queue",
+        "_native_slack_task_cards",
     )
 
     def _run_agent_build_turn_context(

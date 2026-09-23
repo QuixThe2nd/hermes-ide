@@ -24,6 +24,11 @@ class TurnContext:
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
+    # This turn's resolved tool_preview_length (0 = unlimited), snapshotted at turn
+    # start. Rendering reads this turn-owned value, never the process-global
+    # agent.display budget: interleaved turns (Discord unlimited vs a capped
+    # platform) must not change each other's previews mid-turn.
+    tool_preview_max_len: int = 0
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None

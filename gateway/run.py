@@ -6054,7 +6054,6 @@ class TurnRunner:
             and isinstance(args.get("command"), str)
             and args["command"].strip()
         ):
-            from agent.display import get_tool_preview_max_len
             _cmd_full = args["command"].rstrip()
             # Consecutive terminal calls: drop the repeated
             # "💻 terminal" header so back-to-back commands render as
@@ -6063,8 +6062,10 @@ class TurnRunner:
                 "" if ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
             )
             _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
-            # Single-line, capped preview for non-verbose modes.
-            _pl = get_tool_preview_max_len()
+            # Single-line, capped preview for non-verbose modes. The budget is
+            # this turn's snapshot, never the process-global preview length:
+            # a concurrent turn on another platform must not re-cap it.
+            _pl = ctx.tool_preview_max_len
             _cap = _pl if _pl > 0 else 40
             _lines = _cmd_full.splitlines()
             _cmd_short = _lines[0] if _lines else _cmd_full
@@ -6078,17 +6079,16 @@ class TurnRunner:
         # Verbose mode: show detailed arguments, respects tool_preview_length.
         # An unlimited preview budget (tool_preview_length <= 0) renders the
         # same way in "all"/"new" modes: the whole command and ALL arguments,
-        # never a tool-specific builder summary.
-        from agent.display import get_tool_preview_max_len as _get_preview_max_len
-        if ctx.progress_mode == "verbose" or _get_preview_max_len() <= 0:
+        # never a tool-specific builder summary. The budget is this turn's
+        # snapshot, so an interleaved capped-platform turn cannot re-cap it.
+        _pl = ctx.tool_preview_max_len
+        if ctx.progress_mode == "verbose" or _pl <= 0:
             if _code_block_full is not None:
                 ctx.last_was_terminal_block[0] = True
                 ctx.progress_queue.put(_code_block_full)
                 return
             ctx.last_was_terminal_block[0] = False
             if args:
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
                 args_str = json.dumps(args, ensure_ascii=False, default=str)
                 # When tool_preview_length is 0 (default), don't truncate
                 # in verbose mode — the user explicitly asked for full
@@ -6103,29 +6103,28 @@ class TurnRunner:
             ctx.progress_queue.put(msg)
             return
 
-        # "all" / "new" modes: short preview, respects tool_preview_length
-        # config (defaults to 40 chars when unset to keep gateway messages
-        # compact — unlike CLI spinners, these persist as permanent messages).
-        # Terminal commands on markdown platforms get a single-line capped
-        # fenced block (built above) instead of the truncated preview.
+        # "all" / "new" modes: short preview capped at this turn's
+        # tool_preview_length snapshot (these persist as permanent messages,
+        # unlike CLI spinners). Terminal commands on markdown platforms get a
+        # single-line capped fenced block (built above) instead of the
+        # truncated preview.
         if _code_block_short is not None:
             msg = _code_block_short
             ctx.last_was_terminal_block[0] = True
         elif preview:
             from agent.display import (
-                get_tool_preview_max_len,
                 get_tool_verb,
                 prepare_tool_preview,
                 tool_verb_connector,
                 verb_drops_preview,
             )
-            _pl = get_tool_preview_max_len()
-            _cap = _pl if _pl > 0 else 40
+            # Reaching here means _pl > 0 (verbose and the unlimited budget
+            # both rendered above), so the turn snapshot IS the cap.
             _prepared_preview = prepare_tool_preview(
                 tool_name,
                 args,
                 fallback=preview,
-                max_len=_cap,
+                max_len=_pl,
             )
             if _progress_adapter is not None:
                 preview = _progress_adapter.format_tool_preview(_prepared_preview)
@@ -34931,11 +34930,16 @@ class GatewayRunner(
         # display.<key> global, then built-in platform defaults.
         from gateway.display_config import resolve_display_setting
 
-        # Apply tool preview length config (0 = no limit)
+        # Apply tool preview length config (0 = no limit). The global stays for
+        # legacy non-turn consumers; the turn snapshots the resolved budget so
+        # interleaved turns (Discord unlimited vs a capped platform) never
+        # change each other's rendering mid-flight.
+        _tool_preview_max_len = 0
         try:
             from agent.display import set_tool_preview_max_len
             _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
-            set_tool_preview_max_len(int(_tpl) if _tpl else 0)
+            _tool_preview_max_len = max(int(_tpl) if _tpl else 0, 0)
+            set_tool_preview_max_len(_tool_preview_max_len)
         except Exception:
             pass
 
@@ -35171,6 +35175,7 @@ class GatewayRunner(
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
             progress_grouping=progress_grouping,
+            tool_preview_max_len=_tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled,
             progress_queue=progress_queue,
             log_queue=log_queue,
