@@ -805,7 +805,7 @@ def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_p
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     (tmp_path / "config.yaml").write_text(
-        yaml.dump({"display": {"tool_preview_length": 0}}),
+        yaml.dump({"display": {"tool_preview_length": 40}}),
         encoding="utf-8",
     )
 
@@ -2049,6 +2049,108 @@ async def test_terminal_progress_no_bash_block_in_verbose_mode(monkeypatch, tmp_
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
     assert "```bash" not in all_content
+
+
+def _run_terminal_command_progress(monkeypatch, tmp_path, *, mode="all", config=None):
+    """Shared setup for terminal fenced-block preview-cap tests.
+
+    Returns (adapter, result) after running the agent with
+    TerminalCommandAgent under ``mode`` (HERMES_TOOL_PROGRESS_MODE) and the
+    given display ``config`` dict written to config.yaml — so the gateway
+    resolves tool_preview_length the same way production does.
+    """
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", mode)
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(yaml.dump(config or {}), encoding="utf-8")
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = asyncio.get_event_loop().run_until_complete(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-terminal-preview-cap",
+            session_key="agent:main:telegram:dm:12345",
+        )
+    )
+    return adapter, result
+
+
+def test_terminal_progress_preview_cap_zero_renders_full_command(monkeypatch, tmp_path):
+    """tool_preview_length 0 = unlimited: a multi-line terminal command renders
+    FULLY inside the fenced block in "all"/"new" mode — every line, no "..."."""
+    adapter, result = _run_terminal_command_progress(
+        monkeypatch, tmp_path, config={"display": {"tool_preview_length": 0}}
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert f"```\n{TerminalCommandAgent.CMD}\n```" in all_content
+    # No collapsed single-line form anywhere.
+    assert "set -euo pipefail ..." not in all_content
+    assert 'terminal: "' not in all_content
+
+
+def test_terminal_progress_positive_cap_still_truncates(monkeypatch, tmp_path):
+    """A positive tool_preview_length keeps the collapse: first line only,
+    capped, with the multi-line "..." marker (behavior preserved)."""
+    adapter, result = _run_terminal_command_progress(
+        monkeypatch, tmp_path, config={"display": {"tool_preview_length": 40}}
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert "set -euo pipefail ..." in all_content
+    assert "npm install -g hyperframes@latest" not in all_content
+    assert "node --version" not in all_content
+
+
+def test_all_mode_preview_cap_zero_is_uncapped(monkeypatch, tmp_path):
+    """Non-terminal previews follow the same rule: cap 0 = the full preview,
+    no ellipsis collapse."""
+    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    content = adapter.sent[0]["content"]
+    preview_text = _extract_progress_preview(content)
+    assert preview_text is not None, f"No preview found in: {content}"
+    assert preview_text == LongPreviewAgent.LONG_CMD, (
+        f"Preview truncated ({len(preview_text)} chars): {preview_text}"
+    )
+
+
+def test_discord_platform_default_tool_preview_length_is_full():
+    """Contract of the 0 = unlimited change: Discord's platform default cap is
+    0 (full commands / uncapped previews out of the box)."""
+    from gateway.display_config import resolve_display_setting
+
+    assert resolve_display_setting({}, "discord", "tool_preview_length") == 0
+
 
 class MultiTerminalCommandAgent:
     """Emits several consecutive terminal tool.started events, then a

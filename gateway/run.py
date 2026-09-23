@@ -6038,9 +6038,9 @@ class TurnRunner:
         #
         # Verbose mode shows the FULL command.  Non-verbose ("all"/"new")
         # modes still wrap in a fence but truncate to a single line capped
-        # at ``tool_preview_length`` (default 40) so a long or multi-line
-        # command doesn't render as a huge block — matching the budget the
-        # non-terminal preview path already applies (#42634).
+        # at ``tool_preview_length`` (0 = the full command) so a long or
+        # multi-line command doesn't render as a huge block — matching the
+        # budget the non-terminal preview path already applies (#42634).
         _code_block_full = None
         _code_block_short = None
         try:
@@ -6063,16 +6063,18 @@ class TurnRunner:
                 "" if ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
             )
             _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
-            # Single-line, capped preview for non-verbose modes.
+            # Single-line, capped preview for non-verbose modes (0 = full command).
             _pl = get_tool_preview_max_len()
-            _cap = _pl if _pl > 0 else 40
-            _lines = _cmd_full.splitlines()
-            _cmd_short = _lines[0] if _lines else _cmd_full
-            _multiline = len(_lines) > 1
-            if len(_cmd_short) > _cap:
-                _cmd_short = _cmd_short[:_cap - 3] + "..."
-            elif _multiline:
-                _cmd_short = _cmd_short + " ..."
+            _cap = _pl
+            if _cap <= 0:
+                _cmd_short = _cmd_full
+            else:
+                _lines = _cmd_full.splitlines()
+                _cmd_short = _lines[0] if _lines else _cmd_full
+                if len(_cmd_short) > _cap:
+                    _cmd_short = _cmd_short[:_cap - 3] + "..."
+                elif len(_lines) > 1:
+                    _cmd_short = _cmd_short + " ..."
             _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
         # Verbose mode: show detailed arguments, respects tool_preview_length
@@ -6100,8 +6102,8 @@ class TurnRunner:
             return
 
         # "all" / "new" modes: short preview, respects tool_preview_length
-        # config (defaults to 40 chars when unset to keep gateway messages
-        # compact — unlike CLI spinners, these persist as permanent messages).
+        # config (0 = uncapped — unlike CLI spinners, these persist as
+        # permanent messages, so an explicit cap keeps them compact).
         # Terminal commands on markdown platforms get a single-line capped
         # fenced block (built above) instead of the truncated preview.
         if _code_block_short is not None:
@@ -6116,7 +6118,7 @@ class TurnRunner:
                 verb_drops_preview,
             )
             _pl = get_tool_preview_max_len()
-            _cap = _pl if _pl > 0 else 40
+            _cap = _pl
             _prepared_preview = prepare_tool_preview(
                 tool_name,
                 args,

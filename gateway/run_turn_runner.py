@@ -230,17 +230,18 @@ class TurnRunner:
 
     @staticmethod
     def _preview_cap() -> int:
-        """tool_preview_length (default 40): the one-line preview budget for "all"/"new" modes."""
+        """tool_preview_length verbatim: the one-line preview budget for "all"/"new" modes
+        (0 = unlimited)."""
         from agent.display import get_tool_preview_max_len
-        pl = get_tool_preview_max_len()
-        return pl if pl > 0 else 40
+        return get_tool_preview_max_len()
 
     def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
         """(full, short) fenced blocks for a terminal command on markdown platforms, else (None, None).
 
         No language tag: Slack mrkdwn renders it as a literal first code line. Verbose shows the FULL
-        command; "all"/"new" truncate to one line capped at ``tool_preview_length``. Consecutive
-        terminal calls drop the repeated header so back-to-back commands render as adjacent blocks.
+        command; "all"/"new" truncate to one line capped at ``tool_preview_length`` (0 = the full
+        command). Consecutive terminal calls drop the repeated header so back-to-back commands
+        render as adjacent blocks.
         """
         if not (
             getattr(adapter, "supports_code_blocks", False) and tool_name == "terminal" and isinstance(args, dict)
@@ -250,12 +251,15 @@ class TurnRunner:
         cmd_full = args["command"].rstrip()
         header = "" if self._ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
         cap = self._preview_cap()
-        lines = cmd_full.splitlines()
-        cmd_short = lines[0] if lines else cmd_full
-        if len(cmd_short) > cap:
-            cmd_short = cmd_short[:cap - 3] + "..."
-        elif len(lines) > 1:
-            cmd_short += " ..."
+        if cap <= 0:
+            cmd_short = cmd_full
+        else:
+            lines = cmd_full.splitlines()
+            cmd_short = lines[0] if lines else cmd_full
+            if len(cmd_short) > cap:
+                cmd_short = cmd_short[:cap - 3] + "..."
+            elif len(lines) > 1:
+                cmd_short += " ..."
         return f"{header}```\n{cmd_full}\n```", f"{header}```\n{cmd_short}\n```"
 
     def _progress_build_message(self, tool_name, preview, args) -> Optional[str]:
