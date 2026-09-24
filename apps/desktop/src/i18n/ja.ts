@@ -1525,7 +1525,13 @@ export const ja = defineLocale({
     skillArchivedTitle: 'スキルをアーカイブしました',
     skillArchivedMessage: 'hermes curator restore で復元できます。',
     officialCatalog: 'インストール可能',
-    officialPill: '公式'
+    officialPill: '公式',
+    hub: {
+      installBlockedTitle: name => `${name} をインストールできませんでした`,
+      installBlockedMessage: (findings, unverified) =>
+        `セキュリティスキャンで ${findings > 0 ? `${findings} 件` : '危険なパターン'} の確認が必要と判定されました${unverified ? '。このスキルは未確認のソースから提供されています' : ''}。著者を信頼するか決める前にスキャン結果を確認してください。`,
+      viewScan: 'スキャンを表示',
+    }
   },
 
   starmap: {

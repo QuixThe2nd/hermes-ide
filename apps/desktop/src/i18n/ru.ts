@@ -1667,6 +1667,10 @@ export const ru = defineLocale({
       uninstallStarted: name => `Удаление ${name}...`,
       updateStarted: 'Обновление установленных навыков...',
       actionFailed: 'Действие с навыком не удалось',
+      installBlockedTitle: name => `Не удалось установить ${name}`,
+      installBlockedMessage: (findings, unverified) =>
+        `Проверка безопасности обнаружила ${findings > 0 ? `${findings} ${RU_NOUN(findings, 'элемент', 'элемента', 'элементов')}` : 'рискованные шаблоны'} для проверки${unverified ? ', и навык из непроверенного источника' : ''}. Прочитайте результаты проверки, прежде чем решать, доверять ли автору.`,
+      viewScan: 'Просмотреть сканирование',
       actionLog: 'Журнал действий',
       alreadyInstalled: name => `«${name}» уже установлен`,
       pickerTitle: 'Хаб навыков',

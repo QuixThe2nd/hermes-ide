@@ -2007,6 +2007,10 @@ export const zh = defineLocale({
       uninstallStarted: name => `正在卸载 ${name}…`,
       updateStarted: '正在更新已安装技能…',
       actionFailed: '技能操作失败',
+      installBlockedTitle: name => `无法安装 ${name}`,
+      installBlockedMessage: (findings, unverified) =>
+        `安全扫描标记了 ${findings > 0 ? `${findings} 项` : '风险模式'} 需要审查${unverified ? '，且该技能来自未验证的来源' : ''}。请先阅读扫描结果，再决定是否信任作者。`,
+      viewScan: '查看扫描',
       actionLog: '操作日志',
       alreadyInstalled: name => `“${name}”已安装`,
       pickerTitle: '技能中心',

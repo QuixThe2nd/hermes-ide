@@ -1537,7 +1537,13 @@ export const zhHant = defineLocale({
     skillArchivedTitle: '技能已封存',
     skillArchivedMessage: '可透過 hermes curator restore 還原。',
     officialCatalog: '可安裝',
-    officialPill: '官方'
+    officialPill: '官方',
+    hub: {
+      installBlockedTitle: name => `無法安裝 ${name}`,
+      installBlockedMessage: (findings, unverified) =>
+        `安全掃描標記了 ${findings > 0 ? `${findings} 項` : '風險模式'} 需要檢視${unverified ? '，且此技能來自未驗證的來源' : ''}。請先閱讀掃描結果，再決定是否信任作者。`,
+      viewScan: '檢視掃描',
+    }
   },
 
   starmap: {
