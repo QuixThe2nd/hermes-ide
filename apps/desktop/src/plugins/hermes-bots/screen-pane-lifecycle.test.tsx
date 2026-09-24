@@ -6,7 +6,13 @@ import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
 const sockets = vi.hoisted(
-  () => [] as Array<{ closeCodes: number[]; closed: boolean; close: (code?: number) => void; serverClose: (code: number) => void }>
+  () =>
+    [] as Array<{
+      closeCodes: number[]
+      closed: boolean
+      close: (code?: number) => void
+      serverClose: (code: number) => void
+    }>
 )
 
 const rfbs = vi.hoisted(() => [] as Array<{ emit: (type: string, detail?: unknown) => void }>)
@@ -191,7 +197,8 @@ it('re-attaches in watch mode after the bridge evicts us with 4000, with a bound
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(sockets).toHaveLength(1))
   await act(async () => {})
-  const observes = () => vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.observe').length
+  const observes = () =>
+    vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.observe').length
   expect(observes()).toBe(1)
 
   act(() => {
