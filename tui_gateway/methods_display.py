@@ -183,12 +183,13 @@ def _(rid, params: dict) -> dict:
     if _bd_runtime.install_command() is None:
         return _err(rid, _DISPLAY_ERR, "no supported package manager (apt-get, dnf, pacman) on this host")
     profile_key = hermes_home_key()
-    sid = str(params.get("session_id") or "")
 
     def _ask_password() -> str:
-        # The fork's shared server→client request bridge (tui_gateway.server_requests): one
-        # generic ask, answered by request id — no per-kind respond RPC.
-        return _ask("display.install.sudo", sid, {"profile_key": profile_key}, timeout=300)
+        # App-level card, no session: `_ask` embeds sid in params.session_id, which write_json
+        # routes to that session's transport — a client-supplied session_id could route the masked
+        # password card into another window's chat. "" skips that route and reaches the connection
+        # that clicked Install through the transport bind_transport() carries below.
+        return _ask("display.install.sudo", "", {"profile_key": profile_key}, timeout=300)
 
     def _line(text: str) -> None:
         _broadcast_global_event("display.install.log", {"profile_key": profile_key, "line": text})

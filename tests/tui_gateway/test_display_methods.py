@@ -173,3 +173,34 @@ def test_lease_acquire_and_release_only_honour_an_id_this_connection_minted(monk
     assert stolen["error"]["data"]["code"] == "viewer_mismatch"
     assert _fresh_lease.get().holder == _fresh_lease.HUMAN
     assert rpc(mine, "display.lease.release", {"viewer_id": minted})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+
+
+def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):
+    """The sudo card is app-level: it goes to the connection that clicked Install (copy_context
+    pins the transport). Honouring params.session_id let a caller route the masked password card
+    into ANOTHER window's chat."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import install, runtime
+
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y x")
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda *a, **k: None)
+    asked = threading.Event()
+    blocks = []
+
+    def fake_send(method, sid, params, *, timeout, qids=None):
+        blocks.append((method, sid))
+        asked.set()
+        return {"value": ""}
+
+    def fake_install(*, ask_password, on_line, timeout_seconds=900.0, claimed=False):
+        ask_password()
+        return -1
+
+    import tui_gateway.server_requests as server_requests
+    monkeypatch.setattr(server_requests, "send", fake_send)
+    monkeypatch.setattr(install, "install_packages", fake_install)
+    resp = _call(server, "display.install", {"session_id": "victim-session"})
+    assert resp["result"]["started"], resp
+    assert asked.wait(5)
+    assert blocks and all(sid != "victim-session" for _ev, sid in blocks), blocks
