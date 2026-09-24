@@ -146,7 +146,7 @@ def _(rid, params: dict) -> dict:
             _line(f"install failed: {e}")
             code = 1
         _broadcast_global_event("display.install.done", {"profile_key": profile_key, "code": code,
-                                                         "status": _bd_runtime.status().as_dict()})
+                                                         "status": _display_snapshot()})
 
     try:
         _bd_install.assert_not_running()
