@@ -65,9 +65,15 @@ def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
 
 @router.websocket("/api/display/ws")
 async def display_ws(ws: WebSocket) -> None:
+    # Host/Origin/client-IP policy is refused BEFORE accept, like every other dashboard route: a
+    # cross-origin page never gets a completed handshake. Everything after that (ticket, desktop
+    # state) is refused AFTER accept so the code + reason arrive in a close frame — a close before
+    # accept surfaces in the browser as an opaque HTTP 403 and the renderer cannot tell "re-observe"
+    # (4401) from "screen is gone" (4001).
     if not _ws_request_is_allowed(ws):
         await ws.close(code=_CLOSE_NOT_ALLOWED)
         return
+    await ws.accept()
     info = _consume_display_ticket(ws)
     if info is None:
         await ws.close(code=_CLOSE_BAD_TICKET, reason="display ticket missing, expired or used")
@@ -76,7 +82,8 @@ async def display_ws(ws: WebSocket) -> None:
 
 
 async def _bridge(ws: WebSocket, info: dict) -> None:
-    """Pump RFB bytes between the viewer socket and THIS profile's Xvnc, gated by the lease."""
+    """Pump RFB bytes between the viewer socket (already accepted) and THIS profile's Xvnc, gated by
+    the lease."""
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _lease
     from tools.bot_desktop.rfb_filter import RfbClientFilter
@@ -96,7 +103,6 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop socket unreachable")
         return
 
-    await ws.accept()
     loop = asyncio.get_running_loop()
     evicted = asyncio.Event()
     held = {"ever": _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)}
