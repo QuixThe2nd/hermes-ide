@@ -1617,9 +1617,12 @@ export {
   PanelSectionLabel
 } from '@/app/overlays/panel'
 export {
+  type ProfileGroupHeaderContribution,
+  type ProfileGroupRoute,
   type RouteContribution,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  SIDEBAR_PROFILE_GROUP_HEADER_AREA,
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'

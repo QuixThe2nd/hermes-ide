@@ -112,6 +112,17 @@ server_request("sudo", params=SudoRequestParams, result=ValueResult,
                doc="Masked sudo password for the terminal tool.")
 
 
+class DisplayInstallSudoRequestParams(ServerRequestParams):
+    """``tui_gateway/methods_display.py::display.install`` — the one-click Bot Screen package
+    install needs sudo on the gateway host; the card's description says what runs, no command."""
+
+    profile_key: str
+
+
+server_request("display.install.sudo", params=DisplayInstallSudoRequestParams, result=ValueResult,
+               doc="Masked sudo password for the one-click Bot Screen package install.")
+
+
 class SecretRequestParams(ServerRequestParams):
     env_var: str
     prompt: str

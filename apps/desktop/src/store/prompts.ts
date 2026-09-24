@@ -105,6 +105,8 @@ interface PendingApprovalPayload {
 export interface SudoRequest extends KeyedPrompt {
   command?: string
   requestId: string
+  /** Description override so the card can say WHAT the password is for. */
+  description?: string
 }
 
 export interface SecretRequest extends KeyedPrompt {
@@ -367,8 +369,10 @@ export const sessionApprovalRequests = (sessionId: string | null) =>
   computed($approvalQueues, all => all[keyFor(sessionId)] ?? EMPTY_APPROVALS)
 export const sessionApprovalRequest = (sessionId: string | null) =>
   computed(approval.$all, all => all[keyFor(sessionId)] ?? null)
+/** A session's sudo card, else the app-level one (a Bot Screen package install is raised with no
+ *  session: it belongs to the connection, not to a turn, so whichever chat is focused shows it). */
 export const sessionSudoRequest = (sessionId: string | null) =>
-  computed(sudo.$all, all => all[keyFor(sessionId)] ?? null)
+  computed(sudo.$all, all => all[keyFor(sessionId)] ?? (sessionId ? all[keyFor(null)] ?? null : null))
 export const sessionSecretRequest = (sessionId: string | null) =>
   computed(secret.$all, all => all[keyFor(sessionId)] ?? null)
 

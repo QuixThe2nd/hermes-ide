@@ -691,6 +691,132 @@
       }
     },
     {
+      "name": "display.install",
+      "summary": "Start the one-click distro package install in the background (sudo card + log/done events).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayInstallParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayInstallResult"
+        }
+      }
+    },
+    {
+      "name": "display.lease.acquire",
+      "summary": "Take over: hand control of the screen to one human viewer.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayLeaseAcquireParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayLeaseResult"
+        }
+      }
+    },
+    {
+      "name": "display.lease.release",
+      "summary": "Hand back (or release the current holder when no ``viewer_id`` is given).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayObserveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayLeaseResult"
+        }
+      }
+    },
+    {
+      "name": "display.observe",
+      "summary": "Mint the single-use, 30 s RFB ticket the viewer redeems on ``/api/display/ws``.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayObserveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayObserveResult"
+        }
+      }
+    },
+    {
+      "name": "display.start",
+      "summary": "Start this profile's headless Xvnc/Xfce session; returns the fresh snapshot.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayStatusResult"
+        }
+      }
+    },
+    {
+      "name": "display.status",
+      "summary": "Runtime + lease snapshot of a profile's Bot Desktop (the pane's state authority).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayStatusResult"
+        }
+      }
+    },
+    {
+      "name": "display.stop",
+      "summary": "Stop the headless session (releasing any lease first); ``stopped`` is the teardown verdict.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayStopResult"
+        }
+      }
+    },
+    {
       "name": "file.attach",
       "summary": "Stage a non-image file into the session workspace and hand back its @file: ref.",
       "params": [
@@ -10183,6 +10309,97 @@
         "title": "DelegationStatusResult",
         "type": "object"
       },
+      "DesktopRuntimeStatus": {
+        "additionalProperties": false,
+        "description": "``tools/bot_desktop/runtime.py::DesktopStatus.as_dict`` \u2014 the process state itself.",
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry"
+        ],
+        "title": "DesktopRuntimeStatus",
+        "type": "object"
+      },
       "DiagnosticsShareNousParams": {
         "additionalProperties": false,
         "properties": {
@@ -10334,6 +10551,593 @@
         ],
         "title": "DispatchType",
         "type": "string"
+      },
+      "DisplayInstallDonePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DesktopRuntimeStatus",
+            "description": "fresh runtime snapshot without the lease"
+          }
+        },
+        "required": [
+          "profile_key",
+          "code",
+          "status"
+        ],
+        "title": "DisplayInstallDonePayload",
+        "type": "object"
+      },
+      "DisplayInstallLogPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "line": {
+            "title": "Line",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_key",
+          "line"
+        ],
+        "title": "DisplayInstallLogPayload",
+        "type": "object"
+      },
+      "DisplayInstallParams": {
+        "additionalProperties": false,
+        "description": "The desktop's Install card: profile from the routed call, ``session_id`` only so the sudo\ncard can name the session the install was started from (absent for sessionless installs).",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "title": "DisplayInstallParams",
+        "type": "object"
+      },
+      "DisplayInstallResult": {
+        "additionalProperties": false,
+        "properties": {
+          "started": {
+            "title": "Started",
+            "type": "boolean"
+          },
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "started",
+          "command",
+          "profile_key"
+        ],
+        "title": "DisplayInstallResult",
+        "type": "object"
+      },
+      "DisplayInstallSudoRequestParams": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/methods_display.py::display.install`` \u2014 the one-click Bot Screen package\ninstall needs sudo on the gateway host; the card's description says what runs, no command.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "profile_key"
+        ],
+        "title": "DisplayInstallSudoRequestParams",
+        "type": "object"
+      },
+      "DisplayLease": {
+        "additionalProperties": false,
+        "description": "``lease.py::Lease.as_dict`` \u2014 who may drive this profile's screen right now.",
+        "properties": {
+          "holder": {
+            "$ref": "#/components/schemas/DisplayLeaseHolder"
+          },
+          "viewer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Viewer Id"
+          },
+          "since": {
+            "title": "Since",
+            "type": "number"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "pending_handoff": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pending Handoff"
+          }
+        },
+        "required": [
+          "holder",
+          "since"
+        ],
+        "title": "DisplayLease",
+        "type": "object"
+      },
+      "DisplayLeaseAcquireParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "viewer_id": {
+            "title": "Viewer Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "viewer_id"
+        ],
+        "title": "DisplayLeaseAcquireParams",
+        "type": "object"
+      },
+      "DisplayLeaseHolder": {
+        "description": "``tools/bot_desktop/lease.py``: the agent by default, exactly one human viewer after Take over.",
+        "enum": [
+          "agent",
+          "human"
+        ],
+        "title": "DisplayLeaseHolder",
+        "type": "string"
+      },
+      "DisplayLeasePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          }
+        },
+        "required": [
+          "profile_key",
+          "lease"
+        ],
+        "title": "DisplayLeasePayload",
+        "type": "object"
+      },
+      "DisplayLeaseResult": {
+        "additionalProperties": false,
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          }
+        },
+        "required": [
+          "lease"
+        ],
+        "title": "DisplayLeaseResult",
+        "type": "object"
+      },
+      "DisplayObserveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "viewer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Viewer Id"
+          }
+        },
+        "title": "DisplayObserveParams",
+        "type": "object"
+      },
+      "DisplayObserveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          },
+          "ticket": {
+            "title": "Ticket",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "viewer_id": {
+            "title": "Viewer Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "profile_key",
+          "lease",
+          "ticket",
+          "path",
+          "viewer_id"
+        ],
+        "title": "DisplayObserveResult",
+        "type": "object"
+      },
+      "DisplayStatusResult": {
+        "additionalProperties": false,
+        "description": "``methods_display.py::_display_snapshot``: the runtime status flattened, plus the lease and\nthe profile key the snapshot was resolved for (multiplexed gateways answer per bot).",
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "profile_key",
+          "lease"
+        ],
+        "title": "DisplayStatusResult",
+        "type": "object"
+      },
+      "DisplayStopResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          },
+          "stopped": {
+            "title": "Stopped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "profile_key",
+          "lease",
+          "stopped"
+        ],
+        "title": "DisplayStopResult",
+        "type": "object"
       },
       "EmptyRequestParams": {
         "additionalProperties": false,
@@ -33637,6 +34441,24 @@
       }
     },
     {
+      "name": "display.install.sudo",
+      "summary": "Masked sudo password for the one-click Bot Screen package install.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayInstallSudoRequestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ValueResult"
+        }
+      }
+    },
+    {
       "name": "preview.act",
       "summary": "Click / type / scroll / annotate inside the in-app browser preview.",
       "params": [
@@ -33946,6 +34768,42 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ChangeSignalPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "display.install.done",
+      "summary": "The install run ended (``code``); carries the fresh status snapshot for the repaint.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayInstallDonePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "display.install.log",
+      "summary": "One streamed stdout line of the running package install.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayInstallLogPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "display.lease",
+      "summary": "A lease transition every connected client repaints from (bot-row badge, viewer border).",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayLeasePayload"
           }
         }
       ]

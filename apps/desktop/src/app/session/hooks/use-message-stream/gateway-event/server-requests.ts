@@ -266,6 +266,20 @@ const sudo: Handler = ctx => {
   notifyInput(ctx, translateNow('notifications.native.inputBody'))
 }
 
+const displayInstallSudo: Handler = ctx => {
+  // One-click Bot Screen package install (`display.install`): the installer's
+  // sudo prompt parks on the shared masked card, so the password never touches
+  // the pane. No command to review — the description says what runs instead.
+  rememberServerRequest(ctx.request)
+  setSudoRequest({
+    description: translateNow('prompts.sudoInstallDesc'),
+    requestId: ctx.request.id,
+    sessionId: ctx.sessionId || null
+  })
+  markNeedsInput(ctx)
+  notifyInput(ctx, translateNow('prompts.sudoInstallDesc'))
+}
+
 const secret: Handler = ctx => {
   const p = ctx.request.params
   const envVar = str(p.env_var)
@@ -417,6 +431,7 @@ const tour: Handler = ({ isActiveSession, request }) => {
 export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   approval,
   clarify,
+  'display.install.sudo': displayInstallSudo,
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,

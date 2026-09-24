@@ -458,6 +458,85 @@ export interface ProjectFacts {
   verifyCommands: string[]
   contextFiles: string[]
 }
+/** ``methods_display.py::_display_snapshot``: the runtime status flattened, plus the lease and the profile key the snapshot was resolved for (multiplexed gateways answer per bot). */
+export interface DisplayStatusResult {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
+  profile_key: string
+  lease: DisplayLease
+}
+/** ``lease.py::Lease.as_dict`` — who may drive this profile's screen right now. */
+export interface DisplayLease {
+  holder: DisplayLeaseHolder
+  viewer_id?: string | null
+  since: number
+  reason?: string
+  pending_handoff?: string | null
+}
+/** ``tools/bot_desktop/lease.py``: the agent by default, exactly one human viewer after Take over. */
+export type DisplayLeaseHolder = 'agent' | 'human'
+export interface DisplayStopResult {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
+  profile_key: string
+  lease: DisplayLease
+  stopped: boolean
+}
+export interface DisplayObserveParams {
+  profile?: string | null
+  viewer_id?: string | null
+}
+export interface DisplayObserveResult {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
+  profile_key: string
+  lease: DisplayLease
+  ticket: string
+  path: string
+  viewer_id: string
+}
+/** The desktop's Install card: profile from the routed call, ``session_id`` only so the sudo card can name the session the install was started from (absent for sessionless installs). */
+export interface DisplayInstallParams {
+  profile?: string | null
+  session_id?: string | null
+}
+export interface DisplayInstallResult {
+  started: boolean
+  command: string
+  profile_key: string
+}
+export interface DisplayLeaseAcquireParams {
+  profile?: string | null
+  viewer_id: string
+  reason?: string
+}
+export interface DisplayLeaseResult {
+  lease: DisplayLease
+}
 export interface ConnectionOperationParams {
   profile?: string | null
   session_id: string
@@ -3747,6 +3826,11 @@ export interface SudoRequestParams {
 export interface ValueResult {
   value: string
 }
+/** ``tui_gateway/methods_display.py::display.install`` — the one-click Bot Screen package install needs sudo on the gateway host; the card's description says what runs, no command. */
+export interface DisplayInstallSudoRequestParams {
+  session_id: string
+  profile_key: string
+}
 export interface SecretRequestParams {
   session_id: string
   env_var: string
@@ -3808,6 +3892,32 @@ export interface TourStep {
   text?: string | null
   side?: string | null
   [key: string]: unknown
+}
+export interface DisplayLeasePayload {
+  profile_key: string
+  lease: DisplayLease
+}
+export interface DisplayInstallLogPayload {
+  profile_key: string
+  line: string
+}
+export interface DisplayInstallDonePayload {
+  profile_key: string
+  code: number
+  status: DesktopRuntimeStatus
+}
+/** ``tools/bot_desktop/runtime.py::DesktopStatus.as_dict`` — the process state itself. */
+export interface DesktopRuntimeStatus {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
 }
 /** ``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
 export interface ConnectionUpdatePayload {
@@ -4265,6 +4375,20 @@ export interface RpcMethods {
   'delegation.status': { params: ProfileParams; result: DelegationStatusResult }
   /** Upload a force-redacted debug bundle to Nous-internal diagnostics storage. */
   'diagnostics.share_nous': { params: DiagnosticsShareNousParams; result: DiagnosticsShareNousResult }
+  /** Start the one-click distro package install in the background (sudo card + log/done events). */
+  'display.install': { params: DisplayInstallParams; result: DisplayInstallResult }
+  /** Take over: hand control of the screen to one human viewer. */
+  'display.lease.acquire': { params: DisplayLeaseAcquireParams; result: DisplayLeaseResult }
+  /** Hand back (or release the current holder when no ``viewer_id`` is given). */
+  'display.lease.release': { params: DisplayObserveParams; result: DisplayLeaseResult }
+  /** Mint the single-use, 30 s RFB ticket the viewer redeems on ``/api/display/ws``. */
+  'display.observe': { params: DisplayObserveParams; result: DisplayObserveResult }
+  /** Start this profile's headless Xvnc/Xfce session; returns the fresh snapshot. */
+  'display.start': { params: ProfileParams; result: DisplayStatusResult }
+  /** Runtime + lease snapshot of a profile's Bot Desktop (the pane's state authority). */
+  'display.status': { params: ProfileParams; result: DisplayStatusResult }
+  /** Stop the headless session (releasing any lease first); ``stopped`` is the teardown verdict. */
+  'display.stop': { params: ProfileParams; result: DisplayStopResult }
   /** Stage a non-image file into the session workspace and hand back its @file: ref. */
   'file.attach': { params: FileAttachParams; result: FileAttachResult }
   /** Mark the one-time availability notice as shown on the free-tier identity. */
@@ -4666,6 +4790,13 @@ export const RPC_METHODS = [
   'delegation.pause',
   'delegation.status',
   'diagnostics.share_nous',
+  'display.install',
+  'display.lease.acquire',
+  'display.lease.release',
+  'display.observe',
+  'display.start',
+  'display.status',
+  'display.stop',
   'file.attach',
   'free_tier.ack_notice',
   'free_tier.provision',
@@ -4854,6 +4985,8 @@ export interface ServerRequestMap {
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
   /** The clarify tool: ask the user one question or a batch. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }
+  /** Masked sudo password for the one-click Bot Screen package install. */
+  'display.install.sudo': { params: DisplayInstallSudoRequestParams; result: ValueResult }
   /** Click / type / scroll / annotate inside the in-app browser preview. */
   'preview.act': { params: PreviewActRequestParams; result: ValueResult }
   /** Read the in-app browser preview's text (JSON text answer). */
@@ -4879,6 +5012,7 @@ export type ServerRequestMethod = keyof ServerRequestMap
 export const SERVER_REQUEST_METHODS = [
   'approval',
   'clarify',
+  'display.install.sudo',
   'preview.act',
   'preview.read',
   'secret',
@@ -4915,6 +5049,12 @@ export interface BackendGatewayEventMap {
   'connection.update': ConnectionUpdatePayload
   /** cron/jobs.json moved; refetch the cron list. */
   'cron.changed': ChangeSignalPayload
+  /** The install run ended (``code``); carries the fresh status snapshot for the repaint. */
+  'display.install.done': DisplayInstallDonePayload
+  /** One streamed stdout line of the running package install. */
+  'display.install.log': DisplayInstallLogPayload
+  /** A lease transition every connected client repaints from (bot-row badge, viewer border). */
+  'display.lease': DisplayLeasePayload
   /** A session-level failure outside a turn (agent init, model switch, compression, resume). */
   error: ErrorPayload
   /** First frame of a connection: the resolved skin, the change-event capability and the replay epoch. */
@@ -5045,6 +5185,9 @@ export const GATEWAY_EVENT_TYPES = [
   'connection.request',
   'connection.update',
   'cron.changed',
+  'display.install.done',
+  'display.install.log',
+  'display.lease',
   'error',
   'gateway.ready',
   'layout.apply',
