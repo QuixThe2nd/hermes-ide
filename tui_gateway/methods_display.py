@@ -99,7 +99,12 @@ def _(rid, params: dict) -> dict:
 @method("display.stop")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
+    """Stopping kills the screen under whoever is on it, so it obeys the same rule as a bare
+    display.lease.release: refused while a human holds unless the caller says ``force``."""
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    if not params.get("force") and _bd_lease.human_holds():
+        return _err(rid, _DISPLAY_ERR, "a human holds this screen; pass force: true to stop it anyway",
+                    data={"code": "viewer_mismatch"})
     try:
         _bd_lease.release()
         stopped = _bd_runtime.stop()
