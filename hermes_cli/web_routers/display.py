@@ -9,6 +9,13 @@ only from the viewer that currently holds the lease. noVNC's ``viewOnly`` is UX;
 
 A lease change closes the evicted viewer's socket with 4000 ``control-taken`` so its UI drops back to
 Watch mode and reconnects.
+
+Design notes. The ticket rides in the query string on purpose: noVNC's Websock owns the socket and
+cannot negotiate a subprotocol or add a header, and the ticket is single-use and expires in 30 s, so
+a logged URL is spent by the time anyone reads it. The bridge's input gate re-reads ``lease.json`` at
+most every ``_LEASE_REFRESH_S`` (250 ms) between in-process ``on_change`` callbacks: that bounds how
+long another PROCESS's takeover can go unnoticed, and is the price of not stat-ing the lease file on
+the event loop for every pointer move.
 """
 
 from __future__ import annotations

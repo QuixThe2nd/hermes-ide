@@ -30,8 +30,9 @@ _SET_ENCODINGS = 2
 _CLIENT_CUT_TEXT = 6
 _FENCE = 248
 
-# TigerVNC's default MaxCutText. The length is client-declared (int32); without a cap a watcher
-# with a ticket but no lease could make the bridge buffer ~2 GiB waiting for a payload.
+# TigerVNC's default MaxCutText, and the value launcher.sh passes as ``-MaxCutText`` so Xvnc and
+# the bridge agree (keep the two in sync). The length is client-declared (int32); without a cap a
+# watcher with a ticket but no lease could make the bridge buffer ~2 GiB waiting for a payload.
 _MAX_CUT_TEXT = 256 * 1024
 
 

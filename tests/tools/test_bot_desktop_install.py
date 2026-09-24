@@ -86,7 +86,7 @@ def test_timeout_kills_the_package_managers_whole_process_group(monkeypatch):
 
     def gone() -> bool:  # /proc-based: a reparented orphan sits outside our subtree, where os.kill(pid, 0) is guarded
         try:
-            return "Z" in (Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split() or ["Z"])[0]
+            return "Z" in (Path(f"/proc/{child}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split() or ["Z"])[0]
         except OSError:
             return True
 
@@ -97,3 +97,31 @@ def test_timeout_kills_the_package_managers_whole_process_group(monkeypatch):
     else:
         subprocess.run(["kill", "-9", str(child)], check=False)
         pytest.fail("grandchild survived the install timeout")
+
+
+def test_passwordless_sudo_runs_the_install_without_asking_for_a_password(monkeypatch):
+    """A host with NOPASSWD sudo must not pop the masked password card — the card blocks the install
+    for up to five minutes on an answer nobody needs to give — and the package command still runs
+    and streams its output."""
+    monkeypatch.setattr(install, "_sudo_nopasswd", lambda: True)
+    spawned: list[list[str]] = []
+
+    class _Proc:
+        pid = 4242
+        stdin = __import__("io").StringIO()
+
+        def __init__(self, argv, **kw):
+            spawned.append(argv)
+            self.stdout = iter(["Reading package lists...\n", "Done\n"])
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(install.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(install.os, "killpg", lambda *a: None)
+    lines: list[str] = []
+    code = install.install_packages(ask_password=lambda: pytest.fail("sudo password asked despite NOPASSWD"),
+                                    on_line=lines.append)
+    assert code == 0
+    assert spawned and spawned[0][:1] == ["sudo"] and "-S" not in spawned[0]
+    assert "Done" in lines
