@@ -178,3 +178,26 @@ def test_lease_works_without_fcntl(tmp_path):
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=60,
                          stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(tmp_path)})
     assert out.stdout.strip() == "OK", out.stderr
+
+
+@pytest.mark.linux_only
+def test_lease_files_are_private_even_when_the_lease_is_written_before_the_screen_exists(tmp_path, monkeypatch):
+    """A takeover can be recorded before start() ever created bot-desktop/ 0700. The lease path then created
+    the directory and files with the umask (0755 / 0644): who holds the screen, and the lock the RFB bridge
+    serialises on, readable and clobberable by every other local user. Every piece must be owner-only."""
+    import os
+    import stat
+
+    home = tmp_path / "deep" / "home"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(lease, "get_hermes_home", lambda: home)
+    old = os.umask(0o022)
+    try:
+        lease.acquire("v1")
+    finally:
+        os.umask(old)
+    sd = home / "bot-desktop"
+    for path in (sd, sd / "lease.json", sd / "lease.lock"):
+        assert path.exists(), path
+        assert stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, f"{path.name} is {oct(path.stat().st_mode)}"

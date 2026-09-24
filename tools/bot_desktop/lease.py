@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import get_hermes_home, hermes_home_key, secure_parent_dir
 
 try:
     import fcntl
@@ -87,10 +87,23 @@ def _read(path: Path) -> Lease:
         return Lease(holder=HUMAN, viewer_id="unreadable-lease", reason="lease file corrupt")
 
 
-def _write(path: Path, lease: Lease) -> None:
+def _private_dir(path: Path) -> None:
+    """``bot-desktop/`` owner-only even when the lease is the first thing written there (a takeover can be
+    recorded before start() ever ran, and the umask would otherwise leave it 0755)."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    secure_parent_dir(path)
+
+
+def _open_private(path: str | bytes | os.PathLike, flags: int) -> int:
+    """``open(..., opener=_open_private)``: the file is created 0600 regardless of the umask."""
+    return os.open(path, flags, 0o600)
+
+
+def _write(path: Path, lease: Lease) -> None:
+    _private_dir(path)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(lease.as_dict()), encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8", opener=_open_private) as fh:
+        fh.write(json.dumps(lease.as_dict()))
     os.replace(tmp, path)
 
 
@@ -104,8 +117,8 @@ class _locked:
     def __enter__(self):
         if fcntl is None:
             return self
-        self._lockfile.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = open(self._lockfile, "a+", encoding="utf-8")  # noqa: SIM115 — closed in __exit__
+        _private_dir(self._lockfile)
+        self._fh = open(self._lockfile, "a+", encoding="utf-8", opener=_open_private)  # noqa: SIM115 — closed in __exit__
         fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
         return self
 

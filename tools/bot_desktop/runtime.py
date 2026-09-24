@@ -48,8 +48,10 @@ BINARY_PACKAGES = {
     "apt": {"Xvnc": "tigervnc-standalone-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
             "xfdesktop": "xfdesktop4", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-x11",
             "xauth": "xauth", "xdpyinfo": "x11-utils", "setxkbmap": "x11-xkb-utils", "xprop": "x11-utils"},
-    "dnf": {"Xvnc": "tigervnc-server-minimal", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
-            "xfdesktop": "xfdesktop", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-x11",
+    # tigervnc-x11-server is the real package (tigervnc-server-minimal is only a Provides on it); dbus-run-session
+    # is in dbus-daemon (dbus-x11 ships dbus-launch only).
+    "dnf": {"Xvnc": "tigervnc-x11-server", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel",
+            "xfdesktop": "xfdesktop", "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus-daemon",
             "xauth": "xorg-x11-xauth", "xdpyinfo": "xdpyinfo", "setxkbmap": "setxkbmap", "xprop": "xprop"},
     "pacman": {"Xvnc": "tigervnc", "xfwm4": "xfwm4", "xfce4-panel": "xfce4-panel", "xfdesktop": "xfdesktop",
                "xfsettingsd": "xfce4-settings", "dbus-run-session": "dbus",
@@ -60,8 +62,8 @@ PACKAGES = {
     "apt": ["tigervnc-standalone-server", "xfce4-panel", "xfwm4", "xfdesktop4", "xfce4-settings",
             "xfce4-terminal", "dbus-x11", "x11-xserver-utils", "x11-utils", "x11-xkb-utils", "xauth",
             "fonts-dejavu-core"],
-    "dnf": ["tigervnc-server-minimal", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings",
-            "xfce4-terminal", "dbus-x11", "xsetroot", "xset", "xdpyinfo", "xprop", "xorg-x11-xauth", "setxkbmap",
+    "dnf": ["tigervnc-x11-server", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings",
+            "xfce4-terminal", "dbus-daemon", "xsetroot", "xset", "xdpyinfo", "xprop", "xorg-x11-xauth", "setxkbmap",
             "dejavu-sans-fonts"],
     "pacman": ["tigervnc", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings", "xfce4-terminal", "dbus",
                "xorg-xsetroot", "xorg-xset", "xorg-xdpyinfo", "xorg-xprop", "xorg-xauth", "xorg-setxkbmap",
@@ -229,7 +231,9 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
     _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
 
 
-_ALLOC_LOCK = Path("/tmp/.hermes-bot-desktop-alloc.lock")  # host-wide: profiles allocate from one band
+# Host-wide (every profile allocates from one band), so it lives outside any profile home — but not in
+# world-writable /tmp, where a predictable name lets another local user pre-create or squat the file.
+_ALLOC_LOCK = Path(os.environ.get("XDG_RUNTIME_DIR") or Path.home() / ".cache") / "hermes-bot-desktop-alloc.lock"
 
 
 @contextlib.contextmanager
@@ -256,6 +260,7 @@ def _pick_display() -> int:
 
 
 def _allocate_display() -> int:
+    _ALLOC_LOCK.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _flocked(_ALLOC_LOCK):
         return _pick_display()
 
@@ -371,6 +376,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
             return status()
         if _launcher_pid() is None:
             _reap_orphaned_server(sd)
+        _ALLOC_LOCK.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with _flocked(_ALLOC_LOCK):
             return _spawn_and_wait(sd, _pick_display(), wait_seconds)
 
