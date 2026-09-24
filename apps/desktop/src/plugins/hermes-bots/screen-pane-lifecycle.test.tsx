@@ -9,7 +9,7 @@ const sockets = vi.hoisted(
   () => [] as Array<{ closeCodes: number[]; closed: boolean; close: (code?: number) => void; serverClose: (code: number) => void }>
 )
 
-const rfbs = vi.hoisted(() => [] as Array<{ emit: (type: string, detail?: unknown) => void }>)
+const rfbs = vi.hoisted(() => [] as Array<{ emit: (type: string, detail?: unknown) => void; viewOnly?: boolean }>)
 const retention = vi.hoisted(() => ({ held: 0 }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
@@ -63,6 +63,7 @@ vi.mock('./screen-connection', async importActual => ({
 vi.mock('@novnc/novnc', () => ({
   default: class {
     private listeners = new Map<string, Array<(event: { detail?: unknown }) => void>>()
+    viewOnly = true
     constructor(
       _target: HTMLElement,
       private socket: { close: () => void }
