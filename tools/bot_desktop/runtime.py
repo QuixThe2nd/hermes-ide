@@ -122,6 +122,7 @@ class DesktopStatus:
     socket: Optional[str]
     geometry: str
     install_command: Optional[str]
+    browser: Optional[str]  # headed Chromium the dock's Browser icon and agent-browser share; None = no headed browser
 
     def as_dict(self) -> Dict[str, object]:
         return dict(self.__dict__)
@@ -337,6 +338,7 @@ def geometry() -> str:
 
 
 def status(profile: Optional[str] = None) -> DesktopStatus:
+    from tools.bot_desktop import browser as _bd_browser
     missing: list[str] = missing_binaries() if is_supported_host() else list(REQUIRED_BINARIES)
     pid = _launcher_pid()
     env = published_env()
@@ -351,6 +353,7 @@ def status(profile: Optional[str] = None) -> DesktopStatus:
         socket=str(rfb_socket_path()) if rfb_socket_path() else None,
         geometry=geometry(),
         install_command=install_command() if missing else None,
+        browser=_bd_browser.executable() if is_supported_host() else None,
     )
 
 

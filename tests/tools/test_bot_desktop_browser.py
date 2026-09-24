@@ -89,3 +89,71 @@ def test_agent_attaches_to_human_started_browser(monkeypatch):
     monkeypatch.setattr(browser, "running_instance_cdp_port", lambda d, **kw: None)
     session._run_browser_command_unfenced("t", "open", ["https://x"], 10, None, "agent-browser", info)
     assert "--cdp" not in argvs[-1] and argvs[-1][:3] == ["agent-browser", "--session", "h_abc"]
+
+
+def _install_browsers(tmp_path, monkeypatch, *, playwright: bool, system: bool):
+    """A Playwright build under a private PLAYWRIGHT_BROWSERS_PATH and/or a system chromium on PATH."""
+    monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+    roots = tmp_path / "pw"
+    roots.mkdir(parents=True)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(roots))
+    monkeypatch.setattr("tools.browser_tool_install._chromium_search_roots", lambda: [str(roots)])
+    pw_exe = roots / "chromium-1200" / "chrome-linux" / "chrome"
+    if playwright:
+        pw_exe.parent.mkdir(parents=True)
+        pw_exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        pw_exe.chmod(0o755)
+    sys_exe = tmp_path / "bin" / "chromium"
+    if system:
+        sys_exe.parent.mkdir(parents=True)
+        sys_exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        sys_exe.chmod(0o755)
+    monkeypatch.setattr("shutil.which", lambda name, *a, **k: str(sys_exe) if system and name == "chromium" else None)
+    return str(pw_exe), str(sys_exe)
+
+
+def test_unprivileged_user_under_apparmor_userns_restriction_gets_the_system_browser(tmp_path, monkeypatch):
+    """Playwright's bundled Chromium has no setuid chrome_sandbox; with
+    kernel.apparmor_restrict_unprivileged_userns=1 it dies 'FATAL: No usable sandbox!' for a non-root user,
+    so the dock icon is dead. A distro chromium (which ships the sandbox helper) must win there — and
+    the Playwright build stays the answer when it is the only one (no --no-sandbox for non-root)."""
+    pw_exe, sys_exe = _install_browsers(tmp_path, monkeypatch, playwright=True, system=True)
+    monkeypatch.setattr(browser.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(browser, "_userns_restricted", lambda: True)
+    assert browser.executable() == sys_exe
+
+    monkeypatch.setattr(browser, "_userns_restricted", lambda: False)
+    assert browser.executable() == pw_exe  # unrestricted host: Playwright's build as before
+
+    _install_browsers(tmp_path / "only-pw", monkeypatch, playwright=True, system=False)
+    monkeypatch.setattr(browser, "_userns_restricted", lambda: True)
+    exe = browser.executable()
+    assert exe and exe.endswith("chrome-linux/chrome")
+    assert "--no-sandbox" not in browser.dock_command(exe, "/p/dir")
+
+
+def test_root_dock_browser_starts_with_the_same_sandbox_args_as_the_agents_browser(monkeypatch):
+    """Chromium refuses to start as root without --no-sandbox; agent-browser gets that flag from one
+    policy, and the dock icon (same binary, same profile) must get the very same flags or the human's
+    click dies while the agent's launch works."""
+    from tools import browser_tool_session as session
+
+    monkeypatch.setattr(session.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(browser.os, "geteuid", lambda: 0)
+    agent_env: dict = {}
+    session._apply_chromium_sandbox_args(agent_env)
+    agent_flags = set(agent_env["AGENT_BROWSER_ARGS"].split(","))
+    assert agent_flags, "root must inject sandbox flags for agent-browser"
+    assert agent_flags <= set(browser.dock_command("/opt/chrome", "/p/dir").split())
+
+
+def test_status_reports_the_headed_browser_or_its_absence(monkeypatch):
+    """The official image ships only chromium_headless_shell: executable() is None and the dock silently
+    has no Browser icon. Status must say so instead of leaving the pane to guess."""
+    monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)
+    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    monkeypatch.setattr(runtime, "geometry", lambda: "1440x900")
+    monkeypatch.setattr(browser, "executable", lambda: None)
+    assert runtime.status().as_dict()["browser"] is None
+    monkeypatch.setattr(browser, "executable", lambda: "/usr/bin/chromium")
+    assert runtime.status().browser == "/usr/bin/chromium"

@@ -31,12 +31,15 @@ _CHROMIUM_MISSING_DOCKER_HINT = ("Chromium browser is missing. You're running in
 _CHROMIUM_MISSING_HINT = f"Chromium browser is missing. Install it with: {_CHROMIUM_INSTALL}"
 
 
-def _needs_chromium_sandbox_bypass() -> bool:
-    """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return True
-    if _install._running_in_docker():
-        return True
+# THE Chromium startup flags for a host where its sandbox cannot work; agent-browser gets them through
+# AGENT_BROWSER_ARGS and the Bot Desktop dock's Browser icon (same binary, same profile) through
+# ``tools.bot_desktop.browser.dock_command`` — one list, or the human's click dies while the agent's works.
+CHROMIUM_SANDBOX_BYPASS_ARGS = ("--no-sandbox", "--disable-dev-shm-usage")
+
+
+def apparmor_restricts_unprivileged_userns() -> bool:
+    """Ubuntu 23.10+ default: unprivileged user namespaces are denied, so a Chromium whose
+    ``chrome_sandbox`` helper is not setuid (Playwright's bundle) dies with 'No usable sandbox'."""
     try:
         with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
             return f.read().strip() == "1"
@@ -44,12 +47,21 @@ def _needs_chromium_sandbox_bypass() -> bool:
         return False
 
 
+def _needs_chromium_sandbox_bypass() -> bool:
+    """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    if _install._running_in_docker():
+        return True
+    return apparmor_restricts_unprivileged_userns()
+
+
 def _apply_chromium_sandbox_args(browser_env: Dict[str, str]) -> None:
     """Add required Chromium sandbox flags without overriding user settings."""
     if ("AGENT_BROWSER_ARGS" not in browser_env and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
             and _needs_chromium_sandbox_bypass()):
         _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — injecting --no-sandbox")
-        browser_env["AGENT_BROWSER_ARGS"] = "--no-sandbox,--disable-dev-shm-usage"
+        browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
 
 
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
