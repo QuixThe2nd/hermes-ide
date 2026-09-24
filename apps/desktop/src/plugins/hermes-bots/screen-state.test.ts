@@ -58,6 +58,17 @@ describe('lease epoch ordering', () => {
     setScreenLease(bot, legacy)
     expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(legacy)
   })
+
+  it('an unchanged-looking lease still advances the cached epoch, so a delayed older takeover is rejected', () => {
+    // agent@0 → agent@2 (a take-over and hand-back that both happened before we looked) must leave epoch 2
+    // recorded even though nothing visible changed; otherwise the late human@1 event wins and the pane shows
+    // a human holding a screen the agent already has back.
+    setScreenLease(bot, { ...agent, epoch: 0 })
+    setScreenLease(bot, { ...agent, epoch: 2 })
+    setScreenLease(bot, { ...human, epoch: 1 })
+    expect(screenStateFor($screenState.get(), bot)?.lease?.holder).toBe('agent')
+    expect(screenStateFor($screenState.get(), bot)?.lease?.epoch).toBe(2)
+  })
 })
 
 describe('status request ordering', () => {

@@ -164,7 +164,14 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       }
 
       retention.current = retain
-      const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe')
+      // Re-present the id this window already minted: a reconnect (network blip, 4000 eviction, Reconnect
+      // button) must keep the human's lease bound to THIS pane, or the new stream is watch-only and the
+      // old lease can only be cleared by force. The server honours a minted id only on the connection
+      // that minted it; a foreign or stale id is silently replaced.
+      const priorViewer = screenStateFor($screenState.get(), bot)?.viewer?.id
+      const observe = await displayRequest<DisplayObserveResult>(
+        bot, 'display.observe', priorViewer ? { viewer_id: priorViewer } : {},
+      )
       const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
       setScreenStatus(bot, observe)
       const url = await resolveScreenWsUrl(bot, observe.ticket)

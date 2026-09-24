@@ -177,6 +177,15 @@ it('pins the bot socket for the attach lifetime and lets go on unmount', async (
 })
 
 it('does not hand back while replacing a stream to reconnect the same viewer', async () => {
+  // The server mints a fresh id for a bare observe; only an observe that re-presents the minted id
+  // keeps it. Model that, so a pane that forgets its id visibly loses the lease it holds.
+  let minted = 0
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method, params) => {
+    if (method !== 'display.observe') return { ...status, ticket: 'test-ticket', viewer_id: 'this-viewer' }
+    const presented = (params as { viewer_id?: string } | undefined)?.viewer_id
+    const viewer_id = presented === 'this-viewer' ? 'this-viewer' : minted++ === 0 ? 'this-viewer' : 'replacement-viewer'
+    return { ...status, ticket: 'test-ticket', viewer_id }
+  })
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(sockets).toHaveLength(1))
   await act(async () => {})
@@ -184,6 +193,8 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   await waitFor(() => expect(sockets).toHaveLength(2))
   expect(sockets[0].closeCodes).toEqual([1005])
   expect(sockets[1].closed).toBe(false)
+  // Same viewer after the reconnect: the human's lease still belongs to this pane and it can hand back.
+  expect(rfbs[1].viewOnly).toBe(false)
   view.unmount()
 })
 

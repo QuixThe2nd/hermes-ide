@@ -91,11 +91,14 @@ export function setScreenLease(bot: RosterRow, lease: DisplayLease): void {
     prev?.lease &&
     prev.lease.holder === lease.holder &&
     prev.lease.viewer_id === lease.viewer_id &&
-    prev.lease.viewer_hash === lease.viewer_hash
+    prev.lease.viewer_hash === lease.viewer_hash &&
+    prev.lease.epoch === lease.epoch
   ) {
     return
   }
 
+  // Same presentation, newer epoch still has to be recorded: otherwise a delayed older event (human@1
+  // after agent@0 → agent@2) compares against the stale epoch and rolls the pane back.
   $screenState.set({ ...current, [key]: { status: prev?.status ?? null, lease, viewer: prev?.viewer ?? null } })
 }
 
