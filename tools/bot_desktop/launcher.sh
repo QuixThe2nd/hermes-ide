@@ -147,7 +147,8 @@ if [[ ! -e "$X/xfce4-panel.xml" ]]; then
   # The bot's browser: runtime.py resolves the executable agent-browser drives plus the profile's
   # persistent user-data-dir, so a human taking over lands in the bot's own cookie jar.
   [[ -n "${HERMES_BD_BROWSER_EXEC:-}" ]] && \
-    add_launcher "Browser" internet-web-browser "$HERMES_BD_BROWSER_EXEC" "${HERMES_BD_BROWSER_EXEC_LINE:-}"
+    add_launcher "Browser" internet-web-browser "$HERMES_BD_BROWSER_EXEC" "${HERMES_BD_BROWSER_EXEC_LINE:-}" && \
+    echo "$n" > "$L/.hermes-browser-launcher"
   add_launcher "Files" system-file-manager "thunar"
   add_launcher "Text Editor" accessories-text-editor "mousepad"
   dock_plugins=""; dock_items=""
@@ -222,6 +223,16 @@ for a in xfce4-screensaver light-locker xfce4-power-manager xfce-polkit \
   [[ -e "$XDG_CONFIG_HOME/autostart/$a.desktop" ]] || \
     printf '[Desktop Entry]\nType=Application\nName=%s\nHidden=true\n' "$a" > "$XDG_CONFIG_HOME/autostart/$a.desktop"
 done
+# The Browser launcher's Exec= line binds the bot's user-data-dir by absolute path. The panel layout is
+# seeded once (the human may have rearranged it), but this one line is ours and must follow the profile:
+# after `hermes profile rename` the old path would open a browser with an empty, unshared cookie jar.
+L="$XDG_CONFIG_HOME/xfce4/panel"
+if [[ -n "${HERMES_BD_BROWSER_EXEC:-}" && -n "${HERMES_BD_BROWSER_EXEC_LINE:-}" && -r "$L/.hermes-browser-launcher" ]]; then
+  bn="$(cat "$L/.hermes-browser-launcher")"
+  d="$L/launcher-$bn/hermes.desktop"
+  [[ -f "$d" ]] && sed -i "s|^Exec=.*|$(printf '%s' "$HERMES_BD_BROWSER_EXEC_LINE" | sed 's/[&|\\]/\\&/g')|" "$d"
+fi
+
 # Tests seed the config tree on a fake PATH and stop here (no X server needed).
 [[ -n "${HERMES_BD_SEED_ONLY:-}" ]] && exit 0
 
