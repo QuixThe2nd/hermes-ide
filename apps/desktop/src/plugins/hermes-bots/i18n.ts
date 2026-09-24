@@ -281,7 +281,6 @@ type BotsMessages = {
     portalUnsupported: string
     portalUnavailable: string
     unavailableTitle: string
-    recheck: string
     stoppedTitle: string
     stoppedBody: string
     start: string
@@ -290,6 +289,9 @@ type BotsMessages = {
     reconnect: string
     takeOver: string
     handBack: string
+    handBackForce: string
+    handBackForceHint: string
+    openNeedsUpdate: string
     youControl: string
     otherControls: string
     agentControls: string
@@ -573,7 +575,6 @@ const en: BotsMessages = {
     portalUnsupported: 'Not available on this host',
     portalUnavailable: 'Update the bot\u2019s Hermes to use Screen',
     unavailableTitle: 'Screen needs a newer Hermes',
-    recheck: 'Check again',
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
     start: 'Start screen',
@@ -582,6 +583,9 @@ const en: BotsMessages = {
     reconnect: 'Reconnect',
     takeOver: 'Take over',
     handBack: 'Hand back',
+    handBackForce: 'Hand back (force)',
+    handBackForceHint: 'Release a lease held by a viewer that is no longer here, e.g. after a reload.',
+    openNeedsUpdate: 'Update Hermes Desktop to open bot screens.',
     youControl: 'You are in control',
     otherControls: 'Another viewer is in control',
     agentControls: 'Bot is in control',
@@ -860,7 +864,6 @@ const ja: BotsMessages = {
     portalUnsupported: 'このホストでは利用できません',
     portalUnavailable: 'Screen を使うにはボットの Hermes を更新してください',
     unavailableTitle: 'Screen には新しい Hermes が必要です',
-    recheck: '再確認',
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
     start: '画面を起動',
@@ -869,6 +872,9 @@ const ja: BotsMessages = {
     reconnect: '再接続',
     takeOver: '引き継ぐ',
     handBack: '戻す',
+    handBackForce: '強制的に戻す',
+    handBackForceHint: 'もう存在しないビューア（再読み込み後など）が保持しているリースを解放します。',
+    openNeedsUpdate: 'ボットの画面を開くには Hermes Desktop を更新してください。',
     youControl: 'あなたが操作中',
     otherControls: '別のビューアが操作中',
     agentControls: 'ボットが操作中',
@@ -1142,7 +1148,6 @@ const zh: BotsMessages = {
     portalUnsupported: '此主机不可用',
     portalUnavailable: '更新机器人的 Hermes 以使用屏幕',
     unavailableTitle: '屏幕需要更新版的 Hermes',
-    recheck: '重新检查',
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
     start: '启动屏幕',
@@ -1151,6 +1156,9 @@ const zh: BotsMessages = {
     reconnect: '重新连接',
     takeOver: '接管',
     handBack: '交还',
+    handBackForce: '强制交还',
+    handBackForceHint: '释放已不在场的查看者（例如重新加载后）持有的控制权。',
+    openNeedsUpdate: '更新 Hermes Desktop 以打开机器人屏幕。',
     youControl: '你正在控制',
     otherControls: '另一位查看者正在控制',
     agentControls: '机器人正在控制',
@@ -1424,7 +1432,6 @@ const zhHant: BotsMessages = {
     portalUnsupported: '此主機不可用',
     portalUnavailable: '更新機器人的 Hermes 以使用螢幕',
     unavailableTitle: '螢幕需要較新版的 Hermes',
-    recheck: '重新檢查',
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',
     start: '啟動螢幕',
@@ -1433,6 +1440,9 @@ const zhHant: BotsMessages = {
     reconnect: '重新連線',
     takeOver: '接手',
     handBack: '交還',
+    handBackForce: '強制交還',
+    handBackForceHint: '釋放已不在場的檢視者（例如重新載入後）持有的控制權。',
+    openNeedsUpdate: '更新 Hermes Desktop 以開啟機器人螢幕。',
     youControl: '你正在控制',
     otherControls: '另一位檢視者正在控制',
     agentControls: '機器人正在控制',
