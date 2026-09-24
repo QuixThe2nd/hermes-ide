@@ -144,3 +144,80 @@ def test_concurrent_starts_of_one_profile_spawn_one_launcher(tmp_path, start_in_
     out = _collect([start_in_fresh_process(tmp_path / "a"), start_in_fresh_process(tmp_path / "a")])
     assert len({o["pid"] for o in out}) == 1, out
     assert len(list((tmp_path / "xlocks").glob("spawned.*"))) == 1
+
+
+_ORPHANING_LAUNCHER = """#!/usr/bin/env bash
+# Stands in for launcher.sh whose Xvnc child ("sleep") lives in the launcher's process group and
+# outlives a SIGKILL of the launcher itself — the X lock names the child, as the real one does.
+: > "$HERMES_BD_XLOCK_DIR/spawned.$$"
+sleep 30 &
+echo $! > "$HERMES_BD_XLOCK_DIR/.X${HERMES_BD_DISPLAY_NUM}-lock"
+: > "$HERMES_BD_SOCKET"
+printf 'DISPLAY=:%s\\n' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"
+wait
+"""
+
+
+def _gone(pid: int) -> bool:
+    import psutil
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def _wait_until(pred, timeout=5.0) -> bool:
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return pred()
+
+
+@pytest.fixture
+def in_process_runtime(tmp_path, monkeypatch):
+    """runtime.start()/stop() against a scratch state dir and a fake launcher script (set by the test)."""
+    import os
+
+    home = tmp_path / "home"
+    (tmp_path / "xlocks").mkdir()
+    monkeypatch.setattr(runtime, "state_dir", lambda: home / "bot-desktop")
+    monkeypatch.setattr(runtime, "_LAUNCHER", tmp_path / "launcher.sh")
+    monkeypatch.setattr(runtime, "_X_LOCK_DIR", tmp_path / "xlocks")
+    monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")
+    monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
+    monkeypatch.setattr(runtime, "geometry", lambda: "800x600")
+    monkeypatch.setenv("HERMES_BD_XLOCK_DIR", str(tmp_path / "xlocks"))
+    yield tmp_path
+    with contextlib.suppress(Exception):
+        runtime.stop()
+    for lock in (tmp_path / "xlocks").glob(".X*-lock"):  # anything the code under test failed to reap
+        with contextlib.suppress(OSError, ValueError):
+            os.kill(int(lock.read_text()), 9)
+
+
+@pytest.mark.linux_only
+@pytest.mark.live_system_guard_bypass  # the orphan is reparented to init: signalling it is the point
+def test_orphaned_x_server_of_a_dead_launcher_is_reaped_on_next_start(in_process_runtime):
+    """SIGKILL the launcher and its Xvnc survives, holding the display and rfb.sock. status() keys on the
+    launcher pid and says stopped; start() must find that orphan through the recorded display's X lock
+    and kill it instead of allocating a second server beside it (two servers, one socket path)."""
+    import os
+    import signal
+
+    scratch = in_process_runtime
+    (scratch / "launcher.sh").write_text(_ORPHANING_LAUNCHER, encoding="utf-8")
+    first = runtime.start(wait_seconds=10)
+    lock = scratch / "xlocks" / f".X{first.display.lstrip(':')}-lock"
+    orphan = int(lock.read_text())
+    os.kill(first.pid, signal.SIGKILL)
+    assert _wait_until(lambda: _gone(first.pid))
+    assert not _gone(orphan), "the X server outlives its launcher (that is the bug's precondition)"
+    assert runtime.status().running is False
+
+    second = runtime.start(wait_seconds=10)
+    assert second.pid != first.pid and second.running
+    assert _wait_until(lambda: _gone(orphan)), "the dead launcher's X server must be reaped, not leaked"
+    assert runtime.stop() is True
