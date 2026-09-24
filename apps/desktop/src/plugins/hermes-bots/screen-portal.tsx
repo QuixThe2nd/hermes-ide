@@ -112,7 +112,15 @@ export function useScreenPortalState(bot: RosterRow) {
   return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null) }
 }
 
-export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; meta?: BotMeta | null; compact?: boolean }) {
+export function ScreenPortal({
+  bot,
+  meta,
+  compact = false
+}: {
+  bot: RosterRow
+  meta?: BotMeta | null
+  compact?: boolean
+}) {
   const t = useBots()
   const { status, tone } = useScreenPortalState(bot)
 
@@ -139,7 +147,9 @@ export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; m
     >
       <span className="relative grid size-7 shrink-0 place-items-center rounded bg-black/70 text-white/90">
         <Codicon name={TONE_ICON[tone]} />
-        <span className={`absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-(--ui-bg-primary) ${TONE_DOT[tone]}`} />
+        <span
+          className={`absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-(--ui-bg-primary) ${TONE_DOT[tone]}`}
+        />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs font-medium">{t.screen.portalTitle}</span>
@@ -163,11 +173,17 @@ export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }
       const resolved = resolveBotConnectionRoute(row)
 
       return resolved.route
-        ? resolved.route.profile === route.profile && (route.connectionId === null || resolved.route.connectionId === route.connectionId)
+        ? resolved.route.profile === route.profile &&
+            (route.connectionId === null || resolved.route.connectionId === route.connectionId)
         : row.name === route.profile && route.connectionId === null
     }) ??
     (route.connectionId
-      ? ({ name: route.profile, sourceScoped: true, connectionId: route.connectionId, connectionKind: route.connectionId === 'local' ? 'local' : 'remote' } as RosterRow)
+      ? ({
+          name: route.profile,
+          sourceScoped: true,
+          connectionId: route.connectionId,
+          connectionKind: route.connectionId === 'local' ? 'local' : 'remote'
+        } as RosterRow)
       : ({ name: route.profile } as RosterRow))
 
   return <ScreenPortal bot={bot} compact />
