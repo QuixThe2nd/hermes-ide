@@ -221,3 +221,36 @@ def test_orphaned_x_server_of_a_dead_launcher_is_reaped_on_next_start(in_process
     assert second.pid != first.pid and second.running
     assert _wait_until(lambda: _gone(orphan)), "the dead launcher's X server must be reaped, not leaked"
     assert runtime.stop() is True
+
+
+_SLOW_LAUNCHER = """#!/usr/bin/env bash
+# Publishes only AFTER runtime.start()'s readiness deadline has passed.
+sleep 30 &
+echo $! > "$HERMES_BD_XLOCK_DIR/.X${HERMES_BD_DISPLAY_NUM}-lock"
+sleep 1
+: > "$HERMES_BD_SOCKET"
+printf 'DISPLAY=:%s\\n' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"
+wait
+"""
+
+
+@pytest.mark.linux_only
+@pytest.mark.live_system_guard_bypass  # the launcher's group must really be signalled
+def test_readiness_timeout_terminates_the_launch_it_gave_up_on(in_process_runtime):
+    """When the launcher misses the readiness deadline start() raises — and must take the launch down with
+    it. It used to leave the launcher running; the child then published DISPLAY/rfb.sock a moment later and
+    a screen nobody asked for (and whose start() had reported failure) stayed up behind a 'running' status."""
+    import time
+
+    scratch = in_process_runtime
+    (scratch / "launcher.sh").write_text(_SLOW_LAUNCHER, encoding="utf-8")
+    sd = runtime.state_dir()
+    with pytest.raises(RuntimeError, match="did not publish"):
+        runtime.start(wait_seconds=0.05)
+    launcher = runtime._recorded_launcher_pid()
+    assert launcher is None or _gone(launcher), "the timed-out launcher must be reaped, not left to publish later"
+    time.sleep(1.5)  # past the slow launcher's publish time
+    assert not (sd / "env").exists() and not (sd / "rfb.sock").exists()
+    assert runtime.status().running is False
+    for lock in (scratch / "xlocks").glob(".X*-lock"):
+        assert _gone(int(lock.read_text())), "the launch's X server must die with its launcher"

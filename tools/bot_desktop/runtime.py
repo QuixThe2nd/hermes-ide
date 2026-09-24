@@ -412,6 +412,13 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
             logger.info("Bot Desktop for profile %s up on :%s", _profile_name(), num)
             return status()
         time.sleep(0.1)
+    # Giving up must take the launch down: left alone, the launcher publishes DISPLAY and rfb.sock a moment
+    # later and a screen whose start() reported failure stays up as "running". The launcher is its own
+    # session leader, so its group is exactly this launch (Xvnc, dbus, Xfce) and nothing else.
+    _kill_group_then_wait(proc.pid, proc.pid)
+    proc.wait()
+    for name in ("launcher.pid", "env", "rfb.sock"):
+        (sd / name).unlink(missing_ok=True)
     raise RuntimeError(f"Bot Desktop did not publish its display within {wait_seconds:.0f}s (see {sd / 'launcher.log'})")
 
 
