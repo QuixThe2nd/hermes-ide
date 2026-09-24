@@ -116,21 +116,38 @@ def _(rid, params: dict) -> dict:
 # viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
 # keep its identity — and its lease — while nobody can claim an id minted for another connection.
 _minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+# Transports that cannot be weakly referenced (stdio, slotted, or none bound at all) are one
+# connection per process — the TUI's own pipe — so their minted ids share one process-wide set.
+_unweakable_minted_ids: set[str] = set()
+
+
+def _minted_for_this_connection() -> set[str]:
+    try:
+        return _minted_viewer_ids.setdefault(current_transport(), set())
+    except TypeError:
+        return _unweakable_minted_ids
 
 
 def _mint_viewer_id(requested: str) -> str:
     """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
     earlier; anything else (including a holder id read off display.status) gets a fresh id."""
     import secrets
-    try:
-        mine = _minted_viewer_ids.setdefault(current_transport(), set())
-    except TypeError:  # stdio / slotted transports cannot be weakly referenced: always mint
-        mine = set()
+    mine = _minted_for_this_connection()
     if requested in mine:
         return requested
     viewer_id = secrets.token_urlsafe(16)
     mine.add(viewer_id)
     return viewer_id
+
+
+def _foreign_viewer_id(rid, viewer_id: str):
+    """The error for a viewer id this connection never minted, or None. acquire/release take the id
+    as a capability, so one a caller invented or read off the wire must be refused — otherwise the
+    minting only shapes the honest path and a made-up id still evicts or releases the human."""
+    if viewer_id in _minted_for_this_connection():
+        return None
+    return _err(rid, _DISPLAY_ERR, "viewer_id was not minted for this connection; call display.observe first",
+                data={"code": "viewer_mismatch"})
 
 
 @method("display.observe")
@@ -210,6 +227,8 @@ def _(rid, params: dict) -> dict:
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
+    if (refused := _foreign_viewer_id(rid, viewer_id)) is not None:
+        return refused
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _lease_view(lease)})
 
@@ -224,6 +243,8 @@ def _(rid, params: dict) -> dict:
     if viewer_id is None and not params.get("force") and _bd_lease.human_holds():
         return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
                     data={"code": "viewer_mismatch"})
+    if viewer_id is not None and not params.get("force") and (refused := _foreign_viewer_id(rid, viewer_id)) is not None:
+        return refused
     lease = _bd_lease.release(viewer_id)
     return _ok(rid, {"lease": _lease_view(lease)})
 

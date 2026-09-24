@@ -65,16 +65,19 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     assert _call(server, "display.thumbnail", {})["result"]["data_url"].endswith("SECRET")
 
 
-def test_release_without_viewer_id_cannot_yank_another_viewers_lease(_fresh_lease):
+def test_release_without_viewer_id_cannot_yank_another_viewers_lease(monkeypatch, tmp_path, _fresh_lease):
     """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
-    must be refused unless it forces; a matching viewer id and force keep working."""
+    must be refused unless it forces; the holder's own (minted) viewer id and force keep working."""
     import tui_gateway.server as server
+    from tools.bot_desktop import runtime
 
-    _fresh_lease.acquire("viewer-1")
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    mine = _call(server, "display.observe", {})["result"]["viewer_id"]
+    _fresh_lease.acquire(mine)
     refused = _call(server, "display.lease.release", {})
     assert refused["error"]["data"]["code"] == "viewer_mismatch"
     assert _fresh_lease.get().holder == _fresh_lease.HUMAN
-    assert _call(server, "display.lease.release", {"viewer_id": "viewer-1"})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+    assert _call(server, "display.lease.release", {"viewer_id": mine})["result"]["lease"]["holder"] == _fresh_lease.AGENT
     _fresh_lease.acquire("viewer-2")
     assert _call(server, "display.lease.release", {"force": True})["result"]["lease"]["holder"] == _fresh_lease.AGENT
 
@@ -140,3 +143,33 @@ def test_stop_cannot_kill_the_screen_under_a_human_without_force(monkeypatch, _f
     forced = _call(server, "display.stop", {"force": True})["result"]
     assert forced["stopped"] is True and stops == [1]
     assert _fresh_lease.get().holder == _fresh_lease.AGENT
+
+
+def test_lease_acquire_and_release_only_honour_an_id_this_connection_minted(monkeypatch, tmp_path, _fresh_lease):
+    """The minted identity is worthless if acquire takes any string: a caller could acquire under a
+    made-up id (evicting the human) or release with a guessed one. Both must insist on an id that
+    display.observe minted for THIS connection."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import runtime
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+
+    class _Peer:
+        def write(self, obj):
+            return True
+
+    def rpc(peer, method, params):
+        return server.dispatch({"jsonrpc": "2.0", "id": 3, "method": method, "params": params}, peer)
+
+    mine, other = _Peer(), _Peer()
+    minted = rpc(mine, "display.observe", {})["result"]["viewer_id"]
+    forged = rpc(other, "display.lease.acquire", {"viewer_id": "made-up"})
+    assert forged["error"]["data"]["code"] == "viewer_mismatch"
+    assert _fresh_lease.get().holder == _fresh_lease.AGENT
+    ok = rpc(mine, "display.lease.acquire", {"viewer_id": minted})["result"]
+    assert ok["lease"]["holder"] == _fresh_lease.HUMAN
+    # another connection presenting the holder's id (read off the wire) cannot release it either
+    stolen = rpc(other, "display.lease.release", {"viewer_id": minted})
+    assert stolen["error"]["data"]["code"] == "viewer_mismatch"
+    assert _fresh_lease.get().holder == _fresh_lease.HUMAN
+    assert rpc(mine, "display.lease.release", {"viewer_id": minted})["result"]["lease"]["holder"] == _fresh_lease.AGENT
