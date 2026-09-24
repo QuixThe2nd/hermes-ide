@@ -1,9 +1,9 @@
 """Cross-process lease watcher: ``display.lease`` for transitions made OUTSIDE ``hermes serve``.
 
 The lease (``tools.bot_desktop.lease``) lives on disk and is changed by whatever process hosts the
-agent — the messaging gateway's ``request_handoff``, a ``hermes chat`` takeover, a cron worker's
-release. ``lease.on_change`` only fires in the writing process, so ``methods_display``'s in-process
-listener never sees those; the Desktop's "Bot needs you" badge and hero tone stayed stale until the
+agent — a ``hermes computer-use screen`` takeover from the CLI, a cron worker's release.
+``lease.on_change`` only fires in the writing process, so ``methods_display``'s in-process
+listener never sees those; the Desktop's hero tone and pane state stayed stale until the
 pane was reopened. One daemon thread stats every served home's ``bot-desktop/lease.json`` (launch
 home + ``_served_profile_homes``) every 0.5s and broadcasts the SAME ``display.lease`` payload when
 the epoch moves. Bodies are rebound onto server.py's globals (method_ctx.bind_module).

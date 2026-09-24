@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 AGENT = "agent"
 HUMAN = "human"
-_POLL_SECONDS = 0.25
 
 
 class HumanHasControl(RuntimeError):
@@ -47,7 +46,6 @@ class Lease:
     viewer_id: Optional[str] = None
     since: float = field(default_factory=time.time)
     reason: str = ""
-    pending_handoff: Optional[str] = None  # agent's reason for asking, until the human takes over
     epoch: int = 0
 
     def as_dict(self) -> Dict[str, object]:
@@ -175,8 +173,7 @@ def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = 
         # The agent's ask ("please log in to X") stays as the takeover reason: the human needs it
         # on screen WHILE they act, not only before they clicked Take over.
         lease.holder, lease.viewer_id, lease.since = HUMAN, viewer_id, time.time()
-        lease.reason = reason or lease.pending_handoff or ""
-        lease.pending_handoff = None
+        lease.reason = reason or ""
         return True
     return _transition(profile_key, _m)
 
@@ -191,43 +188,8 @@ def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = Non
             logger.info("bot-desktop lease: release by %r ignored, another viewer holds", viewer_id)
             return False
         lease.holder, lease.viewer_id, lease.since, lease.reason = AGENT, None, time.time(), ""
-        lease.pending_handoff = None  # "hand back" answers an open request even if nobody formally took over
         return True
     return _transition(profile_key, _m)
-
-
-def request_handoff(reason: str, *, profile_key: Optional[str] = None) -> Lease:
-    """Agent asks a human to take over (login, 2FA, CAPTCHA, payment). Recorded so the UI can show
-    why and the bridge can page the user; control itself still flips only on ``acquire``."""
-    def _m(lease: Lease) -> bool:
-        lease.pending_handoff = reason
-        return True
-    return _transition(profile_key, _m)
-
-
-def wait_for_release(*, timeout: float, profile_key: Optional[str] = None) -> bool:
-    """Block until the agent holds the lease (and no handoff is pending) or ``timeout`` elapses.
-    True when control is back with the agent. Polls the file so a release made by another process
-    is seen; the local Condition just shortens the wait for same-process transitions."""
-    return _wait_until(lambda lease: lease.holder == AGENT and lease.pending_handoff is None, timeout, profile_key)
-
-
-def wait_for_takeover_or_release(*, timeout: float, profile_key: Optional[str] = None) -> bool:
-    """False when, after ``timeout``, the agent still holds with a handoff pending: nobody answered."""
-    return _wait_until(lambda lease: lease.holder == HUMAN or lease.pending_handoff is None, timeout, profile_key)
-
-
-def _wait_until(done: Callable[[Lease], bool], timeout: float, profile_key: Optional[str]) -> bool:
-    path = _path(profile_key)
-    deadline = time.monotonic() + timeout
-    while True:
-        if done(_read(path)):
-            return True
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        with _lock:
-            _lock.wait(min(remaining, _POLL_SECONDS))
 
 
 def human_holds(profile_key: Optional[str] = None) -> bool:
@@ -246,8 +208,7 @@ def assert_agent_may_act(profile_key: Optional[str] = None) -> Lease:
     if lease.holder == HUMAN:
         raise HumanHasControl(
             "A human has taken over this desktop (they may be entering a credential). Screen actions and "
-            "captures are refused until they hand control back; call computer_use action='wait_for_human' "
-            "to block until then.")
+            "captures are refused until they hand control back. Tell the user what you need in your reply.")
     return lease
 
 

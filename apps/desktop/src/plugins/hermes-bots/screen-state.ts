@@ -91,8 +91,7 @@ export function setScreenLease(bot: RosterRow, lease: DisplayLease): void {
     prev?.lease &&
     prev.lease.holder === lease.holder &&
     prev.lease.viewer_id === lease.viewer_id &&
-    prev.lease.viewer_hash === lease.viewer_hash &&
-    prev.lease.pending_handoff === lease.pending_handoff
+    prev.lease.viewer_hash === lease.viewer_hash
   ) {
     return
   }

@@ -299,9 +299,6 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     if not action:
         return json.dumps({"error": "missing `action`"})
     session_id = str(kwargs.get("session_id") or "")  # approval-state / daemon-mode isolation key
-    from tools.computer_use.handoff import HANDOFF_ACTIONS, handle_handoff
-    if action in HANDOFF_ACTIONS:
-        return handle_handoff(action, args)
     # Bot Desktop lease: while a human drives the screen every action, capture included, is refused.
     from tools.bot_desktop import lease as _bd_lease
     from tools.bot_desktop.runtime import ensure_started_for_tool as _bd_ensure_started
@@ -343,7 +340,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                 if _bd_lease.get().epoch != admitted.epoch:
                     raise _bd_lease.HumanHasControl(
                         "A human took over this desktop while the action ran; its result was discarded. "
-                        "Re-capture (or call computer_use action='wait_for_human' if they still hold control).")
+                        "Tell the user what you need and re-capture once they hand back.")
             _fence()  # input actions never receive fence=; refuse before the device op starts
             result = _dispatch(backend, action, args, session_id=session_id or None, fence=_fence)
             _fence()

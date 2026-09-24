@@ -77,7 +77,7 @@ const status: DisplayStatus = {
   socket: null,
   geometry: '1440x900',
   install_command: 'sudo apt-get install -y tigervnc-standalone-server',
-  lease: { holder: 'agent', viewer_id: null, pending_handoff: null, since: 1, reason: '' }
+  lease: { holder: 'agent', viewer_id: null, since: 1, reason: '' }
 }
 
 beforeEach(() => {

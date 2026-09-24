@@ -296,7 +296,6 @@ type BotsMessages = {
     otherControls: string
     agentControls: string
     controlTaken: string
-    handoffRequested: string
   }
 
   /** Bot-scoped scheduled jobs. Generic scheduling chrome (weekday names,
@@ -590,7 +589,6 @@ const en: BotsMessages = {
     otherControls: 'Another viewer is in control',
     agentControls: 'Bot is in control',
     controlTaken: 'Another viewer took control. Watching only.',
-    handoffRequested: 'Bot needs you'
   },
   cron: {
     filterHint:
@@ -879,7 +877,6 @@ const ja: BotsMessages = {
     otherControls: '別のビューアが操作中',
     agentControls: 'ボットが操作中',
     controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。',
-    handoffRequested: 'ボットが助けを求めています'
   },
   cron: {
     filterHint:
@@ -1163,7 +1160,6 @@ const zh: BotsMessages = {
     otherControls: '另一位查看者正在控制',
     agentControls: '机器人正在控制',
     controlTaken: '另一位查看者已接管控制。仅可观看。',
-    handoffRequested: '机器人需要你'
   },
   cron: {
     filterHint:
@@ -1447,7 +1443,6 @@ const zhHant: BotsMessages = {
     otherControls: '另一位檢視者正在控制',
     agentControls: '機器人正在控制',
     controlTaken: '另一位檢視者已接手控制。僅可觀看。',
-    handoffRequested: '機器人需要你'
   },
   cron: {
     filterHint:

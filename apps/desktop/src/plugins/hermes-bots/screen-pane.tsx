@@ -357,12 +357,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         <span className="font-medium">{t.screen.title}</span>
         {status?.display ? <span className="text-muted-foreground">{status.display} · {status.geometry}</span> : null}
         <span className="grow" />
-        {lease?.pending_handoff ? (
-          <span className="rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400" title={lease.pending_handoff}>
-            <Codicon name="bell" /> {t.screen.handoffRequested}
-          </span>
-        ) : lease?.holder === 'human' && lease.reason ? (
-          // The agent's ask stays readable WHILE the human acts, not only before Take over.
+        {lease?.holder === 'human' && lease.reason ? (
+          // Why control was taken stays readable while the human acts.
           <span className="max-w-[40%] truncate rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400" title={lease.reason}>
             <Codicon name="bell" /> {lease.reason}
           </span>

@@ -100,11 +100,12 @@ with `human_has_control`, captures included. This is a tool-level fence, not an
 OS one: the bot runs as the same user as its screen. Don't type secrets into a
 bot you wouldn't trust with them.
 
-The bot can ask for you: when it recognises a login or verification step it
-calls `computer_use` with `action: "request_handoff"` and a reason, the pane
-shows **Bot needs you**, the bot tells you in its reply what it needs (so the
-ask reaches you in whatever chat you are on), and it blocks in
-`action: "wait_for_human"` until you hand back.
+When the bot hits a step it should not do itself (a login, 2FA, a CAPTCHA, a
+payment) it says so in its reply and ends its turn; the ask reaches you in
+whatever chat you are on. Take over when you are ready, do the step, hand back,
+and tell the bot to continue. Nothing blocks on the bot's side while it waits:
+taking over is always yours to start, and a bot never holds a tool call open
+waiting for you.
 
 Two viewers on one screen: the most recent **Take over** wins; the previous
 controller drops back to watching.

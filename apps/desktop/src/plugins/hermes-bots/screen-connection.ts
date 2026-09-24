@@ -24,7 +24,6 @@ export interface DisplayLease {
   viewer_hash?: null | string
   since: number
   reason: string
-  pending_handoff: null | string
   /** Monotonic per transition; a lower epoch is an older snapshot, never newer truth. */
   epoch?: number
 }

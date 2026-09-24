@@ -16,4 +16,3 @@ def test_screen_stop_hands_back_even_when_the_desktop_has_already_exited():
     args = parser.parse_args(['screen', 'stop'])
     assert args.screen_func(args) == 0
     assert lease.get().holder == lease.AGENT
-    assert lease.wait_for_release(timeout=0)

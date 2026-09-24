@@ -651,7 +651,7 @@ def run_fenced(session_info: Dict[str, Any], fn: Callable[[], Dict[str, Any]]) -
     if _bd_lease.get().epoch != admitted.epoch:
         return {"success": False, "code": "human_has_control",
                 "error": "A human took over the bot's screen while this browser command ran; its result was "
-                         "discarded. Call computer_use action='wait_for_human' to block until they hand back."}
+                         "discarded. Tell the user what you need; retry once they hand back."}
     return result
 
 

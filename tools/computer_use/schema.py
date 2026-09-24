@@ -10,18 +10,6 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-# Bot Screen handoff: the human takes the bot's headless Linux screen over from the Hermes Desktop app.
-# Only meaningful where a Bot Desktop can exist (Linux gateway hosts); `schema_for_host` strips it
-# elsewhere so macOS/Windows/seated-Linux models never learn actions that cannot succeed.
-_HANDOFF_ACTIONS = ("request_handoff", "wait_for_human")
-_HANDOFF_ONLY_PROPERTIES = ("reason", "grace")
-_HANDOFF_ACTION_HINT = (
-    " When a login, 2FA, CAPTCHA or payment step needs the human, call "
-    "`request_handoff` (with `reason`) so they can take over this screen from the Hermes "
-    "Desktop app, then `wait_for_human`; while they hold control every other action is refused."
-)
-_HANDOFF_SECONDS_HINT = " wait_for_human: how long to block for the hand-back (default 600, max 1800)."
-
 # One consolidated tool with an `action` discriminator keeps the schema compact
 # and the per-turn token cost low. Property groups: capture (mode, app, pid,
 # window_id) / targeting (element, coordinate, button, modifiers) / drag / scroll /
@@ -44,14 +32,12 @@ _PROPERTIES: Dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
-            "request_handoff",
-            "wait_for_human",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
             "require approval unless auto-approved. Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)." + _HANDOFF_ACTION_HINT
+            "focus steal)."
         ),
     },
     "mode": {
@@ -155,15 +141,13 @@ _PROPERTIES: Dict[str, Any] = {
         ),
     },
     "text": {"type": "string", "description": "Text to type (respects the current layout)."},
-    "reason": {"type": "string", "description": "request_handoff: one sentence telling the human what to do on the screen (e.g. 'Sign in to LinkedIn and complete 2FA')."},
     "keys": {
         "type": "string",
         "description": (
             "Key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return', 'escape', 'tab'. Use '+' to combine."
         ),
     },
-    "seconds": {"type": "number", "description": "wait: seconds to pause (max 30)." + _HANDOFF_SECONDS_HINT},
-    "grace": {"type": "number", "description": "wait_for_human: seconds to wait for someone to take over before returning no_takeover (default 60); once a human holds control the full `seconds` applies."},
+    "seconds": {"type": "number", "description": "wait: seconds to pause (max 30)."},
     "raise_window": {
         "type": "boolean",
         "description": (
@@ -223,18 +207,3 @@ def get_computer_use_schema() -> Dict[str, Any]:
     """Return the generic OpenAI function-calling schema."""
     return COMPUTER_USE_SCHEMA
 
-
-def schema_for_host(*, supported: bool) -> Dict[str, Any]:
-    """The frozen schema on hosts that can run a Bot Desktop; elsewhere the same schema without the
-    handoff actions, their parameters and their copy. Pure: the host decision is the caller's."""
-    if supported:
-        return COMPUTER_USE_SCHEMA
-    props = dict(_PROPERTIES)
-    for name in _HANDOFF_ONLY_PROPERTIES:
-        props.pop(name)
-    action = dict(props["action"])
-    action["enum"] = [a for a in action["enum"] if a not in _HANDOFF_ACTIONS]
-    action["description"] = action["description"].replace(_HANDOFF_ACTION_HINT, "")
-    props["action"] = action
-    props["seconds"] = {**props["seconds"], "description": props["seconds"]["description"].replace(_HANDOFF_SECONDS_HINT, "")}
-    return {**COMPUTER_USE_SCHEMA, "parameters": {**COMPUTER_USE_SCHEMA["parameters"], "properties": props}}

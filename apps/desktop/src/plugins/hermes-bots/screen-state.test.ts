@@ -15,7 +15,7 @@ import { $screenState, beginScreenStatusRequest, screenStateFor, setScreenLease,
 
 const bot: RosterRow = { name: 'ops' }
 
-const agent: DisplayLease = { holder: 'agent', viewer_id: null, viewer_hash: null, since: 1, reason: '', pending_handoff: null, epoch: 3 }
+const agent: DisplayLease = { holder: 'agent', viewer_id: null, viewer_hash: null, since: 1, reason: '', epoch: 3 }
 const human: DisplayLease = { ...agent, holder: 'human', viewer_hash: 'abc123abc123', epoch: 4 }
 
 const statusWith = (lease: DisplayLease): DisplayStatus => ({

@@ -46,17 +46,17 @@ def _lease_events(events, **want):
     return [p for ev, p in events if ev == "display.lease" and all(p["lease"].get(k) == v for k, v in want.items())]
 
 
-def test_handoff_requested_in_another_process_is_broadcast(tmp_path, monkeypatch):
+def test_takeover_in_another_process_is_broadcast(tmp_path, monkeypatch):
     import tui_gateway.server as server
     from hermes_constants import hermes_home_key
     home = tmp_path / "home"
     home.mkdir()
     events = _watching(server, home, monkeypatch)
 
-    _other_process(home, 'lease.request_handoff("probe")')
+    _other_process(home, 'lease.acquire("cli-viewer", reason="probe")')
 
-    assert _wait_for(lambda: _lease_events(events, pending_handoff="probe")), events
-    (payload,) = _lease_events(events, pending_handoff="probe")
+    assert _wait_for(lambda: _lease_events(events, reason="probe")), events
+    (payload,) = _lease_events(events, reason="probe")
     assert payload["profile_key"] == hermes_home_key(home)
 
 

@@ -107,7 +107,7 @@ const status: DisplayStatus = {
   socket: '/tmp/rfb.sock',
   geometry: '1440x900',
   install_command: null,
-  lease: { holder: 'human', viewer_id: 'this-viewer', pending_handoff: null, since: 1, reason: '' }
+  lease: { holder: 'human', viewer_id: 'this-viewer', since: 1, reason: '' }
 }
 
 beforeEach(() => {
