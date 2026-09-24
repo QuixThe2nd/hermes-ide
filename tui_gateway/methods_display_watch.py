@@ -23,8 +23,9 @@ _lease_watcher_started = threading.Event()
 # made by THIS process is not re-broadcast when its file write is noticed a tick later).
 _lease_epochs: dict[str, int] = {}
 _lease_mtimes: dict[str, int | None] = {}
-# profile key → (env mtime, launcher.pid mtime): the screen's running/display identity. A start,
-# stop or crash made by another process (CLI, gateway auto-start) moves one of these.
+# profile key → (env mtime, launcher.pid mtime, launcher alive): the screen's running/display
+# identity. A start or stop made by another process (CLI, gateway auto-start) moves a file; a crash
+# leaves both files and only flips liveness.
 _runtime_marks: dict[str, tuple] = {}
 
 
@@ -46,20 +47,23 @@ def _mtime(path: Path):
 
 
 def _poll_runtime_files() -> None:
-    """Broadcast ``display.status`` when a home's screen started/stopped outside this process."""
+    """Broadcast ``display.status`` when a home's screen started/stopped outside this process — a
+    file move (start/stop by the CLI or gateway) or the launcher dying without touching its files
+    (Xvnc crash: env and launcher.pid stay put, only the pid stops being live)."""
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime as _bd_runtime
     for home in _watched_lease_homes():
         key = hermes_home_key(home)
         sd = home / "bot-desktop"
-        mark = (_mtime(sd / "env"), _mtime(sd / "launcher.pid"))
-        first = key not in _runtime_marks
-        if _runtime_marks.get(key) == mark:
-            continue
-        _runtime_marks[key] = mark
-        if first:  # seeding: display.status carries the current state
-            continue
         token = set_hermes_home_override(home)
         try:
+            mark = (_mtime(sd / "env"), _mtime(sd / "launcher.pid"), _bd_runtime._launcher_pid() is not None)
+            first = key not in _runtime_marks
+            if _runtime_marks.get(key) == mark:
+                continue
+            _runtime_marks[key] = mark
+            if first:  # seeding: display.status carries the current state
+                continue
             payload = _display_snapshot()
         finally:
             reset_hermes_home_override(token)

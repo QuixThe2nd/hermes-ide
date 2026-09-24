@@ -92,8 +92,8 @@ def test_screen_started_or_stopped_by_another_process_is_broadcast_as_status(tmp
     assert not [e for e in events if e[0] == "display.status"]
 
     # what runtime.start() publishes from another process: launcher.pid then env
-    (home / "bot-desktop" / "launcher.pid").write_text("424242 1.5")
-    (home / "bot-desktop" / "env").write_text("DISPLAY=:77\n")
+    (home / "bot-desktop" / "launcher.pid").write_text("424242 1.5", encoding="utf-8")
+    (home / "bot-desktop" / "env").write_text("DISPLAY=:77\n", encoding="utf-8")
     server._poll_runtime_files()
     statuses = [p for e, p in events if e == "display.status"]
     assert statuses and statuses[-1]["profile_key"] == str(home)
@@ -102,3 +102,33 @@ def test_screen_started_or_stopped_by_another_process_is_broadcast_as_status(tmp
     server._poll_runtime_files()
     assert len([e for e in events if e[0] == "display.status"]) == 2
     assert [p for e, p in events if e == "display.status"][-1]["running"] is False
+
+
+def test_launcher_dying_without_touching_its_files_is_broadcast_as_stopped(tmp_path, monkeypatch):
+    """Xvnc/the launcher crashing leaves env and launcher.pid exactly as they were, so a watcher keyed
+    on mtimes alone never told the Desktop the screen was gone. The mark must include liveness."""
+    import psutil
+    import tui_gateway.server as server
+
+    home = tmp_path / "home"
+    (home / "bot-desktop").mkdir(parents=True)
+    launcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.DEVNULL)  # noqa: S603
+    try:
+        born = psutil.Process(launcher.pid).create_time()
+        (home / "bot-desktop" / "launcher.pid").write_text(f"{launcher.pid} {born!r}", encoding="utf-8")
+        (home / "bot-desktop" / "env").write_text("DISPLAY=:77\n", encoding="utf-8")
+        events = _watching(server, home, monkeypatch)
+        server._poll_runtime_files()  # seed: running
+        server._poll_runtime_files()
+        assert not [e for e in events if e[0] == "display.status"], "unchanged state was re-broadcast"
+
+        launcher.kill()
+        launcher.wait(5)
+        server._poll_runtime_files()
+        server._poll_runtime_files()
+        statuses = [p for e, p in events if e == "display.status"]
+        assert len(statuses) == 1 and statuses[0]["running"] is False, statuses
+    finally:
+        if launcher.poll() is None:
+            launcher.kill()
+            launcher.wait(5)
