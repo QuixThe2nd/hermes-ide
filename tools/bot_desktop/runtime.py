@@ -408,9 +408,11 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
         "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
         "HERMES_BD_GEOMETRY": geometry(),
     })
-    from tools.bot_desktop.browser import dock_command, dock_launch
+    from tools.bot_desktop.browser import dock_exec_line, dock_launch
     if (browser := dock_launch()) is not None:
-        child_env["HERMES_BD_BROWSER_EXEC"] = dock_command(*browser)
+        # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
+        child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
+        child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
     # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
     log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)

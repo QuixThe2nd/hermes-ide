@@ -76,17 +76,27 @@ def dock_launch() -> Optional[Tuple[str, str]]:
     return (exe, str(profile_dir())) if exe else None
 
 
-def dock_command(exe: str, user_data_dir: str) -> str:
-    """Shell line the dock's Browser icon runs. ``--remote-debugging-port=0`` makes a human-started
+def dock_argv(exe: str, user_data_dir: str) -> list[str]:
+    """Command the dock's Browser icon runs. ``--remote-debugging-port=0`` makes a human-started
     instance attachable (Chromium writes the chosen port to ``<user-data-dir>/DevToolsActivePort``);
     first-run / default-browser dialogs would sit between the human and the bot's tabs."""
     # --test-type hides the "Chrome for Testing is only for automated testing" and unsupported-flag
     # (--no-sandbox as root) infobars, which otherwise sit at the top of the human's takeover view.
     # Root gets the same sandbox-bypass flags agent-browser starts this binary with (one policy).
     from tools.browser_tool_session import CHROMIUM_SANDBOX_BYPASS_ARGS
-    root_args = " ".join(("", *CHROMIUM_SANDBOX_BYPASS_ARGS)) if _is_root() else ""
-    return (f"{exe} --user-data-dir={user_data_dir} --remote-debugging-port=0 --no-first-run "
-            f"--no-default-browser-check --test-type{root_args}")
+    return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0", "--no-first-run",
+            "--no-default-browser-check", "--test-type", *(CHROMIUM_SANDBOX_BYPASS_ARGS if _is_root() else ())]
+
+
+def dock_exec_line(exe: str, user_data_dir: str) -> str:
+    """The ``Exec=`` line of the dock's ``.desktop`` entry. Every argument is double-quoted per the
+    Desktop Entry spec (a browser under ``/opt/Google Chrome/`` or a profile under a spaced HERMES_HOME
+    otherwise splits into garbage): inside the quotes ``" ` $ \\`` are backslash-escaped, and because the
+    value is itself a string field, each of those backslashes is escaped once more."""
+    def quote(arg: str) -> str:
+        quoted = "".join("\\" + ch if ch in '"`$\\' else ch for ch in arg)
+        return '"' + quoted.replace("\\", "\\\\") + '"'
+    return "Exec=" + " ".join(quote(arg) for arg in dock_argv(exe, user_data_dir))
 
 
 def running_instance_cdp_port(user_data_dir: str, *, exclude_session: Optional[str] = None) -> Optional[int]:

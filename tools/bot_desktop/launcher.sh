@@ -134,18 +134,20 @@ sed -i "s|HERMES_BD_WALLPAPER_PLACEHOLDER|$HERMES_BD_WALLPAPER|" "$X/xfce4-deskt
 if [[ ! -e "$X/xfce4-panel.xml" ]]; then
   L="$XDG_CONFIG_HOME/xfce4/panel"; mkdir -p "$L"
   dock_ids=(); n=20
-  add_launcher() {  # name icon exec — skipped when the executable is missing
-    local exe; exe=${3%% *}
-    command -v "$exe" >/dev/null 2>&1 || return 0
+  add_launcher() {  # name icon executable [Exec= line] — skipped when the executable is missing.
+    # The Exec= line is passed ready-made (spec-quoted by Python) so paths with spaces survive; a bare
+    # program name is its own Exec= value.
+    command -v "$3" >/dev/null 2>&1 || return 0
     n=$((n+1)); mkdir -p "$L/launcher-$n"
-    printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=%s\nIcon=%s\nExec=%s\nTerminal=false\nStartupNotify=false\n' \
-      "$1" "$2" "$3" > "$L/launcher-$n/hermes.desktop"
+    printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=%s\nIcon=%s\n%s\nTerminal=false\nStartupNotify=false\n' \
+      "$1" "$2" "${4:-Exec=$3}" > "$L/launcher-$n/hermes.desktop"
     dock_ids+=("$n")
   }
   add_launcher "Terminal" utilities-terminal "xfce4-terminal"
   # The bot's browser: runtime.py resolves the executable agent-browser drives plus the profile's
   # persistent user-data-dir, so a human taking over lands in the bot's own cookie jar.
-  [[ -n "${HERMES_BD_BROWSER_EXEC:-}" ]] && add_launcher "Browser" internet-web-browser "$HERMES_BD_BROWSER_EXEC"
+  [[ -n "${HERMES_BD_BROWSER_EXEC:-}" ]] && \
+    add_launcher "Browser" internet-web-browser "$HERMES_BD_BROWSER_EXEC" "${HERMES_BD_BROWSER_EXEC_LINE:-}"
   add_launcher "Files" system-file-manager "thunar"
   add_launcher "Text Editor" accessories-text-editor "mousepad"
   dock_plugins=""; dock_items=""

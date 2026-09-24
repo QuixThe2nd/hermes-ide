@@ -33,7 +33,7 @@ def test_user_pinned_profile_wins(tmp_path, monkeypatch):
 
 def test_dock_browser_advertises_a_devtools_port():
     """A human-started instance must be attachable, or the agent can never drive it afterwards."""
-    assert "--remote-debugging-port=" in browser.dock_command("/opt/chrome", "/p/dir").split()[2]
+    assert "--remote-debugging-port=" in browser.dock_argv("/opt/chrome", "/p/dir")[2]
 
 
 def _fake_running_instance(user_data_dir, pid: int, port: int) -> None:
@@ -129,7 +129,7 @@ def test_unprivileged_user_under_apparmor_userns_restriction_gets_the_system_bro
     monkeypatch.setattr(browser, "_userns_restricted", lambda: True)
     exe = browser.executable()
     assert exe and exe.endswith("chrome-linux/chrome")
-    assert "--no-sandbox" not in browser.dock_command(exe, "/p/dir")
+    assert "--no-sandbox" not in browser.dock_argv(exe, "/p/dir")
 
 
 def test_root_dock_browser_starts_with_the_same_sandbox_args_as_the_agents_browser(monkeypatch):
@@ -144,7 +144,7 @@ def test_root_dock_browser_starts_with_the_same_sandbox_args_as_the_agents_brows
     session._apply_chromium_sandbox_args(agent_env)
     agent_flags = set(agent_env["AGENT_BROWSER_ARGS"].split(","))
     assert agent_flags, "root must inject sandbox flags for agent-browser"
-    assert agent_flags <= set(browser.dock_command("/opt/chrome", "/p/dir").split())
+    assert agent_flags <= set(browser.dock_argv("/opt/chrome", "/p/dir"))
 
 
 def test_status_reports_the_headed_browser_or_its_absence(monkeypatch):
@@ -157,3 +157,16 @@ def test_status_reports_the_headed_browser_or_its_absence(monkeypatch):
     assert runtime.status().as_dict()["browser"] is None
     monkeypatch.setattr(browser, "executable", lambda: "/usr/bin/chromium")
     assert runtime.status().browser == "/usr/bin/chromium"
+
+
+def test_dock_exec_line_survives_spaces_in_the_executable_and_profile_paths():
+    """The launcher used to split the shell line on the first space to find the executable, so a
+    Chromium under '/opt/Google Chrome/' or a profile under a spaced HERMES_HOME broke the dock icon.
+    Exec= follows the Desktop Entry spec: each argument double-quoted, with the reserved characters
+    backslash-escaped inside the quotes."""
+    exe = "/opt/Google Chrome/chrome"
+    profile = '/home/a b/.hermes/browser "x"/profile'
+    line = browser.dock_exec_line(exe, profile)
+    assert line.startswith('Exec="/opt/Google Chrome/chrome" ')
+    assert r'"--user-data-dir=/home/a b/.hermes/browser \\"x\\"/profile"' in line  # spec: \" quoted, then \ string-escaped
+    assert "--remote-debugging-port=0" in line

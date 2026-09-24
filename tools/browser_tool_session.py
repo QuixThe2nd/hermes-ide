@@ -33,7 +33,7 @@ _CHROMIUM_MISSING_HINT = f"Chromium browser is missing. Install it with: {_CHROM
 
 # THE Chromium startup flags for a host where its sandbox cannot work; agent-browser gets them through
 # AGENT_BROWSER_ARGS and the Bot Desktop dock's Browser icon (same binary, same profile) through
-# ``tools.bot_desktop.browser.dock_command`` — one list, or the human's click dies while the agent's works.
+# ``tools.bot_desktop.browser.dock_argv`` — one list, or the human's click dies while the agent's works.
 CHROMIUM_SANDBOX_BYPASS_ARGS = ("--no-sandbox", "--disable-dev-shm-usage")
 
 

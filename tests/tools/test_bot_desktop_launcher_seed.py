@@ -35,7 +35,7 @@ def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
         "HERMES_BD_SOCKET": str(tmp_path / "rfb.sock"), "HERMES_BD_XAUTH": str(tmp_path / "Xauthority"),
         "HERMES_BD_ENV_FILE": str(tmp_path / "env"), "HERMES_BD_CONFIG_HOME": str(cfg),
         "HERMES_BD_SEED_ONLY": "1",
-        **({"HERMES_BD_BROWSER_EXEC": browser_exec} if browser_exec else {}),
+        **({"HERMES_BD_BROWSER_EXEC": browser_exec, "HERMES_BD_BROWSER_EXEC_LINE": f"Exec={browser_exec} --user-data-dir={tmp_path}/bp"} if browser_exec else {}),
     }
     subprocess.run(["bash", str(LAUNCHER)], env=env, check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
     return cfg
@@ -43,7 +43,7 @@ def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
 
 def test_dock_lists_only_programs_present_on_path(tmp_path):
     chrome = tmp_path / "bin" / "chrome"  # the browser is the one runtime.py resolved, never a PATH scan
-    cfg = _seed(tmp_path, ["xfce4-terminal", "chrome", "firefox"], browser_exec=f"{chrome} --user-data-dir={tmp_path}/bp")
+    cfg = _seed(tmp_path, ["xfce4-terminal", "chrome", "firefox"], browser_exec=str(chrome))
     panel = ET.parse(cfg / "xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml")  # well-formed or this raises
     launcher_ids = [str(p.get("name")) for p in panel.iter("property") if p.get("value") == "launcher"]
     execs = sorted(
