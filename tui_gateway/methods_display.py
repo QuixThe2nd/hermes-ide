@@ -108,11 +108,13 @@ def _(rid, params: dict) -> dict:
     """Stopping kills the screen under whoever is on it, so it obeys the same rule as a bare
     display.lease.release: refused while a human holds unless the caller says ``force``."""
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
-    if not params.get("force") and _bd_lease.human_holds():
+    force = bool(params.get("force"))
+    # Refusal and release are ONE lease transition: a takeover landing between a separate human_holds()
+    # check and the release would be acknowledged to the human and then silently revoked here.
+    if _bd_lease.release(unless_human=not force).holder == _bd_lease.HUMAN:
         return _err(rid, _DISPLAY_ERR, "a human holds this screen; pass force: true to stop it anyway",
                     data={"code": "viewer_mismatch"})
     try:
-        _bd_lease.release()
         stopped = _bd_runtime.stop()
         return _ok(rid, {**_display_snapshot(), "stopped": stopped})
     except Exception as e:
@@ -247,12 +249,13 @@ def _(rid, params: dict) -> dict:
     viewer_id = str(params.get("viewer_id") or "").strip() or None
     # lease.release(None) skips the holder check; a client that lost its viewer id must not be able to
     # yank control from whoever holds it unless it says so explicitly (force).
-    if viewer_id is None and not params.get("force") and _bd_lease.human_holds():
-        return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
-                    data={"code": "viewer_mismatch"})
     if viewer_id is not None and not params.get("force") and (refused := _foreign_viewer_id(rid, viewer_id)) is not None:
         return refused
-    lease = _bd_lease.release(viewer_id)
+    # Same atomicity as display.stop: the "is a human holding?" decision happens inside the transition.
+    lease = _bd_lease.release(viewer_id, unless_human=viewer_id is None and not params.get("force"))
+    if viewer_id is None and lease.holder == _bd_lease.HUMAN:
+        return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
+                    data={"code": "viewer_mismatch"})
     return _ok(rid, {"lease": _lease_view(lease)})
 
 

@@ -144,6 +144,24 @@ def test_stop_cannot_kill_the_screen_under_a_human_without_force(monkeypatch, _f
     assert forced["stopped"] is True and stops == [1]
     assert _fresh_lease.get().holder == _fresh_lease.AGENT
 
+    # The refusal must be decided in the SAME transition as the release: a takeover that lands after a
+    # separate "is a human holding?" read but before the release would be acknowledged, then revoked.
+    # Simulate it by making the release transition itself see a human (a write raced in under the lock).
+    real_transition = _fresh_lease._transition
+
+    def transition_after_takeover(profile_key, mutate):
+        def mutate_seeing_human(lease_now):
+            lease_now.holder, lease_now.viewer_id = _fresh_lease.HUMAN, "late-viewer"
+            return mutate(lease_now)
+        return real_transition(profile_key, mutate_seeing_human)
+
+    monkeypatch.setattr(_fresh_lease, "_transition", transition_after_takeover)
+    stops.clear()
+    for method, params in (("display.stop", {}), ("display.lease.release", {})):
+        res = _call(server, method, params)
+        assert "error" in res and res["error"]["data"]["code"] == "viewer_mismatch", (method, res)
+    assert stops == []
+
 
 def test_lease_acquire_and_release_only_honour_an_id_this_connection_minted(monkeypatch, tmp_path, _fresh_lease):
     """The minted identity is worthless if acquire takes any string: a caller could acquire under a

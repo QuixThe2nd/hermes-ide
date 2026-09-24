@@ -178,10 +178,17 @@ def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = 
     return _transition(profile_key, _m)
 
 
-def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = None) -> Lease:
+def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = None,
+            unless_human: bool = False) -> Lease:
     """Return control to the agent. With ``viewer_id`` only that holder may release (a stale viewer
-    closing its window must not yank control from the one who took over after it)."""
+    closing its window must not yank control from the one who took over after it). ``unless_human``
+    makes a bare release a no-op while any human holds: the decision is taken under the file lock,
+    so a takeover racing a check-then-release cannot be silently revoked. Callers read the returned
+    lease's holder to learn whether anything happened."""
     def _m(lease: Lease) -> bool:
+        if unless_human and lease.holder == HUMAN:
+            logger.info("bot-desktop lease: bare release ignored, a human holds")
+            return False
         if viewer_id is not None and lease.holder == HUMAN and lease.viewer_id != viewer_id:
             # Ignored, not an error: the returned lease still shows the real holder. Logged so a
             # caller that never inspects the return value leaves a trace.
