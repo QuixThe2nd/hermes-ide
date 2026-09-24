@@ -1954,8 +1954,9 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-# Credential files dropped from named-profile exports.
-_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env"})
+# Credential files dropped from named-profile exports. ``bot-desktop`` is the screen's runtime state:
+# its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
+_EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
 
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
