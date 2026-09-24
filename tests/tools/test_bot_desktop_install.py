@@ -135,6 +135,7 @@ def test_passwordless_sudo_runs_the_install_without_asking_for_a_password(monkey
     assert spawned and spawned[0][:1] == ["sudo"] and "-S" not in spawned[0]
     assert "Done" in lines
 
+
 @pytest.mark.linux_only
 def test_timeout_returns_and_frees_the_slot_even_when_a_descendant_survives(monkeypatch):
     """From an unprivileged Hermes, killpg reaches the sudo leader but not a root-owned apt child; that

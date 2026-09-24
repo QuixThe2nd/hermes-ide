@@ -410,6 +410,16 @@ def _rewrite_computer_use(td: Dict[str, Any], available: set) -> Optional[Dict[s
     return _fn_def({**td["function"], **schema_for_host(supported=False)})
 
 
+def _rewrite_computer_use(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
+    """Strip the Bot Screen handoff (`request_handoff` / `wait_for_human`) where no Bot Desktop can exist
+    (macOS, Windows): the model would otherwise learn actions that cannot succeed on this host."""
+    from tools.bot_desktop.runtime import is_supported_host
+    from tools.computer_use.schema import schema_for_host
+    if is_supported_host():
+        return td
+    return _fn_def({**td["function"], **schema_for_host(supported=False)})
+
+
 def _rewrite_browser_exec(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
     """browser_exec runs arbitrary host Python: a session without the terminal surface
     must not regain host execution via the browser toolset. Session-level gate rather
