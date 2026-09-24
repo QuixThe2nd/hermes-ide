@@ -109,7 +109,7 @@ it('a stopped pane learns of an external start from the pushed display.status ev
   expect(view.getByText('Stopped')).toBeTruthy()
 
   act(() => emitGatewayEvent({ type: 'display.status', connectionId: 'host-a', profile: 'ops', payload: running }))
-  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe'))
+  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', expect.anything()))
   expect(view.queryByText('Stopped')).toBeNull()
   view.unmount()
 })

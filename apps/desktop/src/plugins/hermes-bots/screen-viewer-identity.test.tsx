@@ -111,7 +111,7 @@ const emitLease = (viewer_hash: string) =>
 
 it('holds control when the lease names the hash of the server-minted viewer id, not when it names another', async () => {
   const view = render(<BotScreenPane bot={bot} />)
-  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe'))
+  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', expect.anything()))
   await act(async () => {})
 
   emitLease(await viewerHash('someone-else'))
@@ -125,7 +125,7 @@ it('holds control when the lease names the hash of the server-minted viewer id, 
 
 it('hands back with the minted id, never a client-generated one', async () => {
   const view = render(<BotScreenPane bot={bot} />)
-  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe'))
+  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', expect.anything()))
   await act(async () => {})
   emitLease(await viewerHash(MINTED))
 
@@ -138,7 +138,7 @@ it('hands back with the minted id, never a client-generated one', async () => {
 
 it('offers a forced hand-back for a human lease this window does not hold, sending {force: true} and no viewer id', async () => {
   const view = render(<BotScreenPane bot={bot} />)
-  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe'))
+  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', expect.anything()))
   await act(async () => {})
 
   emitLease(await viewerHash(MINTED))

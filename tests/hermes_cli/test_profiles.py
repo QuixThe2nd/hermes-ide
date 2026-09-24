@@ -1915,6 +1915,9 @@ def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op
     """Deleting or renaming a profile stops its gateway, and must stop its Bot Desktop launcher too: the
     Xvnc/Xfce session otherwise keeps running against a directory that no longer exists (or now belongs to
     another name), holding its display number and an rfb.sock nobody can reach through status()."""
+    import time
+    from tools.bot_desktop import runtime
+
     profile_dir = create_profile("coder", no_alias=True)
     proc = _live_bot_desktop_launcher(profile_dir)
     try:
@@ -1924,7 +1927,12 @@ def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op
                 delete_profile("coder", yes=True)
             else:
                 rename_profile("coder", "hacker")
-        assert proc.wait(timeout=10) != 0, "the launcher was signalled by the profile op"
+        # The runtime reaps what it kills (a later gateway holds no Popen for the launcher), so our own
+        # Popen may see the status already collected; liveness, not the exit code, is the contract.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and runtime._pid_alive(proc.pid):
+            time.sleep(0.05)
+        assert not runtime._pid_alive(proc.pid), "the launcher was not stopped by the profile op"
     finally:
         proc.kill()
 
