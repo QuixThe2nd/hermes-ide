@@ -1497,6 +1497,25 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     print(f"✓ Stopped {len(pids)} profile backend process(es)")
 
 
+def _stop_bot_desktop(profile_dir: Path) -> None:
+    """Stop the profile's Bot Desktop (Xvnc + Xfce launcher) before its directory is removed or renamed;
+    gateway shutdown does not reach it (its own session, its own pid file). Scoped through the hermes-home
+    override so the runtime reads THIS profile's bot-desktop/ state, whichever profile invoked the op.
+    A failure here is logged, never fatal: the profile op is what the user asked for."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime
+    if not runtime.is_supported_host():
+        return
+    token = set_hermes_home_override(profile_dir)
+    try:
+        if runtime.stop():
+            print("✓ Bot Desktop stopped")
+    except Exception as e:
+        logger.warning("Could not stop the Bot Desktop of %s: %s", profile_dir, e)
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _rmtree_make_writable(func, path, exc):
     """onexc/onerror handler: add +w on PermissionError so rmtree can proceed. Covers NixOS-
     style read-only copies where the path itself (0444) or its parent (0555) isn't writable."""
@@ -1609,6 +1628,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if gw_running:
         _stop_gateway_process(profile_dir)
     _stop_profile_backends(canon, profile_dir)
+    _stop_bot_desktop(profile_dir)
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
@@ -2123,10 +2143,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise _profile_exists_error(new_canon)
 
-    # 1. Stop gateway if running
+    # 1. Stop gateway if running, and the screen whose launcher holds paths under the old name
     if _check_gateway_running(old_dir):
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
+    _stop_bot_desktop(old_dir)
 
     # 1b. Unroute the old name from a live multiplexer BEFORE the rename (same protocol as
     # delete_profile). A multiplexed secondary has no gateway.pid of its own, so the check above
