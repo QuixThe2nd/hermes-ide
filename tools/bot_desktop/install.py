@@ -18,6 +18,7 @@ import logging
 import os
 import selectors
 import shlex
+import shutil
 import signal
 import subprocess
 import threading
@@ -31,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 _install_lock = threading.Lock()
 _running: set[str] = set()
+
+
+NO_SUDO = -2  # install_packages: unprivileged host without sudo; the on_line stream carried the command to run as root
 
 
 class InstallBusy(RuntimeError):
@@ -63,7 +67,8 @@ def release(key: str) -> None:
 
 def install_packages(*, ask_password: Callable[[], str], on_line: Callable[[str], None],
                      timeout_seconds: float = 900.0, claimed: bool = False) -> int:
-    """Run the package install; returns the process exit code (0 = success, ``-1`` = cancelled).
+    """Run the package install; returns the process exit code (0 = success, ``-1`` = cancelled,
+    :data:`NO_SUDO` = unprivileged host without sudo — the command to run by hand was streamed).
     ``claimed=True``: the caller already holds the slot via :func:`claim`; it is released here either way."""
     key = hermes_home_key() if claimed else None
     try:
@@ -91,16 +96,21 @@ def _sudo_nopasswd() -> bool:
 def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], None],
          timeout_seconds: float) -> int:
     argv = shlex.split(cmd)
-    assert argv[0] == "sudo", cmd
     stdin_payload: Optional[str] = None
-    if not _sudo_nopasswd():
-        password = ask_password() or ""
-        if not password:
-            on_line("install cancelled: no sudo password provided")
-            return -1
-        # -S: read the password from stdin; -p '': no prompt text mixed into the streamed output.
-        argv = ["sudo", "-S", "-p", "", *argv[1:]]
-        stdin_payload = password + "\n"
+    if argv[0] == "sudo":
+        if shutil.which("sudo") is None:
+            # Minimal containers ship no sudo: a password card would be a dead end. Hand the human the
+            # exact command for the host instead.
+            on_line(f"install needs root and this host has no sudo; run on the host as root: {cmd[len('sudo '):]}")
+            return NO_SUDO
+        if not _sudo_nopasswd():
+            password = ask_password() or ""
+            if not password:
+                on_line("install cancelled: no sudo password provided")
+                return -1
+            # -S: read the password from stdin; -p '': no prompt text mixed into the streamed output.
+            argv = ["sudo", "-S", "-p", "", *argv[1:]]
+            stdin_payload = password + "\n"
     on_line(f"$ {cmd}")
     env = {"DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"}
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only (is_supported_host)

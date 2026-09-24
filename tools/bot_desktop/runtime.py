@@ -91,15 +91,23 @@ def package_manager() -> Optional[str]:
 
 
 def install_command() -> Optional[str]:
+    """The distro command that installs the Bot Desktop packages, as the human would type it on THIS host:
+    prefixed with ``sudo`` unless Hermes already runs as root (the official Docker image is uid 0 with no
+    sudo binary), so it is both what the pane shows and what :mod:`tools.bot_desktop.install` runs."""
     pm = package_manager()
     if pm is None:
         return None
     pkgs = " ".join(PACKAGES[pm])
-    return {
-        "apt": f"sudo apt-get install -y --no-install-recommends {pkgs}",
-        "dnf": f"sudo dnf install -y {pkgs}",
-        "pacman": f"sudo pacman -S --needed --noconfirm {pkgs}",
+    body = {
+        "apt": f"apt-get install -y --no-install-recommends {pkgs}",
+        "dnf": f"dnf install -y {pkgs}",
+        "pacman": f"pacman -S --needed --noconfirm {pkgs}",
     }[pm]
+    return body if is_root() else f"sudo {body}"
+
+
+def is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 @dataclass

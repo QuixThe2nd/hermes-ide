@@ -78,6 +78,9 @@ def _screen_install(args) -> int:
     except install.InstallBusy as exc:
         print(f"Bot Desktop: {exc}")
         return 1
+    if rc == install.NO_SUDO:
+        print("Bot Desktop: this host has no sudo. Run as root on the host:\n  " + cmd.removeprefix("sudo "))
+        return 1
     if rc != 0:
         print(f"Bot Desktop: installer exited {rc}")
         return rc or 1

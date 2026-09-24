@@ -8,6 +8,8 @@ import pytest
 
 from tools.bot_desktop import install, runtime
 
+_REAL_INSTALL_COMMAND = runtime.install_command  # captured before the fixture pins a sudo line
+
 
 @pytest.fixture(autouse=True)
 def _isolated_host(tmp_path, monkeypatch):
@@ -165,3 +167,39 @@ def test_timeout_returns_and_frees_the_slot_even_when_a_descendant_survives(monk
     assert any(line.startswith("code ") and line != "code 0" for line in lines), lines
     assert any("timed out" in line for line in lines), lines
     install.release(install.claim())  # slot is free again
+
+
+def test_root_installs_without_sudo_and_without_asking(monkeypatch):
+    """The official Docker image runs Hermes as uid 0 with no sudo binary: the package manager must be
+    run directly, and the password card must never be raised for a user who already is root."""
+    import subprocess
+
+    monkeypatch.setattr(install.os, "geteuid", lambda: 0)
+    monkeypatch.setattr("shutil.which", lambda name, *a, **k: None)
+    monkeypatch.setattr(runtime, "package_manager", lambda: "apt")
+    monkeypatch.setattr(runtime, "install_command", _REAL_INSTALL_COMMAND)
+    spawned: list[list[str]] = []
+    real_popen = subprocess.Popen
+
+    def popen(argv, **kw):
+        spawned.append(list(argv))
+        return real_popen(["true"], **kw)
+
+    monkeypatch.setattr(install.subprocess, "Popen", popen)
+    code = install.install_packages(ask_password=lambda: pytest.fail("root was asked for a sudo password"),
+                                    on_line=lambda _l: None)
+    assert code == 0
+    assert spawned and spawned[0][0] == "apt-get", spawned
+
+
+def test_no_sudo_binary_returns_the_host_command_instead_of_a_password_card(monkeypatch):
+    """Unprivileged with no sudo on the host (minimal containers): a password card would be a dead end,
+    the user needs the exact command to run on the host instead."""
+    monkeypatch.setattr(install.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr("shutil.which", lambda name, *a, **k: None)
+    monkeypatch.setattr(install.subprocess, "Popen", lambda *a, **k: pytest.fail("package manager spawned"))
+    lines: list[str] = []
+    code = install.install_packages(ask_password=lambda: pytest.fail("password card raised without sudo"),
+                                    on_line=lines.append)
+    assert code == install.NO_SUDO
+    assert any("apt-get install" in line for line in lines), lines
