@@ -244,13 +244,22 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
             return True
         return True
 
+    def _reap_if_ours() -> None:
+        # The launcher was Popen'd by whichever gateway started it; a later gateway that stops it holds
+        # no Popen, so the dead leader would sit as a zombie in our table (and count as "left").
+        with contextlib.suppress(ChildProcessError, OSError):
+            os.waitpid(pid, os.WNOHANG)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+
     _signal(signal.SIGTERM)
     deadline = time.monotonic() + grace
     while time.monotonic() < deadline:
+        _reap_if_ours()
         if not _anything_left():
             return
         time.sleep(0.05)
     _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+    time.sleep(0.1)
+    _reap_if_ours()
 
 
 # Host-wide (every profile allocates from one band), so it lives outside any profile home — but not in
