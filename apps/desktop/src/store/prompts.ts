@@ -43,7 +43,10 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
   const idOf = (value: T): string | undefined => (value as { requestId?: string }).requestId
 
   return {
-    $active: computed([$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? null),
+    // An app-level prompt (sessionId null: the Bot Screen install card) is not about any chat, so it is
+    // shown in whichever chat is active rather than only while the chat that happened to be open at
+    // request time stays open.
+    $active: computed([$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? all[keyFor(null)] ?? null),
     $all,
     reset: () => $all.set({}),
     set: request => $all.set({ ...$all.get(), [keyFor(request.sessionId)]: request }),
