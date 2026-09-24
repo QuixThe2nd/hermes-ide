@@ -109,3 +109,23 @@ def test_browser_console_supervisor_fast_path_is_fenced_while_human_controls_sha
     assert evaluated == [] and commands == [], "human holds the lease, yet the page was evaluated"
     assert "WHAT-THE-HUMAN-TYPED" not in raw
     assert result.get("code") == "human_has_control"
+
+
+def test_vault_page_operations_respect_the_human_lease(monkeypatch):
+    """The vault tools reach the page over the supervisor socket, outside `_run_browser_command`: while a
+    human holds the screen they must be refused like every other page access, and never focus, inspect or
+    write to the form the human is typing into."""
+    from tools import browser_tool as browser
+    from tools import browser_vault_tool as vault
+
+    browser._active_sessions["default"] = {"session_name": "review", "cdp_url": None, "features": {"local": True}}
+    touched = []
+    for name in ("browser_vault_fill", "browser_vault_enter_code", "browser_vault_save_login"):
+        monkeypatch.setattr(vault, name, lambda *a, **k: touched.append(name) or json.dumps({"success": True}))
+    lease.acquire("human")
+    for handler in (vault._handle_vault_fill, vault._handle_vault_enter_code, vault._handle_vault_save_login):
+        res = json.loads(handler({"handle": "vault_x"}, task_id="default"))
+        assert res["code"] == "human_has_control", handler.__name__
+    assert touched == [], "no vault page access while the human holds the screen"
+    lease.release("human")
+    assert json.loads(vault._handle_vault_fill({"handle": "vault_x"}, task_id="default"))["success"] is True
