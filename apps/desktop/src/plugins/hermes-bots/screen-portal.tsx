@@ -20,7 +20,7 @@ import { resolveBotConnectionRoute } from './routing'
 import { type DisplayLease, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, type ScreenViewer } from './screen-connection'
 import { openBotScreen } from './screen-open'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable } from './screen-state'
-import type { BotMeta, RosterRow } from './types'
+import type { RosterRow } from './types'
 
 export type PortalTone = 'live' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unavailable' | 'unknown'
 
@@ -136,7 +136,7 @@ export function useScreenPortalState(bot: RosterRow) {
   return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null, state?.unavailable) }
 }
 
-export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; meta?: BotMeta | null; compact?: boolean }) {
+export function ScreenPortal({ bot }: { bot: RosterRow }) {
   const t = useBots()
   const { status, tone } = useScreenPortalState(bot)
 
@@ -151,7 +151,8 @@ export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; m
     unknown: status?.display ?? ''
   }[tone]
 
-  if ((tone === 'unsupported' || tone === 'unavailable') && compact) {
+  // Nothing to offer for a screen that cannot exist: the sidebar row simply disappears.
+  if (tone === 'unsupported' || tone === 'unavailable') {
     return null
   }
 
@@ -159,7 +160,7 @@ export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; m
     <button
       aria-label={`${t.screen.portalTitle}: ${subtitle}`}
       className="group flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) bg-(--chrome-action-hover)/40 px-2 py-1.5 text-left transition-colors hover:bg-(--chrome-action-hover)"
-      onClick={() => openBotScreen(bot, meta ?? null)}
+      onClick={() => openBotScreen(bot, null)}
       type="button"
     >
       <span className="relative grid size-7 shrink-0 place-items-center rounded bg-black/70 text-white/90">
@@ -201,5 +202,5 @@ export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }
     [connectionId, profile, roster]
   )
 
-  return <ScreenPortal bot={bot} compact />
+  return <ScreenPortal bot={bot} />
 }

@@ -56,6 +56,8 @@ vi.mock('./i18n', () => ({
   })
 }))
 
+import { host } from '@hermes/plugin-sdk'
+
 // eslint-disable-next-line no-restricted-imports
 import { emitGatewayEvent } from '../../contrib/events'
 
@@ -104,4 +106,28 @@ it('retains the bot socket before display.install and releases it when the done 
   view.unmount()
   // Unmount after done must not double-release.
   expect(calls.filter(call => call === 'release')).toHaveLength(1)
+})
+
+it('an unmount while the retention is still pending releases it once and never sends display.install', async () => {
+  let grant: (() => void) | null = null
+  vi.mocked(host.retainProfile).mockImplementationOnce(
+    () =>
+      new Promise(resolve => {
+        grant = () => {
+          calls.push('retain')
+          resolve(() => {
+            calls.push('release')
+          })
+        }
+      })
+  )
+  const view = render(<ScreenInstallCard bot={bot} onInstalled={vi.fn()} status={status} />)
+
+  await act(async () => {
+    fireEvent.click(view.getByText('Install on host'))
+  })
+  view.unmount()
+  await act(async () => grant?.())
+  await act(async () => {})
+  expect(calls).toEqual(['retain', 'release'])
 })

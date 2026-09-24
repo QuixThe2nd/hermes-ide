@@ -34,13 +34,22 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
   // Keeps the bot's socket open from display.install until done/failed: the log
   // and done events ride that socket, and the SDK closes an idle one otherwise.
   const retention = useRef<(() => void) | null>(null)
+  // Set by unmount: a retention that resolves after cleanup ran is released on the spot and
+  // the install it was pinning the socket for is never sent.
+  const unmounted = useRef(false)
 
   const releaseRetention = useCallback(() => {
     retention.current?.()
     retention.current = null
   }, [])
 
-  useEffect(() => releaseRetention, [releaseRetention])
+  useEffect(
+    () => () => {
+      unmounted.current = true
+      releaseRetention()
+    },
+    [releaseRetention]
+  )
 
   useEffect(() => {
     logEnd.current?.scrollIntoView({ block: 'end' })
@@ -86,7 +95,15 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
     setError(null)
 
     try {
-      retention.current = await retainBotScreen(bot)
+      const retain = await retainBotScreen(bot)
+
+      if (unmounted.current) {
+        retain()
+
+        return
+      }
+
+      retention.current = retain
       await displayRequest(bot, 'display.install')
     } catch (err) {
       releaseRetention()
