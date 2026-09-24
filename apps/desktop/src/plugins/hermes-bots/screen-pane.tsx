@@ -251,10 +251,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   }, [bot])
 
   const takeOver = useCallback(async () => {
+    // The button is disabled without a viewer; the guard keeps a keyboard-activated
+    // stale closure from sending an empty viewer_id the server rejects.
+    if (!viewer) {
+      return
+    }
+
     setBusy(true)
 
     try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: viewer?.id })
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: viewer.id })
       setScreenLease(bot, result.lease)
 
       if (conn !== 'live') {
@@ -265,7 +271,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     } finally {
       setBusy(false)
     }
-  }, [attach, bot, conn, viewer?.id])
+  }, [attach, bot, conn, viewer])
 
   // `force` is the escape hatch for a lease this window no longer owns (a reload
   // minted a fresh viewer id; the old one still holds): the server refuses a
@@ -352,7 +358,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
                 <Codicon name="debug-continue" /> {t.screen.handBackForce}
               </Button>
             ) : null}
-            <Button disabled={busy || conn === 'attaching'} onClick={() => void takeOver()} size="sm">
+            {/* The lease is granted to a server-minted viewer id; until `display.observe` has
+                minted one for this attach a Take over could only send an empty id and dead-end
+                on "viewer_id required". Reconnect is the way to mint one. */}
+            <Button disabled={busy || conn === 'attaching' || !viewer} onClick={() => void takeOver()} size="sm">
               <Codicon name="record-keys" /> {t.screen.takeOver}
             </Button>
           </>

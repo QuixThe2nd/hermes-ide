@@ -151,3 +151,23 @@ it('offers a forced hand-back for a human lease this window does not hold, sendi
   expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.release', { force: true })
   view.unmount()
 })
+
+it('does not offer Take over while no server-minted viewer id exists, even once the attach has settled', async () => {
+  vi.mocked(displayRequest).mockImplementation((_bot, method) =>
+    method === 'display.observe' ? Promise.reject(new Error('ticket refused')) : Promise.resolve(status)
+  )
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(view.getByText('ticket refused')).toBeTruthy())
+  // The attach failed before observe minted an id: a Take over now would send an empty
+  // viewer_id and the server would answer "viewer_id required" — a dead end.
+  expect(view.getByText('Take over').closest('button')?.disabled).toBe(true)
+
+  vi.mocked(displayRequest).mockImplementation(async (_bot, method) =>
+    method === 'display.observe' ? { ...status, ticket: 'test-ticket', viewer_id: MINTED } : status
+  )
+  await act(async () => {
+    view.getByTitle('Reconnect').click()
+  })
+  await waitFor(() => expect(view.getByText('Take over').closest('button')?.disabled).toBe(false))
+  view.unmount()
+})
