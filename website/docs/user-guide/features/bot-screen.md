@@ -24,7 +24,14 @@ running as that user — another bot on the same host, and the bot's own
 `terminal` tool included — can reach them directly, bypassing the pane and the
 lease. The lease is a tool-level fence on `computer_use` and the browser tools,
 not an OS one. Running each bot as its own OS user is out of scope; if that
-isolation matters to you, put the bots on separate hosts.
+isolation matters to you, put the bots on separate hosts. Two timing details
+worth knowing: the WebSocket bridge caches its lease decision for up to 250 ms
+between re-reads of the lease file, so a takeover made by another process is
+enforced within that window (the bot's tool results are voided by the lease
+epoch regardless of the window). And the viewer's single-use, 30-second
+`display_ticket` travels as a URL query parameter on purpose — noVNC cannot
+negotiate WebSocket subprotocols, so a header is not an option — which means a
+reverse proxy's access log may record an already-spent ticket.
 
 ## Requirements
 
@@ -35,16 +42,22 @@ isolation matters to you, put the bots on separate hosts.
   machine as it is. When they are missing the Screen pane in Hermes Desktop shows
   **Install on host** — one click runs the package manager on the gateway host
   (it asks for that host's sudo password in a masked card; the password goes to
-  that host only and is never stored) and streams the log. From a shell,
+  that host only and is never stored) and streams the log. When Hermes itself
+  runs as root — the usual case in a container — the installer runs the package
+  manager directly, with no sudo and no password card. When it is not root and
+  the host has no `sudo` at all, the pane and the CLI print the exact install
+  command for you to run on the host instead of showing a card. From a shell,
   `hermes computer-use screen status` prints the exact line and
   `hermes computer-use screen install` runs it:
 
   | Distro | Packages |
   |---|---|
   | Debian / Ubuntu | `tigervnc-standalone-server xfce4-panel xfwm4 xfdesktop4 xfce4-settings xfce4-terminal dbus-x11 x11-xserver-utils x11-utils xauth fonts-dejavu-core` |
-  | Fedora | `tigervnc-server-minimal xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal dbus-x11 xsetroot xset xdpyinfo xprop xorg-x11-xauth setxkbmap dejavu-sans-fonts` |
+  | Fedora | `tigervnc-x11-server xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal dbus-daemon xsetroot xset xdpyinfo xprop xorg-x11-xauth setxkbmap dejavu-sans-fonts` |
   | Arch | `tigervnc xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal xorg-xsetroot xorg-xset xorg-xdpyinfo xorg-xprop xorg-xauth xorg-setxkbmap ttf-dejavu` |
 
+  On Fedora the `Xvnc` binary is in `tigervnc-x11-server` (not
+  `tigervnc-server-minimal`) and `dbus-run-session` comes from `dbus-daemon`.
   Deliberately **not** the `xfce4` metapackage: it pulls in the screensaver,
   power manager and polkit agent that lock or prompt a headless desktop.
 - [Computer Use](./computer-use.md) enabled for the bot (cua-driver installed).
@@ -64,10 +77,12 @@ Every bot's computer is one click away in three places of Hermes Desktop:
   its conversations too.
 
 1. Open the Screen with any of the entries above.
-   The first time, click **Start screen**. Set `bot_desktop.auto_start: true` if
-   you want a headless host to start the screen by itself on the bot's first
-   `computer_use` call (off by default: installing TigerVNC never yields a screen
-   nobody asked for). A headed browser opens on the screen once it is running.
+   The screen is **off by default** and nothing starts it for you: click
+   **Start screen** in the pane, run `hermes computer-use screen start` on the
+   host, or set `bot_desktop.auto_start: true` if you want a headless host to
+   start the screen by itself on the bot's first `computer_use` call (off so
+   that installing TigerVNC never yields a screen nobody asked for). A headed
+   browser opens on the screen once it is running.
 2. The pane streams the bot's desktop. The chip in the header says who is in
    control: **Bot is in control** by default.
 3. Click **Take over**. The border turns red, your keyboard and mouse now drive
@@ -104,6 +119,28 @@ are in the bot's own windows and cookie jar; what you sign in to is what the bot
 uses afterwards and in every later session, until the site expires the login.
 Set `browser.headed: true` so the bot's own browsing is visible on the screen too.
 
+The dock is seeded **once**, the first time the screen starts for a profile.
+The guard is the panel layout file
+`<HERMES_HOME>/bot-desktop/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml`:
+while it exists the launcher leaves the panel alone, so changing
+`AGENT_BROWSER_EXECUTABLE_PATH` or `AGENT_BROWSER_PROFILE` and restarting the
+screen does not re-pin the Browser icon. Delete that file and the dock is
+rebuilt on the next `screen start` from whatever is installed then.
+
+Which Chromium the dock and the bot use: an explicit
+`AGENT_BROWSER_EXECUTABLE_PATH` wins; otherwise Hermes prefers a system
+`chromium` / `google-chrome` when one is installed, and falls back to the
+Chromium Playwright bundled. The reason for that order is the sandbox: on
+Ubuntu 23.10 and later, `kernel.apparmor_restrict_unprivileged_userns=1` stops
+Playwright's bundled Chromium from setting up its sandbox for a non-root user
+and it exits with `FATAL: No usable sandbox!`, while the distro's Chromium ships
+with an AppArmor profile that allows it. If the pick is wrong for your host, set
+`AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium` (or your Chrome path) in the
+gateway's environment. The official Docker image ships only Playwright's
+*headless shell*, which cannot draw a window, so inside it the dock has no
+Browser icon and the pane / `screen status` report **no headed browser** until
+you install a headed one (`apt-get install chromium`).
+
 ## CLI
 
 ```bash
@@ -119,8 +156,13 @@ hermes -p research computer-use screen start   # another bot's screen
 ```yaml
 bot_desktop:
   geometry: "1440x900"   # screen size; the viewer scales to fit the pane
-  auto_start: true       # start on the first computer_use call when the host has no display
+  auto_start: false      # set true to start on the first computer_use call
 ```
+
+`auto_start` is off by default. Start the screen from the Desktop's Screen
+pane (**Start screen**), from `hermes computer-use screen start`, or set the
+flag to `true` for a headless host that should bring its screen up the first
+time the bot calls `computer_use` and no display is available.
 
 State lives under `<HERMES_HOME>/bot-desktop/` per profile (RFB Unix socket,
 Xauthority, launcher log, per-profile xfconf).
@@ -166,3 +208,18 @@ Xauthority, launcher log, per-profile xfconf).
   pane (or **Hand back (force)** after a reload). From a shell,
   `hermes computer-use screen stop` releases the lease and stops the screen;
   `hermes computer-use screen start` brings it back with the bot in control.
+
+### Testing under WSL
+
+WSL2 counts as a supported Linux host: `screen status` reports it as such and
+the pane is offered. One WSLg quirk gets in the way of the first start: WSLg
+mounts `/tmp/.X11-unix` read-only, so `Xvnc` cannot create its display socket
+and dies with `Cannot establish any listening sockets` in `launcher.log`.
+Replace the mount with a writable directory before starting the screen:
+
+```bash
+sudo umount /tmp/.X11-unix
+sudo mkdir -p /tmp/.X11-unix && sudo chmod 1777 /tmp/.X11-unix
+```
+
+The mount comes back on the next WSL restart; repeat the two commands then.

@@ -431,8 +431,11 @@ of screenshot context, not ~600K.
     has the recipe.
   - **Linux** requires a reachable display server. Headless servers
     get one from [Bot Screen](./bot-screen.md): a per-profile Xfce
-    desktop over TigerVNC that Hermes starts on first use and streams
-    into Hermes Desktop, where you can take over for logins and 2FA.
+    desktop over TigerVNC, streamed into Hermes Desktop, where you can
+    take over for logins and 2FA. You start it from the Desktop's
+    Screen pane or `hermes computer-use screen start`; it starts on
+    first use only when `bot_desktop.auto_start: true` is set (off by
+    default).
     Pure Wayland sessions need an XWayland bridge for screen capture
     (cua-driver's Wayland inject path handles input independently).
 
