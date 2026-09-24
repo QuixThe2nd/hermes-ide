@@ -126,6 +126,9 @@ def test_passwordless_sudo_runs_the_install_without_asking_for_a_password(monkey
         def wait(self, timeout=None):
             return 0
 
+        def poll(self):
+            return 0
+
     monkeypatch.setattr(install.subprocess, "Popen", _Proc)
     monkeypatch.setattr(install.os, "killpg", lambda *a: None)
     lines: list[str] = []
@@ -204,3 +207,41 @@ def test_no_sudo_binary_returns_the_host_command_instead_of_a_password_card(monk
                                     on_line=lines.append)
     assert code == install.NO_SUDO
     assert any("apt-get install" in line for line in lines), lines
+
+
+def test_timeout_finishes_the_group_when_only_the_leader_dies_on_term(monkeypatch):
+    """TERM ends the leader shell at once, but a descendant in the same group that ignores TERM used to be
+    left alive holding the dpkg lock: the kill helper returned as soon as the leader was reaped. Cleanup is
+    done only when the whole process group is gone."""
+    import subprocess
+    import time
+
+    monkeypatch.setattr(install, "_sudo_nopasswd", lambda: True)
+    monkeypatch.setattr(install, "_TERM_GRACE_SECONDS", 0.3, raising=False)
+    real_popen = subprocess.Popen
+
+    def popen(argv, **kw):
+        if argv[:1] != ["sudo"]:
+            return real_popen(argv, **kw)
+        return real_popen(["sh", "-c", "sh -c 'trap \"\" TERM; echo child $$; sleep 30' & wait"], **kw)
+
+    monkeypatch.setattr(install.subprocess, "Popen", popen)
+    lines: list[str] = []
+    install.install_packages(ask_password=lambda: "", on_line=lines.append, timeout_seconds=0.5)
+    child = next(int(line.split()[1]) for line in lines if line.startswith("child "))
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and _alive(child):
+        time.sleep(0.05)
+    try:
+        assert not _alive(child), "the TERM-ignoring descendant survived the timeout cleanup"
+    finally:
+        subprocess.run(["kill", "-9", str(child)], check=False)
+
+
+def _alive(pid: int) -> bool:
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True

@@ -130,6 +130,8 @@ def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], 
         return proc.returncode if proc.returncode is not None else -9
     finally:
         proc.stdout.close()  # type: ignore[union-attr]
+        if proc.poll() is None:  # the drain raised (a failing on_line sink): the slot is released, so no orphan
+            _kill_group(proc)
 
 
 _TERM_GRACE_SECONDS = 5.0
@@ -167,9 +169,24 @@ def _kill_group(proc: subprocess.Popen) -> None:
     apt/dnf running as root with the dpkg lock while the slot is released, so the whole group goes: TERM
     first so dpkg can finish its transaction, KILL after the grace. Best effort — as non-root neither
     signal reaches a root-owned child, which is why the caller never waits on EOF."""
+    def _group_gone() -> bool:
+        try:
+            os.killpg(proc.pid, 0)  # windows-footgun: ok — Linux-only (is_supported_host)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False  # a root-owned child is still there
+        return False
+
     for sig, grace in ((signal.SIGTERM, _TERM_GRACE_SECONDS), (signal.SIGKILL, 1.0)):  # windows-footgun: ok — Linux-only (is_supported_host)
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, sig)  # windows-footgun: ok — Linux-only (is_supported_host)
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=grace)
+        # The leader (sudo / the package manager) going away is not the end: wait for the whole group so a
+        # TERM-ignoring descendant gets the KILL round instead of surviving with the dpkg lock.
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline and not _group_gone():
+            time.sleep(0.05)
+        if _group_gone():
             return

@@ -231,10 +231,23 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
                 os.killpg(pgid, sig)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
             else:
                 os.kill(pid, sig)
+    def _anything_left() -> bool:
+        # The leader dying first is the common case (bash exits on TERM, Xvnc traps it); the group is
+        # done only when killpg(0) finds nobody, else a TERM-ignoring descendant keeps the display.
+        if pgid is None:
+            return _pid_alive(pid)
+        try:
+            os.killpg(pgid, 0)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
     _signal(signal.SIGTERM)
     deadline = time.monotonic() + grace
     while time.monotonic() < deadline:
-        if not _pid_alive(pid):
+        if not _anything_left():
             return
         time.sleep(0.05)
     _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
