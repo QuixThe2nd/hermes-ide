@@ -6,7 +6,13 @@ import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
 const sockets = vi.hoisted(
-  () => [] as Array<{ closeCodes: number[]; closed: boolean; close: (code?: number) => void; serverClose: (code: number) => void }>
+  () =>
+    [] as Array<{
+      closeCodes: number[]
+      closed: boolean
+      close: (code?: number) => void
+      serverClose: (code: number) => void
+    }>
 )
 
 const rfbs = vi.hoisted(() => [] as Array<{ emit: (type: string, detail?: unknown) => void }>)
@@ -181,9 +187,13 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   // keeps it. Model that, so a pane that forgets its id visibly loses the lease it holds.
   let minted = 0
   vi.mocked(displayRequest).mockImplementation(async (_bot, method, params) => {
-    if (method !== 'display.observe') return { ...status, ticket: 'test-ticket', viewer_id: 'this-viewer' }
+    if (method !== 'display.observe') {
+      return { ...status, ticket: 'test-ticket', viewer_id: 'this-viewer' }
+    }
     const presented = (params as { viewer_id?: string } | undefined)?.viewer_id
-    const viewer_id = presented === 'this-viewer' ? 'this-viewer' : minted++ === 0 ? 'this-viewer' : 'replacement-viewer'
+    const viewer_id =
+      presented === 'this-viewer' ? 'this-viewer' : minted++ === 0 ? 'this-viewer' : 'replacement-viewer'
+
     return { ...status, ticket: 'test-ticket', viewer_id }
   })
   const view = render(<BotScreenPane bot={bot} />)
@@ -202,7 +212,8 @@ it('re-attaches in watch mode after the bridge evicts us with 4000, with a bound
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(sockets).toHaveLength(1))
   await act(async () => {})
-  const observes = () => vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.observe').length
+  const observes = () =>
+    vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.observe').length
   expect(observes()).toBe(1)
 
   act(() => {
