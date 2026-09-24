@@ -107,12 +107,19 @@ def test_passwordless_sudo_runs_the_install_without_asking_for_a_password(monkey
     spawned: list[list[str]] = []
 
     class _Proc:
+        """Stub matching the readiness-polled drain: stdout must be a real
+        selectable fd (os.pipe), so the lines go through the kernel pipe."""
+
         pid = 4242
-        stdin = __import__("io").StringIO()
 
         def __init__(self, argv, **kw):
             spawned.append(argv)
-            self.stdout = iter(["Reading package lists...\n", "Done\n"])
+            r, w = __import__("os").pipe()
+            __import__("os").write(w, b"Reading package lists...\nDone\n")
+            __import__("os").close(w)
+            self.stdout = __import__("types").SimpleNamespace(
+                fileno=lambda: r, close=lambda: __import__("os").close(r))
+            self.stdin = __import__("types").SimpleNamespace(close=lambda: None)
 
         def wait(self):
             return 0
@@ -125,3 +132,36 @@ def test_passwordless_sudo_runs_the_install_without_asking_for_a_password(monkey
     assert code == 0
     assert spawned and spawned[0][:1] == ["sudo"] and "-S" not in spawned[0]
     assert "Done" in lines
+
+@pytest.mark.linux_only
+def test_timeout_returns_and_frees_the_slot_even_when_a_descendant_survives(monkeypatch):
+    """From an unprivileged Hermes, killpg reaches the sudo leader but not a root-owned apt child; that
+    child keeps the pipe's write end open, so draining stdout never sees EOF and the profile slot stays
+    taken forever. The timeout must end the drain and release the slot regardless of what survived.
+    Stand-in for the unkillable root child: a grandchild in its own session holding our stdout."""
+    import subprocess
+    import time
+
+    monkeypatch.setattr(install, "_sudo_nopasswd", lambda: True)
+    monkeypatch.setattr(install, "_TERM_GRACE_SECONDS", 0.2, raising=False)
+    real_popen = subprocess.Popen
+
+    def popen(argv, **kw):
+        if argv[:1] != ["sudo"]:
+            return real_popen(argv, **kw)
+        return real_popen(["sh", "-c", "setsid sleep 30 & echo child $!; wait"], **kw)
+
+    monkeypatch.setattr(install.subprocess, "Popen", popen)
+    lines: list[str] = []
+    started = time.monotonic()
+    worker = threading.Thread(target=lambda: lines.append(
+        f"code {install.install_packages(ask_password=lambda: '', on_line=lines.append, timeout_seconds=0.5)}"))
+    worker.start()
+    worker.join(3.0)
+    survivor = next((int(line.split()[1]) for line in lines if line.startswith("child ")), None)
+    if survivor:
+        subprocess.run(["kill", "-9", str(survivor)], check=False)
+    assert not worker.is_alive(), f"install_packages hung {time.monotonic() - started:.1f}s on a surviving descendant"
+    assert any(line.startswith("code ") and line != "code 0" for line in lines), lines
+    assert any("timed out" in line for line in lines), lines
+    install.release(install.claim())  # slot is free again

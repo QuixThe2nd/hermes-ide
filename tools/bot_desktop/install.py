@@ -16,10 +16,12 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import selectors
 import shlex
 import signal
 import subprocess
 import threading
+import time
 from typing import Callable, Optional
 
 from hermes_constants import hermes_home_key
@@ -103,24 +105,61 @@ def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], 
     env = {"DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"}
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only (is_supported_host)
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        env={**os.environ, **env}, text=True, encoding="utf-8", errors="replace", start_new_session=True)
+        env={**os.environ, **env}, start_new_session=True)
     try:
         if stdin_payload is not None:
-            proc.stdin.write(stdin_payload)  # type: ignore[union-attr]
+            proc.stdin.write(stdin_payload.encode("utf-8"))  # type: ignore[union-attr]
         proc.stdin.close()  # type: ignore[union-attr]
     except OSError:
         pass
-    # The package manager runs in its own session (start_new_session); killing only sudo would leave apt/dnf
-    # running as root with the dpkg lock while the slot is released, so the whole group goes.
-    def _kill_group() -> None:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (is_supported_host)
-
-    timer = threading.Timer(timeout_seconds, _kill_group)
-    timer.start()
     try:
-        for line in proc.stdout:  # type: ignore[union-attr]
-            on_line(line.rstrip("\n"))
-        return proc.wait()
+        if _drain_until(proc, on_line, time.monotonic() + timeout_seconds):
+            return proc.wait()
+        _kill_group(proc)
+        on_line(f"install timed out after {timeout_seconds:.0f}s; the package manager may still be running as root")
+        return proc.returncode if proc.returncode is not None else -9
     finally:
-        timer.cancel()
+        proc.stdout.close()  # type: ignore[union-attr]
+
+
+_TERM_GRACE_SECONDS = 5.0
+
+
+def _drain_until(proc: subprocess.Popen, on_line: Callable[[str], None], deadline: float) -> bool:
+    """Stream ``proc.stdout`` lines to ``on_line`` until EOF (``True``) or ``deadline`` (``False``).
+
+    Readiness-polled rather than a blocking ``for line in proc.stdout``: from an unprivileged Hermes no
+    signal reaches a root-owned apt/dnf child, and that child keeps the pipe's write end open, so a
+    blocking read would never see EOF and the profile's install slot would be held forever.
+    """
+    fd = proc.stdout.fileno()  # type: ignore[union-attr]
+    buf = b""
+    with selectors.DefaultSelector() as sel:
+        sel.register(fd, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if not sel.select(timeout=min(remaining, 1.0)):
+                continue
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                if buf:
+                    on_line(buf.decode("utf-8", "replace"))
+                return True
+            *lines, buf = (buf + chunk).split(b"\n")
+            for line in lines:
+                on_line(line.decode("utf-8", "replace"))
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """The package manager runs in its own session (start_new_session); killing only sudo would leave
+    apt/dnf running as root with the dpkg lock while the slot is released, so the whole group goes: TERM
+    first so dpkg can finish its transaction, KILL after the grace. Best effort — as non-root neither
+    signal reaches a root-owned child, which is why the caller never waits on EOF."""
+    for sig, grace in ((signal.SIGTERM, _TERM_GRACE_SECONDS), (signal.SIGKILL, 1.0)):  # windows-footgun: ok — Linux-only (is_supported_host)
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, sig)  # windows-footgun: ok — Linux-only (is_supported_host)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=grace)
+            return
