@@ -316,6 +316,25 @@ class TestCreateProfile:
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
 
+    def test_clone_all_does_not_inherit_the_source_screens_identity(self, profile_env):
+        """launcher.pid / env / lease name the SOURCE's live X server; a clone that inherits them believes it
+        owns that screen and `screen stop` on the clone kills the source's desktop. The browser profile
+        beside them is user data (logins) and must come along."""
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        bd = default_home / "bot-desktop"
+        (bd / "browser-profile" / "Default").mkdir(parents=True)
+        (bd / "browser-profile" / "Default" / "Cookies").write_text("jar")
+        (bd / "launcher.pid").write_text("4242 1.5")
+        (bd / "env").write_text("DISPLAY=:21\nXAUTHORITY=/x\n")
+        (bd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 3}))
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        for runtime_file in ("launcher.pid", "env", "lease.json"):
+            assert not (profile_dir / "bot-desktop" / runtime_file).exists(), runtime_file
+        assert (profile_dir / "bot-desktop" / "browser-profile" / "Default" / "Cookies").read_text() == "jar"
+
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
     def test_clone_all_skips_special_files(self, profile_env):
         # A live source profile holds special files copytree cannot copy (e.g. a suffixless

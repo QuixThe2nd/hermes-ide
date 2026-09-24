@@ -41,7 +41,14 @@ _CLONE_SUBDIR_FILES = ["memories/MEMORY.md", "memories/USER.md"]
 
 # Runtime files stripped after --clone-all. A post-copy step rather than an ignore filter
 # because they are created dynamically and may be absent at copy time.
-_CLONE_ALL_STRIP: list[str] = ["gateway.pid", "gateway_state.json", "processes.json"]
+_CLONE_ALL_STRIP: list[str] = [
+    "gateway.pid", "gateway_state.json", "processes.json",
+    # Bot Desktop runtime identity: pid + create_time of the SOURCE's launcher, its DISPLAY/XAUTHORITY and
+    # lease. Copied verbatim, `screen stop` on the clone would kill the source's X server. The persistent
+    # browser profile beside them is user data and stays.
+    "bot-desktop/launcher.pid", "bot-desktop/env", "bot-desktop/rfb.sock",
+    "bot-desktop/lease.json", "bot-desktop/lease.lock",
+]
 
 # Infrastructure excluded from --clone-all ONLY when the source is the default profile
 # (``~/.hermes``): git checkout (+ ~3 GB venv), worktrees, sibling profiles, shared bins,
