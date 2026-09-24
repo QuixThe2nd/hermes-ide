@@ -7,7 +7,9 @@
  * the gateway drops input from anyone but the lease holder.
  *
  * Every attach spends a single-use ticket, so a lease flip that the bridge
- * answers with close 4000 (`control-taken`) simply re-attaches in watch mode.
+ * answers with close 4000 (`control-taken`) re-attaches in watch mode on a
+ * fresh ticket under a brief caption; a bridge that keeps evicting fresh
+ * attaches is bounded to a few rapid retries before the error state.
  */
 
 import { Button, Codicon, EmptyState, GlyphSpinner, host, useValue } from '@hermes/plugin-sdk'
@@ -32,10 +34,13 @@ type RfbLike = {
   focus: () => void
 }
 
-type ConnState = 'idle' | 'attaching' | 'live' | 'control-taken' | 'error'
+type ConnState = 'idle' | 'attaching' | 'live' | 'error'
 
 /** Bridge close code when another viewer took the lease (mirrors tui_gateway display bridge). */
 const CLOSE_CONTROL_TAKEN = 4000
+/** Evictions arriving this soon after dialing count toward the loop budget; slower ones reset it. */
+const EVICTION_LOOP_WINDOW_MS = 10_000
+const MAX_RAPID_EVICTIONS = 3
 
 async function loadRfb(): Promise<new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike> {
   const mod = (await import('@novnc/novnc')) as unknown as { default: new (...args: never[]) => RfbLike }
@@ -63,7 +68,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const [conn, setConn] = useState<ConnState>('idle')
   const [error, setError] = useState<null | string>(null)
   const [busy, setBusy] = useState(false)
+  // Caption after a 4000 eviction; cleared once the watch-mode re-attach paints live frames.
+  const [evicted, setEvicted] = useState(false)
   const attachGeneration = useRef(0)
+  const dialedAt = useRef(0)
+  const rapidEvictions = useRef(0)
 
   const refresh = useCallback(async () => {
     // A reply that a newer request, a start result or a pushed event overtook is dropped by
@@ -128,9 +137,13 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     retention.current = null
   }, [])
 
-  const attach = useCallback(async () => {
+  const attach = useCallback(async (auto = false) => {
     if (!canvasHost.current) {
       return
+    }
+
+    if (!auto) {
+      rapidEvictions.current = 0
     }
 
     detach()
@@ -161,6 +174,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       }
 
       setScreenViewer(bot, minted)
+      dialedAt.current = Date.now()
       const ws = new WebSocket(url)
       ws.binaryType = 'arraybuffer'
       socket.current = ws
@@ -181,6 +195,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       client.addEventListener('connect', () => {
         if (generation === attachGeneration.current) {
           setConn('live')
+          setEvicted(false)
         }
       })
       client.addEventListener('disconnect', event => {
@@ -197,7 +212,19 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         const reason = event.detail?.reason ?? ''
 
         if (closeCode === CLOSE_CONTROL_TAKEN || reason.includes('control-taken')) {
-          setConn('control-taken')
+          // Evicted: the socket is dead, so the frozen frame must not stay up. Going idle
+          // re-attaches in watch mode on a fresh ticket; a bridge that evicts every fresh
+          // attach within the window is bounded, then lands in the error state + Reconnect.
+          rapidEvictions.current = Date.now() - dialedAt.current < EVICTION_LOOP_WINDOW_MS ? rapidEvictions.current + 1 : 1
+
+          if (rapidEvictions.current > MAX_RAPID_EVICTIONS) {
+            setEvicted(false)
+            setConn('error')
+            setError(t.screen.controlTaken)
+          } else {
+            setEvicted(true)
+            setConn('idle')
+          }
         } else if (event.detail?.clean) {
           setConn('idle')
         } else {
@@ -214,7 +241,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         setError(err instanceof Error ? err.message : String(err))
       }
     }
-  }, [bot, detach, refresh, t.screen.streamLost])
+  }, [bot, detach, refresh, t.screen.controlTaken, t.screen.streamLost])
 
   // Visibility is not lifecycle: the stream stays attached while the pane is
   // hidden; only unmount tears it down (and hands control back server-side).
@@ -222,7 +249,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
   useEffect(() => {
     if (status?.running && conn === 'idle') {
-      void attach()
+      void attach(true)
     }
   }, [attach, conn, status?.running])
 
@@ -381,8 +408,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
             <GlyphSpinner /> {t.screen.attaching}
           </div>
         ) : null}
-        {conn === 'control-taken' ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60 text-xs text-white">{t.screen.controlTaken}</div>
+        {evicted ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 bg-amber-950/80 px-3 py-1.5 text-center text-xs text-amber-100">{t.screen.controlTaken}</div>
         ) : null}
         {conn === 'error' && error ? (
           <div className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200">{error}</div>

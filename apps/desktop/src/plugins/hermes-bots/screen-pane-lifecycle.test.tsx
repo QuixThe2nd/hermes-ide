@@ -187,15 +187,44 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   view.unmount()
 })
 
-it('shows the control-taken overlay from the bridge close code, which noVNC does not forward', async () => {
+it('re-attaches in watch mode after the bridge evicts us with 4000, with a bounded retry budget', async () => {
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(sockets).toHaveLength(1))
   await act(async () => {})
+  const observes = () => vi.mocked(displayRequest).mock.calls.filter(([, method]) => method === 'display.observe').length
+  expect(observes()).toBe(1)
 
   act(() => {
     sockets[0].serverClose(4000)
     rfbs[0].emit('disconnect', { clean: true })
   })
+  // The caption is informational; the stream itself must come back on a fresh ticket,
+  // not sit frozen on a dead socket until the user finds Reconnect.
   expect(view.getByText('Another viewer took control')).toBeTruthy()
+  await waitFor(() => expect(sockets).toHaveLength(2))
+  expect(observes()).toBe(2)
+  await act(async () => {})
+  expect(view.queryByText('Another viewer took control')).toBeNull()
+
+  // A bridge that evicts every fresh attach must not become a tight observe loop: after a
+  // bounded run of rapid evictions the pane lands in the error state with Reconnect.
+  const evictLatest = async () => {
+    await waitFor(() => expect(sockets.at(-1)?.closed).toBe(false))
+    const index = sockets.length - 1
+    act(() => {
+      sockets[index].serverClose(4000)
+      rfbs[index].emit('disconnect', { clean: true })
+    })
+    await act(async () => {})
+  }
+
+  for (let round = 0; round < 3; round += 1) {
+    await evictLatest()
+  }
+
+  await act(async () => new Promise(resolve => setTimeout(resolve, 20)))
+  expect(observes()).toBe(4)
+  expect(sockets.at(-1)?.closed).toBe(true)
+  expect(view.getByTitle('Reconnect').closest('button')?.disabled).toBe(false)
   view.unmount()
 })
