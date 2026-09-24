@@ -128,3 +128,33 @@ def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_inter
         elapsed = asyncio.run(_run(home))
     lease._reset_for_tests()
     assert elapsed < 0.5, elapsed
+
+
+def test_no_bridge_task_or_socket_outlives_the_bridge():
+    """The pumps were cancelled but never awaited and the Xvnc writer closed without wait_closed, so
+    a returned _bridge still had tasks (and a half-closed socket) in flight on the loop; a viewer
+    reconnecting in a tight loop accumulated them. Everything the bridge started is finished, and
+    Xvnc has seen EOF, when it returns."""
+    async def _run(home: str) -> set:
+        sock_dir = os.path.join(home, "bot-desktop")
+        os.makedirs(sock_dir, exist_ok=True)
+        xvnc_saw_eof = asyncio.Event()
+
+        async def _xvnc(reader, writer):
+            await reader.read()  # until the bridge closes its end
+            xvnc_saw_eof.set()
+
+        server = await asyncio.start_unix_server(_xvnc, path=os.path.join(sock_dir, "rfb.sock"))
+        try:
+            await display._bridge(_Ws(1000), {"hermes_home": home, "viewer_id": "desk-1"})
+            leftover = {t for t in asyncio.all_tasks()
+                        if not t.done() and t.get_coro().__qualname__.startswith("_bridge.")}
+            await asyncio.wait_for(xvnc_saw_eof.wait(), 2)
+            return leftover
+        finally:
+            server.close()
+
+    lease._reset_for_tests()
+    with tempfile.TemporaryDirectory() as home:
+        leftover = asyncio.run(_run(home))
+    assert leftover == set(), [t.get_coro() for t in leftover]

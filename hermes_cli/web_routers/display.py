@@ -172,6 +172,9 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
+        # Cancelled pumps must finish before we tear down the socket they hold, or they outlive the
+        # bridge on the loop (a viewer reconnecting in a loop piled them up).
+        await asyncio.gather(*pending, return_exceptions=True)
         for t in done:
             exc = t.exception()
             if exc and not isinstance(exc, (WebSocketDisconnect, ConnectionError)):
@@ -179,6 +182,10 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     finally:
         unsubscribe()
         writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:  # Xvnc already gone (ECONNRESET / EPIPE on the FIN)
+            pass
         # Closing the viewer window hands control back. A DROPPED link (laptop lid, Wi-Fi, 1006)
         # keeps the human's exclusion: they may be mid-login on that screen and the agent must not
         # resume into it. The Desktop reconnects into the same lease, or the human hands back.
