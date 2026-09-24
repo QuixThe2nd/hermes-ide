@@ -17,7 +17,14 @@ import { useEffect } from 'react'
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
-import { type DisplayLease, displayRequest, type DisplayStatus, isEventForBotScreen, leaseHeldBy, type ScreenViewer } from './screen-connection'
+import {
+  type DisplayLease,
+  displayRequest,
+  type DisplayStatus,
+  isEventForBotScreen,
+  leaseHeldBy,
+  type ScreenViewer
+} from './screen-connection'
 import { openBotScreen } from './screen-open'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
 import type { BotMeta, RosterRow } from './types'
@@ -25,7 +32,11 @@ import type { BotMeta, RosterRow } from './types'
 export type PortalTone = 'live' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unknown'
 
 /** Pure: map cached status + lease (+ this window's minted viewer, if attached) to what the portal says. */
-export function portalTone(status: DisplayStatus | null, lease: DisplayLease | null, viewer: ScreenViewer | null = null): PortalTone {
+export function portalTone(
+  status: DisplayStatus | null,
+  lease: DisplayLease | null,
+  viewer: ScreenViewer | null = null
+): PortalTone {
   if (!status) {
     return 'unknown'
   }
@@ -112,7 +123,15 @@ export function useScreenPortalState(bot: RosterRow) {
   return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null) }
 }
 
-export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; meta?: BotMeta | null; compact?: boolean }) {
+export function ScreenPortal({
+  bot,
+  meta,
+  compact = false
+}: {
+  bot: RosterRow
+  meta?: BotMeta | null
+  compact?: boolean
+}) {
   const t = useBots()
   const { status, tone } = useScreenPortalState(bot)
 
@@ -139,7 +158,9 @@ export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; m
     >
       <span className="relative grid size-7 shrink-0 place-items-center rounded bg-black/70 text-white/90">
         <Codicon name={TONE_ICON[tone]} />
-        <span className={`absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-(--ui-bg-primary) ${TONE_DOT[tone]}`} />
+        <span
+          className={`absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-(--ui-bg-primary) ${TONE_DOT[tone]}`}
+        />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs font-medium">{t.screen.portalTitle}</span>
@@ -167,7 +188,12 @@ export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }
         : row.name === route.profile && route.connectionId === null
     }) ??
     (route.connectionId
-      ? ({ name: route.profile, sourceScoped: true, connectionId: route.connectionId, connectionKind: route.connectionId === 'local' ? 'local' : 'remote' } as RosterRow)
+      ? ({
+          name: route.profile,
+          sourceScoped: true,
+          connectionId: route.connectionId,
+          connectionKind: route.connectionId === 'local' ? 'local' : 'remote'
+        } as RosterRow)
       : ({ name: route.profile } as RosterRow))
 
   return <ScreenPortal bot={bot} compact />

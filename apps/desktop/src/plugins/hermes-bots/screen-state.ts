@@ -27,7 +27,10 @@ export function setScreenStatus(bot: RosterRow, status: DisplayStatus): void {
   const key = botSelectionKey(bot)
   const current = $screenState.get()
   const prev = current[key]
-  $screenState.set({ ...current, [key]: { status, lease: status.lease ?? prev?.lease ?? null, viewer: prev?.viewer ?? null } })
+  $screenState.set({
+    ...current,
+    [key]: { status, lease: status.lease ?? prev?.lease ?? null, viewer: prev?.viewer ?? null }
+  })
 }
 
 export function setScreenLease(bot: RosterRow, lease: DisplayLease): void {
