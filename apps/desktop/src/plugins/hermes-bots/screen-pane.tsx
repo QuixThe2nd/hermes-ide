@@ -17,7 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useBots } from './i18n'
 import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
 import { ScreenInstallCard } from './screen-install'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
+import { $screenState, beginScreenStatusRequest, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
 import type { RosterRow } from './types'
 
 type RfbLike = {
@@ -66,9 +66,13 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const attachGeneration = useRef(0)
 
   const refresh = useCallback(async () => {
+    // A reply that a newer request, a start result or a pushed event overtook is dropped by
+    // the store; otherwise a slow `running: true` from before a stop repaints a dead screen.
+    const request = beginScreenStatusRequest(bot)
+
     try {
       const next = await displayRequest<DisplayStatus>(bot, 'display.status')
-      setScreenStatus(bot, next)
+      setScreenStatus(bot, next, request)
       setError(null)
     } catch (err) {
       if (isDisplayUnavailable(err)) {

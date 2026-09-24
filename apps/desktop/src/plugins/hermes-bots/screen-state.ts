@@ -32,8 +32,33 @@ function isOlderLease(prev: DisplayLease | null | undefined, next: DisplayLease)
   return typeof next.epoch === 'number' && typeof prev?.epoch === 'number' && next.epoch < prev.epoch
 }
 
-export function setScreenStatus(bot: RosterRow, status: DisplayStatus): void {
+/**
+ * Per-bot generation of the latest `display.status`-shaped write. A request
+ * takes a token from `beginScreenStatusRequest` and hands it back with its
+ * reply; a reply whose token was superseded (a newer request, a pushed event,
+ * a start/observe result) is a slower answer about the past and is dropped.
+ */
+const statusGeneration = new Map<string, number>()
+
+export function beginScreenStatusRequest(bot: RosterRow): number {
   const key = botSelectionKey(bot)
+  const next = (statusGeneration.get(key) ?? 0) + 1
+  statusGeneration.set(key, next)
+
+  return next
+}
+
+/** Apply a status snapshot. Without `request` the write is authoritative (an event or a fresh
+ *  mutation result) and invalidates every status request still in flight. */
+export function setScreenStatus(bot: RosterRow, status: DisplayStatus, request?: number): void {
+  const key = botSelectionKey(bot)
+
+  if (request === undefined) {
+    statusGeneration.set(key, (statusGeneration.get(key) ?? 0) + 1)
+  } else if (request !== statusGeneration.get(key)) {
+    return
+  }
+
   const current = $screenState.get()
   const prev = current[key]
   const lease = status.lease && !isOlderLease(prev?.lease, status.lease) ? status.lease : (prev?.lease ?? null)

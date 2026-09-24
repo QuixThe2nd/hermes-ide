@@ -11,7 +11,7 @@ import type { RosterRow } from './types'
 
 vi.mock('./data', () => ({ botSelectionKey: (bot: RosterRow) => bot.name }))
 
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
+import { $screenState, beginScreenStatusRequest, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
 
 const bot: RosterRow = { name: 'ops' }
 
@@ -57,5 +57,22 @@ describe('lease epoch ordering', () => {
     const legacy = { ...human, epoch: undefined }
     setScreenLease(bot, legacy)
     expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(legacy)
+  })
+})
+
+describe('status request ordering', () => {
+  it('a slower reply from a superseded status request never overwrites newer truth', () => {
+    const stale = beginScreenStatusRequest(bot)
+    const fresh = beginScreenStatusRequest(bot)
+
+    setScreenStatus(bot, { ...statusWith(agent), running: false }, fresh)
+    setScreenStatus(bot, statusWith(agent), stale)
+    expect(screenStateFor($screenState.get(), bot)?.status?.running).toBe(false)
+
+    // A pushed event is newer than anything still in flight.
+    const inFlight = beginScreenStatusRequest(bot)
+    setScreenStatus(bot, statusWith(agent))
+    setScreenStatus(bot, { ...statusWith(agent), running: false }, inFlight)
+    expect(screenStateFor($screenState.get(), bot)?.status?.running).toBe(true)
   })
 })
