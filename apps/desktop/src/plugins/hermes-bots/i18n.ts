@@ -269,6 +269,7 @@ type BotsMessages = {
     heroNotInstalled: string
     heroConnecting: string
     heroStale: string
+    heroSuppressed: string
     heroOpenLive: string
     heroInstall: string
     heroStart: string
@@ -558,6 +559,7 @@ const en: BotsMessages = {
     heroNotInstalled: 'Not installed on this host',
     heroConnecting: 'Checking the screen…',
     heroStale: 'Last seen — screen unreachable',
+    heroSuppressed: 'Hidden while someone has control',
     heroOpenLive: 'Open live',
     heroInstall: 'Install',
     heroStart: 'Start',
@@ -842,6 +844,7 @@ const ja: BotsMessages = {
     heroNotInstalled: 'このホストには未インストール',
     heroConnecting: '画面を確認中…',
     heroStale: '最終表示 — 画面に接続できません',
+    heroSuppressed: '他の人が操作中は非表示',
     heroOpenLive: 'ライブで開く',
     heroInstall: 'インストール',
     heroStart: '開始',
@@ -1121,6 +1124,7 @@ const zh: BotsMessages = {
     heroNotInstalled: '此主机未安装',
     heroConnecting: '正在检查屏幕…',
     heroStale: '最后画面 — 屏幕无法访问',
+    heroSuppressed: '有人控制时隐藏',
     heroOpenLive: '实时打开',
     heroInstall: '安装',
     heroStart: '启动',
@@ -1400,6 +1404,7 @@ const zhHant: BotsMessages = {
     heroNotInstalled: '此主機未安裝',
     heroConnecting: '正在檢查螢幕…',
     heroStale: '最後畫面 — 螢幕無法連線',
+    heroSuppressed: '有人控制時隱藏',
     heroOpenLive: '即時開啟',
     heroInstall: '安裝',
     heroStart: '啟動',
