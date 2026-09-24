@@ -344,6 +344,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                     raise _bd_lease.HumanHasControl(
                         "A human took over this desktop while the action ran; its result was discarded. "
                         "Re-capture (or call computer_use action='wait_for_human' if they still hold control).")
+            _fence()  # input actions never receive fence=; refuse before the device op starts
             result = _dispatch(backend, action, args, session_id=session_id or None, fence=_fence)
             _fence()
             return result
