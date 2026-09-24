@@ -111,7 +111,13 @@ export function ScreenHero({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
     unknown: t.screen.heroConnecting
   }[tone]
 
-  const cta = running ? t.screen.heroOpenLive : tone === 'missing' ? t.screen.heroInstall : tone === 'off' ? t.screen.heroStart : ''
+  const cta = running
+    ? t.screen.heroOpenLive
+    : tone === 'missing'
+      ? t.screen.heroInstall
+      : tone === 'off'
+        ? t.screen.heroStart
+        : ''
 
   return (
     <button
@@ -126,12 +132,17 @@ export function ScreenHero({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
         <img alt="" className="absolute inset-0 size-full object-cover" draggable={false} src={dataUrl} />
       ) : (
         <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.08),transparent_70%)]">
-          <Codicon className="text-[2.25rem] text-white/30" name={running ? 'loading' : tone === 'missing' ? 'cloud-download' : 'vm'} />
+          <Codicon
+            className="text-[2.25rem] text-white/30"
+            name={running ? 'loading' : tone === 'missing' ? 'cloud-download' : 'vm'}
+          />
         </span>
       )}
 
       <span className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/85 to-black/0 px-2.5 pb-2 pt-6 text-white">
-        <span className={`size-2 shrink-0 rounded-full ${running ? (tone === 'live' ? 'bg-emerald-400' : tone === 'human' ? 'bg-red-400' : 'bg-amber-400') : 'bg-white/40'}`} />
+        <span
+          className={`size-2 shrink-0 rounded-full ${running ? (tone === 'live' ? 'bg-emerald-400' : tone === 'human' ? 'bg-red-400' : 'bg-amber-400') : 'bg-white/40'}`}
+        />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs font-medium">{t.screen.portalTitle}</span>
           <span className="block truncate text-[0.65rem] text-white/70">{caption}</span>
