@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 
 import pytest
@@ -109,21 +110,20 @@ def test_passwordless_sudo_runs_the_install_without_asking_for_a_password(monkey
     spawned: list[list[str]] = []
 
     class _Proc:
-        """Stub matching the readiness-polled drain: stdout must be a real
-        selectable fd (os.pipe), so the lines go through the kernel pipe."""
-
+        """Stands in for the sudo child: the drain reads the pipe by fd, so stdout is a real pipe with
+        the output already written and the write end closed (EOF)."""
         pid = 4242
+        returncode = 0
+        stdin = __import__("io").StringIO()
 
         def __init__(self, argv, **kw):
             spawned.append(argv)
-            r, w = __import__("os").pipe()
-            __import__("os").write(w, b"Reading package lists...\nDone\n")
-            __import__("os").close(w)
-            self.stdout = __import__("types").SimpleNamespace(
-                fileno=lambda: r, close=lambda: __import__("os").close(r))
-            self.stdin = __import__("types").SimpleNamespace(close=lambda: None)
+            r, w = os.pipe()
+            os.write(w, b"Reading package lists...\nDone\n")
+            os.close(w)
+            self.stdout = os.fdopen(r, "rb")
 
-        def wait(self):
+        def wait(self, timeout=None):
             return 0
 
     monkeypatch.setattr(install.subprocess, "Popen", _Proc)
