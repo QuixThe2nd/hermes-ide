@@ -86,13 +86,29 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   useEffect(() => {
     void refresh()
 
-    return host.onEvent('display.lease', (event: RpcEvent) => {
+    const offLease = host.onEvent('display.lease', (event: RpcEvent) => {
       const payload = event.payload as { lease?: DisplayLease } | undefined
 
       if (payload?.lease && isEventForBotScreen(bot, event, status?.profile_key)) {
         setScreenLease(bot, payload.lease)
       }
     })
+
+    // A start/stop made outside this window (CLI, gateway auto-start, another Desktop) is
+    // pushed by the serve-side runtime watcher. A stopped pane with no sibling portal or
+    // hero mounted for this bot has no other way to learn of it.
+    const offStatus = host.onEvent('display.status', (event: RpcEvent) => {
+      const payload = event.payload as DisplayStatus | undefined
+
+      if (payload?.profile_key && isEventForBotScreen(bot, event, status?.profile_key)) {
+        setScreenStatus(bot, payload)
+      }
+    })
+
+    return () => {
+      offLease()
+      offStatus()
+    }
   }, [bot, refresh, status?.profile_key])
 
   const detach = useCallback((handBack = false) => {
