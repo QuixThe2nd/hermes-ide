@@ -1095,9 +1095,15 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
-    fast = _eval_supervisor_fast_path(effective_task_id, expression)
-    if fast is not None:
-        return fast
+    # The supervisor answers over its own WebSocket and never reaches _run_browser_command, so the Bot
+    # Desktop lease fence has to bracket it here too — otherwise the one command that reads arbitrary
+    # page state is the one a human's takeover does not stop. Same fence, same session identity.
+    fenced = _session.run_fenced(_active_sessions.get(effective_task_id) or {},
+                                 lambda: {"fast": _eval_supervisor_fast_path(effective_task_id, expression)})
+    if fenced.get("code") == "human_has_control":
+        return _dumps(fenced)
+    if fenced["fast"] is not None:
+        return fenced["fast"]
 
     result = _session._run_browser_command(effective_task_id, "eval", [expression])
     if not result.get("success"):

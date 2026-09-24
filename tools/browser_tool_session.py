@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.browser_tool_origin import origin as _bt
@@ -615,23 +615,32 @@ def _run_browser_command(
     except Exception as e:
         _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
-    # The bot's LOCAL browser lives on its Bot Desktop screen, in the same profile a human who took
-    # over is typing into. While the human holds the lease every action AND read against it is
-    # refused (the page may show their credential); the fence brackets the whole run so a takeover
-    # mid-command also voids the result. Cloud / user-supplied CDP sessions are a different browser.
-    if _shares_bot_desktop_browser(session_info):
-        from tools.bot_desktop import lease as _bd_lease
-        try:
-            admitted = _bd_lease.assert_agent_may_act()
-        except _bd_lease.HumanHasControl as e:
-            return {"success": False, "error": str(e), "code": "human_has_control"}
-        result = _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
-        if _bd_lease.get().epoch != admitted.epoch:
-            return {"success": False, "code": "human_has_control",
-                    "error": "A human took over the bot's screen while this browser command ran; its result was "
-                             "discarded. Call computer_use action='wait_for_human' to block until they hand back."}
-        return result
-    return _run_browser_command_unfenced(task_id, command, args, timeout, _engine_override, browser_cmd, session_info)
+    return run_fenced(session_info, lambda: _run_browser_command_unfenced(
+        task_id, command, args, timeout, _engine_override, browser_cmd, session_info))
+
+
+def run_fenced(session_info: Dict[str, Any], fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
+    """Run ``fn`` under the Bot Desktop lease fence when ``session_info`` is the bot's LOCAL browser.
+
+    That browser lives on the Bot Desktop screen, in the same profile a human who took over is typing
+    into. While the human holds the lease every action AND read against it is refused (the page may show
+    their credential); the fence brackets the whole run so a takeover mid-command also voids the result.
+    Cloud / user-supplied CDP sessions are a different browser and run unfenced. This is THE fence: every
+    path that reaches the page (agent-browser subprocess, CDP supervisor fast path) goes through here.
+    """
+    if not _shares_bot_desktop_browser(session_info):
+        return fn()
+    from tools.bot_desktop import lease as _bd_lease
+    try:
+        admitted = _bd_lease.assert_agent_may_act()
+    except _bd_lease.HumanHasControl as e:
+        return {"success": False, "error": str(e), "code": "human_has_control"}
+    result = fn()
+    if _bd_lease.get().epoch != admitted.epoch:
+        return {"success": False, "code": "human_has_control",
+                "error": "A human took over the bot's screen while this browser command ran; its result was "
+                         "discarded. Call computer_use action='wait_for_human' to block until they hand back."}
+    return result
 
 
 def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:

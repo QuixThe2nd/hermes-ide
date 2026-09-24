@@ -76,3 +76,36 @@ def test_real_profile_local_browser_is_fenced_by_provenance_even_without_a_live_
     result = json.loads(browser.browser_click("e1", task_id="review"))
     assert commands == [], f"human holds the lease, yet a real-profile browser command was dispatched: {commands}"
     assert result.get("code") == "human_has_control"
+
+
+def test_browser_console_supervisor_fast_path_is_fenced_while_human_controls_shared_browser(monkeypatch):
+    """`browser_console(expression=...)` answers over the CDP supervisor's WebSocket without ever reaching
+    `_run_browser_command`, so the fence must sit in front of that fast path too — otherwise the one
+    command that reads arbitrary page state is the one command the human's takeover does not stop."""
+    import tools.browser_supervisor as supervisor_mod
+
+    commands: list = []
+    browser, _ = _wire(monkeypatch, commands)
+    browser._active_sessions["review"] = {"session_name": "review", "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
+                                          "features": {"local": True}}
+    evaluated: list = []
+
+    class FakeSupervisor:
+        def evaluate_runtime(self, expression, **_kw):
+            evaluated.append(expression)
+            return {"ok": True, "result": "WHAT-THE-HUMAN-TYPED", "result_type": "string"}
+
+    class FakeRegistry:
+        def get(self, task_id):
+            return FakeSupervisor()
+
+    monkeypatch.setattr(supervisor_mod, "SUPERVISOR_REGISTRY", FakeRegistry())
+    try:
+        lease.acquire("human-viewer")
+        raw = browser.browser_console(expression="document.title", task_id="review")
+    finally:
+        browser._active_sessions.pop("review", None)
+    result = json.loads(raw)
+    assert evaluated == [] and commands == [], "human holds the lease, yet the page was evaluated"
+    assert "WHAT-THE-HUMAN-TYPED" not in raw
+    assert result.get("code") == "human_has_control"
