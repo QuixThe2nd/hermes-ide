@@ -104,7 +104,7 @@ Allowlisted groups can also observe unmentioned chatter with `observe_unmentione
 
 ## Operations
 
-A stalled gateway should not look dead. `display.retry_progress` adds a live provider retry and fallback bubble during stalls; it is off by default. Replies can also end with a timing split for total, API, tools, and other time, which is off by default upstream.
+A stalled gateway should not look dead. `display.retry_progress` adds a live provider retry and fallback bubble during stalls; it is off by default. Replies can also end with a timing split for total, API, tools, and other time, which is off by default upstream. Tool previews are capped at `display.tool_preview_length`; 0 (the Discord default) shows the full command and all arguments.
 
 Important status and warning notices a platform outage swallowed are not lost either: when the transport marks a notice send as a transient failure, the delivery ledger retains it, and the same reconnect that revives the adapter replays it into the original chat (thread included, prefixed with a ♻️ recovered-notice marker, no pings). Notices already delivered never replay, and a failed restart confirmation is never revived — instead its cancellation explanation is what comes back after reconnect.
 

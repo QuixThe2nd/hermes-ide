@@ -228,11 +228,12 @@ class TurnRunner:
         except Exception as err:
             logger.debug("tool-progress onboarding hint failed: %s", err)
 
-    @staticmethod
-    def _preview_cap() -> int:
-        """tool_preview_length (default 40): the one-line preview budget for "all"/"new" modes."""
-        from agent.display import get_tool_preview_max_len
-        pl = get_tool_preview_max_len()
+    def _preview_cap(self) -> int:
+        """This turn's tool_preview_length snapshot (default 40): the one-line preview
+        budget for "all"/"new" modes. Turn-owned, never the process-global preview
+        length — interleaved turns (Discord unlimited vs a capped platform) must not
+        change each other's rendering."""
+        pl = getattr(self._ctx, "tool_preview_max_len", 0)
         return pl if pl > 0 else 40
 
     def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
@@ -268,13 +269,18 @@ class TurnRunner:
         except Exception:
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
-        verbose = ctx.progress_mode == "verbose"
+        # Full rendering — explicit "verbose", or an unlimited preview budget
+        # (tool_preview_length <= 0): the whole command and ALL arguments, never
+        # a tool-specific builder summary. The budget is this turn's snapshot,
+        # so an interleaved capped-platform turn cannot re-cap it (and a Discord
+        # turn cannot uncap a capped one). Explicit positive caps keep the
+        # compact "all"/"new" preview path below.
+        pl = getattr(ctx, "tool_preview_max_len", 0)
+        verbose = ctx.progress_mode == "verbose" or pl <= 0
         code = code_full if verbose else code_short
         ctx.last_was_terminal_block[0] = code is not None
         if verbose:
             if code is None and args:
-                from agent.display import get_tool_preview_max_len
-                pl = get_tool_preview_max_len()
                 args_str = json.dumps(args, ensure_ascii=False, default=str)
                 # tool_preview_length 0 (default) = no truncation in verbose mode; the user asked
                 # for full detail and platform message-length limits handle the rest.

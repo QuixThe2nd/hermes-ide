@@ -105,7 +105,15 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # phrase ("⏳ still working"); raw detail remains available via
     # display.platforms.discord.long_running_notifications: true (plus
     # busy_ack_detail for the iteration counter).
-    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext", "long_running_notifications": "phase"},
+    # Discord shows the FULL tool command and all arguments by default
+    # (tool_preview_length 0 = unlimited); an explicit positive
+    # display.platforms.discord.tool_preview_length re-caps.
+    "discord":     {
+        **_TIER_HIGH,
+        "reasoning_style": "subtext",
+        "long_running_notifications": "phase",
+        "tool_preview_length": 0,
+    },
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
