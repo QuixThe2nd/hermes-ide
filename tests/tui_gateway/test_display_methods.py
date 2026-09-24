@@ -204,3 +204,19 @@ def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):
     assert resp["result"]["started"], resp
     assert asked.wait(5)
     assert blocks and all(sid != "victim-session" for _ev, sid in blocks), blocks
+
+
+def test_thumbnail_grabbed_across_a_takeover_is_suppressed(monkeypatch, _fresh_lease):
+    """The human_holds() check happens before the grab; a takeover that lands while the framebuffer
+    is being read means the returned frame may already show the human's session. The lease epoch
+    must match before and after the grab or the frame is dropped."""
+    import tui_gateway.server as server
+    from tools.bot_desktop import thumbnail
+
+    def grab_while_human_takes_over():
+        _fresh_lease.acquire("viewer-1")
+        return "data:image/jpeg;base64,SECRET"
+
+    monkeypatch.setattr(thumbnail, "thumbnail_data_url", grab_while_human_takes_over)
+    result = _call(server, "display.thumbnail", {})["result"]
+    assert result["data_url"] is None and result["suppressed"] == "human_has_control", result

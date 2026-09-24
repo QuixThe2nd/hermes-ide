@@ -73,13 +73,19 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """One JPEG grab of the bot's screen (``data_url``: null while stopped). Read-only: no lease change.
-    Suppressed while a human holds the lease — the frame may show what they are typing."""
+    Suppressed while a human holds the lease — the frame may show what they are typing — and when
+    the lease moved DURING the grab: a takeover racing the framebuffer read means the frame may
+    already be the human's session, so it is dropped rather than shipped to every client."""
     try:
         from tools.bot_desktop import lease as _bd_lease
-        if _bd_lease.human_holds():
+        before = _bd_lease.get()
+        if before.holder == _bd_lease.HUMAN:
             return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
         from tools.bot_desktop.thumbnail import thumbnail_data_url
-        return _ok(rid, {"data_url": thumbnail_data_url()})
+        data_url = thumbnail_data_url()
+        if _bd_lease.get().epoch != before.epoch:
+            return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
+        return _ok(rid, {"data_url": data_url})
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
 
