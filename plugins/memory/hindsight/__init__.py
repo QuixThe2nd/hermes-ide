@@ -98,10 +98,10 @@ _DEFAULT_BANK_DIRECTIVES: tuple[Dict[str, Any], ...] = (
 
 
 def _ensure_client_dependency() -> None:
-    """Lazily install the Hindsight client (``tools.lazy_deps``) before importing it."""
+    """Lazily install the Hindsight client (``pm.ensure_import``) before importing it."""
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("memory.hindsight", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("hindsight")
     except ImportError:
         pass
     except Exception as exc:
@@ -137,8 +137,7 @@ def _cloud_api_key(config: dict) -> str:
 
 
 def _maybe_upgrade_client() -> None:
-    """Auto-upgrade an outdated hindsight-client via the environment-aware lazy_deps
-    installer (sealed hosted venvs redirect to the durable target)."""
+    """Auto-upgrade an outdated hindsight-client by resyncing the extra against uv.lock."""
     try:
         from importlib.metadata import version as pkg_version
         from packaging.version import Version
@@ -146,16 +145,13 @@ def _maybe_upgrade_client() -> None:
         if Version(installed) < Version(_MIN_CLIENT_VERSION):
             logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
                            installed, _MIN_CLIENT_VERSION)
-            from tools.lazy_deps import install_specs
-            outcome = install_specs([f"hindsight-client>={_MIN_CLIENT_VERSION}"], timeout=120)
-            if outcome.ok:
-                logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
-            elif outcome.blocked:
-                logger.warning("Auto-upgrade unavailable: %s. Run: uv pip install 'hindsight-client>=%s'",
-                               outcome.reason, _MIN_CLIENT_VERSION)
-            else:
-                logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                               (outcome.stderr or "").strip() or "install error", _MIN_CLIENT_VERSION)
+            # uv.lock owns the pin; an upgrade is a resync of the extra.
+            import pm
+            try:
+                pm.sync_venv(["hindsight"])
+                logger.info("hindsight-client resynced against uv.lock")
+            except Exception as exc:
+                logger.warning("Auto-upgrade unavailable: %s. Run: hermes pm install", exc)
     except Exception:
         pass  # packaging not available or other issue — proceed anyway
 

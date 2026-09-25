@@ -97,7 +97,7 @@ def _interpreter_source(venv_dir: Path) -> str | None:
     if not cfg.is_file():
         return None
     try:
-        lines = cfg.read_text(encoding="utf-8").splitlines()
+        lines = cfg.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return None
     home = next((l.partition("=")[2].strip() for l in lines if l.lower().startswith("home")), "")
@@ -125,7 +125,7 @@ def _anchor_marker(venv_bin: Path) -> Path:
 def _marker_matches(venv_bin: Path, expected: str) -> bool:
     marker = _anchor_marker(venv_bin)
     try:
-        return marker.is_file() and marker.read_text(encoding="utf-8").strip() == expected
+        return marker.is_file() and marker.read_text(encoding="utf-8-sig").strip() == expected
     except OSError:
         return False
 

@@ -169,9 +169,18 @@ def _hash_file(path: Path) -> Optional[str]:
 
 
 def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
-    """Agent-write ledger ``{abs_path: {"sha256", "ts"}}``: hash of every file the last
-    ``write_file``/``patch`` produced, so restores can tell Hermes' writes from later user edits."""
-    return _read_json_dict(_ledger_path(store, dir_hash)) or {}
+    """Load the agent-write ledger: {relpath: {"sha256": ..., "ts": ...}}.
+
+    The ledger records the content hash of every file the last successful
+    ``write_file`` / ``patch`` produced, so restores can tell "Hermes wrote
+    this" apart from "the user hand-edited this afterwards".
+    """
+    try:
+        raw = _ledger_path(store, dir_hash).read_text(encoding="utf-8-sig")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
@@ -470,14 +479,30 @@ def _volume_evidence(workdir: Path) -> Dict:
 
 
 def _register_project(store: Path, working_dir: str) -> None:
-    """Upsert ``projects/<hash>.json`` (workdir, last_touch, created_at; ``created_at`` survives).
-    Parent identity is refreshed while the project is observably live (a remount can change it);
-    on a failed probe the recorded identity is kept — stale evidence only makes pruning MORE
-    conservative.  Never raises."""
-    meta_path = _project_meta_path(store, _project_hash(working_dir))
-    meta, now, workdir = _read_json_dict(meta_path) or {}, time.time(), _normalize_path(working_dir)
-    meta.update({"workdir": str(workdir), "last_touch": now, **_volume_evidence(workdir)})
-    meta.setdefault("created_at", now)
+    """Create or update ``projects/<hash>.json`` with workdir + timestamps."""
+    dir_hash = _project_hash(working_dir)
+    meta_path = _project_meta_path(store, dir_hash)
+    now = time.time()
+    meta: Dict = {"workdir": str(_normalize_path(working_dir)),
+                  "created_at": now, "last_touch": now}
+    evidence = _volume_evidence(_normalize_path(working_dir))
+    if evidence:
+        meta.update(evidence)
+    if meta_path.exists():
+        try:
+            existing = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+            if isinstance(existing, dict):
+                meta["created_at"] = existing.get("created_at", now)
+                if not evidence:
+                    # Fresh probe failed — keep the previously recorded
+                    # parent identity rather than dropping it. Stale evidence
+                    # only makes pruning MORE conservative (mismatch => not
+                    # an orphan).
+                    for key in ("workdir_parent_dev", "workdir_parent_ino"):
+                        if key in existing:
+                            meta[key] = existing[key]
+        except (OSError, ValueError):
+            pass
     try:
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         meta_path.write_text(json.dumps(meta), encoding="utf-8")
@@ -485,7 +510,33 @@ def _register_project(store: Path, working_dir: str) -> None:
         logger.debug("Could not write project metadata %s: %s", meta_path, exc)
 
 
-_touch_project = _register_project  # per-turn touch == re-register (same upsert)
+def _touch_project(store: Path, working_dir: str) -> None:
+    """Update last_touch for a project, preserving created_at."""
+    dir_hash = _project_hash(working_dir)
+    meta_path = _project_meta_path(store, dir_hash)
+    if not meta_path.exists():
+        _register_project(store, working_dir)
+        return
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["workdir"] = str(_normalize_path(working_dir))
+    meta["last_touch"] = time.time()
+    meta.setdefault("created_at", meta["last_touch"])
+    # Refresh the parent-directory identity while the project is observably
+    # live — a remount can legitimately change it (new device, new inode).
+    # On probe failure the previous evidence is kept: stale evidence can only
+    # make pruning MORE conservative (mismatch => not an orphan).
+    evidence = _volume_evidence(_normalize_path(working_dir))
+    if evidence:
+        meta.update(evidence)
+    try:
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not update project metadata %s: %s", meta_path, exc)
 
 
 def _list_projects(store: Path) -> List[Dict]:
@@ -493,8 +544,18 @@ def _list_projects(store: Path) -> List[Dict]:
     projects_dir = store / _PROJECTS_DIRNAME
     if not projects_dir.exists():
         return []
-    metas = ((meta_path.stem, _read_json_dict(meta_path)) for meta_path in projects_dir.glob("*.json"))
-    return [{**meta, "_hash": stem} for stem, meta in metas if meta is not None]
+    out: List[Dict] = []
+    for meta_path in projects_dir.glob("*.json"):
+        dir_hash = meta_path.stem
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        meta["_hash"] = dir_hash
+        out.append(meta)
+    return out
 
 
 def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
@@ -507,13 +568,21 @@ def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
             continue
         workdir: Optional[str] = None
         marker_unreadable = False
-        try:
-            if (child / "HERMES_WORKDIR").exists():
-                workdir = (child / "HERMES_WORKDIR").read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            marker_unreadable = True  # present but unreadable: no evidence the project is gone
-        out.append({"path": child, "workdir": workdir, "marker_unreadable": marker_unreadable,
-                    "exists": bool(workdir) and Path(workdir).exists()})
+        wd_marker = child / "HERMES_WORKDIR"
+        if wd_marker.exists():
+            try:
+                workdir = wd_marker.read_text(encoding="utf-8-sig").strip()
+            except (OSError, UnicodeDecodeError):
+                # The marker is there, we just could not read it. That is
+                # not evidence the project is gone — never delete on it.
+                workdir = None
+                marker_unreadable = True
+        out.append({
+            "path": child,
+            "workdir": workdir,
+            "exists": bool(workdir) and Path(workdir).exists(),
+            "marker_unreadable": marker_unreadable,
+        })
     return out
 
 
@@ -1169,14 +1238,23 @@ def maybe_auto_prune_checkpoints(retention_days: int = 7, min_interval_hours: in
             return out
         marker = base / _PRUNE_MARKER_NAME
         now = time.time()
-        try:
-            if marker.exists() and now - float(marker.read_text(encoding="utf-8").strip()) < min_interval_hours * 3600:
-                out["skipped"] = True
-                return out
-        except (OSError, ValueError):
-            pass  # corrupt marker — treat as no prior run
-        # Claim the interval before pruning: callers run on a periodic tick, and a prune that
-        # dies mid-way must cost one skipped day, not a git gc every tick.
+        if marker.exists():
+            try:
+                last_ts = float(marker.read_text(encoding="utf-8-sig").strip())
+                if now - last_ts < min_interval_hours * 3600:
+                    out["skipped"] = True
+                    return out
+            except (OSError, ValueError):
+                pass  # corrupt marker — treat as no prior run
+
+        result = prune_checkpoints(
+            retention_days=retention_days,
+            delete_orphans=delete_orphans,
+            checkpoint_base=base,
+            max_total_size_mb=max_total_size_mb,
+        )
+        out["result"] = result
+
         try:
             marker.write_text(str(now), encoding="utf-8")
         except OSError as exc:

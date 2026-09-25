@@ -408,7 +408,7 @@ _CELL_LABELS = {"markdown": "Markdown", "code": "Code", "raw": "Raw"}
 
 def _extract_notebook(path: str, *, display_path: Optional[str] = None) -> str:
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
             nb = json.load(fh)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ExtractionError(f"Not a valid notebook: {exc}") from exc

@@ -249,6 +249,48 @@ def _managed_bin_dir() -> str:
     return str(Path(get_hermes_home()) / "bin")
 
 
+def _pinned_uvx() -> Optional[str]:
+    """The pinned uvx from pm's store, or None when pm can't provide it.
+
+    uvx ships inside uv's own store entry, beside the uv binary — the pin
+    that governs uv governs it. Resolved from pm's uv fact rather than by
+    probing directories: pm names the binary, so nobody goes fishing with
+    ``shutil.which`` on a dir (a PATH probe could resolve a system uvx of
+    unknown version). Pure lookup (``realize=False``) — this is a probe,
+    not the converging ``install_cli()`` path.
+    """
+    try:
+        import pm
+
+        uv_bin, _env = pm.uv(realize=False)
+        if not uv_bin:
+            return None
+        uvx = str(Path(uv_bin).with_name("uvx.exe" if os.name == "nt" else "uvx"))
+        if os.path.isfile(uvx) and os.access(uvx, os.X_OK):
+            return uvx
+        return None
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Could not resolve pinned uvx: %s", e)
+        return None
+
+
+def _user_local_bin_dir() -> Optional[str]:
+    """The standard user-level tool dir (~/.local/bin on POSIX; uv's default
+    tool bin dir on Windows). Desktop/TUI workers may start with a minimal
+    PATH that omits it even when `uv tool install browser-use` put the
+    binary there."""
+    try:
+        if os.name == "nt":
+            base = os.environ.get("APPDATA")
+            if base:
+                return str(Path(base) / "uv" / "bin")
+            return None
+        return str(Path(os.path.expanduser("~")) / ".local" / "bin")
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("Could not resolve user-local bin dir: %s", e)
+        return None
+
+
 def _find_cli() -> Optional[List[str]]:
     """Locate the browser-use CLI, or None when it can't be run. MANAGED-FIRST: Hermes' own ``$HERMES_HOME/bin``
     copy always wins so every session drives one Hermes-controlled binary; PATH and the user-level tool dir
@@ -269,10 +311,20 @@ def _find_cli() -> Optional[List[str]]:
 
 
 def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
-    """Install the browser-use CLI via ``uv tool install`` (managed uv via ``ensure_uv`` → uv on PATH), linking
-    the binary into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()`` resolves it for every profile.
-    Returns ``(ok, message)``; never raises. MANAGED-FIRST: only the managed copy short-circuits — a browser-use
-    on PATH is a user-level side install and must not block provisioning the canonical copy (version drift)."""
+    """Install the browser-use CLI persistently via ``uv tool install``.
+
+    Resolution order for uv: Hermes' managed uv (realized on demand via
+    ``pm.uv``) → uv on PATH. The binary is linked
+    into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()``
+    resolves it for every profile without touching the user's PATH.
+
+    Returns ``(ok, message)`` — never raises.
+    """
+    # MANAGED-FIRST: only the managed copy short-circuits the install. A
+    # browser-use found on PATH is a user-level side install — it must NOT
+    # prevent provisioning the canonical Hermes-managed copy, or resolution
+    # stays pinned to a binary we don't control (version drift, no updates
+    # through hermes tools).
     bin_dir = _managed_bin_dir()
     managed = shutil.which("browser-use", path=bin_dir)
     if managed:

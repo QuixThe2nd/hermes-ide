@@ -1885,3 +1885,62 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     doctor_tools._check_docker_backend("docker", False, [])
 
     assert calls == [["/usr/bin/docker", "version"]]
+
+
+class TestPmVenvActive:
+    """_pm_venv_active() resolves the runtime venv from pm's facts/store,
+    not from sys.prefix sniffing (which degrades under
+    no-boot-through-venv, where sys.prefix == sys.base_prefix always and
+    VIRTUAL_ENV is unset in bundled installs)."""
+
+    def test_pm_provisioned_venv_is_active_without_virtual_env(self, tmp_path, monkeypatch):
+        import json
+
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        (payload / "venv").mkdir(parents=True)
+        store.mkdir(parents=True, exist_ok=True)
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        (store / "facts.json").write_text(
+            json.dumps(
+                {"schema": 1, "packages": {"venv": {"stamp": "abc", "extras": []}}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        # No sys.prefix venv: the legacy probe alone would say False.
+        monkeypatch.setattr(doctor_mod.sys, "prefix", "/usr")
+        monkeypatch.setattr(doctor_mod.sys, "base_prefix", "/usr")
+
+        assert doctor_mod._pm_venv_active() is True
+
+    def test_no_venv_fact_falls_back_to_legacy_probe(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "no-such-store"))
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(doctor_mod.sys, "prefix", "/usr")
+        monkeypatch.setattr(doctor_mod.sys, "base_prefix", "/usr")
+
+        assert doctor_mod._pm_venv_active() is False
+
+        monkeypatch.setattr(doctor_mod.sys, "prefix", "/some/venv")
+        assert doctor_mod._pm_venv_active() is True
+
+    def test_bundled_venv_fact_without_venv_dir_is_not_active(self, tmp_path, monkeypatch):
+        import json
+
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        store.mkdir(parents=True)
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        (store / "facts.json").write_text(
+            json.dumps(
+                {"schema": 1, "packages": {"venv": {"stamp": "abc", "extras": []}}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        monkeypatch.setattr(doctor_mod.sys, "prefix", "/usr")
+        monkeypatch.setattr(doctor_mod.sys, "base_prefix", "/usr")
+
+        assert doctor_mod._pm_venv_active() is False

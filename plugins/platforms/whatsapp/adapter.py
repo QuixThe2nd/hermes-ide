@@ -211,9 +211,27 @@ def _file_content_hash(path: Path) -> str:
         return ""
 
 
+def _pm_ensure_node(command: str) -> str | None:
+    """Lazily provision node/npm through the pm store, then re-resolve.
+
+    ``find_node_executable`` prefers the pm store's pinned Node but never
+    installs it. Node/npm ship as pm packages, so when the store is empty
+    this is the pm.ensure wiring the pm-unified-toolchain plan asks for:
+    install (respecting the lazy-install policy — raises InstallError and
+    returns None when lazy installs are refused) and re-resolve.
+    """
+    try:
+        import pm
+
+        pm.ensure("node" if command == "npm" else command)
+        return find_node_executable(command)
+    except Exception:
+        return None
+
+
 def check_whatsapp_requirements() -> bool:
     """Node.js (Hermes-managed first, so a bad system Node on PATH can't break Windows) is available."""
-    _node = find_node_executable("node")
+    _node = find_node_executable("node") or _pm_ensure_node("node")
     try:
         return bool(_node) and subprocess.run([_node, "--version"], timeout=5, **_RUN_TEXT).returncode == 0
     except Exception:
@@ -330,7 +348,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             pass
         print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
         # Hermes-managed portable Node's npm.cmd first (Windows), then PATH.
-        _npm_bin = find_node_executable("npm") or "npm"
+        _npm_bin = find_node_executable("npm") or _pm_ensure_node("npm") or "npm"
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
             install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),

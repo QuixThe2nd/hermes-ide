@@ -304,8 +304,8 @@ def check_teams_requirements() -> bool:
         bindings["TEAMS_SDK_AVAILABLE"] = True
         return bindings
 
-    from tools.lazy_deps import ensure_and_bind
-    return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
+    from pm.extras import ensure_and_bind
+    return ensure_and_bind("teams", _import, globals())
 
 
 _CHAT_TYPES = {"personal": "dm", "groupChat": "group", "channel": "channel"}
@@ -820,11 +820,14 @@ def interactive_setup() -> None:
 
 
 def _install_hint() -> str:
-    """Install hint derived from the LAZY_DEPS pins (aiohttp is CVE-pinned, so bumps happen);
-    ``venv_pip=True`` targets the real Hermes venv, sidestepping PEP 668 on Ubuntu 24.04."""
+    """Build the Teams install hint string.
+
+    Prefers ``uv sync --frozen --extra teams`` (respects pyproject pinning);
+    falls back to a plain pip install of the two packages if that is
+    unavailable. Restarting the gateway also auto-installs via pm.
+    """
     try:
-        from tools.lazy_deps import feature_install_command
-        cmd = feature_install_command("platform.teams", venv_pip=True)
+        cmd = "uv sync --frozen --extra teams"
     except Exception:  # pragma: no cover — defensive
         cmd = None
     if not cmd:

@@ -45,7 +45,14 @@ def test_install_npm_works_without_extras(tmp_path, monkeypatch):
     from agent.lsp import install as install_mod
 
     monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+    # _install_npm resolves npm via hermes_constants.find_node_executable
+    # (managed Node first, PATH second) — not install_mod.shutil.which, so
+    # mock the actual seam or the early "no usable npm" return skips the
+    # subprocess entirely.
+    monkeypatch.setattr(
+        install_mod, "find_node_executable",
+        lambda c: "/usr/bin/npm" if c == "npm" else None,
+    )
 
     install_mod._install_npm("pyright", "pyright-langserver")
 

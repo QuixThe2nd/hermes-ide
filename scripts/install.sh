@@ -583,6 +583,55 @@ detect_os() {
 # Dependency checks
 # ============================================================================
 
+# --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
+# Derived from pm/lock.json. DO NOT EDIT BY HAND:
+# run scripts/gen-bootstrap-pins.py after a pin bump.
+UV_PIN_VERSION="0.12.3"
+
+# Sets UV_PIN_URL + UV_PIN_SHA256 for a <os>-<arch> target key.
+uv_bootstrap_pin() {
+    case "$1" in
+        linux-x64)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-gnu.tar.gz"
+            UV_PIN_SHA256="600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101"
+            ;;
+        linux-arm64)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-gnu.tar.gz"
+            UV_PIN_SHA256="bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2"
+            ;;
+        darwin-x64)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-apple-darwin.tar.gz"
+            UV_PIN_SHA256="4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b"
+            ;;
+        darwin-arm64)
+            UV_PIN_URL="https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz"
+            UV_PIN_SHA256="546f7f8a6c70ff13a3a9d2bc958db3427298cebf3e0cb756f9177133b7068843"
+            ;;
+        *)
+            UV_PIN_URL=""
+            UV_PIN_SHA256=""
+            return 1
+            ;;
+    esac
+}
+# --- END GENERATED: bootstrap pins ---
+
+uv_bootstrap_target() {
+    # Map this host to a pm/lock.json target key (<os>-<arch>).
+    local _arch
+    case "$(uname -m)" in
+        arm64|aarch64) _arch="arm64" ;;
+        x86_64|amd64)  _arch="x64" ;;
+        *) return 1 ;;
+    esac
+    case "$(uname -s)" in
+        Linux)  echo "linux-$_arch" ;;
+        Darwin) echo "darwin-$_arch" ;;
+        *) return 1 ;;
+    esac
+}
+
+
 install_uv() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Termux detected — using Python's stdlib venv + pip instead of uv"
@@ -601,6 +650,56 @@ install_uv() {
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "Managed uv found ($UV_VERSION)"
         return 0
+    fi
+
+    # Upstream bootstrap-pins integration (pm store foundation): prefer the
+    # pm/lock.json-pinned uv artifact — sha256-verified, staged into the same
+    # pm store slot pm itself uses — over the astral curl installer. The
+    # GENERATED pin fragment above is drift-checked by the bootstrap CI lane;
+    # regenerate it with scripts/gen-bootstrap-pins.py, never edit by hand.
+    # Termux never reaches here (bypassed above): the pinned builds are glibc.
+    local _pin_target=""
+    if _pin_target="$(uv_bootstrap_target 2>/dev/null)" && [ -n "$_pin_target" ] && uv_bootstrap_pin "$_pin_target"; then
+        local _pin_store="${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}"
+        local _pin_entry="$_pin_store/uv-$UV_PIN_VERSION-$_pin_target"
+        if [ ! -x "$_pin_entry/uv" ]; then
+            log_info "Staging pinned uv $UV_PIN_VERSION ($_pin_target) into the pm store..."
+            local _pin_tmp
+            _pin_tmp="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-pin.$$.tmp")"
+            mkdir -p "$_pin_tmp"
+            if curl -LsSf "$UV_PIN_URL" -o "$_pin_tmp/uv.tar.gz"; then
+                local _digest
+                if command -v sha256sum >/dev/null 2>&1; then
+                    _digest="$(sha256sum "$_pin_tmp/uv.tar.gz" | cut -d' ' -f1)"
+                else
+                    _digest="$(shasum -a 256 "$_pin_tmp/uv.tar.gz" | cut -d' ' -f1)"
+                fi
+                if [ "$_digest" = "$UV_PIN_SHA256" ] && tar -xzf "$_pin_tmp/uv.tar.gz" -C "$_pin_tmp"; then
+                    local _unpacked
+                    _unpacked="$(find "$_pin_tmp" -mindepth 1 -maxdepth 2 -name uv -type f | head -n1)"
+                    if [ -n "$_unpacked" ]; then
+                        mkdir -p "$_pin_entry"
+                        mv "$_unpacked" "$_pin_entry/uv"
+                        [ -f "$(dirname "$_unpacked")/uvx" ] && mv "$(dirname "$_unpacked")/uvx" "$_pin_entry/uvx"
+                        chmod +x "$_pin_entry/uv" 2>/dev/null || true
+                        chmod +x "$_pin_entry/uvx" 2>/dev/null || true
+                    fi
+                fi
+            fi
+            rm -rf "$_pin_tmp"
+        fi
+        if [ -x "$_pin_entry/uv" ] && "$_pin_entry/uv" --version >/dev/null 2>&1; then
+            # Keep the fork's managed-uv contract ($HERMES_HOME/bin/uv, shared
+            # with hermes_cli/managed_uv.py) pointing at the pinned build.
+            mkdir -p "$HERMES_HOME/bin"
+            cp "$_pin_entry/uv" "$_managed_uv"
+            chmod +x "$_managed_uv"
+            UV_CMD="$_managed_uv"
+            UV_VERSION=$($UV_CMD --version 2>/dev/null)
+            log_success "Managed uv installed from pm-pinned artifact ($UV_VERSION)"
+            return 0
+        fi
+        log_warn "Pinned uv staging unavailable — falling back to the astral installer"
     fi
 
     log_info "Installing managed uv into $HERMES_HOME/bin ..."

@@ -197,7 +197,7 @@ def _cache_file(name: str) -> Path:
 def _load_json_dict(path: Path) -> Dict[str, Any]:
     """JSON object at ``path``, or {} when missing/invalid."""
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -259,7 +259,7 @@ def _model_metadata_disk_cache_age_seconds() -> Optional[float]:
 def _load_model_metadata_disk_cache() -> Dict[str, Dict[str, Any]]:
     """Processed OpenRouter metadata cache from disk ({} on any failure)."""
     try:
-        with _get_model_metadata_cache_path().open("r", encoding="utf-8") as f:
+        with _get_model_metadata_cache_path().open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return {str(key): value for key, value in data.items() if isinstance(value, dict)} if isinstance(data, dict) else {}
     except Exception as e:
@@ -1123,7 +1123,7 @@ def _load_context_cache_document() -> dict:
     if not path.exists():
         return {}
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = yaml.safe_load(f)
             if not isinstance(data, dict):
                 return {}

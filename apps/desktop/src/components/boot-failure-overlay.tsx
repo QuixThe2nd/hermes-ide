@@ -205,7 +205,11 @@ export function BootFailureOverlay() {
 
       await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
 
-      let result: { connected?: boolean } | undefined
+      // `error` matters here: the oauth arm (oauthLoginConnectionConfig) and
+      // the cloud cascade can both fail with a reason, and the incomplete
+      // sign-in notice below surfaces it. (DesktopCloudAgentSignInResult has
+      // no error field; oauthLoginConnectionConfig does.)
+      let result: { connected?: boolean; error?: string } | undefined
 
       if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
         const status = await desktop.cloud.status()

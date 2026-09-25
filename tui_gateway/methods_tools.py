@@ -488,7 +488,10 @@ def _(rid, params: dict) -> dict:
         on_result=lambda r: _ok(rid, {
             "blocked": False, "code": r.returncode, "output": (_joined_output(r) or "(no output)")[:48_000]}),
         timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,
-        env=hermes_subprocess_env(inherit_credentials=True))
+        # Same-interpreter re-exec: ambient PYTHONPATH must survive the env
+        # factory's Hermes-owned strip (no-boot-through-venv).
+        env=_tools_mod("hermes_cli._subprocess_compat").restore_ambient_pythonpath(
+            hermes_subprocess_env(inherit_credentials=True)))
 
 
 @_rpc("command.resolve", 5012)

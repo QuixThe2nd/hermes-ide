@@ -11,8 +11,9 @@ code has two failure modes:
   how a generated systemd unit or launchd plist can bake a system Node in and
   keep resolving it across reboots.
 
-The fix per call site is one of ``find_node_executable()``,
-``iter_hermes_node_dirs()``, ``resolve_uv()``, or ``ensure_uv()``. This test is
+The fix per call site is one of ``find_node_executable()``, ``pm.env_for()``,
+``pm.ensure()``, or (transitional)
+``pm.uv()``. This test is
 the ratchet that stops a new bare lookup from being added back.
 
 Reading source is normally banned (see AGENTS.md). It is the right tool here and
@@ -28,6 +29,7 @@ from __future__ import annotations
 import ast
 import functools
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -78,13 +80,13 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "hermes_cli import guard."
     ),
     ("tools/browser_use_cli.py", "uv"): (
-        "install_cli()'s fallback after ensure_uv() misses — a user-installed "
+        "install_cli()'s fallback after pm.uv() misses — a user-installed "
         "uv on PATH is a legitimate last rung before giving up with install "
         "guidance."
     ),
     ("hermes_cli/gateway.py", "node"): (
-        "Fallback rung of _append_node_dir_for_service(), after the managed "
-        "dirs from iter_hermes_node_dirs() are already appended."
+        "Fallback rung of _append_node_dir_for_service(), after the pm "
+        "store's managed dirs are already appended."
     ),
     ("hermes_cli/main_tui_launch.py", "node"): (
         "_ensure_tui_node()'s idempotence gate: the question really is 'is "
@@ -162,6 +164,9 @@ def _findings() -> list[tuple[str, str, int]]:
     """Return (relpath, command, lineno) for every bare managed lookup."""
     found: list[tuple[str, str, int]] = []
     for path in _source_files():
+        rel = path.relative_to(REPO_ROOT)
+        if rel.parts and rel.parts[0] in _EXEMPT_DIRS:
+            continue
         try:
             source = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -172,9 +177,8 @@ def _findings() -> list[tuple[str, str, int]]:
             tree = ast.parse(source)
         except SyntaxError:
             continue
-        rel = path.relative_to(REPO_ROOT).as_posix()
         for command, lineno in _iter_which_calls(tree):
-            found.append((rel, command, lineno))
+            found.append((rel.as_posix(), command, lineno))
     return found
 
 
@@ -193,9 +197,9 @@ def test_no_unreviewed_bare_managed_runtime_lookups():
         "arbitrary process's PATH, so this resolves a system copy — or nothing "
         "— on an install that has a managed one.\n"
         "Use instead:\n"
-        "  uv       -> managed_uv.resolve_uv() (lookup) or ensure_uv() (may install)\n"
+        "  uv       -> pm.uv(realize=False) (lookup) or pm.uv() (may realize)\n"
         "  node/npm -> hermes_constants.find_node_executable()\n"
-        "  PATH env -> hermes_constants.iter_hermes_node_dirs()\n"
+        "  PATH env -> hermes_constants.with_hermes_node_path()\n"
         "If PATH really is the right question, add the site to _ALLOWED with a "
         "reason."
     )
@@ -217,8 +221,6 @@ def test_allowlist_has_no_stale_entries():
     "helper",
     [
         "find_node_executable",
-        "find_hermes_node_executable",
-        "iter_hermes_node_dirs",
         "with_hermes_node_path",
     ],
 )

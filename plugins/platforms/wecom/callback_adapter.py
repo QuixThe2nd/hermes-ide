@@ -71,10 +71,10 @@ def ensure_wecom_callback_requirements() -> bool:
         return {"ET": _ET, "DEFUSEDXML_AVAILABLE": True}
 
     try:
-        from tools.lazy_deps import ensure_and_bind
+        from pm.extras import ensure_and_bind
     except Exception:  # pragma: no cover — defensive
         return False
-    return bool(ensure_and_bind("platform.wecom_callback", _import, globals(), prompt=False)) and check_wecom_callback_requirements()
+    return bool(ensure_and_bind("wecom", _import, globals())) and check_wecom_callback_requirements()
 
 
 def _ack():

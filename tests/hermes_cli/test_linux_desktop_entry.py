@@ -63,6 +63,19 @@ def _parse(entry_text: str) -> dict:
     return values
 
 
+def _strip_exec_env_prefix(exec_line: str) -> str:
+    """Strip the ``env PYTHONPATH=<repo>`` prefix the Exec line carries.
+
+    No-boot-through-venv: a DE launch inherits no environment, so the Exec
+    line carries the repo PYTHONPATH explicitly via ``env`` — every launcher
+    form is wrapped, and tests pin the wrapped command after the prefix.
+    """
+    tokens = exec_line.split(" ")
+    assert tokens[0] == "env"
+    assert tokens[1].startswith("PYTHONPATH=")
+    return " ".join(tokens[2:])
+
+
 def test_install_writes_entry_with_absolute_exec_and_icon(
     tmp_path, xdg_home, monkeypatch
 ):
@@ -85,8 +98,9 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
 
     # Exec must be the absolute path of the resolved binary. The launcher
     # runs with a minimal PATH, so a bare `hermes` would not resolve.
-    assert values["Exec"] == f"{hermes_bin} desktop"
-    assert Path(values["Exec"].split(" ")[0]).is_absolute()
+    exec_line = _strip_exec_env_prefix(values["Exec"])
+    assert exec_line == f"{hermes_bin} desktop"
+    assert Path(exec_line.split(" ")[0]).is_absolute()
 
     # Icon must be an absolute path to the real icon in the checkout.
     icon_path = Path(values["Icon"])
@@ -173,7 +187,12 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     assert exec_line.endswith("-m hermes_cli.main desktop")
-    assert Path(exec_line.split(" ")[0]).is_absolute()
+    # No-boot-through-venv: a DE launch inherits no environment, so the
+    # Exec line carries the repo PYTHONPATH explicitly via `env`.
+    tokens = exec_line.split(" ")
+    assert tokens[0] == "env"
+    assert tokens[1].startswith("PYTHONPATH=")
+    assert Path(tokens[2].strip('"')).is_absolute()
 
 
 # #90292: the shell installer's bash wrapper makes argv[0] the repo `hermes`
@@ -202,7 +221,10 @@ def test_exec_prefixes_interpreter_for_env_shebang_python_script(
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     interpreter = os.path.abspath(sys.executable)
-    assert exec_line.split(" ")[0].strip('"') == interpreter
+    tokens = exec_line.split(" ")
+    assert tokens[0] == "env"
+    assert tokens[1].startswith("PYTHONPATH=")
+    assert tokens[2].strip('"') == interpreter
     assert str(hermes_bin) in exec_line
     assert exec_line.endswith("desktop")
 
@@ -224,7 +246,7 @@ def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypat
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     # A bash wrapper execs the venv python itself — no interpreter prefix.
-    assert exec_line == f"{hermes_bin} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{hermes_bin} desktop"
 
 
 def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch):
@@ -246,7 +268,7 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
 
     # Console-script with the venv's own interpreter in the shebang: correct
     # as-is, prefixing would only add noise.
-    assert exec_line == f"{hermes_bin} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{hermes_bin} desktop"
 
 
 # The persisted entry must be launch-context independent: whatever process
@@ -294,7 +316,7 @@ def test_exec_converges_from_repo_script_argv0_to_installed_wrapper(
 
     # Converged on the durable wrapper — NOT the repo script, and NOT an
     # interpreter-prefixed form pinning sys.executable.
-    assert exec_line == f"{wrapper} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{wrapper} desktop"
 
 
 def test_exec_never_persists_a_bare_interpreter_command(
@@ -325,13 +347,14 @@ def test_exec_never_persists_a_bare_interpreter_command(
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    first_token = exec_line.split(" ")[0].strip('"')
+    bare_exec = _strip_exec_env_prefix(exec_line)
+    first_token = bare_exec.split(" ")[0].strip('"')
     assert Path(first_token) != interpreter
     assert not (
         Path(first_token).name.startswith("python")
-        and "desktop" in exec_line.split(" ", 1)[1]
+        and "desktop" in bare_exec.split(" ", 1)[1]
     ), f"persisted an unrunnable bare-interpreter Exec: {exec_line}"
-    assert exec_line == f"{wrapper} desktop"
+    assert bare_exec == f"{wrapper} desktop"
 
 
 def test_exec_keeps_resolver_fallback_when_no_wrapper_on_path(
@@ -369,8 +392,9 @@ def test_exec_keeps_resolver_fallback_when_no_wrapper_on_path(
 
     # The runnable module fallback — NOT the bare repo script (its env
     # shebang would escape the venv under a DE) and NOT `<python> desktop`.
-    assert exec_line.endswith("-m hermes_cli.main desktop")
-    assert Path(exec_line.split(" ")[0].strip('"')).is_absolute()
+    bare_exec = _strip_exec_env_prefix(exec_line)
+    assert bare_exec.endswith("-m hermes_cli.main desktop")
+    assert Path(bare_exec.split(" ")[0].strip('"')).is_absolute()
     assert str(repo_script) not in exec_line
 
 
@@ -419,7 +443,7 @@ def test_exec_uses_known_wrapper_when_path_lookup_misses(
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     # The probe found the wrapper despite the PATH miss.
-    assert exec_line == f"{known_wrapper} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{known_wrapper} desktop"
 
 
 def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, monkeypatch):
@@ -466,7 +490,7 @@ def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, mo
     assert entry is not None
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    assert exec_line == f"{known_wrapper} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{known_wrapper} desktop"
     assert str(venv_script) not in exec_line
 
     # …and the same context a second time re-renders byte-identical content:
@@ -515,7 +539,7 @@ def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
     assert entry is not None
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    assert exec_line == f"{known_wrapper} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{known_wrapper} desktop"
 
     # …and the SAME context a second time re-renders byte-identical content:
     # the no-op guard in install_desktop_entry then skips the rewrite.
@@ -763,7 +787,7 @@ def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    assert exec_line == f'"{spaced}" desktop'
+    assert _strip_exec_env_prefix(exec_line) == f'"{spaced}" desktop'
 
 
 @pytest.mark.skipif(
@@ -863,8 +887,9 @@ def test_exec_falls_back_to_running_interpreter_when_probe_fails(
 
     # Runnable module form under the RUNNING interpreter - never the
     # unprobeable ELF fake, never a bare "<python> desktop".
-    assert exec_line.endswith("-m hermes_cli.main desktop")
-    first = exec_line.split(" ")[0].strip('"')
+    bare_exec = _strip_exec_env_prefix(exec_line)
+    assert bare_exec.endswith("-m hermes_cli.main desktop")
+    first = bare_exec.split(" ")[0].strip('"')
     assert first == os.path.abspath(sys.executable)
     assert str(interpreter) not in exec_line
 
@@ -1086,7 +1111,7 @@ def test_probe_accepts_shell_launcher_wrapper(tmp_path, xdg_home, monkeypatch):
 
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-    assert exec_line == f"{good_wrapper} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{good_wrapper} desktop"
 
 
 def test_install_icon_handles_truncated_png_header(tmp_path, xdg_home, monkeypatch):

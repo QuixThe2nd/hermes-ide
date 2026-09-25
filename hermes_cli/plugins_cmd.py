@@ -283,7 +283,7 @@ def _has_portable_manifest(plugin_dir: Path) -> bool:
 def _load_yaml_manifest(manifest_file: Path):
     """``yaml.safe_load`` of *manifest_file* (``{}`` when empty); raises on any read/parse error."""
     import yaml
-    with open(manifest_file, encoding="utf-8") as f:
+    with open(manifest_file, encoding="utf-8-sig") as f:
         return yaml.safe_load(f) or {}
 
 
@@ -424,7 +424,7 @@ def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     console = _console()
     after_install = plugin_dir / "after-install.md"
     if after_install.exists():
-        body, title = Markdown(after_install.read_text(encoding="utf-8")), None
+        body, title = Markdown(after_install.read_text(encoding="utf-8-sig")), None
     else:
         body = f"[green bold]Plugin installed:[/] {identifier}\n[dim]Location:[/] {plugin_dir}"
         title = "✓ Installed"
@@ -480,7 +480,7 @@ def _read_install_metadata() -> dict[str, dict[str, object]]:
     if not path.exists():
         return {}
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise PluginOperationError(f"Could not read plugin install metadata: {exc}") from exc
     if not isinstance(value, dict):

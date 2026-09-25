@@ -134,7 +134,10 @@ dependencies = [
   # without an explicit dependency here (and in the `web` extra below).
   "python-multipart>=0.0.9,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
-  "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
+  # pywinpty ships win_amd64 wheels only (winpty has no ARM64 support), so
+  # win32-arm64 would build the Rust sdist from source and fail — same
+  # exclusion faster-whisper carries for its missing win_arm64 wheel.
+  "pywinpty>=2.0.0,<3; sys_platform == 'win32' and platform_machine != 'ARM64'",
   # Desktop SSH's Windows remote runtime (hermes_cli/windows_ssh_runtime.py)
   # imports win32security/win32file/etc. directly — declare pywin32 rather than
   # relying on the concurrent-log-handler → portalocker transitive chain.
@@ -231,7 +234,10 @@ voice = [
 wake = [
   "openwakeword==0.6.0",
   "onnxruntime==1.27.0",
-  "sherpa-onnx==1.13.4",
+  # sherpa-onnx ships win_amd64/win32 wheels only (its kaldi-decoder C++ has
+  # no win_arm64 build), so win32-arm64 would build the sdist and fail. Gate
+  # it off there like faster-whisper; the other engines still ship.
+  "sherpa-onnx==1.13.4; platform_machine != 'ARM64' or sys_platform != 'win32'",
   "sentencepiece==0.2.2",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
@@ -243,6 +249,30 @@ wake = [
   "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
 ]
 honcho = ["honcho-ai==2.2.0"]
+# Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
+# only real extras (contract: tests/pm/test_extras.py). Each is
+# lazy-installed at first use via pm.ensure_import(name) and therefore
+# deliberately NOT in [all] (see tests/test_project_metadata.py's
+# lazy_covered_extras list — keep that list in sync when adding here).
+telegram = ["python-telegram-bot[webhooks]==22.8"]
+discord = ["discord.py[voice]==2.7.1"]
+# stt-whisper + audio-io compose [voice] (faster-whisper / sounddevice / numpy).
+stt-whisper = ["faster-whisper==1.2.1"]
+audio-io = ["sounddevice==0.5.5", "numpy==2.4.3"]
+# WeChat voice decode (tools/transcription_tools.py self-heal path).
+silk = ["pilk==0.2.4"]
+# Wake-engine sub-extras — lazy per-engine installs so a user who only wants
+# sherpa-onnx doesn't pull the whole [wake] bundle. Pins match [wake].
+wake-openwakeword = ["openwakeword==0.6.0", "onnxruntime==1.27.0"]
+wake-sherpa = ["sherpa-onnx==1.13.4; platform_machine != 'ARM64' or sys_platform != 'win32'"]
+wake-porcupine = ["pvporcupine==4.0.3"]
+# macOS tflite bridge (tools/wake_word.py); same marker policy as [wake].
+wake-tflite = ["ai-edge-litert==2.1.6; platform_system == 'Darwin'"]
+# Document extraction (read_file anydoc converter self-heal) — core already
+# bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
+# can re-sync exactly the pin from core.
+doc-extract = ["firecrawl-anydoc==0.2.4"]
+trace-upload = ["huggingface-hub==1.24.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
 # (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the
 # LAZY_DEPS pins (enforced by tests/test_project_metadata.py). Deliberately

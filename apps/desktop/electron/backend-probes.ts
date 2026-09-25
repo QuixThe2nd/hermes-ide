@@ -161,13 +161,14 @@ function hermesRuntimeImportProbe() {
  * @param {object} [opts.env] - Additional environment for the probe.
  * @returns {boolean}
  */
-async function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string> } = {}) {
+async function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string>; cwd?: string } = {}) {
   if (!pythonPath) {
     return false
   }
 
   try {
     await execProbe(pythonPath, ['-c', hermesRuntimeImportProbe()], {
+      cwd: opts.cwd,
       env: { ...process.env, ...(opts.env || {}) },
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,

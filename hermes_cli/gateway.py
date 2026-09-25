@@ -2776,9 +2776,48 @@ def launchd_gateway_labels_for_install() -> list[str]:
     return root_label + sorted(profile_labels)
 
 
+def _pm_runtime_venv_dir() -> Path | None:
+    """The venv pm provisioned for this install, resolved from pm's own
+    records (facts.json + store layout) — never from interpreter state.
+
+    Under no-boot-through-venv the gateway runs the store python with the
+    venv's site-packages on PYTHONPATH, so ``sys.prefix`` always equals
+    ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled installs;
+    prefix/env probing silently degrades. pm is the authority instead: a
+    bundled install keeps its relocatable venv beside the manifest (a
+    sibling of the store), a dev install syncs the project venv
+    (``venv``/``.venv``, per ``hermes_constants.project_venv_dir`` — the
+    same layout ``pm.packages.Venv.venv_dir`` materializes). The venv fact
+    must exist: pm only vouches for what it provisioned.
+    """
+    try:
+        from pm import paths
+        from pm.lock import Facts
+    except Exception:
+        return None
+    try:
+        if not Facts(paths.facts_path()).get("venv"):
+            return None
+    except Exception:
+        return None
+    store = paths.store_root()
+    bundled = store.parent / "venv"
+    if (store.parent / "manifest.json").is_file():
+        return bundled if bundled.is_dir() else None
+    try:
+        from hermes_constants import project_venv_dir
+    except ImportError:
+        return None
+    return project_venv_dir(paths.repo_root())
+
+
 def _detect_venv_dir() -> Path | None:
-    """Active virtualenv dir: ``sys.prefix``, then ``VIRTUAL_ENV`` (uv sets it without changing
-    sys.prefix), then .venv/venv under PROJECT_ROOT; None if none found."""
+    """Active virtualenv dir: pm's provisioned runtime venv first (facts + store layout — the
+    authority under no-boot-through-venv), then ``sys.prefix``, then ``VIRTUAL_ENV`` (uv sets it
+    without changing sys.prefix), then .venv/venv under PROJECT_ROOT; None if none found."""
+    pm_venv = _pm_runtime_venv_dir()
+    if pm_venv is not None and pm_venv.is_dir():
+        return pm_venv
     candidates: list[Path] = []
     if sys.prefix != sys.base_prefix:
         candidates.append(Path(sys.prefix))
@@ -2892,11 +2931,20 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
             return False
 
     candidates = []
+
+    # The interpreter's own bin dir. Under no-boot-through-venv the
+    # gateway runs the store python (sys.prefix == sys.base_prefix), so
+    # the venv bin dir comes from pm's facts/store resolution, not from
+    # prefix sniffing.
     venv_bin = project_root / "venv" / "bin"
     if _is_dir(venv_bin):
         candidates.append(str(venv_bin))
-    elif sys.prefix != sys.base_prefix:
-        candidates.append(str(Path(sys.prefix) / "bin"))
+    else:
+        pm_venv = _pm_runtime_venv_dir()
+        if pm_venv is not None:
+            pm_venv_bin = pm_venv / "bin"
+            if _is_dir(pm_venv_bin):
+                candidates.append(str(pm_venv_bin))
 
     hermes_home = get_hermes_home()
     extras = (project_root / "node_modules" / ".bin", hermes_home / "node" / "bin", hermes_home / "node_modules" / ".bin")

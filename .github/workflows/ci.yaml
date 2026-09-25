@@ -48,6 +48,7 @@ jobs:
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
       installer: ${{ steps.classify.outputs.installer }}
       desktop_updater: ${{ steps.classify.outputs.desktop_updater }}
+      bootstrap: ${{ steps.classify.outputs.bootstrap }}
       rust: ${{ steps.classify.outputs.rust }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
@@ -117,6 +118,15 @@ jobs:
     # changes used to run the TypeScript matrix and nothing that compiles them.
     if: needs.detect.outputs.rust == 'true'
     uses: ./.github/workflows/rust-tests.yml
+
+  bootstrap-installer:
+    name: Bootstrap installer
+    needs: detect
+    # The bootstrap-installer path: install.sh, the pin fragments it embeds,
+    # and the version stamp it ships. The PowerShell installer has its own
+    # Windows-only lane above (installer-tests).
+    if: needs.detect.outputs.bootstrap == 'true'
+    uses: ./.github/workflows/bootstrap-installer.yml
 
   e2e-desktop:
     name: Desktop E2E
@@ -233,6 +243,7 @@ jobs:
       - js-tests
       - installer-tests
       - rust-tests
+      - bootstrap-installer
       - e2e-desktop
       - docs-site
       - history-check

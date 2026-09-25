@@ -246,6 +246,7 @@ class TestGitBashExternalProgramProbe:
         assert str(tmp_path / "hermes" / "git") in message
 
 
+
 @pytest.mark.macos_only
 @pytest.mark.skipif(
     not os.path.isfile("/bin/bash"),

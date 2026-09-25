@@ -630,8 +630,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 def _build_client(config: HonchoClientConfig) -> "Honcho":
     """Construct the SDK client (runs inside the slot factory so racing callers share one)."""
     with contextlib.suppress(Exception):  # lazy-dep failures fall through to the canonical import error below
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("memory.honcho", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("honcho")
     try:
         from honcho import Honcho
     except ImportError:
