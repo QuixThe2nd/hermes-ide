@@ -23,7 +23,7 @@ __all__ = [
 def _read_text(path: str) -> str | None:
     """Read a small text file, or None when it is missing/unreadable."""
     try:
-        with open(path, encoding="utf-8") as handle:
+        with open(path, encoding="utf-8-sig") as handle:
             return handle.read()
     except (OSError, UnicodeDecodeError):
         return None
@@ -123,7 +123,7 @@ def read_openai_version() -> str | None:
     for base in sys.path:
         version_file = os.path.join(base or os.getcwd(), "openai", "_version.py")
         try:
-            with open(version_file, encoding="utf-8") as handle:
+            with open(version_file, encoding="utf-8-sig") as handle:
                 for line in handle:
                     stripped = line.strip()
                     if not stripped.startswith("__version__"):

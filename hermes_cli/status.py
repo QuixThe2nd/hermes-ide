@@ -295,7 +295,7 @@ def _render_sessions(ctx):
         _kv("Active:", 0)
     else:
         try:
-            data = _load_json(sessions_file)
+            data = _load_json(sessions_file, "utf-8-sig")
             entries = [k for k in data if not str(k).startswith("_")] if isinstance(data, dict) else []
             _kv("Active:", f"{len(entries)} session(s)")
         except Exception:

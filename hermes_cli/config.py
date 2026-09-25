@@ -279,7 +279,7 @@ def get_managed_system() -> Optional[str]:
     managed_marker = get_hermes_home() / ".managed"
     if marker is None and managed_marker.exists():
         try:
-            marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
+            marker = managed_marker.read_text(encoding="utf-8-sig", errors="replace").strip().lower()
         except OSError:
             marker = ""
     if marker is None or marker in _IGNORED_MANAGED_VALUES or marker in _MANAGED_FALSE_VALUES:
@@ -315,7 +315,7 @@ _SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-m
 
 def _install_method_stamp(path: Path) -> Optional[str]:
     try:
-        method = path.read_text(encoding="utf-8").strip().lower()
+        method = path.read_text(encoding="utf-8-sig").strip().lower()
     except OSError:
         return None
     return method if method in _SUPPORTED_INSTALL_METHODS else None
@@ -362,7 +362,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     # A .git directory, or a ``gitdir:`` pointer file for worktrees.
     git_path = root / ".git"
     try:
-        if git_path.is_dir() or git_path.read_text(encoding="utf-8").strip().startswith("gitdir:"):
+        if git_path.is_dir() or git_path.read_text(encoding="utf-8-sig").strip().startswith("gitdir:"):
             return "git"
     except OSError:
         pass
@@ -468,7 +468,7 @@ def get_container_exec_info() -> Optional[dict]:
 
     try:
         info = {}
-        with open(get_hermes_home() / ".container-mode", "r", encoding="utf-8") as f:
+        with open(get_hermes_home() / ".container-mode", "r", encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -611,7 +611,7 @@ def _is_container() -> bool:
             or os.path.exists("/.dockerenv")):
         return True
     try:
-        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
+        with open("/proc/1/cgroup", "r", encoding="utf-8-sig") as f:
             cgroup_content = f.read()
         return any(marker in cgroup_content for marker in ("docker", "lxc", "kubepods"))
     except (OSError, IOError):
@@ -636,7 +636,7 @@ def _ensure_default_soul_md(home: Path) -> None:
     soul_path = home / "SOUL.md"
     if soul_path.exists():
         try:
-            existing = soul_path.read_text(encoding="utf-8")
+            existing = soul_path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             return
         if not is_legacy_template_soul(existing):
@@ -1057,7 +1057,7 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
         return latest, latest
 
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             config = fast_safe_load(f)
     except Exception as e:
         _warn_config_parse_failure(config_path, e)
@@ -2018,7 +2018,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             return copy.deepcopy(cached[len(cache_key)]) if want_deepcopy else cached[len(cache_key)]
 
         try:
-            with open(config_path, encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8-sig") as f:
                 data = fast_safe_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
@@ -2046,7 +2046,7 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
     if config_path is None:
         config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             data = fast_safe_load(f) or {}
     except FileNotFoundError:
         return {}
@@ -2096,7 +2096,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         raise _refuse_overwrite(config_path, "cannot be accessed", exc, _FIX_PERMS) from exc
 
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             loaded = fast_safe_load(f)
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be read", exc, _FIX_PERMS) from exc
@@ -2344,7 +2344,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         if user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
+                with open(config_path, encoding="utf-8-sig") as f:
                     user_config = fast_safe_load(f) or {}
 
                 if "max_turns" in user_config:
@@ -4102,7 +4102,7 @@ def _platform_plugin_manifests():
         if manifest_path is None:
             continue
         try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
+            with open(manifest_path, "r", encoding="utf-8-sig") as f:
                 manifest = fast_safe_load(f) or {}
         except Exception:
             continue

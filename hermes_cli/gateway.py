@@ -446,7 +446,7 @@ def probe_gateway_loop_liveness(
         from gateway.shutdown_watchdog import get_loop_heartbeat_path
         path = get_loop_heartbeat_path(home)
         mtime = path.stat().st_mtime
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
         heartbeat_pid = int(payload.get("pid", 0))
     except Exception:
         return GATEWAY_LOOP_UNKNOWN
@@ -1125,7 +1125,7 @@ def _systemctl_show(properties: tuple[str, ...], *, system: bool) -> dict[str, s
 def _hermes_home_pinned_by_unit(unit_path: Path) -> str | None:
     """``HERMES_HOME`` pinned by the unit file at *unit_path*, or None when absent/unreadable."""
     try:
-        text = unit_path.read_text(encoding="utf-8")
+        text = unit_path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
     for line in text.splitlines():
@@ -2424,7 +2424,7 @@ def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
             try:
                 if not unit_path.exists():
                     continue
-                text = unit_path.read_text(encoding="utf-8", errors="ignore")
+                text = unit_path.read_text(encoding="utf-8-sig", errors="ignore")
             except (OSError, PermissionError):
                 continue
             if any(marker in text for marker in _LEGACY_UNIT_EXECSTART_MARKERS):
@@ -2586,7 +2586,7 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
 def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
     if not unit_path.exists():
         return None
-    for line in unit_path.read_text(encoding="utf-8").splitlines():
+    for line in unit_path.read_text(encoding="utf-8-sig").splitlines():
         if line.startswith("User="):
             return line.split("=", 1)[1].strip() or None
     return None
@@ -2833,10 +2833,14 @@ def get_python_path() -> str:
         try:
             from hermes_constants import venv_python_path
         except ImportError:
-            # Update-boundary: a gateway restarted mid-update can hold a stale hermes_constants
-            # without this symbol; see _reload_hermes_constants() in hermes_cli/managed_uv.py.
-            from hermes_cli.managed_uv import _reload_hermes_constants
-            venv_python_path = _reload_hermes_constants().venv_python_path
+            # Update-boundary: a gateway restarted mid-update can hold a
+            # hermes_constants cached from before this symbol existed.
+            # Reload picks up the definitions actually on disk.
+            import importlib
+
+            import hermes_constants
+
+            venv_python_path = importlib.reload(hermes_constants).venv_python_path
 
         venv_python = venv_python_path(venv, windows=is_windows())
         if venv_python.exists():
@@ -2986,21 +2990,61 @@ def _systemd_watchdog_seconds(hermes_home: str | Path | None = None) -> int:
 
 
 def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | None = None) -> None:
-    """Append the Node dir a service unit should use: managed ``<hermes_root>/node`` (profile-scoped)
-    first — a unit survives reboots, so baking a shell-PATH Node is permanent breakage — else PATH lookup."""
-    from hermes_constants import (hermes_managed_node_tree_present, iter_hermes_node_dirs)
-    managed_node_present = hermes_managed_node_tree_present(hermes_root)
-    for directory in iter_hermes_node_dirs(hermes_root) if managed_node_present else ():
-        entry = str(directory)
+    """Add the Node directory a generated service unit should use to *path_entries*.
+
+    The pm store's Node/npm dirs go first when installed. A bare
+    ``shutil.which("node")`` cannot be trusted on its own here: a service unit
+    is written once and then survives reboots, so resolving a system Node that
+    happens to be ahead on the installing shell's PATH bakes the wrong
+    interpreter in permanently — the exact failure the desktop backend spawn
+    was fixed for. The store is profile-scoped, so each profile's unit still
+    names its own Node.
+
+    *hermes_root* is the Hermes home the unit will run against. System units
+    installed via sudo MUST pass the **target user's** home: probing the
+    default (the calling user's — root's —) tree would bake root's Node into
+    the target user's unit; the target user's installed-state file
+    (``<hermes_root>/tools/facts.json``) is read directly for that case.
+    The probe swallows OSError: an unreadable candidate dir (hardened home)
+    means "skip the rung", not "crash the generator".
+
+    PATH lookup remains the fallback rung for installs with no pm-managed Node.
+    """
+    managed_dirs: list[str] = []
+    try:
+        if hermes_root is None:
+            import pm
+
+            env = pm.env_for("npm", base_env={"PATH": ""})
+            managed_dirs = [d for d in env.get("PATH", "").split(os.pathsep) if d]
+        else:
+            from pm.lock import Facts
+
+            store_root = Path(hermes_root) / "tools"
+            facts = Facts(store_root / "facts.json")
+            for name in ("npm", "node"):
+                value = facts.env_for(name, store_root).get("PATH") or []
+                for directory in value if isinstance(value, list) else [value]:
+                    if directory and directory not in managed_dirs:
+                        managed_dirs.append(str(directory))
+    except Exception:
+        managed_dirs = []
+
+    managed_appended = False
+    for entry in managed_dirs:
         try:
-            present = directory.is_dir()
+            present = Path(entry).is_dir()
         except OSError:
             present = False
-        if present and entry not in path_entries:
-            path_entries.append(entry)
+        if present:
+            managed_appended = True
+            if entry not in path_entries:
+                path_entries.append(entry)
 
-    # With managed Node present, consulting the invoker's PATH would make a system unit depend on who ran sudo.
-    if managed_node_present:
+    # Ambient PATH lookup is a fallback, not an additional rung. Once the
+    # target Hermes home provides managed Node, consulting the invoker's PATH
+    # makes a system unit differ between sudo/root and its service user.
+    if managed_appended:
         return
 
     resolved_node = shutil.which("node")
@@ -3149,7 +3193,7 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
-    installed = unit_path.read_text(encoding="utf-8")
+    installed = unit_path.read_text(encoding="utf-8-sig")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.
@@ -4114,7 +4158,7 @@ def launchd_plist_is_current() -> bool:
     plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         return False
-    installed = plist_path.read_text(encoding="utf-8")
+    installed = plist_path.read_text(encoding="utf-8-sig")
     norm = _normalize_launchd_plist_for_comparison
     return norm(installed) == norm(generate_launchd_plist())
 
