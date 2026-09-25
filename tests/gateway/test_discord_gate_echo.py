@@ -1,1 +1,253 @@
-IiIiVGVzdHMgZm9yIGRpc2NvcmQucmVzcG9uc2VfZ2F0ZSBlY2hvX2NoYW5uZWxzIChqdWRnZSBlY2hvLCBubyBzZXNzaW9uIHdha2UpLiIiIgoKZnJvbSBkYXRldGltZSBpbXBvcnQgZGF0ZXRpbWUsIHRpbWV6b25lCmZyb20gdHlwZXMgaW1wb3J0IFNpbXBsZU5hbWVzcGFjZQpmcm9tIHVuaXR0ZXN0Lm1vY2sgaW1wb3J0IEFzeW5jTW9jaywgTWFnaWNNb2NrCgppbXBvcnQgcHl0ZXN0Cgpmcm9tIGdhdGV3YXkuY29uZmlnIGltcG9ydCBQbGF0Zm9ybUNvbmZpZywgUmVzcG9uc2VHYXRlQ29uZmlnCmZyb20gZ2F0ZXdheS5wbGF0Zm9ybXMuYmFzZSBpbXBvcnQgU2VuZFJlc3VsdAoKaW1wb3J0IHBsdWdpbnMucGxhdGZvcm1zLmRpc2NvcmQuYWRhcHRlciBhcyBkaXNjb3JkX3BsYXRmb3JtICAjIG5vcWE6IEU0MDIKZnJvbSBwbHVnaW5zLnBsYXRmb3Jtcy5kaXNjb3JkLmFkYXB0ZXIgaW1wb3J0IERpc2NvcmRBZGFwdGVyICAjIG5vcWE6IEU0MDIKZnJvbSBwbHVnaW5zLnBsYXRmb3Jtcy5kaXNjb3JkLnJlc3BvbnNlX2dhdGUgaW1wb3J0IEdhdGVEZWNpc2lvbiwgUmVzcG9uc2VHYXRlRXJyb3IgICMgbm9xYTogRTQwMgoKCmNsYXNzIF9UZXh0Q2hhbm5lbDoKICAgIGRlZiBfX2luaXRfXyhzZWxmLCBjaGFubmVsX2lkOiBpbnQgPSAxMDAsIG5hbWU6IHN0ciA9ICJnZW5lcmFsIik6CiAgICAgICAgc2VsZi5pZCA9IGNoYW5uZWxfaWQKICAgICAgICBzZWxmLm5hbWUgPSBuYW1lCiAgICAgICAgc2VsZi5ndWlsZCA9IFNpbXBsZU5hbWVzcGFjZShuYW1lPSJUZXN0IFNlcnZlciIsIGlkPTEpCiAgICAgICAgc2VsZi50b3BpYyA9IE5vbmUKCiAgICBkZWYgaGlzdG9yeShzZWxmLCAqLCBsaW1pdCwgYmVmb3JlLCBhZnRlcj1Ob25lLCBvbGRlc3RfZmlyc3Q9Tm9uZSk6CiAgICAgICAgYXN5bmMgZGVmIF9lbXB0eSgpOgogICAgICAgICAgICByZXR1cm4KICAgICAgICAgICAgeWllbGQKCiAgICAgICAgcmV0dXJuIF9lbXB0eSgpCgoKZGVmIF9tYWtlX21lc3NhZ2UoKiwgbXNnX2lkOiBpbnQgPSA0MiwgY2hhbm5lbCwgY29udGVudDogc3RyID0gImhlbGxvIGFtYmllbnQiLCBtZW50aW9ucz1Ob25lKToKICAgIGF1dGhvciA9IFNpbXBsZU5hbWVzcGFjZShpZD03LCBkaXNwbGF5X25hbWU9IkFsaWNlIiwgbmFtZT0iQWxpY2UiLCBib3Q9RmFsc2UpCiAgICByZXR1cm4gU2ltcGxlTmFtZXNwYWNlKAogICAgICAgIGlkPW1zZ19pZCwKICAgICAgICBjb250ZW50PWNvbnRlbnQsCiAgICAgICAgbWVudGlvbnM9bGlzdChtZW50aW9ucyBvciBbXSksCiAgICAgICAgYXR0YWNobWVudHM9W10sCiAgICAgICAgcmVmZXJlbmNlPU5vbmUsCiAgICAgICAgbWVzc2FnZV9zbmFwc2hvdHM9Tm9uZSwKICAgICAgICBjcmVhdGVkX2F0PWRhdGV0aW1lLm5vdyh0aW1lem9uZS51dGMpLAogICAgICAgIGNoYW5uZWw9Y2hhbm5lbCwKICAgICAgICBhdXRob3I9YXV0aG9yLAogICAgICAgIHR5cGU9ZGlzY29yZF9wbGF0Zm9ybS5kaXNjb3JkLk1lc3NhZ2VUeXBlLmRlZmF1bHQsCiAgICApCgoKQHB5dGVzdC5maXh0dXJlCmRlZiBhZGFwdGVyKG1vbmtleXBhdGNoKToKICAgIGZvciB2YXIgaW4gKAogICAgICAgICJESVNDT1JEX1JFUVVJUkVfTUVOVElPTiIsCiAgICAgICAgIkRJU0NPUkRfSUdOT1JFX05PX01FTlRJT04iLAogICAgICAgICJESVNDT1JEX0ZSRUVfUkVTUE9OU0VfQ0hBTk5FTFMiLAogICAgICAgICJESVNDT1JEX0FMTE9XRURfQ0hBTk5FTFMiLAogICAgICAgICJESVNDT1JEX0lHTk9SRURfQ0hBTk5FTFMiLAogICAgKToKICAgICAgICBtb25rZXlwYXRjaC5kZWxlbnYodmFyLCByYWlzaW5nPUZhbHNlKQogICAgbW9ua2V5cGF0Y2guc2V0ZW52KCJESVNDT1JEX1JFUVVJUkVfTUVOVElPTiIsICJ0cnVlIikKICAgIG1vbmtleXBhdGNoLnNldGVudigiRElTQ09SRF9BTExPV19BTExfVVNFUlMiLCAidHJ1ZSIpCgogICAgY29uZmlnID0gUGxhdGZvcm1Db25maWcoZW5hYmxlZD1UcnVlLCB0b2tlbj0iKioqIikKICAgIGEgPSBEaXNjb3JkQWRhcHRlcihjb25maWcpCiAgICBib3RfdXNlciA9IFNpbXBsZU5hbWVzcGFjZShpZD05OTksIGRpc3BsYXlfbmFtZT0iSGVybWVzIiwgbmFtZT0iSGVybWVzIiwgYm90PVRydWUpCiAgICBhLl9jbGllbnQgPSBTaW1wbGVOYW1lc3BhY2UodXNlcj1ib3RfdXNlcikKICAgIGEuX3RleHRfYmF0Y2hfZGVsYXlfc2Vjb25kcyA9IDAKICAgIGEuX3JlYWR5X2V2ZW50LnNldCgpCiAgICBhLl9oYW5kbGVfbWVzc2FnZSA9IEFzeW5jTW9jayhyZXR1cm5fdmFsdWU9VHJ1ZSkKICAgIGEuc2VuZCA9IEFzeW5jTW9jayhyZXR1cm5fdmFsdWU9U2VuZFJlc3VsdChzdWNjZXNzPVRydWUsIG1lc3NhZ2VfaWQ9IjEiKSkKICAgIHJldHVybiBhCgoKZGVmIF9pbml0X2dhdGUoYWRhcHRlciwgZ2F0ZV9kaWN0KToKICAgIGFkYXB0ZXIuY29uZmlnLnJlc3BvbnNlX2dhdGUgPSBSZXNwb25zZUdhdGVDb25maWcuZnJvbV9kaWN0KGdhdGVfZGljdCkKICAgIGFkYXB0ZXIuX3Jlc3BvbnNlX2dhdGVfY3JlZGVudGlhbCA9ICJmYWtlLXRlc3QtY3JlZGVudGlhbCIKICAgIGFkYXB0ZXIuX3Jlc3BvbnNlX2dhdGVfaW5pdCgpCgoKZGVmIF9tb2NrX2RlY2lkZShhZGFwdGVyLCBkZWNpc2lvbjogR2F0ZURlY2lzaW9uKToKICAgIGNsaWVudCA9IE1hZ2ljTW9jaygpCiAgICBjbGllbnQuZGVjaWRlID0gQXN5bmNNb2NrKHJldHVybl92YWx1ZT1kZWNpc2lvbikKICAgIGNsaWVudC50aHJlc2hvbGQgPSBhZGFwdGVyLl9yZXNwb25zZV9nYXRlLmNvbmZpZy50aHJlc2hvbGQKICAgIGFkYXB0ZXIuX3Jlc3BvbnNlX2dhdGUuY2xpZW50ID0gY2xpZW50CiAgICByZXR1cm4gY2xpZW50CgoKQHB5dGVzdC5tYXJrLmFzeW5jaW8KYXN5bmMgZGVmIHRlc3RfZWNob19jaGFubmVsX3Njb3JlX2F0X29yX2Fib3ZlX3RocmVzaG9sZChhZGFwdGVyKToKICAgIGNoYW5uZWwgPSBfVGV4dENoYW5uZWwoKQogICAgX2luaXRfZ2F0ZSgKICAgICAgICBhZGFwdGVyLAogICAgICAgIHsiZWNob19jaGFubmVscyI6IFsiMTAwIl0sICJtb2RlIjogImVuZm9yY2UiLCAidGhyZXNob2xkIjogMC44fSwKICAgICkKICAgIGNsaWVudCA9IF9tb2NrX2RlY2lkZSgKICAgICAgICBhZGFwdGVyLAogICAgICAgIEdhdGVEZWNpc2lvbihhbGxvd2VkPVRydWUsIG1vZGU9ImVuZm9yY2UiLCBzY29yZT0wLjk2LCBsYXRlbmN5X21zPTEyLjApLAogICAgKQogICAgbXNnID0gX21ha2VfbWVzc2FnZShjaGFubmVsPWNoYW5uZWwpCgogICAgcmVzdWx0ID0gYXdhaXQgYWRhcHRlci5fZGlzcGF0Y2hfZGlzY29yZF9tZXNzYWdlKG1zZykKCiAgICBhc3NlcnQgcmVzdWx0IGlzIEZhbHNlCiAgICBhZGFwdGVyLnNlbmQuYXNzZXJ0X2F3YWl0ZWRfb25jZSgpCiAgICBhc3NlcnQgIjAuOTYiIGluIGFkYXB0ZXIuc2VuZC5hd2FpdF9hcmdzLmFyZ3NbMV0KICAgIGFkYXB0ZXIuX2hhbmRsZV9tZXNzYWdlLmFzc2VydF9ub3RfYXdhaXRlZCgpCiAgICBjbGllbnQuZGVjaWRlLmFzc2VydF9hd2FpdGVkX29uY2UoKQoKCkBweXRlc3QubWFyay5hc3luY2lvCmFzeW5jIGRlZiB0ZXN0X2VjaG9fY2hhbm5lbF9zY29yZV9iZWxvd190aHJlc2hvbGQoYWRhcHRlcik6CiAgICBjaGFubmVsID0gX1RleHRDaGFubmVsKCkKICAgIF9pbml0X2dhdGUoCiAgICAgICAgYWRhcHRlciwKICAgICAgICB7ImVjaG9fY2hhbm5lbHMiOiBbIjEwMCJdLCAibW9kZSI6ICJzaGFkb3ciLCAidGhyZXNob2xkIjogMC44fSwKICAgICkKICAgIGNsaWVudCA9IF9tb2NrX2RlY2lkZSgKICAgICAgICBhZGFwdGVyLAogICAgICAgIEdhdGVEZWNpc2lvbigKICAgICAgICAgICAgYWxsb3dlZD1GYWxzZSwgbW9kZT0ic2hhZG93Iiwgc2NvcmU9MC4zMSwgbGF0ZW5jeV9tcz04LjAsIHJlYXNvbj0iYmVsb3dfdGhyZXNob2xkIiwKICAgICAgICApLAogICAgKQogICAgbXNnID0gX21ha2VfbWVzc2FnZShjaGFubmVsPWNoYW5uZWwpCgogICAgcmVzdWx0ID0gYXdhaXQgYWRhcHRlci5fZGlzcGF0Y2hfZGlzY29yZF9tZXNzYWdlKG1zZykKCiAgICBhc3NlcnQgcmVzdWx0IGlzIEZhbHNlCiAgICBhZGFwdGVyLnNlbmQuYXNzZXJ0X2F3YWl0ZWRfb25jZSgpCiAgICBib2R5ID0gYWRhcHRlci5zZW5kLmF3YWl0X2FyZ3MuYXJnc1sxXQogICAgYXNzZXJ0ICIwLjMxIiBpbiBib2R5CiAgICBhc3NlcnQgIihiZWxvdyAwLjgpIiBpbiBib2R5CiAgICBhZGFwdGVyLl9oYW5kbGVfbWVzc2FnZS5hc3NlcnRfbm90X2F3YWl0ZWQoKQogICAgY2xpZW50LmRlY2lkZS5hc3NlcnRfYXdhaXRlZF9vbmNlKCkKCgpAcHl0ZXN0Lm1hcmsuYXN5bmNpbwphc3luYyBkZWYgdGVzdF9ub25fZWNob19lbmZvcmNlX2Rlbnlfbm9fZWNob19zZW5kKGFkYXB0ZXIpOgogICAgY2hhbm5lbCA9IF9UZXh0Q2hhbm5lbCgpCiAgICBfaW5pdF9nYXRlKAogICAgICAgIGFkYXB0ZXIsCiAgICAgICAgeyJjaGFubmVscyI6IFsiMTAwIl0sICJtb2RlIjogImVuZm9yY2UiLCAidGhyZXNob2xkIjogMC44fSwKICAgICkKICAgIGNsaWVudCA9IF9tb2NrX2RlY2lkZSgKICAgICAgICBhZGFwdGVyLAogICAgICAgIEdhdGVEZWNpc2lvbigKICAgICAgICAgICAgYWxsb3dlZD1GYWxzZSwgbW9kZT0iZW5mb3JjZSIsIHNjb3JlPTAuMzEsIGxhdGVuY3lfbXM9NS4wLCByZWFzb249ImJlbG93X3RocmVzaG9sZCIsCiAgICAgICAgKSwKICAgICkKICAgIG1zZyA9IF9tYWtlX21lc3NhZ2UoY2hhbm5lbD1jaGFubmVsKQoKICAgIHJlc3VsdCA9IGF3YWl0IGFkYXB0ZXIuX2Rpc3BhdGNoX2Rpc2NvcmRfbWVzc2FnZShtc2cpCgogICAgYXNzZXJ0IHJlc3VsdCBpcyBGYWxzZQogICAgYWRhcHRlci5zZW5kLmFzc2VydF9ub3RfYXdhaXRlZCgpCiAgICBhZGFwdGVyLl9oYW5kbGVfbWVzc2FnZS5hc3NlcnRfbm90X2F3YWl0ZWQoKQogICAgY2xpZW50LmRlY2lkZS5hc3NlcnRfYXdhaXRlZF9vbmNlKCkKCgpAcHl0ZXN0Lm1hcmsuYXN5bmNpbwphc3luYyBkZWYgdGVzdF9ub25fZWNob19zaGFkb3dfc3RpbGxfZGlzcGF0Y2hlc193aGVuX2FkbWl0dGVkKGFkYXB0ZXIpOgogICAgY2hhbm5lbCA9IF9UZXh0Q2hhbm5lbCgpCiAgICBfaW5pdF9nYXRlKAogICAgICAgIGFkYXB0ZXIsCiAgICAgICAgeyJjaGFubmVscyI6IFsiMTAwIl0sICJtb2RlIjogInNoYWRvdyIsICJ0aHJlc2hvbGQiOiAwLjh9LAogICAgKQogICAgY2xpZW50ID0gX21vY2tfZGVjaWRlKAogICAgICAgIGFkYXB0ZXIsCiAgICAgICAgR2F0ZURlY2lzaW9uKGFsbG93ZWQ9VHJ1ZSwgbW9kZT0ic2hhZG93Iiwgc2NvcmU9MC45NSwgbGF0ZW5jeV9tcz0zLjApLAogICAgKQogICAgbXNnID0gX21ha2VfbWVzc2FnZShjaGFubmVsPWNoYW5uZWwpCgogICAgcmVzdWx0ID0gYXdhaXQgYWRhcHRlci5fZGlzcGF0Y2hfZGlzY29yZF9tZXNzYWdlKG1zZykKCiAgICBhc3NlcnQgcmVzdWx0IGlzIFRydWUKICAgIGFkYXB0ZXIuc2VuZC5hc3NlcnRfbm90X2F3YWl0ZWQoKQogICAgYWRhcHRlci5faGFuZGxlX21lc3NhZ2UuYXNzZXJ0X2F3YWl0ZWRfb25jZSgpCiAgICBjbGllbnQuZGVjaWRlLmFzc2VydF9hd2FpdGVkX29uY2UoKQoKCkBweXRlc3QubWFyay5hc3luY2lvCmFzeW5jIGRlZiB0ZXN0X2V4cGxpY2l0X21lbnRpb25faW5fZWNob19jaGFubmVsX2J5cGFzc2VzX2dhdGUoYWRhcHRlcik6CiAgICBjaGFubmVsID0gX1RleHRDaGFubmVsKCkKICAgIF9pbml0X2dhdGUoCiAgICAgICAgYWRhcHRlciwKICAgICAgICB7ImVjaG9fY2hhbm5lbHMiOiBbIjEwMCJdLCAibW9kZSI6ICJlbmZvcmNlIn0sCiAgICApCiAgICBjbGllbnQgPSBNYWdpY01vY2soKQogICAgY2xpZW50LmRlY2lkZSA9IEFzeW5jTW9jaygpCiAgICBhZGFwdGVyLl9yZXNwb25zZV9nYXRlLmNsaWVudCA9IGNsaWVudAogICAgYm90X3VzZXIgPSBhZGFwdGVyLl9jbGllbnQudXNlcgogICAgbXNnID0gX21ha2VfbWVzc2FnZShjaGFubmVsPWNoYW5uZWwsIGNvbnRlbnQ9ImhleSIsIG1lbnRpb25zPVtib3RfdXNlcl0pCgogICAgcmVzdWx0ID0gYXdhaXQgYWRhcHRlci5fZGlzcGF0Y2hfZGlzY29yZF9tZXNzYWdlKG1zZykKCiAgICBhc3NlcnQgcmVzdWx0IGlzIFRydWUKICAgIGFkYXB0ZXIuc2VuZC5hc3NlcnRfbm90X2F3YWl0ZWQoKQogICAgY2xpZW50LmRlY2lkZS5hc3NlcnRfbm90X2F3YWl0ZWQoKQogICAgYWRhcHRlci5faGFuZGxlX21lc3NhZ2UuYXNzZXJ0X2F3YWl0ZWRfb25jZSgpCgoKQHB5dGVzdC5tYXJrLmFzeW5jaW8KYXN5bmMgZGVmIHRlc3RfZWNob19jaGFubmVsX2p1ZGdlX2Vycm9yKGFkYXB0ZXIpOgogICAgY2hhbm5lbCA9IF9UZXh0Q2hhbm5lbCgpCiAgICBfaW5pdF9nYXRlKAogICAgICAgIGFkYXB0ZXIsCiAgICAgICAgeyJlY2hvX2NoYW5uZWxzIjogWyIxMDAiXSwgIm1vZGUiOiAiZW5mb3JjZSJ9LAogICAgKQogICAgY2xpZW50ID0gTWFnaWNNb2NrKCkKICAgIGNsaWVudC5kZWNpZGUgPSBBc3luY01vY2soc2lkZV9lZmZlY3Q9UmVzcG9uc2VHYXRlRXJyb3IoInRpbWVvdXQiLCAidGltZWQgb3V0IikpCiAgICBhZGFwdGVyLl9yZXNwb25zZV9nYXRlLmNsaWVudCA9IGNsaWVudAogICAgbXNnID0gX21ha2VfbWVzc2FnZShjaGFubmVsPWNoYW5uZWwpCgogICAgcmVzdWx0ID0gYXdhaXQgYWRhcHRlci5fZGlzcGF0Y2hfZGlzY29yZF9tZXNzYWdlKG1zZykKCiAgICBhc3NlcnQgcmVzdWx0IGlzIEZhbHNlCiAgICBhZGFwdGVyLnNlbmQuYXNzZXJ0X2F3YWl0ZWRfb25jZSgpCiAgICBhc3NlcnQgImdhdGUgZXJyb3IgKHRpbWVvdXQpIiBpbiBhZGFwdGVyLnNlbmQuYXdhaXRfYXJncy5hcmdzWzFdCiAgICBhZGFwdGVyLl9oYW5kbGVfbWVzc2FnZS5hc3NlcnRfbm90X2F3YWl0ZWQoKQoKCmRlZiB0ZXN0X3Jlc3BvbnNlX2dhdGVfY29uZmlnX2VjaG9fY2hhbm5lbHNfdmFsaWRhdGlvbigpOgogICAgY2ZnID0gUmVzcG9uc2VHYXRlQ29uZmlnLmZyb21fZGljdCgKICAgICAgICB7CiAgICAgICAgICAgICJlY2hvX2NoYW5uZWxzIjogWzEwMCwgIjEwMCIsICJnZW5lcmFsIl0sCiAgICAgICAgICAgICJjaGFubmVscyI6IFsiZ2VuZXJhbCJdLAogICAgICAgIH0KICAgICkKICAgIGFzc2VydCBjZmcuZWNob19jaGFubmVscyA9PSAoIjEwMCIsICJnZW5lcmFsIikKICAgIGFzc2VydCBjZmcuY2hhbm5lbHMgPT0gKCJnZW5lcmFsIiwpCiAgICBhc3NlcnQgY2ZnLmVuYWJsZWQgaXMgVHJ1ZQoKICAgIHdpdGggcHl0ZXN0LnJhaXNlcyhWYWx1ZUVycm9yLCBtYXRjaD0iXFwqIik6CiAgICAgICAgUmVzcG9uc2VHYXRlQ29uZmlnLmZyb21fZGljdCh7ImVjaG9fY2hhbm5lbHMiOiBbIioiXX0pCgoKQHB5dGVzdC5tYXJrLmFzeW5jaW8KYXN5bmMgZGVmIHRlc3RfZG91YmxlX2VjaG9fZ3VhcmRfbGl2ZV9hbmRfcmVjb3ZlcmVkKGFkYXB0ZXIpOgogICAgY2hhbm5lbCA9IF9UZXh0Q2hhbm5lbCgpCiAgICBfaW5pdF9nYXRlKAogICAgICAgIGFkYXB0ZXIsCiAgICAgICAgeyJlY2hvX2NoYW5uZWxzIjogWyIxMDAiXSwgIm1vZGUiOiAiZW5mb3JjZSJ9LAogICAgKQogICAgY2xpZW50ID0gX21vY2tfZGVjaWRlKAogICAgICAgIGFkYXB0ZXIsCiAgICAgICAgR2F0ZURlY2lzaW9uKGFsbG93ZWQ9VHJ1ZSwgbW9kZT0iZW5mb3JjZSIsIHNjb3JlPTAuOTYsIGxhdGVuY3lfbXM9MS4wKSwKICAgICkKICAgIG1zZyA9IF9tYWtlX21lc3NhZ2UobXNnX2lkPTkwMDEsIGNoYW5uZWw9Y2hhbm5lbCkKCiAgICBmaXJzdCA9IGF3YWl0IGFkYXB0ZXIuX2Rpc3BhdGNoX2Rpc2NvcmRfbWVzc2FnZShtc2cpCiAgICBzZWNvbmQgPSBhd2FpdCBhZGFwdGVyLl9kaXNwYXRjaF9yZWNvdmVyZWRfbWVzc2FnZShtc2cpCgogICAgYXNzZXJ0IGZpcnN0IGlzIEZhbHNlCiAgICBhc3NlcnQgc2Vjb25kIGlzIEZhbHNlCiAgICBhc3NlcnQgYWRhcHRlci5zZW5kLmF3YWl0X2NvdW50ID09IDEKICAgIGFzc2VydCBjbGllbnQuZGVjaWRlLmF3YWl0X2NvdW50ID09IDEK
+"""Tests for discord.response_gate echo_channels (judge echo, no session wake)."""
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from gateway.config import PlatformConfig, ResponseGateConfig
+from gateway.platforms.base import SendResult
+
+import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.response_gate import GateDecision, ResponseGateError  # noqa: E402
+
+
+class _TextChannel:
+    def __init__(self, channel_id: int = 100, name: str = "general"):
+        self.id = channel_id
+        self.name = name
+        self.guild = SimpleNamespace(name="Test Server", id=1)
+        self.topic = None
+
+    def history(self, *, limit, before, after=None, oldest_first=None):
+        async def _empty():
+            return
+            yield
+
+        return _empty()
+
+
+def _make_message(*, msg_id: int = 42, channel, content: str = "hello ambient", mentions=None):
+    author = SimpleNamespace(id=7, display_name="Alice", name="Alice", bot=False)
+    return SimpleNamespace(
+        id=msg_id,
+        content=content,
+        mentions=list(mentions or []),
+        attachments=[],
+        reference=None,
+        message_snapshots=None,
+        created_at=datetime.now(timezone.utc),
+        channel=channel,
+        author=author,
+        type=discord_platform.discord.MessageType.default,
+    )
+
+
+@pytest.fixture
+def adapter(monkeypatch):
+    for var in (
+        "DISCORD_REQUIRE_MENTION",
+        "DISCORD_IGNORE_NO_MENTION",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+
+    config = PlatformConfig(enabled=True, token="***")
+    a = DiscordAdapter(config)
+    bot_user = SimpleNamespace(id=999, display_name="Hermes", name="Hermes", bot=True)
+    a._client = SimpleNamespace(user=bot_user)
+    a._text_batch_delay_seconds = 0
+    a._ready_event.set()
+    a._handle_message = AsyncMock(return_value=True)
+    a.send = AsyncMock(return_value=SendResult(success=True, message_id="1"))
+    return a
+
+
+def _init_gate(adapter, gate_dict):
+    adapter.config.response_gate = ResponseGateConfig.from_dict(gate_dict)
+    adapter._response_gate_credential = "fake-test-credential"
+    adapter._response_gate_init()
+
+
+def _mock_decide(adapter, decision: GateDecision):
+    client = MagicMock()
+    client.decide = AsyncMock(return_value=decision)
+    client.threshold = adapter._response_gate.config.threshold
+    adapter._response_gate.client = client
+    return client
+
+
+@pytest.mark.asyncio
+async def test_echo_channel_score_at_or_above_threshold(adapter):
+    channel = _TextChannel()
+    _init_gate(
+        adapter,
+        {"echo_channels": ["100"], "mode": "enforce", "threshold": 0.8},
+    )
+    client = _mock_decide(
+        adapter,
+        GateDecision(allowed=True, mode="enforce", score=0.96, latency_ms=12.0),
+    )
+    msg = _make_message(channel=channel)
+
+    result = await adapter._dispatch_discord_message(msg)
+
+    assert result is False
+    adapter.send.assert_awaited_once()
+    assert "0.96" in adapter.send.await_args.args[1]
+    adapter._handle_message.assert_not_awaited()
+    client.decide.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_echo_channel_score_below_threshold(adapter):
+    channel = _TextChannel()
+    _init_gate(
+        adapter,
+        {"echo_channels": ["100"], "mode": "shadow", "threshold": 0.8},
+    )
+    client = _mock_decide(
+        adapter,
+        GateDecision(
+            allowed=False, mode="shadow", score=0.31, latency_ms=8.0, reason="below_threshold",
+        ),
+    )
+    msg = _make_message(channel=channel)
+
+    result = await adapter._dispatch_discord_message(msg)
+
+    assert result is False
+    adapter.send.assert_awaited_once()
+    body = adapter.send.await_args.args[1]
+    assert "0.31" in body
+    assert "(below 0.8)" in body
+    adapter._handle_message.assert_not_awaited()
+    client.decide.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_non_echo_enforce_deny_no_echo_send(adapter):
+    channel = _TextChannel()
+    _init_gate(
+        adapter,
+        {"channels": ["100"], "mode": "enforce", "threshold": 0.8},
+    )
+    client = _mock_decide(
+        adapter,
+        GateDecision(
+            allowed=False, mode="enforce", score=0.31, latency_ms=5.0, reason="below_threshold",
+        ),
+    )
+    msg = _make_message(channel=channel)
+
+    result = await adapter._dispatch_discord_message(msg)
+
+    assert result is False
+    adapter.send.assert_not_awaited()
+    adapter._handle_message.assert_not_awaited()
+    client.decide.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_non_echo_shadow_still_dispatches_when_admitted(adapter):
+    channel = _TextChannel()
+    _init_gate(
+        adapter,
+        {"channels": ["100"], "mode": "shadow", "threshold": 0.8},
+    )
+    client = _mock_decide(
+        adapter,
+        GateDecision(allowed=True, mode="shadow", score=0.95, latency_ms=3.0),
+    )
+    msg = _make_message(channel=channel)
+
+    result = await adapter._dispatch_discord_message(msg)
+
+    assert result is True
+    adapter.send.assert_not_awaited()
+    adapter._handle_message.assert_awaited_once()
+    client.decide.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_explicit_mention_in_echo_channel_bypasses_gate(adapter):
+    channel = _TextChannel()
+    _init_gate(
+        adapter,
+        {"echo_channels": ["100"], "mode": "enforce"},
+    )
+    client = MagicMock()
+    client.decide = AsyncMock()
+    adapter._response_gate.client = client
+    bot_user = adapter._client.user
+    msg = _make_message(channel=channel, content="hey", mentions=[bot_user])
+
+    result = await adapter._dispatch_discord_message(msg)
+
+    assert result is True
+    adapter.send.assert_not_awaited()
+    client.decide.assert_not_awaited()
+    adapter._handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_echo_channel_judge_error(adapter):
+    channel = _TextChannel()
+    _init_gate(
+        adapter,
+        {"echo_channels": ["100"], "mode": "enforce"},
+    )
+    client = MagicMock()
+    client.decide = AsyncMock(side_effect=ResponseGateError("timeout", "timed out"))
+    adapter._response_gate.client = client
+    msg = _make_message(channel=channel)
+
+    result = await adapter._dispatch_discord_message(msg)
+
+    assert result is False
+    adapter.send.assert_awaited_once()
+    assert "gate error (timeout)" in adapter.send.await_args.args[1]
+    adapter._handle_message.assert_not_awaited()
+
+
+def test_response_gate_config_echo_channels_validation():
+    cfg = ResponseGateConfig.from_dict(
+        {
+            "echo_channels": [100, "100", "general"],
+            "channels": ["general"],
+        }
+    )
+    assert cfg.echo_channels == ("100", "general")
+    assert cfg.channels == ("general",)
+    assert cfg.enabled is True
+
+    with pytest.raises(ValueError, match="\\*"):
+        ResponseGateConfig.from_dict({"echo_channels": ["*"]})
+
+
+@pytest.mark.asyncio
+async def test_double_echo_guard_live_and_recovered(adapter):
+    channel = _TextChannel()
+    _init_gate(
+        adapter,
+        {"echo_channels": ["100"], "mode": "enforce"},
+    )
+    client = _mock_decide(
+        adapter,
+        GateDecision(allowed=True, mode="enforce", score=0.96, latency_ms=1.0),
+    )
+    msg = _make_message(msg_id=9001, channel=channel)
+
+    first = await adapter._dispatch_discord_message(msg)
+    second = await adapter._dispatch_recovered_message(msg)
+
+    assert first is False
+    assert second is False
+    assert adapter.send.await_count == 1
+    assert client.decide.await_count == 1
