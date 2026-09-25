@@ -47,7 +47,7 @@ class ForeignSession:
 
 def _read_json_lines(path: Path):
     """Yield parsed JSON objects, silently skipping unparseable lines."""
-    with contextlib.suppress(OSError), open(path, "r", encoding="utf-8", errors="replace") as f:
+    with contextlib.suppress(OSError), open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         for line in f:
             try:
                 obj = json.loads(line)

@@ -123,7 +123,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     if not pid_file.exists():
         return
     try:  # Line 1 = pid, optional line 2 = kernel start time (legacy files: pid only).
-        lines = [ln.strip() for ln in pid_file.read_text(encoding="utf-8").split("\n")]
+        lines = [ln.strip() for ln in pid_file.read_text(encoding="utf-8-sig").split("\n")]
         pid = int(lines[0])
         recorded_start = int(lines[1]) if len(lines) > 1 and lines[1] else None
     except (ValueError, OSError, TypeError, IndexError):
@@ -324,7 +324,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"  # holds the package.json hash of the last install
         _pkg_hash = _file_content_hash(bridge_dir / "package.json")
         try:
-            if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8").strip() == _pkg_hash and bool(_pkg_hash):
+            if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8-sig").strip() == _pkg_hash and bool(_pkg_hash):
                 return True
         except OSError:
             pass
@@ -796,7 +796,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if file_size > _MAX_TEXT_INJECT_BYTES:
                     print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {_MAX_TEXT_INJECT_BYTES})", flush=True)
                     continue
-                content = p.read_text(encoding="utf-8", errors="replace")
+                content = p.read_text(encoding="utf-8-sig", errors="replace")
                 parts = p.name.split("_", 2)  # strip the doc_<hex>_ prefix for display
                 injection = f"[Content of {parts[2] if len(parts) >= 3 else p.name}]:\n{content}"
                 body = f"{injection}\n\n{body}" if body else injection

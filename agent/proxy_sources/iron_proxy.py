@@ -281,7 +281,7 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
 
 def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
     """Parse ``sha256sum`` output (``<hex>  <filename>``)."""
-    for line in checksum_file.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in checksum_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         parts = line.strip().split()
         if len(parts) >= 2 and parts[-1] == asset_name:
             return parts[0]
@@ -382,7 +382,7 @@ def mint_proxy_token(prefix: str = "hermes-proxy") -> str:
 def _read_text_or_none(p: Path) -> Optional[str]:
     """Stripped file contents, or None when missing/unreadable/empty."""
     try:
-        return p.read_text(encoding="utf-8").strip() or None
+        return p.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 
@@ -423,7 +423,7 @@ def _config_listen(section: str, *keys: str, config_path: Optional[Path] = None)
     yaml, data = _yaml(), {}
     if yaml is not None:
         with suppress(OSError, yaml.YAMLError):
-            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8-sig")) or {}
     block = data.get(section) or {}
     return _parse_listen(next((block[k] for k in keys if block.get(k)), ""))
 
@@ -606,7 +606,7 @@ def load_mappings() -> List[TokenMapping]:
     if not (f := _proxy_state_dir() / "mappings.json").exists():
         return []
     try:
-        payload = json.loads(f.read_text(encoding="utf-8"))
+        payload = json.loads(f.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Failed to read iron-proxy mappings.json: %s", exc)
         return []
@@ -661,7 +661,7 @@ def _read_pid() -> Optional[int]:
 def _pid_proc_starttime(pid: int) -> Optional[str]:
     """/proc/<pid>/stat starttime (field 22) on Linux, else None — cheap PID-recycling detector."""
     try:
-        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8-sig")
     except OSError:
         return None
     # comm may contain spaces/parens, so split after the LAST ")"; field 22 -> tail index 19.

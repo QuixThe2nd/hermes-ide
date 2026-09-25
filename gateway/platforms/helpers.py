@@ -138,7 +138,7 @@ class ThreadParticipationTracker:
     def _load(self) -> "list[str] | None":
         """Thread ids persisted on disk; None when the file is unreadable/corrupt."""
         try:
-            data = json.loads(self._state_path().read_text(encoding="utf-8"))
+            data = json.loads(self._state_path().read_text(encoding="utf-8-sig"))
         except Exception:
             return None
         if not isinstance(data, list):

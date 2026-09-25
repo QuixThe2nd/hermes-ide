@@ -42,7 +42,7 @@ class TeamsPipelineStore:
 
     def _load(self) -> None:
         with self._lock:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}") if self.path.exists() else None
+            data = json.loads(self.path.read_text(encoding="utf-8-sig") or "{}") if self.path.exists() else None
             if isinstance(data, dict):
                 self._state = {bucket: dict(data.get(bucket) or {}) for bucket in _BUCKETS}
 

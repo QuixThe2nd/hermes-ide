@@ -58,7 +58,7 @@ def _finite_limit(path: Path) -> Optional[int]:
     """A cgroup memory limit file's value when it is a real cap; None for unreadable, empty,
     ``max``, or the v1 near-2^63 sentinel (all mean unlimited)."""
     try:
-        limit = int(path.read_text(encoding="utf-8").strip())
+        limit = int(path.read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return None
     return limit if 0 < limit < (1 << 62) else None

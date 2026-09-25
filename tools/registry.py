@@ -70,7 +70,7 @@ def _module_registers_tools(module_path: Path) -> bool:
     Only module-body statements count, so helpers registering inside a function are skipped;
     a text prefilter avoids ``ast.parse`` for files lacking both words."""
     try:
-        source = module_path.read_text(encoding="utf-8")
+        source = module_path.read_text(encoding="utf-8-sig")
         if "registry" not in source or "register" not in source:
             return False
         tree = ast.parse(source, filename=str(module_path))
@@ -156,7 +156,7 @@ def _load_discovery_cache() -> Dict[str, list]:
     if path is None:
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):

@@ -148,7 +148,7 @@ def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = 
     entries = []
     for path in candidates:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         # A parseable non-object file (scalar/list) cannot be attributed to any session: skip it
@@ -229,7 +229,7 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
             # One unparseable payload or rejected append must only skip THIS file: the file is
             # never unlinked, so aborting the pass would re-poison every later boot.
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
                 # Agent-history snapshots are for manual operator recovery, not automatic DB
                 # insertion.
                 if payload.get("reason") == "shutdown-with-unpersisted-agent-history":

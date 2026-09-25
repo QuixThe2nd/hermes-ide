@@ -1880,7 +1880,7 @@ class SessionStore:
         sessions_file = self.sessions_dir / "sessions.json"
         if sessions_file.exists():
             try:
-                with open(sessions_file, "r", encoding="utf-8") as f:
+                with open(sessions_file, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                 imported = 0
                 for key, entry_data in data.items():

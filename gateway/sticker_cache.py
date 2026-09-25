@@ -31,7 +31,7 @@ STICKER_VISION_PROMPT = (
 
 def _load_cache() -> dict:
     try:
-        return json.loads(_resolve_cache_path().read_text(encoding="utf-8"))
+        return json.loads(_resolve_cache_path().read_text(encoding="utf-8-sig"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 

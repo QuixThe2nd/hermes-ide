@@ -117,7 +117,7 @@ def transcript(last: Optional[int] = None) -> Dict[str, Any]:
     if not active:
         return dict(_NO_ACTIVE)
     tp = Path(active.get("out_dir", "")) / "transcript.txt"
-    text = tp.read_text(encoding="utf-8", errors="replace") if tp.is_file() else ""
+    text = tp.read_text(encoding="utf-8-sig", errors="replace") if tp.is_file() else ""
     all_lines = [ln for ln in text.splitlines() if ln.strip()]
     return {"ok": True, "meetingId": active.get("meeting_id"),
             "lines": all_lines[-last:] if last else all_lines, "total": len(all_lines), "path": str(tp)}

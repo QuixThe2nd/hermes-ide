@@ -43,7 +43,7 @@ def main():
         if not p.exists():
             print(f"Error: reference {label} not found: {p}", file=sys.stderr)
             sys.exit(1)
-    ref_text = ref_text_path.read_text(encoding="utf-8").strip()
+    ref_text = ref_text_path.read_text(encoding="utf-8-sig").strip()
 
     try:
         from neutts import NeuTTS

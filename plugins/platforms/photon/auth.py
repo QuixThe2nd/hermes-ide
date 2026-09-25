@@ -61,7 +61,7 @@ def _load_auth() -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8")) or {}
+        return json.loads(path.read_text(encoding="utf-8-sig")) or {}
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("photon: could not read %s: %s", path, e)
         return {}

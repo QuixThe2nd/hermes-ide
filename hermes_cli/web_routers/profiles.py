@@ -881,7 +881,7 @@ async def get_profile_soul(name: str):
         # Probe and read in one hop (two round-trips would widen the check/read window).
         if not soul_path.exists():
             return _MISSING
-        return soul_path.read_text(encoding="utf-8")
+        return soul_path.read_text(encoding="utf-8-sig")
 
     content = await _read_off_loop(_run, "SOUL.md", OSError)
     if content is _MISSING:
@@ -968,7 +968,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 def _read_desktop_overlay(profile_dir: Path) -> Any:
     """The desktop appearance overlay bundled with an imported profile
     (``desktop.json`` at the profile root); raises when unreadable."""
-    return json.loads((profile_dir / "desktop.json").read_text(encoding="utf-8"))
+    return json.loads((profile_dir / "desktop.json").read_text(encoding="utf-8-sig"))
 
 
 @router.post("/api/profiles/{name}/export")

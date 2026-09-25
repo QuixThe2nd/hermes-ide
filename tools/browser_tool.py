@@ -108,10 +108,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# PATH fallbacks for minimal-PATH environments (systemd services): Termux,
-# macOS Homebrew, and the usual system dirs — needed for agent-browser/npx/node.
+# PATH fallbacks for minimal-PATH environments (systemd services): macOS
+# Homebrew and the usual system dirs — needed for agent-browser/npx/node.
 _SANE_PATH_DIRS = (
-    "/data/data/com.termux/files/usr/bin", "/data/data/com.termux/files/usr/sbin",
     "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/sbin", "/usr/local/bin",
     "/usr/sbin", "/usr/bin", "/sbin", "/bin",
 )

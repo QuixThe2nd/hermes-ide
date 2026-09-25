@@ -6321,7 +6321,7 @@ def _load_slack_bot_tokens(raw_token: str, *, quiet: bool) -> List[str]:
             # File holds plaintext bot tokens; warn if group/world-readable.
             from utils import warn_if_credential_file_broadly_readable
             warn_if_credential_file_broadly_readable(tokens_file, label="[Slack]", log=logger)
-        saved = json.loads(tokens_file.read_text(encoding="utf-8"))
+        saved = json.loads(tokens_file.read_text(encoding="utf-8-sig"))
         for team_id, entry in saved.items():
             tok = entry.get("token", "") if isinstance(entry, dict) else ""
             if tok and tok not in tokens:

@@ -46,7 +46,7 @@ def _aliases_path() -> Path:
 
 
 def _read_json(path: Path) -> Any:
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
 
 

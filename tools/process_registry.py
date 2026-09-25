@@ -124,11 +124,11 @@ def _worker_memory_max_bytes() -> int:
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     candidates: List[int] = []
     with suppress(OSError, ValueError):
-        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
+        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8-sig").splitlines()
         v2 = next((ln for ln in lines if ln.startswith("0::")), None)
         if v2 is not None:
             relative = v2.partition("::")[2].lstrip("/")
-            raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8").strip()
+            raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8-sig").strip()
             if raw_limit.isdigit() and int(raw_limit) >= _MIN_WORKER_MEMORY_MAX_BYTES:
                 candidates.append(int(raw_limit))
     with suppress(OSError, ValueError, TypeError):
