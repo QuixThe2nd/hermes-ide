@@ -27,9 +27,11 @@ test('launches the unpacked helper without prompting and delivers only validated
   const spawn = vi.fn((_command: string, _args: string[], _options: SpawnOptions) => child)
   const captures: CommandScreenshotCapture[] = []
   const statuses: CommandScreenshotStatus[] = []
+
   const monitor = new CommandScreenshotMonitor({
     platform: 'darwin', appPath: '/Applications/Hermes.app/Contents/Resources/app.asar', spawn,
   })
+
   monitor.start(value => captures.push(value), value => statuses.push(value))
   assert.equal(spawn.mock.calls.length, 1)
   assert.deepEqual(spawn.mock.calls[0], [
@@ -55,15 +57,18 @@ test('launches the unpacked helper without prompting and delivers only validated
 
 test('bounds startup and termination, preserves permission failures, and isolates restarts', () => {
   vi.useFakeTimers()
+
   try {
     const first = new FakeChild()
     const second = new FakeChild()
     const spawn = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
     const statuses: CommandScreenshotStatus[] = []
     const captures: CommandScreenshotCapture[] = []
+
     const monitor = new CommandScreenshotMonitor({
       platform: 'darwin', spawn, startupTimeoutMs: 100, stopTimeoutMs: 50,
     })
+
     monitor.start(value => captures.push(value), value => statuses.push(value), true)
     assert.deepEqual(spawn.mock.calls[0][1], ['--request-permission'])
     first.stdout.write('{"type":"error","code":"permission-required"}\n')
@@ -93,6 +98,7 @@ test('stopping from the starting callback cancels the child before it can become
   const monitor = new CommandScreenshotMonitor({ platform: 'darwin', spawn: () => child })
   monitor.start(() => assert.fail('stopped monitor delivered a capture'), status => {
     statuses.push(status)
+
     if (status.type === 'starting') {
       monitor.stop()
     }
@@ -105,6 +111,7 @@ test('stopping from the starting callback cancels the child before it can become
 
 test.skipIf(process.platform !== 'darwin')('native state machine requires distinct keys, a clean chord and full release', () => {
   const dir = mkdtempSync(resolve(tmpdir(), 'hermes-command-monitor-test-'))
+
   try {
     const fixture = resolve(dir, 'gesture.m')
     const binary = resolve(dir, 'gesture')
@@ -198,6 +205,7 @@ int main(void) { @autoreleasepool {
 
 test.skipIf(process.platform !== 'darwin')('builds a universal helper with a read-only permission check and real controller lifecycle', async () => {
   const dir = mkdtempSync(resolve(tmpdir(), 'hermes-command-monitor-build-'))
+
   try {
     const script = resolve(import.meta.dirname, '../scripts/build-command-screenshot-monitor.mjs')
     execFileSync(process.execPath, [script, '--out-dir', resolve(dir, 'dist')], { timeout: 60_000 })
@@ -215,29 +223,37 @@ test.skipIf(process.platform !== 'darwin')('builds a universal helper with a rea
     assert.equal(invalid.status, 64)
     assert.deepEqual(JSON.parse(invalid.stdout), { type: 'error', code: 'unavailable' })
     let closed: Promise<NodeJS.Signals | null> | undefined
+
     const monitor = new CommandScreenshotMonitor({
       appPath: dir,
       spawn: (command, args, options) => {
         const child = nodeSpawn(command, args, options)
         closed = new Promise(settle => child.once('close', (_code, signal) => settle(signal)))
+
         return child
       },
     })
+
     const statuses: CommandScreenshotStatus[] = []
+
     const terminal = await new Promise<CommandScreenshotStatus>((settle, reject) => {
       const timeout = setTimeout(() => { monitor.stop(); reject(new Error('real monitor did not settle')) }, 10_000)
       monitor.start(() => {}, status => {
         statuses.push(status)
+
         if (status.type === 'ready' || status.type === 'error') {
           clearTimeout(timeout)
           settle(status)
         }
       })
     })
+
     assert.equal(statuses[0].type, 'starting')
+
     if (permission.type === 'error') {
       assert.deepEqual(terminal, permission)
     }
+
     monitor.stop()
     assert.ok(closed)
     assert.notEqual(await closed, 'SIGKILL') // the real helper exits without escalation

@@ -994,6 +994,7 @@ export function DeliverCheckboxes({
   // Rewriting it rewrites exactly that portion — checked presets survive, and
   // unknown tokens keep their preserved checkboxes above while typed.
   const customValue = selected.filter(target => !knownIds.has(target)).join(',')
+
   const onCustomChange = (next: string) => {
     const presets = selected.filter(target => knownIds.has(target))
     const customs = next.split(',').map(part => part.trim()).filter(Boolean)

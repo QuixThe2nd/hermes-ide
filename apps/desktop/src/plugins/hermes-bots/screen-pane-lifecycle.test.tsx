@@ -185,8 +185,10 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
     if (method !== 'display.observe') {
       return { ...status, ticket: 'test-ticket', viewer_id: 'this-viewer' }
     }
+
     const presented = (params as { viewer_id?: string } | undefined)?.viewer_id
     const viewer_id = presented === 'this-viewer' ? 'this-viewer' : minted++ === 0 ? 'this-viewer' : 'replacement-viewer'
+
     return { ...status, ticket: 'test-ticket', viewer_id }
   })
   const view = render(<BotScreenPane bot={bot} />)
