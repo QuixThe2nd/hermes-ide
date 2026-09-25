@@ -59,7 +59,7 @@ def _install_fakes(monkeypatch, proposals, critique_responder=None, revision_tex
         lambda refs, msgs, **kw: _proposal_outputs(proposals),
     )
 
-    def fake_fan_out(tasks, *, temperature=None, max_tokens=None):
+    def fake_fan_out(tasks, *, temperature=None, max_tokens=None, progress_callback=None):
         # Distinguish rounds by prompt content.
         first = tasks[0][1][0]["content"] if tasks else ""
         if "Reassess your position" in first:

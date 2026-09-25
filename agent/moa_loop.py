@@ -601,13 +601,16 @@ def _run_references_parallel(
     another MoA preset are skipped here (recursion guard) with a labelled note.
 
     If ``progress_callback`` is provided it is invoked as each reference
-    completes: ``progress_callback(refs_done, refs_total, label)``. The total
-    matches ``len(reference_models)`` so listeners can render a status-bar
-    progress like ``MOA: 2/3 refs done``. Recursion-guarded slots (presets
-    referencing another preset) count as completed the moment their skip note
-    is written, so the final event always reports
-    ``refs_done == refs_total``. Best-effort — failures are logged
-    but never break the fan-out (display must never block a turn).
+    completes: ``progress_callback(refs_done, refs_total, label, index=idx,
+    status=...)``. The total matches ``len(reference_models)`` so listeners
+    can render a status-bar progress like ``MOA: 2/3 refs done``; ``index``
+    is the completing slot's stable position in ``reference_models`` and
+    ``status`` its ``_slot_progress_status`` classification, so a per-slot
+    progress surface updates the RIGHT row without parsing the label.
+    Recursion-guarded slots (presets referencing another preset) count as
+    completed the moment their skip note is written, so the final event
+    always reports ``refs_done == refs_total``. Best-effort — failures are
+    logged but never break the fan-out (display must never block a turn).
 
     Each element is ``(label, text, accounting)`` where accounting is a
     ``_RefAccounting`` object (zeroed for skipped/failed/interrupted
@@ -646,6 +649,12 @@ def _run_references_parallel(
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
                 results[idx] = _placeholder_output(slot, "[skipped: MoA presets cannot recursively reference MoA]")
+                completed += 1
+                if progress_callback is not None:
+                    try:
+                        progress_callback(completed, total, _slot_label(slot), index=idx, status="skipped")
+                    except Exception as exc:  # pragma: no cover - display must never break
+                        logger.debug("MoA progress_callback failed: %s", exc)
                 continue
             futures[executor.submit(
                 propagate_context_to_thread(_run_reference), slot, ref_messages, temperature=temperature,
@@ -663,7 +672,10 @@ def _run_references_parallel(
                 completed += 1
                 if progress_callback is not None:
                     try:
-                        progress_callback(completed, total, _slot_label(reference_models[idx]))
+                        progress_callback(
+                            completed, total, _slot_label(reference_models[idx]),
+                            index=idx, status=_slot_progress_status(results[idx][1]),
+                        )
                     except Exception as exc:  # pragma: no cover - display must never break
                         logger.debug("MoA progress_callback failed: %s", exc)
             if pending and agent is not None and getattr(agent, "_interrupt_requested", False):
@@ -813,6 +825,23 @@ def _hash_messages(msgs: list[dict[str, Any]]) -> str:
 def _is_failed_reference(text: str) -> bool:
     """Whether a reference output is a ``[failed: …]`` / ``[skipped: …]`` sentinel."""
     return text.lstrip().lower().startswith(("[failed:", "[skipped:"))
+
+
+def _slot_progress_status(text: Any) -> str:
+    """Classify one fan-out result into the per-slot status enum.
+
+    Progress callbacks carry the classification, never the result text: the
+    sentinel prefixes and the empty-response marker are matched here so an
+    advisor's answer never rides along with its progress event.
+    """
+    value = str(text or "").lstrip().lower()
+    if value.startswith("[failed:"):
+        return "failed"
+    if value.startswith("[skipped:"):
+        return "skipped"
+    if not value or value == "(empty response)":
+        return "empty"
+    return "responded"
 
 
 def _join_reference_outputs(outputs: list[tuple[str, str, Any]], degraded: str = "") -> str:
@@ -1299,7 +1328,12 @@ class MoAChatCompletions:
         reference_outputs = _run_references_parallel(
             reference_models, ref_messages, temperature=_preset_temperature(preset, "reference_temperature"),
 
-            progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
+            # The extra fan-out kwargs (slot index/status) are accepted but NOT
+            # relayed: the moa.progress event shape is the desktop/TUI surface
+            # contract and stays refs_done/refs_total/label only.
+            progress_callback=lambda done, total, label, index=None, status=None: self._emit(
+                "moa.progress", refs_done=done, refs_total=total, label=label
+            ),
             reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,
             agent=self._agent, late_accounting_sink=self._record_late_reference_accounting,
         )
@@ -1511,8 +1545,66 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
 #
 # Safety contract for events placed on the bus: the payload is an allowlist
 # (tool name, stage id, optional terminal status, per-invocation correlation
-# id, and integer aggregate counts). Never a prompt, evidence, an advisor
-# answer, a config blob, or raw tool arguments.
+# id, integer aggregate counts, and an optional per-slot roster snapshot —
+# stable slot index, bounded provider/model identity, a small status enum,
+# and an optional round id). Never a prompt, evidence, an advisor answer, a
+# provider:model slot label, a config blob, or raw tool arguments.
+
+# Per-slot roster snapshot bounds. Statuses are a closed enum (an unrecognized
+# status is rendered as "unknown", never guessed into "responded"); identity
+# fields are charset-restricted model/provider identifiers, so nothing a
+# config author could stuff into a label (markdown, mention markup, secrets)
+# can ride into an event or an embed.
+_STAGE_SLOT_STATUSES = frozenset({
+    "waiting", "responded", "failed", "skipped", "empty", "unparsed", "unknown",
+})
+_STAGE_SLOT_MAX_ROWS = 64  # hard cap per event; beyond this rows are counted omitted
+_STAGE_SLOT_FIELD_CAP = 64  # per identity/round field, in characters
+_STAGE_SLOT_IDENTITY_RE = re.compile(r"[^A-Za-z0-9._/:+-]+")
+
+
+def _stage_slot_identity(value: Any) -> str:
+    """Restrict an identity/round field to a conservative identifier charset."""
+    return _STAGE_SLOT_IDENTITY_RE.sub("", str(value or ""))[:_STAGE_SLOT_FIELD_CAP]
+
+
+def _stage_slot_rows(slots: Any) -> tuple[list[dict[str, Any]], int]:
+    """Allowlist a caller-supplied per-slot roster snapshot for a stage event.
+
+    Each row keeps only a stable slot index, bounded provider/model identity
+    strings, a status from ``_STAGE_SLOT_STATUSES``, and an optional round id
+    — enough for a progress surface to say who was asked and who answered,
+    and never enough to carry a prompt, advice, a slot label, credentials, or
+    any other slot field. Returns ``(rows, omitted_beyond_cap)``; a missing or
+    unusable ``slots`` value yields ``([], 0)`` so the event degrades to the
+    legacy count-only shape instead of failing.
+    """
+    rows: list[dict[str, Any]] = []
+    omitted = 0
+    if not isinstance(slots, (list, tuple)):
+        return rows, omitted
+    for position, entry in enumerate(slots):
+        if position >= _STAGE_SLOT_MAX_ROWS:
+            omitted = max(0, len(slots) - _STAGE_SLOT_MAX_ROWS)
+            break
+        if not isinstance(entry, dict):
+            continue
+        try:
+            index = int(entry.get("index"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        status = str(entry.get("status") or "")
+        row: dict[str, Any] = {
+            "index": index,
+            "provider": _stage_slot_identity(entry.get("provider")),
+            "model": _stage_slot_identity(entry.get("model")),
+            "status": status if status in _STAGE_SLOT_STATUSES else "unknown",
+        }
+        round_id = _stage_slot_identity(entry.get("round"))
+        if round_id:
+            row["round"] = round_id
+        rows.append(row)
+    return rows, omitted
 
 _TOOL_STAGE_LOCK = threading.Lock()
 _TOOL_STAGE_SUBSCRIBERS: dict[str, Callable[[dict], None]] = {}
@@ -1575,28 +1667,37 @@ def tool_stage_reporter(
     one turn share the task_id, so it cannot alone tell their events
     apart. Counts passed through ``**counts`` are coerced to ints and
     anything non-numeric is dropped — the allowlist is enforced here so
-    callers cannot accidentally leak text into an event.
+    callers cannot accidentally leak text into an event. ``slots`` is an
+    optional per-slot roster snapshot sanitized by ``_stage_slot_rows``;
+    every snapshot is rebuilt into fresh row dicts so a later mutation of
+    the caller's roster state can never reach an already-published event.
     """
     invocation_id = uuid.uuid4().hex
 
-    def report(stage: str, status: str | None = None, **counts: Any) -> None:
-        publish_tool_stage(
-            session_id,
-            {
-                "type": "tool.stage",
-                "tool": tool_name,
-                "invocation_id": invocation_id,
-                "stage": str(stage),
-                "status": status,
-                "terminal": status is not None,
-                "task_id": task_id,
-                "counts": {
-                    str(key): int(value)
-                    for key, value in counts.items()
-                    if isinstance(value, (int, float)) and not isinstance(value, bool)
-                },
-            },
-        )
+    def report(
+        stage: str, status: str | None = None, slots: Any = None, **counts: Any
+    ) -> None:
+        event_counts = {
+            str(key): int(value)
+            for key, value in counts.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        event: dict[str, Any] = {
+            "type": "tool.stage",
+            "tool": tool_name,
+            "invocation_id": invocation_id,
+            "stage": str(stage),
+            "status": status,
+            "terminal": status is not None,
+            "task_id": task_id,
+            "counts": event_counts,
+        }
+        rows, omitted = _stage_slot_rows(slots)
+        if rows:
+            event["slots"] = rows
+        if omitted:
+            event_counts["omitted"] = omitted
+        publish_tool_stage(session_id, event)
 
     return report
 

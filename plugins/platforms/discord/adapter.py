@@ -1257,6 +1257,103 @@ _TOOL_STAGE_STATUS_MARKS: Dict[str, str] = {
 # them as plain allowlisted counts, never as advisor progress.
 _TOOL_STAGE_ADVISOR_PROGRESS: tuple[str, str] = ("moa_ask", "advisors")
 
+# Per-slot roster marks for the MoA stage events. The bus only ever publishes
+# this small status enum; an unknown status still renders (❔) rather than
+# being guessed into "responded".
+_TOOL_STAGE_SLOT_MARKS: Dict[str, str] = {
+    "waiting": "⏳",
+    "responded": "✅",
+    "failed": "❌",
+    "skipped": "⏭️",
+    "empty": "◌",
+    "unparsed": "⚠️",
+}
+_TOOL_STAGE_ROSTER_ROW_CAP = 24  # rows rendered before an explicit omission note
+_TOOL_STAGE_ROSTER_FIELD_CAP = 64  # per identity field, matching the bus cap
+# Total description budget when a roster renders — comfortably under Discord's
+# 4096-character embed description limit.
+_TOOL_STAGE_ROSTER_DESC_CAP = 3600
+# Identity fields render through this charset regardless of what an event
+# carries: mention markup (<@id>, @everyone), markdown, and control characters
+# all vanish, so a malformed or hostile roster cannot ping anyone or break the
+# embed's formatting.
+_TOOL_STAGE_SLOT_IDENTITY_RE = re.compile(r"[^A-Za-z0-9._/:+-]+")
+
+
+def _tool_stage_slot_identity(value: Any) -> str:
+    return _TOOL_STAGE_SLOT_IDENTITY_RE.sub("", str(value or ""))[
+        :_TOOL_STAGE_ROSTER_FIELD_CAP
+    ]
+
+
+def _tool_stage_slot_roster(slots: Any, budget: int) -> Optional[str]:
+    """Render an event's per-slot roster as bounded description lines.
+
+    Returns ``None`` when the event carries no roster at all (legacy
+    count-only events render exactly as before). Rows render
+    ``mark provider:model`` grouped under their round header; duplicate
+    provider/model pairs within a round keep separate ``#N`` rows so two
+    configured copies of one model never collapse. Rows past the cap or the
+    character budget are dropped but counted in an explicit ``+N more
+    omitted`` note — omission is stated, never silent.
+    """
+    if not isinstance(slots, (list, tuple)) or not slots:
+        return None
+
+    rows: List[Tuple[str, str]] = []  # (round header, rendered row)
+    omitted = 0
+    duplicates: Dict[Tuple[str, str], int] = {}
+    for entry in slots:
+        if not isinstance(entry, dict):
+            omitted += 1
+            continue
+        provider = _tool_stage_slot_identity(entry.get("provider"))
+        model = _tool_stage_slot_identity(entry.get("model"))
+        round_name = _tool_stage_slot_identity(entry.get("round"))
+        mark = _TOOL_STAGE_SLOT_MARKS.get(str(entry.get("status") or ""), "❔")
+        label = f"{provider}:{model}" if provider and model else (model or provider)
+        if not label:
+            # Nothing survived sanitizing; the stable slot index is the only
+            # remaining truthful identity for the row.
+            index = entry.get("index")
+            if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+                label = f"slot{index}"
+            else:
+                label = "slot?"
+        key = (round_name, label)
+        seen = duplicates.get(key, 0) + 1
+        duplicates[key] = seen
+        if seen > 1:
+            label = f"{label}#{seen}"
+        rows.append((round_name, f"{mark} {label}"))
+
+    if len(rows) > _TOOL_STAGE_ROSTER_ROW_CAP:
+        omitted += len(rows) - _TOOL_STAGE_ROSTER_ROW_CAP
+        rows = rows[:_TOOL_STAGE_ROSTER_ROW_CAP]
+
+    def _compose() -> str:
+        lines: List[str] = []
+        last_round: Optional[str] = None
+        for round_name, row in rows:
+            if round_name != last_round:
+                if round_name:
+                    lines.append(f"{round_name}:")
+                last_round = round_name
+            lines.append(row)
+        return "\n".join(lines)
+
+    while True:
+        text = _compose()
+        if omitted:
+            text = f"{text}\n… +{omitted} more omitted" if text else (
+                f"… +{omitted} more omitted"
+            )
+        if len(text) <= budget or not rows:
+            return text or None
+        # Over budget: drop the oldest-unrendered (last) row and say so.
+        rows = rows[:-1]
+        omitted += 1
+
 
 def _tool_stage_count_summary(
     tool: str, stage: str, terminal: bool, counts: Dict[str, Any]
@@ -1300,13 +1397,21 @@ def _tool_stage_count_summary(
 
 
 def _tool_stage_appearance(
-    tool: str, stage: str, status: Optional[str], counts: Dict[str, Any]
+    tool: str,
+    stage: str,
+    status: Optional[str],
+    counts: Dict[str, Any],
+    slots: Optional[Any] = None,
 ) -> Tuple[str, str, str]:
     """Map one allowlisted stage event to ``(title, description, color_key)``.
 
     Unknown tools / stages / statuses fall back to a neutral rendering of
     the raw ids (bounded by the title/description caps), so a future tool
-    publishing new stages still renders something sane.
+    publishing new stages still renders something sane. ``slots`` optionally
+    carries the event's per-advisor roster; when present it renders below the
+    summary line, so one embed identifies every configured advisor and its
+    current status while staying identity-only (never prompt, advice, or
+    error text).
     """
     tool = str(tool or "tool")
     stage = str(stage or "stage")
@@ -1336,6 +1441,17 @@ def _tool_stage_appearance(
 
     title = title[:_TOOL_STAGE_TITLE_CAP]
     description = description[:_TOOL_STAGE_DESC_CAP]
+    roster = None
+    if slots is not None:
+        roster = _tool_stage_slot_roster(
+            slots, _TOOL_STAGE_ROSTER_DESC_CAP - len(description) - 1
+        )
+    if roster is not None:
+        description = f"{description}\n{roster}"
+        # Belt-and-braces: the roster already respects the budget, and this
+        # slice guarantees the composed description stays under Discord's cap
+        # even if that ever regresses.
+        description = description[:_TOOL_STAGE_ROSTER_DESC_CAP]
     return title, description, color_key
 
 
@@ -5521,7 +5637,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         Pure rendering over ``_tool_stage_appearance``; the footer carries the
         tool name plus a short slice of the invocation id so two concurrent
-        MoA calls are visually distinguishable in the same channel.
+        MoA calls are visually distinguishable in the same channel. A roster
+        in the event renders as per-advisor identity/status lines.
         """
         tool = str(stage.get("tool") or "tool")
         title, description, color_key = _tool_stage_appearance(
@@ -5529,6 +5646,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             stage.get("stage"),
             stage.get("status"),
             stage.get("counts") or {},
+            stage.get("slots"),
         )
         color_factory = {
             "success": discord.Color.green,
