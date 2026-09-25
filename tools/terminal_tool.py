@@ -2518,37 +2518,6 @@ class _ApprovalVerdict:
     approved_run: bool = False
 
 
-def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:
-    """The terminal error envelope: ``output``/``exit_code``/``error`` (+ ``status``, extras)."""
-    body: Dict[str, Any] = {"output": "", "exit_code": exit_code, "error": error}
-    if status is not None:
-        body["status"] = status
-    body.update(extra)
-    return json.dumps(body, ensure_ascii=False)
-
-
-class _Rejected(Exception):
-    """Carries a finished tool-result JSON out of the planning/guard helpers, so
-    each early-return site is one ``raise`` instead of an isinstance-checked
-    ``str | plan`` union at the caller."""
-
-    def __init__(self, result_json: str):
-        super().__init__(result_json)
-        self.result_json = result_json
-
-
-@dataclass
-class _ApprovalVerdict:
-    """Outcome of the pre-exec guard pass.
-
-    ``note`` is the audit note attached to the result. ``approved_run`` is True
-    when the user explicitly approved (or pre-confirmed via ``force``).
-    """
-
-    note: Optional[str] = None
-    approved_run: bool = False
-
-
 def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
     """Run tirith + dangerous-command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
@@ -4103,7 +4072,7 @@ def terminal_tool(
             if spill_file_path:
                 try:
                     _sp = Path(spill_file_path)
-                    raw_spill = _sp.read_text(encoding="utf-8-sig", errors="replace")
+                    raw_spill = _sp.read_text(encoding="utf-8", errors="replace")
                     from tools.spill_safety import write_text_exclusive
 
                     # Rewrite in place via lstat-checked unlink + exclusive
