@@ -37,6 +37,7 @@ describe('Command screenshot capture', () => {
     permission.mockReturnValue(true)
 
     vi.useFakeTimers()
+
     try {
       const expired = capture.request(7, window)!
       vi.advanceTimersByTime(6000)
