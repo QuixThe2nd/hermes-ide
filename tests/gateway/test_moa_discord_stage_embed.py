@@ -102,11 +102,16 @@ def _install_consult_fakes(monkeypatch, outputs):
     )
 
 
-def _install_progress_fan_out(monkeypatch):
+def _install_progress_fan_out(
+    monkeypatch, completion_order=None, slot_status=None, results=None
+):
     """Swap in a fan-out that drives the real ``progress_callback`` contract.
 
     The canary label stands in for a provider:model slot label handed to the
-    callback — it must never reach a stage event.
+    callback — it must never reach a stage event. ``completion_order`` reports
+    slots in an arbitrary order (out-of-order arrival); ``slot_status`` maps a
+    slot index to the per-slot status the fan-out observed; ``results`` maps a
+    slot index to its final output text.
     """
     from tools import moa_tool
 
@@ -114,15 +119,23 @@ def _install_progress_fan_out(monkeypatch):
         refs, msgs, *, temperature=None, max_tokens=None, progress_callback=None, **_kw
     ):
         total = len(refs)
+        texts = [
+            (results or {}).get(i, f"advice {i}") for i in range(total)
+        ]
         if progress_callback is not None:
-            for done in range(1, total + 1):
-                progress_callback(done, total, "canary-provider:canary-model")
-        return [(f"slot-{i}", f"advice {i}", CanonicalUsage()) for i in range(total)]
+            done = 0
+            for idx in completion_order if completion_order is not None else range(total):
+                done += 1
+                status = "responded" if slot_status is None else slot_status.get(idx, "responded")
+                progress_callback(
+                    done, total, "canary-provider:canary-model", index=idx, status=status
+                )
+        return [(f"slot-{i}", text, CanonicalUsage()) for i, text in enumerate(texts)]
 
     monkeypatch.setattr(moa_tool, "_run_references_parallel", fake_run)
 
 
-def _install_debate_fakes(monkeypatch, proposals):
+def _install_debate_fakes(monkeypatch, proposals, completion_order=None, critique_texts=None):
     from tools import moa_debate
 
     critique_text = (
@@ -141,12 +154,28 @@ def _install_debate_fakes(monkeypatch, proposals):
         ],
     )
 
-    def fake_fan_out(tasks, *, temperature=None, max_tokens=None):
+    def fake_fan_out(
+        tasks, *, temperature=None, max_tokens=None, progress_callback=None
+    ):
         first = tasks[0][1][0]["content"] if tasks else ""
         if "Reassess your position" in first:
             texts = [revision_text] * len(tasks)
+        elif critique_texts is not None:
+            texts = [critique_texts[i] for i in range(len(tasks))]
         else:
             texts = [critique_text] * len(tasks)
+        if progress_callback is not None:
+            done = 0
+            order = completion_order if completion_order is not None else range(len(tasks))
+            for idx in order:
+                done += 1
+                status = "responded"
+                if texts[idx].lstrip().startswith(("[failed:", "[skipped:")):
+                    status = texts[idx].lstrip().split(":", 1)[0].strip("[")
+                progress_callback(
+                    done, len(tasks), "canary-provider:canary-model",
+                    index=idx, status=status,
+                )
         return [(f"slot-{i}", t, CanonicalUsage()) for i, t in enumerate(texts)]
 
     monkeypatch.setattr(moa_debate, "_fan_out_per_slot", fake_fan_out)
@@ -211,8 +240,8 @@ class _RecordingStageAdapter:
         return [e for e in self.edits if e["ok"]]
 
 
-def _stage_event(tool, invocation, stage, status=None, **counts):
-    return {
+def _stage_event(tool, invocation, stage, status=None, slots=None, **counts):
+    event = {
         "type": "tool.stage",
         "tool": tool,
         "invocation_id": invocation,
@@ -222,6 +251,20 @@ def _stage_event(tool, invocation, stage, status=None, **counts):
         "task_id": "task-1",
         "counts": counts,
     }
+    if slots is not None:
+        event["slots"] = slots
+    return event
+
+
+def _slot_row(event, index, round_name=None):
+    """Fetch one roster row by its stable slot index (and optional round)."""
+    matches = [
+        row
+        for row in event.get("slots") or []
+        if row.get("index") == index and (round_name is None or row.get("round") == round_name)
+    ]
+    assert matches, f"no roster row for index {index} round {round_name!r} in {event}"
+    return matches[0]
 
 
 def _make_stage_ctx(adapter, current):
@@ -411,6 +454,173 @@ def test_moa_ask_advisor_progress_is_fail_soft_when_rendering_raises(
     assert result["success"] is True
 
 
+# --- Per-slot roster: identity, live updates, truthfulness ------------------
+
+
+def test_moa_ask_initial_roster_identifies_every_advisor_waiting(
+    monkeypatch, configured_moa
+):
+    """Before any result arrives the first advisors event names every slot."""
+    from tools import moa_tool
+
+    _install_progress_fan_out(monkeypatch)
+
+    with _StageCollector("sess-roster-init") as collector:
+        json.loads(moa_tool.moa_ask(question="q", session_id="sess-roster-init"))
+
+    first = next(e for e in collector.events if e["stage"] == "advisors")
+    rows = first["slots"]
+    assert [(row["index"], row["status"]) for row in rows] == [
+        (0, "waiting"),
+        (1, "waiting"),
+        (2, "waiting"),
+    ]
+    # Identity is provider/model from the roster — every configured advisor,
+    # keyed by stable index, no labels.
+    assert [(row["provider"], row["model"]) for row in rows] == [
+        ("xai-oauth", "grok-4.5"),
+        ("minimax-oauth", "minimax-m3"),
+        ("kimi-coding", "kimi-k3"),
+    ]
+    assert all("round" not in row for row in rows)
+
+
+def test_moa_ask_out_of_order_completions_flip_the_right_slot(
+    monkeypatch, configured_moa
+):
+    """A fast later slot shows responded while an earlier one is still waiting."""
+    from tools import moa_tool
+
+    # Slot 2 finishes first, then 0, then 1 — arrival order ≠ slot order.
+    _install_progress_fan_out(monkeypatch, completion_order=[2, 0, 1])
+
+    with _StageCollector("sess-roster-ooo") as collector:
+        result = json.loads(moa_tool.moa_ask(question="q", session_id="sess-roster-ooo"))
+
+    assert result["success"] is True
+    advisors = [e for e in collector.events if e["stage"] == "advisors"]
+    # advisors[0] is the initial roster; the next three are the arrivals.
+    def _statuses(event):
+        return {row["index"]: row["status"] for row in event["slots"]}
+
+    assert _statuses(advisors[1]) == {0: "waiting", 1: "waiting", 2: "responded"}
+    assert _statuses(advisors[2]) == {0: "responded", 1: "waiting", 2: "responded"}
+    assert _statuses(advisors[3]) == {0: "responded", 1: "responded", 2: "responded"}
+
+    # Terminal event retains every identity with its final status.
+    terminal = collector.events[-1]
+    assert _statuses(terminal) == {0: "responded", 1: "responded", 2: "responded"}
+    assert terminal["terminal"] is True
+
+
+def test_moa_ask_duplicate_models_stay_distinct_rows(monkeypatch, configured_moa):
+    from tools import moa_tool
+
+    # Two configured copies of the same provider/model — identity is the
+    # stable slot index, so the rows must not collapse.
+    configured_moa["moa"]["presets"]["homelab"]["reference_models"] = [
+        {"provider": "xai-oauth", "model": "grok-4.5"},
+        {"provider": "xai-oauth", "model": "grok-4.5"},
+        {"provider": "kimi-coding", "model": "kimi-k3"},
+    ]
+    _install_progress_fan_out(
+        monkeypatch,
+        completion_order=[0, 2, 1],
+        slot_status={0: "responded", 1: "failed", 2: "responded"},
+        results={0: "a", 1: "[failed: provider down]", 2: "c"},
+    )
+
+    with _StageCollector("sess-roster-dup") as collector:
+        result = json.loads(moa_tool.moa_ask(question="q", session_id="sess-roster-dup"))
+
+    assert result["partial"] is True
+    terminal = collector.events[-1]
+    rows = terminal["slots"]
+    assert len(rows) == 3
+    assert [(row["provider"], row["model"]) for row in rows[:2]] == [
+        ("xai-oauth", "grok-4.5"),
+        ("xai-oauth", "grok-4.5"),
+    ]
+    assert [row["status"] for row in rows] == ["responded", "failed", "responded"]
+    # Live mid-flight: the duplicate copy that has not answered is still
+    # waiting while its twin already responded.
+    mid = [e for e in collector.events if e["stage"] == "advisors"][2]
+    assert {row["index"]: row["status"] for row in mid["slots"]} == {
+        0: "responded",
+        1: "waiting",
+        2: "responded",
+    }
+
+
+def test_moa_ask_mixed_slot_statuses_survive_to_terminal(monkeypatch, configured_moa):
+    """Empty and skipped slots never render as responded."""
+    from tools import moa_tool
+
+    _install_progress_fan_out(
+        monkeypatch,
+        slot_status={0: "responded", 1: "empty", 2: "skipped"},
+        results={0: "real advice", 1: "(empty response)", 2: "[skipped: no credits]"},
+    )
+
+    with _StageCollector("sess-roster-mixed") as collector:
+        result = json.loads(moa_tool.moa_ask(question="q", session_id="sess-roster-mixed"))
+
+    assert result["partial"] is True
+    statuses = {row["index"]: row["status"] for row in collector.events[-1]["slots"]}
+    assert statuses == {0: "responded", 1: "empty", 2: "skipped"}
+
+
+def test_moa_ask_fan_out_exception_marks_waiting_slots_failed(
+    monkeypatch, configured_moa
+):
+    from tools import moa_tool
+
+    def exploding_run(*args, **kwargs):
+        raise RuntimeError("fan-out infrastructure failed")
+
+    monkeypatch.setattr(moa_tool, "_run_references_parallel", exploding_run)
+
+    with _StageCollector("sess-roster-fanout-fail") as collector:
+        result = json.loads(
+            moa_tool.moa_ask(question="q", session_id="sess-roster-fanout-fail")
+        )
+
+    assert result["success"] is False
+    terminal = collector.events[-1]
+    assert terminal["status"] == "failure"
+    # No slot may claim to be waiting (or responded) forever: the ones that
+    # never delivered a result read failed.
+    assert [row["status"] for row in terminal["slots"]] == [
+        "failed",
+        "failed",
+        "failed",
+    ]
+
+
+def test_published_slot_snapshots_are_detached_from_later_mutations(
+    monkeypatch, configured_moa
+):
+    """Each event's roster rows are fresh objects — a later status flip never
+    rewrites an already-published snapshot."""
+    from tools import moa_tool
+
+    _install_progress_fan_out(monkeypatch)
+
+    with _StageCollector("sess-roster-detach") as collector:
+        json.loads(moa_tool.moa_ask(question="q", session_id="sess-roster-detach"))
+
+    seen_row_ids = set()
+    for event in collector.events:
+        for row in event.get("slots") or []:
+            row_id = id(row)
+            assert row_id not in seen_row_ids, "slot row object reused across events"
+            seen_row_ids.add(row_id)
+    # Sanity: snapshots really did progress (waiting → responded).
+    first = next(e for e in collector.events if e["stage"] == "advisors")
+    assert all(row["status"] == "waiting" for row in first["slots"])
+    assert all(row["status"] == "responded" for row in collector.events[-1]["slots"])
+
+
 def test_moa_debate_stage_order_with_revision_round(monkeypatch, configured_moa):
     from tools import moa_debate
 
@@ -428,7 +638,9 @@ def test_moa_debate_stage_order_with_revision_round(monkeypatch, configured_moa)
         )
 
     assert result["success"] is True
-    assert collector.stages() == [
+    # Live per-round progress repeats a round's stage id; the ordered set of
+    # stages still tells the round story in order.
+    assert list(dict.fromkeys(collector.stages())) == [
         "starting",
         "proposal",
         "critique",
@@ -505,8 +717,15 @@ def test_moa_debate_partial_when_a_later_round_degrades(monkeypatch, configured_
 
     original_fan_out = debate_mod._fan_out_per_slot
 
-    def flaky_fan_out(tasks, *, temperature=None, max_tokens=None):
-        outputs = original_fan_out(tasks, temperature=temperature, max_tokens=max_tokens)
+    def flaky_fan_out(
+        tasks, *, temperature=None, max_tokens=None, progress_callback=None
+    ):
+        outputs = original_fan_out(
+            tasks,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            progress_callback=progress_callback,
+        )
         degraded = [(lbl, "[failed: critic down]" if i < 2 else txt, acc)
                     for i, (lbl, txt, acc) in enumerate(outputs)]
         return degraded
@@ -521,6 +740,208 @@ def test_moa_debate_partial_when_a_later_round_degrades(monkeypatch, configured_
     assert result["partial"] is True
     assert collector.events[-1]["status"] == "partial"
     assert collector.events[-1]["counts"]["failed"] >= 2
+
+
+# --- Debate round-aware roster ----------------------------------------------
+
+
+def test_moa_debate_round_aware_roster_lives_and_terminals(monkeypatch, configured_moa):
+    """Each round reports live per-slot rows keyed by the stable proposal
+    index, and the terminal event retains every round's final statuses."""
+    from tools import moa_debate
+
+    _install_debate_fakes(monkeypatch, ["answer a", "answer b", "answer c"])
+
+    with _StageCollector("sess-debate-roster") as collector:
+        result = json.loads(
+            moa_debate.moa_debate(
+                question="q", revision=True, session_id="sess-debate-roster"
+            )
+        )
+
+    assert result["success"] is True
+
+    def _round_statuses(event, round_name):
+        return {
+            row["index"]: row["status"]
+            for row in event["slots"]
+            if row["round"] == round_name
+        }
+
+    # Initial proposal event: every configured advisor named and waiting.
+    proposal_events = [e for e in collector.events if e["stage"] == "proposal"]
+    assert _round_statuses(proposal_events[0], "proposal") == {
+        0: "waiting",
+        1: "waiting",
+        2: "waiting",
+    }
+    # Critique and revision rounds each introduce their own waiting rows.
+    critique_events = [e for e in collector.events if e["stage"] == "critique"]
+    assert _round_statuses(critique_events[0], "critique") == {
+        0: "waiting",
+        1: "waiting",
+        2: "waiting",
+    }
+    revision_events = [e for e in collector.events if e["stage"] == "revision"]
+    assert _round_statuses(revision_events[0], "revision") == {
+        0: "waiting",
+        1: "waiting",
+        2: "waiting",
+    }
+
+    # Terminal roster retains identity + final status for every slot of every
+    # round that ran.
+    terminal = collector.events[-1]
+    assert {row["round"] for row in terminal["slots"]} == {
+        "proposal",
+        "critique",
+        "revision",
+    }
+    for round_name in ("proposal", "critique", "revision"):
+        assert _round_statuses(terminal, round_name) == {
+            0: "responded",
+            1: "responded",
+            2: "responded",
+        }
+    # Identity rides on every row, in every round.
+    assert all(
+        row["provider"] and row["model"] for row in terminal["slots"]
+    )
+
+
+def test_moa_debate_fast_later_slot_beats_slow_earlier(monkeypatch, configured_moa):
+    """Out-of-order critique arrivals flip the RIGHT rows in arrival order."""
+    from tools import moa_debate
+
+    _install_debate_fakes(
+        monkeypatch,
+        ["answer a", "answer b", "answer c"],
+        completion_order=[2, 0, 1],
+    )
+
+    with _StageCollector("sess-debate-ooo") as collector:
+        json.loads(moa_debate.moa_debate(question="q", session_id="sess-debate-ooo"))
+
+    critique_events = [e for e in collector.events if e["stage"] == "critique"]
+
+    def _statuses(event):
+        return {
+            row["index"]: row["status"]
+            for row in event["slots"]
+            if row["round"] == "critique"
+        }
+
+    # The initial roster is all-waiting; then slot 2 lands first.
+    assert _statuses(critique_events[0]) == {0: "waiting", 1: "waiting", 2: "waiting"}
+    assert _statuses(critique_events[1]) == {0: "waiting", 1: "waiting", 2: "responded"}
+    assert _statuses(critique_events[2]) == {0: "responded", 1: "waiting", 2: "responded"}
+    assert _statuses(critique_events[3]) == {0: "responded", 1: "responded", 2: "responded"}
+
+
+def test_moa_debate_failed_proposal_preserved_in_final_accounting(
+    monkeypatch, configured_moa
+):
+    """A failed proposal stays in the roster for every later round as skipped,
+    and its fan-out task position never corrupts another advisor's row."""
+    from tools import moa_debate
+
+    # Advisor 1 fails its proposal; ok advisors are slots 0 and 2, so the
+    # critique fan-out's task positions (0, 1) map to roster keys (0, 2).
+    _install_debate_fakes(
+        monkeypatch,
+        ["answer a", "[failed: boom]", "answer c"],
+        completion_order=[1, 0],
+    )
+
+    with _StageCollector("sess-debate-preserve") as collector:
+        result = json.loads(
+            moa_debate.moa_debate(
+                question="q", revision=True, session_id="sess-debate-preserve"
+            )
+        )
+
+    assert result["partial"] is True
+    terminal = collector.events[-1]
+
+    def _rows(round_name):
+        return {
+            row["index"]: row["status"]
+            for row in terminal["slots"]
+            if row["round"] == round_name
+        }
+
+    assert _rows("proposal") == {0: "responded", 1: "failed", 2: "responded"}
+    # The failed advisor sat the later rounds out — visible as skipped rows,
+    # never silently dropped and never claimed as responded.
+    assert _rows("critique") == {0: "responded", 1: "skipped", 2: "responded"}
+    assert _rows("revision") == {0: "responded", 1: "skipped", 2: "responded"}
+
+    # Position→key mapping: task 1 (advisor 2) finished first, so the first
+    # critique progress event shows roster key 2 responded and 0 still waiting.
+    critique_events = [e for e in collector.events if e["stage"] == "critique"]
+    first_arrival = {
+        row["index"]: row["status"]
+        for row in critique_events[1]["slots"]
+        if row["round"] == "critique"
+    }
+    assert first_arrival == {0: "waiting", 1: "skipped", 2: "responded"}
+
+
+def test_moa_debate_unparsed_critique_reflected_truthfully(
+    monkeypatch, configured_moa
+):
+    from tools import moa_debate
+
+    good = (
+        "VERDICT: ANSWER_A | agree | low | none\n"
+        "VERDICT: ANSWER_B | disagree | high | objection\n"
+        "WOULD_ADOPT: ANSWER_A\n"
+        "MANIPULATION: none\n"
+    )
+    # Critic 1 responds prose with no structured verdicts: ok text, unusable
+    # as agreement data — the roster must say unparsed, not responded.
+    _install_debate_fakes(
+        monkeypatch,
+        ["answer a", "answer b", "answer c"],
+        critique_texts=[good, "I see no problems with any answer.", good],
+    )
+
+    with _StageCollector("sess-debate-unparsed") as collector:
+        result = json.loads(
+            moa_debate.moa_debate(question="q", session_id="sess-debate-unparsed")
+        )
+
+    assert [c["status"] for c in result["critiques"]][1] == "unparsed"
+    terminal = collector.events[-1]
+    critique_rows = {
+        row["index"]: row["status"]
+        for row in terminal["slots"]
+        if row["round"] == "critique"
+    }
+    assert critique_rows == {0: "responded", 1: "unparsed", 2: "responded"}
+
+
+def test_moa_debate_revision_skipped_is_not_a_responded_round(
+    monkeypatch, configured_moa
+):
+    from tools import moa_debate
+
+    _install_debate_fakes(monkeypatch, ["answer a", "answer b", "answer c"])
+
+    with _StageCollector("sess-debate-revskip-roster") as collector:
+        json.loads(
+            moa_debate.moa_debate(question="q", session_id="sess-debate-revskip-roster")
+        )
+
+    skipped_event = next(
+        e for e in collector.events if e["stage"] == "revision_skipped"
+    )
+    # No revision rows exist anywhere — a declined round is not a responded one.
+    assert {row["round"] for row in skipped_event["slots"]} == {"proposal", "critique"}
+    assert {row["round"] for row in collector.events[-1]["slots"]} == {
+        "proposal",
+        "critique",
+    }
 
 
 def test_stage_events_never_carry_prompts_evidence_or_answers(
@@ -557,11 +978,20 @@ def test_stage_events_never_carry_prompts_evidence_or_answers(
         "terminal",
         "task_id",
         "counts",
+        "slots",
     }
+    allowed_slot_keys = {"index", "provider", "model", "status", "round"}
     for event in collector.events:
         assert set(event.keys()) <= allowed_keys
         for value in event["counts"].values():
             assert isinstance(value, int)
+        for row in event.get("slots") or []:
+            # Identity + a small status enum only: no labels, no free text.
+            assert set(row.keys()) <= allowed_slot_keys
+            assert isinstance(row["index"], int)
+            assert row["status"] in {
+                "waiting", "responded", "failed", "skipped", "empty", "unparsed", "unknown",
+            }
 
 
 def test_tools_run_unchanged_without_any_subscriber(monkeypatch, configured_moa):
@@ -1705,6 +2135,10 @@ def test_moa_ask_unexpected_exception_still_reports_terminal_failure(
     assert len(terminals) == 1
     assert terminals[0]["status"] == "failure"
     assert collector.stages()[-1] == "complete"
+    # The dying invocation still identifies its roster truthfully: slots that
+    # delivered keep responded, none are left "waiting".
+    final_rows = terminals[0]["slots"]
+    assert [row["status"] for row in final_rows] == ["responded", "responded", "responded"]
 
 
 def test_moa_debate_unexpected_exception_still_reports_terminal_failure(
@@ -1727,6 +2161,12 @@ def test_moa_debate_unexpected_exception_still_reports_terminal_failure(
     assert len(terminals) == 1
     assert terminals[0]["status"] == "failure"
     assert collector.stages()[-1] == "complete"
+    # Roster truth survives the crash: rounds that ran show their final
+    # statuses, nothing is left waiting, and the declined revision round
+    # never grew rows.
+    rounds = {row["round"] for row in terminals[0]["slots"]}
+    assert rounds == {"proposal", "critique"}
+    assert all(row["status"] == "responded" for row in terminals[0]["slots"])
 
 
 def test_nested_subscribe_unsubscribe_restores_previous():
@@ -1763,12 +2203,15 @@ def _make_discord_stage_adapter():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     sent = {}
     edited = {}
+    deliveries = {"sends": 0, "edits": 0}
 
     async def _fake_send(**kwargs):
+        deliveries["sends"] += 1
         sent.update(kwargs)
         return SimpleNamespace(id=4242)
 
     async def _fake_edit(**kwargs):
+        deliveries["edits"] += 1
         edited.update(kwargs)
 
     channel = SimpleNamespace(
@@ -1779,12 +2222,12 @@ def _make_discord_stage_adapter():
         get_channel=lambda _cid: channel,
         fetch_channel=AsyncMock(),
     )
-    return adapter, sent, edited
+    return adapter, sent, edited, deliveries
 
 
 @pytest.mark.asyncio
 async def test_discord_send_and_edit_stage_embed_same_message():
-    adapter, sent, edited = _make_discord_stage_adapter()
+    adapter, sent, edited, deliveries = _make_discord_stage_adapter()
 
     running = _stage_event("moa_ask", "inv-abc", "advisors", advisors=2, models=2)
     result = await adapter.send_tool_stage_embed("555", running, reply_to=None)
@@ -1804,7 +2247,7 @@ async def test_discord_send_and_edit_stage_embed_same_message():
 
 @pytest.mark.asyncio
 async def test_discord_stage_embed_terminal_marks_and_colors():
-    adapter, sent, _ = _make_discord_stage_adapter()
+    adapter, sent, _, _ = _make_discord_stage_adapter()
     from plugins.platforms.discord import adapter as discord_adapter_mod
 
     cases = [
@@ -1824,7 +2267,7 @@ async def test_discord_stage_embed_terminal_marks_and_colors():
 
 @pytest.mark.asyncio
 async def test_discord_stage_embed_renders_only_allowlisted_fields():
-    adapter, sent, _ = _make_discord_stage_adapter()
+    adapter, sent, _, _ = _make_discord_stage_adapter()
 
     event = _stage_event("moa_ask", "inv-2", "advisors", advisors=2)
     # A hostile/buggy extra key must never reach the rendered embed.
@@ -1960,7 +2403,7 @@ def test_discord_advisor_fraction_is_exclusive_to_moa_ask_advisors_stage():
 
 @pytest.mark.asyncio
 async def test_discord_advisor_progress_edits_same_embed():
-    adapter, sent, edited = _make_discord_stage_adapter()
+    adapter, sent, edited, deliveries = _make_discord_stage_adapter()
 
     first = _stage_event(
         "moa_ask", "inv-live", "advisors", advisors=4, models=4, completed=0, total=4
@@ -1983,6 +2426,207 @@ async def test_discord_advisor_progress_edits_same_embed():
         assert edit.success is True
 
     assert edited["embed"].description == "4/4 advisors complete · 4 models"
+
+
+# --- Per-slot roster rendering (real discord.Embed) --------------------------
+
+
+def _ask_slots(overrides=None):
+    rows = [
+        {"index": 0, "provider": "xai-oauth", "model": "grok-4.5", "status": "responded"},
+        {"index": 1, "provider": "minimax-oauth", "model": "minimax-m3", "status": "waiting"},
+        {"index": 2, "provider": "kimi-coding", "model": "kimi-k3", "status": "failed"},
+    ]
+    for index, row in enumerate(rows):
+        row.update((overrides or {}).get(index, {}))
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_discord_stage_embed_renders_per_slot_roster():
+    adapter, sent, edited, deliveries = _make_discord_stage_adapter()
+
+    live = _stage_event(
+        "moa_ask", "inv-roster", "advisors",
+        advisors=3, models=3, completed=1, total=3,
+        slots=_ask_slots(),
+    )
+    result = await adapter.send_tool_stage_embed("555", live)
+    assert result.success is True
+    embed = sent["embed"]
+    # Summary line intact, roster below it: one line per advisor with its mark.
+    assert embed.description.startswith("1/3 advisors complete")
+    assert "✅ xai-oauth:grok-4.5" in embed.description
+    assert "⏳ minimax-oauth:minimax-m3" in embed.description
+    assert "❌ kimi-coding:kimi-k3" in embed.description
+    assert len(embed.description) <= 4096
+
+    # Terminal edit retains identities + final statuses on the same message.
+    terminal = _stage_event(
+        "moa_ask", "inv-roster", "complete", "success",
+        advisors=3, usable=2, failed=1,
+        slots=_ask_slots({1: {"status": "skipped"}}),
+    )
+    edit = await adapter.edit_tool_stage_embed("555", "4242", terminal)
+    assert edit.success is True
+    assert "⏭️ minimax-oauth:minimax-m3" in edited["embed"].description
+    assert "✅ xai-oauth:grok-4.5" in edited["embed"].description
+
+
+@pytest.mark.asyncio
+async def test_discord_roster_groups_rounds_and_keeps_duplicate_rows_distinct():
+    adapter, sent, _, _ = _make_discord_stage_adapter()
+
+    slots = [
+        {"index": 0, "provider": "xai", "model": "grok-4.5", "round": "proposal", "status": "responded"},
+        {"index": 1, "provider": "xai", "model": "grok-4.5", "round": "proposal", "status": "failed"},
+        {"index": 0, "provider": "xai", "model": "grok-4.5", "round": "critique", "status": "responded"},
+        {"index": 1, "provider": "xai", "model": "grok-4.5", "round": "critique", "status": "skipped"},
+    ]
+    event = _stage_event("moa_debate", "inv-r", "complete", "partial", advisors=2, slots=slots)
+    await adapter.send_tool_stage_embed("555", event)
+    description = sent["embed"].description
+    # Round headers group their rows; duplicates stay two rows (#2 suffix).
+    assert "proposal:" in description
+    assert "critique:" in description
+    assert description.index("proposal:") < description.index("critique:")
+    assert "✅ xai:grok-4.5\n" in description
+    assert "❌ xai:grok-4.5#2" in description
+    assert "⏭️ xai:grok-4.5#2" in description
+
+
+@pytest.mark.asyncio
+async def test_discord_roster_bounds_rows_and_notes_omissions():
+    adapter, sent, _, _ = _make_discord_stage_adapter()
+
+    slots = [
+        {"index": i, "provider": "prov", "model": f"model-{i}", "status": "waiting"}
+        for i in range(40)
+    ]
+    event = _stage_event(
+        "moa_ask", "inv-big", "advisors", advisors=40, models=40, completed=0, total=40,
+        slots=slots,
+    )
+    result = await adapter.send_tool_stage_embed("555", event)
+    assert result.success is True
+    description = sent["embed"].description
+    # Bounded roster with an explicit omission note — never a silent cap.
+    rendered_rows = sum(1 for line in description.splitlines() if line.startswith("⏳"))
+    assert rendered_rows == 24
+    assert "+16 more omitted" in description
+    assert len(description) <= 4096
+
+
+@pytest.mark.asyncio
+async def test_discord_roster_survives_oversized_and_malformed_slots():
+    """A hostile/buggy roster can neither ping, inject markup, blow the embed
+    description limit, nor crash embed construction."""
+    adapter, sent, _, _ = _make_discord_stage_adapter()
+
+    hostile = [
+        # Mention markup and markdown in every identity field.
+        {"index": 0, "provider": "<@&110>", "model": "@everyone *_`~|", "status": "responded"},
+        # Oversized identity strings far past the bus cap.
+        {"index": 1, "provider": "p" * 5000, "model": "m" * 5000, "status": "waiting"},
+        # Non-dict junk and a dict without any usable identity.
+        "not-a-dict",
+        {"status": "bogus-status"},
+        None,
+        # Newline/smuggling attempt in a round name.
+        {"index": 2, "provider": "a", "model": "b", "round": "round\n<script>", "status": "skipped"},
+    ]
+    event = _stage_event(
+        "moa_ask", "inv-evil", "advisors", advisors=3, models=3, completed=1, total=3,
+        slots=hostile,
+    )
+    result = await adapter.send_tool_stage_embed("555", event)
+    assert result.success is True
+    description = sent["embed"].description
+    assert "<@" not in description and "</@" not in description
+    assert "@everyone" not in description
+    assert "not-a-dict" not in description
+    assert "<script>" not in description
+    assert "\n\n" not in description  # no smuggled blank/structure lines
+    assert len(description) <= 4096
+    # Unrenderable entries are counted as omitted, not silently gone.
+    assert "more omitted" in description
+
+
+@pytest.mark.asyncio
+async def test_discord_legacy_count_only_events_render_unchanged():
+    adapter, sent, _, _ = _make_discord_stage_adapter()
+
+    event = _stage_event(
+        "moa_ask", "inv-legacy", "advisors", advisors=4, models=4, completed=2, total=4
+    )
+    assert "slots" not in event
+    await adapter.send_tool_stage_embed("555", event)
+    assert sent["embed"].description == "2/4 advisors complete · 4 models"
+
+
+@pytest.mark.asyncio
+async def test_full_path_per_slot_events_render_in_real_embed(
+    monkeypatch, configured_moa
+):
+    """Real moa_ask → bus → drain → real DiscordAdapter → real embed lines."""
+    from gateway.run import TurnRunner
+    from tools import moa_tool
+
+    _install_progress_fan_out(
+        monkeypatch,
+        completion_order=[2, 0, 1],
+        slot_status={0: "responded", 1: "failed", 2: "responded"},
+        results={0: "a", 1: "[failed: provider down]", 2: "c"},
+    )
+    adapter, sent, edited, deliveries = _make_discord_stage_adapter()
+    # The real adapter resolves a numeric Discord channel id, unlike the
+    # duck-typed recorder used elsewhere.
+    current = {"value": True}
+    ctx = TurnContext(
+        source=SimpleNamespace(chat_id="555"),
+        _run_still_current=lambda: current["value"],
+        stage_event_queue=queue_mod.Queue(),
+        _stage_embed_adapter=adapter,
+    )
+    ctx._current_flag = current
+    runner = TurnRunner(_StubGatewayRunner(), ctx)
+
+    with _StageCollector("sess-full-roster") as collector:
+        collector.close()
+        unsub = subscribe_tool_stage_events(
+            "sess-full-roster", runner.tool_stage_event_callback
+        )
+        try:
+            task = asyncio.create_task(runner.send_tool_stage_embeds())
+            result = json.loads(
+                moa_tool.moa_ask(
+                    question="Which architecture?",
+                    session_id="sess-full-roster",
+                    task_id="task-full-roster",
+                )
+            )
+            assert result["partial"] is True
+            deadline = time.monotonic() + 4.0
+            while time.monotonic() < deadline:
+                # starting(send) + advisors×4 + aggregating + complete(edits)
+                if deliveries["sends"] + deliveries["edits"] >= 7:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            unsub()
+            ctx._current_flag["value"] = False
+            await asyncio.wait_for(task, timeout=2.0)
+
+    # One embed, edited in place, ending with the terminal roster.
+    assert deliveries["sends"] == 1
+    assert deliveries["edits"] >= 6
+    assert sent["embed"].title.startswith("moa_ask")
+    description = edited["embed"].description
+    assert "Finished" in description  # the terminal edit landed last
+    assert "✅ xai-oauth:grok-4.5" in description
+    assert "❌ minimax-oauth:minimax-m3" in description
+    assert "✅ kimi-coding:kimi-k3" in description
+    assert len(description) <= 4096
 
 
 def test_plain_platform_adapters_do_not_expose_stage_embed_capability():
