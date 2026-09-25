@@ -356,7 +356,9 @@ class TestYamlBridgeSeeding:
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
         seeded = _apply_yaml_config({}, {"auto_thread": False})
 
-        assert seeded["auto_thread"] == "false"
+        # extra keeps the YAML value's original type (bools stay bools); only the
+        # env bridge stringifies. ``_discord_auto_thread_enabled`` reads either.
+        assert seeded["auto_thread"] is False
         assert os.environ["DISCORD_AUTO_THREAD"] == "false"
 
     def test_auto_thread_explicit_env_keeps_override_precedence(self, monkeypatch):
@@ -370,7 +372,7 @@ class TestYamlBridgeSeeding:
         assert os.environ["DISCORD_AUTO_THREAD"] == "true"
         # ...while extra still carries the config value for the adapter's
         # own per-profile resolution to fall back to.
-        assert seeded["auto_thread"] == "false"
+        assert seeded["auto_thread"] is False
 
     def test_auto_thread_scoped_load_seeds_extra_without_env_write(self, monkeypatch):
         from agent import secret_scope
@@ -383,7 +385,7 @@ class TestYamlBridgeSeeding:
         finally:
             secret_scope.reset_secret_scope(token)
 
-        assert seeded["auto_thread"] == "false"
+        assert seeded["auto_thread"] is False
         # No process-global leak from a profile-scoped load.
         assert os.getenv("DISCORD_AUTO_THREAD") is None
 
