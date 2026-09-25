@@ -241,13 +241,13 @@ def _path_logo(d: str) -> str:
     )
 
 
-def _badge_logo(letter: str, tile: str) -> str:
+def _badge_logo(letter: str, tile: str, text: str = "#e8edf4") -> str:
     """Initial badge for brands without a dependable logo path."""
     return (
         '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
         f'<rect width="24" height="24" rx="6" fill="{tile}"/>'
         '<text x="12" y="17.2" text-anchor="middle" font-family="inherit" '
-        f'font-size="14.5" font-weight="700" fill="#e8edf4">{letter}</text></svg>'
+        f'font-size="14.5" font-weight="700" fill="{text}">{letter}</text></svg>'
     )
 
 
@@ -259,6 +259,7 @@ def _badge_logo(letter: str, tile: str) -> str:
 # and the canonical unhyphenated catalog spellings ("xai/…", "moonshotai/…").
 PROVIDER_PREFIXES = (
     ("openrouter/", "openrouter"),
+    ("typesafe/", "jev"),
     ("claude-", "claude"),
     ("anthropic/", "claude"),
     ("codex", "openai"),
@@ -290,6 +291,7 @@ PROVIDER_BRANDS = {
     # Grok/xAI is monochrome: white X glyph, restrained light-grey slices.
     "grok": {"name": "Grok (xAI)", "color": "#BFC7D3", "glyph": "#E8EDF4", "logo": _path_logo(_LOGO_X)},
     "openrouter": {"name": "OpenRouter", "color": "#6467F2", "logo": _path_logo(_LOGO_OPENROUTER)},
+    "jev": {"name": "Jev (Typesafe)", "color": "#2DD4BF", "logo": _badge_logo("J", "#2DD4BF", "#0B1220")},
 }
 
 # Outcome badge: green when usage is final, red for auth/rate-limit
@@ -667,6 +669,23 @@ def provider_key(model: Any) -> str | None:
         if name.startswith(prefix):
             return key
     return None
+
+
+def model_display(model: Any) -> Any:
+    """Display label for a raw model id — presentation only.
+
+    Exactly one leading ``typesafe/`` namespace is dropped for display
+    (``typesafe/jev-1.13`` renders as ``jev-1.13``, dated variants likewise);
+    everything else — JSON payloads, option values, filter/URL state, sort
+    and aggregation keys, ``provider_key`` inputs — keeps the raw string, and
+    no other provider namespace is ever stripped.  Falsy input passes through
+    so the existing None/empty rendering is unchanged.  Mirrored exactly in
+    the browser JS (modelDisplay).
+    """
+    if not model:
+        return model
+    name = str(model)
+    return name[len("typesafe/"):] if name.startswith("typesafe/") else name
 
 
 BRAND_SHADE_STEPS = (
@@ -1423,14 +1442,21 @@ def render_filter_bar(snapshot: dict[str, Any]) -> str:
                     value, opt.get("requests"), opt.get("tokens"),
                     value == selected_value,
                     # harness options label the Hermes family "Hermes IDE";
-                    # the option VALUE stays the raw caller (the filter key)
-                    caller_display(value) if key == "harness" else "",
+                    # the option VALUE stays the raw caller (the filter key).
+                    # model options drop the typesafe/ namespace for display
+                    # only — the value stays the raw model id.
+                    caller_display(value) if key == "harness"
+                    else model_display(value) if key == "model" else "",
                 )
             )
         if selected_value and selected_value not in seen:
             # the active filter narrowed itself out of the cross-filtered
             # list — keep it selectable anyway (never silently dropped)
-            sel_label = caller_display(selected_value) if key == "harness" else selected_value
+            sel_label = (
+                caller_display(selected_value) if key == "harness"
+                else model_display(selected_value) if key == "model"
+                else selected_value
+            )
             options.append(
                 f'<option value="{esc(selected_value)}" selected>{esc(sel_label)}</option>'
             )
@@ -1489,7 +1515,8 @@ def render_filter_bar(snapshot: dict[str, Any]) -> str:
         chips.append(
             f'<button type="button" class="fchip" data-key="{esc(key)}"'
             f' title="Clear the {esc(key)} filter">'
-            f'<span class="fk">{esc(key)}</span> {esc(value)}'
+            f'<span class="fk">{esc(key)}</span>'
+            f' {esc(model_display(value) if key == "model" else value)}'
             '<span class="fx" aria-hidden="true">✕</span></button>'
         )
     active = len(chips)
@@ -1665,13 +1692,13 @@ def model_name_html(model: Any) -> str:
     events table).  Unknown providers and missing models stay plain text."""
     key = provider_key(model)
     if not key:
-        return esc(model)
+        return esc(model_display(model))
     brand = PROVIDER_BRANDS[key]
     glyph = brand.get("glyph", brand["color"])
     return (
         f'<span class="mbrand" title="{esc(brand["name"])}">'
         f'<span class="plogo" style="color:{glyph}">{brand["logo"]}</span>'
-        f"{esc(model)}</span>"
+        f"{esc(model_display(model))}</span>"
     )
 
 
@@ -1819,7 +1846,7 @@ def model_legend_html(slices: list[dict[str, Any]]) -> str:
     steps = brand_step_map([s["model"] for s in slices if s["model"] != "other"])
     items = "".join(
         f'<li class="lrow" data-model="{esc(s["model"])}" tabindex="0"'
-        f' title="Filter to {esc(s["model"])}">'
+        f' title="Filter to {esc(model_display(s["model"]))}">'
         f'<span class="swatch" style="background:{slice_fill(slices, i, steps)}"></span>'
         f'<span class="name">{model_name_html(s["model"])}</span>'
         f'<span class="num">{esc(fmt_stat(s["tokens"]))}</span>'
@@ -1832,7 +1859,7 @@ def model_legend_html(slices: list[dict[str, Any]]) -> str:
 
 def donut_aria(slices: list[dict[str, Any]], range_label: str) -> str:
     total = sum(s["tokens"] for s in slices)
-    breakdown = ", ".join(f"{s['model']} {fmt_pct(s['tokens'], total)}" for s in slices)
+    breakdown = ", ".join(f"{model_display(s['model'])} {fmt_pct(s['tokens'], total)}" for s in slices)
     return f"Donut chart of token share by model over {range_label}. {breakdown}"
 
 
@@ -2440,7 +2467,7 @@ JS = r"""
         chip.dataset.key = k;   /* same shape the server-rendered chips carry */
         chip.title = 'Clear the ' + k + ' filter';
         chip.appendChild(el('span', 'fk', k));
-        chip.appendChild(document.createTextNode(' ' + state[k] + ' '));
+        chip.appendChild(document.createTextNode(' ' + (k === 'model' ? modelDisplay(state[k]) : state[k]) + ' '));
         chip.appendChild(el('span', 'fx', '✕'));
         chip.addEventListener('click', function () { setFilter(k, ''); });
         box.appendChild(chip);
@@ -2478,7 +2505,9 @@ JS = r"""
         label = callerDisplay(value) + ' · ' + fmtCompact(o.tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
       } else {
         value = String(o.value || '');
-        label = value + ' · ' + fmtCompact(o.tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
+        /* model labels drop the typesafe/ namespace for display; the option
+           VALUE stays the raw model id — it is the filter key */
+        label = (key === 'model' ? modelDisplay(value) : value) + ' · ' + fmtCompact(o.tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
       }
       if (!value || hasOwn(seen, value)) return;
       seen[value] = true;
@@ -2490,7 +2519,7 @@ JS = r"""
       }
       sel.appendChild(opt);
     });
-    if (current && !hasOwn(seen, current)) sel.appendChild(new Option(current, current));
+    if (current && !hasOwn(seen, current)) sel.appendChild(new Option(key === 'model' ? modelDisplay(current) : current, current));
     sel.value = current;
     if (key === 'chat') applyChatSearch();
   }
@@ -2856,6 +2885,16 @@ JS = r"""
     return c;
   }
 
+  /* display label for a raw model id — presentation only, the exact twin of
+     the server's model_display: one leading 'typesafe/' is dropped for
+     display; option values, filter/URL state, data keys and providerKey()
+     inputs all keep the raw id, and no other namespace is stripped */
+  function modelDisplay(model) {
+    if (!model) return model;
+    var s = String(model);
+    return s.indexOf('typesafe/') === 0 ? s.slice('typesafe/'.length) : s;
+  }
+
   /* hex mirror of the .h0…h5/.h-unattr/.hb-* CSS palette — a canvas cannot
      read CSS custom properties, so the chart resolves harnessClass() to hex
      here; the hb-* entries are the server's HARNESS_BRANDS twin */
@@ -2881,7 +2920,7 @@ JS = r"""
      paint got from Python.  Logos are Simple Icons (CC0) path data; Z.ai and
      Kimi are clean initial badges (brand-coloured rounded square + letter) */
   var PROVIDER_PREFIXES = [
-    ['openrouter/', 'openrouter'], ['claude-', 'claude'], ['anthropic/', 'claude'],
+    ['openrouter/', 'openrouter'], ['typesafe/', 'jev'], ['claude-', 'claude'], ['anthropic/', 'claude'],
     ['codex', 'openai'], ['openai/', 'openai'], ['gpt-', 'openai'],
     ['grok-', 'grok'], ['x-ai/', 'grok'], ['xai/', 'grok'],
     ['kimi-', 'kimi'], ['kimi/', 'kimi'], ['moonshot/', 'kimi'],
@@ -2891,11 +2930,13 @@ JS = r"""
   var PROVIDER_EXACT = { k3: 'kimi', k2: 'kimi' };  /* native bare IDs */
   var PROVIDER_NAMES = {
     openai: 'ChatGPT/OpenAI', zai: 'Z.ai', kimi: 'Kimi (Moonshot AI)',
-    claude: 'Claude (Anthropic)', grok: 'Grok (xAI)', openrouter: 'OpenRouter'
+    claude: 'Claude (Anthropic)', grok: 'Grok (xAI)', openrouter: 'OpenRouter',
+    jev: 'Jev (Typesafe)'
   };
   var PROVIDER_HEXES = {
     openai: '#10A37F', zai: '#8A8AF0', kimi: '#5A5AF5',
-    claude: '#D97757', grok: '#BFC7D3', openrouter: '#6467F2'
+    claude: '#D97757', grok: '#BFC7D3', openrouter: '#6467F2',
+    jev: '#2DD4BF'
   };
   var PROVIDER_GLYPHS = { grok: '#E8EDF4' };  /* monochrome white-on-dark X */
   var PROVIDER_LOGOS = {
@@ -2904,7 +2945,8 @@ JS = r"""
     kimi: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="24" height="24" rx="6" fill="#5A5AF5"/><text x="12" y="17.2" text-anchor="middle" font-family="inherit" font-size="14.5" font-weight="700" fill="#e8edf4">K</text></svg>',
     claude: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>',
     grok: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>',
-    openrouter: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>'
+    openrouter: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>',
+    jev: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="24" height="24" rx="6" fill="#2DD4BF"/><text x="12" y="17.2" text-anchor="middle" font-family="inherit" font-size="14.5" font-weight="700" fill="#0B1220">J</text></svg>'
   };
 
   /* same longest-prefix, case-insensitive match as the server's provider_key;
@@ -2995,7 +3037,7 @@ JS = r"""
       wrap.title = PROVIDER_NAMES[key];
       wrap.appendChild(brandLogoEl(key));
     }
-    wrap.appendChild(document.createTextNode(model || '—'));
+    wrap.appendChild(document.createTextNode(modelDisplay(model) || '—'));
     return wrap;
   }
 
@@ -3335,7 +3377,7 @@ JS = r"""
 
     donutGeom = { slices: slices, total: total, cx: cx, cy: cy, rIn: rIn, rOut: rOut, start: -Math.PI / 2 };
     canvas.setAttribute('aria-label', 'Token share by model, ' + lastRangeLabel + ': ' +
-      slices.map(function (s) { return s.model + ' ' + pctLabel(s.tokens, total); }).join(', '));
+      slices.map(function (s) { return modelDisplay(s.model) + ' ' + pctLabel(s.tokens, total); }).join(', '));
 
     var legend = $('model-legend');
     if (legend) {
@@ -3343,13 +3385,13 @@ JS = r"""
       slices.forEach(function (s, i) {
         var li = el('li', 'lrow');
         li.setAttribute('data-model', s.model);
-        li.title = 'Filter to ' + s.model;
+        li.title = 'Filter to ' + modelDisplay(s.model);
         var sw = el('span', 'swatch');
         sw.style.background = sliceFill(slices, i, shadeSteps);
         li.appendChild(sw);
         var logo = brandLogoEl(providerKey(s.model));
         if (logo) li.appendChild(logo);
-        li.appendChild(el('span', 'name', s.model));
+        li.appendChild(el('span', 'name', modelDisplay(s.model)));
         li.appendChild(el('span', 'num', fmtStat(s.tokens)));
         li.appendChild(el('span', 'pct', pctLabel(s.tokens, total)));
         legend.appendChild(li);
@@ -3381,7 +3423,7 @@ JS = r"""
     tip.textContent = '';
     tip.appendChild(el('div', 'tv', fmtCompact(s.tokens) + ' tokens'));
     tip.appendChild(el('div', 'tl',
-      s.model + ' · ' + pctLabel(s.tokens, g.total) + ' · ' + fmtInt(s.requests) + ' req'));
+      modelDisplay(s.model) + ' · ' + pctLabel(s.tokens, g.total) + ' · ' + fmtInt(s.requests) + ' req'));
     tip.hidden = false;
     tip.style.left = Math.max(tip.offsetWidth / 2 + 2,
       Math.min(wrap.clientWidth - tip.offsetWidth / 2 - 2, px)) + 'px';
@@ -3798,7 +3840,7 @@ JS = r"""
               if (mi) div.appendChild(document.createTextNode(' · '));
               var logo = brandLogoEl(providerKey(m.name));
               if (logo) div.appendChild(logo);
-              div.appendChild(document.createTextNode(m.name + ' ' + fmtCompact(m.tokens)));
+              div.appendChild(document.createTextNode(modelDisplay(m.name) + ' ' + fmtCompact(m.tokens)));
             });
             div.appendChild(document.createTextNode(')'));
           }
@@ -3836,7 +3878,8 @@ JS = r"""
       line.appendChild(dot);
       var logo = chartMode === 'model' ? brandLogoEl(providerKey(seg.name)) : null;
       if (logo) line.appendChild(logo);
-      var segName = chartMode === 'harness' ? callerDisplay(seg.name) : seg.name;
+      var segName = chartMode === 'harness' ? callerDisplay(seg.name)
+        : (chartMode === 'model' ? modelDisplay(seg.name) : seg.name);
       line.appendChild(document.createTextNode(segName + ' · ' + fmtCompact(seg.tokens)));
       tip.appendChild(line);
     });
