@@ -30,9 +30,9 @@ import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
-#: Fixed Decisions endpoint. Deliberately not configurable: the gate never posts a
-#: bearer credential to an operator-supplied URL.
+#: Fixed Decisions endpoint; optional loopback ``response_gate.decisions_url`` only.
 JEV_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 
 #: Fixed question key; the gate answers exactly one proposition per consultation.
@@ -48,6 +48,28 @@ _MAX_MESSAGE_CHARS = 4000
 #: Hard secondary cap on messages returned per snapshot, so a large configured
 #: ``context_messages`` still cannot turn into an unbounded request body.
 _MAX_SNAPSHOT_MESSAGES = 50
+
+#: Usage attribution headers (override mode only; stripped by llm_usage_proxy upstream).
+_USAGE_CALLER_HEADER = "X-Usage-Caller"
+_USAGE_CHAT_TYPE_HEADER = "X-Usage-Chat-Type"
+_USAGE_CHAT_ID_HEADER = "X-Usage-Chat-Id"
+
+#: Fixed caller label for the ledger (the proxy accepts ^[A-Za-z0-9._:-]+$).
+_USAGE_CALLER_LABEL = "discord-response-gate"
+
+#: Wire bound for the chat-id header (matches the proxy's own limit).
+_USAGE_CHAT_ID_MAX_CHARS = 128
+
+
+def _encode_usage_chat_id(chat_id: Any) -> str:
+    """Percent-encoded, bounded chat id for X-Usage-Chat-Id; empty when unusable."""
+    text = str(chat_id or "").strip()
+    if not text or len(text) > _USAGE_CHAT_ID_MAX_CHARS:
+        return ""
+    encoded = quote(text, safe="-._~")
+    if len(encoded) > _USAGE_CHAT_ID_MAX_CHARS * 9 + 16:
+        return ""
+    return encoded
 
 
 class ResponseGateError(Exception):
@@ -150,32 +172,51 @@ class JevDecisionClient:
         threshold: float,
         timeout_seconds: float,
         instructions: str,
+        decisions_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         if not credential:
             # Constructed without a credential the caller must not consult us; keep the
             # failure explicit so enforce mode denies instead of silently passing.
             raise ResponseGateError("missing_credential", "No OpenRouter credential for the response gate")
+        if decisions_url is not None:
+            url = str(decisions_url).strip()
+            try:
+                from gateway.config import is_loopback_http_url
+                loopback = is_loopback_http_url(url)
+            except Exception:
+                loopback = False
+            if not loopback:
+                raise ResponseGateError(
+                    "config_error", "decisions_url must be a loopback http(s) URL"
+                )
+            decisions_url = url
         self._credential = credential
         self._model = model
         self._threshold = threshold
         self._timeout_seconds = timeout_seconds
         self._instructions = instructions
+        self._decisions_url = decisions_url
         self._log = logger or logging.getLogger(__name__)
 
     @property
     def threshold(self) -> float:
         return self._threshold
 
-    async def decide(self, state: Dict[str, Any], *, mode: str) -> GateDecision:
+    async def decide(self, state: Dict[str, Any], *, mode: str,
+                     chat_id: Optional[str] = None) -> GateDecision:
         """Ask the judge one ``should_reply`` question about ``state``.
 
         Returns a :class:`GateDecision` whose ``allowed`` reflects the threshold
         comparison. Every failure path raises :class:`ResponseGateError`.
+
+        ``chat_id`` is the exact conversation id (thread id for threads, channel id
+        otherwise); it only leaves the process as a usage-attribution header when a
+        loopback ``decisions_url`` override is configured.
         """
         started = time.monotonic()
         try:
-            answer = await self._request(state)
+            answer = await self._request(state, chat_id=chat_id)
         except ResponseGateError:
             raise
         score = self._validate_answer(answer)
@@ -191,7 +232,7 @@ class JevDecisionClient:
 
     # --- transport ---------------------------------------------------------
 
-    async def _request(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def _request(self, state: Dict[str, Any], *, chat_id: Optional[str] = None) -> Dict[str, Any]:
         """POST one bounded request and return the parsed JSON body."""
         try:
             import aiohttp
@@ -204,16 +245,30 @@ class JevDecisionClient:
             "questions": {SHOULD_REPLY_KEY: {"type": "noul", "instructions": self._instructions}},
         }
         payload = json.dumps(body, ensure_ascii=False, default=str)
+        url = self._decisions_url or JEV_DECISIONS_URL
         headers = {
             "Authorization": f"Bearer {self._credential}",
             "Content-Type": "application/json",
         }
+        if self._decisions_url is not None:
+            headers[_USAGE_CALLER_HEADER] = _USAGE_CALLER_LABEL
+            headers[_USAGE_CHAT_TYPE_HEADER] = "discord"
+            encoded_chat_id = _encode_usage_chat_id(chat_id)
+            if encoded_chat_id:
+                headers[_USAGE_CHAT_ID_HEADER] = encoded_chat_id
         timeout = aiohttp.ClientTimeout(total=self._timeout_seconds)
-        session_kwargs, request_kwargs = self._proxy_kwargs()
+        session_kwargs, request_kwargs = (
+            ({}, {}) if self._decisions_url is not None else self._proxy_kwargs()
+        )
+        if self._decisions_url is not None:
+            # Credential posts to operator-configured loopback only: never follow 3xx
+            # (would re-POST the bearer to Location) and never honor HTTP(S)_PROXY env.
+            session_kwargs = {**session_kwargs, "trust_env": False}
+            request_kwargs = {**request_kwargs, "allow_redirects": False}
         try:
             async with aiohttp.ClientSession(timeout=timeout, **session_kwargs) as session:
                 async with session.post(
-                    JEV_DECISIONS_URL, data=payload.encode("utf-8"), headers=headers, **request_kwargs
+                    url, data=payload.encode("utf-8"), headers=headers, **request_kwargs
                 ) as response:
                     status = response.status
                     raw = await response.read()
@@ -347,6 +402,7 @@ class GateRuntime:
             client = JevDecisionClient(
                 credential=credential, model=config.model, threshold=config.threshold,
                 timeout_seconds=config.timeout_seconds, instructions=build_gate_instructions(bot_name),
+                decisions_url=getattr(config, "decisions_url", None),
                 logger=logger,
             )
         return cls(config=config, client=client, logger=logger)
@@ -387,7 +443,9 @@ class GateRuntime:
                 error="missing_credential", evidence={"message_id": state["candidate"]["id"]},
             )
         try:
-            return await self.client.decide(state, mode=self.mode)
+            # chat_id is the same exact-conversation key the evidence buffer uses, so
+            # ledger rows line up with the conversation the judge was consulted about.
+            return await self.client.decide(state, mode=self.mode, chat_id=state["channel"]["id"])
         except ResponseGateError as exc:
             self._log.debug("response gate judge failed: %s", exc.reason, exc_info=True)
             return GateDecision(

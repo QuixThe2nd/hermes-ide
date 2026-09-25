@@ -3,6 +3,7 @@ policies and delivery preferences, loaded from config.yaml / gateway.json / env.
 """
 
 import contextlib
+import ipaddress
 import logging
 import math
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
+from urllib.parse import urlsplit
 
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
@@ -462,6 +464,11 @@ class ResponseGateConfig:
     context_chars: int = 8000
     #: Judge model; fixed default, no fallback chain.
     model: str = "typesafe/jev-1.13"
+    #: Optional loopback-only override for the Decisions endpoint, so judge calls can
+    #: traverse a local metering proxy. ``None`` (default) keeps the fixed endpoint
+    #: and its exact request shape. Anything non-loopback is refused at load: the
+    #: gate posts a bearer credential to whatever URL it is given.
+    decisions_url: Optional[str] = None
 
     # Validation bounds. Explicit config outside them raises at load time: a mistyped gate
     # must never quietly degrade into "every ambient message is allowed".
@@ -483,6 +490,8 @@ class ResponseGateConfig:
             result["channels"] = list(self.channels)
         if self.echo_channels:
             result["echo_channels"] = list(self.echo_channels)
+        if self.decisions_url:
+            result["decisions_url"] = self.decisions_url
         return result
 
     @property
@@ -528,11 +537,64 @@ class ResponseGateConfig:
         model = str(data.get("model", "typesafe/jev-1.13")).strip()
         if not model:
             raise ValueError("response_gate: model must be a non-empty model slug")
+        decisions_url = data.get("decisions_url")
+        if decisions_url is not None:
+            decisions_url = str(decisions_url).strip()
+            if not is_loopback_http_url(decisions_url):
+                raise ValueError(
+                    "response_gate.decisions_url must be a loopback http(s) URL"
+                )
         return cls(
             provider=provider, channels=channels, echo_channels=echo_channels, mode=mode,
             threshold=threshold, timeout_seconds=timeout_seconds,
             context_messages=context_messages, context_chars=context_chars, model=model,
+            decisions_url=decisions_url,
         )
+
+
+def is_loopback_http_url(url: Any) -> bool:
+    """True for a strict loopback http(s) URL suitable for ``response_gate.decisions_url``."""
+    if url is None:
+        return False
+    raw = str(url)
+    if not raw:
+        return False
+    for char in raw:
+        code = ord(char)
+        if code < 0x21 or code == 0x7F:
+            return False
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    if parts.username is not None or parts.password is not None:
+        return False
+    if parts.query or parts.fragment:
+        return False
+    host = parts.hostname
+    if not host:
+        return False
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    if port == 0:
+        return False
+    host_norm = host.lower()
+    if host_norm.endswith("."):
+        host_norm = host_norm[:-1]
+    if host_norm == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if addr.is_loopback:
+        return True
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(mapped is not None and mapped.is_loopback)
 
 
 def _response_gate_channels(raw: Any) -> tuple:
