@@ -1,8 +1,0 @@
-name: discord-history
-default_enabled: false
-version: 0.1.0
-description: "Owner-authorized, citation-backed Discord history recall using DiscordChatExporter and PostgreSQL."
-author: Hermes Agent
-kind: standalone
-provides_tools:
-  - discord_history
