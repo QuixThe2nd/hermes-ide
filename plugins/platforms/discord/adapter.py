@@ -1878,19 +1878,24 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
 
     def _response_gate_scope_keys(self, message: Any) -> Optional[set]:
-        """Channel keys for a message, or None when the gate is off/not selected.
+        """Channel keys for a message, or None when the gate is off/not selected."""
+        return self._response_gate_channel_keys_in_scope(getattr(message, "channel", None))
+
+    def _response_gate_channel_keys_in_scope(self, channel: Any) -> Optional[set]:
+        """Channel keys for one conversation, or None when the gate is off/not selected.
 
         Scope is the gate's own channel opt-in narrowed by the allowed/ignored-channel rule
         ``_handle_message`` already owns: a channel that rule ignores is never consulted, so
-        the judge costs no API call outside the channels this bot answers in.
+        the judge costs no API call outside the channels this bot answers in. Shared by the
+        inbound (observed message) and outbound (delivered reply) observe paths.
         """
         gate = self._response_gate
         if gate is None:
             return None
-        if isinstance(message.channel, discord.DMChannel):
+        if isinstance(channel, discord.DMChannel):
             return None  # DMs are always explicit; the gate never sees them
-        parent_id = self._get_parent_channel_id(message.channel)
-        keys = self._discord_channel_keys(message, parent_id)
+        parent_id = self._get_parent_channel_id(channel)
+        keys = self._discord_channel_keys_from_channel(channel, parent_id)
         if not gate.selects(keys) or not self._discord_channel_policy_admits(keys):
             return None
         return keys
@@ -2107,14 +2112,38 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         if self._response_gate_scope_keys(message) is None:
             return
-        if getattr(getattr(message, "author", None), "bot", False):
-            return  # keep recursive bot chatter out of the evidence
         author = getattr(message, "author", None)
+        own_user = getattr(getattr(self, "_client", None), "user", None)
+        if getattr(author, "bot", False) and author != own_user:
+            return  # other bots' chatter stays out of the evidence
         gate.observe(
             message.channel,
             getattr(author, "display_name", None) or getattr(author, "name", ""),
             getattr(message, "content", ""),
         )
+
+    def _response_gate_observe_sent(self, channel: Any, text: Any) -> None:
+        """Buffer this bot's own delivered final reply as future judge evidence.
+
+        The inbound path can never supply these: own messages return before any gate
+        code in ``_discord_message_admission``, so the send seam is the only source of
+        the assistant's half of the conversation that the judge's rule (3) matches
+        against. Final replies only — previews, interims, acks and notices never carry
+        the notify marker / finalize flag the call sites gate on. The author is the
+        same display name ``state.bot.name`` carries, so author matching sees it. A
+        retried or duplicated send appends a duplicate evidence line; the buffer is
+        bounded and the judge tolerates the repeat, so no dedup machinery here.
+        """
+        gate = self._response_gate
+        if gate is None:
+            return
+        keys = self._response_gate_channel_keys_in_scope(channel)
+        if keys is None or gate.echo_keys.intersection(keys):
+            return  # echo channels carry judge-score lines, not this bot's conversation
+        bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
+        if not bot_name:
+            return
+        gate.observe(channel, bot_name, text)
 
     def _discord_message_admission(
         self, message: Any, *, claim: bool, gate_probe: Optional[Dict[str, Any]] = None,
@@ -4141,6 +4170,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
+            if final_delivery and message_ids and not metadata.get("_interim_send") and not nonconversational:
+                # The delivered final is this bot's own half of the conversation: judge
+                # evidence for the next follow-up in it (see _response_gate_observe_sent).
+                self._response_gate_observe_sent(channel, content)
             return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
@@ -4269,7 +4302,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Pre-flight oversize: final edits split-and-deliver; streaming edits truncate in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
-                    return await self._edit_overflow_split(channel, msg, message_id, content)
+                    return await self._edit_overflow_split_final(channel, msg, message_id, content)
                 formatted = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap every edit is the same text; skip until finalize.
@@ -4288,7 +4321,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # Reactive split: format_message inflation can exceed 2,000 (50035) even after pre-flight.
                 if self._is_length_overflow_error(edit_err):
                     if finalize:
-                        return await self._edit_overflow_split(channel, msg, message_id, content)
+                        return await self._edit_overflow_split_final(channel, msg, message_id, content)
                     truncated = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                     if self._last_overflow_preview.get(_preview_key) == truncated:
                         # Saturated-preview dedup (see pre-flight path above).
@@ -4299,6 +4332,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     raise
             result = SendResult(success=True, message_id=message_id)
             if finalize:
+                # A finalized edit is a delivered turn-final reply: gate evidence like a send.
+                self._response_gate_observe_sent(channel, content)
                 await self._record_response_async((metadata or {}).get("reply_to_message_id"), result, content, True)
             return result
         except Exception as e:  # pragma: no cover - defensive logging
@@ -4366,6 +4401,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return "error code: 50035" in text and (
             "2000 or fewer" in text or "fewer in length" in text
         )
+
+    async def _edit_overflow_split_final(
+        self, channel: Any, msg: Any, message_id: str, content: str,
+    ) -> SendResult:
+        """``_edit_overflow_split`` for a finalize edit, observing the delivered final as gate evidence.
+
+        Finalize-only by construction: both callers gate on ``finalize=True``, so a
+        successfully split-delivered final is this bot's turn-final reply for the channel.
+        """
+        result = await self._edit_overflow_split(channel, msg, message_id, content)
+        if result.success:
+            self._response_gate_observe_sent(channel, content)
+        return result
 
     async def _edit_overflow_split(
         self, channel: Any, msg: Any, message_id: str, content: str,

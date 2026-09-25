@@ -83,7 +83,8 @@ class ChannelContextBuffer:
 
     ``maxlen`` and the character budget come from the validated gate config, so memory
     stays proportional to the configured context window. Entries are
-    ``(author_name, text)`` pairs with bot chatter filtered by the caller.
+    ``(author_name, text)`` pairs: the caller buffers human messages plus this bot's
+    own delivered final replies (send seam) and filters other bots' chatter.
     """
 
     def __init__(self, *, max_messages: int, max_chars: int, max_channels: int = MAX_TRACKED_CHANNELS) -> None:
@@ -287,7 +288,8 @@ def build_gate_instructions(bot_name: str) -> str:
         "You are deciding whether the assistant identified by state.bot.name and "
         "state.bot.id should join a group chat conversation right now. "
         "state.candidate is the newest human message and state.recent_messages holds "
-        "the preceding messages from that same conversation, oldest first. "
+        "the preceding messages from that same conversation, oldest first, including "
+        "the assistant's own earlier replies under an author matching state.bot.name. "
         "Apply these rules in priority order: "
         "(1) If the candidate directly addresses that assistant by the name in "
         "state.bot.name — any greeting, question, or request aimed at the assistant "
