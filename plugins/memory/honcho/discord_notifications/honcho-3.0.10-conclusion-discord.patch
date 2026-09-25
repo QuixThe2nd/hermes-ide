@@ -1,0 +1,1526 @@
+diff --git a/src/crud/document.py b/src/crud/document.py
+index 018f3411..3f82b750 100644
+--- a/src/crud/document.py
++++ b/src/crud/document.py
+@@ -28,6 +28,7 @@ from src.vector_store import (
+     VectorStore,
+     get_external_vector_store,
+ )
++from src.webhooks.events import stage_conclusion_created_events
+ 
+ logger = getLogger(__name__)
+ 
+@@ -453,7 +454,7 @@ async def create_documents(
+     """
+     honcho_documents: list[models.Document] = []
+     accepted_documents: list[schemas.DocumentCreate] = []
+-    # Store (document_model, embedding) pairs - IDs aren't available until after commit
++    # Store (document_model, embedding) pairs for external vector upsert after commit
+     docs_with_embeddings: list[tuple[models.Document, list[float]]] = []
+ 
+     for doc in documents:
+@@ -522,6 +523,8 @@ async def create_documents(
+ 
+     try:
+         db.add_all(honcho_documents)
++        await db.flush()
++        await stage_conclusion_created_events(db, workspace_name, honcho_documents)
+         # NOTE
+         # If the process crashes after this commit but before vector upsert completes,
+         # documents will be left in sync_state='pending' with NULL embeddings.
+@@ -856,6 +859,8 @@ async def create_observations(
+ 
+     try:
+         db.add_all(honcho_documents)
++        await db.flush()
++        await stage_conclusion_created_events(db, workspace_name, honcho_documents)
+         await db.commit()
+         # Refresh all documents to get generated IDs and timestamps
+         for doc in honcho_documents:
+diff --git a/src/webhooks/events.py b/src/webhooks/events.py
+index a37eab89..0bc7dcc7 100644
+--- a/src/webhooks/events.py
++++ b/src/webhooks/events.py
+@@ -1,12 +1,16 @@
++import datetime
+ import logging
++from collections import defaultdict
+ from enum import Enum
+ from typing import Literal
+ 
+ from pydantic import BaseModel
++from sqlalchemy.ext.asyncio import AsyncSession
+ 
++from src import models
+ from src.dependencies import tracked_db
+-from src.models import QueueItem
+ from src.utils.queue_payload import create_webhook_payload
++from src.utils.types import DocumentLevel
+ from src.utils.work_unit import construct_work_unit_key
+ 
+ logger = logging.getLogger(__name__)
+@@ -15,6 +19,7 @@ logger = logging.getLogger(__name__)
+ class WebhookEventType(str, Enum):
+     QUEUE_EMPTY = "queue.empty"
+     TEST = "test.event"
++    CONCLUSION_CREATED = "conclusion.created"
+ 
+ 
+ class BaseWebhookEvent(BaseModel):
+@@ -39,8 +44,93 @@ class TestEvent(BaseWebhookEvent):
+     type: Literal[WebhookEventType.TEST] = WebhookEventType.TEST
+ 
+ 
++class ConclusionEntry(BaseModel):
++    """A single conclusion included in a conclusion.created webhook event."""
++
++    id: str
++    content: str
++    observer: str
++    observed: str
++    session_name: str | None = None
++    created_at: str
++
++
++class ConclusionCreatedEvent(BaseWebhookEvent):
++    """Webhook event emitted when new conclusions are persisted."""
++
++    type: Literal[WebhookEventType.CONCLUSION_CREATED] = (
++        WebhookEventType.CONCLUSION_CREATED
++    )
++    level: DocumentLevel
++    conclusions: list[ConclusionEntry]
++
++
+ # Union type for all webhook events
+-WebhookEvent = QueueEmptyEvent | TestEvent
++WebhookEvent = QueueEmptyEvent | TestEvent | ConclusionCreatedEvent
++
++
++def _document_to_conclusion_entry(document: models.Document) -> ConclusionEntry:
++    created_at = document.created_at
++    created_at_iso = (
++        created_at.isoformat()
++        if created_at.tzinfo is not None
++        else created_at.replace(tzinfo=datetime.timezone.utc).isoformat()
++    )
++    return ConclusionEntry(
++        id=document.id,
++        content=document.content,
++        observer=document.observer,
++        observed=document.observed,
++        session_name=document.session_name,
++        created_at=created_at_iso,
++    )
++
++
++async def stage_conclusion_created_events(
++    db: AsyncSession,
++    workspace_name: str,
++    documents: list[models.Document],
++) -> None:
++    """
++    Stage conclusion.created webhook queue items in the caller's transaction.
++
++    Groups documents by level and enqueues one webhook task per affected level.
++    Does not commit or open its own database session.
++    """
++    if not documents:
++        return
++
++    by_level: dict[DocumentLevel, list[models.Document]] = defaultdict(list)
++    for document in documents:
++        by_level[document.level].append(document)
++
++    work_unit_key = construct_work_unit_key(
++        workspace_name,
++        {"task_type": "webhook"},
++    )
++
++    for level, level_documents in by_level.items():
++        event = ConclusionCreatedEvent(
++            workspace_id=workspace_name,
++            level=level,
++            conclusions=[
++                _document_to_conclusion_entry(document) for document in level_documents
++            ],
++        )
++        payload = create_webhook_payload(
++            event_type=event.type.value,
++            data=event.model_dump(mode="json", exclude={"type"}),
++        )
++        db.add(
++            models.QueueItem(
++                work_unit_key=work_unit_key,
++                payload=payload,
++                session_id=None,
++                task_type="webhook",
++                workspace_name=workspace_name,
++                message_id=None,
++            )
++        )
+ 
+ 
+ async def publish_webhook_event(event: WebhookEvent) -> None:
+@@ -59,7 +149,7 @@ async def publish_webhook_event(event: WebhookEvent) -> None:
+         )
+ 
+         async with tracked_db("publish_webhook_event") as db:
+-            queue_item = QueueItem(
++            queue_item = models.QueueItem(
+                 work_unit_key=construct_work_unit_key(
+                     event.workspace_id,
+                     {
+diff --git a/src/webhooks/webhook_delivery.py b/src/webhooks/webhook_delivery.py
+index 3d2df830..bebef9b9 100644
+--- a/src/webhooks/webhook_delivery.py
++++ b/src/webhooks/webhook_delivery.py
+@@ -3,6 +3,8 @@ import hashlib
+ import hmac
+ import json
+ import logging
++import os
++from typing import Any
+ 
+ import httpx
+ from sqlalchemy.ext.asyncio import AsyncSession
+@@ -12,9 +14,63 @@ from src.crud.webhook import list_webhook_endpoints
+ from src.dependencies import tracked_db
+ from src.utils.formatting import utc_now_iso
+ from src.utils.queue_payload import WebhookPayload
++from src.utils.types import DocumentLevel
++from src.webhooks.events import WebhookEventType
+ 
+ logger = logging.getLogger(__name__)
+ 
++DISCORD_USER_AGENT = "Honcho-Discord-Webhook/3.0.10"
++DISCORD_MAX_EMBEDS_PER_MESSAGE = 10
++DISCORD_MAX_CHARS_PER_MESSAGE = 6000
++DISCORD_MAX_DESCRIPTION = 4096
++DISCORD_MAX_FIELD_NAME = 256
++DISCORD_MAX_FIELD_VALUE = 1024
++DISCORD_MAX_FIELDS = 25
++DISCORD_MAX_TITLE = 256
++DISCORD_MAX_ATTEMPTS = 3
++DISCORD_INITIAL_BACKOFF_SECONDS = 0.5
++
++_LEVEL_EMBED_CONFIG: dict[DocumentLevel, dict[str, Any]] = {
++    "explicit": {
++        "title": "New Explicit Conclusion",
++        "color": 0x3498DB,
++    },
++    "deductive": {
++        "title": "New Deductive Conclusion",
++        "color": 0x2ECC71,
++    },
++    "inductive": {
++        "title": "New Inductive Conclusion",
++        "color": 0x9B59B6,
++    },
++    "contradiction": {
++        "title": "New Contradiction",
++        "color": 0xE74C3C,
++    },
++}
++
++
++class DiscordDeliveryError(Exception):
++    """Terminal Discord webhook delivery failure without leaking webhook URLs."""
++
++    def __init__(
++        self,
++        *,
++        level: str,
++        status_code: int | None,
++        attempts: int,
++        reason: str,
++    ) -> None:
++        self.level = level
++        self.status_code = status_code
++        self.attempts = attempts
++        self.reason = reason
++        super().__init__(
++            "Discord delivery failed for "
++            f"level={level} status={status_code} "
++            f"attempts={attempts} reason={reason}"
++        )
++
+ 
+ async def deliver_webhook(payload: WebhookPayload, workspace_name: str) -> None:
+     """
+@@ -23,13 +79,29 @@ async def deliver_webhook(payload: WebhookPayload, workspace_name: str) -> None:
+     try:
+         async with tracked_db("webhook.deliver") as db:
+             webhook_urls = await _get_webhook_urls(db, workspace_name)
++    except Exception:
++        logger.exception("Failed to fetch webhook endpoints for %s", workspace_name)
++        webhook_urls = []
+ 
+-        if not webhook_urls:
+-            logger.debug(
+-                f"No webhook endpoints for workspace {workspace_name}, skipping."
+-            )
+-            return
++    await _deliver_to_generic_endpoints(payload, workspace_name, webhook_urls)
+ 
++    if payload.event_type == WebhookEventType.CONCLUSION_CREATED.value:
++        await _deliver_discord_conclusion_created(payload, workspace_name)
++
++
++async def _deliver_to_generic_endpoints(
++    payload: WebhookPayload,
++    workspace_name: str,
++    webhook_urls: list[str],
++) -> None:
++    if not webhook_urls:
++        logger.debug(
++            "No webhook endpoints for workspace %s, skipping generic delivery.",
++            workspace_name,
++        )
++        return
++
++    try:
+         event_payload = {
+             "type": payload.event_type,
+             "data": payload.data,
+@@ -61,21 +133,297 @@ async def deliver_webhook(payload: WebhookPayload, workspace_name: str) -> None:
+                 if isinstance(result, httpx.Response):
+                     if 200 <= result.status_code < 300:
+                         logger.debug(
+-                            f"Successfully delivered webhook {payload.event_type} to {url}"
++                            "Successfully delivered webhook %s to %s",
++                            payload.event_type,
++                            url,
+                         )
+                     else:
+                         logger.error(
+-                            f"Failed delivery for {payload.event_type} to {url}. Status: {result.status_code}"
++                            "Failed delivery for %s to %s. Status: %s",
++                            payload.event_type,
++                            url,
++                            result.status_code,
+                         )
+                 else:
+                     logger.error(
+-                        f"Failed delivery for {payload.event_type} to {url}. Exception: {result}"
++                        "Failed delivery for %s to %s. Exception: %s",
++                        payload.event_type,
++                        url,
++                        result,
+                     )
+ 
+     except httpx.RequestError:
+-        logger.exception(f"Error sending webhook for {workspace_name}.")
++        logger.exception("Error sending webhook for %s.", workspace_name)
++    except Exception:
++        logger.exception("Unexpected error delivering generic webhook.")
++
++
++def _discord_webhook_env_key(level: str) -> str:
++    return f"HONCHO_DISCORD_WEBHOOK_{level.upper()}"
++
++
++def _get_discord_webhook_url(level: str) -> str | None:
++    url = os.environ.get(_discord_webhook_env_key(level), "").strip()
++    return url or None
++
++
++def _truncate(text: str, limit: int, suffix: str = "...") -> str:
++    if len(text) <= limit:
++        return text
++    if limit <= len(suffix):
++        return text[:limit]
++    return text[: limit - len(suffix)] + suffix
++
++
++def _embed_char_count(embed: dict[str, Any]) -> int:
++    total = len(embed.get("title") or "")
++    total += len(embed.get("description") or "")
++    for field in embed.get("fields") or []:
++        total += len(field.get("name") or "")
++        total += len(field.get("value") or "")
++    footer = embed.get("footer")
++    if isinstance(footer, dict):
++        total += len(footer.get("text") or "")
++    return total
++
++
++def _build_conclusion_embed(
++    *,
++    level: DocumentLevel,
++    workspace_name: str,
++    conclusion: dict[str, Any],
++) -> dict[str, Any]:
++    config = _LEVEL_EMBED_CONFIG[level]
++    fields: list[dict[str, Any]] = [
++        {
++            "name": _truncate("Level", DISCORD_MAX_FIELD_NAME),
++            "value": _truncate(level, DISCORD_MAX_FIELD_VALUE),
++            "inline": True,
++        },
++        {
++            "name": _truncate("Observer", DISCORD_MAX_FIELD_NAME),
++            "value": _truncate(
++                str(conclusion.get("observer", "")), DISCORD_MAX_FIELD_VALUE
++            ),
++            "inline": True,
++        },
++        {
++            "name": _truncate("About", DISCORD_MAX_FIELD_NAME),
++            "value": _truncate(
++                str(conclusion.get("observed", "")), DISCORD_MAX_FIELD_VALUE
++            ),
++            "inline": True,
++        },
++        {
++            "name": _truncate("Workspace", DISCORD_MAX_FIELD_NAME),
++            "value": _truncate(workspace_name, DISCORD_MAX_FIELD_VALUE),
++            "inline": True,
++        },
++        {
++            "name": _truncate("Document ID", DISCORD_MAX_FIELD_NAME),
++            "value": _truncate(str(conclusion.get("id", "")), DISCORD_MAX_FIELD_VALUE),
++            "inline": True,
++        },
++        {
++            "name": _truncate("Created", DISCORD_MAX_FIELD_NAME),
++            "value": _truncate(
++                str(conclusion.get("created_at", "")),
++                DISCORD_MAX_FIELD_VALUE,
++            ),
++            "inline": True,
++        },
++    ]
++
++    session_name = conclusion.get("session_name")
++    if session_name:
++        fields.append(
++            {
++                "name": _truncate("Session", DISCORD_MAX_FIELD_NAME),
++                "value": _truncate(str(session_name), DISCORD_MAX_FIELD_VALUE),
++                "inline": True,
++            }
++        )
++
++    fields = fields[:DISCORD_MAX_FIELDS]
++
++    description = _truncate(str(conclusion.get("content", "")), DISCORD_MAX_DESCRIPTION)
++    embed: dict[str, Any] = {
++        "title": _truncate(config["title"], DISCORD_MAX_TITLE),
++        "description": description,
++        "color": config["color"],
++        "fields": fields,
++    }
++
++    if _embed_char_count(embed) > DISCORD_MAX_CHARS_PER_MESSAGE:
++        overhead = _embed_char_count({**embed, "description": ""})
++        allowed_description = max(
++            0, DISCORD_MAX_CHARS_PER_MESSAGE - overhead - len("...")
++        )
++        embed["description"] = _truncate(description, allowed_description)
++
++    return embed
++
++
++def _chunk_discord_embeds(embeds: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
++    batches: list[list[dict[str, Any]]] = []
++    current_batch: list[dict[str, Any]] = []
++    current_chars = 0
++
++    for embed in embeds:
++        embed_chars = _embed_char_count(embed)
++        batch_full = len(current_batch) >= DISCORD_MAX_EMBEDS_PER_MESSAGE
++        would_exceed = current_batch and (
++            current_chars + embed_chars > DISCORD_MAX_CHARS_PER_MESSAGE
++        )
++        if batch_full or would_exceed:
++            batches.append(current_batch)
++            current_batch = []
++            current_chars = 0
++
++        current_batch.append(embed)
++        current_chars += embed_chars
++
++    if current_batch:
++        batches.append(current_batch)
++
++    return batches
++
++
++def _build_discord_embed_batches(
++    payload: WebhookPayload,
++    workspace_name: str,
++) -> list[list[dict[str, Any]]]:
++    level = payload.data.get("level")
++    conclusions = payload.data.get("conclusions")
++    if not isinstance(level, str) or not isinstance(conclusions, list):
++        raise ValueError("Invalid conclusion.created payload")
++
++    if level not in _LEVEL_EMBED_CONFIG:
++        raise ValueError(f"Unsupported conclusion level: {level}")
++
++    embeds = [
++        _build_conclusion_embed(
++            level=level,  # type: ignore[arg-type]
++            workspace_name=workspace_name,
++            conclusion=conclusion,
++        )
++        for conclusion in conclusions
++        if isinstance(conclusion, dict)
++    ]
++    return _chunk_discord_embeds(embeds)
++
++
++async def _post_discord_payload(
++    client: httpx.AsyncClient,
++    url: str,
++    payload: dict[str, Any],
++    *,
++    level: str,
++    event_type: str,
++) -> None:
++    status_code: int | None = None
++    reason = "network_error"
++
++    for attempt in range(1, DISCORD_MAX_ATTEMPTS + 1):
++        try:
++            response = await client.post(
++                url,
++                json=payload,
++                headers={"User-Agent": DISCORD_USER_AGENT},
++            )
++        except httpx.RequestError:
++            status_code = None
++            reason = "network_error"
++            if attempt >= DISCORD_MAX_ATTEMPTS:
++                break
++            await asyncio.sleep(DISCORD_INITIAL_BACKOFF_SECONDS * attempt)
++            continue
++
++        if 200 <= response.status_code < 300:
++            logger.debug(
++                "Delivered Discord webhook for event=%s level=%s status=%s",
++                event_type,
++                level,
++                response.status_code,
++            )
++            return
++
++        status_code = response.status_code
++
++        if response.status_code == 429:
++            reason = "rate_limited"
++            if attempt >= DISCORD_MAX_ATTEMPTS:
++                break
++            await asyncio.sleep(_parse_discord_retry_after(response))
++            continue
++
++        if response.status_code >= 500:
++            reason = "server_error"
++            if attempt >= DISCORD_MAX_ATTEMPTS:
++                break
++            await asyncio.sleep(DISCORD_INITIAL_BACKOFF_SECONDS * attempt)
++            continue
++
++        reason = "client_error"
++        break
++
++    raise DiscordDeliveryError(
++        level=level,
++        status_code=status_code,
++        attempts=DISCORD_MAX_ATTEMPTS,
++        reason=reason,
++    ) from None
++
++
++def _parse_discord_retry_after(response: httpx.Response) -> float:
++    retry_after_header = response.headers.get("Retry-After")
++    if retry_after_header:
++        try:
++            return min(float(retry_after_header), 60.0)
++        except ValueError:
++            pass
++
++    try:
++        body = response.json()
++        retry_after = body.get("retry_after")
++        if isinstance(retry_after, (int, float)):
++            return min(float(retry_after), 60.0)
+     except Exception:
+-        logger.exception("Unexpected error delivering webhook.")
++        pass
++
++    return 1.0
++
++
++async def _deliver_discord_conclusion_created(
++    payload: WebhookPayload,
++    workspace_name: str,
++) -> None:
++    level = payload.data.get("level")
++    if not isinstance(level, str):
++        raise ValueError("conclusion.created payload missing level")
++
++    webhook_url = _get_discord_webhook_url(level)
++    if not webhook_url:
++        logger.debug(
++            "Skipping Discord delivery for event=%s level=%s: env var not set",
++            payload.event_type,
++            level,
++        )
++        return
++
++    embed_batches = _build_discord_embed_batches(payload, workspace_name)
++    if not embed_batches:
++        return
++
++    async with httpx.AsyncClient(timeout=30.0) as client:
++        for embed_batch in embed_batches:
++            await _post_discord_payload(
++                client,
++                webhook_url,
++                {"embeds": embed_batch},
++                level=level,
++                event_type=payload.event_type,
++            )
+ 
+ 
+ async def _get_webhook_urls(db: AsyncSession, workspace_name: str) -> list[str]:
+@@ -87,7 +435,7 @@ async def _get_webhook_urls(db: AsyncSession, workspace_name: str) -> list[str]:
+         result = await db.execute(endpoints)
+         return [endpoint.url for endpoint in result.scalars().all()]
+     except Exception:
+-        logger.exception(f"Error fetching endpoints for {workspace_name}")
++        logger.exception("Error fetching endpoints for %s", workspace_name)
+         return []
+ 
+ 
+diff --git a/tests/webhooks/test_conclusion_created.py b/tests/webhooks/test_conclusion_created.py
+new file mode 100644
+index 00000000..23183c27
+--- /dev/null
++++ b/tests/webhooks/test_conclusion_created.py
+@@ -0,0 +1,923 @@
++import asyncio
++import json
++from types import SimpleNamespace
++from typing import Any
++from unittest.mock import AsyncMock
++
++import httpx
++import pytest
++from nanoid import generate as generate_nanoid
++from sqlalchemy import select
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from src import crud, models, schemas
++from src.config import settings
++from src.utils.queue_payload import WebhookPayload
++from src.utils.work_unit import construct_work_unit_key
++from src.webhooks import events, webhook_delivery
++from src.webhooks.events import (
++    ConclusionCreatedEvent,
++    ConclusionEntry,
++    WebhookEventType,
++)
++
++
++async def _setup_collection(
++    db_session: AsyncSession,
++    workspace: models.Workspace,
++    observer: models.Peer,
++) -> tuple[models.Peer, models.Session, models.Collection]:
++    observed = models.Peer(name=str(generate_nanoid()), workspace_name=workspace.name)
++    db_session.add(observed)
++    await db_session.flush()
++
++    session = models.Session(name=str(generate_nanoid()), workspace_name=workspace.name)
++    db_session.add(session)
++    await db_session.flush()
++
++    collection = models.Collection(
++        workspace_name=workspace.name,
++        observer=observer.name,
++        observed=observed.name,
++    )
++    db_session.add(collection)
++    await db_session.flush()
++    return observed, session, collection
++
++
++async def _queue_webhook_items(
++    db_session: AsyncSession,
++    workspace_name: str,
++) -> list[models.QueueItem]:
++    result = await db_session.execute(
++        select(models.QueueItem).where(
++            models.QueueItem.workspace_name == workspace_name,
++            models.QueueItem.task_type == "webhook",
++        )
++    )
++    return list(result.scalars().all())
++
++
++class RecordingAsyncClient:
++    def __init__(
++        self,
++        responses: dict[str, list[httpx.Response | Exception]] | None = None,
++    ):
++        self._responses = responses or {}
++        self._call_counts: dict[str, int] = {}
++        self.calls: list[dict[str, Any]] = []
++
++    async def __aenter__(self) -> "RecordingAsyncClient":
++        return self
++
++    async def __aexit__(
++        self, exc_type: object, exc: object, tb: object
++    ) -> None:  # pragma: no cover
++        _ = (exc_type, exc, tb)
++
++    async def post(
++        self,
++        url: str,
++        *,
++        content: str | None = None,
++        json: dict[str, Any] | None = None,
++        headers: dict[str, str] | None = None,
++    ) -> httpx.Response:
++        self.calls.append(
++            {
++                "url": url,
++                "content": content,
++                "json": json,
++                "headers": headers or {},
++            }
++        )
++        call_index = self._call_counts.get(url, 0)
++        self._call_counts[url] = call_index + 1
++        queue = self._responses.get(url, [])
++        if call_index >= len(queue):
++            return httpx.Response(
++                200, request=httpx.Request("POST", url), content=b"{}"
++            )
++        result = queue[call_index]
++        if isinstance(result, Exception):
++            raise result
++        return result
++
++
++def test_conclusion_created_event_serialization() -> None:
++    event = ConclusionCreatedEvent(
++        workspace_id="ws_1",
++        level="explicit",
++        conclusions=[
++            ConclusionEntry(
++                id="doc_1",
++                content="User likes pizza",
++                observer="peer_a",
++                observed="peer_b",
++                session_name="sess_1",
++                created_at="2026-01-01T00:00:00+00:00",
++            )
++        ],
++    )
++
++    dumped = event.model_dump(mode="json", exclude={"type"})
++    assert dumped["workspace_id"] == "ws_1"
++    assert dumped["level"] == "explicit"
++    assert len(dumped["conclusions"]) == 1
++    assert dumped["conclusions"][0]["id"] == "doc_1"
++    assert event.type == WebhookEventType.CONCLUSION_CREATED
++
++
++@pytest.mark.asyncio
++async def test_stage_conclusion_created_events_groups_by_level(
++    db_session: AsyncSession,
++    sample_data: tuple[models.Workspace, models.Peer],
++) -> None:
++    workspace, observer = sample_data
++    observed, session, _ = await _setup_collection(db_session, workspace, observer)
++
++    documents = [
++        models.Document(
++            workspace_name=workspace.name,
++            observer=observer.name,
++            observed=observed.name,
++            content="explicit one",
++            level="explicit",
++            session_name=session.name,
++        ),
++        models.Document(
++            workspace_name=workspace.name,
++            observer=observer.name,
++            observed=observed.name,
++            content="deductive one",
++            level="deductive",
++            session_name=session.name,
++        ),
++        models.Document(
++            workspace_name=workspace.name,
++            observer=observer.name,
++            observed=observed.name,
++            content="explicit two",
++            level="explicit",
++            session_name=session.name,
++        ),
++    ]
++    db_session.add_all(documents)
++    await db_session.flush()
++
++    await events.stage_conclusion_created_events(db_session, workspace.name, documents)
++    await db_session.commit()
++
++    queue_items = await _queue_webhook_items(db_session, workspace.name)
++    assert len(queue_items) == 2
++
++    payloads_by_level = {
++        item.payload["data"]["level"]: item.payload["data"] for item in queue_items
++    }
++    assert len(payloads_by_level["explicit"]["conclusions"]) == 2
++    assert len(payloads_by_level["deductive"]["conclusions"]) == 1
++    assert all(
++        item.work_unit_key
++        == construct_work_unit_key(workspace.name, {"task_type": "webhook"})
++        for item in queue_items
++    )
++
++
++@pytest.mark.asyncio
++async def test_stage_conclusion_created_events_noop_for_empty(
++    db_session: AsyncSession,
++    sample_data: tuple[models.Workspace, models.Peer],
++) -> None:
++    workspace, _ = sample_data
++    await events.stage_conclusion_created_events(db_session, workspace.name, [])
++    await db_session.commit()
++    assert await _queue_webhook_items(db_session, workspace.name) == []
++
++
++@pytest.mark.asyncio
++async def test_staged_events_roll_back_with_transaction(
++    db_session: AsyncSession,
++    sample_data: tuple[models.Workspace, models.Peer],
++) -> None:
++    workspace, observer = sample_data
++    observed, session, _ = await _setup_collection(db_session, workspace, observer)
++    workspace_name = workspace.name
++    document = models.Document(
++        workspace_name=workspace_name,
++        observer=observer.name,
++        observed=observed.name,
++        content="rollback me",
++        level="explicit",
++        session_name=session.name,
++    )
++    db_session.add(document)
++    await db_session.flush()
++    await events.stage_conclusion_created_events(db_session, workspace_name, [document])
++    await db_session.rollback()
++
++    docs = (await db_session.execute(select(models.Document))).scalars().all()
++    queue_items = await _queue_webhook_items(db_session, workspace_name)
++    assert docs == []
++    assert queue_items == []
++
++
++@pytest.mark.asyncio
++async def test_create_documents_stages_queue_items(
++    db_session: AsyncSession,
++    sample_data: tuple[models.Workspace, models.Peer],
++) -> None:
++    workspace, observer = sample_data
++    observed, session, _ = await _setup_collection(db_session, workspace, observer)
++
++    await crud.create_documents(
++        db_session,
++        [
++            schemas.DocumentCreate(
++                content="first explicit",
++                level="explicit",
++                embedding=[0.5] * settings.EMBEDDING.VECTOR_DIMENSIONS,
++                session_name=session.name,
++                metadata=schemas.DocumentMetadata(
++                    message_ids=[1],
++                    message_created_at="2026-01-01T00:00:00Z",
++                ),
++            ),
++            schemas.DocumentCreate(
++                content="first deductive",
++                level="deductive",
++                embedding=[0.6] * settings.EMBEDDING.VECTOR_DIMENSIONS,
++                session_name=session.name,
++                metadata=schemas.DocumentMetadata(
++                    message_ids=[2],
++                    message_created_at="2026-01-01T00:00:00Z",
++                ),
++            ),
++        ],
++        workspace_name=workspace.name,
++        observer=observer.name,
++        observed=observed.name,
++    )
++
++    queue_items = await _queue_webhook_items(db_session, workspace.name)
++    assert len(queue_items) == 2
++    assert {item.payload["event_type"] for item in queue_items} == {
++        WebhookEventType.CONCLUSION_CREATED.value
++    }
++
++
++@pytest.mark.asyncio
++async def test_create_observations_stages_queue_items(
++    db_session: AsyncSession,
++    sample_data: tuple[models.Workspace, models.Peer],
++) -> None:
++    workspace, observer = sample_data
++    observed, session, _ = await _setup_collection(db_session, workspace, observer)
++
++    await crud.create_observations(
++        db_session,
++        [
++            schemas.ConclusionCreate(
++                content="manual conclusion",
++                observer_id=observer.name,
++                observed_id=observed.name,
++                session_id=session.name,
++            )
++        ],
++        workspace.name,
++    )
++
++    queue_items = await _queue_webhook_items(db_session, workspace.name)
++    assert len(queue_items) == 1
++    payload = queue_items[0].payload
++    assert payload["event_type"] == WebhookEventType.CONCLUSION_CREATED.value
++    assert payload["data"]["level"] == "explicit"
++    assert len(payload["data"]["conclusions"]) == 1
++
++
++@pytest.mark.asyncio
++async def test_dedup_rejected_documents_do_not_stage_events(
++    db_session: AsyncSession,
++    sample_data: tuple[models.Workspace, models.Peer],
++) -> None:
++    workspace, observer = sample_data
++    observed, session, _ = await _setup_collection(db_session, workspace, observer)
++
++    await crud.create_documents(
++        db_session,
++        [
++            schemas.DocumentCreate(
++                content="eri loves cats and dogs and birds and snakes",
++                embedding=[0.5] * settings.EMBEDDING.VECTOR_DIMENSIONS,
++                session_name=session.name,
++                metadata=schemas.DocumentMetadata(
++                    message_ids=[1],
++                    message_created_at="2026-01-01T00:00:00Z",
++                ),
++            )
++        ],
++        workspace_name=workspace.name,
++        observer=observer.name,
++        observed=observed.name,
++    )
++    initial_queue = await _queue_webhook_items(db_session, workspace.name)
++    assert len(initial_queue) == 1
++
++    await crud.create_documents(
++        db_session,
++        [
++            schemas.DocumentCreate(
++                content="eri loves cats",
++                embedding=[0.5] * settings.EMBEDDING.VECTOR_DIMENSIONS,
++                session_name=session.name,
++                metadata=schemas.DocumentMetadata(
++                    message_ids=[2],
++                    message_created_at="2026-01-02T00:00:00Z",
++                ),
++            )
++        ],
++        workspace_name=workspace.name,
++        observer=observer.name,
++        observed=observed.name,
++        deduplicate=True,
++    )
++
++    queue_items = await _queue_webhook_items(db_session, workspace.name)
++    assert len(queue_items) == 1
++
++
++@pytest.mark.asyncio
++async def test_dedup_replacement_stages_event(
++    db_session: AsyncSession,
++    sample_data: tuple[models.Workspace, models.Peer],
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    workspace, observer = sample_data
++    observed, session, _ = await _setup_collection(db_session, workspace, observer)
++
++    class FakeEncoding:
++        def encode(self, text: str) -> list[int]:
++            return list(range(len(text.split())))
++
++    monkeypatch.setattr(
++        "src.crud.document.embedding_client",
++        SimpleNamespace(encoding=FakeEncoding()),
++    )
++    await crud.create_documents(
++        db_session,
++        [
++            schemas.DocumentCreate(
++                content="eri loves cats",
++                embedding=[0.5] * settings.EMBEDDING.VECTOR_DIMENSIONS,
++                session_name=session.name,
++                times_derived=3,
++                metadata=schemas.DocumentMetadata(
++                    message_ids=[1],
++                    message_created_at="2026-01-01T00:00:00Z",
++                ),
++            )
++        ],
++        workspace_name=workspace.name,
++        observer=observer.name,
++        observed=observed.name,
++    )
++    assert len(await _queue_webhook_items(db_session, workspace.name)) == 1
++
++    await crud.create_documents(
++        db_session,
++        [
++            schemas.DocumentCreate(
++                content="eri loves cats and dogs",
++                embedding=[0.5] * settings.EMBEDDING.VECTOR_DIMENSIONS,
++                session_name=session.name,
++                times_derived=1,
++                metadata=schemas.DocumentMetadata(
++                    message_ids=[2],
++                    message_created_at="2026-01-02T00:00:00Z",
++                ),
++            )
++        ],
++        workspace_name=workspace.name,
++        observer=observer.name,
++        observed=observed.name,
++        deduplicate=True,
++    )
++
++    queue_items = await _queue_webhook_items(db_session, workspace.name)
++    assert len(queue_items) == 2
++    latest_payload = queue_items[-1].payload
++    assert latest_payload["event_type"] == WebhookEventType.CONCLUSION_CREATED.value
++    assert len(latest_payload["data"]["conclusions"]) == 1
++    assert (
++        latest_payload["data"]["conclusions"][0]["content"] == "eri loves cats and dogs"
++    )
++
++
++@pytest.mark.asyncio
++async def test_deliver_conclusion_created_routes_all_levels(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    level_urls = {
++        "explicit": "https://discord.example/explicit",
++        "deductive": "https://discord.example/deductive",
++        "inductive": "https://discord.example/inductive",
++        "contradiction": "https://discord.example/contradiction",
++    }
++    for level, url in level_urls.items():
++        monkeypatch.setenv(
++            webhook_delivery._discord_webhook_env_key(level),  # pyright: ignore[reportPrivateUsage]
++            url,
++        )
++    monkeypatch.setattr(
++        webhook_delivery,
++        "_get_webhook_urls",
++        AsyncMock(return_value=[]),
++    )
++
++    fake_client = RecordingAsyncClient()
++    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
++
++    expected_config = {
++        "explicit": {"title": "New Explicit Conclusion", "color": 0x3498DB},
++        "deductive": {"title": "New Deductive Conclusion", "color": 0x2ECC71},
++        "inductive": {"title": "New Inductive Conclusion", "color": 0x9B59B6},
++        "contradiction": {"title": "New Contradiction", "color": 0xE74C3C},
++    }
++
++    for level, url in level_urls.items():
++        fake_client.calls.clear()
++        payload = WebhookPayload(
++            event_type=WebhookEventType.CONCLUSION_CREATED.value,
++            data={
++                "workspace_id": "ws_1",
++                "level": level,
++                "conclusions": [
++                    {
++                        "id": f"doc_{level}",
++                        "content": f"{level} content",
++                        "observer": "a",
++                        "observed": "b",
++                        "session_name": None,
++                        "created_at": "2026-01-01T00:00:00+00:00",
++                    }
++                ],
++            },
++        )
++        await webhook_delivery.deliver_webhook(payload, "ws_1")
++
++        discord_calls = [call for call in fake_client.calls if call["json"] is not None]
++        assert len(discord_calls) == 1
++        assert discord_calls[0]["url"] == url
++        embed = discord_calls[0]["json"]["embeds"][0]
++        assert embed["title"] == expected_config[level]["title"]
++        assert embed["color"] == expected_config[level]["color"]
++        called_urls = {call["url"] for call in discord_calls}
++        for other_level, other_url in level_urls.items():
++            if other_level != level:
++                assert other_url not in called_urls
++
++
++@pytest.mark.asyncio
++async def test_deliver_conclusion_created_without_generic_endpoints(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    discord_url = "https://discord.example/explicit"
++    monkeypatch.setenv("HONCHO_DISCORD_WEBHOOK_EXPLICIT", discord_url)
++    monkeypatch.setattr(
++        webhook_delivery,
++        "_get_webhook_urls",
++        AsyncMock(return_value=[]),
++    )
++    fake_client = RecordingAsyncClient()
++    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
++
++    payload = WebhookPayload(
++        event_type=WebhookEventType.CONCLUSION_CREATED.value,
++        data={
++            "workspace_id": "ws_1",
++            "level": "explicit",
++            "conclusions": [
++                {
++                    "id": "doc_1",
++                    "content": "hello",
++                    "observer": "a",
++                    "observed": "b",
++                    "session_name": None,
++                    "created_at": "2026-01-01T00:00:00+00:00",
++                }
++            ],
++        },
++    )
++    await webhook_delivery.deliver_webhook(payload, "ws_1")
++
++    assert len(fake_client.calls) == 1
++    assert fake_client.calls[0]["url"] == discord_url
++    assert fake_client.calls[0]["json"] is not None
++    assert (
++        fake_client.calls[0]["headers"]["User-Agent"]
++        == webhook_delivery.DISCORD_USER_AGENT
++    )
++
++
++@pytest.mark.asyncio
++async def test_deliver_conclusion_created_still_posts_generic_endpoints(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(settings.WEBHOOK, "SECRET", "delivery-secret")
++    monkeypatch.setattr(webhook_delivery, "utc_now_iso", lambda: "2026-02-13T00:00:00Z")
++    monkeypatch.setenv(
++        "HONCHO_DISCORD_WEBHOOK_EXPLICIT", "https://discord.example/explicit"
++    )
++
++    generic_url = "https://a.example.com/hook"
++    monkeypatch.setattr(
++        webhook_delivery,
++        "_get_webhook_urls",
++        AsyncMock(return_value=[generic_url]),
++    )
++
++    fake_client = RecordingAsyncClient()
++    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
++
++    payload = WebhookPayload(
++        event_type=WebhookEventType.CONCLUSION_CREATED.value,
++        data={
++            "workspace_id": "ws_1",
++            "level": "explicit",
++            "conclusions": [
++                {
++                    "id": "doc_1",
++                    "content": "hello",
++                    "observer": "a",
++                    "observed": "b",
++                    "session_name": None,
++                    "created_at": "2026-01-01T00:00:00+00:00",
++                }
++            ],
++        },
++    )
++    await webhook_delivery.deliver_webhook(payload, "ws_1")
++
++    generic_calls = [call for call in fake_client.calls if call["content"] is not None]
++    discord_calls = [call for call in fake_client.calls if call["json"] is not None]
++    assert len(generic_calls) == 1
++    assert len(discord_calls) == 1
++
++    expected_event_json = json.dumps(
++        {
++            "type": payload.event_type,
++            "data": payload.data,
++            "timestamp": "2026-02-13T00:00:00Z",
++        },
++        separators=(",", ":"),
++        sort_keys=True,
++    )
++    expected_signature = webhook_delivery._generate_webhook_signature(  # pyright: ignore[reportPrivateUsage]
++        expected_event_json
++    )
++    assert generic_calls[0]["content"] == expected_event_json
++    assert generic_calls[0]["headers"]["X-Honcho-Signature"] == expected_signature
++
++
++@pytest.mark.asyncio
++async def test_missing_discord_url_skips_cleanly(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.delenv("HONCHO_DISCORD_WEBHOOK_EXPLICIT", raising=False)
++    monkeypatch.setattr(
++        webhook_delivery,
++        "_get_webhook_urls",
++        AsyncMock(return_value=["https://a.example.com/hook"]),
++    )
++    monkeypatch.setattr(settings.WEBHOOK, "SECRET", "delivery-secret")
++
++    fake_client = RecordingAsyncClient()
++    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
++
++    payload = WebhookPayload(
++        event_type=WebhookEventType.CONCLUSION_CREATED.value,
++        data={
++            "workspace_id": "ws_1",
++            "level": "explicit",
++            "conclusions": [
++                {
++                    "id": "doc_1",
++                    "content": "hello",
++                    "observer": "a",
++                    "observed": "b",
++                    "session_name": None,
++                    "created_at": "2026-01-01T00:00:00+00:00",
++                }
++            ],
++        },
++    )
++    await webhook_delivery.deliver_webhook(payload, "ws_1")
++
++    assert len([call for call in fake_client.calls if call["json"] is not None]) == 0
++    assert len([call for call in fake_client.calls if call["content"] is not None]) == 1
++
++
++def test_build_discord_embed_batches_splits_at_max_embeds_per_message() -> None:
++    payload = WebhookPayload(
++        event_type=WebhookEventType.CONCLUSION_CREATED.value,
++        data={
++            "workspace_id": "ws_1",
++            "level": "explicit",
++            "conclusions": [
++                {
++                    "id": f"doc_{index}",
++                    "content": f"short {index}",
++                    "observer": "observer",
++                    "observed": "observed",
++                    "session_name": None,
++                    "created_at": "2026-01-01T00:00:00+00:00",
++                }
++                for index in range(15)
++            ],
++        },
++    )
++
++    batches = webhook_delivery._build_discord_embed_batches(payload, "ws_1")  # pyright: ignore[reportPrivateUsage]
++    assert len(batches) == 2
++    assert len(batches[0]) == 10
++    assert len(batches[1]) == 5
++
++
++def test_build_discord_embed_batches_respects_limits() -> None:
++    long_content = "x" * 5000
++    payload = WebhookPayload(
++        event_type=WebhookEventType.CONCLUSION_CREATED.value,
++        data={
++            "workspace_id": "ws_1",
++            "level": "explicit",
++            "conclusions": [
++                {
++                    "id": f"doc_{index}",
++                    "content": long_content,
++                    "observer": "observer",
++                    "observed": "observed",
++                    "session_name": "session",
++                    "created_at": "2026-01-01T00:00:00+00:00",
++                }
++                for index in range(15)
++            ],
++        },
++    )
++
++    batches = webhook_delivery._build_discord_embed_batches(payload, "ws_1")  # pyright: ignore[reportPrivateUsage]
++    assert batches
++    total_embeds = sum(len(batch) for batch in batches)
++    assert total_embeds == 15
++
++    for batch in batches:
++        assert len(batch) <= webhook_delivery.DISCORD_MAX_EMBEDS_PER_MESSAGE
++        total_chars = sum(
++            webhook_delivery._embed_char_count(embed)  # pyright: ignore[reportPrivateUsage]
++            for embed in batch
++        )
++        assert total_chars <= webhook_delivery.DISCORD_MAX_CHARS_PER_MESSAGE
++        for embed in batch:
++            assert (
++                len(embed.get("description", ""))
++                <= webhook_delivery.DISCORD_MAX_DESCRIPTION
++            )
++            for field in embed.get("fields", []):
++                assert len(field["name"]) <= webhook_delivery.DISCORD_MAX_FIELD_NAME
++                assert len(field["value"]) <= webhook_delivery.DISCORD_MAX_FIELD_VALUE
++            assert len(embed.get("fields", [])) <= webhook_delivery.DISCORD_MAX_FIELDS
++
++
++@pytest.mark.asyncio
++async def test_discord_delivery_retries_on_429(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    discord_url = "https://discord.example/explicit"
++    monkeypatch.setenv("HONCHO_DISCORD_WEBHOOK_EXPLICIT", discord_url)
++    monkeypatch.setattr(
++        webhook_delivery,
++        "_get_webhook_urls",
++        AsyncMock(return_value=[]),
++    )
++
++    sleep_calls: list[float] = []
++
++    async def fake_sleep(seconds: float) -> None:
++        sleep_calls.append(seconds)
++
++    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
++
++    fake_client = RecordingAsyncClient(
++        {
++            discord_url: [
++                httpx.Response(
++                    429,
++                    request=httpx.Request("POST", discord_url),
++                    content=json.dumps({"retry_after": 0.01}).encode(),
++                ),
++                httpx.Response(204, request=httpx.Request("POST", discord_url)),
++            ]
++        }
++    )
++    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
++
++    payload = WebhookPayload(
++        event_type=WebhookEventType.CONCLUSION_CREATED.value,
++        data={
++            "workspace_id": "ws_1",
++            "level": "explicit",
++            "conclusions": [
++                {
++                    "id": "doc_1",
++                    "content": "hello",
++                    "observer": "a",
++                    "observed": "b",
++                    "session_name": None,
++                    "created_at": "2026-01-01T00:00:00+00:00",
++                }
++            ],
++        },
++    )
++    await webhook_delivery.deliver_webhook(payload, "ws_1")
++
++    assert len([call for call in fake_client.calls if call["url"] == discord_url]) == 2
++    assert sleep_calls == [0.01]
++
++
++@pytest.mark.asyncio
++async def test_discord_delivery_retries_transient_5xx_then_raises(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    discord_url = "https://discord.example/explicit"
++    monkeypatch.setenv("HONCHO_DISCORD_WEBHOOK_EXPLICIT", discord_url)
++    monkeypatch.setattr(
++        webhook_delivery,
++        "_get_webhook_urls",
++        AsyncMock(return_value=[]),
++    )
++    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
++
++    fake_client = RecordingAsyncClient(
++        {
++            discord_url: [
++                httpx.Response(500, request=httpx.Request("POST", discord_url)),
++                httpx.Response(500, request=httpx.Request("POST", discord_url)),
++                httpx.Response(500, request=httpx.Request("POST", discord_url)),
++            ]
++        }
++    )
++    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
++
++    payload = WebhookPayload(
++        event_type=WebhookEventType.CONCLUSION_CREATED.value,
++        data={
++            "workspace_id": "ws_1",
++            "level": "explicit",
++            "conclusions": [
++                {
++                    "id": "doc_1",
++                    "content": "hello",
++                    "observer": "a",
++                    "observed": "b",
++                    "session_name": None,
++                    "created_at": "2026-01-01T00:00:00+00:00",
++                }
++            ],
++        },
++    )
++
++    with pytest.raises(webhook_delivery.DiscordDeliveryError) as exc_info:
++        await webhook_delivery.deliver_webhook(payload, "ws_1")
++
++    assert len(fake_client.calls) == webhook_delivery.DISCORD_MAX_ATTEMPTS
++    exc = exc_info.value
++    assert exc.level == "explicit"
++    assert exc.status_code == 500
++    assert exc.attempts == webhook_delivery.DISCORD_MAX_ATTEMPTS
++    assert exc.__cause__ is None
++    assert exc.__context__ is None
++
++
++@pytest.mark.asyncio
++async def test_discord_delivery_retries_network_errors_then_raises(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    discord_url = "https://discord.example/explicit"
++    monkeypatch.setenv("HONCHO_DISCORD_WEBHOOK_EXPLICIT", discord_url)
++    monkeypatch.setattr(
++        webhook_delivery,
++        "_get_webhook_urls",
++        AsyncMock(return_value=[]),
++    )
++    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
++
++    fake_client = RecordingAsyncClient(
++        {
++            discord_url: [
++                httpx.ConnectError("network down"),
++                httpx.ConnectError("network down"),
++                httpx.ConnectError("network down"),
++            ]
++        }
++    )
++    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
++
++    payload = WebhookPayload(
++        event_type=WebhookEventType.CONCLUSION_CREATED.value,
++        data={
++            "workspace_id": "ws_1",
++            "level": "explicit",
++            "conclusions": [
++                {
++                    "id": "doc_1",
++                    "content": "hello",
++                    "observer": "a",
++                    "observed": "b",
++                    "session_name": None,
++                    "created_at": "2026-01-01T00:00:00+00:00",
++                }
++            ],
++        },
++    )
++
++    with pytest.raises(webhook_delivery.DiscordDeliveryError) as exc_info:
++        await webhook_delivery.deliver_webhook(payload, "ws_1")
++
++    assert len(fake_client.calls) == webhook_delivery.DISCORD_MAX_ATTEMPTS
++    exc = exc_info.value
++    assert exc.reason == "network_error"
++    assert exc.__cause__ is None
++    assert exc.__context__ is None
++
++
++@pytest.mark.asyncio
++async def test_discord_terminal_failure_does_not_leak_webhook_url(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    secret_token = "super-secret-webhook-token-abc123"
++    discord_url = f"https://discord.com/api/webhooks/123456/{secret_token}"
++    monkeypatch.setenv("HONCHO_DISCORD_WEBHOOK_EXPLICIT", discord_url)
++    monkeypatch.setattr(
++        webhook_delivery,
++        "_get_webhook_urls",
++        AsyncMock(return_value=[]),
++    )
++    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
++
++    fake_client = RecordingAsyncClient(
++        {
++            discord_url: [
++                httpx.Response(
++                    403,
++                    request=httpx.Request("POST", discord_url),
++                )
++            ]
++        }
++    )
++    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
++
++    payload = WebhookPayload(
++        event_type=WebhookEventType.CONCLUSION_CREATED.value,
++        data={
++            "workspace_id": "ws_1",
++            "level": "explicit",
++            "conclusions": [
++                {
++                    "id": "doc_1",
++                    "content": "hello",
++                    "observer": "a",
++                    "observed": "b",
++                    "session_name": None,
++                    "created_at": "2026-01-01T00:00:00+00:00",
++                }
++            ],
++        },
++    )
++
++    with pytest.raises(webhook_delivery.DiscordDeliveryError) as exc_info:
++        await webhook_delivery.deliver_webhook(payload, "ws_1")
++
++    exc = exc_info.value
++    error_text = f"{exc!s}{exc!r}"
++    assert secret_token not in error_text
++    assert discord_url not in error_text
++    assert exc.__cause__ is None
++    assert exc.__context__ is None
++
++
++@pytest.mark.asyncio
++async def test_generic_delivery_swallows_payload_serialization_errors(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(
++        webhook_delivery,
++        "_get_webhook_urls",
++        AsyncMock(return_value=["https://a.example.com/hook"]),
++    )
++
++    def explode_json(*args: Any, **kwargs: Any) -> str:
++        _ = (args, kwargs)
++        raise TypeError("not serializable")
++
++    monkeypatch.setattr(json, "dumps", explode_json)
++
++    payload = WebhookPayload(event_type="queue.empty", data={"queue_type": "summary"})
++    await webhook_delivery.deliver_webhook(payload, "workspace-a")
