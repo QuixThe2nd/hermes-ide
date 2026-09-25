@@ -182,7 +182,9 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   // keeps it. Model that, so a pane that forgets its id visibly loses the lease it holds.
   let minted = 0
   vi.mocked(displayRequest).mockImplementation(async (_bot, method, params) => {
-    if (method !== 'display.observe') return { ...status, ticket: 'test-ticket', viewer_id: 'this-viewer' }
+    if (method !== 'display.observe') {
+      return { ...status, ticket: 'test-ticket', viewer_id: 'this-viewer' }
+    }
     const presented = (params as { viewer_id?: string } | undefined)?.viewer_id
     const viewer_id = presented === 'this-viewer' ? 'this-viewer' : minted++ === 0 ? 'this-viewer' : 'replacement-viewer'
     return { ...status, ticket: 'test-ticket', viewer_id }
