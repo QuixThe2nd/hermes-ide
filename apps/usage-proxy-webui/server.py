@@ -674,18 +674,24 @@ def provider_key(model: Any) -> str | None:
 def model_display(model: Any) -> Any:
     """Display label for a raw model id — presentation only.
 
-    Exactly one leading ``typesafe/`` namespace is dropped for display
-    (``typesafe/jev-1.13`` renders as ``jev-1.13``, dated variants likewise);
+    Exactly one leading ``typesafe/`` namespace is dropped for display, and
+    when that namespace matched, a trailing ``-YYYYMMDD`` date suffix is
+    dropped too (``typesafe/jev-1.13-20260917`` renders as ``jev-1.13``);
     everything else — JSON payloads, option values, filter/URL state, sort
     and aggregation keys, ``provider_key`` inputs — keeps the raw string, and
-    no other provider namespace is ever stripped.  Falsy input passes through
+    no other provider namespace is ever stripped (so ``openai/gpt-5-20260101``
+    or a bare ``foo-20260101`` keep their tails).  Falsy input passes through
     so the existing None/empty rendering is unchanged.  Mirrored exactly in
     the browser JS (modelDisplay).
     """
     if not model:
         return model
     name = str(model)
-    return name[len("typesafe/"):] if name.startswith("typesafe/") else name
+    if not name.startswith("typesafe/"):
+        return name
+    short = name[len("typesafe/"):]
+    match = re.search(r"-\d{8}$", short)
+    return short[: match.start()] if match else short
 
 
 BRAND_SHADE_STEPS = (
@@ -2887,12 +2893,17 @@ JS = r"""
 
   /* display label for a raw model id — presentation only, the exact twin of
      the server's model_display: one leading 'typesafe/' is dropped for
-     display; option values, filter/URL state, data keys and providerKey()
-     inputs all keep the raw id, and no other namespace is stripped */
+     display, and only then a trailing -YYYYMMDD date suffix
+     (typesafe/jev-1.13-20260917 renders as jev-1.13); option values,
+     filter/URL state, data keys and providerKey() inputs all keep the raw
+     id, and no other namespace is stripped */
   function modelDisplay(model) {
     if (!model) return model;
     var s = String(model);
-    return s.indexOf('typesafe/') === 0 ? s.slice('typesafe/'.length) : s;
+    if (s.indexOf('typesafe/') !== 0) return s;
+    var short = s.slice('typesafe/'.length);
+    var m = /-\d{8}$/.exec(short);
+    return m ? short.slice(0, m.index) : short;
   }
 
   /* hex mirror of the .h0…h5/.h-unattr/.hb-* CSS palette — a canvas cannot
