@@ -20818,7 +20818,10 @@ class GatewayRunner(
             # without flushing causes permanent data loss.
             try:
                 from gateway.shutdown_flush import flush_pending_to_file
-                flush_pending_to_file(dict(self._pending_messages), reason="shutdown")
+                # Snapshot-owned mirrors stay out: the durable drain snapshot already
+                # owns them, and spooling here too would replay them twice after restart.
+                flush_pending_to_file(dict(self._pending_messages), reason="shutdown",
+                                      skip_attrs=("_drain_snapshot_owned",))
             except Exception:
                 pass
             # The FIFO tail lives in SessionState.conversation.queued_events,
@@ -37975,61 +37978,13 @@ def main():
     if args.config:
         import yaml
         with open(args.config, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-            config = GatewayConfig.from_dict(data)
+            config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
         # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
         from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
         log_multiplex_decision(resolve_multiplex_mode(config))
 
-
-    # Post-update boot bootstrap: when this install's code changed since the
-    # last boot (app-updater swap, docker/nix image change, git pull without
-    # `hermes update`), run the idempotent user-state steps (config
-    # migration, skills sync, state.db guard) before platforms connect.
-    # Two file reads when nothing changed; never raises.
-    try:
-        from pathlib import Path as _Path
-
-        from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
-
-        maybe_run_boot_bootstrap(_Path(__file__).resolve().parents[1])
-    except Exception as exc:
-        # maybe_run_boot_bootstrap itself never raises and logs internally;
-        # this guard covers the import/lookup path. Don't hide it silently.
-        logger.warning("boot bootstrap setup failed (continuing boot): %s", exc)
-
-    # pm startup: same contract as the CLI dispatch path (hermes_cli/main.py)
-    # — the gateway daemon never passes through CLI dispatch, so without this
-    # it would boot without the store's tools (git/bash/ffmpeg/...) on PATH.
-    # O(1) stamp checks, no network, no installs; warns, never blocks.
-    try:
-        import pm
-
-        pm.adopt()
-        problems = pm.check()
-        if problems:
-            logger.warning(
-                "install out of sync (%s) — run `hermes pm install`",
-                "; ".join(problems),
-            )
-        else:
-            pm.activate()
-    except Exception:
-        logger.debug("pm startup check failed", exc_info=True)
-    # start_gateway() performs the full graceful teardown (adapters
-    # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,
-    # PID file + runtime lock released) before it returns OR raises SystemExit
-    # with an explicit code. Force-exit afterwards so a wedged non-daemon worker
-    # thread (e.g. a ThreadPoolExecutor tool/LLM call blocked with no timeout)
-    # cannot block interpreter finalization (Py_FinalizeEx joins all non-daemon
-    # threads, incl. concurrent.futures' _python_exit) and strand the gateway
-    # half-shut down with the supervisor unable to restart it (#53107).
-    #
-    # SystemExit is caught explicitly: start_gateway raises it on the
-    # clean-fatal-config (#51228), planned-restart, and service-restart paths,
-    # all of which complete teardown first. Routing those codes through the
-    # same os._exit backstop means EVERY exit path is wedge-proof, not just the
-    # boolean-return ones.
+    # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a
+    # wedged non-daemon worker can't block Py_FinalizeEx's join. SystemExit caught so EVERY path exits.
     try:
         # start_gateway() performs the full graceful teardown (adapters disconnected, sessions saved +
         # flushed, SQLite closed, cron/MCP stopped, PID file + runtime lock released) before it returns OR

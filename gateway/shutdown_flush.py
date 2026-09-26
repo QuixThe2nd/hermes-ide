@@ -19,7 +19,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +78,20 @@ def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **ext
         return False
 
 
-def flush_pending_to_file(pending: Dict[str, Any], *, reason: str = "shutdown") -> int:
-    """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count."""
+def flush_pending_to_file(pending: Dict[str, Any], *, reason: str = "shutdown",
+                          skip_attrs: Iterable[str] = ()) -> int:
+    """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count.
+
+    ``skip_attrs`` names ownership-marker attributes: a slot whose value carries a truthy
+    marker is left unspooled because another durable record already owns it (e.g. the
+    drain-restart snapshot owns ``_drain_snapshot_owned`` mirrors — spooling them here
+    would replay the same content twice after restart).
+    """
     if not pending:
         return 0
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
     for session_key, value in list(pending.items()):
-        if value is not None:
+        if value is not None and not any(getattr(value, attr, None) for attr in skip_attrs):
             flushed += _flush_value(flush_dir, "pending", session_key, value, reason=reason, ts=ts)
     if flushed:
         logger.info("Flushed %d pending message(s) to %s (reason=%s)", flushed, flush_dir, reason)
@@ -148,7 +155,7 @@ def drain_transcript_spool(session_id: str, replay, *, db_known_failing: bool = 
     entries = []
     for path in candidates:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
         # A parseable non-object file (scalar/list) cannot be attributed to any session: skip it
@@ -229,7 +236,7 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
             # One unparseable payload or rejected append must only skip THIS file: the file is
             # never unlinked, so aborting the pass would re-poison every later boot.
             try:
-                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                payload = json.loads(path.read_text(encoding="utf-8"))
                 # Agent-history snapshots are for manual operator recovery, not automatic DB
                 # insertion.
                 if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
