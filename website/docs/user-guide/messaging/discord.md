@@ -481,6 +481,49 @@ discord:
 
 Values outside the documented ranges (threshold outside `0..1`, `timeout_seconds` above `30`, oversized context bounds) refuse to load rather than quietly degrading into "admit everything".
 
+#### `discord.reaction_gate`
+
+**Type:** mapping — **Default:** unset (gate off)
+
+An opt-in judge for *reactions*. In the channels you list, the bot asks a remote classifier one `choice` question per message — which single whitelisted emoji best fits as its reaction, or `None` (no reaction fits) or `Other` (a reaction fits but no whitelisted one does) — and adds exactly one reaction when the combined probability of `None` and `Other` is strictly below one half. The gate is off unless the block is present, `enabled: true` **and** `channels` names at least one channel; there is no wildcard.
+
+```yaml
+discord:
+  reaction_gate:
+    enabled: true              # explicit opt-in switch
+    channels:                  # explicit list — no "*"
+      - 1234567890
+    emojis:                    # whitelist; also the exact-tie preference order
+      - 👍
+      - ❤️
+      - 😂
+      - 🎉
+      - 😢
+      - 😮
+      - 🔥
+      - 🤔
+    criteria:                  # optional per-emoji description overrides
+      🎉: "Fits celebrations and shipped work."
+    timeout_seconds: 3.0       # per-request budget; over budget means no reaction
+    context_messages: 10       # recent same-channel messages sent as evidence
+    context_chars: 8000        # total character budget for that evidence block
+    model: typesafe/jev-1.13   # judge model; fixed default, no fallback chain
+```
+
+**The decision rule.** The judge returns a probability for every offered option. The bot reacts with the highest-probability whitelisted emoji — and only when `P(None) + P(Other)` is **strictly below `0.5`**. At `0.5` or above it does nothing. There is no second confidence threshold on top of that sum, and an abstention option is allowed to top the distribution on its own: with `None = 0.30`, `Other = 0.19` and `👍 = 0.31` the sum is `0.49`, so the bot reacts with 👍. An exact tie between emojis resolves to the one listed first in `emojis`.
+
+**Multi-glyph entries.** An `emojis` entry may hold several emoji glyphs, e.g. `👉👈`. The judge sees it as **one** option (the whole string), and when it wins, the bot adds the glyphs as separate back-to-back reactions in string order — 👉 then 👈. A compound emoji that is one grapheme cluster — `🤦‍♂️` (ZWJ sequence), `❤️` (VS16), skin-tone sequences like `🫱🏻‍🫲🏽`, keycaps like `1️⃣`, flags like `🇦🇺` — stays exactly **one** reaction. Each glyph of a multi-glyph entry is its own API call: if one fails, the rest are still attempted.
+
+**Independent of [`response_gate`](#discordresponse_gate).** The two gates share only a transport. This one judges *every* eligible message in its channels — `@mentions`, replies, and other bots' conversational messages included, whether or not the speaking gate (or the mention prefilter) would have answered them — and its outcome never feeds back into speaking: a reaction success or failure creates no session, forces no text reply, and blocks none. The channels, verdicts and evidence of the two gates are configured separately and can overlap or not at all.
+
+**Eligibility.** The bot's own messages, system/lifecycle events (joins, pins, …), DMs, [`ignored_channels`](#discordignored_channels), channels outside `channels`, and messages from users who fail the authorization allowlist are never evaluated and never reacted to. Each message id is considered once no matter how it is delivered (live or backfill), so a duplicate or concurrent delivery cannot double-react.
+
+**Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel *or thread* — up to `context_messages` messages and `context_chars` characters. The window holds the messages that preceded the candidate when it arrived (never the candidate itself) plus this bot's own delivered final replies, so a user's "thanks" after one of them reads as connected. A thread's evidence never merges its parent channel's history, and nothing from other channels is included. Message text is evidence about the conversation, never instructions to the judge, and logs carry only channel/message ids and the outcome — never message content.
+
+**Fail-closed.** A missing `OPENROUTER_API_KEY`, timeout, transport error, malformed answer, unknown option, or an incoherent probability distribution means *no reaction* — never a fallback emoji and never a text reply. Like the speaking gate, the key is read once at connect time from the profile environment, not from `config.yaml`.
+
+Values outside the documented ranges (`timeout_seconds` above `30`, more than `32` emojis, emojis longer than `32` characters, criteria text above `500` characters, oversized context bounds, a `None`/`Other` entry in `emojis` — those two options are fixed) refuse to load or leave the gate off rather than quietly degrading.
+
 #### `discord.auto_thread`
 
 **Type:** boolean — **Default:** `true`

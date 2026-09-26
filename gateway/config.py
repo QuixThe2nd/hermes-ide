@@ -600,8 +600,8 @@ def is_loopback_http_url(url: Any) -> bool:
     return bool(mapped is not None and mapped.is_loopback)
 
 
-def _response_gate_channels(raw: Any) -> tuple:
-    """Normalize ``channels`` into a tuple of non-empty strings; empty/None ⇒ ().
+def _gate_channel_list(raw: Any, label: str) -> tuple:
+    """Normalize a gate ``channels`` list into non-empty strings; empty/None ⇒ ().
 
     Accepts a YAML list or the legacy comma-separated string spelling used by the other
     channel gates. Values are strings of the raw entry (YAML reads bare ids as ints).
@@ -614,10 +614,14 @@ def _response_gate_channels(raw: Any) -> tuple:
         parts = [part.strip() for part in str(raw).split(",")]
     cleaned = tuple(dict.fromkeys(part for part in parts if part))
     if "*" in cleaned:
-        # The other channel gates accept "*" as a wildcard; the gate must not silently
+        # The other channel gates accept "*" as a wildcard; a judge gate must not silently
         # become a global switch, so an operator has to list channels explicitly.
-        raise ValueError("response_gate: channels does not support '*'; list channel ids explicitly")
+        raise ValueError(f"{label}: channels does not support '*'; list channel ids explicitly")
     return cleaned
+
+
+def _response_gate_channels(raw: Any) -> tuple:
+    return _gate_channel_list(raw, "response_gate")
 
 
 def _response_gate_float(data: dict, key: str, default: float, low: float, high: float,
@@ -642,6 +646,185 @@ def _response_gate_int(data: dict, key: str, default: int, low: int, high: int, 
     if raw < low or raw > high:
         raise ValueError(f"{label} must be between {low} and {high}, got {raw}")
     return raw
+
+
+#: The fixed abstention options every reaction-gate question carries. They are part of
+#: the product contract (the decision rule sums exactly these two), never config.
+REACTION_NONE_OPTION = "None"
+REACTION_OTHER_OPTION = "Other"
+
+#: Default whitelisted emojis offered to the reaction judge (configurable per gate).
+DEFAULT_REACTION_EMOJIS = ("👍", "❤️", "😂", "🎉", "😢", "😮", "🔥", "🤔")
+
+
+def _reaction_gate_emojis(raw: Any) -> tuple:
+    """Normalize the whitelisted ``emojis`` into non-empty unique strings.
+
+    A list (or comma-separated string, mirroring the channel gates) of single emoji
+    or short emoji-sequence entries; ``None`` keeps the default whitelist, while an
+    explicitly configured empty or oversized list refuses to load.
+    """
+    if raw is None:
+        return DEFAULT_REACTION_EMOJIS
+    if isinstance(raw, (list, tuple, set)):
+        parts = [str(part).strip() for part in raw]
+    else:
+        parts = [part.strip() for part in str(raw).split(",")]
+    cleaned = tuple(dict.fromkeys(part for part in parts if part))
+    if not cleaned:
+        raise ValueError("reaction_gate: emojis must list at least one emoji")
+    if len(cleaned) > ReactionGateConfig.MAX_EMOJIS:
+        raise ValueError(
+            f"reaction_gate: emojis must list at most {ReactionGateConfig.MAX_EMOJIS} emojis"
+        )
+    for emoji in cleaned:
+        if len(emoji) > ReactionGateConfig.MAX_EMOJI_CHARS:
+            raise ValueError(
+                f"reaction_gate: emoji entry too long ({len(emoji)} chars): keep one emoji per entry"
+            )
+        if emoji in (REACTION_NONE_OPTION, REACTION_OTHER_OPTION):
+            raise ValueError(
+                "reaction_gate: 'None' and 'Other' are fixed judge options, not whitelisted emojis"
+            )
+    return cleaned
+
+
+def _reaction_gate_criteria(raw: Any, emojis: tuple) -> Dict[str, str]:
+    """Optional per-emoji criteria overrides; the two abstention options stay fixed."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("reaction_gate.criteria must be a mapping of emoji to description")
+    cleaned: Dict[str, str] = {}
+    for key, value in raw.items():
+        emoji = str(key).strip()
+        if emoji not in emojis:
+            raise ValueError("reaction_gate.criteria keys must be whitelisted emojis")
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"reaction_gate.criteria[{emoji!r}] must be a non-empty description")
+        if len(text) > ReactionGateConfig.MAX_CRITERIA_CHARS:
+            raise ValueError(
+                f"reaction_gate.criteria[{emoji!r}] must be at most "
+                f"{ReactionGateConfig.MAX_CRITERIA_CHARS} characters"
+            )
+        cleaned[emoji] = text
+    return cleaned
+
+
+@dataclass
+class ReactionGateConfig:
+    """Opt-in per-channel emoji reaction gate (``<platform>.reaction_gate``).
+
+    An independent judge that decides whether the bot adds ONE whitelisted emoji
+    reaction to a message — every message in the selected channels, not only the
+    ambient ones the :class:`ResponseGateConfig` judge sees. It shares nothing with
+    the speaking gate but the transport: either gate may be on, off, or scoped
+    differently, and neither ever changes the other's verdicts.
+    """
+
+    #: Judge backend; ``jev`` (OpenRouter Decisions endpoint) is the only one.
+    provider: str = "jev"
+    #: Master switch. The gate is off unless this is explicitly ``true`` AND
+    #: ``channels`` names at least one channel — an omitted block never reacts.
+    enabled: bool = False
+    #: Channel IDs (or exact channel names / ``#names``) opted in. A parent channel
+    #: id selects its threads (the adapter's established channel-key convention).
+    channels: tuple = ()
+    #: Whitelisted emojis offered to the judge, in preference order for exact ties.
+    emojis: tuple = DEFAULT_REACTION_EMOJIS
+    #: Optional per-emoji criteria text overrides; ``None``/``Other`` wording is fixed.
+    criteria: Dict[str, str] = field(default_factory=dict)
+    #: Per-request budget; a timeout means no reaction (never a reply).
+    timeout_seconds: float = 3.0
+    #: Bounded recent same-conversation messages sent as evidence (exact channel/thread only).
+    context_messages: int = 10
+    #: Total character budget for the buffered context block.
+    context_chars: int = 8000
+    #: Judge model; fixed default, no fallback chain.
+    model: str = "typesafe/jev-1.13"
+    #: Optional loopback-only override for the Decisions endpoint (see ResponseGateConfig).
+    decisions_url: Optional[str] = None
+
+    # Validation bounds — the same budgets as the response gate, plus emoji-list caps
+    # so one request body stays bounded no matter how wide the whitelist is.
+    MAX_TIMEOUT_SECONDS = ResponseGateConfig.MAX_TIMEOUT_SECONDS
+    MAX_CONTEXT_MESSAGES = ResponseGateConfig.MAX_CONTEXT_MESSAGES
+    MAX_CONTEXT_CHARS = ResponseGateConfig.MAX_CONTEXT_CHARS
+    MAX_EMOJIS = 32
+    MAX_EMOJI_CHARS = 32
+    MAX_CRITERIA_CHARS = 500
+
+    @property
+    def active(self) -> bool:
+        """True when the gate is configured, switched on, and has channels + emojis."""
+        return (
+            self.provider == "jev" and self.enabled and bool(self.channels) and bool(self.emojis)
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "provider": self.provider,
+            "enabled": self.enabled,
+            "emojis": list(self.emojis),
+            "timeout_seconds": self.timeout_seconds,
+            "context_messages": self.context_messages,
+            "context_chars": self.context_chars,
+            "model": self.model,
+        }
+        if self.channels:
+            result["channels"] = list(self.channels)
+        if self.criteria:
+            result["criteria"] = dict(self.criteria)
+        if self.decisions_url:
+            result["decisions_url"] = self.decisions_url
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ReactionGateConfig":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"reaction_gate must be a mapping with enabled/channels/emojis; got "
+                f"{type(data).__name__}"
+            )
+        provider = str(data.get("provider", "jev")).strip().lower()
+        if provider != "jev":
+            # Same rule as the response gate: an unknown provider is a config error,
+            # not "gate off" — it would look enabled while doing nothing.
+            raise ValueError(f"reaction_gate: unsupported provider {provider!r} (only 'jev')")
+        enabled = _coerce_bool(data.get("enabled", False), False)
+        channels = _gate_channel_list(data.get("channels"), "reaction_gate")
+        emojis = _reaction_gate_emojis(data.get("emojis"))
+        criteria = _reaction_gate_criteria(data.get("criteria"), emojis)
+        timeout_seconds = _response_gate_float(
+            data, "timeout_seconds", 3.0, 0.0, cls.MAX_TIMEOUT_SECONDS,
+            "reaction_gate.timeout_seconds", exclusive_min=True,
+        )
+        context_messages = _response_gate_int(
+            data, "context_messages", 10, 1, cls.MAX_CONTEXT_MESSAGES,
+            "reaction_gate.context_messages",
+        )
+        context_chars = _response_gate_int(
+            data, "context_chars", 8000, 1, cls.MAX_CONTEXT_CHARS, "reaction_gate.context_chars",
+        )
+        model = str(data.get("model", "typesafe/jev-1.13")).strip()
+        if not model:
+            raise ValueError("reaction_gate: model must be a non-empty model slug")
+        decisions_url = data.get("decisions_url")
+        if decisions_url is not None:
+            decisions_url = str(decisions_url).strip()
+            if not is_loopback_http_url(decisions_url):
+                raise ValueError(
+                    "reaction_gate.decisions_url must be a loopback http(s) URL"
+                )
+        return cls(
+            provider=provider, enabled=enabled, channels=channels, emojis=emojis,
+            criteria=criteria, timeout_seconds=timeout_seconds,
+            context_messages=context_messages, context_chars=context_chars, model=model,
+            decisions_url=decisions_url,
+        )
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token
@@ -671,6 +854,10 @@ class PlatformConfig:
 
     # Opt-in per-channel ambient response gate (Discord today); None ⇒ off.
     response_gate: Optional[ResponseGateConfig] = None
+
+    # Opt-in per-channel emoji reaction gate (Discord today); None ⇒ off. Fully
+    # independent of ``response_gate``: separate scope, verdicts and side effects.
+    reaction_gate: Optional[ReactionGateConfig] = None
 
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
@@ -717,6 +904,8 @@ class PlatformConfig:
             result["notification_channel"] = self.notification_channel.to_dict()
         if self.response_gate is not None:
             result["response_gate"] = self.response_gate.to_dict()
+        if self.reaction_gate is not None:
+            result["reaction_gate"] = self.reaction_gate.to_dict()
         if self.channel_overrides:
             result["channel_overrides"] = {cid: ov.to_dict() for cid, ov in self.channel_overrides.items()}
         return result
@@ -726,6 +915,7 @@ class PlatformConfig:
     _TYPED_KEYS = frozenset({
         "enabled", "token", "api_key", "home_channel", "notification_channel", "reply_to_mode", "channel_overrides", "extra",
         "gateway_restart_notification", "typing_indicator", "typing_status_text", "response_gate",
+        "reaction_gate",
     })
 
     @classmethod
@@ -771,12 +961,21 @@ class PlatformConfig:
             logger.warning("Ignoring invalid response_gate config (gate stays off): %s", exc)
             response_gate = None
 
+        # Same containment discipline as the response gate: a typo in this opt-in
+        # block must not take the whole platform (or its allowlists) down with it.
+        try:
+            reaction_gate = ReactionGateConfig.from_dict(toplevel_or_extra("reaction_gate"))
+        except ValueError as exc:
+            logger.warning("Ignoring invalid reaction_gate config (gate stays off): %s", exc)
+            reaction_gate = None
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             notification_channel=notification_channel,
             response_gate=response_gate,
+            reaction_gate=reaction_gate,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),

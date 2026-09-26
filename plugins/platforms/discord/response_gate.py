@@ -117,8 +117,11 @@ class ChannelContextBuffer:
 
     ``maxlen`` and the character budget come from the validated gate config, so memory
     stays proportional to the configured context window. Entries are
-    ``(author_name, text)`` pairs: the caller buffers human messages plus this bot's
-    own delivered final replies (send seam) and filters other bots' chatter.
+    ``(author_name, text, message_id)`` triples: the caller buffers human messages plus
+    this bot's own delivered final replies (send seam) and filters other bots' chatter.
+    The id is optional bookkeeping for snapshot-time self-exclusion — a reaction
+    candidate buffered at intake must not judge itself — and entries recorded without
+    one (the speaking gate's observations, this bot's sent replies) are never excluded.
     """
 
     def __init__(self, *, max_messages: int, max_chars: int, max_channels: int = MAX_TRACKED_CHANNELS) -> None:
@@ -127,11 +130,13 @@ class ChannelContextBuffer:
         self._max_channels = max(1, int(max_channels))
         self._channels: "OrderedDict[str, deque]" = OrderedDict()
 
-    def observe(self, conversation_id: str, author_name: str, text: str) -> None:
+    def observe(
+        self, conversation_id: str, author_name: str, text: str, message_id: Optional[str] = None,
+    ) -> None:
         """Record one message for ``conversation_id`` (exact channel/thread id only)."""
         if not conversation_id:
             return
-        entry = (self._clean_author(author_name), self._clean_text(text))
+        entry = (self._clean_author(author_name), self._clean_text(text), str(message_id or ""))
         if not entry[1]:
             return
         bucket = self._channels.get(conversation_id)
@@ -145,16 +150,24 @@ class ChannelContextBuffer:
                 bucket.popleft()
         bucket.append(entry)
 
-    def snapshot(self, conversation_id: str) -> List[Dict[str, str]]:
+    def snapshot(
+        self, conversation_id: str, *, exclude_id: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
         """Most recent messages for one conversation, trimmed to the character budget.
 
         Returns oldest-first (conversation order) without exposing the buffer itself.
+        ``exclude_id`` drops the entry recorded for exactly that message id: the
+        intake-time self-exclusion that lets a candidate sit in the buffer before its
+        own consultation without ever judging itself. The window is trimmed after the
+        exclusion, so dropping the newest entry (the usual case) costs nothing.
         """
         bucket = self._channels.get(conversation_id)
         if not bucket:
             return []
-        chosen = list(bucket)[- _MAX_SNAPSHOT_MESSAGES:]
-        return [{"author": author, "content": text} for author, text in chosen]
+        chosen = [
+            entry for entry in bucket if not (exclude_id and entry[2] == exclude_id)
+        ][-_MAX_SNAPSHOT_MESSAGES:]
+        return [{"author": author, "content": text} for author, text, _ in chosen]
 
     def forget(self, conversation_id: str) -> None:
         """Drop one conversation's buffer (used when a channel leaves the gate scope)."""
@@ -175,6 +188,9 @@ class JevDecisionClient:
     The bearer credential is supplied by the adapter at startup from the owning
     profile's own secret scope and is never read again at event time, so a late event
     callback cannot pick up another profile's key.
+    Subclasses may carry a different ``usage_caller`` label (ledger attribution) and
+    pass their own ``questions`` mapping to :meth:`_request` — the transport, timeout,
+    proxy and fail-closed error mapping stay single-sourced here.
     """
 
     def __init__(
@@ -187,6 +203,7 @@ class JevDecisionClient:
         questions: Dict[str, Any],
         decisions_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
+        usage_caller: str = _USAGE_CALLER_LABEL,
     ) -> None:
         if not credential:
             # Constructed without a credential the caller must not consult us; keep the
@@ -210,6 +227,7 @@ class JevDecisionClient:
         self._timeout_seconds = timeout_seconds
         self._questions = questions
         self._decisions_url = decisions_url
+        self._usage_caller = usage_caller
         self._log = logger or logging.getLogger(__name__)
 
     @property
@@ -256,8 +274,16 @@ class JevDecisionClient:
 
     # --- transport ---------------------------------------------------------
 
-    async def _request(self, state: Dict[str, Any], *, chat_id: Optional[str] = None) -> Dict[str, Any]:
-        """POST one bounded request and return the parsed JSON body."""
+    async def _request(
+        self, state: Dict[str, Any], *, chat_id: Optional[str] = None,
+        questions: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """POST one bounded request and return the parsed JSON body.
+
+        ``questions`` defaults to this client's own question mapping; a sibling
+        policy (the reaction gate) passes its own mapping so the transport
+        stays single-sourced.
+        """
         try:
             import aiohttp
         except Exception as exc:  # pragma: no cover - aiohttp ships with discord.py
@@ -266,7 +292,7 @@ class JevDecisionClient:
         body = {
             "model": self._model,
             "state": state,
-            "questions": self._questions,
+            "questions": questions if questions is not None else self._questions,
         }
         payload = json.dumps(body, ensure_ascii=False, default=str)
         url = self._decisions_url or JEV_DECISIONS_URL
@@ -275,7 +301,7 @@ class JevDecisionClient:
             "Content-Type": "application/json",
         }
         if self._decisions_url is not None:
-            headers[_USAGE_CALLER_HEADER] = _USAGE_CALLER_LABEL
+            headers[_USAGE_CALLER_HEADER] = self._usage_caller
             headers[_USAGE_CHAT_TYPE_HEADER] = "discord"
             encoded_chat_id = _encode_usage_chat_id(chat_id)
             if encoded_chat_id:
@@ -451,6 +477,49 @@ def build_gate_questions(bot_name: str) -> Dict[str, Any]:
     }
 
 
+def build_conversation_state(
+    message: Any, *, channel: Any, bot_name: str, bot_id: Any,
+    recent: List[Dict[str, str]], context_chars: int,
+) -> Dict[str, Any]:
+    """Assemble the bounded evidence a judge sees: this conversation only.
+
+    Shared by every gate runtime (speaking, reactions): the candidate message plus a
+    newest-first-trimmed window of ``recent`` evidence entries, capped to
+    ``context_chars``. No cross-conversation history ever enters the state.
+    """
+    budget = max(1, int(context_chars or 0))
+    kept: List[Dict[str, str]] = []
+    for entry in reversed(recent):  # newest first, so the budget keeps the freshest evidence
+        text = str(entry.get("content", ""))[:budget]
+        budget -= len(text)
+        kept.append({"author": entry.get("author", ""), "content": text})
+        if budget <= 0:
+            break
+    kept.reverse()
+    author = getattr(message, "author", None)
+    conversation_id = str(getattr(channel, "id", "") or "")
+    candidate_text = str(getattr(message, "content", "") or "")
+    return {
+        "platform": "discord",
+        "bot": {"name": str(bot_name or "assistant"), "id": str(bot_id or "")},
+        "channel": {
+            "id": conversation_id,
+            "is_thread": bool(getattr(channel, "parent_id", None)),
+            "parent_id": str(getattr(channel, "parent_id", "") or ""),
+        },
+        "candidate": {
+            "id": str(getattr(message, "id", "") or ""),
+            "author": str(getattr(author, "display_name", None) or getattr(author, "name", "") or ""),
+            "author_id": str(getattr(author, "id", "") or ""),
+            "content": candidate_text[:_MAX_MESSAGE_CHARS],
+            "is_reply": getattr(message, "reference", None) is not None,
+            "has_attachments": bool(getattr(message, "attachments", None)),
+            "mentioned_anyone": bool(getattr(message, "mentions", None)),
+        },
+        "recent_messages": kept,
+    }
+
+
 class GateRuntime:
     """One adapter's gate: validated config, judge client and the context buffer.
 
@@ -532,35 +601,8 @@ class GateRuntime:
 
     def _build_state(self, message: Any, *, channel: Any, bot_name: str, bot_id: Any) -> Dict[str, Any]:
         """Assemble the bounded evidence the judge sees: this conversation only."""
-        author = getattr(message, "author", None)
-        conversation_id = self.conversation_id(channel)
-        recent = self.snapshot_context(channel)
-        budget = max(1, int(getattr(self.config, "context_chars", 0)))
-        kept: List[Dict[str, str]] = []
-        for entry in reversed(recent):  # newest first, so the budget keeps the freshest evidence
-            text = str(entry.get("content", ""))[:budget]
-            budget -= len(text)
-            kept.append({"author": entry.get("author", ""), "content": text})
-            if budget <= 0:
-                break
-        kept.reverse()
-        candidate_text = str(getattr(message, "content", "") or "")
-        return {
-            "platform": "discord",
-            "bot": {"name": str(bot_name or "assistant"), "id": str(bot_id or "")},
-            "channel": {
-                "id": conversation_id,
-                "is_thread": bool(getattr(channel, "parent_id", None)),
-                "parent_id": str(getattr(channel, "parent_id", "") or ""),
-            },
-            "candidate": {
-                "id": str(getattr(message, "id", "") or ""),
-                "author": str(getattr(author, "display_name", None) or getattr(author, "name", "") or ""),
-                "author_id": str(getattr(author, "id", "") or ""),
-                "content": candidate_text[:_MAX_MESSAGE_CHARS],
-                "is_reply": getattr(message, "reference", None) is not None,
-                "has_attachments": bool(getattr(message, "attachments", None)),
-                "mentioned_anyone": bool(getattr(message, "mentions", None)),
-            },
-            "recent_messages": kept,
-        }
+        return build_conversation_state(
+            message, channel=channel, bot_name=bot_name, bot_id=bot_id,
+            recent=self.snapshot_context(channel),
+            context_chars=getattr(self.config, "context_chars", 0),
+        )
