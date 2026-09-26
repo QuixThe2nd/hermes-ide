@@ -3889,6 +3889,20 @@ class BasePlatformAdapter(ABC):
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
     # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.
 
+    def _pending_event_is_drain_snapshot_owned(self, session_key: str) -> bool:
+        """True when the session's parked pending event is a drain-admission mirror.
+
+        ``record_drain_event`` (gateway/run_drain_queue.py) stamps each event the
+        durable drain snapshot owns (``_drain_snapshot_owned``) at drain-time
+        admission. The background pending-turn drain must leave such mirrors
+        parked for the post-bounce replay: running one re-enters the drain gate,
+        which re-records and re-acks the SAME event — the restart-drain
+        completion-amplification loop (one admitted completion filled the
+        snapshot to cap and replayed as that many turns).
+        """
+        pending_event = self._pending_messages.get(session_key)
+        return bool(getattr(pending_event, "_drain_snapshot_owned", False))
+
     def _release_session_guard(self, session_key: str, *, guard: Optional[asyncio.Event] = None) -> None:
         """Release the session guard; with ``guard`` given, only if the entry is still that exact
         Event (an old task's unwind must not clear the guard a reset-like command swapped in)."""
@@ -3976,7 +3990,12 @@ class BasePlatformAdapter(ABC):
         """Tail of /stop, /new, /reset: release the command-scoped guard, then
         spawn a fresh processing task for any follow-up queued meanwhile."""
         await self._flush_text_debounce_now(session_key)
-        pending_event = self._pending_messages.pop(session_key, None)
+        # A drain-snapshot-owned mirror stays parked for the post-bounce replay.
+        pending_event = (
+            None
+            if self._pending_event_is_drain_snapshot_owned(session_key)
+            else self._pending_messages.pop(session_key, None)
+        )
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is not None:
             self._start_session_processing(pending_event, session_key)
@@ -4469,7 +4488,12 @@ class BasePlatformAdapter(ABC):
         drop: re-queue it if another task already owns the session (drain handoff), else spawn the
         drain task and leave it the guard. Nothing pending: release the guard only if we still own
         it."""
-        late_pending = self._pending_messages.pop(session_key, None)
+        # A drain-snapshot-owned mirror stays parked for the post-bounce replay.
+        late_pending = (
+            None
+            if self._pending_event_is_drain_snapshot_owned(session_key)
+            else self._pending_messages.pop(session_key, None)
+        )
         current_task = asyncio.current_task()
         if late_pending is not None:
             existing_task = self._session_tasks.get(session_key)
@@ -4569,7 +4593,17 @@ class BasePlatformAdapter(ABC):
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
-            if session_key in self._pending_messages:
+            if (
+                session_key in self._pending_messages
+                and self._pending_event_is_drain_snapshot_owned(session_key)
+            ):
+                # Drain-snapshot-owned mirror: leave it parked for the
+                # post-bounce replay; this task finishes normally below.
+                logger.debug(
+                    "[%s] Leaving drain-snapshot-owned pending event parked "
+                    "for session %s (durable queue owns it)",
+                    self.name, session_key)
+            elif session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
