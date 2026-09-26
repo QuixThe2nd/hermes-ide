@@ -462,7 +462,7 @@ discord:
     channels:                 # explicit opt-in list — no "*"
       - 1234567890
     mode: shadow              # shadow (default) | enforce
-    threshold: 0.8            # score at or above this admits the message
+    threshold: 0.8            # legacy single-score key; kept for config compatibility only
     timeout_seconds: 3.0      # per-request budget; over budget means deny
     context_messages: 10      # recent same-channel messages sent as evidence
     context_chars: 8000       # total character budget for that evidence block
@@ -470,6 +470,8 @@ discord:
 ```
 
 **Modes.** `shadow` runs the judge and logs the verdict but never changes behavior — use it to see what the gate *would* have done before trusting it. `enforce` makes the verdict binding: an approved ambient message wakes the bot normally, and every other message in the gated channels stays silent.
+
+**The decision.** Each candidate is judged in one bounded request that asks three `noul` questions (each scored `0..1`): `addresses_bot` — does the message speak directly to the bot by name; `continues_bot_thread` — does it follow up on a conversation the bot was recently part of; `noise` — is it conversational noise with nothing to answer. The verdict is composed from the three components: **allow when `addresses_bot > 0.5`, or when `continues_bot_thread > 0.6` and `noise < 0.4`** — a direct address always admits, and a genuine thread follow-up admits unless the message is noise. A missing or invalid component fails closed (deny). The `threshold` key is still accepted and validated so existing configs keep loading, but it no longer influences the verdict; the composed cutoffs are fixed.
 
 **Explicit triggers never consult it.** `@mentions`, replies to the bot, `mention_patterns` wake words, slash commands, and DMs all keep their existing paths with no judge round-trip. Only unprompted text is judged, and text that pings another human is judged rather than preempted — it may be meant for someone else and still be worth answering.
 

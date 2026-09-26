@@ -1475,14 +1475,18 @@ class RestartPendingThreadTitle(NamedTuple):
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.response_gate import (
+    ADDRESSES_BOT_KEY,
+    CONTINUES_THREAD_KEY,
+    NOISE_KEY,
     ChannelContextBuffer,
     GateDecision,
     GateRuntime,
     JevDecisionClient,
     ResponseGateError,
-    SHOULD_REPLY_KEY,
-    build_gate_instructions,
 )
+
+#: Component display order for gate echoes/logs (matches the judge's question order).
+_RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, NOISE_KEY)
 
 
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
@@ -2119,10 +2123,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return bool(gate.echo_keys.intersection(keys))
 
     def _response_gate_echo_text(self, decision: GateDecision) -> str:
-        gate = self._response_gate
-        threshold = float(gate.config.threshold) if gate is not None else 0.8
         if decision.error:
             return f"gate error ({decision.error})"
+        if decision.scores:
+            verdict = "allow" if decision.allowed else "deny"
+            parts = " ".join(
+                f"{key}={decision.scores.get(key, 0.0):.2f}" for key in _RESPONSE_GATE_SCORE_KEYS
+            )
+            return f"{verdict} ({parts})"
+        # Legacy single-score decision (no component nouls): keep the threshold readout.
+        gate = self._response_gate
+        threshold = float(gate.config.threshold) if gate is not None else 0.8
         score = decision.score if decision.score is not None else 0.0
         if score >= threshold:
             return f"{score:.2f}"
@@ -2210,17 +2221,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _response_gate_log(
         self, decision: GateDecision, candidate: Dict[str, Any], *, outcome: Optional[str] = None,
     ) -> None:
-        """One line per consultation: ids, mode, outcome, score, sanitized reason, latency.
+        """One line per consultation: ids, mode, outcome, scores, sanitized reason, latency.
 
         Never message content, credentials, headers or the remote response body.
         """
         resolved_outcome = outcome if outcome is not None else ("allow" if decision.allowed else "deny")
+        if decision.scores:
+            score_text = " ".join(
+                f"{key}={decision.scores.get(key, -1.0):.4f}" for key in _RESPONSE_GATE_SCORE_KEYS
+            )
+        else:
+            # Legacy single-score decision (no component nouls present).
+            score_text = "should_reply=%.4f" % (decision.score if decision.score is not None else -1.0)
         logger.log(
             logging.WARNING if decision.error else logging.INFO,
-            "[%s] response_gate mode=%s channel=%s message=%s outcome=%s %s=%.4f reason=%s error=%s latency_ms=%s",
+            "[%s] response_gate mode=%s channel=%s message=%s outcome=%s %s reason=%s error=%s latency_ms=%s",
             self.name, decision.mode, candidate.get("conversation_id"), candidate.get("message_id"),
-            resolved_outcome, SHOULD_REPLY_KEY,
-            decision.score if decision.score is not None else -1.0,
+            resolved_outcome, score_text,
             decision.reason, decision.error or "none",
             f"{decision.latency_ms:.0f}" if decision.latency_ms is not None else "n/a",
         )

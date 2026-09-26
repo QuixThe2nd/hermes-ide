@@ -454,7 +454,10 @@ class ResponseGateConfig:
     #: ``shadow`` computes and logs the decision but keeps the legacy admission result;
     #: ``enforce`` lets an approved ambient message through and denies everything else.
     mode: str = "shadow"
-    #: ``noul`` score at or above this allows ambient participation.
+    #: Legacy single-score cutoff, still accepted and validated so existing configs keep
+    #: loading. The gate's verdict is composed from three fixed component cutoffs
+    #: (addresses_bot > 0.5, or continues_bot_thread > 0.6 and noise < 0.4); this value
+    #: no longer influences it.
     threshold: float = 0.8
     #: Per-request budget; a timeout denies (enforce) rather than failing open.
     timeout_seconds: float = 3.0
