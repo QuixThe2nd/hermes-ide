@@ -1484,6 +1484,11 @@ from plugins.platforms.discord.response_gate import (
     JevDecisionClient,
     ResponseGateError,
 )
+from plugins.platforms.discord.reaction_gate import (
+    ReactionDecision,
+    ReactionGateRuntime,
+    split_reaction_clusters,
+)
 
 #: Component display order for gate echoes/logs (matches the judge's question order).
 _RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, NOISE_KEY)
@@ -1549,6 +1554,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._response_gate_admitted_ids: "OrderedDict[str, None]" = OrderedDict()
         self._response_gate_echoed_ids: "OrderedDict[str, None]" = OrderedDict()
         self._response_gate_warned: set = set()
+        # Opt-in emoji reaction gate (discord.reaction_gate). Independent of the speaking
+        # gate above: its own scope, judge, evidence and once-only registry. The runtime
+        # reuses the SAME credential captured at connect() (this profile's own key), so
+        # late event callbacks can never read another profile's. None ⇒ off, never consulted.
+        self._reaction_gate: Optional[ReactionGateRuntime] = None
+        # Message ids this adapter's reaction gate has consulted (or is consulting):
+        # the once-only guard across live + recovered duplicate deliveries. Bounded.
+        self._reaction_gate_seen: "OrderedDict[str, None]" = OrderedDict()
+        # In-flight consultation tasks; cancelled and awaited in disconnect().
+        self._reaction_gate_tasks: set = set()
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
@@ -1778,6 +1793,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # another profile's (first-writer-wins) key.
             self._response_gate_credential = _scoped_gate_env("OPENROUTER_API_KEY") or None
             self._response_gate_init()
+            # The reaction gate shares that captured judge credential (same profile scope,
+            # same capture discipline); it never re-reads any secret at event time.
+            self._reaction_gate_init()
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
             self._allowed_role_ids = self._get_allowed_roles()
@@ -2282,6 +2300,186 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         gate.observe(channel, bot_name, text)
 
+    # --- opt-in choice reaction gate (discord.reaction_gate) -----------------
+    #
+    # A side effect, not a speech decision: for every message the ingress prefilters
+    # even consider (own bot messages, lifecycle/system events, DMs, auth-denied humans
+    # and out-of-policy channels excluded), consult the judge once and add the winning
+    # whitelisted entry — one reaction per grapheme cluster, so a multi-glyph entry
+    # (👉👈) reacts with each glyph while a compound emoji (🤦‍♂️) stays one reaction. It
+    # runs independently of the speaking gate's verdict — a
+    # message the speaking gate drops can still be reacted to — and its own success or
+    # failure never creates a session, forces a reply, or blocks one.
+
+    #: Consulted message ids held at once; a busy server cannot grow this without bound.
+    _REACTION_GATE_MAX_SEEN = 1024
+
+    def _reaction_gate_init(self) -> None:
+        """Build the reaction gate from validated config plus the credential captured at startup."""
+        reaction_cfg = getattr(self.config, "reaction_gate", None)
+        if reaction_cfg is None or not reaction_cfg.active:
+            self._reaction_gate = None
+            return
+        self._reaction_gate = ReactionGateRuntime.build(
+            reaction_cfg, self._response_gate_credential, logger=logger,
+        )
+        if self._reaction_gate.client is None:
+            # Enabled with no credential fails closed (no reactions); say so once,
+            # loudly, instead of looking like a quiet disable.
+            logger.error(
+                "[%s] reaction_gate is enabled for %d channel(s) but no OPENROUTER_API_KEY "
+                "was found in this profile's secrets: no automatic reactions will be added",
+                self.name, len(reaction_cfg.channels),
+            )
+
+    def _reaction_gate_candidate(self, message: Any) -> Optional[Dict[str, Any]]:
+        """Build the payload for one reaction candidate, or None when never consultable.
+
+        Single definition of "reaches the reaction judge", shared by both intake sites.
+        Deliberately WIDER than the speaking gate's candidate rule — mentions, replies
+        and other bots' messages are reaction candidates too — but still narrowed by the
+        rules that prevent loops and privacy leaks: never this bot's own messages, never
+        lifecycle/system events, never DMs, never a channel the allowed/ignored-channel
+        policy refuses, and never a human the user policy would not authorize. The
+        speaking rules keep their own meaning for text: a bot message that never
+        text-wakes this bot can still earn a reaction.
+        """
+        gate = self._reaction_gate
+        if gate is None:
+            return None
+        channel = getattr(message, "channel", None)
+        if channel is None or isinstance(channel, discord.DMChannel):
+            return None  # reactions are a server-surface feature; DMs stay private
+        author = getattr(message, "author", None)
+        own_user = getattr(getattr(self, "_client", None), "user", None)
+        if author is None or (own_user is not None and author == own_user):
+            return None  # never react to this bot's own output (loop guard)
+        if getattr(message, "type", discord.MessageType.default) not in {
+            discord.MessageType.default, discord.MessageType.reply,
+        }:
+            return None  # lifecycle/system events (joins, pins, …) carry nothing to react to
+        if not getattr(author, "bot", False):
+            msg_guild = getattr(message, "guild", None)
+            if msg_guild is None:
+                return None  # guild-less human traffic is DM-shaped; keep it out
+            msg_channel_ids = {str(getattr(channel, "id", "") or "")}
+            parent_id = self._get_parent_channel_id(channel)
+            if parent_id:
+                msg_channel_ids.add(parent_id)
+            if not self._is_allowed_user(
+                str(getattr(author, "id", "") or ""), author,
+                guild=msg_guild, is_dm=False, channel_ids=msg_channel_ids,
+            ):
+                return None  # the user policy that governs speech governs reactions too
+        channel_keys = self._discord_channel_keys_from_channel(
+            channel, self._get_parent_channel_id(channel),
+        )
+        if not gate.selects(channel_keys) or not self._discord_channel_policy_admits(channel_keys):
+            return None
+        return {
+            "message_id": str(getattr(message, "id", "") or ""),
+            "conversation_id": GateRuntime.conversation_id(channel),
+            "channel_keys": set(channel_keys),
+        }
+
+    def _reaction_gate_consider(self, message: Any) -> None:
+        """Consult the reaction judge for one dispatched message (bounded side effect).
+
+        The once-only registry is claimed synchronously BEFORE the task is spawned, so
+        a live/recovered duplicate — or two concurrent deliveries of the same id —
+        consults at most once and reacts at most once. The spawned task can never block
+        or fail the dispatch that called this; it is cancelled on disconnect.
+        """
+        candidate = self._reaction_gate_candidate(message)
+        if candidate is None:
+            return
+        message_id = candidate.get("message_id") or ""
+        if not message_id:
+            return
+        if message_id in self._reaction_gate_seen:
+            return
+        while len(self._reaction_gate_seen) >= self._REACTION_GATE_MAX_SEEN:
+            self._reaction_gate_seen.popitem(last=False)
+        self._reaction_gate_seen[message_id] = None
+        task = asyncio.create_task(self._reaction_gate_run(message, candidate))
+        self._reaction_gate_tasks.add(task)
+        task.add_done_callback(self._reaction_gate_tasks.discard)
+
+    async def _reaction_gate_run(self, message: Any, candidate: Dict[str, Any]) -> None:
+        """One bounded consultation → one reaction per grapheme cluster. Never raises into dispatch."""
+        gate = self._reaction_gate
+        if gate is None:
+            return
+        user = getattr(getattr(self, "_client", None), "user", None)
+        decision = await gate.evaluate(
+            message, channel=getattr(message, "channel", None),
+            bot_name=str(getattr(user, "display_name", "") or getattr(user, "name", "") or ""),
+            bot_id=getattr(user, "id", None),
+        )
+        # Buffered AFTER the evaluation, so the candidate is never its own history.
+        self._reaction_gate_observe(message, candidate)
+        emoji = decision.emoji
+        if emoji is None:
+            self._reaction_gate_log(decision, candidate)
+            return
+        # A multi-glyph whitelist entry is ONE judge option but is added as one
+        # reaction per grapheme cluster, in string order (👉👈 → 👉 then 👈); a
+        # compound emoji (🤦‍♂️, 1️⃣, 🇦🇺) is one cluster and stays one reaction.
+        # Each cluster is its own API call with no transaction: one failing is
+        # logged and never skips the remaining clusters.
+        clusters = split_reaction_clusters(emoji)
+        added = [await self._add_reaction(message, cluster) for cluster in clusters]
+        if all(added):
+            outcome = f"react:{emoji}"
+        else:
+            detail = ",".join(
+                f"{cluster}:{'added' if ok else 'failed'}"
+                for cluster, ok in zip(clusters, added)
+            )
+            outcome = (
+                f"react_partial:{emoji}[{detail}]" if any(added)
+                else f"react_failed:{emoji}[{detail}]"
+            )
+        self._reaction_gate_log(decision, candidate, outcome=outcome)
+
+    def _reaction_gate_log(
+        self, decision: ReactionDecision, candidate: Dict[str, Any], *,
+        outcome: Optional[str] = None,
+    ) -> None:
+        """One line per consultation: ids, outcome, abstention mass, sanitized reason, latency.
+
+        Never message content, credentials, headers or the remote response body.
+        """
+        resolved = outcome if outcome is not None else (
+            "react" if decision.emoji is not None else "no_reaction"
+        )
+        logger.log(
+            logging.WARNING if decision.error else logging.INFO,
+            "[%s] reaction_gate channel=%s message=%s outcome=%s abstain=%.4f reason=%s error=%s latency_ms=%s",
+            self.name, candidate.get("conversation_id"), candidate.get("message_id"),
+            resolved,
+            decision.abstain_sum if decision.abstain_sum is not None else -1.0,
+            decision.reason, decision.error or "none",
+            f"{decision.latency_ms:.0f}" if decision.latency_ms is not None else "n/a",
+        )
+
+    def _reaction_gate_observe(self, message: Any, candidate: Dict[str, Any]) -> None:
+        """Buffer one in-scope message as future reaction evidence (cheap, bounded).
+
+        Unlike the speaking gate's evidence (human messages plus this bot's replies),
+        reaction evidence also carries other bots' messages: they are reaction
+        candidates too, and the judge should see the conversation they appear in.
+        """
+        gate = self._reaction_gate
+        if gate is None or candidate is None:
+            return
+        author = getattr(message, "author", None)
+        gate.observe(
+            message.channel,
+            getattr(author, "display_name", None) or getattr(author, "name", ""),
+            getattr(message, "content", ""),
+        )
+
     def _discord_message_admission(
         self, message: Any, *, claim: bool, gate_probe: Optional[Dict[str, Any]] = None,
     ) -> tuple[bool, bool]:
@@ -2382,6 +2580,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # enforce approval can also rescue an ambient message admission dropped on the mention
         # policy (verdict True) while a deny still sends nothing anywhere.
         verdict = await self._response_gate_apply(message, gate_probe)
+        # Reaction consideration is independent of the speaking verdict: a message this
+        # gate (or the mention prefilter above) drops can still be reacted to, and the
+        # spawned task never blocks this dispatch.
+        self._reaction_gate_consider(message)
         if verdict is False:
             return False  # enforce deny: no typing, thread, session or tool side effects
         if not admitted and verdict is not True:
@@ -2780,6 +2982,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     await task
                 except asyncio.CancelledError:
                     pass
+        # Reaction consultations are dispatch side effects: cancel any still in flight
+        # (their message is gone from this connection's point of view) and drop the
+        # once-only registry so a reconnect starts clean.
+        for task in list(self._reaction_gate_tasks):
+            task.cancel()
+        for task in list(self._reaction_gate_tasks):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pragma: no cover - defensive logging
+                logger.debug("[%s] reaction_gate task error during disconnect", self.name, exc_info=True)
+        self._reaction_gate_tasks.clear()
+        self._reaction_gate_seen.clear()
+        self._reaction_gate = None
         self._running = False
         self._client = None
         self._ready_event.clear()
@@ -3162,6 +3379,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
         """Run one recovered message through the live Discord ingress gates."""
+        # Considered before the mention prefilter below: that prefilter's early return
+        # would otherwise hide recovered ambient messages from the reaction gate, which
+        # must see exactly what the live path sees (independent of the speaking rules).
+        self._reaction_gate_consider(message)
         if not isinstance(message.channel, discord.DMChannel):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)

@@ -223,6 +223,8 @@ _SHARED_KEYS: tuple = (
     # root-level ``discord:`` block and a nested ``platforms.discord:`` block both deliver it
     # to the adapter, which parses/validates it. See plugins/platforms/discord docs.
     ("response_gate", None, None),
+    # Same bridge for the independent emoji reaction gate (gateway.config.ReactionGateConfig).
+    ("reaction_gate", None, None),
     ("observe_unmentioned_group_messages", _TELEGRAM, None),
     *_plain(
         "dm_policy", "allow_from", "allow_admin_from", "user_allowed_commands",

@@ -127,7 +127,7 @@ class TestOwnFinalReplyBecomesEvidence:
 
         captured: list[dict] = []
 
-        async def fake_request(_self, state):
+        async def fake_request(_self, state, chat_id=None):
             captured.append(state)
             return {"answers": {"should_reply": {"type": "noul", "noul": 0.9}}}
 
