@@ -1709,6 +1709,19 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         incoming_is_photo = event.message_type == MessageType.PHOTO
         both_photo = existing_is_photo and incoming_is_photo
         incoming_has_media = bool(event.media_urls)
+        # Durable-ownership boundary (drain-restart snapshots own the stamped side and
+        # replay it after the bounce).  Chosen mechanism: block cross-boundary merges.
+        # An unstamped live event merging into a snapshot-owned head would diverge the
+        # live head from the durable copy its replay re-admits — so return unmerged and
+        # let the snapshot stay the head's one owner.  Conversely a stamped event
+        # merging into an unmarked head must mark the surviving head, or the merged
+        # (partly snapshot-owned) head reads as unowned, is processed live before
+        # shutdown, and its incoming portion is ALSO replayed after restart.
+        incoming_owned = bool(getattr(event, "_drain_snapshot_owned", False))
+        if bool(getattr(existing, "_drain_snapshot_owned", False)) and not incoming_owned:
+            return
+        if incoming_owned:
+            existing._drain_snapshot_owned = True
 
         def _padded_inline_flags(msg: MessageEvent) -> List[Optional[bool]]:
             flags = list(getattr(msg, "media_text_inlined", []) or [])
@@ -4706,7 +4719,10 @@ class BasePlatformAdapter(ABC):
             # in self._background_tasks now.  Re-check.
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
             from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+            # Snapshot-owned mirrors stay out: the durable drain snapshot already owns
+            # them, and spooling here too would replay them twice after restart.
+            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown",
+                                  skip_attrs=("_drain_snapshot_owned",))
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
