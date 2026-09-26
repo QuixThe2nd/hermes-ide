@@ -109,6 +109,45 @@ Route names come from the proxy's route table (`hermes llm_usage_proxy status`).
 Explicit `llm_usage_proxy.upstreams` config entries, the well-known provider
 defaults, and each credential-pool entry's base URL all become routes.
 
+## Jev body capture (opt-in)
+
+Off by default, nothing is captured. With `--capture-jev-bodies` on the proxy's
+argv (or `llm_usage_proxy.capture_jev_bodies: true` in config — see the caveat
+below), the proxy stores the **full request JSON and the complete
+non-streaming response body** for jev traffic only, so a human can troubleshoot
+a bad response from the actual bytes that crossed the wire.
+
+Scope and honesty rules:
+
+* Captured traffic is exactly: route `openrouter-alpha` **and** request model
+  starting with `typesafe/jev-` (case-insensitive). Everything else — other
+  routes, other model families — is never captured, even with the flag on.
+* Bodies go to a **separate `jev_bodies` table** (request and response text,
+  status, latency, request id, timestamps, and a `capture_state`); the usage
+  ledger's shape and retention are untouched. The table is only created when
+  the flag is on, so a default-off deployment's DB is byte-identical to one
+  that never had the feature.
+* Streaming (SSE) responses are never captured — the row stores the request
+  plus an explicit `[response was streamed …]` marker, so a row can never read
+  as a half-response. Bodies past the buffered cap are stored truncated with
+  an explicit truncation marker; an abandoned or failed relay stores what it
+  had with an `incomplete` marker.
+* Retention is bounded: rows older than 24h are pruned opportunistically on
+  insert, and the table is capped at 5000 rows (newest kept). The DB file
+  keeps the same `0600` posture as the ledger.
+
+The dashboard in `apps/usage-proxy-webui` lists the captures at `/captures`
+(time, model, path, status, latency, state) with a detail page per row
+rendering the pretty-printed request JSON and the raw response text —
+escaped, monospace, read-only, same LAN-only posture as the rest of the
+dashboard, linked from the main page and no auto-refresh.
+
+**Config:** `capture_jev_bodies` in the plugin config (default off) is wired
+through the systemd unit renderer: an enabled config adds
+`--capture-jev-bodies` to the unit's `ExecStart` argv on the next
+`hermes llm_usage_proxy enable`/update, or pass the flag directly to a manual
+`hermes llm_usage_proxy serve --capture-jev-bodies` run.
+
 ## Security posture
 
 * Binds `127.0.0.1` only. Never a LAN or Tailscale address.
@@ -122,3 +161,6 @@ defaults, and each credential-pool entry's base URL all become routes.
   is the one place a secret may sit in argv (shell history and `ps` can see it);
   pass `--key -` to read it from stdin instead.
 * The ledger, WAL/SHM siblings, and key store are all `0600` from creation.
+* Body capture is opt-in and narrow by construction: one route, one model
+  family, its own table, bounded retention. With the flag off, no body is ever
+  stored and the `jev_bodies` table is never created.

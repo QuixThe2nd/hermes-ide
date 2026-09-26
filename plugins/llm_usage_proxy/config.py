@@ -69,6 +69,11 @@ def load_llm_usage_proxy_config(raw: Mapping[str, Any] | None = None) -> dict[st
         # local caller tokens. Off by default — it changes who may call the
         # proxy at all, so flipping it on has to be a decision, not a default.
         "manage_keys": _coerce_bool(raw.get("manage_keys"), False),
+        # Opt-in jev body capture (--capture-jev-bodies on the unit): full
+        # request/response bodies for jev traffic only, in their own table
+        # with bounded retention. Off by default — storing bodies is a
+        # troubleshooting decision, never a silent default.
+        "capture_jev_bodies": _coerce_bool(raw.get("capture_jev_bodies"), False),
     }
 
 
@@ -76,6 +81,14 @@ def manage_keys_enabled(cfg: Mapping[str, Any]) -> bool:
     """Whether a config mapping asks for key-manager mode (never raises)."""
     try:
         return _coerce_bool(cfg.get("manage_keys"), False)
+    except AttributeError:
+        return False
+
+
+def capture_jev_bodies_enabled(cfg: Mapping[str, Any]) -> bool:
+    """Whether a config mapping asks for jev body capture (never raises)."""
+    try:
+        return _coerce_bool(cfg.get("capture_jev_bodies"), False)
     except AttributeError:
         return False
 

@@ -88,6 +88,23 @@ FETCH_TIMEOUT_MS = 4500
 DASHBOARD_EVENTS = 50       # rows shown in the recent-events table
 API_EVENTS_DEFAULT = 200
 API_EVENTS_MAX = 1000
+
+# Jev body-capture viewer (/captures): rows in the list table, and the badge
+# tone/label per capture_state the proxy writes into jev_bodies.
+CAPTURES_LIMIT_DEFAULT = 200
+CAPTURES_LIMIT_MAX = 500
+CAPTURE_STATE_TONES = {
+    "complete": "good",
+    "streamed": "none",
+    "incomplete": "crit",
+    "truncated": "none",
+}
+CAPTURE_STATE_LABELS = {
+    "complete": "complete",
+    "streamed": "streamed · not captured",
+    "incomplete": "incomplete",
+    "truncated": "truncated",
+}
 HOURS = 24
 DAYS_7D = 7
 
@@ -539,6 +556,76 @@ def ledger_columns(conn: sqlite3.Connection) -> set[str]:
         return {row[1] for row in conn.execute("PRAGMA table_info(usage_events)")}
     except sqlite3.Error:
         return set()
+
+
+def jev_bodies_present(conn: sqlite3.Connection) -> bool:
+    """Whether this DB has a jev_bodies table at all.
+
+    The proxy creates the table only when --capture-jev-bodies is on, so a
+    default-off deployment must render an empty viewer, not an error.
+    """
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jev_bodies'"
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
+
+
+def query_jev_captures(conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+    """Newest jev_bodies rows for the /captures list table."""
+    rows = conn.execute(
+        "SELECT id, ts, upstream, model, path, status_code, latency_ms,"
+        " capture_state FROM jev_bodies ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    out = []
+    for cid, ts, upstream, model, path, status_code, latency_ms, state in rows:
+        capture: dict[str, Any] = {
+            "id": cid,
+            "ts": ts,
+            "upstream": upstream,
+            "model": model,
+            "path": path,
+            "status_code": status_code,
+            "latency_ms": latency_ms,
+            "capture_state": state,
+        }
+        capture["ts_sydney"] = to_sydney(ts)
+        out.append(capture)
+    return out
+
+
+def query_jev_capture(
+    conn: sqlite3.Connection, capture_id: int
+) -> Optional[dict[str, Any]]:
+    """One full jev_bodies row (bodies included) for the detail page."""
+    row = conn.execute(
+        "SELECT id, ts, upstream, model, path, request_id, status_code,"
+        " latency_ms, capture_state, request_body, response_body, created_at"
+        " FROM jev_bodies WHERE id = ?",
+        (capture_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    capture: dict[str, Any] = {
+        "id": row[0],
+        "ts": row[1],
+        "upstream": row[2],
+        "model": row[3],
+        "path": row[4],
+        "request_id": row[5],
+        "status_code": row[6],
+        "latency_ms": row[7],
+        "capture_state": row[8],
+        "request_body": row[9],
+        "response_body": row[10],
+        "created_at": row[11],
+    }
+    capture["ts_sydney"] = to_sydney(capture["ts"])
+    capture["created_sydney"] = to_sydney(capture["created_at"])
+    return capture
 
 
 def utc_now() -> datetime:
@@ -1734,6 +1821,266 @@ def events_table_body(events: list[dict[str, Any]]) -> str:
     return "".join(out)
 
 
+def pretty_request_json(text: Any) -> str:
+    """Best-effort pretty-print of a captured request body.
+
+    Captured requests are JSON by construction; a body that is not valid
+    JSON (truncated at the cap, or rewritten past recognition) is shown
+    exactly as stored rather than mangled into something it never was.
+    """
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return str(text)
+    if not isinstance(parsed, (dict, list)):
+        return str(text)
+    return json.dumps(parsed, indent=2, ensure_ascii=False)
+
+
+def capture_state_badge(state: Any) -> str:
+    key = str(state) if state else ""
+    tone = CAPTURE_STATE_TONES.get(key, "none")
+    label = CAPTURE_STATE_LABELS.get(key, key or "unknown")
+    return (
+        f'<span class="badge"><span class="dot-s tone-{tone}"></span>'
+        f"<span>{esc(label)}</span></span>"
+    )
+
+
+def _capture_num(value: Any, suffix: str = "") -> str:
+    """Numeric cell, or an explicit dash when the proxy recorded NULL."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return '<span class="muted">&mdash;</span>'
+    return esc(f"{value}{suffix}")
+
+
+def captures_table_body(captures: list[dict[str, Any]]) -> str:
+    if not captures:
+        return (
+            '<tr><td colspan="7" class="muted">No jev captures'
+            " &mdash; capture is opt-in (--capture-jev-bodies) and stores only"
+            " openrouter-alpha traffic whose model starts with"
+            " typesafe/jev-</td></tr>"
+        )
+    out = []
+    for c in captures:
+        row_cls = ' class="row-crit"' if c.get("capture_state") == "incomplete" else ""
+        out.append(
+            f"<tr{row_cls}>"
+            f'<td class="num" title="{esc(c.get("ts"))}">{esc(c.get("ts_sydney"))}</td>'
+            f"<td>{model_name_html(c.get('model'))}</td>"
+            f"<td>{esc(c.get('path'))}</td>"
+            f'<td class="num">{_capture_num(c.get("status_code"))}</td>'
+            f'<td class="num">{_capture_num(c.get("latency_ms"), " ms")}</td>'
+            f"<td>{capture_state_badge(c.get('capture_state'))}</td>"
+            f'<td><a class="navlink" href="/captures/{c["id"]}">view</a></td>'
+            "</tr>"
+        )
+    return "".join(out)
+
+
+def _captures_shell(title: str, subtitle: str, body: str) -> bytes:
+    """Static page shell for the capture viewer — same CSS, same dark card
+    style, no polling JS: these pages are read at human speed, on demand."""
+    page = (
+        """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>"""
+        + esc(title)
+        + """</title>
+<style>"""
+        + CSS
+        + """</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="topbar">
+  <div>
+    <h1>Jev <span class="accent">captures</span></h1>
+    <p class="subtitle">"""
+        + subtitle
+        + """</p>
+  </div>
+  <div class="live"><span class="dot" aria-hidden="true"></span><span>read-only</span></div>
+</header>
+
+"""
+        + body
+        + """
+
+<footer>
+  Opt-in request/response body capture for jev traffic &middot; SQLite opened read-only (mode=ro) &middot; same LAN-only posture as the dashboard &middot; no auto-refresh: reload to see new captures.
+</footer>
+</div>
+</body>
+</html>"""
+    )
+    return page.encode("utf-8")
+
+
+def _captures_error_card(message: str) -> str:
+    return (
+        '<div class="card error-card show"><h2>Captures unavailable</h2>'
+        f"<p>{esc(message)}</p></div>"
+    )
+
+
+def render_captures_page(db_path: str, limit: int) -> tuple[int, bytes]:
+    """The /captures list page. Soft-fails at HTTP 200 (dashboard convention)
+    so a transient DB lock still leaves a page worth reloading."""
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = open_db_readonly(db_path)
+        table_absent = not jev_bodies_present(conn)
+        captures = [] if table_absent else query_jev_captures(conn, limit)
+    except (sqlite3.Error, OSError) as exc:
+        return 200, _captures_shell(
+            "Jev captures — AI Usage",
+            "captured request/response bodies",
+            _captures_error_card(f"capture store unavailable: {exc}"),
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+    if table_absent:
+        body = (
+            '<section class="card"><div class="card-head"><h2>Captured bodies</h2>'
+            '<span class="win">nothing captured on this ledger</span></div>'
+            '<p class="muted">This ledger has no jev_bodies table: the proxy'
+            " creates it only when started with --capture-jev-bodies.</p></section>"
+        )
+    else:
+        body = (
+            '<section class="card" aria-label="Captured jev bodies">'
+            '<div class="card-head"><h2>Captured bodies</h2>'
+            f'<span class="win">newest {len(captures)} &middot; times in Australia/Sydney'
+            " &middot; retention is bounded by the proxy</span></div>"
+            '<div class="scroll-x"><table class="events">'
+            "<thead><tr>"
+            "<th scope=\"col\">Time</th><th scope=\"col\">Model</th>"
+            "<th scope=\"col\">Path</th><th scope=\"col\" class=\"num\">Status</th>"
+            "<th scope=\"col\" class=\"num\">Latency</th><th scope=\"col\">State</th>"
+            "<th scope=\"col\"><span class=\"sr-only\">View</span></th>"
+            "</tr></thead><tbody>"
+            + captures_table_body(captures)
+            + "</tbody></table></div></section>"
+        )
+    return 200, _captures_shell(
+        "Jev captures — AI Usage",
+        "captured request/response bodies &middot; "
+        '<a class="navlink" href="/">back to the dashboard</a>',
+        body,
+    )
+
+
+def _capture_meta_row(label: str, value_html: str) -> str:
+    return f'<tr><th scope="row">{esc(label)}</th><td>{value_html}</td></tr>'
+
+
+def render_capture_page(db_path: str, capture_id: int) -> tuple[int, bytes]:
+    """The /captures/&lt;id&gt; detail page: meta plus both bodies, escaped."""
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = open_db_readonly(db_path)
+        capture = (
+            query_jev_capture(conn, capture_id)
+            if jev_bodies_present(conn)
+            else None
+        )
+    except (sqlite3.Error, OSError) as exc:
+        return 200, _captures_shell(
+            f"Capture #{capture_id} — AI Usage",
+            "captured request/response bodies",
+            _captures_error_card(f"capture store unavailable: {exc}"),
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+    if capture is None:
+        body = (
+            '<section class="card"><div class="card-head">'
+            f"<h2>Capture #{capture_id} not found</h2></div>"
+            '<p class="muted">It may have been pruned by the retention window or'
+            ' the row cap. <a class="navlink" href="/captures">Back to the list'
+            "</a>.</p></section>"
+        )
+        return 404, _captures_shell(
+            f"Capture #{capture_id} — AI Usage",
+            "captured request/response bodies",
+            body,
+        )
+
+    status = capture.get("status_code")
+    request_id = capture.get("request_id")
+    meta_rows = "".join(
+        (
+            _capture_meta_row(
+                "Started",
+                f'<span title="{esc(capture.get("ts"))}">'
+                f"{esc(capture.get('ts_sydney'))} (Sydney)</span>",
+            ),
+            _capture_meta_row("Stored", esc(capture.get("created_sydney")) + " (Sydney)"),
+            _capture_meta_row(
+                "Route",
+                esc(capture.get("upstream")) + " &middot; " + esc(capture.get("path")),
+            ),
+            _capture_meta_row("Model", model_name_html(capture.get("model"))),
+            _capture_meta_row("Status", _capture_num(status)),
+            _capture_meta_row("Latency", _capture_num(capture.get("latency_ms"), " ms")),
+            _capture_meta_row("State", capture_state_badge(capture.get("capture_state"))),
+            _capture_meta_row(
+                "Upstream request id",
+                f'<span class="mono">{esc(request_id)}</span>'
+                if request_id
+                else '<span class="muted">&mdash;</span>',
+            ),
+        )
+    )
+    request_body = capture.get("request_body")
+    response_body = capture.get("response_body")
+    body = (
+        '<p><a class="navlink" href="/captures">&larr; all captures</a></p>'
+        '<section class="card" aria-label="Capture metadata">'
+        f'<div class="card-head"><h2>Capture #{capture["id"]}</h2>'
+        '<span class="win">exactly what the proxy stored &mdash; nothing is'
+        " re-fetched or edited</span></div>"
+        f'<div class="scroll-x"><table><tbody>{meta_rows}</tbody></table></div>'
+        "</section>"
+        '<section class="card" aria-label="Request body">'
+        "<h2>Request body</h2>"
+        '<p class="win">pretty-printed from the stored JSON</p>'
+    )
+    if request_body:
+        body += (
+            '<pre class="body-block">'
+            + esc(pretty_request_json(request_body))
+            + "</pre>"
+        )
+    else:
+        body += '<p class="muted">No request body was stored.</p>'
+    body += '</section><section class="card" aria-label="Response body">'
+    body += "<h2>Response body</h2>"
+    body += '<p class="win">raw stored text &mdash; not interpreted</p>'
+    if response_body:
+        body += '<pre class="body-block">' + esc(response_body) + "</pre>"
+    else:
+        body += '<p class="muted">No response body was stored.</p>'
+    body += "</section>"
+    return 200, _captures_shell(
+        f"Capture #{capture['id']} — AI Usage",
+        "captured request/response bodies &middot; "
+        '<a class="navlink" href="/">back to the dashboard</a>',
+        body,
+    )
+
+
 def bucket_series_groups(bucket: dict[str, Any]) -> list[dict[str, Any]]:
     """One entry per harness: ``{caller, tokens, models: [(model, tokens), …]}``
     with harnesses and models both sorted tokens-desc — the structured text
@@ -2268,6 +2615,19 @@ th.sortable.sorted-desc::after { content: " ▼"; font-size: 0.6rem; }
 
 footer { margin-top: 20px; color: var(--muted); font-size: 0.75rem; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* capture viewer (/captures): plain in-page navigation and the two stored
+   bodies — monospace, wrapped, scroll-bounded; content is html-escaped */
+.navlink, a.navlink { color: var(--accent-bright); text-decoration: none; }
+a.navlink:hover, a.navlink:focus-visible { text-decoration: underline; }
+.mono { font-family: var(--mono); font-size: 0.82rem; }
+.body-block {
+  margin: 0; padding: 12px 14px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 8px;
+  font-family: var(--mono); font-size: 0.78rem; line-height: 1.5;
+  color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 70vh; overflow: auto;
+}
 
 @media (max-width: 600px) {
   body { font-size: 14px; }
@@ -4258,7 +4618,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 <header class="topbar">
   <div>
     <h1>AI <span class="accent">Usage</span></h1>
-    <p class="subtitle">Live LLM token usage &middot; read-only view of the SQLite ledger &middot; times in Australia/Sydney</p>
+    <p class="subtitle">Live LLM token usage &middot; read-only view of the SQLite ledger &middot; times in Australia/Sydney &middot; <a class="navlink" href="/captures">jev body captures</a></p>
   </div>
   <div class="live" id="live" role="status">
     <span class="dot" aria-hidden="true"></span>
@@ -4482,6 +4842,24 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 conn.close()
         return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8")
 
+    def _captures_body(self, parsed) -> tuple[int, str, bytes]:
+        qs = parse_qs(parsed.query)
+        limit = CAPTURES_LIMIT_DEFAULT
+        if "limit" in qs:
+            try:
+                limit = min(max(1, int(qs["limit"][0])), CAPTURES_LIMIT_MAX)
+            except (ValueError, IndexError):
+                return 400, "text/plain; charset=utf-8", b"invalid limit\n"
+        status, body = render_captures_page(self.db_path, limit)
+        return status, "text/html; charset=utf-8", body
+
+    def _capture_detail_body(self, parsed) -> tuple[int, str, bytes]:
+        raw = parsed.path.rsplit("/", 1)[-1]
+        if not raw.isdigit():
+            return 404, "text/plain; charset=utf-8", b"not found\n"
+        status, body = render_capture_page(self.db_path, int(raw))
+        return status, "text/html; charset=utf-8", body
+
     def _body_for(self, parsed) -> tuple[int, str, bytes]:
         route = parsed.path
         filters = parse_filters(parse_qs(parsed.query))
@@ -4498,6 +4876,10 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             return self._timeseries_body(parsed)
         if route == "/api/events":
             return self._events_body(parsed)
+        if route == "/captures":
+            return self._captures_body(parsed)
+        if route.startswith("/captures/"):
+            return self._capture_detail_body(parsed)
         return 404, "text/plain; charset=utf-8", b"not found\n"
 
     def do_GET(self) -> None:

@@ -34,6 +34,7 @@ from plugins.auto_update.systemd import (
     format_environment,
 )
 from plugins.llm_usage_proxy.config import (
+    capture_jev_bodies_enabled,
     load_llm_usage_proxy_config,
     manage_keys_enabled,
 )
@@ -183,6 +184,8 @@ def build_exec_start_argv(
         # No secret travels in argv: the server reads the key store from disk.
         argv.append("--manage-keys")
         argv.extend(("--keys-path", str(keys_path(home))))
+    if capture_jev_bodies_enabled(cfg):
+        argv.append("--capture-jev-bodies")
     resolved = dict(targets) if targets is not None else build_route_table(
         cfg, environ=environ
     )
@@ -699,6 +702,7 @@ def format_status(
         f"  Bind: {BIND_HOST}:{port}",
         f"  SQLite: {db_path()}",
         f"  Key manager: {'on (--manage-keys; keys in ' + str(keys_path()) + ')' if manage_keys_enabled(cfg) else 'off (credential passthrough)'}",
+        f"  Jev body capture: {'on (--capture-jev-bodies)' if capture_jev_bodies_enabled(cfg) else 'off'}",
         f"  Unit installed: {'yes' if result.unit_installed else 'no'}",
         f"  Enabled: {_format_yes_no(result.enabled, known=result.enabled_known)}",
         f"  Service active: {_format_yes_no(result.service_active, known=result.service_active_known)}",

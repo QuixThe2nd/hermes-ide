@@ -39,6 +39,15 @@ Security posture:
     ``redact_text`` and never include bodies.
   * One row per HTTP attempt; a failed attempt is a row with a NULL status,
     never a silent gap and never a fabricated zero.
+  * Opt-in body capture (``--capture-jev-bodies``) stores full request and
+    non-streaming response bodies — but only for jev traffic (the
+    openrouter-alpha route with ``typesafe/jev-*`` models), in a separate
+    ``jev_bodies`` table with a bounded retention window and row cap, never
+    in the usage ledger. Off by default: without the flag no body is ever
+    stored and behavior is byte-identical to a proxy without the feature.
+    Streaming responses are never captured (the request plus an explicit
+    streamed marker only), and bodies past the buffered cap are stored
+    truncated with an explicit marker rather than silently shortened.
 
 Honesty rules for the accounting:
   * Usage completeness (final / partial / missing) is recorded separately
@@ -69,7 +78,7 @@ import tempfile
 import threading
 import time
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection, HTTPSConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping, Optional
@@ -180,6 +189,29 @@ SCHEMA_CHAT_INDEX = (
     " ON usage_events (chat_id, ts)"
 )
 
+# Opt-in jev body capture (--capture-jev-bodies). Bodies live in a table of
+# their own — never as new usage_events columns — so the ledger's shape and
+# retention are untouched, and the table itself is only created when capture
+# is enabled: a default-off proxy leaves the DB byte-identical to one that
+# never had the feature.
+JEV_BODIES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS jev_bodies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    upstream TEXT NOT NULL,
+    model TEXT,
+    path TEXT,
+    request_id TEXT,
+    status_code INTEGER,
+    latency_ms INTEGER,
+    capture_state TEXT NOT NULL,
+    request_body TEXT,
+    response_body TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jev_bodies_ts ON jev_bodies (ts);
+"""
+
 # Hop-by-hop headers (RFC 2616 §13.5.1 + common additions) — never forwarded
 # in either direction. Host/Content-Length are handled explicitly instead.
 HOP_BY_HOP = {
@@ -217,6 +249,38 @@ KEY_RETRY_STATUSES = frozenset({401, 429})
 USAGE_FINAL = "final"  # terminal usage event observed per provider rules
 USAGE_PARTIAL = "partial"  # some genuine usage seen, no terminal event
 USAGE_MISSING = "missing"  # no usage observed (provider omitted it, etc.)
+
+# Jev body capture scope: only this route AND this model family is captured,
+# so the flag can never quietly widen into a general body recorder.
+JEV_CAPTURE_UPSTREAM = "openrouter-alpha"
+JEV_MODEL_PREFIX = "typesafe/jev-"
+
+# Capture state values (what a jev_bodies row actually holds).
+CAPTURE_COMPLETE = "complete"  # whole buffered response body
+CAPTURE_STREAMED = "streamed"  # SSE: request only, response never captured
+CAPTURE_INCOMPLETE = "incomplete"  # relay died / decode failed mid-body
+CAPTURE_TRUNCATED = "truncated"  # body exceeded the cap, stored prefix only
+
+# Retention for captured bodies: pruned opportunistically on insert (no timer
+# thread — the store is the single writer), plus a hard row cap for disk.
+CAPTURE_RETENTION_HOURS = 24.0
+CAPTURE_MAX_ROWS = 5000
+
+# Markers appended into stored bodies so a row can never present itself as
+# more (or less) than what was actually captured.
+CAPTURE_STREAMED_NOTE = (
+    "[response was streamed (SSE) and not captured — request body only]"
+)
+CAPTURE_INCOMPLETE_NOTE = (
+    "[capture incomplete: the response ended before its body finished]"
+)
+CAPTURE_DECODE_BROKEN_NOTE = (
+    "[capture incomplete: the response's compression stream failed mid-body]"
+)
+
+
+def _capture_truncation_note(cap: int) -> str:
+    return f"[capture truncated at the {cap}-byte buffered cap — prefix only]"
 
 # ── Secret redaction ─────────────────────────────────────────────────────────
 
@@ -484,6 +548,104 @@ class _SSEEventParser:
             self._on_event(name, data)
 
 
+def should_capture_jev_body(
+    capture_enabled: bool, upstream_name: str, model: Optional[str]
+) -> bool:
+    """Narrow gate for opt-in body capture: the jev route AND the jev family.
+
+    The model prefix match is case-insensitive; anything else — other routes,
+    other model families, an unparseable request body — is never captured,
+    even with the flag on.
+    """
+    if not capture_enabled:
+        return False
+    if upstream_name != JEV_CAPTURE_UPSTREAM:
+        return False
+    return isinstance(model, str) and model.lower().startswith(JEV_MODEL_PREFIX)
+
+
+class JevBodyCapture:
+    """Per-request accumulator for the opt-in jev body capture.
+
+    Exists only for requests that passed :func:`should_capture_jev_body`, so
+    every other request pays nothing for the feature. Holds the decoded
+    response bytes up to the buffered-body cap; bytes past the cap are
+    dropped and the row says so explicitly rather than storing a silently
+    shortened body.
+    """
+
+    __slots__ = (
+        "_cap",
+        "_chunks",
+        "_held",
+        "_streamed",
+        "_truncated",
+        "_decode_broken",
+    )
+
+    def __init__(self, cap: int = MAX_REQUEST_BODY_BYTES) -> None:
+        self._cap = int(cap)
+        self._chunks: list[bytes] = []
+        self._held = 0
+        self._streamed = False
+        self._truncated = False
+        self._decode_broken = False
+
+    def feed(self, text: bytes) -> None:
+        """Accumulate already-decoded response bytes (bounded by the cap)."""
+        if self._streamed or not text or self._held >= self._cap:
+            return
+        room = self._cap - self._held
+        if len(text) > room:
+            text = text[:room]
+            self._truncated = True
+        self._chunks.append(text)
+        self._held += len(text)
+
+    def mark_streamed(self) -> None:
+        """SSE detected: hold no bytes, the row says streamed, never half."""
+        self._streamed = True
+        self._chunks.clear()
+        self._held = 0
+
+    def mark_decode_broken(self) -> None:
+        """The decompressor failed mid-body: what is held may be short."""
+        self._decode_broken = True
+
+    def state(self, outcome: str) -> str:
+        if self._streamed:
+            return CAPTURE_STREAMED
+        if self._decode_broken or outcome != OUTCOME_COMPLETED:
+            return CAPTURE_INCOMPLETE
+        if self._truncated:
+            return CAPTURE_TRUNCATED
+        return CAPTURE_COMPLETE
+
+    def request_text(self, body: Optional[bytes]) -> str:
+        """Text form of the forwarded request body, cap-marked when shortened."""
+        if body is None:
+            return ""
+        if len(body) > self._cap:
+            return (
+                body[: self._cap].decode("utf-8", "replace")
+                + "\n"
+                + _capture_truncation_note(self._cap)
+            )
+        return body.decode("utf-8", "replace")
+
+    def response_text(self, outcome: str = OUTCOME_COMPLETED) -> str:
+        if self._streamed:
+            return CAPTURE_STREAMED_NOTE
+        text = b"".join(self._chunks).decode("utf-8", "replace")
+        if self._truncated:
+            text += "\n" + _capture_truncation_note(self._cap)
+        if self._decode_broken:
+            text += "\n" + CAPTURE_DECODE_BROKEN_NOTE
+        elif outcome != OUTCOME_COMPLETED:
+            text += "\n" + CAPTURE_INCOMPLETE_NOTE
+        return text
+
+
 class UsageScanner:
     """Incremental tee that watches response bytes go by.
 
@@ -494,7 +656,12 @@ class UsageScanner:
     forwarded payload is untouched and completeness stays honest.
     """
 
-    def __init__(self, content_type: str, content_encoding: str = ""):
+    def __init__(
+        self,
+        content_type: str,
+        content_encoding: str = "",
+        capture: Optional[JevBodyCapture] = None,
+    ):
         declared = (content_type or "").lower()
         self._events = "event-stream" in declared
         self._json = not self._events and "json" in declared
@@ -517,6 +684,13 @@ class UsageScanner:
         self.model: Optional[str] = None
         self._terminal_seen = False
         self._sse = _SSEEventParser(self._on_sse_event)
+        # Optional capture tee: when present (a captured jev request), decoded
+        # response bytes are also accumulated for the jev_bodies row — even
+        # after usage parsing gives up. With None the scanner behaves exactly
+        # as it did before capture existed.
+        self._capture = capture
+        if capture is not None and self._events:
+            capture.mark_streamed()
 
     @property
     def completeness(self) -> str:
@@ -597,6 +771,8 @@ class UsageScanner:
             return False
         if head.startswith(self._SSE_LINE_PREFIXES):
             self._events = True
+            if self._capture is not None:
+                self._capture.mark_streamed()
         elif head[:1] in (b"{", b"["):
             self._json = True
         elif any(p.startswith(head) for p in self._SSE_LINE_PREFIXES):
@@ -613,36 +789,46 @@ class UsageScanner:
         return True
 
     def feed(self, chunk: bytes) -> None:
-        if self._parse_abandoned or not chunk:
+        if not chunk:
+            return
+        if self._parse_abandoned and self._capture is None:
             return
         if self._decoder is not None:
             try:
                 text = self._decoder.decompress(chunk)
             except zlib.error:
                 self._parse_abandoned = True
+                if self._capture is not None:
+                    self._capture.mark_decode_broken()
                 return
             self._decompressed_total += len(text)
             if self._decompressed_total > MAX_PARSE_BYTES:
                 # Bounded decoding: a compressed stream that expands beyond
                 # the parse budget is forwarded but no longer parsed.
                 self._parse_abandoned = True
-                return
         else:
             text = chunk
-        if text:
-            self._ingest_text(text)
+        if self._capture is not None:
+            self._capture.feed(text)
+        if self._parse_abandoned or not text:
+            return
+        self._ingest_text(text)
 
     def finish(self) -> None:
         """Flush trailing bytes (final SSE line without newline, gzip footer)."""
-        if self._parse_abandoned:
-            return
         if self._decoder is not None:
             try:
                 text = self._decoder.flush()
             except zlib.error:
                 text = b""
+                if self._capture is not None:
+                    self._capture.mark_decode_broken()
         else:
             text = b""
+        if self._capture is not None and text:
+            self._capture.feed(text)
+        if self._parse_abandoned:
+            return
         if text:
             self._ingest_text(text)
         if self._events:
@@ -732,8 +918,18 @@ class UsageStore:
         "chat_name TEXT",
     )
 
-    def __init__(self, path: str):
+    def __init__(
+        self,
+        path: str,
+        *,
+        capture_jev_bodies: bool = False,
+        capture_retention_hours: float = CAPTURE_RETENTION_HOURS,
+        capture_max_rows: int = CAPTURE_MAX_ROWS,
+    ):
         self.path = path
+        self._capture_enabled = bool(capture_jev_bodies)
+        self._capture_retention_hours = max(0.0, float(capture_retention_hours))
+        self._capture_max_rows = max(1, int(capture_max_rows))
         os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
@@ -743,6 +939,8 @@ class UsageStore:
             self._conn.executescript(SCHEMA)
             self._migrate()
             self._conn.execute(SCHEMA_CHAT_INDEX)
+            if self._capture_enabled:
+                self._conn.executescript(JEV_BODIES_SCHEMA)
         _ensure_mode_0600(self.path)
 
     def _migrate(self) -> None:
@@ -814,6 +1012,59 @@ class UsageStore:
                     chat_id,
                     chat_name,
                 ),
+            )
+        _ensure_mode_0600(self.path)
+
+    def insert_jev_body(
+        self,
+        *,
+        ts: str,
+        upstream: str,
+        model: Optional[str],
+        path: Optional[str],
+        request_id: Optional[str],
+        status_code: Optional[int],
+        latency_ms: int,
+        capture_state: str,
+        request_body: Optional[str],
+        response_body: Optional[str],
+    ) -> None:
+        """Append one captured jev body pair, pruning retention and the row cap.
+
+        Pruning rides the insert's locked transaction (the store is the
+        single writer; no timer thread): first the retention window, then the
+        row cap keeping the newest rows. Ordering insert-before-prune is what
+        makes the cap hold after the insert itself, not just before it.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(hours=self._capture_retention_hours)).isoformat(
+            timespec="milliseconds"
+        )
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO jev_bodies (ts, upstream, model, path, request_id,"
+                " status_code, latency_ms, capture_state, request_body,"
+                " response_body, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    ts,
+                    upstream,
+                    model,
+                    path,
+                    request_id,
+                    status_code,
+                    latency_ms,
+                    capture_state,
+                    request_body,
+                    response_body,
+                    now.isoformat(timespec="milliseconds"),
+                ),
+            )
+            self._conn.execute("DELETE FROM jev_bodies WHERE ts < ?", (cutoff,))
+            self._conn.execute(
+                "DELETE FROM jev_bodies WHERE id NOT IN"
+                " (SELECT id FROM jev_bodies ORDER BY id DESC LIMIT ?)",
+                (self._capture_max_rows,),
             )
         _ensure_mode_0600(self.path)
 
@@ -1373,6 +1624,11 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
     def rotator(self) -> Optional[KeyRotator]:
         return getattr(self.server, "rotator", None)
 
+    @property
+    def capture_jev_bodies(self) -> bool:
+        """True only when the unit was started with --capture-jev-bodies."""
+        return bool(getattr(self.server, "capture_jev_bodies", False))
+
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
         # Raw access logging is disabled outright: the default request line
         # embeds the full path *with query string*, and query strings can
@@ -1746,6 +2002,17 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             if route_keys and self.rotator is not None:
                 managed_key, managed_position = self.rotator.issue(upstream_name)
 
+        # Opt-in jev body capture: the sink exists only for requests that pass
+        # the gate, so everything else streams through untouched. ``ts`` is the
+        # request's own start time; the row itself is written at finish().
+        capture: Optional[JevBodyCapture] = None
+        capture_ts: Optional[str] = None
+        if should_capture_jev_body(self.capture_jev_bodies, upstream_name, model):
+            capture = JevBodyCapture(MAX_REQUEST_BODY_BYTES)
+            capture_ts = datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds"
+            )
+
         conn: Optional[HTTPConnection] = None
         status_code: Optional[int] = None
         request_id: Optional[str] = None
@@ -1845,7 +2112,7 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
 
             content_type = resp.getheader("Content-Type") or ""
             content_encoding = resp.getheader("Content-Encoding") or ""
-            scanner = UsageScanner(content_type, content_encoding)
+            scanner = UsageScanner(content_type, content_encoding, capture)
 
             self.send_response_only(resp.status, resp.reason)
             for name, value in resp_headers:
@@ -1924,6 +2191,32 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 )
             except sqlite3.Error as exc:
                 logger.error("failed to record usage row: %s", redact_text(str(exc)))
+            if capture is not None:
+                # The capture row says what it holds: complete, streamed
+                # (SSE — request only), incomplete (the relay died or the
+                # body's compression stream failed), or truncated at the cap.
+                # A failed ledger write above must not skip this one.
+                try:
+                    self.store.insert_jev_body(
+                        ts=capture_ts
+                        or datetime.now(timezone.utc).isoformat(
+                            timespec="milliseconds"
+                        ),
+                        upstream=upstream_name,
+                        model=model,
+                        path=routed_path or "/",
+                        request_id=request_id,
+                        status_code=status_code,
+                        latency_ms=latency_ms,
+                        capture_state=capture.state(outcome),
+                        request_body=capture.request_text(body),
+                        response_body=capture.response_text(outcome),
+                    )
+                except sqlite3.Error as exc:
+                    logger.error(
+                        "failed to record jev body capture: %s",
+                        redact_text(str(exc)),
+                    )
 
     def _relay_response(
         self, resp: Any, scanner: UsageScanner, framing_known: bool
@@ -1973,8 +2266,11 @@ class UsageProxyServer(ThreadingHTTPServer):
         identity: str = "",
         manage_keys: bool = False,
         keys_path: Optional[str] = None,
+        capture_jev_bodies: bool = False,
     ):
-        self.store = UsageStore(db_path or default_db_path())
+        self.store = UsageStore(
+            db_path or default_db_path(), capture_jev_bodies=capture_jev_bodies
+        )
         resolved = dict(DEFAULT_UPSTREAMS)
         for name, base in (upstreams or {}).items():
             resolved[name] = base
@@ -1983,6 +2279,9 @@ class UsageProxyServer(ThreadingHTTPServer):
         # Key-manager mode is opt-in per process: without the flag no caller is
         # ever refused and no Authorization header is ever rewritten.
         self.manage_keys = bool(manage_keys)
+        # Body capture is opt-in per process too: without the flag no body is
+        # ever stored and the jev_bodies table is never even created.
+        self.capture_jev_bodies = bool(capture_jev_bodies)
         self.key_store = KeyStore(keys_path) if self.manage_keys else None
         self.rotator = KeyRotator(self.key_store) if self.key_store else None
         super().__init__((BIND_HOST, int(port)), UsageProxyHandler)
@@ -2074,6 +2373,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Path to the key store (default: <HERMES_HOME>/usage-proxy/keys.json)",
     )
     parser.add_argument(
+        "--capture-jev-bodies",
+        action="store_true",
+        help=(
+            "Opt-in: store full request/response bodies for jev traffic"
+            " (openrouter-alpha + typesafe/jev-* models) in a separate"
+            " jev_bodies table with bounded retention; default off"
+        ),
+    )
+    parser.add_argument(
         "--upstream",
         action="append",
         default=[],
@@ -2101,6 +2409,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             identity=args.identity,
             manage_keys=args.manage_keys,
             keys_path=args.keys_path,
+            capture_jev_bodies=args.capture_jev_bodies,
         )
     except (ValueError, OSError, sqlite3.Error) as exc:
         print(
@@ -2110,12 +2419,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     logger.info(
-        "llm-usage-proxy listening on %s:%d (db=%s, upstreams=%s, manage-keys=%s)",
+        "llm-usage-proxy listening on %s:%d (db=%s, upstreams=%s, manage-keys=%s,"
+        " capture-jev-bodies=%s)",
         BIND_HOST,
         args.port,
         args.db,
         ",".join(sorted(server.upstreams)),
         "yes" if args.manage_keys else "no",
+        "yes" if args.capture_jev_bodies else "no",
     )
     try:
         server.serve_forever(poll_interval=0.5)
