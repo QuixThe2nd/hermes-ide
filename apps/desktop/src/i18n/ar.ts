@@ -1,6 +1,7 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+
   sessionImport: {
     title: 'المتابعة من تطبيق آخر',
     subtitle: 'انقل محادثة إلى Hermes وتابع من حيث توقفت.',
@@ -181,6 +182,8 @@ export const ar = defineLocale({
     updateReadyTitle: 'التحديث جاهز',
     updateReadyMessage: count => `${count} تغيير جديد متاح.`,
     updateReadyMessageUnknown: 'يتوفر تحديث جديد.',
+    updateReadyMessageAppInstaller:
+      'إصدار جديد من Hermes جاهز. حدّث الآن وسيتولى Windows إكمال التحديث.',
     seeWhatsNew: 'عرض الجديد',
     mcp: {
       needsAuthTitle: 'خادم MCP يحتاج إلى إعادة المصادقة',
@@ -2360,6 +2363,8 @@ export const ar = defineLocale({
     availableTitleBackend: 'يتوفر تحديث للواجهة الخلفية',
     availableBodyBackend: 'إصدار أحدث من واجهة Hermes الخلفية المتصلة جاهز للتثبيت.',
     availableBodyNoChangelog: 'إصدار أحدث جاهز. ملاحظات الإصدار غير متاحة لنوع التثبيت هذا.',
+    availableBodyAppInstaller:
+      'إصدار جديد من Hermes جاهز. سيُغلق Hermes ويتولى Windows إكمال التحديث ثم يعيد فتح Hermes تلقائيًا.',
     updateNow: 'التحديث الآن',
     maybeLater: 'ربما لاحقا',
     moreChanges: count => `+ ${count} تغيير${count === 1 ? '' : 'ات'} إضافي مُضمَّن.`,
@@ -2377,6 +2382,13 @@ export const ar = defineLocale({
     applyingBodyBackend:
       'تطبّق الواجهة الخلفية البعيدة التحديث وستعيد التشغيل. يعيد Hermes الاتصال تلقائيا عند عودتها.',
     applyingClose: 'ستُغلق هذه النافذة أثناء تشغيل التحديث، ثم يعيد Hermes فتح نفسه تلقائيا.',
+    applyingBodyAppInstaller:
+      'سيُغلق Hermes ويتولى Windows إكمال التحديث. سيعود Hermes للفتح عند الانتهاء — لا تحتاج إلى فعل أي شيء.',
+    applyingCloseAppInstaller:
+      'ستُغلق هذه النافذة، ويتولى Windows إكمال التحديث، ثم يعيد Hermes فتح نفسه تلقائيًا.',
+    checkUnknownTitleAppInstaller: 'تعذّر التحقق من التحديثات',
+    checkUnknownBodyAppInstaller:
+      'لم يتمكن Windows من التحقق من التحديثات الآن. كما تُثبَّت التحديثات تلقائيًا عند إعادة تشغيل Hermes.',
     errorTitle: 'لم يكتمل التحديث',
     errorBody: 'لا داعي للقلق — لم يُفقد شيء. يمكنك إعادة المحاولة الآن.',
     blockerTitle: 'إغلاق المعاينات المحلية لتحديث Hermes؟',

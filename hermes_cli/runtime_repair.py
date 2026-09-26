@@ -1,12 +1,28 @@
-"""Hermes-managed uv and Python runtime repair.
+"""Managed Python runtime repair (checkout venv surgery).
 
-The Python backing the install is shared by every Hermes profile because the checkout's ``venv``
-is shared. Runtime repair therefore uses an install-scoped store under
-``<checkout>/.hermes-runtime/python``. A vulnerable interpreter is never reinstalled in place: a
-new immutable Python generation is provisioned and a relocatable sibling venv built and smoke-tested
-from it. POSIX installs cut over with same-filesystem directory renames; Windows installs
-atomically repoint the live venv's ``pyvenv.cfg`` at the new generation instead, because any
-open handle under the venv (cwd, open file, sync client) makes Windows refuse the rename.
+The Python backing a CHECKOUT install is shared by every Hermes profile
+because the checkout's ``venv`` is shared.  A vulnerable interpreter is
+never reinstalled in place: we provision a new immutable Python generation
+into the install's runtime dir and build and smoke-test a relocatable
+sibling venv from it.  POSIX installs cut over with same-filesystem
+directory renames — the old venv stays parked for synchronous rollback
+and is swept for cleanup once it is clearly stale.  Windows installs
+atomically repoint the live venv's ``pyvenv.cfg`` at the new generation
+instead, because any open handle under the venv (cwd, open file, sync
+client) makes Windows refuse the rename.
+
+Sealed trees never reach this module — their interpreter is a build
+artifact (pm's ``sealed()`` payloads ship a staged python and refuse
+runtime installs).
+
+uv itself is NOT this module's business: the pinned uv is realized through
+``pm`` (``pm/lock.json`` + the pm store), like every other managed tool.
+This module previously carried its own uv acquisition (the old managed-uv
+module); that half predated the package manager and is retired — except
+:func:`pip_install_hint`, which still names Hermes' own uv binary when a
+managed install has one (the installer drops it in ``$HERMES_HOME/bin``
+without putting that on PATH, so a bare ``uv`` would fail for
+installer-only users).
 """
 
 from __future__ import annotations
@@ -20,14 +36,13 @@ import platform
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.sqlite_runtime import (
@@ -36,23 +51,41 @@ from hermes_cli.sqlite_runtime import (
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_RUNTIME_DIR_NAME = ".hermes-runtime"
 _VENV_NAME = "venv"
 _ALT_VENV_NAME = ".venv"
-_REPAIR_LOCK_NAME = "runtime-repair.lock"
+_RUNTIME_DIR_NAME = ".hermes-runtime"
 _MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
+_REPAIR_LOCK_NAME = "runtime-repair.lock"
 
 _Provisioned = tuple[Path, Path, SQLiteRuntimeInfo]
 
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
 
-def managed_uv_path() -> Path:
-    """Path of Hermes' own uv binary (``$HERMES_HOME/bin/uv[.exe]``); may not exist yet."""
+
+def _runtime_dir(project_root: Path) -> Path:
+    """The checkout-scoped scratch dir for repair artifacts.
+
+    Deliberately NOT the pm store: the pm store is machine-wide and holds
+    immutable published entries, while generations, candidate venvs, and
+    the repair lock are private to one checkout and its cutover.
+    """
+    return Path(project_root) / _RUNTIME_DIR_NAME
+
+
+def _uv_binary_path() -> Path:
+    """Path of Hermes' own uv binary (``$HERMES_HOME/bin/uv[.exe]``); may not exist yet.
+
+    Only a lookup helper for :func:`resolve_uv`/:func:`pip_install_hint` — uv
+    ACQUISITION is pm's business now (see the module docstring).
+    """
     return get_hermes_home() / "bin" / ("uv.exe" if platform.system() == "Windows" else "uv")
 
 
 def resolve_uv() -> Optional[str]:
     """Return the managed uv path if it exists, else ``None``."""
-    p = managed_uv_path()
+    p = _uv_binary_path()
     return str(p) if p.is_file() and os.access(p, os.X_OK) else None
 
 
@@ -68,25 +101,100 @@ def pip_install_hint(package: str) -> str:
 def managed_python_install_dir(project_root: Path | None = None) -> Path:
     """Return the checkout-scoped Python store shared by all profiles."""
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
-    return root / _RUNTIME_DIR_NAME / "python"
+    return _runtime_dir(root) / "python"
 
 
 def managed_python_env(
-    project_root: Path | None = None, *, install_dir: Path | None = None,
-    base_env: dict[str, str] | None = None) -> dict[str, str]:
-    """Return a sanitized environment for Hermes-private uv Python commands."""
+    project_root: Path | None = None,
+    *,
+    install_dir: Path | None = None,
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a sanitized environment for Hermes-private uv Python commands.
+
+    Builds on pm's ``uv_env`` sanitization (which strips every ``UV_*``
+    override and active-venv leakage — the interpreter-hijack class), then
+    pins uv's managed-Python behavior to the private install dir.
+    """
+    from pm.packages import uv_env
+
     target = (
-        Path(install_dir) if install_dir is not None else managed_python_install_dir(project_root))
-    env = dict(os.environ if base_env is None else base_env)
+        Path(install_dir)
+        if install_dir is not None
+        else managed_python_install_dir(project_root)
+    )
+    env = uv_env(dict(os.environ if base_env is None else base_env))
     for key in (
-        "CONDA_DEFAULT_ENV", "CONDA_PREFIX", "UV_PROJECT_ENVIRONMENT", "UV_NO_MANAGED_PYTHON",
-        "UV_PYTHON", "UV_PYTHON_DOWNLOADS", "UV_SYSTEM_PYTHON", "VIRTUAL_ENV", "PYTHONHOME",
-        "PYTHONPATH"):
+        "CONDA_DEFAULT_ENV",
+        "CONDA_PREFIX",
+        "PYTHONHOME",
+        "PYTHONPATH",
+    ):
         env.pop(key, None)
     env.update({
-        "UV_MANAGED_PYTHON": "1", "UV_NO_CONFIG": "1", "UV_PYTHON_INSTALL_BIN": "0",
-        "UV_PYTHON_INSTALL_DIR": str(target), "UV_PYTHON_INSTALL_REGISTRY": "0"})
+        "UV_MANAGED_PYTHON": "1",
+        "UV_NO_CONFIG": "1",
+        "UV_PYTHON_INSTALL_BIN": "0",
+        "UV_PYTHON_INSTALL_DIR": str(target),
+        "UV_PYTHON_INSTALL_REGISTRY": "0",
+    })
     return env
+
+
+@dataclass(frozen=True)
+class RuntimeRepairResult:
+    """Outcome of a managed-runtime repair attempt."""
+
+    status: str
+    detail: str = ""
+    sqlite_before: str = ""
+    sqlite_after: str = ""
+    backup_venv: Path | None = None
+
+    @property
+    def repaired(self) -> bool:
+        return self.status == "repaired"
+
+
+@dataclass(frozen=True)
+class _RepairLock:
+    path: Path
+    fd: int
+
+
+def _report_runtime_repair_failure(repair: RuntimeRepairResult) -> None:
+    if repair.backup_venv is None:
+        print(
+            "  ℹ Managed Python runtime was not replaced; "
+            f"the existing venv is unchanged ({repair.detail})."
+        )
+        print(
+            "    Sessions stay protected meanwhile: Hermes keeps databases "
+            "out of WAL mode on this SQLite build. The next `hermes update` "
+            "will retry."
+        )
+        return
+    print(f"  ✗ Managed Python runtime cutover needs manual recovery: {repair.detail}")
+    print(f"    Previous venv: {repair.backup_venv}")
+
+
+def _record_runtime_repair(repair: RuntimeRepairResult) -> None:
+    """Put the repair outcome into the update receipt (no-op outside ``hermes update``).
+
+    Receipts are built only from explicit ``record_step``/``record_skip`` calls, so without this
+    a failed repair left ``outcome: partial`` with no step naming the reason or the SQLite
+    versions. A deferred or not-applicable repair is a skip WITH its reason, not a failed step:
+    every pip/non-venv install would otherwise carry a red step in every receipt.
+    """
+    from hermes_cli.update_receipt import record_skip, record_step
+
+    detail = (
+        f"{repair.status}: {repair.detail}" if repair.detail else repair.status
+    ) + f" (sqlite {repair.sqlite_before or 'unknown'} → {repair.sqlite_after or 'unknown'})"
+    if repair.status in {"skipped", "not-applicable"}:
+        record_skip("sqlite_runtime_repair", detail)
+    else:
+        record_step("sqlite_runtime_repair", repair.status in {"safe", "repaired"}, detail)
 
 
 def _macos_sign_managed_python(python: Path) -> bool:
@@ -127,228 +235,39 @@ def _macos_sign_managed_python(python: Path) -> bool:
         return False
 
 
-@dataclass(frozen=True)
-class RuntimeRepairResult:
-    """Outcome of a managed-runtime repair attempt."""
-
-    status: str
-    detail: str = ""
-    sqlite_before: str = ""
-    sqlite_after: str = ""
-    backup_venv: Path | None = None
-
-    @property
-    def repaired(self) -> bool:
-        return self.status == "repaired"
-
-
-@dataclass(frozen=True)
-class _RepairLock:
-    path: Path
-    fd: int
-
-
-def _report_runtime_repair_failure(repair: RuntimeRepairResult) -> None:
-    if repair.backup_venv is None:
-        print("  ℹ Managed Python runtime was not replaced; "
-              f"the existing venv is unchanged ({repair.detail}).")
-        print("    Sessions stay protected meanwhile: Hermes keeps databases "
-              "out of WAL mode on this SQLite build. The next `hermes update` "
-              "will retry.")
-        return
-    print(f"  ✗ Managed Python runtime cutover needs manual recovery: {repair.detail}")
-    print(f"    Previous venv: {repair.backup_venv}")
-
-
-class _UvResult(str):
-    """``ensure_uv()`` return value that survives an update boundary. POSIX only: a str subclass
-    with an overridden ``__iter__`` is unsafe as a Windows subprocess argument."""
-
-    fresh_bootstrap: bool
-
-    def __new__(cls, path: Optional[str], fresh: bool = False) -> "_UvResult":
-        self = super().__new__(cls, path or "")
-        self.fresh_bootstrap = fresh
-        return self
-
-    def __iter__(self):
-        # Tuple-unpacking hook for legacy ``uv_bin, fresh = ensure_uv()`` sites; the first
-        # element keeps the historical contract (path string, or None when unavailable).
-        return iter(((str(self) or None), self.fresh_bootstrap))
-
-
-def _ensure_uv_path(
-    *, repair_observer: Callable[[RuntimeRepairResult], None] | None = None) -> Optional[str]:
-    """Resolve the managed uv path, installing it if necessary (plain ``str``/``None``)."""
-    existing = resolve_uv()
-    if existing and _uv_runs(existing):
-        return existing
-    target = managed_uv_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    print(f"  → Installing managed uv into {target.parent} ...")
-    try:
-        _install_uv(target)
-    except Exception as exc:
-        logger.warning("Managed uv install failed: %s", exc)
-        print(f"  ✗ Failed to install managed uv: {exc}")
-        return None
-    result = resolve_uv()
-    if result:
-        print(f"  ✓ Managed uv installed ({_uv_version(result)})")
-        # Compatibility boundary: an older, already-imported updater calls the freshly pulled
-        # ``ensure_uv()``; repairing here lets that first update migrate a vulnerable runtime.
-        _run_runtime_repair(result, repair_observer)
-    else:
-        print("  ✗ Managed uv install appeared to succeed but binary not found")
-    return result
-
-
-def _uv_runs(uv_bin: str) -> bool:
-    """``uv --version`` exits 0. A pre-fix installer could salvage a relocated Chocolatey/Scoop shim into
-    ``$HERMES_HOME/bin``: it is a file with the executable bit that never runs, so is_file()+X_OK
-    alone would keep handing it out forever instead of reinstalling."""
-    try:
-        return subprocess.run([uv_bin, "--version"], capture_output=True, check=False).returncode == 0
-    except OSError:
-        return False
-
-
-def _uv_version(uv_bin: str) -> str:
-    return subprocess.run(
-        [uv_bin, "--version"],
-        capture_output=True, text=True, encoding='utf-8', errors='replace', check=False,
-    ).stdout.strip()
-
-
-def _record_runtime_repair(repair: RuntimeRepairResult) -> None:
-    """Put the repair outcome into the update receipt (no-op outside ``hermes update``).
-
-    Receipts are built only from explicit ``record_step``/``record_skip`` calls, so without this
-    a failed repair left ``outcome: partial`` with no step naming the reason or the SQLite
-    versions. A deferred or not-applicable repair is a skip WITH its reason, not a failed step:
-    every pip/non-venv install would otherwise carry a red step in every receipt.
-    """
-    from hermes_cli.update_receipt import record_skip, record_step
-
-    detail = (
-        f"{repair.status}: {repair.detail}" if repair.detail else repair.status
-    ) + f" (sqlite {repair.sqlite_before or 'unknown'} → {repair.sqlite_after or 'unknown'})"
-    if repair.status in {"skipped", "not-applicable"}:
-        record_skip("sqlite_runtime_repair", detail)
-    else:
-        record_step("sqlite_runtime_repair", repair.status in {"safe", "repaired"}, detail)
-
-
-def _run_runtime_repair(
-    uv_bin: str, repair_observer: Callable[[RuntimeRepairResult], None] | None,
-    *, print_skip: bool = False) -> None:
-    """Run the vulnerable-runtime repair hook; never raises (repair is non-fatal)."""
-    try:
-        repair = repair_vulnerable_runtime(uv_bin)
-        _record_runtime_repair(repair)
-        if repair_observer is not None:
-            repair_observer(repair)
-        if repair.status == "failed":
-            _report_runtime_repair_failure(repair)
-    except Exception as exc:
-        logger.warning("Managed Python runtime repair failed: %s", exc)
-        if print_skip:
-            print(f"  ⚠ Managed Python runtime repair skipped: {exc}")
-
-
-def ensure_uv(
-    *, repair_observer: Callable[[RuntimeRepairResult], None] | None = None):
-    """Return the managed uv path, installing it first if necessary; falsy on failure, never raises.
-
-    On POSIX the result is a :class:`_UvResult` (``str`` subclass) usable as the path *and*
-    unpackable as ``(path, fresh_bootstrap)`` for older call sites.
-    """
-    result = _ensure_uv_path(repair_observer=repair_observer)
-    if platform.system() == "Windows":
-        # See _UvResult: the __iter__ override is unsafe as a Windows subprocess argument.
-        return result
-    return _UvResult(result)
-
-
-def _uv_self_update_stamp() -> Path:
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "cache" / ".uv_self_update_stamp"
-
-
-def _uv_self_update_is_fresh(now: float | None = None) -> bool:
-    """True when ``uv self update`` ran recently enough to skip.
-
-    uv releases roughly weekly while many users run ``hermes update`` daily; a blocking network
-    self-update on every run is waste and, offline, an unbounded hang risk.
-    """
-    try:
-        age = (now if now is not None else time.time()) - _uv_self_update_stamp().stat().st_mtime
-        return 0 <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
-    except Exception:
-        return False
-
-
-def _touch_uv_self_update_stamp() -> None:
-    with contextlib.suppress(OSError):
-        stamp = _uv_self_update_stamp()
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.touch()
-
-
-# uv ships releases ~weekly; refresh the managed binary at most this often.
-UV_SELF_UPDATE_INTERVAL_SECONDS = 7 * 24 * 3600
-# `uv self update` is a network call with no default timeout; unbounded it can hang forever.
-UV_SELF_UPDATE_TIMEOUT_SECONDS = 60
-
-
-def update_managed_uv(
-    *, repair_observer: Callable[[RuntimeRepairResult], None] | None = None, force: bool = False
-) -> Optional[str]:
-    """Run ``uv self update`` on the managed uv binary; returns its path, or ``None`` if absent.
-
-    The network self-update is skipped when it succeeded within ``UV_SELF_UPDATE_INTERVAL_SECONDS``
-    unless ``force=True``; the vulnerable-runtime repair probe ALWAYS runs — CVE-driven repair is
-    never gated behind the freshness stamp.
-    """
-    existing = resolve_uv()
-    if not existing:
-        # Not installed yet — ensure_uv() will handle that elsewhere.
-        return None
-    if force or not _uv_self_update_is_fresh():
-        try:
-            result = subprocess.run(
-                [existing, "self", "update"], capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                check=False, timeout=UV_SELF_UPDATE_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            logger.debug("uv self update timed out after %ss", UV_SELF_UPDATE_TIMEOUT_SECONDS)
-            result = None
-        if result is not None and result.returncode == 0:
-            _touch_uv_self_update_stamp()
-            print(f"  ✓ Managed uv updated ({_uv_version(existing)})")
-        elif result is not None:
-            # Non-fatal — old uv still works fine.
-            logger.debug("uv self update failed (rc=%d): %s", result.returncode, result.stderr)
-    # Keep this hook inside the long-standing API: during an update main.py is already imported
-    # from the old checkout and ``git pull`` replaces this module before the updater imports it,
-    # so calling the repair here is what migrates the runtime on that first update. Non-fatal:
-    # the live venv is untouched unless a fully prepared candidate reached cutover.
-    _run_runtime_repair(existing, repair_observer, print_skip=True)
-    return existing
+# ---------------------------------------------------------------------------
+# Managed Python runtime repair
+# ---------------------------------------------------------------------------
 
 
 def _reload_hermes_constants():
-    """Re-execute ``hermes_constants`` from disk (the imported one may predate venv_python_path)."""
+    """Re-execute ``hermes_constants`` from disk and return the fresh module.
+
+    ``hermes update`` imports ``hermes_constants`` from the OLD checkout,
+    ``git pull`` then replaces that file, and this freshly-pulled module runs
+    its lazy imports against the module object Python already cached in
+    ``sys.modules`` — the pre-upgrade one. A symbol added by the update is
+    absent there while the file named in the resulting ``ImportError`` plainly
+    contains it, which is what made this read as a contradiction:
+
+        cannot import name 'venv_python_path' from 'hermes_constants'
+        (~/.hermes/hermes-agent/hermes_constants.py)
+
+    Reloading picks up the definitions actually on disk, so callers keep using
+    the shared helper instead of hand-rolling a second copy of its logic.
+    """
     import hermes_constants
+
     return importlib.reload(hermes_constants)
 
 
 def _venv_python(venv_dir: Path) -> Path:
+    windows = platform.system() == "Windows"
     try:
         from hermes_constants import venv_python_path
     except ImportError:
         venv_python_path = _reload_hermes_constants().venv_python_path
-    return venv_python_path(venv_dir, windows=platform.system() == "Windows")
+    return venv_python_path(venv_dir, windows=windows)
 
 
 def _remove_tree(path: Path, *, boundary: Path) -> None:
@@ -387,8 +306,9 @@ def _runtime_request(info: SQLiteRuntimeInfo) -> str:
     return _dotted(info.python_version[:2])
 
 
-# Cap on newer patches tried, newest-first, before giving up: each attempt is a real
-# download+install+probe+delete cycle, and the fix is almost always in the next patch or two.
+# Cap on how many newer patches we'll try, newest-first, before giving up.
+# Bounded because each attempt is a real download+install+probe+delete cycle;
+# in practice the fix is almost always in the very next patch or two.
 _MAX_PATCH_RETRIES = 5
 
 
@@ -414,7 +334,8 @@ def _list_available_patches(
         for entry in json.loads(result.stdout):
             if not isinstance(entry, dict):
                 continue
-            # Only default/cpython builds -- skip pypy/graalpy/freethreaded variants.
+            # Only default/cpython builds -- skip pypy/graalpy/freethreaded variants,
+            # which aren't what this repair path wants.
             if entry.get("implementation") not in (None, "cpython") or (
                 entry.get("variant") not in (None, "default")):
                 continue
@@ -424,7 +345,9 @@ def _list_available_patches(
                     (int(parts["major"]), int(parts["minor"]), int(parts["patch"])))
             except (KeyError, TypeError, ValueError):
                 continue
-        # Deduplicate (a version can repeat across platforms/arches) and sort newest-first.
+        # Deduplicate (list --all-versions can repeat a version across
+        # platforms/arches if filtering above didn't fully narrow it) and sort
+        # newest-first.
         return sorted(set(versions), reverse=True)
     except Exception:
         return []
@@ -437,7 +360,14 @@ def _attempt_install_generation(
     """One install+probe attempt for ``request`` (bare minor "3.11" or explicit patch "3.11.15").
 
     Each attempt gets its own generation directory so a rejected candidate is fully cleaned up
-    before the next attempt (--reinstall semantics). Returns None (and cleans up) on any failure.
+    before the next attempt (--reinstall semantics). Returns None (and cleans up) on any failure,
+    including a vulnerable or off-line candidate.
+
+    When *tried_versions* is given, the probed candidate's version is
+    recorded in it so callers looping over explicit patches can skip a
+    version a bare-minor request already resolved to (and rejected) --
+    retrying it explicitly would spend a full download+install+probe+delete
+    cycle to reach a certain rejection.
     """
     generation = python_root / f"generation-{_token()}"
     generation.mkdir(parents=True, exist_ok=False)
@@ -502,12 +432,14 @@ def _retry_explicit_patches(
 
     ``skip_at_or_below`` also skips patches at or below that version: only NEWER patches can carry
     the fix and the downgrade guard rejects the rest; on a stale uv catalog the newest indexed
-    patch can be the installed one, and the loop would burn every retry walking backwards.
+    patch can be the installed one, and the loop would burn every retry walking backwards
+    (in #71250 the newest indexed 3.11 was 3.11.14, exactly the installed version, so without
+    this skip the loop burned all five retries walking backwards before failing).
     """
     # The bare minor-line request resolved to a still-vulnerable (or otherwise rejected) candidate. Rather
     # than giving up immediately, query which patches on this minor line uv actually knows about and retry
-    # with explicit newer versions, newest-first -- this handles the case where the default resolution for a
-    # bare request picks an older cached/indexed patch even though a newer, non-vulnerable one is available
+    # with explicit newer versions, newest-first -- this handles the case where the default resolution for
+    # a bare request picks an older cached/indexed patch even though a newer, non-vulnerable one is available
     # (issue #71250).
     env_for_list = managed_python_env(project_root, install_dir=python_root)
     patches = _list_available_patches(uv_bin, request, cwd=project_root, env=env_for_list)
@@ -548,7 +480,7 @@ def _provision_line(
 
 def _install_safe_python_generation(
     uv_bin: str, *, project_root: Path, current: SQLiteRuntimeInfo) -> _Provisioned | None:
-    runtime_root = project_root / _RUNTIME_DIR_NAME
+    runtime_root = _runtime_dir(project_root)
     python_root = managed_python_install_dir(project_root)
     _make_world_traversable(runtime_root)
     _make_world_traversable(python_root)
@@ -659,7 +591,7 @@ class _CandidateStageError(Exception):
 
 def _stage_candidate_venv(
     uv_bin: str, *, project_root: Path, generation: Path, python: Path) -> Path:
-    runtime_root = project_root / _RUNTIME_DIR_NAME
+    runtime_root = _runtime_dir(project_root)
     candidate = runtime_root / f"venv-candidate-{_token()}"
     env = managed_python_env(project_root, install_dir=generation)
     env.update({
@@ -708,6 +640,7 @@ def _stage_candidate_venv(
 
 
 def _rename_with_retry(source: Path, destination: Path) -> None:
+    last_error: OSError | None = None
     for delay in (0.0, 0.1, 0.25, 0.5, 1.0):
         if delay:
             time.sleep(delay)
@@ -716,45 +649,63 @@ def _rename_with_retry(source: Path, destination: Path) -> None:
             return
         except OSError as exc:
             last_error = exc
-    raise last_error
+    if last_error is not None:
+        raise last_error
 
 
 def _cut_over_candidate(
     candidate: Path, *, project_root: Path, live: Path | None = None
 ) -> tuple[bool, Path | None, SQLiteRuntimeInfo | None, str]:
     live = live if live is not None else project_root / _VENV_NAME
-    runtime_root = project_root / _RUNTIME_DIR_NAME
+    runtime_root = _runtime_dir(project_root)
     token = _token()
     backup = live.with_name(f"{live.name}.stale.runtime-{token}")
     rejected = runtime_root / f"venv-rejected-{token}"
+
     try:
         try:
             _rename_with_retry(live, backup)
         except OSError as exc:
             return False, None, None, f"could not park the existing venv: {exc}"
+
         try:
             _rename_with_retry(candidate, live)
         except OSError as promote_error:
             try:
                 _rename_with_retry(backup, live)
             except OSError as rollback_error:
-                return False, backup, None, (
+                return (
+                    False,
+                    backup,
+                    None,
                     "could not promote the replacement venv "
-                    f"({promote_error}); rollback failed ({rollback_error})")
-            return False, None, None, f"could not promote the replacement venv: {promote_error}"
+                    f"({promote_error}); rollback failed ({rollback_error})",
+                )
+            return (
+                False,
+                None,
+                None,
+                f"could not promote the replacement venv: {promote_error}",
+            )
+
         try:
             healthy, detail, info = _smoke_candidate_venv(live)
         except Exception as exc:
             healthy, detail, info = False, f"candidate smoke raised: {exc}", None
         if healthy:
             return True, backup, info, ""
+
         try:
             _rename_with_retry(live, rejected)
             _rename_with_retry(backup, live)
         except OSError as exc:
-            return False, backup, info, (
+            return (
+                False,
+                backup,
+                info,
                 "post-cutover smoke failed "
-                f"({detail}); rollback failed ({exc}); rejected venv: {rejected}")
+                f"({detail}); rollback failed ({exc}); rejected venv: {rejected}",
+            )
         _remove_tree(rejected, boundary=runtime_root)
         return False, None, info, f"post-cutover smoke failed: {detail}"
     except BaseException:
@@ -764,7 +715,10 @@ def _cut_over_candidate(
             except OSError as exc:
                 logger.error(
                     "interrupted runtime cutover could not restore %s from %s: %s",
-                    live, backup, exc)
+                    live,
+                    backup,
+                    exc,
+                )
         raise
 
 
@@ -888,70 +842,52 @@ def _release_repair_lock(lock: _RepairLock) -> None:
             os.close(lock.fd)
 
 
-
-
-
-
-def _uv_version_string(uv_bin: str) -> str:
-    """Return ``uv --version`` output, or ``""`` when it cannot be read."""
-    try:
-        result = subprocess.run(
-            [uv_bin, "--version"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            check=False, timeout=15)
-    except Exception:
-        return ""
-    return (result.stdout or "").strip() if result.returncode == 0 else ""
-
-
-def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
-    """Re-bootstrap the managed uv binary to refresh its Python catalog (the only supported
-    refresh path for unmanaged installs). A caller-supplied foreign uv path is left alone.
-
-    The managed uv is installed with ``UV_UNMANAGED_INSTALL``, which disables ``uv self update`` by design —
-    so its embedded python-build-standalone download catalog stays frozen at bootstrap age.
-    python-build-standalone re-releases existing CPython patch versions with newer SQLite (e.g. the 3.11.15
-    build was re-cut with SQLite 3.53.x), so a stale catalog can make every provisioning attempt resolve to
-    a vulnerable build even though a fixed build of the SAME patch version exists (issue #72093). The
-    patch-retry loop cannot recover from that: the fixed build carries no newer version number to retry
-    with.
-    """
-    managed = managed_uv_path()
-    try:
-        if Path(uv_bin).resolve() != managed.resolve():
-            return False
-    except OSError:
-        return False
-    before = _uv_version_string(uv_bin)
-    try:
-        _install_uv(managed)
-    except Exception as exc:
-        logger.warning("managed uv refresh failed: %s", exc)
-        return False
-    after = _uv_version_string(uv_bin)
-    return bool(after) and after != before
-
-
 def _default_live_venv(root: Path) -> Path:
-    """Venv that runtime repair should target for *root*: ``venv`` when it holds an interpreter
-    (managed layout wins), else ``.venv`` when that does, else ``venv`` so ``not-applicable`` fires.
+    """Return the venv that runtime repair should target for *root*.
+
+    Managed installs create ``<checkout>/venv``, but uv-default and dev
+    checkouts use ``<checkout>/.venv``.  Historically only ``venv`` was
+    probed, so a ``.venv`` install linking a vulnerable SQLite returned
+    ``not-applicable`` on every ``hermes update`` and stayed on
+    journal_mode=DELETE forever — even though the WAL fallback warning
+    promises that ``hermes update`` repairs the runtime (issue class:
+    2,600x slower ``state.db`` appends under DELETE).
+
+    ``venv`` wins when it holds an interpreter (managed layout takes
+    precedence); otherwise fall back to ``.venv`` when that one does.
+    When neither has an interpreter, return the ``venv`` path so the
+    caller's existing ``not-applicable`` handling fires unchanged.
     """
-    primary, fallback = root / _VENV_NAME, root / _ALT_VENV_NAME
-    use_fallback = not _venv_python(primary).is_file() and _venv_python(fallback).is_file()
-    return fallback if use_fallback else primary
+    primary = root / _VENV_NAME
+    if _venv_python(primary).is_file():
+        return primary
+    fallback = root / _ALT_VENV_NAME
+    if _venv_python(fallback).is_file():
+        return fallback
+    return primary
 
 
 def _sweep_stale_runtime_backups(
-    live: Path, *, root: Path, keep: Path | None = None, min_age_seconds: float = 3600.0) -> None:
-    """Remove leftover ``venv.stale.runtime-*`` backups next to *live*. Best-effort: never raises.
+    live: Path,
+    *,
+    root: Path,
+    keep: Path | None = None,
+    min_age_seconds: float = 3600.0,
+) -> None:
+    """Remove leftover ``venv.stale.runtime-*`` backups next to *live*.
 
-    On POSIX this is safe while an older process still maps files from the tree (open FDs/mmaps
-    keep their inodes). ``min_age_seconds`` avoids racing a concurrent repair whose fresh backup
-    may still be its rollback path; ``keep`` exempts the backup this repair just created.
+    A successful runtime repair parks the previous venv as
+    ``<live>.stale.runtime-<token>``; historically nothing ever reclaimed
+    those, so each repair leaked a full venv (~1 GB) at the project root
+    forever (issue #73109).  On POSIX, deleting the tree is safe even while
+    an older process still maps files from it — open FDs and mmaps keep
+    their inodes alive; the directory entry is what goes away.
 
-    A successful runtime repair parks the previous venv as ``<live>.stale.runtime-<token>``; historically
-    nothing ever reclaimed those, so each repair leaked a full venv (~1 GB) at the project root forever
-    (issue #73109).
+    ``min_age_seconds`` guards against racing a concurrent repair in
+    another process: a backup parked seconds ago may still be that
+    repair's rollback path, so only clearly-old markers are swept.
+    ``keep`` exempts the backup the current repair just created.
+    Best-effort: never raises.
     """
     try:
         candidates = list(live.parent.glob(f"{live.name}.stale.runtime-*"))
@@ -962,154 +898,198 @@ def _sweep_stale_runtime_backups(
         if keep is not None and candidate == keep:
             continue
         try:
-            if now - candidate.stat().st_mtime < min_age_seconds:
-                continue
+            age = now - candidate.stat().st_mtime
         except OSError:
+            continue
+        if age < min_age_seconds:
             continue
         _remove_tree(candidate, boundary=root)
 
 
-def _result(
-    status: str, current: SQLiteRuntimeInfo, detail: str = "", **extra) -> RuntimeRepairResult:
-    return RuntimeRepairResult(status, detail, sqlite_before=current.sqlite_version_string, **extra)
-
-
-
-
-def _repair_under_lock(
-    uv_bin: str, *, root: Path, live: Path, live_python: Path, runtime_root: Path
-) -> RuntimeRepairResult:
-    """Provision, stage and cut over a fixed runtime; caller holds the repair lock."""
-    # Re-probe under the install-scoped lock: another updater may have completed the repair
-    # while this process was entering the path.
-    current = probe_sqlite_runtime(live_python)
-    if current is None:
-        return RuntimeRepairResult("skipped", "live interpreter probe failed")
-    if not current.wal_reset_vulnerable:
-        return _result("safe", current, sqlite_after=current.sqlite_version_string)
-    print(
-        "  ⚠ Hermes venv links SQLite "
-        f"{current.sqlite_version_string}, which has the WAL-reset bug.")
-    provisioned = _install_safe_python_generation(uv_bin, project_root=root, current=current)
-    # Likely a stale managed-uv catalog: python-build-standalone re-releases the same patch
-    # versions with fixed SQLite, but a frozen catalog keeps resolving the old vulnerable build
-    # and the patch-retry loop has no newer number to try. Refresh the binary and retry once.
-    if provisioned is None and _refresh_managed_uv_catalog(uv_bin):
-        # See #72093.
-        print("  → Managed uv refreshed; retrying provisioning...")
-        provisioned = _install_safe_python_generation(uv_bin, project_root=root, current=current)
-    if provisioned is None:
-        return _result("failed", current, "could not provision a fixed private Python runtime")
-    generation, python, candidate_info = provisioned
-
-    try:
-        candidate = _stage_candidate_venv(
-            uv_bin, project_root=root, generation=generation, python=python)
-    except _CandidateStageError as exc:
-        _remove_tree(generation, boundary=managed_python_install_dir(root))
-        return _result(
-            "failed", current, str(exc),
-            sqlite_after=candidate_info.sqlite_version_string)
-
-    backup = None
-    generation_in_use = False
-    if platform.system() == "Windows":
-        cut_over, generation_in_use, final_info, cutover_detail = _cut_over_windows_runtime_config(
-            candidate, live=live, current=current, candidate_info=candidate_info)
-    else:
-        cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
-            candidate, project_root=root, live=live)
-    if not cut_over:
-        if backup is None:
-            _remove_tree(candidate, boundary=runtime_root)
-            if not generation_in_use:
-                _remove_tree(generation, boundary=managed_python_install_dir(root))
-        return _result(
-            "failed", current, cutover_detail,
-            sqlite_after=final_info.sqlite_version_string if final_info is not None else "",
-            backup_venv=backup)
-    final_version = (final_info if final_info is not None else candidate_info).sqlite_version_string
-    print(
-        "  ✓ Managed Python runtime repaired "
-        f"(SQLite {current.sqlite_version_string} → {final_version})")
-    if backup is not None and backup.exists():
-        _remove_tree(backup, boundary=root)
-    elif backup is None:
-        # Windows: the live venv now points at the generation; the staging venv is spent.
-        _remove_tree(candidate, boundary=runtime_root)
-    return _result("repaired", current, sqlite_after=final_version, backup_venv=backup)
-
-
 def repair_vulnerable_runtime(
-    uv_bin: str, *, project_root: Path | None = None, venv_dir: Path | None = None
+    *,
+    project_root: Path | None = None,
+    venv_dir: Path | None = None,
 ) -> RuntimeRepairResult:
-    """Replace a vulnerable install venv without mutating its packages in place.
+    """Replace a vulnerable install venv without mutating it in place.
 
-    Every failure before cutover leaves the live venv untouched. POSIX cuts over with directory
-    renames and restores the parked venv synchronously on failure; Windows repoints the live
-    venv's ``pyvenv.cfg`` instead (any open handle under the venv makes a directory rename fail
-    there) and restores the original config on a failed smoke.
+    Every failure before cutover leaves the live venv untouched. POSIX cuts over with
+    directory renames and restores the parked venv synchronously on failure; Windows repoints
+    the live venv's ``pyvenv.cfg`` instead (any open handle under the venv makes a directory
+    rename fail there — #93032) and restores the original config on a failed smoke.
+
+    uv is resolved internally — the pinned binary via ``pm`` (its version
+    lives in ``pm/lock.json``; the bytes live in the pm store).  There is
+    no foreign-uv path: the lockfile names exactly one uv, and a repair
+    that ran on someone else's uv would provision an interpreter outside
+    the catalog the pin promises.  A stale python-build-standalone catalog
+    is fixed by bumping the uv pin — ``hermes update`` pulls the new
+    lockfile before repair runs, so pm has already realized the bumped
+    binary by the time this module asks for it.
     """
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
     live = Path(venv_dir) if venv_dir is not None else _default_live_venv(root)
     live_python = _venv_python(live)
     if not (root / "pyproject.toml").is_file() or not live_python.is_file():
         return RuntimeRepairResult("not-applicable")
+
+    from pm.ensure import uv as pm_uv
+
+    uv_bin, _uv_env = pm_uv()
+    if not uv_bin:
+        return RuntimeRepairResult(
+            "skipped", "pinned uv unavailable (pm could not realize it)"
+        )
+
     current = probe_sqlite_runtime(live_python)
     if current is None:
-        return RuntimeRepairResult("skipped", f"could not probe live interpreter {live_python}")
+        return RuntimeRepairResult(
+            "skipped",
+            f"could not probe live interpreter {live_python}",
+        )
     if not current.wal_reset_vulnerable:
-        # Already fixed: any venv.stale.runtime-* markers next to the live venv are leftovers
-        # from a past repair and will never be rolled back to. Sweep them so they don't leak
-        # ~1 GB each forever. Age-gated to avoid racing an in-flight repair in a sibling process.
-        # See #73109.
+        # The runtime is already fixed — any venv.stale.runtime-* markers
+        # next to the live venv are leftovers from a past repair (or from
+        # a build predating the post-repair cleanup) and will never be
+        # rolled back to. Sweep them so they don't leak ~1 GB each
+        # forever (issue #73109). Age-gated to avoid racing an in-flight
+        # repair in a sibling process.
         _sweep_stale_runtime_backups(live, root=root)
-        return _result("safe", current, sqlite_after=current.sqlite_version_string)
-    runtime_root = root / _RUNTIME_DIR_NAME
+        return RuntimeRepairResult(
+            "safe",
+            sqlite_before=current.sqlite_version_string,
+            sqlite_after=current.sqlite_version_string,
+        )
+
+    runtime_root = _runtime_dir(root)
     lock = _acquire_repair_lock(runtime_root)
     if lock is None:
         detail = "another runtime repair is already in progress"
         print(f"  ⚠ SQLite runtime repair deferred: {detail}")
-        return _result("skipped", current, detail)
+        return RuntimeRepairResult(
+            "skipped",
+            detail,
+            sqlite_before=current.sqlite_version_string,
+        )
+
+    generation: Path | None = None
+    candidate: Path | None = None
     try:
-        return _repair_under_lock(
-            uv_bin, root=root, live=live, live_python=live_python, runtime_root=runtime_root)
+        # Re-probe under the install-scoped lock: another updater may have
+        # completed the repair while this process was entering the path.
+        current = probe_sqlite_runtime(live_python)
+        if current is None:
+            return RuntimeRepairResult("skipped", "live interpreter probe failed")
+        if not current.wal_reset_vulnerable:
+            return RuntimeRepairResult(
+                "safe",
+                sqlite_before=current.sqlite_version_string,
+                sqlite_after=current.sqlite_version_string,
+            )
+
+        print(
+            "  ⚠ Hermes venv links SQLite "
+            f"{current.sqlite_version_string}, which has the WAL-reset bug."
+        )
+        provisioned = _install_safe_python_generation(
+            uv_bin,
+            project_root=root,
+            current=current,
+        )
+        if provisioned is None:
+            return RuntimeRepairResult(
+                "failed",
+                "could not provision a fixed private Python runtime",
+                sqlite_before=current.sqlite_version_string,
+            )
+        generation, python, candidate_info = provisioned
+
+        try:
+            candidate = _stage_candidate_venv(
+                uv_bin,
+                project_root=root,
+                generation=generation,
+                python=python,
+            )
+        except _CandidateStageError as exc:
+            # A rejected candidate raises with the child's own diagnosis
+            # already cleaned up (#111417/#111497: the reason travels into
+            # the result detail, the failure report and the receipt).
+            _remove_tree(generation, boundary=managed_python_install_dir(root))
+            return RuntimeRepairResult(
+                "failed",
+                str(exc),
+                sqlite_before=current.sqlite_version_string,
+                sqlite_after=candidate_info.sqlite_version_string,
+            )
+        if candidate is None:
+            # Legacy/patched staging contract: None means rejected (and
+            # already cleaned up) without a reason payload.
+            _remove_tree(generation, boundary=managed_python_install_dir(root))
+            return RuntimeRepairResult(
+                "failed",
+                "replacement environment did not pass dependency and import smoke tests",
+                sqlite_before=current.sqlite_version_string,
+                sqlite_after=candidate_info.sqlite_version_string,
+            )
+
+        backup: Path | None = None
+        generation_in_use = False
+        if platform.system() == "Windows":
+            cut_over, generation_in_use, final_info, cutover_detail = (
+                _cut_over_windows_runtime_config(
+                    candidate, live=live, current=current, candidate_info=candidate_info)
+            )
+        else:
+            cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
+                candidate,
+                project_root=root,
+                live=live,
+            )
+        if not cut_over:
+            if backup is None:
+                _remove_tree(candidate, boundary=runtime_root)
+                if not generation_in_use:
+                    _remove_tree(generation, boundary=managed_python_install_dir(root))
+            return RuntimeRepairResult(
+                "failed",
+                cutover_detail,
+                sqlite_before=current.sqlite_version_string,
+                sqlite_after=(
+                    final_info.sqlite_version_string if final_info is not None else ""
+                ),
+                backup_venv=backup,
+            )
+
+        final_version = (
+            final_info.sqlite_version_string
+            if final_info is not None
+            else candidate_info.sqlite_version_string
+        )
+        print(
+            "  ✓ Managed Python runtime repaired "
+            f"(SQLite {current.sqlite_version_string} → {final_version})"
+        )
+        if backup is not None and backup.exists():
+            _remove_tree(backup, boundary=root)
+        elif backup is None:
+            # Windows: the live venv now points at the generation; the
+            # staging venv is spent.
+            _remove_tree(candidate, boundary=runtime_root)
+        return RuntimeRepairResult(
+            "repaired",
+            sqlite_before=current.sqlite_version_string,
+            sqlite_after=final_version,
+            backup_venv=backup,
+        )
     finally:
         _release_repair_lock(lock)
 
 
-def _install_uv(target: Path) -> None:
-    """Bootstrap uv into *target* using the official standalone installer.
-
-    Sets ``UV_UNMANAGED_INSTALL`` (POSIX) / ``UV_INSTALL_DIR`` (Windows) so the installer writes
-    into ``$HERMES_HOME/bin/`` instead of ``~/.local/bin/``.
-    """
-    env = {**os.environ, "UV_UNMANAGED_INSTALL": str(target.parent),
-           "UV_INSTALL_DIR": str(target.parent)}
-    (_install_uv_windows if platform.system() == "Windows" else _install_uv_posix)(env)
-
-
-def _install_uv_posix(env: dict[str, str]) -> None:
-    """Download + sh the POSIX installer (two-stage to avoid curl|sh pitfalls)."""
-    with tempfile.NamedTemporaryFile(suffix=".sh", delete=False) as f:
-        installer_path = f.name
-    try:
-        subprocess.run(
-            ["curl", "-LsSf", "https://astral.sh/uv/install.sh", "-o", installer_path],
-            check=True, capture_output=True)
-        subprocess.run(["sh", installer_path], env=env, check=True, capture_output=True)
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(installer_path)
-
-
-def _install_uv_windows(env: dict[str, str]) -> None:
-    """Invoke the PowerShell installer."""
-    cmd = "irm https://astral.sh/uv/install.ps1 | iex"
-    subprocess.run(
-        ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd], env=env, check=True,
-        capture_output=True)
+# ---------------------------------------------------------------------------
+# Legacy stub
+# ---------------------------------------------------------------------------
 
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
-    True  # dont remove me. ask ethernet
+    return True  # dont remove me. ask ethernet

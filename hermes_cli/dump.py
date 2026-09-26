@@ -23,7 +23,8 @@ def _dotenv_key_names() -> set[str]:
     from .env, invisible to the launchd backend).
     """
     try:
-        text = get_env_path().read_text(encoding="utf-8", errors="ignore")
+        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors may leave a UTF-8 BOM.
+        text = get_env_path().read_text(encoding="utf-8-sig", errors="ignore")
     except (OSError, UnicodeError):
         return set()
     names: set[str] = set()
@@ -50,8 +51,21 @@ def _git_output(project_root: Path, *args: str) -> str:
 
 
 def _get_git_commit(project_root: Path) -> str:
-    """Short git commit hash, or '(unknown)'. Docker images exclude ``.git``, so fall back to the build SHA
-    the Dockerfile bakes into ``<project_root>/.hermes_build_sha``."""
+    """Short git commit hash, or '(unknown)'.
+
+    Prefers ``version_info.get_version_info()`` which reads the install stamp first
+    (Docker/Nix), then falls back to live ``git rev-parse`` for source installs.
+    Docker images exclude ``.git``, so the final fallback is the build SHA the
+    Dockerfile bakes into ``<project_root>/.hermes_build_sha``.
+    """
+    try:
+        from hermes_cli.version_info import get_version_info
+
+        info = get_version_info()
+        if info.commit:
+            return info.commit[:8]
+    except Exception:
+        pass
     value = _git_output(project_root, "rev-parse", "--short=8", "HEAD")
     if value:
         return value
@@ -63,7 +77,22 @@ def _get_git_commit(project_root: Path) -> str:
 
 
 def _get_git_commit_date(project_root: Path) -> str:
-    """Return the date the HEAD commit was authored (YYYY-MM-DD), or '' (Docker images have no .git)."""
+    """Return the date the HEAD commit was authored (YYYY-MM-DD), or '' (Docker images have no .git).
+
+    Uses ``version_info.get_version_info()`` which carries the commit date as a Unix
+    timestamp from the install stamp (Docker/Nix) or live git (source installs);
+    falls back to live ``git log`` for source checkouts without an install stamp.
+    """
+    try:
+        from hermes_cli.version_info import get_version_info
+
+        info = get_version_info()
+        if info.commit_date:
+            from datetime import datetime, timezone
+
+            return datetime.fromtimestamp(info.commit_date, tz=timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        pass
     return _git_output(project_root, "log", "-1", "--format=%cd", "--date=short", "HEAD")
 
 

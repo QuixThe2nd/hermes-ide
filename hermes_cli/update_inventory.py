@@ -328,9 +328,17 @@ def collect_runtime_inventory() -> UpdatePlan:
     plan = UpdatePlan()
     _collect_install_shape(plan)
     with _probe("Code-identity probe"):
+        # Fork path first: live git (source installs) then the Dockerfile-baked .hermes_build_sha.
+        # Upstream's version_info install stamp answers where that finds nothing (sealed/MSIX installs).
         from hermes_cli.build_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
+        if not identity.get("sha"):
+            from hermes_cli.version_info import get_code_identity as _stamp_identity
+
+            stamped = _stamp_identity(refresh=True)
+            if stamped.get("sha"):
+                identity = stamped
         plan.expected_sha = identity.get("sha")
         plan.expected_version = identity.get("version")
     profile_homes: list = []

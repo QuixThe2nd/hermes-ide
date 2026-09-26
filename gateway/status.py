@@ -65,7 +65,7 @@ def record_start_and_check_storm(
         now = datetime.now(timezone.utc).timestamp()
         existing: list[float] = []
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
                 with contextlib.suppress(ValueError):
                     existing.append(float(line))
         existing.append(now)
@@ -296,7 +296,7 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     on Linux, else psutil ``create_time()`` in centiseconds. Units differ per platform; the guard
     only compares same-host values."""
     with contextlib.suppress(IndexError, ValueError, OSError):
-        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])
+        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
     try:
         import psutil  # type: ignore
         return int(round(psutil.Process(pid).create_time() * 100))
@@ -471,7 +471,7 @@ def _get_code_identity_fields() -> dict[str, Any]:
     degrades to absent fields.
     """
     try:
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
         identity = get_code_identity()
         return {"code_sha": identity.get("sha"), "code_version": identity.get("version")}
     except Exception:
@@ -500,7 +500,7 @@ def _read_json_file(path: Path, *, bare_pid_ok: bool = False) -> Optional[dict[s
     """JSON object at ``path``, or None when absent/empty/unreadable/invalid. ``bare_pid_ok`` also
     accepts legacy bare-integer PID files as ``{"pid": N}``."""
     try:
-        raw = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        raw = path.read_text(encoding="utf-8-sig").strip() if path.exists() else ""
     except (OSError, UnicodeDecodeError):  # vanished, EACCES, non-UTF-8 garbage
         return None
     if not raw:
@@ -638,7 +638,7 @@ def _pid_exists(pid: int) -> bool:
 def _posix_is_zombie(pid: int) -> bool:
     """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
     try:
-        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()  # windows-footgun: ok (/proc is BOM-free)
         return len(stat_fields) > 2 and stat_fields[2] == "Z"
     except FileNotFoundError:
         with contextlib.suppress(Exception):
@@ -1194,7 +1194,7 @@ def _scoped_lock_record_is_stale(existing: dict[str, Any], existing_pid: Optiona
 def _process_is_stopped(pid: int) -> bool:
     """True for a stopped / tracing-stop state (T/t) in ``/proc/<pid>/status``."""
     with contextlib.suppress(OSError):
-        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines():
+        for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8").splitlines():  # windows-footgun: ok (/proc is BOM-free)
             if line.startswith("State:"):
                 return line.split()[1] in {"T", "t"}
     return False

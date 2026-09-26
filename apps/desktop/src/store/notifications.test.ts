@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 
@@ -108,4 +108,30 @@ test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', ()
   expect($notifications.get()[0]?.action?.label).toBe(en.notifications.actions.restartHermes)
   $notifications.get()[0]?.action?.onClick()
   expect($backendRestartRequest.get()).toBe(before + 1)
+})
+
+test('notifyError posts the full error to desktop.log, not the summary', () => {
+  const logLine = vi.fn()
+
+  const previous = (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+
+  ;(window as unknown as { hermesDesktop: { logLine: typeof logLine } }).hermesDesktop = { logLine }
+
+  try {
+    const error = new Error('sqlite3.OperationalError: database is locked')
+    error.stack = 'Error: sqlite3.OperationalError: database is locked\n    at saveSession (session.ts:12)'
+
+    notifyError(error, 'Prompt failed')
+
+    expect(logLine).toHaveBeenCalledTimes(1)
+    expect(logLine.mock.calls[0][0]).toContain('Prompt failed')
+    expect(logLine.mock.calls[0][0]).toContain('database is locked')
+    expect(logLine.mock.calls[0][0]).toContain('session.ts:12')
+  } finally {
+    if (previous === undefined) {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    } else {
+      ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = previous
+    }
+  }
 })

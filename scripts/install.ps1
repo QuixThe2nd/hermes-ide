@@ -828,7 +828,7 @@ function Resolve-UvShimTarget {
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
-    # The runtime update path (hermes_cli/managed_uv.py) looks in the same
+    # The runtime update path (hermes_cli/runtime_repair.py) looks in the same
     # place, so install.ps1 and `hermes update` stay in sync.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
 
@@ -889,7 +889,7 @@ function Install-Uv {
         # on PATH, or at ~/.local/bin (the astral default location when
         # UV_INSTALL_DIR was ignored by an older installer) -- copy it into
         # the managed location so the managed-first invariant holds
-        # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
+        # (hermes_cli/runtime_repair.py looks only at $HermesHome\bin\uv.exe).
         if (-not (Test-Path $managedUv)) {
             $existingUv = $null
             $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
@@ -1271,7 +1271,7 @@ function Resolve-UvCmd {
 function Initialize-ManagedPythonEnvironment {
     # Python used by Hermes belongs to the checkout, never to another
     # application or a user-level uv configuration. Keep this aligned with
-    # hermes_cli.managed_uv.managed_python_env(), which owns the update path.
+    # hermes_cli.runtime_repair.managed_python_env(), which owns the update path.
     foreach ($name in @(
         "CONDA_DEFAULT_ENV", "CONDA_PREFIX", "UV_PROJECT_ENVIRONMENT",
         "UV_NO_MANAGED_PYTHON", "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
@@ -3266,7 +3266,7 @@ function Install-HermesCommandLaunchers {
     # Launcher form depends on the venv (keep in lockstep with
     # hermes_cli/_install_repair.py): a normal venv's exe trampoline
     # embeds an absolute interpreter path and survives copying; a
-    # relocatable venv's trampoline (managed_uv rebuilds use
+    # relocatable venv's trampoline (runtime_repair rebuilds use
     # --relocatable) resolves relative to its own location, and a copy
     # dies with 'uv trampoline failed to canonicalize script path' --
     # those get a .cmd delegator invoking the in-venv exe instead.

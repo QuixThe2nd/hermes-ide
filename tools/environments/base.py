@@ -120,7 +120,7 @@ def get_sandbox_dir() -> Path:
 def _load_json_store(path: Path) -> dict:
     """Load a JSON file as a dict, returning ``{}`` on any error."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
 
@@ -165,7 +165,8 @@ class BaseEnvironment(ABC):
 
     def get_temp_dir(self) -> str:
         """Backend temp directory for session artifacts (``/tmp`` in sandboxes;
-        LocalEnvironment overrides for Termux where only ``TMPDIR`` is writable)."""
+        LocalEnvironment overrides on hosts where ``/tmp`` may be missing and only
+        ``TMPDIR`` is writable)."""
         return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):

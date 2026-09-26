@@ -87,24 +87,26 @@ test('win wrapper rejects values that still contain placeholders', () => {
   assert.throws(() => renderWinWrapper({ module: '__HERMES_REPO_REL__', func: 'main' }, RELS.relRepo, RELS.relSite))
 })
 
-test('MSIX: one uap5 alias Extension per launcher exe, Executable naming that exe', () => {
+test('MSIX: ONE uap5 alias Extension naming every launcher alias', () => {
   const xml = appExecutionAliasExtensions()
   const blocks = xml.match(/<uap5:Extension\b/g) ?? []
-  assert.equal(blocks.length, 3)
+  // makeappx rejects a second windows.appExecutionAlias Extension with the
+  // opaque 0x80080204 — all launcher aliases must ride in ONE block.
+  assert.equal(blocks.length, 1)
+  // The block's Executable names the exe that serves the aliases (first launcher).
+  const first = ['app', 'resources', 'agent-payload', 'bin', `${CLI_LAUNCHER_SPECS[0].name}.exe`].join('\\')
+  assert.ok(xml.includes(`Executable="${first}"`), 'Executable must name the first launcher exe')
+  // Every launcher exe gets exactly one ExecutionAlias inside the block.
   for (const spec of CLI_LAUNCHER_SPECS) {
     const expected = ['app', 'resources', 'agent-payload', 'bin', `${spec.name}.exe`].join('\\')
-    assert.ok(
-      xml.includes(`Executable="${expected}"`),
-      `no alias Extension names ${expected}`
-    )
     // Backslashes: MSIX Executable must be manifest-backslash form.
     assert.ok(!xml.includes(`${expected}/`), 'forward slashes are not manifest form')
+    assert.ok(
+      xml.includes(`<uap5:ExecutionAlias Alias="${spec.name}.exe" />`),
+      `no ExecutionAlias for ${spec.name}.exe`
+    )
   }
-  // The old rust shim's single-exe-argv[0]-dispatch shape is gone: each
-  // block serves exactly ONE alias.
-  for (const block of (xml.match(/<uap5:Extension[\s\S]*?<\/uap5:Extension>/g) ?? [])) {
-    assert.equal((block.match(/<uap5:ExecutionAlias /g) ?? []).length, 1)
-  }
+  assert.equal((xml.match(/<uap5:ExecutionAlias /g) ?? []).length, CLI_LAUNCHER_SPECS.length)
 })
 
 test('light variant emits no alias fragments', () => {

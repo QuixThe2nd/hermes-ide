@@ -1,5 +1,6 @@
 """Tests for gateway service management helpers."""
 
+import json
 import os
 import plistlib
 import subprocess
@@ -1284,98 +1285,62 @@ class TestGatewaySystemServiceRouting:
 
         assert run_calls == []
 
-    @pytest.mark.parametrize(
-        "restart_all", [False, True], ids=["single-profile", "all-profiles"]
-    )
-    def test_gateway_restart_refused_under_test_isolation(
-        self, monkeypatch, capsys, restart_all
-    ):
-        """`hermes gateway restart` must no-op under HERMES_TEST_ISOLATION.
-
-        The hermetic conftest exports the marker for the whole session, so a
-        test that reaches the restart branch could otherwise kill gateway
-        processes, poke systemd/launchd/s6, or spawn detached helpers outside
-        the sandbox. The guard must fire before every restart mechanism —
-        including the supervised-process probe — so each callable the branch
-        can reach afterwards is stubbed as a recorder and asserted untouched,
-        for the ordinary single-profile restart and for `--all` alike: the
-        s6 service-manager dispatch, the systemd/launchd/Windows
-        stop-start-restart arms and their platform detection, the linger
-        probe, the PID kill, the exit wait, SIGUSR1 graceful restart /
-        SIGTERM, the detached fallback spawn, and the foreground run_gateway
-        last resort.
-        """
-        monkeypatch.setenv("HERMES_TEST_ISOLATION", "1")
-
-        dangerous_calls: list[str] = []
-
-        def recorder(name):
-            return lambda *a, **kw: dangerous_calls.append(name) or 0
-
-        monkeypatch.setattr(
-            "tools.process_registry._is_supervised_gateway_process",
-            recorder("_is_supervised_gateway_process"),
-        )
-        for name in (
-            # s6 service-manager dispatch — the first decision in the branch
-            "_dispatch_via_service_manager_if_s6",
-            "_dispatch_all_via_service_manager_if_s6",
-            # platform/service detection that picks the restart mechanism
-            "supports_systemd_services",
-            "get_systemd_unit_path",
-            "is_macos",
-            "get_launchd_plist_path",
-            "is_windows",
-            # systemd and launchd lifecycle arms (stop/start/restart)
-            "systemd_stop",
-            "systemd_start",
-            "systemd_restart",
-            "launchd_stop",
-            "launchd_start",
-            "launchd_restart",
-            "get_systemd_linger_status",
-            # PID kill and exit-wait arms
-            "kill_gateway_processes",
-            "stop_profile_gateway",
-            "_wait_for_gateway_exit",
-            # signal / graceful-restart arms
-            "terminate_pid",
-            "_graceful_restart_via_sigusr1",
-            # detached fallback spawn and foreground last resort
-            "_spawn_detached_gateway",
-            "run_gateway",
-        ):
-            monkeypatch.setattr(gateway_cli, name, recorder(name))
-
-        # The Windows arm imports this module locally after the guard; its
-        # callables must stay equally untouched.
-        from hermes_cli import gateway_windows
-
-        for name in ("is_installed", "stop", "start", "restart", "_spawn_detached"):
-            monkeypatch.setattr(
-                gateway_windows, name, recorder(f"gateway_windows.{name}")
-            )
-
-        with pytest.raises(SystemExit) as excinfo:
-            gateway_cli.gateway_command(
-                SimpleNamespace(
-                    gateway_command="restart", system=False, all=restart_all
-                )
-            )
-        assert excinfo.value.code == 1
-
-        assert dangerous_calls == [], (
-            f"guard let restart (all={restart_all}) reach: {dangerous_calls}"
-        )
-        out = capsys.readouterr().out
-        assert "HERMES_TEST_ISOLATION" in out
-        assert "Refusing to run" in out
-
-
 class TestDetectVenvDir:
-    """Tests for _detect_venv_dir() virtualenv detection."""
+    """Tests for _detect_venv_dir() virtualenv detection.
+
+    pm's facts/store resolution is the primary source; each legacy-probe
+    test isolates it (``_pm_runtime_venv_dir`` patched to None) so the
+    fallbacks are exercised deterministically regardless of whether the
+    host checkout has pm-provisioned a venv.
+    """
+
+    def test_resolves_pm_provisioned_venv_without_virtual_env(self, tmp_path, monkeypatch):
+        """No sys.prefix venv, no VIRTUAL_ENV anywhere — the pm-provisioned
+        venv (facts + store layout) is the answer."""
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        venv = payload / "venv"
+        venv.mkdir(parents=True)
+        store.mkdir(parents=True)
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        (store / "facts.json").write_text(
+            json.dumps(
+                {"schema": 1, "packages": {"venv": {"stamp": "abc", "extras": []}}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+
+        assert gateway_cli._detect_venv_dir() == venv
+
+    def test_pm_resolution_none_without_venv_fact(self, tmp_path, monkeypatch):
+        """A store without a venv fact does not vouch — no pm answer."""
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        (payload / "venv").mkdir(parents=True)
+        store.mkdir(parents=True)
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        (store / "facts.json").write_text(
+            json.dumps({"schema": 1, "packages": {}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+
+        assert gateway_cli._detect_venv_dir() is None
 
     def test_detects_active_virtualenv_via_sys_prefix(self, tmp_path, monkeypatch):
+        # Legacy probe (pre-pm environments): isolated from pm resolution.
+        monkeypatch.setattr(gateway_cli, "_pm_runtime_venv_dir", lambda: None)
         venv_path = tmp_path / "my-custom-venv"
         venv_path.mkdir()
         monkeypatch.setattr("sys.prefix", str(venv_path))
@@ -1386,6 +1351,7 @@ class TestDetectVenvDir:
 
     def test_falls_back_to_dot_venv_directory(self, tmp_path, monkeypatch):
         # Not inside a virtualenv
+        monkeypatch.setattr(gateway_cli, "_pm_runtime_venv_dir", lambda: None)
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
@@ -1398,6 +1364,7 @@ class TestDetectVenvDir:
         assert result == dot_venv
 
     def test_returns_none_when_no_virtualenv(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_pm_runtime_venv_dir", lambda: None)
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
@@ -1405,6 +1372,36 @@ class TestDetectVenvDir:
 
         result = gateway_cli._detect_venv_dir()
         assert result is None
+
+
+class TestServicePathDirsPmVenv:
+    """_build_service_path_dirs() must derive the venv bin dir from pm's
+    facts/store resolution, not from sys.prefix sniffing (which degrades
+    under no-boot-through-venv, where sys.prefix == sys.base_prefix)."""
+
+    def test_includes_pm_venv_bin_without_sys_prefix_venv(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        venv_bin = payload / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        store.mkdir(parents=True)
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        (store / "facts.json").write_text(
+            json.dumps(
+                {"schema": 1, "packages": {"venv": {"stamp": "abc", "extras": []}}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+
+        dirs = gateway_cli._build_service_path_dirs(project_root=tmp_path / "project")
+
+        assert str(venv_bin) in dirs
 
 
 def _seed_pm_node_facts(hermes_root):

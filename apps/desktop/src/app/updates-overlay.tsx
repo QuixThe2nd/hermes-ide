@@ -14,18 +14,26 @@ import {
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
-import type { DesktopUpdateBlocker, DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import { UpdateStatusCard, VersionHero } from '@/components/update-status'
+import { VersionDetails } from '@/components/version-details'
+import type {
+  DesktopUpdateBlocker,
+  DesktopUpdateCommit,
+  DesktopUpdateStage,
+  DesktopUpdateStatus,
+  DesktopVersionInfo,
+  UpdaterMechanismClient
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
-import { openExternalLink } from '@/lib/external-link'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
-import { requestRoute } from '@/store/recovery-requests'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
   $backendUpdateStatus,
+  $desktopVersion,
   $updateApply,
   $updateChecking,
   $updateOverlayOpen,
@@ -39,18 +47,6 @@ import {
   setUpdateOverlayOpen,
   type UpdateApplyState
 } from '@/store/updates'
-
-import { SETTINGS_ROUTE } from './routes'
-
-/** Same installer page Settings → About links to. */
-const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
-
-/** Main puts the raw cause after "Details:" — show it as the dimmed line. */
-function splitDetails(text: string): [string, string | null] {
-  const marker = text.search(/\s*Details:\s*/)
-
-  return marker < 0 ? [text, null] : [text.slice(0, marker).trim(), text.slice(marker).replace(/^\s*Details:\s*/, '').trim()]
-}
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -66,6 +62,7 @@ export function UpdatesOverlay() {
   const backendStatus = useStore($backendUpdateStatus)
   const backendChecking = useStore($backendUpdateChecking)
   const backendApply = useStore($backendUpdateApply)
+  const desktopVersion = useStore($desktopVersion)
 
   const isBackend = target === 'backend'
   const status = isBackend ? backendStatus : clientStatus
@@ -125,7 +122,9 @@ export function UpdatesOverlay() {
         onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
       >
-        {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
+        {phase === 'applying' && (
+          <ApplyingView apply={apply} isBackend={isBackend} statusMechanism={status?.mechanism} />
+        )}
 
         {phase === 'manual' && (
           <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
@@ -156,6 +155,7 @@ export function UpdatesOverlay() {
             status={status}
             target={target}
             updateAvailable={updateAvailable}
+            version={desktopVersion}
           />
         )}
       </DialogContent>
@@ -172,7 +172,8 @@ function IdleView({
   onRetryCheck,
   status,
   target,
-  updateAvailable
+  updateAvailable,
+  version
 }: {
   behind: number
   checking: boolean
@@ -183,6 +184,7 @@ function IdleView({
   status: DesktopUpdateStatus | null
   target: UpdateTarget
   updateAvailable: boolean
+  version: DesktopVersionInfo | null
 }) {
   const { t } = useI18n()
   const u = t.updates
@@ -210,58 +212,50 @@ function IdleView({
     )
   }
 
-  if (!status.supported) {
-    // A copy without version-control metadata can't self-update; the website
-    // carries the current installer (same URL as Settings → About).
-    const [lead, detail] = splitDetails(status.message ?? u.unsupportedMessage)
+  const details = version ? <VersionDetails version={version} /> : null
 
+  // App-installer check-unknown (OS checker unavailable): NOT "no updates"
+  // and NOT a generic error — the OS also installs updates automatically on
+  // restart (it re-reads the .appinstaller feed on every launch), so the
+  // honest view names that path. Only this mechanism gets it.
+  if (status.mechanism === 'app-installer' && status.error && !status.updateAvailable) {
     return (
-      <CenteredStatus
-        action={
-          status.reason === 'not-a-git-checkout' ? (
-            <Button onClick={() => openExternalLink(INSTALLER_URL)} size="sm">
-              {u.openDownloadPage}
-            </Button>
-          ) : undefined
-        }
-        body={lead}
-        detail={detail ?? undefined}
-        icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title={u.notAvailableTitle}
-      />
+      <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
+        <VersionHero
+          renderHeading={heading => (
+            <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>
+          )}
+          version={version}
+        />
+        <div className="flex flex-col items-center gap-2 text-center">
+          <AlertCircle className="size-6 text-muted-foreground" />
+          <p className="text-sm font-medium">{u.checkUnknownTitleAppInstaller}</p>
+          <p className="max-w-prose text-sm leading-5 text-muted-foreground">{u.checkUnknownBodyAppInstaller}</p>
+        </div>
+        <Button onClick={onRetryCheck} size="sm">
+          {u.tryAgain}
+        </Button>
+        {details}
+      </div>
     )
   }
 
-  if (status.error) {
+  // Everything that is NOT the install pitch — unsupported, check error, and
+  // already-latest — is exactly the About page's state: render the shared
+  // hero + status card so the two surfaces cannot drift. The card owns the
+  // check/retry actions (its "Check now" covers the old Try-again button).
+  if (!status.supported || status.error || !updateAvailable) {
     return (
-      <CenteredStatus
-        action={
-          <div className="flex flex-wrap justify-center gap-2">
-            <Button disabled={checking} onClick={onRetryCheck} size="sm">
-              {u.tryAgain}
-            </Button>
-            {target === 'backend' && (
-              <Button onClick={() => requestRoute(`${SETTINGS_ROUTE}?tab=gateway`)} size="sm" variant="outline">
-                {u.connectionSettings}
-              </Button>
-            )}
-          </div>
-        }
-        body={status.error === 'git-unusable' ? u.gitUnusable : u.connectionRetry}
-        detail={status.message}
-        icon={<ErrorIcon />}
-        title={u.checkFailedTitle}
-      />
-    )
-  }
-
-  if (!updateAvailable) {
-    return (
-      <CenteredStatus
-        body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
-        icon={<BrandMark className="size-12" />}
-        title={u.allSetTitle}
-      />
+      <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
+        <VersionHero
+          renderHeading={heading => (
+            <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>
+          )}
+          version={version}
+        />
+        <UpdateStatusCard target={target} />
+        {details}
+      </div>
     )
   }
 
@@ -272,8 +266,16 @@ function IdleView({
   // Name what's being updated. In remote mode the overlay acts on the connected
   // backend, not the local client — say so. When there are no commit rows to
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
-  // instead of generic filler.
-  const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
+  // instead of generic filler. On a release-feed channel (stable), name the
+  // release tag instead of commit vocabulary.
+  const { title, body } = resolveUpdateCopy({
+    target,
+    shownItems,
+    channel: status?.channel === 'stable' ? 'stable' : 'main',
+    latestTag: status?.latestTag ?? null,
+    mechanism: status?.mechanism,
+    copy: u
+  })
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
@@ -416,11 +418,24 @@ function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void
   )
 }
 
-function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend: boolean }) {
+function ApplyingView({
+  apply,
+  isBackend,
+  statusMechanism
+}: {
+  apply: UpdateApplyState
+  isBackend: boolean
+  statusMechanism?: UpdaterMechanismClient
+}) {
   const { t } = useI18n()
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
-  const body = isBackend ? u.applyingBodyBackend : u.applyingBody
+  const isAppInstaller = statusMechanism === 'app-installer'
+  const body = isAppInstaller
+    ? u.applyingBodyAppInstaller
+    : isBackend
+      ? u.applyingBodyBackend
+      : u.applyingBody
   const currentMessage = apply.message.trim()
   const recentLog = apply.log.slice(-4)
 

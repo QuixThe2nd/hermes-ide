@@ -2,9 +2,20 @@
  * Desktop bundles ship precompiled renderer assets. Returning false here tells
  * electron-builder to skip the node_modules collector/install step, which
  * avoids workspace dependency graph explosions and keeps packaging
- * deterministic across environments. The Hermes Agent Python payload is no
- * longer bundled; the Electron app fetches it at first launch via
- * `install.ps1`'s stage protocol (Windows). See `electron/main.ts`.
+ * deterministic across environments.
+ *
+ * Also guarantees build/agent-payload exists: extraResources copies it on
+ * every build, and electron-builder's behavior for a missing `from` varies
+ * between versions. A bundled build stages the real payload there first
+ * (`hermes pm bundle --out apps/desktop/build/agent-payload`); anything else
+ * gets a stub manifest with external:true, which resolvePayload() treats as
+ * "no payload" so the backend resolver falls through to the runtime rungs.
+ *
+ * Also stages the MSIX build-time assets (the build/appx icon set and the
+ * build/msix-extensions.xml fragment the config points customExtensionsPath
+ * at). These MUST happen here, in the hook electron-builder calls at build
+ * time — not in electron-builder.config.cjs at require time, or every
+ * typecheck/test import of the config would write files.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -20,6 +31,17 @@ const {
 } = require('../product-identity.cjs')
 
 export default async function beforeBuild() {
+  stageMsixAssets()
+  writeMsixExtensions()
+
+  const payloadDir = path.join(import.meta.dirname, '..', 'build', 'agent-payload')
+  const manifest = path.join(payloadDir, 'manifest.json')
+
+  if (!fs.existsSync(manifest)) {
+    fs.mkdirSync(payloadDir, { recursive: true })
+    fs.writeFileSync(manifest, JSON.stringify({ schema: 1, external: true }, null, 2) + '\n')
+  }
+
   return false
 }
 
@@ -95,17 +117,19 @@ ${aliases}`
 export function appExecutionAliasExtensions(launchers = CLI_LAUNCHER_SPECS.map((s) => s.name)) {
   const bs = String.fromCharCode(92)
   const executable = (name) => ['app', 'resources', 'agent-payload', 'bin', `${name}.exe`].join(bs)
-  return launchers
-    .map(
-      (name) => `<uap5:Extension
+  // ONE windows.appExecutionAlias extension per package — makeappx rejects a
+  // second one with the opaque 0x80080204 (A/B-verified against the 26100
+  // kit). Every launcher alias rides in the same extension's AppExecutionAlias;
+  // the Executable attribute names the exe that serves the aliases.
+  return `<uap5:Extension
     xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
     Category="windows.appExecutionAlias"
-    Executable="${executable(name)}"
+    Executable="${executable(launchers[0])}"
     EntryPoint="Windows.FullTrustApplication">
   <uap5:AppExecutionAlias>
-    <uap5:ExecutionAlias Alias="${name}.exe" />
+${launchers
+  .map((name) => `    <uap5:ExecutionAlias Alias="${name}.exe" />`)
+  .join('\n')}
   </uap5:AppExecutionAlias>
 </uap5:Extension>`
-    )
-    .join('\n')
 }

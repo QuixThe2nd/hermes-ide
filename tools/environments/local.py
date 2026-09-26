@@ -24,9 +24,6 @@ from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
-from tools.environments.local_gitbash_probe import (
-    _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
-    _looks_like_msys_spawn_failure, _mandatory_aslr_enabled)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
@@ -305,14 +302,20 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
                          _plugin_terminal_env_strip_keys(), lambda p: p)
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+def hermes_subprocess_env(
+    *, inherit_credentials: bool = False, base_env: dict[str, str] | None = None
+) -> dict[str, str]:
     """Sanitized env for the **non-terminal** spawn surface (browser, ACP/CLI executors,
     computer-use driver, TUI Node host). Tier 1 (``_ALWAYS_STRIP_KEYS``, plugin keys,
     force-prefixed hints, dynamic internal secrets) is always removed; Tier 2 (the
     provider/tool blocklist) unless ``inherit_credentials`` — pass that **only** for
     children that legitimately need LLM credentials (user-blessed claude/codex/gemini
-    CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
-    env = _scrub_credentials(os.environ.copy(), inherit_credentials=inherit_credentials)
+    CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``.
+    ``base_env`` swaps the starting environment (default ``os.environ``) — for callers
+    that already hold a curated env (pm's sanitized uv env) and want the strip policy
+    applied on top of it."""
+    env = _scrub_credentials(dict(base_env) if base_env is not None else os.environ.copy(),
+                             inherit_credentials=inherit_credentials)
     env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
     return _finalize_child_env(env)
 
@@ -434,56 +437,20 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
 
 
 # --- Shell discovery ---
-def _windows_bash_candidates(custom: "str | None") -> list[str]:
-    """Ordered bash.exe candidates on Windows: HERMES_GIT_BASH_PATH, our portable Git
-    under %LOCALAPPDATA%\\hermes\\git (PortableGit ``bin`` and MinGit ``usr\\bin``),
-    known Git-for-Windows dirs, then PATH last — ``shutil.which`` may return WSL's
-    bash, which fails silently on Windows paths."""
-    getenv = os.environ.get
-    lad = getenv("LOCALAPPDATA", "")
-    roots = [
-        lad and os.path.join(lad, "hermes", "git", "bin"),
-        lad and os.path.join(lad, "hermes", "git", "usr", "bin"),
-        os.path.join(getenv("ProgramFiles", r"C:\Program Files"), "Git", "bin"),
-        os.path.join(getenv("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin"),
-        lad and os.path.join(lad, "Programs", "Git", "bin"),
-    ]
-    raw = [custom or "", *(os.path.join(r, "bash.exe") for r in roots if r)]
-    candidates = list(dict.fromkeys(c for c in raw if c and os.path.isfile(c)))
-    found = shutil.which("bash")
-    if found and found not in candidates:
-        candidates.append(found)
-    return candidates
-
 
 def _find_bash() -> str:
-    """Find bash for command execution."""
-    if not _IS_WINDOWS:
-        return (shutil.which("bash")
-                or next((p for p in ("/usr/bin/bash", "/bin/bash") if os.path.isfile(p)), None)
-                or os.environ.get("SHELL") or "/bin/sh")
-    custom = os.environ.get("HERMES_GIT_BASH_PATH")
-    candidates = _windows_bash_candidates(custom)
-    # First candidate that can actually start wins: a stale HERMES_GIT_BASH_PATH
-    # pointing at a broken install must not beat a healthy portable Git.
-    for candidate in candidates:
-        if _bash_starts(candidate):
-            if candidate != custom and custom and os.path.isfile(custom):
-                logger.warning(
-                    "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead", custom, candidate)
-            return candidate
-    if candidates:
-        probe_details = "\n".join(
-            detail for c in candidates if (detail := _bash_probe_details_cache.get(c)))
-        if _mandatory_aslr_enabled() is True or _looks_like_msys_spawn_failure(probe_details):
-            raise RuntimeError(_git_bash_aslr_help(candidates[0], probe_details))
-        # Unknown failure class: return the first path so the caller sees the
-        # real bash error instead of a less useful "not found".
-        return candidates[0]
+    """Resolve the shell Hermes runs commands with. Owned by pm (the store
+    is the authority on bundled bash); this is a thin wrapper over
+    pm.shell() for callers that need a bash binary."""
+    import pm.shell
+
+    bash = pm.shell.bash()
+    if bash:
+        return bash
     raise RuntimeError(
-        "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
-        "Install it from: https://git-scm.com/download/win\n"
-        "Or set HERMES_GIT_BASH_PATH to your bash.exe location.")
+        "No shell found. Hermes needs bash (Git for Windows on Windows). "
+        "Run `hermes pm install` or reinstall the bundle."
+    )
 
 
 _git_bash_bin_dirs_cache: "list[str] | None" = None
@@ -588,12 +555,32 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
 
 
 def _managed_runtime_path_entries() -> list[str]:
-    """Existing Hermes-managed runtime dirs: ``$HERMES_HOME/node`` (+``/bin``) and
-    ``$HERMES_HOME/bin`` (managed ``uv``). Per call, not cached: home is
-    profile-scoped and a managed tree can appear mid-process."""
+    """Return existing Hermes-managed runtime dirs for the terminal subshell PATH.
+
+    The terminal tool spawns a subshell whose PATH is the agent process's PATH
+    plus ``_SANE_PATH``. Neither carries the runtimes Hermes installs for
+    itself, so on a machine where Hermes provisioned its own toolchain a
+    command the agent runs resolves a system copy instead — or nothing at all:
+
+    - the pm store's node/npm entries — installed to satisfy the desktop and
+      browser toolchain. ``tools/browser_tool.py`` already does this for its own
+      subprocesses; the agent's shell deserves the same.
+    - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
+      and nothing has ever put that directory on PATH, so an install whose only
+      uv is the managed one looks uv-less to both the agent and the model.
+
+    Resolved per call rather than cached in a module constant because
+    ``get_hermes_home()`` is profile-scoped and a managed runtime can appear
+    mid-process (a lazy pm install, a first browser install).
+    """
     try:
-        from hermes_constants import get_hermes_home, iter_hermes_node_dirs
-        return [str(d) for d in (*iter_hermes_node_dirs(), get_hermes_home() / "bin") if d.is_dir()]
+        import pm
+        from hermes_constants import get_hermes_home
+
+        env = pm.env_for("npm", base_env={"PATH": ""})
+        managed = [Path(d) for d in env.get("PATH", "").split(os.pathsep) if d]
+        candidates = [*managed, get_hermes_home() / "bin"]
+        return [str(d) for d in candidates if d.is_dir()]
     except Exception:
         return []
 
@@ -637,8 +624,7 @@ def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
     ``C:/.../git/FO``-style paths, which breaks native Windows commands such as ``tasklist``, ``schtasks``,
     and ``wmic``. Hermes runs terminal commands through bash on Windows, so set the standard MSYS opt-out by
     default. Refs #56700.
-    MSYS2-proper and Cygwin bash (which ``_find_bash`` can still return via the final ``shutil.which``
-    fallback) ignore it and honor ``MSYS2_ARG_CONV_EXCL`` instead, so set both. ``*`` disables all argv
+    MSYS2-proper and Cygwin bash (which ``_find_bash`` can still return) ignore it and honor ``MSYS2_ARG_CONV_EXCL`` instead, so set both. ``*`` disables all argv
     conversion — the semantic equivalent of ``MSYS_NO_PATHCONV=1``. Also fixes ``cmd /c`` mangling (#56147).
     """
     if _IS_WINDOWS:
@@ -826,7 +812,7 @@ class LocalEnvironment(BaseEnvironment):
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
-        (Termux has no system temp dir), ``HERMES_HOME/cache/terminal`` (real storage: a
+        (some Unix hosts have no system temp dir), ``HERMES_HOME/cache/terminal`` (real storage: a
         tmpfs system temp dir fills under Hermes load; pruned by ``cleanup_terminal_temp_cache``),
         ``tempfile.gettempdir()``; backend env before process env so terminal.env
         overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,

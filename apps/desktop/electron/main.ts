@@ -298,7 +298,11 @@ import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallba
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { adoptPayloadVenv, installIdForRoot, isBundledInstall, resolvePayload, type PayloadInfo } from './payload-backend'
-import { checkAppInstallerUpdate, PLACEHOLDER_FEED_BASE_URL, triggerAppInstallerUpdate } from './app-updater'
+import { PLACEHOLDER_FEED_BASE_URL } from './app-updater'
+import { AppInstallerStrategy } from './updater/app-installer'
+import { ExternalStrategy } from './updater/external'
+import { resolveUpdaterMechanism } from './updater'
+import { writePendingRelaunch, consumePendingRelaunch } from './updater/relaunch'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -3199,49 +3203,21 @@ async function resolveHealedBranch(updateRoot, branch) {
 // inside applyUpdates. `force` (menu item, Settings "Check now") skips the
 // cache; the renderer's background poller never passes it.
 async function checkUpdates({ force = false }: { force?: boolean } = {}) {
-  // A bundled install has no checkout to pull — the OS App Installer owns
-  // the update loop for out-of-store MSIX installs. Ask the OS whether a
-  // newer package is available on the registered .appinstaller source.
+  // A bundled install has no checkout to pull — resolve the updater
+  // mechanism once and delegate. Out-of-store MSIX asks the OS whether a
+  // newer package is on the registered .appinstaller source; Store installs
+  // report unsupported (the steward owns their update loop).
   const bundledPayload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
   if (bundledPayload) {
-    if (IS_WINDOWS && !isWindowsStore()) {
-      try {
-        const check = await checkAppInstallerUpdate({
-          python: bundledPayload.storePython,
-          // The checker ships inside the payload's repo snapshot (git archive
-          // of the committed tree): <payload>/<repo>/apps/desktop/scripts/.
-          script: path.join(bundledPayload.repoDir, 'apps', 'desktop', 'scripts', 'check-appinstaller-update.py'),
-          run: runPayloadPython
-        })
+    const strategy = resolveBundledUpdateStrategy(bundledPayload)
 
-        return {
-          supported: true,
-          mechanism: 'app-installer',
-          channel: resolveUpdaterChannelFromStamp(),
-          currentVersion: app.getVersion(),
-          latestVersion: null,
-          updateAvailable: check.available === true,
-          // null = unknown (checker unavailable) — surface honestly.
-          error: check.available === null ? (check.error || 'update check unavailable') : undefined,
-          fetchedAt: Date.now()
-        }
-      } catch (error) {
-        return {
-          supported: true,
-          mechanism: 'app-installer',
-          error: 'check-failed',
-          message: error?.message || String(error),
-          fetchedAt: Date.now()
-        }
-      }
-    }
-
-    return {
-      supported: false,
-      reason: 'bundled-not-appinstaller',
-      message: 'bundled install: updates are applied by the installer (Microsoft Store or App Installer).',
+    return strategy.check().catch(error => ({
+      supported: true,
+      mechanism: strategy.mechanism,
+      error: 'check-failed',
+      message: error?.message || String(error),
       fetchedAt: Date.now()
-    }
+    }))
   }
 
   const updateRoot = resolveUpdateRoot()
@@ -3500,6 +3476,42 @@ function fetchGitHubApiOnce(url, accept, token) {
 let updateInFlight = false
 
 // ── bundled / App Installer helpers ─────────────────────────────────────────
+
+/**
+ * Resolve the updater strategy for a BUNDLED install (payload present).
+ * Dispatch mirrors the pre-strategy ladder exactly: win32 out-of-store →
+ * App Installer arm; Store / other → external (unsupported). The checkout
+ * ladder below appliesUpdates' bundled branch stays in main.ts (it delegates
+ * through the same mechanism resolution via the wire's `mechanism` field).
+ */
+function resolveBundledUpdateStrategy(bundledPayload) {
+  const mechanism = resolveUpdaterMechanism({
+    isBundled: true,
+    isWindows: IS_WINDOWS,
+    isWindowsStore: isWindowsStore()
+  })
+
+  if (mechanism === 'app-installer') {
+    return new AppInstallerStrategy({
+      python: bundledPayload.storePython,
+      // The checker ships inside the payload's repo snapshot (git archive of
+      // the committed tree): <payload>/<repo>/apps/desktop/scripts/.
+      script: path.join(bundledPayload.repoDir, 'apps', 'desktop', 'scripts', 'check-appinstaller-update.py'),
+      run: runPayloadPython,
+      channel: resolveUpdaterChannelFromStamp(),
+      light: isLightVariant(),
+      feedBaseUrl: resolveDesktopFeedBaseUrl(),
+      shell: { openExternal: url => shell.openExternal(url) },
+      teardownBundledBackend,
+      emitUpdateProgress,
+      appVersion: app.getVersion(),
+      quit: () => app.quit(),
+      registerPendingRelaunch: fromVersion => writePendingRelaunch(HERMES_HOME, fromVersion)
+    })
+  }
+
+  return new ExternalStrategy()
+}
 
 /** True when this process is a Microsoft Store deployment. */
 function isWindowsStore(): boolean {
@@ -4184,47 +4196,15 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
   // A bundled install ships its whole runtime as a sealed payload — there
   // is no checkout to pull or venv to sync. New app release IS the update.
   if (resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })) {
-    // Out-of-store MSIX installs are App Installer owned: the OS registered
-    // the .appinstaller URI as the update source at install, so "apply"
-    // means run the graceful teardown (backend children holding install-dir
-    // locks must die first — the same teardown the old in-app updater ran
-    // between download and install), then hand the process to the OS App
-    // Installer and quit.
-    if (IS_WINDOWS && !isWindowsStore()) {
-      const feedBaseUrl = resolveDesktopFeedBaseUrl()
+    // Delegate to the bundled strategy: out-of-store MSIX runs the graceful
+    // teardown, hands the swap to the OS App Installer, registers the
+    // one-shot relaunch marker, and quits; anything else gets the manual
+    // card (reinstall the app release).
+    const strategy = resolveBundledUpdateStrategy(
+      resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
+    )
 
-      if (feedBaseUrl) {
-        emitUpdateProgress({
-          stage: 'restart',
-          message: 'Applying the Hermes update — the window will close and the App Installer will finish.',
-          percent: 100
-        })
-
-        await triggerAppInstallerUpdate(
-          feedBaseUrl,
-          resolveUpdaterChannelFromStamp(),
-          isLightVariant(),
-          { openExternal: url => shell.openExternal(url) },
-          teardownBundledBackend
-        )
-
-        // The OS App Installer now owns the swap. Quit so no process holds
-        // files in the install dir while Windows replaces the package.
-        app.quit()
-
-        return { ok: true, manual: false, bundled: true }
-      }
-    }
-
-    // No App Installer source (a non-MSIX bundled install, or no feed
-    // configured): the manual card remains the fallback.
-    emitUpdateProgress({
-      stage: 'manual',
-      message: 'bundled install: update by installing the new app release',
-      percent: null
-    })
-
-    return { ok: true, manual: true, bundled: true }
+    return strategy.apply(opts)
   }
 
   updateInFlight = true
@@ -18577,6 +18557,17 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  // Post-update relaunch detection (App Installer arm): when the previous
+  // version wrote the one-shot pending-relaunch marker before quitting into
+  // an OS package swap, consume it here — the renderer toasts "Hermes
+  // updated to vX.Y.Z" once its bridge is up. Same-version markers (update
+  // never landed) are deleted silently.
+  const relaunchInfo = consumePendingRelaunch(HERMES_HOME, app.getVersion())
+
+  if (relaunchInfo.wasUpdateRelaunch) {
+    rememberLog(`[updates] post-update relaunch detected (from ${relaunchInfo.fromVersion})`)
+  }
+
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()

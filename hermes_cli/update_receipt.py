@@ -1,8 +1,7 @@
 """Structured update receipts + post-update fleet version verification.
 
 The updater must *prove* its outcome instead of assuming it. Every public entry point is
-exception-swallowing so a failure inside receipts can never break an update.
-"""
+exception-swallowing so a failure inside receipts can never break an update."""
 
 from __future__ import annotations
 
@@ -31,11 +30,24 @@ def _utc_now_iso() -> str:
 
 
 def _code_identity(refresh: bool = False) -> dict[str, Any]:
-    """Running-code identity, or ``{}`` when the probe fails."""
+    """Running-code identity, or ``{}`` when the probe fails.
+
+    Fork path first (live git, then the Dockerfile-baked ``.hermes_build_sha``); upstream's
+    ``version_info`` install stamp answers where that finds nothing (packaged/MSIX builds report
+    their install-stamp provenance — ``source="docker"``/``"nix"``/… — for deployment-kind awareness).
+    """
     with suppress(Exception):
         from hermes_cli.build_info import get_code_identity
 
-        return get_code_identity(refresh=refresh) or {}
+        identity = get_code_identity(refresh=refresh) or {}
+        if identity.get("sha"):
+            return identity
+    with suppress(Exception):
+        from hermes_cli.version_info import get_code_identity as _stamp_identity
+
+        stamped = _stamp_identity(refresh=refresh) or {}
+        if stamped.get("sha"):
+            return stamped
     return {}
 
 
@@ -114,7 +126,6 @@ class UpdateReceipt:
         self.data["outcome"] = outcome
         self.data["finished_at"] = _utc_now_iso()
         self.data["post_update"] = _code_identity(refresh=True)
-
 
 def _receipt_dir() -> Path:
     # ``hermes_constants`` (stdlib-only), never ``hermes_cli.config``: the receipt must be
@@ -291,7 +302,7 @@ def read_latest_receipt() -> Optional[dict[str, Any]]:
     with suppress(Exception):
         path = _receipt_dir() / "latest.json"
         if path.is_file():
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
             return payload if isinstance(payload, dict) else None
     return None
 
@@ -350,7 +361,7 @@ def read_named_receipt(name: str) -> Optional[dict[str, Any]]:
         path = _receipt_dir() / name
         if not path.is_file():
             return None
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
         return payload if isinstance(payload, dict) else None
     except Exception:
         return None

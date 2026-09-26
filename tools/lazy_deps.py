@@ -483,7 +483,7 @@ def _uv_binary() -> Optional[str]:
     """Managed uv first ($HERMES_HOME/bin is never on PATH), then PATH. A lookup, not ensure_uv():
     downloading uv mid-turn is more than the caller asked for; pip covers no-uv."""
     try:
-        from hermes_cli.managed_uv import resolve_uv
+        from hermes_cli.runtime_repair import resolve_uv
 
         return resolve_uv() or shutil.which("uv")
     except Exception:

@@ -61,6 +61,10 @@ _CLONE_ALL_STRIP: list[str] = [
 # ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` so the two lists cannot drift.
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
+    # Managed runtime trees — install artifacts, never profile state
+    # (install/profile bucket split; see test_install_bucket_separation).
+    ".hermes-runtime",
+    "node",
 }) | LOCAL_RUNTIME_ROOT_DIRS
 
 # Per-profile history excluded from --clone-all for ANY source: SQLite session store
@@ -193,7 +197,7 @@ def _wrapper_path(alias: str) -> Path:
 def _is_our_wrapper(path: Path) -> bool:
     """True when *path* reads as a Hermes-generated wrapper (contains ``hermes -p``)."""
     try:
-        return "hermes -p" in path.read_text(encoding="utf-8")
+        return "hermes -p" in path.read_text(encoding="utf-8-sig")
     except Exception:
         return False
 
@@ -504,7 +508,7 @@ def build_alias_map() -> dict[str, str]:
         if not is_windows and entry.suffix:
             continue
         try:
-            with open(entry, "r", encoding="utf-8", errors="strict") as f:
+            with open(entry, "r", encoding="utf-8-sig", errors="strict") as f:
                 content = f.read(_WRAPPER_READ_LIMIT)
         except (OSError, UnicodeDecodeError):
             continue  # UnicodeDecodeError = a binary on PATH, not a wrapper
@@ -565,7 +569,7 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
         return None
     try:
         import yaml
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception:
         return None
     return data if isinstance(data, dict) else None
@@ -1793,7 +1797,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
     if not pid_file.exists():
         return
     try:
-        raw = pid_file.read_text(encoding="utf-8").strip()
+        raw = pid_file.read_text(encoding="utf-8-sig").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
         # Cross-profile kill refusal: the record's hermes_home stamp names the gateway's TRUE
@@ -1829,7 +1833,7 @@ def get_active_profile(root: Path | None = None) -> str:
     """Read the sticky active profile name (of *root*, default: this process's Hermes root)."""
     path = root / "active_profile" if root is not None else _get_active_profile_path()
     try:
-        return path.read_text(encoding="utf-8").strip() or "default"
+        return path.read_text(encoding="utf-8-sig").strip() or "default"
     except (UnicodeDecodeError, OSError):
         return "default"
 
@@ -1998,7 +2002,7 @@ def _scrub_export_secrets(staged: Path) -> None:
         if not _should_redact_export_file(path):
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8-sig")
         except (UnicodeDecodeError, OSError):
             continue
         redacted = redact_sensitive_text(text, force=True)
@@ -2110,7 +2114,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             continue
         seen.add(resolved)
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             continue
         hosts = raw.get("hosts")
