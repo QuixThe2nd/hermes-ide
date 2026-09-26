@@ -1562,6 +1562,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Message ids this adapter's reaction gate has consulted (or is consulting):
         # the once-only guard across live + recovered duplicate deliveries. Bounded.
         self._reaction_gate_seen: "OrderedDict[str, None]" = OrderedDict()
+        # Message ids whose consultation task is claimed but not yet finished. Eviction
+        # above skips these (an evicted in-flight id could re-consult and double-react);
+        # each task removes its own id in a finally. Bounded independently, defensively.
+        self._reaction_gate_inflight: set = set()
         # In-flight consultation tasks; cancelled and awaited in disconnect().
         self._reaction_gate_tasks: set = set()
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
@@ -2289,6 +2293,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         retried or duplicated send appends a duplicate evidence line; the buffer is
         bounded and the judge tolerates the repeat, so no dedup machinery here.
         """
+        # The reaction gate needs the same assistant half (its judge reads a "thanks"
+        # after this bot's reply as connected only when the reply is in evidence), so
+        # the exact same seam feeds its buffer too — its own scope, its own bounds,
+        # and a no-op whenever that gate is off.
+        self._reaction_gate_observe_sent(channel, text)
         gate = self._response_gate
         if gate is None:
             return
@@ -2309,10 +2318,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # (👉👈) reacts with each glyph while a compound emoji (🤦‍♂️) stays one reaction. It
     # runs independently of the speaking gate's verdict — a
     # message the speaking gate drops can still be reacted to — and its own success or
-    # failure never creates a session, forces a reply, or blocks one.
+    # failure never creates a session, forces a reply, or blocks one. Each candidate is
+    # buffered as evidence synchronously at intake (before its task is spawned) so a
+    # rapid successor's consult sees it, with the candidate's own entry excluded from
+    # its own consult by message id; this bot's delivered final replies join the same
+    # evidence through the speaking gate's send seam.
 
     #: Consulted message ids held at once; a busy server cannot grow this without bound.
     _REACTION_GATE_MAX_SEEN = 1024
+
+    #: Consultations that may be unfinished at once. Purely defensive: reaching it
+    #: needs every registry slot simultaneously stuck on a wedged judge, and the
+    #: reaction side effect fails closed (that message is never consulted) rather
+    #: than track an unbounded in-flight set.
+    _REACTION_GATE_MAX_INFLIGHT = 1024
 
     def _reaction_gate_init(self) -> None:
         """Build the reaction gate from validated config plus the credential captured at startup."""
@@ -2387,8 +2406,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         The once-only registry is claimed synchronously BEFORE the task is spawned, so
         a live/recovered duplicate — or two concurrent deliveries of the same id —
-        consults at most once and reacts at most once. The spawned task can never block
-        or fail the dispatch that called this; it is cancelled on disconnect.
+        consults at most once and reacts at most once. The candidate is buffered as
+        evidence at this same synchronous point (not after the judge answers), so a
+        later message in the same conversation sees it in its own consult's evidence
+        even while this one's judge call is still open; and the consult's evidence
+        snapshot is frozen right here, with the candidate's own entry excluded by
+        message id — so no candidate ever judges itself, no predecessor can go
+        missing, and no successor can leak in as "preceding" evidence, whatever the
+        task scheduling does. The spawned task can never block or fail the dispatch
+        that called this; it is cancelled on disconnect.
         """
         candidate = self._reaction_gate_candidate(message)
         if candidate is None:
@@ -2398,49 +2424,89 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         if message_id in self._reaction_gate_seen:
             return
-        while len(self._reaction_gate_seen) >= self._REACTION_GATE_MAX_SEEN:
-            self._reaction_gate_seen.popitem(last=False)
-        self._reaction_gate_seen[message_id] = None
-        task = asyncio.create_task(self._reaction_gate_run(message, candidate))
+        self._reaction_gate_remember(message_id)
+        self._reaction_gate_observe(message, candidate)
+        if len(self._reaction_gate_inflight) >= self._REACTION_GATE_MAX_INFLIGHT:
+            return  # defensive bound: fail closed (no consult), once-only still holds
+        self._reaction_gate_inflight.add(message_id)
+        # The evidence is frozen at this synchronous point — everything buffered
+        # before this message arrived, this message's own entry excluded — so the
+        # consult never depends on when the task is later scheduled: no predecessor
+        # can be missing and no successor can leak into "preceding" evidence.
+        recent = self._reaction_gate.snapshot_context(
+            getattr(message, "channel", None), exclude_id=message_id,
+        )
+        task = asyncio.create_task(self._reaction_gate_run(message, candidate, recent))
         self._reaction_gate_tasks.add(task)
         task.add_done_callback(self._reaction_gate_tasks.discard)
 
-    async def _reaction_gate_run(self, message: Any, candidate: Dict[str, Any]) -> None:
+    def _reaction_gate_remember(self, message_id: str) -> None:
+        """Claim one message id as consulted, evicting the oldest NON-in-flight id.
+
+        Eviction may not drop an id whose consultation task is still running: a
+        concurrent duplicate delivery of that id would then re-consult and
+        double-react, which is exactly what the registry exists to prevent. So the
+        oldest evictable (claimed and finished) id goes first, and when everything
+        tracked is still in flight the registry runs over capacity rather than lose
+        the once-only guarantee — bounded by the in-flight cap, and trimmed again by
+        the next claim once tasks finish.
+        """
+        while len(self._reaction_gate_seen) >= self._REACTION_GATE_MAX_SEEN:
+            evictable = next(
+                (
+                    pending for pending in self._reaction_gate_seen
+                    if pending not in self._reaction_gate_inflight
+                ),
+                None,
+            )
+            if evictable is None:
+                break
+            del self._reaction_gate_seen[evictable]
+        self._reaction_gate_seen[message_id] = None
+
+    async def _reaction_gate_run(
+        self, message: Any, candidate: Dict[str, Any], recent: List[Dict[str, str]],
+    ) -> None:
         """One bounded consultation → one reaction per grapheme cluster. Never raises into dispatch."""
-        gate = self._reaction_gate
-        if gate is None:
-            return
-        user = getattr(getattr(self, "_client", None), "user", None)
-        decision = await gate.evaluate(
-            message, channel=getattr(message, "channel", None),
-            bot_name=str(getattr(user, "display_name", "") or getattr(user, "name", "") or ""),
-            bot_id=getattr(user, "id", None),
-        )
-        # Buffered AFTER the evaluation, so the candidate is never its own history.
-        self._reaction_gate_observe(message, candidate)
-        emoji = decision.emoji
-        if emoji is None:
-            self._reaction_gate_log(decision, candidate)
-            return
-        # A multi-glyph whitelist entry is ONE judge option but is added as one
-        # reaction per grapheme cluster, in string order (👉👈 → 👉 then 👈); a
-        # compound emoji (🤦‍♂️, 1️⃣, 🇦🇺) is one cluster and stays one reaction.
-        # Each cluster is its own API call with no transaction: one failing is
-        # logged and never skips the remaining clusters.
-        clusters = split_reaction_clusters(emoji)
-        added = [await self._add_reaction(message, cluster) for cluster in clusters]
-        if all(added):
-            outcome = f"react:{emoji}"
-        else:
-            detail = ",".join(
-                f"{cluster}:{'added' if ok else 'failed'}"
-                for cluster, ok in zip(clusters, added)
+        try:
+            gate = self._reaction_gate
+            if gate is None:
+                return
+            user = getattr(getattr(self, "_client", None), "user", None)
+            decision = await gate.evaluate(
+                message, channel=getattr(message, "channel", None),
+                bot_name=str(getattr(user, "display_name", "") or getattr(user, "name", "") or ""),
+                bot_id=getattr(user, "id", None),
+                recent=recent,
             )
-            outcome = (
-                f"react_partial:{emoji}[{detail}]" if any(added)
-                else f"react_failed:{emoji}[{detail}]"
-            )
-        self._reaction_gate_log(decision, candidate, outcome=outcome)
+            emoji = decision.emoji
+            if emoji is None:
+                self._reaction_gate_log(decision, candidate)
+                return
+            # A multi-glyph whitelist entry is ONE judge option but is added as one
+            # reaction per grapheme cluster, in string order (👉👈 → 👉 then 👈); a
+            # compound emoji (🤦‍♂️, 1️⃣, 🇦🇺) is one cluster and stays one reaction.
+            # Each cluster is its own API call with no transaction: one failing is
+            # logged and never skips the remaining clusters.
+            clusters = split_reaction_clusters(emoji)
+            added = [await self._add_reaction(message, cluster) for cluster in clusters]
+            if all(added):
+                outcome = f"react:{emoji}"
+            else:
+                detail = ",".join(
+                    f"{cluster}:{'added' if ok else 'failed'}"
+                    for cluster, ok in zip(clusters, added)
+                )
+                outcome = (
+                    f"react_partial:{emoji}[{detail}]" if any(added)
+                    else f"react_failed:{emoji}[{detail}]"
+                )
+            self._reaction_gate_log(decision, candidate, outcome=outcome)
+        finally:
+            # Finished for every outcome the registry cares about — answered, failed,
+            # or cancelled — so the id may be evicted and a duplicate can no longer
+            # re-consult it. Runs even when the body above raises.
+            self._reaction_gate_inflight.discard(str(candidate.get("message_id") or ""))
 
     def _reaction_gate_log(
         self, decision: ReactionDecision, candidate: Dict[str, Any], *,
@@ -2469,6 +2535,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         Unlike the speaking gate's evidence (human messages plus this bot's replies),
         reaction evidence also carries other bots' messages: they are reaction
         candidates too, and the judge should see the conversation they appear in.
+        The candidate's message id rides along so its own consult can drop this entry
+        (intake-time buffering would otherwise make it its own history).
         """
         gate = self._reaction_gate
         if gate is None or candidate is None:
@@ -2478,7 +2546,35 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             message.channel,
             getattr(author, "display_name", None) or getattr(author, "name", ""),
             getattr(message, "content", ""),
+            message_id=str(candidate.get("message_id") or ""),
         )
+
+    def _reaction_gate_observe_sent(self, channel: Any, text: Any) -> None:
+        """Buffer this bot's own delivered final reply as future reaction evidence.
+
+        The reaction counterpart of the send seam above, on the reaction gate's own
+        scope and independent of the speaking gate: a user's "thanks" after this bot's
+        reply only reads as connected to the reaction judge when the reply itself is
+        in evidence. Same content rules (the bot's display name as author, the sent
+        text; empty text is dropped by the buffer) and the same per-conversation
+        bounds. The reply is never a reaction candidate (the candidate rule excludes
+        this bot's own output), so it carries no message id to exclude. Never logs
+        content.
+        """
+        gate = self._reaction_gate
+        if gate is None:
+            return
+        if channel is None or isinstance(channel, discord.DMChannel):
+            return  # reactions are a server-surface feature; DMs stay private
+        channel_keys = self._discord_channel_keys_from_channel(
+            channel, self._get_parent_channel_id(channel),
+        )
+        if not gate.selects(channel_keys) or not self._discord_channel_policy_admits(channel_keys):
+            return
+        bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
+        if not bot_name:
+            return
+        gate.observe(channel, bot_name, text)
 
     def _discord_message_admission(
         self, message: Any, *, claim: bool, gate_probe: Optional[Dict[str, Any]] = None,
@@ -2996,6 +3092,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.debug("[%s] reaction_gate task error during disconnect", self.name, exc_info=True)
         self._reaction_gate_tasks.clear()
         self._reaction_gate_seen.clear()
+        self._reaction_gate_inflight.clear()
         self._reaction_gate = None
         self._running = False
         self._client = None

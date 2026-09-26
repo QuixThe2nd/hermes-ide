@@ -5,7 +5,10 @@ the speaking gate's verdict: an ambient message the speaking gate denies is
 still consulted and reacted to, with no session or text reply; the loop/privacy
 exclusions (own bot, system events, DMs, ignored channels, unauthorized
 humans) are never consulted; each message id reacts at most once across live
-and recovered delivery; judge errors never block an explicit reply; disconnect
+and recovered delivery — including past registry capacity, where in-flight ids
+are never evicted; the judge's evidence carries the conversation's earlier
+messages (recorded at intake, never the candidate itself) plus this bot's own
+delivered final replies; judge errors never block an explicit reply; disconnect
 cancels in-flight consultations; and a gate that is off or credential-less
 never calls the judge. Only the two judge transports (the HTTP sockets) are
 stubbed — dispatch, admission prefilters, the runtimes and the config load are
@@ -71,11 +74,19 @@ class _ChoiceRecorder:
         self.answer = answer
         self.error = error
         self.delay = delay
+        self.hold = None  # optional asyncio.Event: park every call until it is set
         self.questions = None  # the last request body offered to the judge
+        self.states = []  # every request's candidate + evidence, in call order
 
     async def __call__(self, state, *, chat_id=None, questions=None):
         self.calls += 1
+        self.states.append({
+            "candidate": dict(state["candidate"]),
+            "recent_messages": [dict(entry) for entry in state["recent_messages"]],
+        })
         self.questions = questions
+        if self.hold is not None:
+            await self.hold.wait()
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.error:
@@ -471,3 +482,106 @@ class TestMultiGlyphEntryReactions:
         ]
         assert len(reaction_lines) == 1
         assert "outcome=react:🔥" in reaction_lines[0]
+
+
+class TestEvidenceAcrossRapidMessages:
+    """Candidates are buffered at INTAKE, so a rapid successor's consult sees them.
+
+    Two eligible messages arrive in one conversation faster than the judge answers
+    the first: the second consult's request evidence must contain the first message
+    (the old post-evaluation buffering lost exactly this case), while neither
+    consult ever sees its own message as its own history.
+    """
+
+    @pytest.mark.asyncio
+    async def test_second_consult_sees_first_message_neither_sees_itself(self, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        choice_judge.delay = 0.25  # both consultations stay open past both intakes
+        adapter = _reaction_adapter(reaction={"enabled": True, "channels": ["555"]})
+        channel = _Channel(555)
+        first = _message(channel=channel, msg_id=301, content="first rapid message")
+        second = _message(channel=channel, msg_id=302, content="second rapid message")
+
+        await adapter._dispatch_discord_message(first)
+        await adapter._dispatch_discord_message(second)  # while the first judge call is open
+        await _drain(adapter)
+
+        assert choice_judge.calls == 2
+        first_state, second_state = choice_judge.states
+        assert first_state["candidate"]["content"] == "first rapid message"
+        assert second_state["candidate"]["content"] == "second rapid message"
+        # The successor's evidence CONTAINS the still-being-judged predecessor...
+        assert [m["content"] for m in second_state["recent_messages"]] == ["first rapid message"]
+        assert second_state["recent_messages"][0]["author"] == "Alice"
+        # ...and neither consult judges itself (the candidate is excluded by id).
+        assert [m["content"] for m in first_state["recent_messages"]] == []
+        assert all(
+            m["content"] != "second rapid message" for m in second_state["recent_messages"]
+        )
+
+
+class TestSentFinalReachesReactionEvidence:
+    """This bot's delivered final replies are reaction evidence (send seam)."""
+
+    @pytest.mark.asyncio
+    async def test_observed_bot_final_is_in_the_next_consults_evidence(self, choice_judge):
+        adapter = _reaction_adapter(reaction={"enabled": True, "channels": ["555"]})
+        channel = _Channel(555)
+        # The same hook the send path calls for a delivered final; the speaking gate
+        # is off here, so this also pins that the reaction evidence does not depend
+        # on it.
+        adapter._response_gate_observe_sent(channel, "here is the fix you asked for")
+
+        followup = _message(channel=channel, msg_id=310, content="thanks, that fixed it!")
+        await adapter._dispatch_discord_message(followup)
+        await _drain(adapter)
+
+        assert choice_judge.calls == 1
+        recent = choice_judge.states[0]["recent_messages"]
+        assert [m["content"] for m in recent] == ["here is the fix you asked for"]
+        assert recent[0]["author"] == BOT_NAME
+
+
+class TestInFlightIdsSurviveRegistryCapacity:
+    """Registry eviction skips claimed-but-unfinished ids; finished ones age out.
+
+    With the judge blocked and the registry over capacity, the oldest in-flight id
+    must NOT be evicted — its duplicate delivery still consults at most once and
+    reacts at most once — while a finished id is evicted as before, so its duplicate
+    may re-consult once the id has aged out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_duplicate_of_oldest_in_flight_id_consults_once(self, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        adapter = _reaction_adapter(reaction={"enabled": True, "channels": ["555"]})
+        adapter._REACTION_GATE_MAX_SEEN = 2  # instance override: tiny registry
+        channel = _Channel(555)
+        finished = _message(channel=channel, msg_id=490, content="already judged")
+        await adapter._dispatch_discord_message(finished)
+        await _drain(adapter)  # its consultation is done: evictable again
+
+        choice_judge.hold = asyncio.Event()  # block every further consultation
+        oldest = _message(channel=channel, msg_id=491, content="oldest in flight")
+        middle = _message(channel=channel, msg_id=492, content="middle in flight")
+        newest = _message(channel=channel, msg_id=493, content="newest in flight")
+        await adapter._dispatch_discord_message(oldest)
+        await adapter._dispatch_discord_message(middle)  # evicts the finished id 490
+        await adapter._dispatch_discord_message(newest)  # nothing evictable: over capacity
+        # A duplicate of the oldest IN-FLIGHT id arrives while the registry is over
+        # capacity: the id was never evicted, so it consults at most once.
+        await adapter._dispatch_recovered_message(oldest)
+        # The finished id 490 WAS evicted by 492's claim: its duplicate re-consults.
+        duplicate_finished = _message(channel=channel, msg_id=490, content="already judged")
+        await adapter._dispatch_discord_message(duplicate_finished)
+
+        choice_judge.hold.set()  # release every held consultation
+        await _drain(adapter)
+
+        # 490 (first pass), 491, 492, 493, then 490 again after aging out — the
+        # in-flight duplicate of 491 added none.
+        assert choice_judge.calls == 5
+        assert _reactions(oldest) == [("🔥",)]  # exactly one reaction, one consult
+        assert _reactions(middle) == [("🔥",)] and _reactions(newest) == [("🔥",)]
+        assert _reactions(finished) == [("🔥",)]
+        assert _reactions(duplicate_finished) == [("🔥",)]  # the aged-out id re-consulted

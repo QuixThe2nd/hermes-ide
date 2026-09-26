@@ -353,22 +353,47 @@ class ReactionGateRuntime:
 
     # --- evidence ---------------------------------------------------------
 
-    def observe(self, channel: Any, author_name: Any, text: Any) -> None:
-        """Record one conversation message as future evidence (bounded, per conversation)."""
-        self.buffer.observe(GateRuntime.conversation_id(channel), author_name, text)
+    def observe(
+        self, channel: Any, author_name: Any, text: Any, message_id: Optional[str] = None,
+    ) -> None:
+        """Record one conversation message as future evidence (bounded, per conversation).
 
-    def snapshot_context(self, channel: Any) -> List[Dict[str, str]]:
-        return self.buffer.snapshot(GateRuntime.conversation_id(channel))
+        ``message_id`` is the intake-time bookkeeping the consult below excludes a
+        candidate's own entry by; messages observed without one (this bot's sent
+        replies) are never excluded from anything.
+        """
+        self.buffer.observe(
+            GateRuntime.conversation_id(channel), author_name, text, message_id=message_id,
+        )
+
+    def snapshot_context(
+        self, channel: Any, *, exclude_id: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        return self.buffer.snapshot(
+            GateRuntime.conversation_id(channel), exclude_id=exclude_id,
+        )
 
     # --- decision ---------------------------------------------------------
 
     async def evaluate(
         self, message: Any, *, channel: Any, bot_name: str, bot_id: Any,
+        recent: Optional[List[Dict[str, str]]] = None,
     ) -> ReactionDecision:
-        """Consult the judge for one reaction candidate. Never raises: failures abstain."""
+        """Consult the judge for one reaction candidate. Never raises: failures abstain.
+
+        ``recent`` is the evidence captured for this consultation. The adapter
+        captures it synchronously at intake — after buffering the candidate, with the
+        candidate's own entry excluded — so the window between a message's arrival
+        and its judge call can neither lose predecessors nor leak successors into
+        "preceding" evidence. Omitting it snapshots now under the same exclusion.
+        """
+        if recent is None:
+            recent = self.snapshot_context(
+                channel, exclude_id=str(getattr(message, "id", "") or ""),
+            )
         state = build_conversation_state(
             message, channel=channel, bot_name=bot_name, bot_id=bot_id,
-            recent=self.snapshot_context(channel),
+            recent=recent,
             context_chars=getattr(self.config, "context_chars", 0),
         )
         if self.client is None:

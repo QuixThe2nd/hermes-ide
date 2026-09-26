@@ -117,8 +117,11 @@ class ChannelContextBuffer:
 
     ``maxlen`` and the character budget come from the validated gate config, so memory
     stays proportional to the configured context window. Entries are
-    ``(author_name, text)`` pairs: the caller buffers human messages plus this bot's
-    own delivered final replies (send seam) and filters other bots' chatter.
+    ``(author_name, text, message_id)`` triples: the caller buffers human messages plus
+    this bot's own delivered final replies (send seam) and filters other bots' chatter.
+    The id is optional bookkeeping for snapshot-time self-exclusion — a reaction
+    candidate buffered at intake must not judge itself — and entries recorded without
+    one (the speaking gate's observations, this bot's sent replies) are never excluded.
     """
 
     def __init__(self, *, max_messages: int, max_chars: int, max_channels: int = MAX_TRACKED_CHANNELS) -> None:
@@ -127,11 +130,13 @@ class ChannelContextBuffer:
         self._max_channels = max(1, int(max_channels))
         self._channels: "OrderedDict[str, deque]" = OrderedDict()
 
-    def observe(self, conversation_id: str, author_name: str, text: str) -> None:
+    def observe(
+        self, conversation_id: str, author_name: str, text: str, message_id: Optional[str] = None,
+    ) -> None:
         """Record one message for ``conversation_id`` (exact channel/thread id only)."""
         if not conversation_id:
             return
-        entry = (self._clean_author(author_name), self._clean_text(text))
+        entry = (self._clean_author(author_name), self._clean_text(text), str(message_id or ""))
         if not entry[1]:
             return
         bucket = self._channels.get(conversation_id)
@@ -145,16 +150,24 @@ class ChannelContextBuffer:
                 bucket.popleft()
         bucket.append(entry)
 
-    def snapshot(self, conversation_id: str) -> List[Dict[str, str]]:
+    def snapshot(
+        self, conversation_id: str, *, exclude_id: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
         """Most recent messages for one conversation, trimmed to the character budget.
 
         Returns oldest-first (conversation order) without exposing the buffer itself.
+        ``exclude_id`` drops the entry recorded for exactly that message id: the
+        intake-time self-exclusion that lets a candidate sit in the buffer before its
+        own consultation without ever judging itself. The window is trimmed after the
+        exclusion, so dropping the newest entry (the usual case) costs nothing.
         """
         bucket = self._channels.get(conversation_id)
         if not bucket:
             return []
-        chosen = list(bucket)[- _MAX_SNAPSHOT_MESSAGES:]
-        return [{"author": author, "content": text} for author, text in chosen]
+        chosen = [
+            entry for entry in bucket if not (exclude_id and entry[2] == exclude_id)
+        ][-_MAX_SNAPSHOT_MESSAGES:]
+        return [{"author": author, "content": text} for author, text, _ in chosen]
 
     def forget(self, conversation_id: str) -> None:
         """Drop one conversation's buffer (used when a channel leaves the gate scope)."""
