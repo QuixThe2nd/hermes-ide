@@ -2049,7 +2049,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         a listed parent channel selects every thread. A non-thread conversation is
         never membership-gated. A thread consults only when this bot already
         participates in it — ``ThreadParticipationTracker``, the same persistent
-        store ``_handle_message`` marks after a live dispatch, never the cache-only
+        store the inbound dispatch and the send seam mark, never the cache-only
         ``channel.members``/``channel.me`` (those disagree with it). The gate is
         scope-first, membership-second: a thread outside the gate's channels is
         unaffected either way.
@@ -2339,6 +2339,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         gate = self._response_gate
         if gate is None:
             return
+        # A delivered final reply IS participation: record it before the scope/membership
+        # checks, so the gate's own rule keeps this conversation visible whatever ingress
+        # produced the reply (a native slash command dispatches through handle_message
+        # and never reaches the inbound path's participation mark).
+        thread_id = str(getattr(channel, "id", "") or "")
+        if isinstance(channel, discord.Thread) and thread_id:
+            self._threads.mark(thread_id)
         keys = self._response_gate_channel_keys_in_scope(channel)
         if keys is None or gate.echo_keys.intersection(keys):
             return  # echo channels carry judge-score lines, not this bot's conversation
