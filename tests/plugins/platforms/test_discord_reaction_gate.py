@@ -74,7 +74,7 @@ def _conversation_state(content: str = "thanks, that fixed it!") -> dict:
 
 
 class TestChooseReactionBoundary:
-    """One pure rule: react iff P(None)+P(Other) is STRICTLY below one half."""
+    """Two-branch rule: low abstention mass OR runaway top emoji vs runner-up emoji."""
 
     @pytest.mark.parametrize(
         "none_p, other_p, expected",
@@ -111,6 +111,34 @@ class TestChooseReactionBoundary:
         assert choose_reaction({"❤️": 0.20, NONE_OPTION: 0.1, OTHER_OPTION: 0.1}, EMOJIS) == "❤️"
         # Missing abstention keys mean zero abstention mass: still a reaction.
         assert choose_reaction({"👍": 0.30, "❤️": 0.10, "😂": 0.05}, EMOJIS) == "👍"
+
+
+class TestChooseReactionRunawayWinner:
+    """Branch (b): a runaway top emoji reacts even when abstention mass >= 0.5."""
+
+    def test_runaway_winner_reacts_despite_high_abstention(self):
+        probabilities = {"👍": 0.20, "❤️": 0.03, "😂": 0.00, NONE_OPTION: 0.74, OTHER_OPTION: 0.03}
+        # abstain = 0.77 >= 0.5, but 0.20 > 5 * 0.03.
+        assert choose_reaction(probabilities, EMOJIS) == "👍"
+
+    def test_exactly_five_times_is_not_enough(self):
+        probabilities = {"👍": 0.15, "❤️": 0.03, "😂": 0.00, NONE_OPTION: 0.80, OTHER_OPTION: 0.02}
+        # 0.15 == 5 * 0.03 — the strict comparison does not fire.
+        assert choose_reaction(probabilities, EMOJIS) is None
+
+    def test_just_under_five_times_abstains(self):
+        probabilities = {"👍": 0.14, "❤️": 0.03, "😂": 0.00, NONE_OPTION: 0.80, OTHER_OPTION: 0.03}
+        assert choose_reaction(probabilities, EMOJIS) is None
+
+    def test_runner_up_is_an_emoji_never_an_abstention_option(self):
+        probabilities = {"👍": 0.40, "❤️": 0.05, "😂": 0.00, NONE_OPTION: 0.55, OTHER_OPTION: 0.00}
+        # None (0.55) outranks every emoji but is ignored for the ratio: 0.40 > 5 * 0.05.
+        assert choose_reaction(probabilities, EMOJIS) == "👍"
+
+    def test_single_emoji_whitelist_has_no_runner_up(self):
+        # Branch (b) needs a runner-up emoji; a one-emoji whitelist can only use branch (a).
+        assert choose_reaction({"👍": 0.40, NONE_OPTION: 0.55, OTHER_OPTION: 0.05}, ("👍",)) is None
+        assert choose_reaction({"👍": 0.40, NONE_OPTION: 0.10, OTHER_OPTION: 0.05}, ("👍",)) == "👍"
 
 
 class TestReactionLabelMap:

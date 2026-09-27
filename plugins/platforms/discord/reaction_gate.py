@@ -4,7 +4,9 @@ The response gate decides whether the bot *speaks*; this sibling decides whether
 *reacts*. For every eligible message in the opted-in channels the judge is asked one
 ``choice`` question over the whitelisted emojis plus the two fixed abstention options
 ``None`` and ``Other``, and the bot adds exactly one reaction — the highest-probability
-whitelisted emoji — when ``P(None) + P(Other) < 0.5`` (strict; at 0.5 or above, nothing).
+whitelisted emoji — when ``P(None) + P(Other) < 0.5`` (strict) **or** when the top emoji's
+probability is strictly more than five times the runner-up emoji's (abstention mass ignored
+for that ratio; at 0.5 or above with no runaway winner, nothing).
 
 Design constraints (see the reaction-gate section of the Discord config reference):
 
@@ -52,8 +54,13 @@ REACTION_KEY = "reaction"
 NONE_OPTION = "None"
 OTHER_OPTION = "Other"
 
-#: React only when the combined abstention mass is STRICTLY below this boundary.
+#: React when the combined abstention mass is STRICTLY below this boundary.
 ABSTAIN_MAX_SUM = 0.5
+
+#: Runaway-winner branch: react when the top emoji STRICTLY outscores the
+#: runner-up emoji by more than this ratio, even with abstention mass at or
+#: above the boundary. Abstention options never count as the runner-up.
+RUNAWAY_WINNER_RATIO = 5.0
 
 #: Coherence slack for the offered distribution: enough for float error and rounded
 #: per-option masses, far below anything that could flip the strict 0.5 comparison.
@@ -97,16 +104,23 @@ def _whitelist_labels(emojis: Iterable[str], label_to_entry: Dict[str, str]) -> 
 def choose_reaction(probabilities: Dict[str, float], emojis: Iterable[str]) -> Optional[str]:
     """The decision rule, as one pure function.
 
-    Returns the highest-probability whitelisted emoji when ``P(None) + P(Other)`` is
-    strictly below :data:`ABSTAIN_MAX_SUM`, else ``None`` (no reaction). An abstention
-    option may top the distribution individually — as long as their SUM stays under
-    the boundary, the best emoji still wins. Exact ties resolve to the emoji that comes
-    first in the configured whitelist order.
+    Returns the highest-probability whitelisted emoji when either ``P(None) + P(Other)``
+    is strictly below :data:`ABSTAIN_MAX_SUM`, or the top emoji's probability is
+    strictly greater than :data:`RUNAWAY_WINNER_RATIO` times the second-highest emoji's
+    (``None`` and ``Other`` are ignored for the ratio; exactly five times does not fire).
+    Otherwise ``None`` (no reaction). An abstention option may top the distribution
+    individually — as long as their SUM stays under the boundary, the best emoji still
+    wins. When the runaway branch fires, the reaction is still the argmax emoji. Exact
+    ties resolve to the emoji that comes first in the configured whitelist order.
     """
+    entries = tuple(emojis)
     abstain = float(probabilities.get(NONE_OPTION, 0.0)) + float(probabilities.get(OTHER_OPTION, 0.0))
-    if abstain >= ABSTAIN_MAX_SUM:
-        return None
-    return max(emojis, key=lambda emoji: float(probabilities.get(emoji, 0.0)))
+    if abstain < ABSTAIN_MAX_SUM:
+        return max(entries, key=lambda emoji: float(probabilities.get(emoji, 0.0)))
+    scores = sorted((float(probabilities.get(emoji, 0.0)) for emoji in entries), reverse=True)
+    if len(scores) >= 2 and scores[0] > RUNAWAY_WINNER_RATIO * scores[1]:
+        return max(entries, key=lambda emoji: float(probabilities.get(emoji, 0.0)))
+    return None
 
 
 #: Code points that never begin a grapheme cluster because they only qualify what
