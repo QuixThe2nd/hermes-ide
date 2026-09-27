@@ -5894,6 +5894,7 @@ class TurnRunner:
             # the agent worker thread inside _profile_runtime_scope, where
             # _load_gateway_config could race the profile swap. Display-only:
             # the model still receives the full injected content either way.
+            platform_key = "cli"
             try:
                 platform = getattr(ctx.source, "platform", None)
                 platform_key = (
@@ -5907,10 +5908,31 @@ class TurnRunner:
                 )
             except Exception:
                 include_content = True
+            sources = args.get("sources") if isinstance(args.get("sources"), list) else []
+            # display.gateway_context_notifications (default true) hides ONLY
+            # the gateway-only envelope card ("🧠 gateway context injected",
+            # sources == ["gateway"]) — interruption notes and voice prefixes
+            # the user watched arrive. Memory/plugin/mixed context cards and
+            # ordinary tool progress are unaffected, the model context never
+            # changes, and display.platforms.<platform>.gateway_context_notifications
+            # overrides the global. Same per-profile ctx.user_config
+            # resolution as above; fail open so a config read error can never
+            # hide a card the operator did not ask to hide.
+            if sources == ["gateway"]:
+                try:
+                    if not _resolve_gateway_display_bool(
+                        ctx.user_config or {},
+                        platform_key,
+                        "gateway_context_notifications",
+                        default=True,
+                    ):
+                        return
+                except Exception:
+                    pass
             messages = _format_context_injection_progress(
                 content=content,
                 injected_chars=args.get("injected_chars", len(content)),
-                sources=args.get("sources") if isinstance(args.get("sources"), list) else [],
+                sources=sources,
                 message_limit=message_limit,
                 supports_code_blocks=bool(getattr(adapter, "supports_code_blocks", False)),
                 message_len_fn=message_len_fn,
