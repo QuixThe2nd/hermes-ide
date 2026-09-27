@@ -15316,6 +15316,21 @@ class GatewayRunner(
             # winding down, so a "still working" heartbeat reads as noise.
             # Sessions with no drain notice keep their normal heartbeat.
             return False
+        if session_key:
+            # The restart tool parks its turn on a typed-consent gateway
+            # clarify (wait_kind="restart") while the user is asked to type
+            # the exact word "restart". The chat is waiting on the user, not
+            # working, so a "still working" heartbeat reads as noise — the
+            # same contradiction as the post-drain-notice case above.
+            # Scoped to this session: a restart wait parked in a different
+            # session must not silence this one's liveness signal.
+            from tools import clarify_gateway as _clarify_mod
+
+            if any(
+                entry.wait_kind == "restart"
+                for entry in _clarify_mod.pending_entries_for_session(session_key)
+            ):
+                return False
         if agent is None:
             return False
         if executor_task is not None and executor_task.done():

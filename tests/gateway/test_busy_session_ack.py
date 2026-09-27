@@ -985,3 +985,117 @@ class TestLongRunningHeartbeatIterationDetail:
         assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
 
 
+class TestLongRunningHeartbeatRestartWaitSuppression:
+    """The restart tool parks its turn on a typed-consent gateway clarify
+    (``wait_kind="restart"``) while the user is asked to type the exact word
+    "restart". That chat is waiting on the user, not working, so the
+    long-running heartbeat must stay quiet for the owning session — the same
+    contradiction a post-drain-notice heartbeat would be. Ordinary clarifies,
+    other sessions' restart waits, and resolved waits do not suppress.
+
+    The suppression predicate reads the live clarify registry through the real
+    ``clarify_gateway`` API; entries are registered and cleaned up the same way
+    the restart tool does so the module-level registry doesn't leak between
+    tests.
+    """
+
+    SESS = "restart-wait-hb-sess"
+    OTHER = "restart-wait-hb-other"
+
+    def teardown_method(self):
+        from tools import clarify_gateway
+
+        clarify_gateway.clear_session(self.SESS)
+        clarify_gateway.clear_session(self.OTHER)
+
+    @staticmethod
+    def _qualifying_runner(agent, session_key):
+        """Bare runner whose ``session_key`` turn slot is owned by ``agent``."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {session_key: agent}
+        return runner
+
+    def _register_wait(self, session_key, *, kind):
+        """Register a pending clarify-wait entry through the real registry API."""
+        from tools import clarify_gateway
+
+        entry = clarify_gateway.register(
+            clarify_id=f"hb-restart-wait-{session_key}-{kind}-{time.time_ns()}",
+            session_key=session_key,
+            question="Type restart to confirm",
+            choices=None,
+            wait_kind=kind,
+        )
+        return entry
+
+    def test_no_pending_wait_heartbeat_emitted(self):
+        """The clarify-reader matrix starts at no-suppression: no pending
+        entries for the session at all -> heartbeat still fires."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+
+        assert runner._should_emit_long_running_notification(
+            self.SESS, agent, executor_task=None
+        ) is True
+
+    def test_pending_restart_wait_suppresses_heartbeat(self):
+        """Pending restart-kind consent wait for THIS session -> no heartbeat,
+        even with the agent alive, no executor task, everything else normal."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+        self._register_wait(self.SESS, kind="restart")
+
+        assert runner._should_emit_long_running_notification(
+            self.SESS, agent, executor_task=None
+        ) is False
+
+    def test_pending_clarify_wait_does_not_suppress(self):
+        """An ordinary clarify question parks the turn on the user too, but it
+        is not a restart consent gate: the heartbeat keeps firing."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+        self._register_wait(self.SESS, kind="clarify")
+
+        assert runner._should_emit_long_running_notification(
+            self.SESS, agent, executor_task=None
+        ) is True
+
+    def test_restart_wait_for_other_session_does_not_suppress(self):
+        """Suppression is scoped to the session that owns the wait: a
+        restart-kind wait parked in a DIFFERENT session must not silence this
+        session's heartbeat."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+        self._register_wait(self.OTHER, kind="restart")
+
+        assert runner._should_emit_long_running_notification(
+            self.SESS, agent, executor_task=None
+        ) is True
+
+    def test_suppression_clears_once_wait_resolves(self):
+        """A resolved wait stops counting the moment its event is set — before
+        the waiter even reaps the entry — and stays cleared after the pop."""
+        from tools import clarify_gateway
+
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+        entry = self._register_wait(self.SESS, kind="restart")
+        assert runner._should_emit_long_running_notification(
+            self.SESS, agent, executor_task=None
+        ) is False
+
+        assert clarify_gateway.resolve_gateway_clarify(entry.clarify_id, "restart") is True
+        # Resolved-but-not-yet-reaped entries are skipped by the reader.
+        assert runner._should_emit_long_running_notification(
+            self.SESS, agent, executor_task=None
+        ) is True
+
+        # The restart tool's waiter reaps the entry on wake; still no suppression.
+        clarify_gateway.wait_for_response(entry.clarify_id, 0)
+        assert runner._should_emit_long_running_notification(
+            self.SESS, agent, executor_task=None
+        ) is True
+
+
