@@ -37,6 +37,18 @@ class TestWaitTimeoutClarity:
         finally:
             registry.kill_process(sid)
 
+    def test_wait_timeout_does_not_suggest_notify_when_headless(self, registry, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t-wait-headless")
+        sid = _spawn_sleeper(registry, notify=False)
+        try:
+            r = registry.wait(sid, timeout=1)
+            assert r["status"] == "timeout"
+            assert "notify_on_complete=true" not in r["timeout_note"]
+            assert "poll" in r["timeout_note"].lower()
+            assert "not available" in r["timeout_note"].lower()
+        finally:
+            registry.kill_process(sid)
+
     def test_wait_timeout_defers_to_notify_when_set(self, registry):
         sid = _spawn_sleeper(registry, notify=True)
         try:

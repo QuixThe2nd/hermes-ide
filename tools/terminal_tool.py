@@ -3635,18 +3635,8 @@ def terminal_tool(
                 # server cases (false positive) and prevents silent
                 # blindness for bounded-task cases (false negative).
                 if background and not notify_on_complete and not watch_patterns:
-                    result_data["hint"] = (
-                        "background=true without notify_on_complete=true means "
-                        "this process runs SILENTLY — you will not be told when "
-                        "it exits. If this is a bounded task (test suite, build, "
-                        "CI poller, deploy, anything with a defined end), you "
-                        "almost certainly wanted notify_on_complete=true so the "
-                        "system pings you on exit. Re-launch with "
-                        "notify_on_complete=true, or call process(action='poll') "
-                        "/ process(action='wait') yourself to learn the outcome. "
-                        "Only ignore this hint for genuine long-lived processes "
-                        "that never exit (servers, watchers, daemons)."
-                    )
+                    from tools.terminal_tool_background import silent_background_hint
+                    result_data["hint"] = silent_background_hint()
 
                 # Nudge: homebrewed CI watcher built from `gh pr view`
                 # `--json statusCheckRollup` or `gh pr checks` piped through
