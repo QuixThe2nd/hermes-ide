@@ -439,6 +439,39 @@ class TestGatewayRuntimeStatus:
         assert entry["needs_attention"] is False
         assert entry["retrying_since"] is None
 
+    def test_gate_config_warnings_persist_preserve_and_clear(self, tmp_path, monkeypatch):
+        """Boot-time gate-config warnings: a write replaces the list, a write WITHOUT the
+        field preserves it (the file is merged, not truncated), and ``[]``/None clear it."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gate_config_warnings=["beta:discord reaction_gate: emojis must list at most 48 emojis"]
+        )
+        assert status.read_runtime_status()["gate_config_warnings"] == [
+            "beta:discord reaction_gate: emojis must list at most 48 emojis"
+        ]
+
+        # An unrelated write must not disturb the recorded warnings.
+        status.write_runtime_status(gateway_state="running")
+        assert status.read_runtime_status()["gate_config_warnings"] == [
+            "beta:discord reaction_gate: emojis must list at most 48 emojis"
+        ]
+
+        # A later boot replaces the previous boot's warnings (this boot's list wins).
+        status.write_runtime_status(gate_config_warnings=["ops:discord response_gate: mode must be 'shadow' or 'enforce'"])
+        assert status.read_runtime_status()["gate_config_warnings"] == [
+            "ops:discord response_gate: mode must be 'shadow' or 'enforce'"
+        ]
+
+        status.write_runtime_status(gate_config_warnings=[])
+        assert status.read_runtime_status()["gate_config_warnings"] == []
+
+        status.write_runtime_status(
+            gate_config_warnings=["beta:discord reaction_gate: emojis must list at most 48 emojis"]
+        )
+        status.write_runtime_status(gate_config_warnings=None)
+        assert status.read_runtime_status()["gate_config_warnings"] == []
+
 
 class TestGetProcessStartTime:
     """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).

@@ -149,6 +149,58 @@ class TestPlatformConfigMalformedSections:
         assert restored.extra == {}
 
 
+class TestGateConfigWarnings:
+    """An invalid opt-in gate block keeps the platform loading with the gate off, and the
+    refusal is recorded on the platform config so status surfaces can show it."""
+
+    def test_invalid_response_gate_block_records_its_error(self):
+        platform = PlatformConfig.from_dict({
+            "enabled": True,
+            "response_gate": {"provider": "jev", "mode": "aggressive", "channels": ["lounge"]},
+        })
+        assert platform.response_gate is None
+        assert len(platform.gate_config_warnings) == 1
+        assert "response_gate" in platform.gate_config_warnings[0]
+        assert "aggressive" in platform.gate_config_warnings[0]
+
+    def test_invalid_reaction_gate_block_records_its_error(self):
+        platform = PlatformConfig.from_dict({
+            "enabled": True,
+            "reaction_gate": {"enabled": True, "channels": ["lounge"], "emojis": []},
+        })
+        assert platform.reaction_gate is None
+        assert len(platform.gate_config_warnings) == 1
+        assert "reaction_gate" in platform.gate_config_warnings[0]
+        assert "emojis" in platform.gate_config_warnings[0]
+
+    def test_both_invalid_blocks_each_record_their_error(self):
+        platform = PlatformConfig.from_dict({
+            "enabled": True,
+            "response_gate": {"mode": "nope"},
+            "reaction_gate": {"enabled": True, "channels": ["lounge"], "emojis": []},
+        })
+        assert platform.response_gate is None and platform.reaction_gate is None
+        assert len(platform.gate_config_warnings) == 2
+
+    def test_valid_or_absent_blocks_record_no_warnings(self):
+        assert PlatformConfig.from_dict({"enabled": True}).gate_config_warnings == ()
+        valid = PlatformConfig.from_dict({
+            "enabled": True,
+            "response_gate": {"channels": ["lounge"]},
+            "reaction_gate": {"enabled": True, "channels": ["lounge"]},
+        })
+        assert valid.response_gate is not None and valid.reaction_gate is not None
+        assert valid.gate_config_warnings == ()
+
+    def test_warnings_are_boot_diagnostics_not_serialized_config(self):
+        platform = PlatformConfig.from_dict({
+            "enabled": True,
+            "reaction_gate": {"enabled": True, "channels": ["lounge"], "emojis": []},
+        })
+        assert platform.gate_config_warnings
+        assert "gate_config_warnings" not in platform.to_dict()
+
+
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
         config = GatewayConfig(

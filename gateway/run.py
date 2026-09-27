@@ -10043,6 +10043,10 @@ class GatewayRunner(
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Gate-config refusals ("<profile>:<platform> <error>") collected while each
+        # profile's adapters boot; written with the boot's served-profiles status
+        # write so status surfaces show why a gate is off instead of only the log.
+        self._gate_config_warnings: List[str] = []
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -21174,7 +21178,12 @@ class GatewayRunner(
                         if name == active
                         else PairingStore(profile=name)
                     )
-            write_runtime_status(served_profiles=served)
+            # Always passed (even empty) at THIS call site: each boot replaces the
+            # previous boot's gate-config warnings instead of inheriting them.
+            write_runtime_status(
+                served_profiles=served,
+                gate_config_warnings=list(getattr(self, "_gate_config_warnings", None) or []),
+            )
         except Exception:
             logger.debug("could not record served_profiles", exc_info=True)
 
@@ -21236,6 +21245,19 @@ class GatewayRunner(
                 "for that profile, or change dm_policy/group_policy away from "
                 "'open'."
             )
+
+        # Gate config errors were contained at parse time (gate stays off, the platform
+        # still loads); collect the refusals here so the boot's status write can surface
+        # them. Keyed like the per-profile status entries. A reconcile-driven re-scan of
+        # an unchanged profile must not append duplicates.
+        gate_warnings = getattr(self, "_gate_config_warnings", None)
+        if gate_warnings is None:
+            gate_warnings = self._gate_config_warnings = []
+        for platform, platform_config in profile_cfg.platforms.items():
+            for warning in platform_config.gate_config_warnings:
+                entry = f"{profile_name}:{platform.value} {warning}"
+                if entry not in gate_warnings:
+                    gate_warnings.append(entry)
 
         port_binding_platforms = sorted(
             platform.value
