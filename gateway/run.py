@@ -21053,6 +21053,26 @@ class GatewayRunner(
         only point that sees every profile's resolved credentials together.
         """
         if not getattr(self.config, "multiplex_profiles", False):
+            # Standalone: ``write_runtime_status`` re-stamps the previous writer's record in
+            # place, so a multiplexer's ``served_profiles`` would outlive it into this
+            # single-profile run; clearing it here keeps `hermes -p X` surfaces truthful.
+            # And with no secondary loop running, the launch profile's own boot refusals are
+            # published from here — always (even empty) so a clean boot replaces a previous
+            # boot's warnings instead of inheriting them.
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _standalone_profile = get_active_profile_name() or "default"
+            except Exception:
+                _standalone_profile = "default"
+            try:
+                from gateway.status import write_runtime_status
+                self._collect_profile_gate_warnings(_standalone_profile, self.config)
+                write_runtime_status(
+                    served_profiles=[],
+                    gate_config_warnings=list(self._gate_config_warnings),
+                )
+            except Exception:
+                logger.debug("could not record gate_config_warnings", exc_info=True)
             return 0
 
         try:
@@ -21061,6 +21081,12 @@ class GatewayRunner(
             return 0
 
         active = get_active_profile_name() or "default"  # launch profile, pre-identity (adapter boot)
+        # The secondary loop below skips the active profile (its adapters boot in the
+        # primary startup loop), so its refusals are seeded here from the launch config.
+        try:
+            self._collect_profile_gate_warnings(active, self.config)
+        except Exception:
+            logger.debug("could not collect active-profile gate warnings", exc_info=True)
         connected = 0
         # Resource claim -> profile that owns it. Credential claims prevent two
         # profiles polling the same account; listener claims prevent sidecars
@@ -21083,9 +21109,16 @@ class GatewayRunner(
                     claimed[retry_claim] = active
 
         profile_homes = _multiplex_profile_homes(self.config)
+        # Boot owns the reconcile baseline: per-home config/.env signatures captured BEFORE
+        # connecting (a save during an awaited handshake needs another scan), then the served
+        # set recorded below. Without this the reconcile watcher diffs against nothing and
+        # hot-serve/unserve (and the gate-warning clearing it publishes) never runs.
+        from gateway.run_profile_reconcile import profile_serve_signature
+        self._served_profile_signatures = {}
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop
+            self._served_profile_signatures[profile_name] = profile_serve_signature(profile_home)
             try:
                 connected += await self._start_one_profile_adapters(
                     profile_name, profile_home, claimed
@@ -21108,33 +21141,55 @@ class GatewayRunner(
         # "Served" means eligible for shared routing, HTTP prefixes, cron, and
         # profile runtime scope; it is intentionally broader than profiles with a
         # successfully connected secondary adapter (or any adapter configured).
-        try:
-            from gateway.status import write_runtime_status
-            from gateway.pairing import PairingStore
-            served = [active] + sorted(
-                name for name, _home in profile_homes if name != active
-            )
-            # Per-profile PairingStores so authz_mixin can route pairing
-            # checks to the right whitelist. The active profile gets a store
-            # at its HERMES_HOME; additional served profiles resolve from
-            # their own profile homes. See gateway.pairing.PairingStore.
-            for name in served:
-                if name and name not in self.pairing_stores:
-                    self.pairing_stores[name] = (
-                        self.pairing_store
-                        if name == active
-                        else PairingStore(profile=name)
-                    )
-            # Always passed (even empty) at THIS call site: each boot replaces the
-            # previous boot's gate-config warnings instead of inheriting them.
-            write_runtime_status(
-                served_profiles=served,
-                gate_config_warnings=list(getattr(self, "_gate_config_warnings", None) or []),
-            )
-        except Exception:
-            logger.debug("could not record served_profiles", exc_info=True)
+        # ``_record_served_profiles`` owns the write (served set, per-profile
+        # PairingStores, this boot's gate-config warnings) and the reconcile baseline.
+        self._record_served_profiles(active, profile_homes)
 
         return connected
+
+    def _collect_profile_gate_warnings(self, profile_name: str, profile_cfg) -> None:
+        """Replace one profile's gate-config refusals with its latest parse's.
+
+        Gate config errors are contained at parse time (gate stays off, the platform
+        still loads); the refusals are collected here so the boot/reconcile status
+        write can surface them, keyed like the per-profile status entries. Replace
+        (not append) per profile: a reconcile-driven re-scan of a corrected profile
+        drops its stale warning, and an unchanged profile never duplicates.
+        """
+        gate_warnings = getattr(self, "_gate_config_warnings", None)
+        if gate_warnings is None:
+            gate_warnings = self._gate_config_warnings = []
+        prefix = f"{profile_name}:"
+        gate_warnings[:] = [w for w in gate_warnings if not w.startswith(prefix)]
+        for platform, platform_config in profile_cfg.platforms.items():
+            for warning in getattr(platform_config, "gate_config_warnings", ()) or ():
+                gate_warnings.append(f"{prefix}{platform.value} {warning}")
+
+    def clear_gate_config_warning(self, *, profile: str, platform: str, gate: str) -> None:
+        """Drop one gate's refusals from the accumulator and republish, keeping siblings.
+
+        The writer that learns a refusal went stale (the Discord reaction-gate live
+        reload, after an accepted corrected/disabled block) holds no config to
+        re-collect from, so it asks the accumulator's owner to prune
+        ``<profile>:<platform> <gate>...`` entries and republish through the same
+        status write the boot/reconcile path uses. Pruning only the disk record
+        would let the next ``_record_served_profiles`` resurrect the warning. Every
+        gate ValueError text starts with the gate name, so the prefix selects
+        exactly that gate's refusals (a sibling response_gate warning survives).
+        """
+        gate_warnings = getattr(self, "_gate_config_warnings", None)
+        if not isinstance(gate_warnings, list):
+            return
+        prefix = f"{profile}:{platform} {gate}"
+        remaining = [w for w in gate_warnings if not (isinstance(w, str) and w.startswith(prefix))]
+        if len(remaining) == len(gate_warnings):
+            return
+        gate_warnings[:] = remaining
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(gate_config_warnings=list(gate_warnings))
+        except Exception:
+            logger.debug("could not republish gate_config_warnings", exc_info=True)
 
     async def _start_one_profile_adapters(
         self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
@@ -21193,18 +21248,7 @@ class GatewayRunner(
                 "'open'."
             )
 
-        # Gate config errors were contained at parse time (gate stays off, the platform
-        # still loads); collect the refusals here so the boot's status write can surface
-        # them. Keyed like the per-profile status entries. A reconcile-driven re-scan of
-        # an unchanged profile must not append duplicates.
-        gate_warnings = getattr(self, "_gate_config_warnings", None)
-        if gate_warnings is None:
-            gate_warnings = self._gate_config_warnings = []
-        for platform, platform_config in profile_cfg.platforms.items():
-            for warning in platform_config.gate_config_warnings:
-                entry = f"{profile_name}:{platform.value} {warning}"
-                if entry not in gate_warnings:
-                    gate_warnings.append(entry)
+        self._collect_profile_gate_warnings(profile_name, profile_cfg)
 
         port_binding_platforms = sorted(
             platform.value

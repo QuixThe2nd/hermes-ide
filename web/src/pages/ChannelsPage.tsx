@@ -159,7 +159,20 @@ export default function ChannelsPage() {
 
   const gatewayRunning = platforms.length > 0 && platforms[0].gateway_running;
 
+  // Gate-config refusals recorded at gateway boot: an invalid response_gate/reaction_gate
+  // block keeps its platform loading with the gate off, and without this banner that
+  // reads exactly like "no gate configured". Fetched inside load() so every refresh
+  // (mount, save, toggle, restart) picks up a corrected/cleared gate without a remount,
+  // and a failed initial status fetch recovers on the next refresh.
+  const [gateConfigWarnings, setGateConfigWarnings] = useState<string[]>([]);
+
   const load = useCallback(() => {
+    api
+      .getStatus()
+      .then((res) => setGateConfigWarnings(res.gate_config_warnings ?? []))
+      .catch(() => {
+        /* a status fetch failure must not break the channels page */
+      });
     return api
       .getMessagingPlatforms()
       .then((res) => {
@@ -169,19 +182,6 @@ export default function ChannelsPage() {
       })
       .catch((e) => showToast(`Could not load channels: ${errorMessage(e)}`, "error"));
   }, [showToast]);
-
-  // Gate-config refusals recorded at gateway boot: an invalid response_gate/reaction_gate
-  // block keeps its platform loading with the gate off, and without this banner that
-  // reads exactly like "no gate configured".
-  const [gateConfigWarnings, setGateConfigWarnings] = useState<string[]>([]);
-  useEffect(() => {
-    api
-      .getStatus()
-      .then((res) => setGateConfigWarnings(res.gate_config_warnings ?? []))
-      .catch(() => {
-        /* a status fetch failure must not break the channels page */
-      });
-  }, []);
 
   useEffect(() => {
     load().finally(() => setLoading(false));

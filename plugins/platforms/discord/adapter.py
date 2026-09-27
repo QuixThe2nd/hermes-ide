@@ -1578,6 +1578,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # captured path — never HERMES_HOME or os.environ.
         self._reaction_gate_reload_task: Optional[asyncio.Task] = None
         self._reaction_gate_config_path: Optional[_Path] = None
+        self._reaction_gate_profile_name: str = "default"
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
@@ -2412,6 +2413,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         from hermes_constants import get_hermes_home
 
         self._reaction_gate_config_path = get_hermes_home() / "config.yaml"
+        # Profile identity for the boot-diagnostic repair in _reaction_gate_reload:
+        # captured here, inside the owning profile's scope, because the watcher
+        # callback runs outside any scope where HERMES_HOME can name another profile.
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            self._reaction_gate_profile_name = get_active_profile_name() or "default"
+        except Exception:
+            self._reaction_gate_profile_name = "default"
         self._reaction_gate_reload_task = start_reaction_gate_reload_watcher(
             config_path=self._reaction_gate_config_path,
             apply=self._reaction_gate_reload,
@@ -2433,10 +2442,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if self._reaction_gate is not None:
                 logger.info("[%s] reaction_gate disabled by config reload (fail closed)", self.name)
             self._reaction_gate = None
+            self._reaction_gate_repair_boot_warning()
             return True
         try:
             reaction_cfg = ReactionGateConfig.from_dict(block)
         except ValueError as exc:
+            # The invalid block is NOT installed: the previously active gate keeps
+            # running, so no status warning is added (the gate is not off) and any
+            # boot-time refusal stays as-is (it still describes the effective config).
             logger.warning(
                 "[%s] reaction_gate reload kept the previous config (invalid block): %s",
                 self.name, exc,
@@ -2446,6 +2459,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if self._reaction_gate is not None:
                 logger.info("[%s] reaction_gate disabled by config reload (fail closed)", self.name)
             self._reaction_gate = None
+            self._reaction_gate_repair_boot_warning()
             return True
         self._reaction_gate = ReactionGateRuntime.build(
             reaction_cfg, self._response_gate_credential, logger=logger,
@@ -2462,7 +2476,31 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             "[%s] reaction_gate reloaded: %d emoji entries, %d channel(s)",
             self.name, len(reaction_cfg.emojis), len(reaction_cfg.channels),
         )
+        self._reaction_gate_repair_boot_warning()
         return True
+
+    def _reaction_gate_repair_boot_warning(self) -> None:
+        """Drop this adapter's stale boot-time reaction_gate refusal at its owner.
+
+        Only called after an ACCEPTED reload: the effective config is now valid (or a
+        deliberate off), so a boot-time "gate stayed off" refusal would be a lie. The
+        runner owns the warning accumulator that every boot/reconcile status write
+        re-stamps, so the repair goes through it; pruning only the disk record would
+        be resurrected by the next served-profiles write. The profile identity was
+        captured at connect, and a sibling response_gate refusal is kept.
+        """
+        clear = getattr(self.gateway_runner, "clear_gate_config_warning", None)
+        if clear is None:
+            return
+        try:
+            platform_value = getattr(getattr(self, "platform", None), "value", "discord")
+            clear(
+                profile=self._reaction_gate_profile_name,
+                platform=platform_value,
+                gate="reaction_gate",
+            )
+        except Exception:
+            logger.debug("[%s] reaction_gate boot-warning repair failed", self.name, exc_info=True)
 
     def _reaction_gate_candidate(self, message: Any) -> Optional[Dict[str, Any]]:
         """Build the payload for one reaction candidate, or None when never consultable.

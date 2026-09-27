@@ -334,7 +334,9 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     if profile_dir is not None:
         # Explicit ?profile=X scoped view: only that profile's refusals. The unscoped view is
         # machine-level (its platform rollup merges every served profile) and shows all of them.
-        prefix = f"{profile_dir.name}:"
+        # Warnings are keyed by canonical profile id, so resolve it: the default home's
+        # directory basename is an installation detail (".hermes"), not "default".
+        prefix = f"{profile_name_for_home(profile_dir) or profile_dir.name}:"
         gate_config_warnings = [w for w in gate_config_warnings if w.startswith(prefix)]
     return {
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
