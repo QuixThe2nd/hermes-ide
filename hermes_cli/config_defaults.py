@@ -2607,6 +2607,14 @@ DEFAULT_CONFIG = {
         # Path (~ ok) to the reviewed manifest for permission_mode bounded; passed as
         # --capability-manifest. See cua.ai/docs/reference/cua-driver/permission-modes
         "capability_manifest": "",
+        # Pre-authorize existing-profile browser attachment in standard mode
+        # (cua-driver's trusted-launcher `--grant existing-profile`). When
+        # true, the agent can attach to your already-running, signed-in
+        # Chrome/Edge window — exposing that profile's live pages, cookies,
+        # and storage to the browser protocol — without a per-use prompt.
+        # Leave false to keep existing-profile attachment failing closed;
+        # isolated driver-owned profiles work either way.
+        "grant_existing_profile": False,
         # macOS only: allow an UNSIGNED CuaDriver.app for the private-session daemon. False fails
         # closed unless signed with the official com.trycua.driver identity. Only for local driver
         # development from source.
