@@ -15273,74 +15273,6 @@ class GatewayRunner(
             return ""
         return " — " + ", ".join(parts) if parts else ""
 
-    def _session_has_pending_drain_notice(self, session_key: Optional[str]) -> bool:
-        """True only when this session's chat was actually told a restart drain is pending.
-
-        A restart can arrive from surfaces that notify no chat (SIGUSR1, the
-        updater, the control socket) or from a different chat than the one
-        mid-turn; shutdown notices go out only once the drain reaches
-        ``stop()``, and the drain itself waits without a timeout. Keying the
-        heartbeat suppression off the bare process-wide restart flag would
-        silence those un-notified sessions' liveness signal for the entire
-        drain. The notified set is exactly the two lanes that carry a drain
-        notice today: the requester's chat (the restart wind-down embed
-        target) and the sessions whose agent accepted the cooperative park
-        steer.
-        """
-        if not session_key or not getattr(self, "_restart_requested", False):
-            return False
-        if session_key in (
-            getattr(self, "_cooperative_restart_steered_sessions", None) or []
-        ):
-            return True
-        from gateway.restart_wind_down import requester_session_key
-
-        return requester_session_key(self) == session_key
-
-    def _should_emit_long_running_notification(
-        self,
-        session_key: Optional[str],
-        agent: Any,
-        executor_task: Optional[Any],
-    ) -> bool:
-        """Only emit the heartbeat while this task still owns the live run.
-
-        Guards against a stale ``running: delegate_agent`` heartbeat outliving the
-        run that started it: stop once the executor finishes, the agent is gone,
-        or the session key has been rebound to a different live agent (e.g. the
-        user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
-        """
-        if self._session_has_pending_drain_notice(session_key):
-            # A restart drain this session's chat was told about (wind-down
-            # embed / park steer): the user already knows the gateway is
-            # winding down, so a "still working" heartbeat reads as noise.
-            # Sessions with no drain notice keep their normal heartbeat.
-            return False
-        if session_key:
-            # The restart tool parks its turn on a typed-consent gateway
-            # clarify (wait_kind="restart") while the user is asked to type
-            # the exact word "restart". The chat is waiting on the user, not
-            # working, so a "still working" heartbeat reads as noise — the
-            # same contradiction as the post-drain-notice case above.
-            # Scoped to this session: a restart wait parked in a different
-            # session must not silence this one's liveness signal.
-            from tools import clarify_gateway as _clarify_mod
-
-            if any(
-                entry.wait_kind == "restart"
-                for entry in _clarify_mod.pending_entries_for_session(session_key)
-            ):
-                return False
-        if agent is None:
-            return False
-        if executor_task is not None and executor_task.done():
-            return False
-        if session_key:
-            _hb_state = self._peek_session_state(session_key)
-            if (_hb_state.turn.agent if _hb_state else None) is not agent:
-                return False
-        return True
-
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
     # running on the gateway's event loop (session-expiry sweep, in-turn
     # cache-hygiene re-eviction). _cleanup_agent_resources is synchronous and
@@ -35720,6 +35652,11 @@ class GatewayRunner(
                     _exec_ref = _executor_task
                 except NameError:
                     _exec_ref = None
+                if self._heartbeat_temporarily_suppressed(session_key):
+                    # Restart-consent wait parked on the user: skip this tick but keep
+                    # the loop alive — the wait can resolve or be cancelled mid-run and
+                    # later model/tool work still needs liveness updates.
+                    continue
                 if not self._should_emit_long_running_notification(
                     session_key, agent_holder[0], _exec_ref
                 ):

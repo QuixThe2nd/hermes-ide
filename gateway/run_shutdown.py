@@ -1131,20 +1131,65 @@ class GatewayShutdownMixin:
             # SIGTERM never completed.
             await self._cleanup_agent_resources_off_loop(agent, context="shutdown finalize", session_key=session_key)
 
+    def _session_has_pending_drain_notice(self, session_key: Optional[str]) -> bool:
+        """True only when this session's chat was actually told a restart drain is pending.
+
+        A restart can arrive from surfaces that notify no chat (SIGUSR1, the
+        updater, the control socket) or from a different chat than the one
+        mid-turn; shutdown notices go out only once the drain reaches
+        ``stop()``, and the drain itself waits without a timeout. Keying the
+        heartbeat suppression off the bare process-wide restart flag would
+        silence those un-notified sessions' liveness signal for the entire
+        drain. The notified set is exactly the two lanes that carry a drain
+        notice today: the requester's chat (the restart wind-down embed
+        target) and the sessions whose agent accepted the cooperative park
+        steer.
+        """
+        if not session_key or not getattr(self, "_restart_requested", False):
+            return False
+        if session_key in (
+            getattr(self, "_cooperative_restart_steered_sessions", None) or []
+        ):
+            return True
+        from gateway.restart_wind_down import requester_session_key
+
+        return requester_session_key(self) == session_key
+
+    def _heartbeat_temporarily_suppressed(self, session_key: Optional[str]) -> bool:
+        """True while a TEMPORARY wait (restart-consent clarify) parks this session.
+
+        Temporary waits only — heartbeat loops must SKIP (continue) the tick
+        rather than terminate: the wait can end mid-run (the user confirms,
+        a wrong reply cancels the gate, or delivery of the consent prompt
+        fails) and later model/tool work still needs liveness updates. Scoped
+        to the owning session: a restart wait parked in a different session
+        must not silence this one's heartbeat.
+        """
+        if not session_key:
+            return False
+        from tools import clarify_gateway
+
+        return any(
+            entry.wait_kind == "restart"
+            for entry in clarify_gateway.pending_entries_for_session(session_key)
+        )
+
     def _should_emit_long_running_notification(
         self, session_key: Optional[str], agent: Any, executor_task: Optional[Any],
     ) -> bool:
         """Emit the heartbeat only while this task still owns the live run (not after ``/new`` rebinds).
 
-        Guards against a stale ``running: delegate_task`` heartbeat outliving the run that started it: stop
-        once the executor finishes, the agent is gone, or the session key has been rebound to a different
-        live agent (e.g. the user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
+        Terminal conditions only: stop once the executor finishes, the agent is gone, or the
+        session key has been rebound to a different live agent (e.g. the user sent ``/new`` and
+        a fresh agent took the slot mid-run, #12029). Temporary suppression (a restart-consent
+        wait parked on the user) lives in ``_heartbeat_temporarily_suppressed`` so the loops skip
+        a tick instead of exiting — the wait can resolve or be cancelled mid-run.
         """
         if agent is None or (executor_task is not None and executor_task.done()):
             return False
-        # Drain/restart already told the chat the task will be interrupted; a "still working"
-        # heartbeat after that notice reads as a contradiction (#10990).
-        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
+        if self._session_has_pending_drain_notice(session_key):
+            # #10990: only chats actually told about the drain are silenced,
+            # unlike the old process-wide _draining/_restart_requested check.
             return False
         if session_key:
             _hb_state = self._peek_session_state(session_key)
