@@ -279,14 +279,25 @@ def _wrap_usage_routed_mounts(
     ``hermes_cli/llm_usage_routes.wrap_mounts_for_usage_routing``. Kept as a
     lazy local so a missing module or any routing failure can never break
     client construction; unaffected traffic simply stays unmetered.
+
+    ``UsageRoutingError`` (the fail-closed policy refusing to build a direct
+    client) is deliberately re-raised: swallowing it into ``return None``
+    would let the SDK build a direct client, which is exactly the egress an
+    enforced profile forbids.
     """
     try:
-        from hermes_cli.llm_usage_routes import wrap_mounts_for_usage_routing
+        from hermes_cli.llm_usage_routes import (
+            UsageRoutingError,
+            wrap_mounts_for_usage_routing,
+        )
     except ImportError:
         return mounts
-    return wrap_mounts_for_usage_routing(
-        mounts, base_url=base_url, verify=verify, async_mode=async_mode
-    )
+    try:
+        return wrap_mounts_for_usage_routing(
+            mounts, base_url=base_url, verify=verify, async_mode=async_mode
+        )
+    except UsageRoutingError:
+        raise
 
 
 def build_keepalive_http_client(
@@ -366,7 +377,12 @@ def build_keepalive_http_client(
             mounts=mounts or None,
             verify=verify,
         )
-    except Exception:
+    except Exception as exc:
+        # Fail-closed routing policy must survive this construction path: a
+        # swallowed UsageRoutingError would return None and let the SDK build
+        # a direct client — exactly the egress the policy forbids.
+        if type(exc).__name__ == "UsageRoutingError":
+            raise
         return None
 
 

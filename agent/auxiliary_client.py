@@ -2068,7 +2068,17 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     """Fresh xAI OAuth (api_key, base_url) for aux clients, or None.
 
     Pool first (some xAI OAuth logins exist only as pool entries), then the singleton auth-store resolver.
+    Shared-owner mode preempts both: the caller token stands in and the central
+    proxy injects the real xAI OAuth credential it alone refreshes.
     """
+    try:
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL as _XAI_DEFAULT_BASE
+        override = (_scoped_key_env("HERMES_XAI_BASE_URL") or _scoped_key_env("XAI_BASE_URL")).rstrip("/")
+        owner_token = _shared_owner_caller_token_for(override or _XAI_DEFAULT_BASE)
+        if owner_token:
+            return owner_token, override or _XAI_DEFAULT_BASE
+    except Exception:
+        pass
     try:
         from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
         pool = load_pool("xai-oauth")
@@ -2099,8 +2109,40 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return _creds_pair(creds)
 
 
+def _shared_owner_caller_token_for(base_url: str) -> str:
+    """This profile's caller token when *base_url* is routed through a shared owner, else "".
+
+    Shared-owner mode (``llm_usage_proxy.owner_endpoint`` set): the profile holds
+    no upstream credential of its own — clients present the profile's caller
+    token to the provider's usual endpoint, the routing seam rewrites the
+    request to the central proxy, and the proxy swaps the token for the real
+    credential (a stored static key, or an OAuth token the proxy alone obtains
+    and refreshes). Returned only when the adopted route table actually covers
+    the URL, so providers the owner does not manage keep their normal
+    credential resolution (and fail-open behavior).
+    """
+    try:
+        from plugins.llm_usage_proxy.owner import caller_token, owner_policy
+        if owner_policy() is None:
+            return ""
+        token = caller_token()
+        if not token:
+            return ""
+        from hermes_cli.llm_usage_routes import base_url_routable
+        return token if base_url_routable(str(base_url or "")) else ""
+    except Exception:
+        return ""
+
+
 def _read_codex_access_token() -> Optional[str]:
-    """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token."""
+    """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token.
+
+    Shared-owner mode: the profile holds no OAuth token at all — its caller
+    token stands in, and the central proxy injects the real Codex credential
+    (which it alone obtains and refreshes)."""
+    owner_token = _shared_owner_caller_token_for(_codex_base_url_override() or _CODEX_AUX_BASE_URL)
+    if owner_token:
+        return owner_token
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)
@@ -2296,7 +2338,7 @@ def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = 
             ), or_model
         # Exhausted pool: fall through to OPENROUTER_API_KEY rather than fail.
         logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
-    or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY")
+    or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY") or _shared_owner_caller_token_for(OPENROUTER_BASE_URL)
     if not or_key:
         _mark_provider_unhealthy(
             "openrouter", ttl=60, reason=_describe_openrouter_unavailable(or_model), level=logging.DEBUG)
@@ -5160,6 +5202,12 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     provider = req.provider
     if provider == "anthropic":
         client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key)
+        if client is None and not req.explicit_api_key:
+            # Shared-owner mode: no local Anthropic credential, but the central
+            # proxy routes api.anthropic.com — present the caller token instead.
+            owner_token = _shared_owner_caller_token_for("https://api.anthropic.com")
+            if owner_token:
+                client, default_model = _try_anthropic(explicit_api_key=owner_token)
         return _route_or_warn(req, client, default_model,
                               "resolve_provider_client: anthropic requested but no Anthropic credentials found")
     creds = resolve_creds(provider)
@@ -5178,6 +5226,10 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             raw_base_url = normalize_actual_base_url(raw_base_url)
             if not api_key and is_actual_local_base_url(raw_base_url):
                 api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
+    if not api_key:
+        # Shared-owner mode: present the profile's caller token for endpoints
+        # the central proxy routes; it injects the real provider key.
+        api_key = _shared_owner_caller_token_for(raw_base_url)
     if not api_key:
         tried_sources = list(pconfig.api_key_env_vars) + (["gh auth token"] if provider == "copilot" else [])
         logger.debug("resolve_provider_client: provider %s has no API key configured (tried: %s)",

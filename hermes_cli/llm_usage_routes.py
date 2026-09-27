@@ -92,16 +92,35 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _MAX_PROFILE_STATES = 64
 
 
+class UsageRoutingError(RuntimeError):
+    """Fail-closed routing refused to send a request directly.
+
+    Raised only for profiles whose ``llm_usage_proxy.enforce`` policy is on:
+    the destination could not be served through the verified (shared-owner or
+    per-profile) proxy — routing inactive, or no registered route covers it —
+    so the request errors clearly instead of silently going direct. Never
+    raised without the policy: installs without it keep the historical
+    direct-and-unmetered behavior.
+    """
+
+
 class _RoutingState:
     """Route table plus its trust flag for exactly one Hermes profile."""
 
-    __slots__ = ("proxy_origin", "routes", "active", "inactive_reason")
+    __slots__ = ("proxy_origin", "routes", "active", "inactive_reason", "enforced", "owner")
 
     def __init__(self) -> None:
         self.proxy_origin = ""
         self.routes: dict[str, str] = {}
         self.active = False
         self.inactive_reason = _INACTIVE_REASON
+        # Fail-closed policy flag (llm_usage_proxy.enforce). Independent of
+        # the table: it must survive a failed verification so an enforced
+        # profile keeps refusing direct egress while its proxy is down.
+        self.enforced = False
+        # Shared-owner endpoint this table was adopted from ("" = per-profile
+        # proxy). Status/attribution only.
+        self.owner = ""
 
 
 # profile key → state. The dict is only mutated under ``_LOCK``, and a
@@ -220,6 +239,8 @@ def register_route_table(
     routes: Mapping[str, str],
     *,
     profile: Optional[str] = None,
+    enforced: bool = False,
+    owner: str = "",
 ) -> list[str]:
     """Install the route table (name → real upstream base URL) for a profile.
 
@@ -228,6 +249,10 @@ def register_route_table(
     every *other* profile's table untouched in all cases). Does NOT activate
     routing — :func:`activate_routing` does, after the proxy's identity has
     been verified.
+
+    ``enforced`` records the profile's fail-closed policy with the table;
+    ``owner`` names the shared-owner endpoint the table was adopted from
+    (empty for a per-profile proxy).
     """
     errors: list[str] = []
     origin = str(proxy_origin or "").strip().rstrip("/")
@@ -261,10 +286,28 @@ def register_route_table(
         state = _state_for_write_locked(resolve_profile_key(profile))
         state.proxy_origin = origin
         state.routes = dict(cleaned)
+        state.enforced = bool(enforced)
+        state.owner = str(owner or "")
         # Re-verify activation against the new table from the caller.
         state.active = False
         state.inactive_reason = "route table registered; proxy identity not verified"
     return []
+
+
+def configure_policy(
+    *, enforced: bool, owner: str = "", profile: Optional[str] = None
+) -> None:
+    """Record a profile's fail-closed policy independently of any table.
+
+    Called by the plugin lifecycle from config *before* verification: the
+    flag must be known to the transport wrappers even when no table is (yet)
+    registered — a verified table later overwrites both fields via
+    :func:`register_route_table`.
+    """
+    with _LOCK:
+        state = _state_for_write_locked(resolve_profile_key(profile))
+        state.enforced = bool(enforced)
+        state.owner = str(owner or "")
 
 
 def activate_routing(*, profile: Optional[str] = None) -> None:
@@ -413,6 +456,8 @@ def _default_routing_state() -> dict[str, Any]:
         "reason": _INACTIVE_REASON,
         "proxy_origin": "",
         "routes": {},
+        "enforced": False,
+        "owner": "",
     }
 
 
@@ -428,7 +473,21 @@ def routing_state(*, profile: Optional[str] = None) -> dict[str, Any]:
         snapshot["reason"] = "" if state.active else state.inactive_reason
         snapshot["proxy_origin"] = state.proxy_origin
         snapshot["routes"] = dict(state.routes)
+        snapshot["enforced"] = state.enforced
+        snapshot["owner"] = state.owner
         return snapshot
+
+
+def is_enforced(*, profile: Optional[str] = None) -> bool:
+    """True when the profile's fail-closed routing policy is on.
+
+    Deliberately does NOT run the lazy bootstrap: this is a cheap check used
+    to decide transport wrapping, and the bootstrap path already consults it
+    after reconciling.
+    """
+    with _LOCK:
+        state = _STATES.get(resolve_profile_key(profile))
+        return bool(state.enforced) if state is not None else False
 
 
 def _match_route(routes: Mapping[str, str], url: str) -> Optional[tuple[str, str, str]]:
@@ -503,6 +562,45 @@ def base_url_routable(base_url: Any, *, profile: Optional[str] = None) -> bool:
             return False
         routes = state.routes
     return _match_route(routes, str(base_url or "")) is not None
+
+
+def _safe_url_for_message(url: str) -> str:
+    """scheme://host/path with no query — query strings can carry keys."""
+    split = urlsplit(str(url or ""))
+    return f"{split.scheme}://{split.netloc}{split.path}"
+
+
+def _enforcement_failure(profile: str, url: str) -> Optional[str]:
+    """Why an enforced profile must refuse to send *url* directly, or None.
+
+    None whenever the profile is not enforced (fail-open is the historical
+    default) or routing is active — per-request route matching has already
+    happened by the time this runs, so an active table means the URL simply
+    has no route: an unknown inference destination, which the policy refuses
+    to send direct.
+    """
+    with _LOCK:
+        state = _STATES.get(resolve_profile_key(profile))
+        if state is None or not state.enforced:
+            return None
+        active = state.active
+        has_routes = bool(state.routes)
+        reason = state.inactive_reason
+    target = _safe_url_for_message(url)
+    if not has_routes or not active:
+        detail = reason or "routing is inactive"
+        return (
+            f"enforced llm_usage_proxy routing: {detail}; the request to {target}"
+            " was NOT sent directly (fail-closed). Restore the proxy and run"
+            " `hermes llm_usage_proxy reconcile`, or turn llm_usage_proxy.enforce"
+            " off to allow direct egress."
+        )
+    return (
+        f"enforced llm_usage_proxy routing: no registered route covers {target};"
+        " the request was NOT sent directly (fail-closed). Add the destination to"
+        " the proxy's route table (llm_usage_proxy.upstreams on the owning"
+        " profile) or turn llm_usage_proxy.enforce off to allow direct egress."
+    )
 
 
 # ── httpx transport wrappers ─────────────────────────────────────────────────
@@ -769,6 +867,9 @@ def _make_sync_wrapper() -> type:
         def handle_request(self, request: Any) -> Any:
             target = reroute_url(request.url, profile=self._profile)
             if target is None:
+                failure = _enforcement_failure(self._profile, str(request.url))
+                if failure is not None:
+                    raise UsageRoutingError(failure)
                 return self._inner.handle_request(request)
             response = self._inner.handle_request(
                 _proxied_request(request, target, self._caller_label)
@@ -809,6 +910,9 @@ def _make_async_wrapper() -> type:
         async def handle_async_request(self, request: Any) -> Any:
             target = reroute_url(request.url, profile=self._profile)
             if target is None:
+                failure = _enforcement_failure(self._profile, str(request.url))
+                if failure is not None:
+                    raise UsageRoutingError(failure)
                 return await self._inner.handle_async_request(request)
             response = await self._inner.handle_async_request(
                 _proxied_request(request, target, self._caller_label)
@@ -842,7 +946,9 @@ def wrap_mounts_for_usage_routing(
     this client*:
 
     * a route table is registered whose bases cover this client's base URL
-      (per-request matching stays authoritative for redirects etc.);
+      (per-request matching stays authoritative for redirects etc.) — OR the
+      profile's fail-closed policy (``llm_usage_proxy.enforce``) is on, in
+      which case the wrapper is what refuses direct egress per request;
     * TLS policy still verifies the upstream (``verify is True`` or an
       ``ssl.SSLContext``, see :func:`_verified_tls_policy`): a disabled
       verification (``verify=False``) must not be silently traded for the
@@ -863,7 +969,7 @@ def wrap_mounts_for_usage_routing(
         # plugin still gets its enabled profile's verified routing in time for
         # this client.
         key = _entry_profile(profile)
-        if not base_url_routable(base_url, profile=key):
+        if not base_url_routable(base_url, profile=key) and not is_enforced(profile=key):
             return mounts
         global _SYNC_WRAPPER, _ASYNC_WRAPPER
         if async_mode:
@@ -877,9 +983,23 @@ def wrap_mounts_for_usage_routing(
         return {
             scheme: wrapper_cls(transport, key) for scheme, transport in mounts.items()
         }
-    except Exception:
-        # A routing failure must never take client construction down; the
-        # traffic simply stays unmetered (visible via routing_state()).
+    except UsageRoutingError:
+        raise
+    except Exception as exc:
+        # A routing failure must never take client construction down — unless
+        # the profile's policy is fail-closed, in which case an unwrappable
+        # client is exactly the direct-egress path the policy forbids.
+        try:
+            if is_enforced(profile=profile):
+                raise UsageRoutingError(
+                    "enforced llm_usage_proxy routing: the HTTP client could not"
+                    f" be wrapped for routing ({type(exc).__name__}); failing"
+                    " closed instead of building a direct client"
+                ) from exc
+        except UsageRoutingError:
+            raise
+        except Exception:
+            pass
         return mounts
 
 
@@ -889,17 +1009,20 @@ def build_sync_routed_client(
     """httpx.Client for SDK paths that build their own transport (Anthropic).
 
     Returned only when this *base_url* is routable under default TLS policy
-    for the profile constructing the client; ``None`` means "let the SDK build
-    its default client" (direct, unmetered). The client's transport is bound
-    to that profile for its whole lifetime. Like the mount-wrapper seam, this
-    may run the one-shot lazy bootstrap first, so an enabled profile whose
-    plugin never loaded still gets routing in time for this client.
+    for the profile constructing the client — or unconditionally when the
+    profile's fail-closed policy is on (the wrapper is then what refuses
+    direct egress). ``None`` means "let the SDK build its default client"
+    (direct, unmetered), which an enforced profile never gets. The client's
+    transport is bound to that profile for its whole lifetime. Like the
+    mount-wrapper seam, this may run the one-shot lazy bootstrap first, so an
+    enabled profile whose plugin never loaded still gets routing in time for
+    this client.
     """
     try:
         import httpx
 
         key = _entry_profile(profile)
-        if not base_url_routable(base_url, profile=key):
+        if not base_url_routable(base_url, profile=key) and not is_enforced(profile=key):
             return None
         global _SYNC_WRAPPER
         if _SYNC_WRAPPER is None:
@@ -908,7 +1031,20 @@ def build_sync_routed_client(
         return httpx.Client(
             transport=_SYNC_WRAPPER(httpx.HTTPTransport(), key), **kwargs
         )
-    except Exception:
+    except UsageRoutingError:
+        raise
+    except Exception as exc:
+        try:
+            if is_enforced(profile=profile):
+                raise UsageRoutingError(
+                    "enforced llm_usage_proxy routing: the routed HTTP client"
+                    f" could not be built ({type(exc).__name__}); failing closed"
+                    " instead of letting the SDK build a direct one"
+                ) from exc
+        except UsageRoutingError:
+            raise
+        except Exception:
+            pass
         return None
 
 
@@ -921,12 +1057,15 @@ def _reset_registry() -> None:
 
 
 __all__ = [
+    "UsageRoutingError",
     "activate_routing",
     "base_url_routable",
     "build_sync_routed_client",
     "chat_attribution_headers",
     "clear_route_table",
+    "configure_policy",
     "deactivate_routing",
+    "is_enforced",
     "register_route_table",
     "reroute_url",
     "resolve_profile_key",

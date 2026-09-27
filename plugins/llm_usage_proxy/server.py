@@ -18,6 +18,14 @@ Security posture:
     token, the proxy injects the real upstream credential, and the ledger
     records which caller made each request. Without the flag the proxy is a
     credential passthrough and never rewrites an Authorization header.
+  * OAuth-based providers (Codex, xAI) have no static key to store; a route
+    named in the key store's ``oauth`` section is credential-owned by the
+    proxy itself: it resolves and refreshes the upstream OAuth token through
+    the canonical Hermes auth store (via the ``hermes_cli.llm_proxy_oauth``
+    helper and its cross-process locks) and injects it — with the account
+    headers that token implies — exactly like a stored key. Clients still
+    present only their caller token, and a single-use refresh token is never
+    copied out of the canonical store.
   * Any client may name itself with the ``X-Usage-Caller`` label header. The
     label is attribution in the ledger and nothing more: it is validated,
     stripped before anything is forwarded upstream, and is never a credential
@@ -73,6 +81,7 @@ import re
 import secrets
 import sqlite3
 import ssl
+import subprocess
 import sys
 import tempfile
 import threading
@@ -244,6 +253,20 @@ UNATTRIBUTED_CALLER = "unattributed"
 # Upstream statuses that make key-manager mode try the route's next stored
 # key — once per request, so a dead key cannot turn into a retry storm.
 KEY_RETRY_STATUSES = frozenset({401, 429})
+
+# OAuth-managed routes (keys.json "oauth" section: route → provider id). For
+# those the proxy itself obtains and refreshes the upstream OAuth credential
+# through the canonical Hermes auth store (the ``hermes_cli.llm_proxy_oauth``
+# helper, which owns refresh + cross-process locks) — clients still present
+# only their caller token.
+# A cached token this close to expiry is refreshed before use.
+OAUTH_REFRESH_SKEW_SEC = 60.0
+# Cache TTL when the helper reports no expiry (defensive; real OAuth access
+# tokens are JWTs and always carry one).
+OAUTH_FALLBACK_TTL_SEC = 240.0
+# One helper invocation may wait out a store lock plus a token-endpoint
+# round trip; bound it so a wedged refresh cannot park a request forever.
+OAUTH_HELPER_TIMEOUT_SEC = 75.0
 
 # Usage completeness values (how authoritative the token numbers are).
 USAGE_FINAL = "final"  # terminal usage event observed per provider rules
@@ -1283,6 +1306,12 @@ class KeyStore:
     ledger. Clients hold caller tokens only; a caller token is never a
     provider credential, and the proxy never hands a provider key back out.
 
+    A third section, ``oauth``, maps a route name to the OAuth provider id
+    whose credential the *proxy itself* obtains and refreshes (Codex, xAI —
+    providers with no static API key to store). Only the provider id is
+    persisted here; the tokens live exclusively in the canonical Hermes
+    auth store the helper refreshes under its cross-process locks.
+
     Reads re-read the file when it changed on disk, so ``hermes
     llm_usage_proxy keys set`` and ``callers create`` take effect on a running
     proxy without a restart. Writes rewrite the file atomically: a reader
@@ -1294,6 +1323,7 @@ class KeyStore:
         self._lock = threading.Lock()
         self._routes: dict[str, tuple[str, ...]] = {}
         self._callers: dict[str, str] = {}
+        self._oauth: dict[str, str] = {}
         self._stamp: Optional[tuple[int, int]] = None
         self._load()
 
@@ -1323,11 +1353,23 @@ class KeyStore:
                     return name
         return None
 
+    def oauth_provider_for(self, route: str) -> Optional[str]:
+        """The OAuth provider id a route is managed with, or None."""
+        with self._lock:
+            self._maybe_reload()
+            return self._oauth.get(route)
+
+    def oauth_routes(self) -> dict[str, str]:
+        """``{route: provider_id}`` for every OAuth-managed route."""
+        with self._lock:
+            self._maybe_reload()
+            return dict(self._oauth)
+
     def describe(self) -> dict[str, dict[str, object]]:
         """Route/caller names with fingerprints only — never secret values."""
         with self._lock:
             self._maybe_reload()
-            return {
+            described: dict[str, dict[str, object]] = {
                 "routes": {
                     name: [key_fingerprint(key) for key in keys]
                     for name, keys in sorted(self._routes.items())
@@ -1337,6 +1379,12 @@ class KeyStore:
                     for name, token in sorted(self._callers.items())
                 },
             }
+            # Provider ids are configuration, not credentials. Omitted when
+            # empty so the longstanding {"routes", "callers"} shape is stable
+            # for existing consumers.
+            if self._oauth:
+                described["oauth"] = dict(sorted(self._oauth.items()))
+            return described
 
     # ── writes ───────────────────────────────────────────────────────────
 
@@ -1406,6 +1454,29 @@ class KeyStore:
             self._save()
             return True
 
+    def set_oauth_route(self, route: str, provider: str) -> str:
+        """Mark *route* as OAuth-managed by *provider* (e.g. openai-codex)."""
+        if not is_route_name(route):
+            raise ValueError(f"invalid route name: {route!r}")
+        provider = str(provider or "").strip()
+        if not is_route_name(provider):
+            raise ValueError(f"invalid OAuth provider id: {provider!r}")
+        with self._lock:
+            self._maybe_reload()
+            self._oauth[route] = provider
+            self._save()
+            return provider
+
+    def remove_oauth_route(self, route: str) -> bool:
+        """Drop a route's OAuth management. True when something was removed."""
+        with self._lock:
+            self._maybe_reload()
+            if route not in self._oauth:
+                return False
+            del self._oauth[route]
+            self._save()
+            return True
+
     # ── file plumbing ────────────────────────────────────────────────────
 
     def _stamp_file(self, path: str) -> Optional[tuple[int, int]]:
@@ -1424,7 +1495,7 @@ class KeyStore:
         path = self.path
         self._stamp = self._stamp_file(path)
         if self._stamp is None:
-            self._routes, self._callers = {}, {}
+            self._routes, self._callers, self._oauth = {}, {}, {}
             return
         try:
             with open(path, "r", encoding="utf-8") as handle:
@@ -1438,10 +1509,11 @@ class KeyStore:
                 path,
                 redact_text(str(exc)),
             )
-            self._routes, self._callers = {}, {}
+            self._routes, self._callers, self._oauth = {}, {}, {}
             return
         routes: dict[str, tuple[str, ...]] = {}
         callers: dict[str, str] = {}
+        oauth: dict[str, str] = {}
         if isinstance(raw, Mapping):
             raw_routes = raw.get("routes")
             if isinstance(raw_routes, Mapping):
@@ -1458,7 +1530,16 @@ class KeyStore:
                 for name, token in raw_callers.items():
                     if is_caller_name(str(name)) and isinstance(token, str) and token:
                         callers[str(name)] = token
-        self._routes, self._callers = routes, callers
+            raw_oauth = raw.get("oauth")
+            if isinstance(raw_oauth, Mapping):
+                for name, provider in raw_oauth.items():
+                    if (
+                        is_route_name(str(name))
+                        and isinstance(provider, str)
+                        and is_route_name(provider.strip())
+                    ):
+                        oauth[str(name)] = provider.strip()
+        self._routes, self._callers, self._oauth = routes, callers, oauth
         _ensure_mode_0600(path)  # a store written loose by an older version
 
     def _save(self) -> None:
@@ -1470,6 +1551,7 @@ class KeyStore:
             "version": 1,
             "routes": {name: list(keys) for name, keys in sorted(self._routes.items())},
             "callers": dict(sorted(self._callers.items())),
+            "oauth": dict(sorted(self._oauth.items())),
         }
         handle_fd, tmp_path = tempfile.mkstemp(
             dir=directory, prefix=".keys-", suffix=".tmp"
@@ -1524,6 +1606,151 @@ class KeyRotator:
         return keys[nxt], nxt
 
 
+class OAuthHelperError(Exception):
+    """The OAuth helper could not produce a usable upstream credential."""
+
+
+def _repo_root() -> str:
+    """Repository root that contains ``hermes_cli`` (this file's grandparent)."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def run_oauth_helper(provider: str) -> dict:
+    """One fresh upstream OAuth credential for *provider* from the canonical store.
+
+    Spawns ``python -m hermes_cli.llm_proxy_oauth <provider>`` — the Hermes-side
+    helper that resolves (and, when expiring, refreshes) the OAuth token through
+    the existing auth machinery and its cross-process store locks. This process
+    stays stdlib-only; the helper is where ``hermes_cli`` may be imported. The
+    helper's stdout is the credential channel and is never logged; its stderr is
+    logged only after :func:`redact_text`.
+    """
+    root = _repo_root()
+    env = dict(os.environ)
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = root + (os.pathsep + pythonpath if pythonpath else "")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.llm_proxy_oauth", provider],
+            capture_output=True,
+            timeout=OAUTH_HELPER_TIMEOUT_SEC,
+            env=env,
+            cwd=root,
+        )
+    except subprocess.TimeoutExpired:
+        raise OAuthHelperError(
+            f"OAuth helper for {provider!r} timed out after"
+            f" {OAUTH_HELPER_TIMEOUT_SEC:.0f}s"
+        ) from None
+    except OSError as exc:
+        raise OAuthHelperError(
+            f"OAuth helper for {provider!r} could not start: {exc}"
+        ) from None
+    try:
+        payload = json.loads(proc.stdout.decode("utf-8", "replace").strip() or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    if proc.returncode != 0 or not isinstance(payload, dict) or not payload.get(
+        "access_token"
+    ):
+        detail = ""
+        if isinstance(payload, dict):
+            detail = str(payload.get("error") or "").strip()
+        if not detail:
+            detail = proc.stderr.decode("utf-8", "replace").strip()
+        if not detail:
+            detail = f"helper exited with status {proc.returncode}"
+        raise OAuthHelperError(redact_text(detail)[:500])
+    return payload
+
+
+class OAuthCredentialProvider:
+    """Per-route cache of upstream OAuth credentials the proxy owns.
+
+    For a route mapped in the key store's ``oauth`` section, the proxy — not
+    any client — obtains and refreshes the upstream credential. Tokens are
+    cached until shortly before their expiry; a ``401`` from the upstream
+    invalidates the cache entry so the request can be retried once with a
+    freshly resolved token (single-use refresh tokens stay safe: the refresh
+    itself happens inside the canonical auth store's cross-process lock in
+    the helper, never from a copied token here).
+    """
+
+    def __init__(
+        self,
+        store: KeyStore,
+        *,
+        helper: Callable[[str], dict] = run_oauth_helper,
+    ):
+        self._store = store
+        self._helper = helper
+        self._guard = threading.Lock()
+        self._route_locks: dict[str, threading.Lock] = {}
+        # route → (access_token, extra_headers, expires_at_epoch)
+        self._cache: dict[str, tuple[str, dict[str, str], float]] = {}
+
+    def _route_lock(self, route: str) -> threading.Lock:
+        with self._guard:
+            lock = self._route_locks.get(route)
+            if lock is None:
+                lock = self._route_locks[route] = threading.Lock()
+            return lock
+
+    def credential_for(self, route: str) -> Optional[tuple[str, dict[str, str]]]:
+        """``(access_token, extra_headers)`` for *route*, or None.
+
+        None means either the route is not OAuth-managed or the credential
+        could not be resolved — the caller fails the request clearly rather
+        than passing anything through.
+        """
+        provider = self._store.oauth_provider_for(route)
+        if not provider:
+            return None
+        with self._route_lock(route):
+            cached = self._cache.get(route)
+            now = time.time()
+            if cached is not None and cached[2] - OAUTH_REFRESH_SKEW_SEC > now:
+                return cached[0], dict(cached[1])
+            try:
+                payload = self._helper(provider)
+            except Exception as exc:
+                logger.warning(
+                    "OAuth credential for route %s unavailable: %s",
+                    route,
+                    redact_text(str(exc)),
+                )
+                # A still-valid cached token beats failing the request: the
+                # skew window exists precisely so this is rare, and a 401
+                # would invalidate below and refetch.
+                if cached is not None and cached[2] > now:
+                    return cached[0], dict(cached[1])
+                return None
+            token = str(payload.get("access_token") or "").strip()
+            if not token:
+                logger.warning(
+                    "OAuth helper for route %s returned no access token", route
+                )
+                return None
+            headers = {
+                str(name): str(value)
+                for name, value in (payload.get("headers") or {}).items()
+                if isinstance(name, str) and isinstance(value, str) and name and value
+            }
+            try:
+                expires_at = float(payload.get("expires_at") or 0)
+            except (TypeError, ValueError):
+                expires_at = 0.0
+            if expires_at <= now:
+                expires_at = now + OAUTH_FALLBACK_TTL_SEC
+            self._cache[route] = (token, headers, expires_at)
+            return token, dict(headers)
+
+    def invalidate(self, route: str) -> None:
+        """Drop the cached credential (an upstream 401 proved it unusable)."""
+        with self._route_lock(route):
+            self._cache.pop(route, None)
+
+
 def apply_upstream_auth(
     headers: list[tuple[str, str]], key: str
 ) -> list[tuple[str, str]]:
@@ -1560,6 +1787,40 @@ def bearer_token(value: Optional[str]) -> Optional[str]:
     if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
         return parts[1].strip()
     return None
+
+
+# Headers the OAuth helper may supply that must never override the credential
+# apply_upstream_auth just injected (belt and braces — the helper only returns
+# account/workspace headers derived from the same token).
+_OAUTH_HEADER_BLOCKLIST = frozenset(
+    {"authorization", "x-api-key", "host", "content-length"} | HOP_BY_HOP
+)
+
+
+def apply_oauth_headers(
+    headers: list[tuple[str, str]], extra: Mapping[str, str]
+) -> list[tuple[str, str]]:
+    """Merge helper-supplied account headers into a forwarded request.
+
+    The headers come from the OAuth token the proxy is injecting (e.g.
+    ``ChatGPT-Account-ID`` and the residency header the Codex backend derives
+    from the JWT), so they must describe *that* token: an existing header of
+    the same name is replaced, credential/transport headers are never
+    touched.
+    """
+    if not extra:
+        return headers
+    wanted = {
+        name: value
+        for name, value in extra.items()
+        if name.lower() not in _OAUTH_HEADER_BLOCKLIST
+    }
+    if not wanted:
+        return headers
+    lowered = {name.lower() for name in wanted}
+    merged = [(name, value) for name, value in headers if name.lower() not in lowered]
+    merged.extend(wanted.items())
+    return merged
 
 
 # ── Proxy handler ────────────────────────────────────────────────────────────
@@ -1625,6 +1886,10 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         return getattr(self.server, "rotator", None)
 
     @property
+    def oauth_provider(self) -> Optional[OAuthCredentialProvider]:
+        return getattr(self.server, "oauth_provider", None)
+
+    @property
     def capture_jev_bodies(self) -> bool:
         """True only when the unit was started with --capture-jev-bodies."""
         return bool(getattr(self.server, "capture_jev_bodies", False))
@@ -1667,6 +1932,13 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             # because the two disagree about who is allowed to call them.
             "manage_keys": self.manage_keys,
         }
+        key_store = self.key_store
+        if self.manage_keys and key_store is not None:
+            # OAuth-managed routes are part of the verified identity surface:
+            # a client checking whether the proxy owns upstream OAuth for a
+            # route should not have to guess.
+            payload["oauth_routes"] = key_store.oauth_routes()
+        return payload
 
     def _send_recent_usage(self) -> None:
         query = urlsplit(self.path).query
@@ -1792,12 +2064,26 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
 
         The dedicated header wins, because key-manager mode otherwise reads
         the Authorization header — which may hold a caller token *or* a
-        credential the client still wants passed through untouched.
+        credential the client still wants passed through untouched. An
+        ``x-api-key`` value counts only when it *is* a known caller token
+        (Anthropic-protocol clients have no Authorization header to carry
+        one); a real provider key in ``x-api-key`` is left to the
+        label/User-Agent attribution gate and the passthrough path, exactly
+        as before.
         """
         explicit = self.headers.get(CALLER_TOKEN_HEADER)
         if explicit and explicit.strip():
             return explicit.strip()
-        return bearer_token(self.headers.get("Authorization"))
+        bearer = bearer_token(self.headers.get("Authorization"))
+        if bearer:
+            return bearer
+        api_key = self.headers.get("x-api-key")
+        key_store = self.key_store
+        if api_key and api_key.strip() and key_store is not None:
+            candidate = api_key.strip()
+            if key_store.caller_for_token(candidate) is not None:
+                return candidate
+        return None
 
     def _presented_caller_label(self) -> Optional[str]:
         """The harness label this request arrived with, if it parses.
@@ -1996,11 +2282,43 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             )
             return
 
+        oauth_credential: Optional[tuple[str, dict[str, str]]] = None
         if key_store is not None:
             route_keys = key_store.route_keys(upstream_name)
             route_key_count = len(route_keys)
             if route_keys and self.rotator is not None:
                 managed_key, managed_position = self.rotator.issue(upstream_name)
+            elif key_store.oauth_provider_for(upstream_name):
+                # OAuth-managed route with no static keys: the proxy itself
+                # holds the upstream credential. An unresolvable one fails the
+                # request clearly — never a silent passthrough of the caller
+                # token to the provider.
+                oauth = self.oauth_provider
+                if oauth is not None:
+                    oauth_credential = oauth.credential_for(upstream_name)
+                if oauth_credential is None:
+                    self._send_json(
+                        502,
+                        {
+                            "error": (
+                                f"upstream OAuth credential for route"
+                                f" '{upstream_name}' is unavailable; see the"
+                                " proxy journal for the helper error"
+                            )
+                        },
+                    )
+                    self._record_rejection(
+                        upstream=upstream_name,
+                        path=routed_path,
+                        model=model,
+                        status=502,
+                        started=started,
+                        caller=caller,
+                        chat_type=chat_type,
+                        chat_id=chat_id,
+                        chat_name=chat_name,
+                    )
+                    return
 
         # Opt-in jev body capture: the sink exists only for requests that pass
         # the gate, so everything else streams through untouched. ``ts`` is the
@@ -2021,7 +2339,10 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         headers_sent = False
         try:
 
-            def _open_and_send(key: Optional[str]) -> tuple[HTTPConnection, Any]:
+            def _open_and_send(
+                key: Optional[str],
+                extra_headers: Optional[Mapping[str, str]] = None,
+            ) -> tuple[HTTPConnection, Any]:
                 nonlocal conn
                 if split_base.scheme == "https":
                     connection: HTTPConnection = HTTPSConnection(
@@ -2039,6 +2360,8 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 headers = self._forward_headers(split_base.netloc)
                 if key is not None:
                     headers = apply_upstream_auth(headers, key)
+                if extra_headers:
+                    headers = apply_oauth_headers(headers, extra_headers)
                 body_for_request = body if body is not None else (
                     b"" if self.command in ("POST", "PUT", "PATCH") else None
                 )
@@ -2053,7 +2376,12 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                     connection.sock.settimeout(STREAM_TIMEOUT_SEC)
                 return connection, connection.getresponse()
 
-            conn, resp = _open_and_send(managed_key)
+            if oauth_credential is not None:
+                conn, resp = _open_and_send(
+                    oauth_credential[0], oauth_credential[1]
+                )
+            else:
+                conn, resp = _open_and_send(managed_key)
             if (
                 managed_key is not None
                 and resp.status in KEY_RETRY_STATUSES
@@ -2075,6 +2403,26 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                     )
                     conn.close()
                     conn, resp = _open_and_send(retry_key)
+            elif (
+                oauth_credential is not None
+                and resp.status == 401
+                and self.oauth_provider is not None
+            ):
+                # One retry with a freshly resolved OAuth credential: the
+                # cached token may have been revoked or rotated out upstream.
+                # The refetch goes through the canonical store's lock (a peer
+                # that already rotated the grant is adopted, never replayed).
+                self.oauth_provider.invalidate(upstream_name)
+                refreshed = self.oauth_provider.credential_for(upstream_name)
+                if refreshed is not None and refreshed[0] != oauth_credential[0]:
+                    logger.info(
+                        "upstream %s answered 401 with the cached OAuth token;"
+                        " retrying with a refreshed one",
+                        upstream_name,
+                    )
+                    conn.close()
+                    oauth_credential = refreshed
+                    conn, resp = _open_and_send(refreshed[0], refreshed[1])
 
             status_code = resp.status
             for header in REQUEST_ID_HEADERS:
@@ -2284,6 +2632,9 @@ class UsageProxyServer(ThreadingHTTPServer):
         self.capture_jev_bodies = bool(capture_jev_bodies)
         self.key_store = KeyStore(keys_path) if self.manage_keys else None
         self.rotator = KeyRotator(self.key_store) if self.key_store else None
+        self.oauth_provider = (
+            OAuthCredentialProvider(self.key_store) if self.key_store else None
+        )
         super().__init__((BIND_HOST, int(port)), UsageProxyHandler)
 
 

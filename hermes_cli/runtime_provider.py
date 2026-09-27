@@ -867,6 +867,138 @@ def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_
     return None
 
 
+# ── shared-owner (central llm_usage_proxy) credential-less resolution ─────────────────────
+
+
+def _shared_owner_target(provider: str, model_cfg: Dict[str, Any], target_model) -> Optional[tuple]:
+    """``(provider, api_mode, base_url)`` for *provider* without reading any credential.
+
+    Shared-owner mode resolves the exact shape the credentialed ladder would have
+    produced, so the routing seam sees the same base URL whether the profile
+    holds the upstream secret or the central proxy does. Returns None when no
+    endpoint is derivable (unknown provider).
+    """
+    effective_model = _effective_model(model_cfg, target_model)
+    spec = _OAUTH_RUNTIME_PROVIDERS.get(provider)
+    if spec is not None:
+        api_mode = spec.api_mode(effective_model) if callable(spec.api_mode) else spec.api_mode
+        base_url = spec.default_base_url
+        if provider == "openai-codex":
+            # Profile-wide override applies to every credential source, the
+            # shared owner included (mirrors the pool-entry path).
+            base_url = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+        elif provider == "nous":
+            base_url = (_nous_inference_env_override() or "") or base_url
+        if not base_url:
+            pconfig = PROVIDER_REGISTRY.get(provider)
+            base_url = getattr(pconfig, "inference_base_url", "") if pconfig else ""
+        return (provider, api_mode, base_url.rstrip("/")) if base_url else None
+    if provider == "minimax-oauth":
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        base_url = getattr(pconfig, "inference_base_url", "") if pconfig else ""
+        return (provider, "anthropic_messages", base_url.rstrip("/")) if base_url else None
+    if provider == "anthropic":
+        return (provider, "anthropic_messages",
+                _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL)
+    if provider == "openrouter":
+        base_url = _config_base_url_for_provider(model_cfg, provider) or OPENROUTER_BASE_URL
+        return (provider, "chat_completions", base_url.rstrip("/"))
+    custom_provider = _get_named_custom_provider(provider)
+    if custom_provider and custom_provider.get("base_url"):
+        base_url = str(custom_provider["base_url"]).rstrip("/")
+        api_mode = _parse_api_mode(custom_provider.get("api_mode")) or _fallback_api_mode(
+            "custom", base_url, effective_model)
+        return ("custom", api_mode, base_url)
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and pconfig.auth_type == "api_key":
+        # Reads env/config for the endpoint only; a missing key does not raise
+        # here (the credentialed rung is what enforces keys).
+        creds = resolve_api_key_provider_credentials(provider)
+        base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider)
+                               or str(creds.get("base_url", "")).rstrip("/"))
+        if not base_url:
+            return None
+        api_mode = _api_key_provider_api_mode(provider, model_cfg, "", base_url,
+                                              effective_model, opencode_by_model=True)
+        return provider, api_mode, _finalize_base_url(provider, api_mode, base_url)
+    return None
+
+
+def _resolve_shared_owner_runtime(requested_provider, explicit_api_key, explicit_base_url,
+                                  target_model) -> Optional[Dict[str, Any]]:
+    """Shared-owner rung: resolve through the central proxy with no local credential.
+
+    When this profile names a shared owner (``llm_usage_proxy.owner_endpoint``)
+    the profile needs no upstream secret of its own: the runtime carries the
+    profile's *caller token* as the API key, the request goes to the provider's
+    usual base URL, and the routing seam rewrites it to the verified owner,
+    which swaps the token for the real credential (static key or proxy-refreshed
+    OAuth). Explicit creds bypass the rung (normal ladder; the seam still
+    reroutes when covered). Unroutable or unresolvable providers fall through
+    fail-open, or raise a clear AuthError when the profile enforces.
+    """
+    try:
+        from plugins.llm_usage_proxy.owner import caller_token, owner_policy
+    except ImportError:
+        return None
+    policy = owner_policy()
+    if policy is None:
+        return None
+    if (explicit_api_key or "").strip() or (explicit_base_url or "").strip():
+        return None
+    enforce = bool(policy.get("enforce"))
+    endpoint = str(policy.get("endpoint") or "")
+    model_cfg = _get_model_config()
+    provider = requested_provider
+    if provider in ("auto", ""):
+        provider = _cfg_provider(model_cfg) or "auto"
+    if provider in ("auto", ""):
+        if enforce:
+            raise AuthError(
+                "Shared-owner routing is enforced but no provider is selected: set"
+                " model.provider in config.yaml (or pass a provider) so the request"
+                f" can be routed through the central proxy at {endpoint}.",
+                provider=requested_provider, code="shared_owner_no_provider")
+        return None
+    target = _shared_owner_target(provider, model_cfg, target_model)
+    if target is None:
+        if enforce:
+            raise AuthError(
+                f"provider '{provider}' has no endpoint the shared owner at"
+                f" {endpoint} could route; enforced routing refuses to resolve it"
+                " locally.",
+                provider=provider, code="shared_owner_unknown_provider")
+        return None
+    provider_name, api_mode, base_url = target
+    from hermes_cli.llm_usage_routes import base_url_routable
+    if not base_url_routable(base_url):
+        if enforce:
+            raise AuthError(
+                f"provider '{provider}' resolves to {base_url}, which the shared"
+                f" owner at {endpoint} does not route; enforced routing refuses"
+                " to send it direct. Add the route on the owner"
+                " (`hermes llm_usage_proxy keys set`/`set-oauth` plus the"
+                " upstream on the owner profile) or turn llm_usage_proxy.enforce"
+                " off.",
+                provider=provider, code="shared_owner_unrouted")
+        return None
+    token = caller_token()
+    if not token:
+        # Without the caller token the owner would reject the request; in
+        # fail-open mode a profile holding its own keys can still resolve them
+        # down the ladder and pass them through the proxy.
+        if enforce:
+            raise AuthError(
+                f"shared owner {endpoint} is configured and enforced but this"
+                " profile has no caller token: set HERMES_USAGE_PROXY_CALLER_TOKEN"
+                " in this profile's .env to a token minted on the owner with"
+                " `hermes llm_usage_proxy callers create <name>`.",
+                provider=provider, code="shared_owner_no_caller_token")
+        return None
+    return _runtime(provider_name, api_mode, base_url, token, source="shared-owner",
+                    requested_provider=requested_provider)
+
+
 def _local_endpoint_bypass(requested_provider: str, explicit_api_key, explicit_base_url) -> Optional[Dict[str, Any]]:
     """provider "auto"/unset with a config base_url at a custom/local endpoint routes through the
     OpenAI-compatible resolver, so resolve_provider() cannot pick up an env ANTHROPIC/OPENAI key
@@ -898,6 +1030,9 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     rung returns or raises, else falls to the next):
       1. disabled-provider guard (``providers.<name>.enabled: false``)
       2. requested-name shortcuts: moa, anthropic@azure, azure-foundry, vertex
+      2b. shared-owner mode (``llm_usage_proxy.owner_endpoint``): credential-less runtime carrying
+          the profile's proxy caller token; the routing seam delivers the request to the central
+          proxy, which owns the upstream credential
       3. named custom provider / llamacpp alias / bare-custom direct alias
       4. local-endpoint bypass (no explicit creds, config base_url at a non-cloud host)
       5. ``auth.resolve_provider`` → explicit --api-key/--base-url path
@@ -940,6 +1075,10 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     """Ladder rungs 2-8, yielded lazily so each is evaluated only when the previous one returned
     nothing; the last rung (OpenRouter / bare-custom fallback) always yields a runtime."""
     yield _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model)
+    # Shared-owner mode (llm_usage_proxy.owner_endpoint set): resolve the provider's
+    # usual shape with the profile's caller token as the key and let the routing
+    # seam send the request to the central proxy, which owns the real credential.
+    yield _resolve_shared_owner_runtime(requested_provider, explicit_api_key, explicit_base_url, target_model)
     yield _tag(_resolve_named_custom_runtime(requested_provider=requested_provider, explicit_api_key=explicit_api_key,
                                              explicit_base_url=explicit_base_url, target_model=target_model), requested_provider)
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url pointing at a custom/local
