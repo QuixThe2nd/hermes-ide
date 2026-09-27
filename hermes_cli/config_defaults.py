@@ -953,6 +953,12 @@ DEFAULT_CONFIG = {
         # Engine warning/failure notifications stay visible unless an operator opts in.
         # Does not suppress task results, manual commands, or existing logs.
         "suppress_warning_notifications": False,
+        # Gateway: show the "🧠 gateway context injected" progress card for gateway-only
+        # envelope context (interruption system notes, voice prefixes added around the user
+        # message). Memory/plugin/mixed context cards and ordinary tool progress are
+        # unaffected, and the model still receives the full injected content either way.
+        # Per-platform: display.platforms.<platform>.gateway_context_notifications.
+        "gateway_context_notifications": True,
         # Codex Responses commentary channel: true delivers completed commentary as mid-turn interim
         # updates; false routes it to reasoning (visible only with show_reasoning).
         "show_commentary": True,
