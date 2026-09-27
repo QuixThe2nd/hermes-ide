@@ -326,11 +326,23 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     # ``liveness.runtime`` is set only when the shared multiplexer answered for a served profile: its
     # gateway IS that process, so name every bot a restart would blip ("default, alpha, beta").
     served = (liveness.runtime or {}).get("served_profiles")
+    # Gate-config refusals ("<profile>:<platform> <error>") share the runtime record with
+    # served_profiles; a served-profile view shows only its own prefix, the unscoped view
+    # (a profile the multiplexer does not serve) gets all of them.
+    raw_gate_warnings = (runtime or {}).get("gate_config_warnings")
+    gate_config_warnings = [str(w) for w in raw_gate_warnings] if isinstance(raw_gate_warnings, list) else []
+    if profile_dir is not None:
+        # Explicit ?profile=X scoped view: only that profile's refusals. The unscoped view is
+        # machine-level (its platform rollup merges every served profile) and shows all of them.
+        prefix = f"{profile_dir.name}:"
+        gate_config_warnings = [w for w in gate_config_warnings if w.startswith(prefix)]
     return {
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
         "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
+        # Boot-time gate-config refusals ("gate stayed off"); empty = nothing was refused.
+        "gate_config_warnings": gate_config_warnings,
         "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
@@ -485,6 +497,8 @@ async def get_status(profile: Optional[str] = None):
             "gateway_heartbeat_stale_s": gateway["gateway_heartbeat_stale_s"],
             # Non-null only for a profile served by the shared multiplexer: every profile that process carries.
             "gateway_shared_with": gateway["gateway_shared_with"],
+            # Boot-time gate-config refusals ("gate stayed off"); empty = nothing was refused.
+            "gate_config_warnings": gateway["gate_config_warnings"],
             "active_agents": active_agents,
             "gateway_busy": derive_gateway_busy(
                 gateway_running=gateway_running, gateway_state=gateway_state,

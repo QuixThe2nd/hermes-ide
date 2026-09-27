@@ -170,6 +170,19 @@ export default function ChannelsPage() {
       .catch((e) => showToast(`Could not load channels: ${errorMessage(e)}`, "error"));
   }, [showToast]);
 
+  // Gate-config refusals recorded at gateway boot: an invalid response_gate/reaction_gate
+  // block keeps its platform loading with the gate off, and without this banner that
+  // reads exactly like "no gate configured".
+  const [gateConfigWarnings, setGateConfigWarnings] = useState<string[]>([]);
+  useEffect(() => {
+    api
+      .getStatus()
+      .then((res) => setGateConfigWarnings(res.gate_config_warnings ?? []))
+      .catch(() => {
+        /* a status fetch failure must not break the channels page */
+      });
+  }, []);
+
   useEffect(() => {
     load().finally(() => setLoading(false));
   }, [load]);
@@ -314,6 +327,20 @@ export default function ChannelsPage() {
   return (
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
+
+      {/* Gate config warnings: each refusal failed safe to "gate stays off" */}
+      {gateConfigWarnings.length > 0 && (
+        <Card className="border-warning/50">
+          <CardContent className="flex flex-col gap-1.5 p-4 text-sm">
+            {gateConfigWarnings.map((warning) => (
+              <div key={warning} className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+                <span>{warning} (gate stayed off)</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Restart banner */}
       {restartNeeded && (

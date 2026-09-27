@@ -882,6 +882,11 @@ class PlatformConfig:
     # independent of ``response_gate``: separate scope, verdicts and side effects.
     reaction_gate: Optional[ReactionGateConfig] = None
 
+    # Boot-time diagnostics, NOT config: the ValueError texts of invalid gate blocks
+    # refused above, so status surfaces can show why a gate is off instead of only the
+    # log. Never serialized by ``to_dict`` (a round-trip must not resurrect them).
+    gate_config_warnings: tuple[str, ...] = ()
+
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
     # - "first": Only first chunk threads to user's message (default)
@@ -978,11 +983,13 @@ class PlatformConfig:
         # the platform-block-level ValueError swallow in GatewayConfig.from_dict), because
         # that would silently drop this whole platform config — the operator would lose
         # allowlists and the platform itself over a typo in one opt-in feature.
+        gate_config_warnings: tuple[str, ...] = ()
         try:
             response_gate = ResponseGateConfig.from_dict(toplevel_or_extra("response_gate"))
         except ValueError as exc:
             logger.warning("Ignoring invalid response_gate config (gate stays off): %s", exc)
             response_gate = None
+            gate_config_warnings = (str(exc),)
 
         # Same containment discipline as the response gate: a typo in this opt-in
         # block must not take the whole platform (or its allowlists) down with it.
@@ -991,6 +998,7 @@ class PlatformConfig:
         except ValueError as exc:
             logger.warning("Ignoring invalid reaction_gate config (gate stays off): %s", exc)
             reaction_gate = None
+            gate_config_warnings += (str(exc),)
 
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
@@ -999,6 +1007,7 @@ class PlatformConfig:
             notification_channel=notification_channel,
             response_gate=response_gate,
             reaction_gate=reaction_gate,
+            gate_config_warnings=gate_config_warnings,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),

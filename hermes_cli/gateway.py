@@ -5320,6 +5320,13 @@ def _runtime_health_lines() -> list[str]:
         for platform, pdata in (state.get("platforms", {}) or {}).items()
         if pdata.get("state") == "fatal"
     ]
+    # Gate config errors fail safe to "gate off" at load (gateway/config.py); without
+    # these lines an invalid gate block would look identical to no gate config at all.
+    lines.extend(
+        f"⚠ {warning} (gate stayed off)"
+        for warning in (state.get("gate_config_warnings") or [])
+        if isinstance(warning, str)
+    )
 
     # A live-claiming snapshot can outlive an ungracefully killed gateway (taskkill /F, OOM). Past
     # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state.

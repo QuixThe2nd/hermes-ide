@@ -416,6 +416,30 @@ class TestReactionGateConfigFromDict:
         platform = PlatformConfig.from_dict({"enabled": True, "reaction_gate": block})
         assert platform.reaction_gate is None
 
+    def test_invalid_block_records_its_error_on_the_platform(self, caplog):
+        """The contained refusal stays visible: the gate stays off, the platform loads, and
+        the ValueError text lands in ``gate_config_warnings`` for the status surfaces."""
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+        platform = PlatformConfig.from_dict({
+            "enabled": True,
+            "reaction_gate": {
+                "enabled": True, "channels": ["555"],
+                "emojis": [f"e{i:02d}" for i in range(ReactionGateConfig.MAX_EMOJIS + 1)],
+            },
+        })
+        assert platform.reaction_gate is None
+        assert len(platform.gate_config_warnings) == 1
+        assert "reaction_gate: emojis must list at most" in platform.gate_config_warnings[0]
+        # The log line operators already watch is unchanged.
+        assert "Ignoring invalid reaction_gate config (gate stays off)" in caplog.text
+
+    def test_valid_block_records_no_warnings(self):
+        platform = PlatformConfig.from_dict({
+            "enabled": True, "reaction_gate": {"enabled": True, "channels": ["555"]},
+        })
+        assert platform.reaction_gate is not None
+        assert platform.gate_config_warnings == ()
+
     def test_to_dict_round_trip(self):
         config = ReactionGateConfig.from_dict({
             "enabled": True, "channels": [321], "emojis": ["👍", "🔥"],

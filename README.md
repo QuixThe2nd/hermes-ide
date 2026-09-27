@@ -106,6 +106,8 @@ Allowlisted groups can also observe unmentioned chatter with `observe_unmentione
 
 A stalled gateway should not look dead. `display.retry_progress` adds a live provider retry and fallback bubble during stalls; it is off by default. Replies can also end with a timing split for total, API, tools, and other time, which is off by default upstream. Tool previews are capped at `display.tool_preview_length`; 0 (the Discord default) shows the full command and all arguments.
 
+A gate that fails its config check fails safe and now says so. An invalid `response_gate` or `reaction_gate` block keeps the platform loading with that gate off, and the validation error surfaces in `hermes gateway status`, `/api/status`, and the dashboard's Channels page instead of only the log — so a gate that never runs cannot masquerade as a gate that was never configured.
+
 Important status and warning notices a platform outage swallowed are not lost either: when the transport marks a notice send as a transient failure, the delivery ledger retains it, and the same reconnect that revives the adapter replays it into the original chat (thread included, prefixed with a ♻️ recovered-notice marker, no pings). Notices already delivered never replay, and a failed restart confirmation is never revived — instead its cancellation explanation is what comes back after reconnect.
 
 Steered follow-ups get a second "✅ Steer delivered" acknowledgement when the text actually reaches the model's context. Accepted and delivered are different states, although software often enjoys pretending otherwise.
