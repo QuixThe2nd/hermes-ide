@@ -377,6 +377,24 @@ class TestResponseGateThreadMembership:
         adapter._handle_message.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_delivered_final_reply_marks_membership(self, adapter, monkeypatch):
+        """A delivered final to an untracked thread marks participation.
+
+        The send seam is the one path every ingress funnels through, so a native
+        slash command in a thread (whose dispatch bypasses the inbound mark) still
+        leaves the conversation visible to both gates after its reply.
+        """
+        thread = _thread_of(monkeypatch, _TextChannel())
+        _init_gate(adapter, self.GATE)
+        msg = _make_message(msg_id=9115, channel=thread)
+        assert adapter._response_gate_consults(msg) is False  # untracked: gate silent
+
+        adapter._response_gate_observe_sent(thread, "done")  # the delivered final
+
+        assert str(thread.id) in adapter._threads
+        assert adapter._response_gate_consults(msg) is True  # participation recorded
+
+    @pytest.mark.asyncio
     async def test_parent_channel_ambient_consults_without_mark(self, adapter, monkeypatch):
         parent = _TextChannel()
         _thread_of(monkeypatch, parent)  # Thread shim active; the parent is not a thread
