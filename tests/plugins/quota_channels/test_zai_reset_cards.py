@@ -520,7 +520,7 @@ class TestStatePersistence:
         )
 
         assert result["success"] is True
-        provider = result["providers"]["z.ai 1"]
+        provider = result["providers"]["z.ai"]
         assert provider["reset_count"] == 1
         assert provider["reset_expiry_seconds"] == OBSERVED_EXPIRY_SECS
         assert provider["reset_expiry_horizons"] == [OBSERVED_EXPIRY_SECS]
@@ -566,7 +566,7 @@ class TestStatePersistence:
         )
 
         assert result["success"] is True
-        provider = result["providers"]["z.ai 1"]
+        provider = result["providers"]["z.ai"]
         assert provider["remaining"] == 60  # the normal quota read stayed fresh
         assert "z.ai reset-list endpoint returned 503" in provider["reset_error"]
         state = load_state()

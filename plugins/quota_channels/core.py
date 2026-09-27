@@ -2303,7 +2303,10 @@ def run_tick(
                 if ordinal is None:
                     ordinal, _ = zai_wallets.assign_wallet_ordinals([wallet], state)
                     ordinal = ordinal[entry_id]
-                display = zai_wallets.wallet_display_label(int(ordinal))
+                if len(wallets) == 1:
+                    display = "z.ai"
+                else:
+                    display = zai_wallets.wallet_display_label(int(ordinal))
                 channel_id = wallet_channels.get(entry_id)
                 if not channel_id or not wallet.runtime_api_key:
                     continue
@@ -2381,7 +2384,10 @@ def run_tick(
                     continue
                 ordinal = wallet_ordinals.get(entry_id)
                 if ordinal is not None:
-                    display = zai_wallets.wallet_display_label(int(ordinal))
+                    if len(wallets) == 1:
+                        display = "z.ai"
+                    else:
+                        display = zai_wallets.wallet_display_label(int(ordinal))
                 else:
                     display = reading_key
                 sort_participants.append((display, channel_id, reading_key))
