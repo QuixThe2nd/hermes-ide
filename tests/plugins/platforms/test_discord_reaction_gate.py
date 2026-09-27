@@ -25,9 +25,11 @@ from plugins.platforms.discord.reaction_gate import (
     OTHER_OPTION,
     JevChoiceClient,
     ReactionGateRuntime,
+    _criteria_for_judge_labels,
     build_reaction_criteria,
     build_reaction_instructions,
     choose_reaction,
+    reaction_label_map,
     split_reaction_clusters,
 )
 from plugins.platforms.discord.response_gate import (
@@ -111,6 +113,46 @@ class TestChooseReactionBoundary:
         assert choose_reaction({"👍": 0.30, "❤️": 0.10, "😂": 0.05}, EMOJIS) == "👍"
 
 
+class TestReactionLabelMap:
+    """Judge labels for custom guild emojis stay collision-safe."""
+
+    def test_native_emojis_map_to_themselves(self):
+        emojis = ("👍", "❤️", "😂")
+        assert reaction_label_map(emojis) == {"👍": "👍", "❤️": "❤️", "😂": "😂"}
+
+    def test_custom_emojis_use_short_names(self):
+        pog = "<:pog:1553218458882154506>"
+        kekw = "<:kekw:456789>"
+        assert reaction_label_map((pog, kekw)) == {"pog": pog, "kekw": kekw}
+
+    def test_name_collision_keeps_full_entries(self):
+        a1, a2 = "<:a:1>", "<:a:2>"
+        assert reaction_label_map((a1, a2)) == {a1: a1, a2: a2}
+
+    def test_mixed_native_and_custom(self):
+        pog = "<:pog:123>"
+        assert reaction_label_map(("👍", pog)) == {"👍": "👍", "pog": pog}
+
+    def test_criteria_translation_uses_label_keys(self):
+        pog = "<:pog:123>"
+        label_map = reaction_label_map((pog, "👍"))
+        labeled = _criteria_for_judge_labels(
+            (pog, "👍"), label_map, {"<:pog:123>": "Fits hype.", "👍": "Fits agree."},
+        )
+        assert labeled["pog"] == "Fits hype."
+        assert labeled["👍"] == "Fits agree."
+        assert labeled[NONE_OPTION] == FIXED_NONE_TEXT
+
+    def test_config_criteria_keys_remain_full_entries_at_load(self):
+        pog = "<:pog:123>"
+        config = ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"],
+            "emojis": [pog, "👍"],
+            "criteria": {pog: "Guild pog only."},
+        })
+        assert config.criteria == {pog: "Guild pog only."}
+
+
 class TestSplitReactionClusters:
     """One whitelist entry → one reaction per grapheme cluster (the reaction add-on).
 
@@ -131,10 +173,12 @@ class TestSplitReactionClusters:
             ("🇦🇺", ["🇦🇺"]),  # regional-indicator pair: one
             ("👍", ["👍"]),  # plain single glyph: one
             ("👍👎", ["👍", "👎"]),  # two plain glyphs: two
+            ("<:pog:1553218458882154506>", ["<:pog:1553218458882154506>"]),
         ],
         ids=[
             "pointing-pair-two", "zwj-man-one", "vs16-heart-one", "skin-tone-handshake-one",
             "keycap-one", "flag-pair-one", "single-glyph-one", "two-glyphs-two",
+            "custom-guild-one",
         ],
     )
     def test_matrix(self, entry, clusters):
