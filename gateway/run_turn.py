@@ -4145,6 +4145,11 @@ class GatewayTurnMixin:
         _heartbeat_msg_id: Optional[str] = None
         while True:
             await asyncio.sleep(_NOTIFY_INTERVAL)
+            if self._heartbeat_temporarily_suppressed(session_key):
+                # Restart-consent wait parked on the user: skip this tick but keep
+                # the loop alive — the wait can resolve or be cancelled mid-run and
+                # later model/tool work still needs liveness updates.
+                continue
             if not self._should_emit_long_running_notification(
                 session_key, agent_holder[0], _executor_task_holder[0]
             ):
@@ -4180,7 +4185,13 @@ class GatewayTurnMixin:
                         logger.debug("Heartbeat edit failed: %s", _ee)
                         _notify_res = None
                 if not (_notify_res and getattr(_notify_res, "success", False)):
-                    # The edit above awaited; a drain/restart notice may have gone out meanwhile, and
+                    # The edit above awaited; a restart-consent wait may have gone pending
+                    # meanwhile — skip this tick (no fresh "Working" bubble: that is exactly
+                    # the noise being suppressed) and let the next tick re-check, since the
+                    # wait can resolve or be cancelled mid-run.
+                    if self._heartbeat_temporarily_suppressed(session_key):
+                        continue
+                    # A drain/restart notice may have gone out meanwhile, and
                     # a fresh "Working" bubble after it reads as a contradiction (#10990).
                     if not self._should_emit_long_running_notification(
                         session_key, agent_holder[0], _executor_task_holder[0]
