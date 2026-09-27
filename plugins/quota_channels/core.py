@@ -2331,6 +2331,8 @@ def run_tick(
                     continue
                 remaining = _remaining_from_name(channel_name, display)
                 provider_results[display] = {
+                    # keep an earlier reconcile error filed under the same label
+                    **(provider_results.get(display) or {}),
                     "remaining": remaining,
                     "reset_seconds": reset_secs,
                     "rename": rename,
