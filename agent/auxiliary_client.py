@@ -2120,17 +2120,57 @@ def _shared_owner_caller_token_for(base_url: str) -> str:
     and refreshes). Returned only when the adopted route table actually covers
     the URL, so providers the owner does not manage keep their normal
     credential resolution (and fail-open behavior).
+
+    When ``llm_usage_proxy.enforce`` is on, unrouted destinations and a missing
+    caller token raise :class:`hermes_cli.auth.AuthError` instead of falling
+    through to local credentials.
     """
+    enforce = False
     try:
         from plugins.llm_usage_proxy.owner import caller_token, owner_policy
-        if owner_policy() is None:
-            return ""
-        token = caller_token()
-        if not token:
-            return ""
+        from hermes_cli.auth import AuthError
         from hermes_cli.llm_usage_routes import base_url_routable
-        return token if base_url_routable(str(base_url or "")) else ""
-    except Exception:
+
+        policy = owner_policy()
+        if policy is None:
+            return ""
+        enforce = bool(policy.get("enforce"))
+        endpoint = str(policy.get("endpoint") or "")
+        base = str(base_url or "").strip().rstrip("/")
+        if not base:
+            return ""
+        if not base_url_routable(base):
+            if enforce:
+                raise AuthError(
+                    f"destination {base} is not routed by the shared owner at"
+                    f" {endpoint}; enforced routing refuses to resolve local"
+                    " credentials for it.",
+                    code="shared_owner_unrouted",
+                )
+            return ""
+        token = (caller_token() or "").strip()
+        if not token:
+            if enforce:
+                raise AuthError(
+                    f"shared owner {endpoint} is configured and enforced but this"
+                    " profile has no caller token: set"
+                    " HERMES_USAGE_PROXY_CALLER_TOKEN in this profile's .env to"
+                    " a token minted on the owner with"
+                    " `hermes llm_usage_proxy callers create <name>`.",
+                    code="shared_owner_no_caller_token",
+                )
+            return ""
+        return token
+    except AuthError:
+        raise
+    except Exception as exc:
+        if enforce:
+            from hermes_cli.auth import AuthError
+            raise AuthError(
+                "shared-owner caller token resolution failed under enforced"
+                f" routing ({type(exc).__name__})",
+                code="shared_owner_unrouted",
+            ) from exc
         return ""
 
 
@@ -2327,6 +2367,12 @@ def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = 
         return None, None
     if not _is_free_model(or_model):
         _warn_paid_lane_once(or_model)
+    owner_or_key = _shared_owner_caller_token_for(OPENROUTER_BASE_URL)
+    if owner_or_key:
+        logger.debug("Auxiliary client: OpenRouter via shared-owner caller token")
+        return _create_openai_client(
+            api_key=owner_or_key, base_url=OPENROUTER_BASE_URL, default_headers=build_or_headers()
+        ), or_model
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
@@ -2338,7 +2384,7 @@ def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = 
             ), or_model
         # Exhausted pool: fall through to OPENROUTER_API_KEY rather than fail.
         logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
-    or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY") or _shared_owner_caller_token_for(OPENROUTER_BASE_URL)
+    or_key = explicit_api_key or _scoped_key_env("OPENROUTER_API_KEY")
     if not or_key:
         _mark_provider_unhealthy(
             "openrouter", ttl=60, reason=_describe_openrouter_unavailable(or_model), level=logging.DEBUG)
@@ -4701,6 +4747,9 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
     """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
     Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
     honoured at the same precedence or every aux call 401s."""
+    owner_key = _shared_owner_caller_token_for(custom_base)
+    if owner_key:
+        return owner_key
     custom_key: Any = (custom_entry.get("api_key") or "").strip()
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
     if not custom_key and custom_key_env:
@@ -5201,23 +5250,22 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
     if provider == "anthropic":
-        client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key)
-        if client is None and not req.explicit_api_key:
-            # Shared-owner mode: no local Anthropic credential, but the central
-            # proxy routes api.anthropic.com — present the caller token instead.
-            owner_token = _shared_owner_caller_token_for("https://api.anthropic.com")
-            if owner_token:
-                client, default_model = _try_anthropic(explicit_api_key=owner_token)
+        owner_token = _shared_owner_caller_token_for("https://api.anthropic.com")
+        if owner_token:
+            client, default_model = _try_anthropic(explicit_api_key=owner_token)
+        else:
+            client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key)
         return _route_or_warn(req, client, default_model,
                               "resolve_provider_client: anthropic requested but no Anthropic credentials found")
     creds = resolve_creds(provider)
-    api_key = str(creds.get("api_key", "")).strip()
-    # Explicit api_key override (fallback_model / custom_providers entry) lets callers
-    # authenticate where no built-in credential is registered for this alias.
-    api_key = _normalize_api_key(req.explicit_api_key) or api_key
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
+    owner_api_key = _shared_owner_caller_token_for(raw_base_url)
+    api_key = str(creds.get("api_key", "")).strip()
+    # Explicit api_key override (fallback_model / custom_providers entry) lets callers
+    # authenticate where no built-in credential is registered for this alias.
+    api_key = owner_api_key or _normalize_api_key(req.explicit_api_key) or api_key
     if provider == "actual":
         with contextlib.suppress(Exception):
             from hermes_cli.auth import (
@@ -5226,10 +5274,6 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             raw_base_url = normalize_actual_base_url(raw_base_url)
             if not api_key and is_actual_local_base_url(raw_base_url):
                 api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
-    if not api_key:
-        # Shared-owner mode: present the profile's caller token for endpoints
-        # the central proxy routes; it injects the real provider key.
-        api_key = _shared_owner_caller_token_for(raw_base_url)
     if not api_key:
         tried_sources = list(pconfig.api_key_env_vars) + (["gh auth token"] if provider == "copilot" else [])
         logger.debug("resolve_provider_client: provider %s has no API key configured (tried: %s)",

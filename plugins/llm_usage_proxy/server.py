@@ -1921,7 +1921,7 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
 
     def _health_payload(self) -> dict[str, Any]:
         server = self.server  # type: ignore[attr-defined]
-        return {
+        payload = {
             "ok": True,
             "service": SERVICE_ID,
             "version": PROTOCOL_VERSION,

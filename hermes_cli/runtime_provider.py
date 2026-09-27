@@ -944,10 +944,10 @@ def _resolve_shared_owner_runtime(requested_provider, explicit_api_key, explicit
     policy = owner_policy()
     if policy is None:
         return None
-    if (explicit_api_key or "").strip() or (explicit_base_url or "").strip():
-        return None
     enforce = bool(policy.get("enforce"))
     endpoint = str(policy.get("endpoint") or "")
+    explicit_key = (explicit_api_key or "").strip()
+    explicit_base = str(explicit_base_url or "").strip().rstrip("/")
     model_cfg = _get_model_config()
     provider = requested_provider
     if provider in ("auto", ""):
@@ -960,6 +960,66 @@ def _resolve_shared_owner_runtime(requested_provider, explicit_api_key, explicit
                 f" can be routed through the central proxy at {endpoint}.",
                 provider=requested_provider, code="shared_owner_no_provider")
         return None
+
+    from hermes_cli.llm_usage_routes import base_url_routable
+
+    def _shared_owner_runtime(provider_name: str, api_mode: str, base_url: str) -> Optional[Dict[str, Any]]:
+        if not base_url_routable(base_url):
+            if enforce:
+                raise AuthError(
+                    f"provider '{provider}' resolves to {base_url}, which the shared"
+                    f" owner at {endpoint} does not route; enforced routing refuses"
+                    " to send it direct. Add the route on the owner"
+                    " (`hermes llm_usage_proxy keys set`/`set-oauth` plus the"
+                    " upstream on the owner profile) or turn llm_usage_proxy.enforce"
+                    " off.",
+                    provider=provider, code="shared_owner_unrouted")
+            return None
+        token = caller_token()
+        if not token:
+            if enforce:
+                raise AuthError(
+                    f"shared owner {endpoint} is configured and enforced but this"
+                    " profile has no caller token: set HERMES_USAGE_PROXY_CALLER_TOKEN"
+                    " in this profile's .env to a token minted on the owner with"
+                    " `hermes llm_usage_proxy callers create <name>`.",
+                    provider=provider, code="shared_owner_no_caller_token")
+            return None
+        return _runtime(provider_name, api_mode, base_url, token, source="shared-owner",
+                        requested_provider=requested_provider)
+
+    if explicit_key:
+        if enforce:
+            base_for_policy = explicit_base
+            if not base_for_policy:
+                hinted = _shared_owner_target(provider, model_cfg, target_model)
+                if hinted is not None:
+                    base_for_policy = hinted[2]
+            if base_for_policy and not base_url_routable(base_for_policy):
+                raise AuthError(
+                    f"provider '{provider}' targets {base_for_policy}, which the shared"
+                    f" owner at {endpoint} does not route; enforced routing refuses"
+                    " to send an explicit local credential direct.",
+                    provider=provider, code="shared_owner_unrouted")
+        return None
+
+    if explicit_base:
+        target = _shared_owner_target(provider, model_cfg, target_model)
+        effective_model = _effective_model(model_cfg, target_model)
+        if target is not None:
+            provider_name, api_mode, _cfg_base = target
+        else:
+            provider_name = provider
+            api_mode = _fallback_api_mode(provider, explicit_base, effective_model)
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        if pconfig and pconfig.auth_type == "api_key":
+            api_mode = _api_key_provider_api_mode(
+                provider, model_cfg, "", explicit_base, effective_model, opencode_by_model=True)
+            base_url = _finalize_base_url(provider, api_mode, explicit_base)
+            return _shared_owner_runtime(provider, api_mode, base_url)
+        base_url = explicit_base
+        return _shared_owner_runtime(provider_name, api_mode, base_url)
+
     target = _shared_owner_target(provider, model_cfg, target_model)
     if target is None:
         if enforce:
@@ -970,33 +1030,7 @@ def _resolve_shared_owner_runtime(requested_provider, explicit_api_key, explicit
                 provider=provider, code="shared_owner_unknown_provider")
         return None
     provider_name, api_mode, base_url = target
-    from hermes_cli.llm_usage_routes import base_url_routable
-    if not base_url_routable(base_url):
-        if enforce:
-            raise AuthError(
-                f"provider '{provider}' resolves to {base_url}, which the shared"
-                f" owner at {endpoint} does not route; enforced routing refuses"
-                " to send it direct. Add the route on the owner"
-                " (`hermes llm_usage_proxy keys set`/`set-oauth` plus the"
-                " upstream on the owner profile) or turn llm_usage_proxy.enforce"
-                " off.",
-                provider=provider, code="shared_owner_unrouted")
-        return None
-    token = caller_token()
-    if not token:
-        # Without the caller token the owner would reject the request; in
-        # fail-open mode a profile holding its own keys can still resolve them
-        # down the ladder and pass them through the proxy.
-        if enforce:
-            raise AuthError(
-                f"shared owner {endpoint} is configured and enforced but this"
-                " profile has no caller token: set HERMES_USAGE_PROXY_CALLER_TOKEN"
-                " in this profile's .env to a token minted on the owner with"
-                " `hermes llm_usage_proxy callers create <name>`.",
-                provider=provider, code="shared_owner_no_caller_token")
-        return None
-    return _runtime(provider_name, api_mode, base_url, token, source="shared-owner",
-                    requested_provider=requested_provider)
+    return _shared_owner_runtime(provider_name, api_mode, base_url)
 
 
 def _local_endpoint_bypass(requested_provider: str, explicit_api_key, explicit_base_url) -> Optional[Dict[str, Any]]:

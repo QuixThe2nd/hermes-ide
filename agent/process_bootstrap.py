@@ -331,6 +331,19 @@ def build_keepalive_http_client(
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None
+        if proxy is not None:
+            try:
+                from hermes_cli.llm_usage_routes import UsageRoutingError, _enforced_for_transport
+                if _enforced_for_transport():
+                    raise UsageRoutingError(
+                        "enforced llm_usage_proxy routing: an environment HTTP"
+                        " proxy (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY) is"
+                        " incompatible with enforced shared-owner routing;"
+                        " failing closed instead of egressing direct through"
+                        " the env proxy"
+                    )
+            except UsageRoutingError:
+                raise
         if proxy is None:
             happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
             # One pool serves every agent in the process, so its ceiling must cover a whole

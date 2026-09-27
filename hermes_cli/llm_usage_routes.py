@@ -490,6 +490,24 @@ def is_enforced(*, profile: Optional[str] = None) -> bool:
         return bool(state.enforced) if state is not None else False
 
 
+def _enforced_for_transport(profile: Optional[str] = None) -> bool:
+    """Whether transport construction must fail closed, without bootstrapping.
+
+    Shared-owner ``enforce`` is read from config via :func:`owner_policy` so
+    incompatible transport settings are rejected before route adoption. The
+    per-profile proxy path uses the adopted routing-state flag instead.
+    """
+    try:
+        from plugins.llm_usage_proxy.owner import owner_policy
+
+        policy = owner_policy()
+        if policy is not None:
+            return bool(policy.get("enforce"))
+    except Exception:
+        pass
+    return is_enforced(profile=profile)
+
+
 def _match_route(routes: Mapping[str, str], url: str) -> Optional[tuple[str, str, str]]:
     """Longest-prefix boundary match of *url* against a route table.
 
@@ -963,7 +981,23 @@ def wrap_mounts_for_usage_routing(
     and per-client close semantics are preserved exactly.
     """
     try:
-        if not _verified_tls_policy(verify) or not mounts:
+        key = resolve_profile_key(profile)
+        if not mounts:
+            if _enforced_for_transport(profile=key):
+                raise UsageRoutingError(
+                    "enforced llm_usage_proxy routing: cannot wrap an empty mount"
+                    " table for routing; failing closed instead of building a"
+                    " direct client"
+                )
+            return mounts
+        if not _verified_tls_policy(verify):
+            if _enforced_for_transport(profile=key):
+                raise UsageRoutingError(
+                    "enforced llm_usage_proxy routing: disabled TLS verification"
+                    " (verify=False) is incompatible with enforced shared-owner"
+                    " routing; failing closed instead of sending traffic direct"
+                    " or trading TLS policy for the proxy's upstream settings"
+                )
             return mounts
         # May run the one-shot lazy bootstrap, so a CLI that never loaded the
         # plugin still gets its enabled profile's verified routing in time for
