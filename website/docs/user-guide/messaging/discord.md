@@ -533,6 +533,8 @@ discord:
 
 **Fail-closed.** A missing `OPENROUTER_API_KEY`, timeout, transport error, malformed answer, unknown option, or an incoherent probability distribution means *no reaction* — never a fallback emoji and never a text reply. Like the speaking gate, the key is read once at connect time from the profile environment, not from `config.yaml`.
 
+**Live reload.** Edits to the `reaction_gate` block in `config.yaml` are picked up by the running adapter within a few seconds — no restart needed; an invalid edit keeps the active gate.
+
 Values outside the documented ranges (`timeout_seconds` above `30`, more than `32` emojis, emojis longer than `32` characters, criteria text above `500` characters, oversized context bounds, a `None`/`Other` entry in `emojis` — those two options are fixed) refuse to load or leave the gate off rather than quietly degrading.
 
 #### `discord.auto_thread`

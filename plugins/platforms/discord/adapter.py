@@ -462,7 +462,7 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, ReactionGateConfig
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, compile_mention_patterns,
@@ -1489,6 +1489,9 @@ from plugins.platforms.discord.reaction_gate import (
     ReactionGateRuntime,
     split_reaction_clusters,
 )
+from plugins.platforms.discord.reaction_gate_reload import (
+    start_reaction_gate_reload_watcher,
+)
 
 #: Component display order for gate echoes/logs (matches the judge's question order).
 _RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, NOISE_KEY)
@@ -1568,6 +1571,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._reaction_gate_inflight: set = set()
         # In-flight consultation tasks; cancelled and awaited in disconnect().
         self._reaction_gate_tasks: set = set()
+        # Live reload of the reaction gate's config block (discord.reaction_gate): the
+        # watcher task and the config file it polls. The path is resolved ONCE inside
+        # connect()'s profile scope (the same capture discipline as the credential
+        # above); the watcher itself runs outside any scope and only ever uses the
+        # captured path — never HERMES_HOME or os.environ.
+        self._reaction_gate_reload_task: Optional[asyncio.Task] = None
+        self._reaction_gate_config_path: Optional[_Path] = None
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
@@ -1800,6 +1810,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # The reaction gate shares that captured judge credential (same profile scope,
             # same capture discipline); it never re-reads any secret at event time.
             self._reaction_gate_init()
+            # Its config block live-reloads: watch this profile's config.yaml (path
+            # captured here, inside the same scope) so a reaction_gate edit takes
+            # effect without a gateway restart or adapter reconnect.
+            self._reaction_gate_start_reload_watcher()
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
             self._allowed_role_ids = self._get_allowed_roles()
@@ -2374,6 +2388,74 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "was found in this profile's secrets: no automatic reactions will be added",
                 self.name, len(reaction_cfg.channels),
             )
+
+    def _reaction_gate_start_reload_watcher(self) -> None:
+        """Watch this profile's config.yaml so a ``reaction_gate`` edit applies live.
+
+        The file path is resolved HERE — this runs from ``connect()`` inside the owning
+        profile's runtime scope (the same capture discipline as the judge credential
+        and the gate-env snapshot). The watcher never re-resolves it: event callbacks
+        and background tasks run outside any profile scope, where ``HERMES_HOME`` can
+        name another profile, so the captured path is the only one it may read.
+        """
+        if self._reaction_gate_reload_task is not None:
+            # A reconnect starts a fresh watcher; drop the stale one (its disconnect
+            # side never ran — see disconnect() for the awaited cancellation).
+            self._reaction_gate_reload_task.cancel()
+        from hermes_constants import get_hermes_home
+
+        self._reaction_gate_config_path = get_hermes_home() / "config.yaml"
+        self._reaction_gate_reload_task = start_reaction_gate_reload_watcher(
+            config_path=self._reaction_gate_config_path,
+            apply=self._reaction_gate_reload,
+            logger=logger,
+            name=self.name,
+        )
+
+    def _reaction_gate_reload(self, block: Any) -> bool:
+        """Build and swap the reaction gate from one re-read ``reaction_gate`` block.
+
+        Called by the reload watcher whenever the extracted block changed. The block is
+        validated exactly like startup; a valid block (or a deliberate off) replaces
+        ``self._reaction_gate`` in a single assignment — the whole runtime contract for
+        a reload, since every consumer reads the attribute fresh. An invalid block
+        returns ``False`` and changes nothing: the previously active gate keeps running.
+        The judge credential is never re-read (the connect-time capture is reused).
+        """
+        if block is None:
+            if self._reaction_gate is not None:
+                logger.info("[%s] reaction_gate disabled by config reload (fail closed)", self.name)
+            self._reaction_gate = None
+            return True
+        try:
+            reaction_cfg = ReactionGateConfig.from_dict(block)
+        except ValueError as exc:
+            logger.warning(
+                "[%s] reaction_gate reload kept the previous config (invalid block): %s",
+                self.name, exc,
+            )
+            return False
+        if not reaction_cfg.active:
+            if self._reaction_gate is not None:
+                logger.info("[%s] reaction_gate disabled by config reload (fail closed)", self.name)
+            self._reaction_gate = None
+            return True
+        self._reaction_gate = ReactionGateRuntime.build(
+            reaction_cfg, self._response_gate_credential, logger=logger,
+        )
+        if self._reaction_gate.client is None:
+            # Same rule as startup, for the same reason: enabled with no captured
+            # credential fails closed (no reactions) and must not look like a disable.
+            logger.error(
+                "[%s] reaction_gate reload has no OPENROUTER_API_KEY captured at connect: "
+                "no automatic reactions will be added",
+                self.name,
+            )
+        logger.info(
+            "[%s] reaction_gate reloaded: %d emoji entries, %d channel(s)",
+            self.name, len(reaction_cfg.emojis), len(reaction_cfg.channels),
+        )
+        return True
 
     def _reaction_gate_candidate(self, message: Any) -> Optional[Dict[str, Any]]:
         """Build the payload for one reaction candidate, or None when never consultable.
@@ -3121,6 +3203,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     await task
                 except asyncio.CancelledError:
                     pass
+        # The config-edit watcher dies with the connection: a live swap must never
+        # land on a torn-down adapter (a reconnect starts a fresh watcher).
+        await cancel_task(self._reaction_gate_reload_task)
+        self._reaction_gate_reload_task = None
+        self._reaction_gate_config_path = None
         # Reaction consultations are dispatch side effects: cancel any still in flight
         # (their message is gone from this connection's point of view) and drop the
         # once-only registry so a reconnect starts clean.
