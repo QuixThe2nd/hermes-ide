@@ -105,6 +105,18 @@ CAPTURE_STATE_LABELS = {
     "incomplete": "incomplete",
     "truncated": "truncated",
 }
+JEV_GATE_LABELS = {
+    "reaction": "reaction gate",
+    "response": "response gate",
+    "mixed": "mixed",
+    "other": "other",
+}
+JEV_GATE_TONES = {
+    "reaction": "good",
+    "response": "none",
+    "mixed": "none",
+    "other": "none",
+}
 HOURS = 24
 DAYS_7D = 7
 
@@ -577,11 +589,21 @@ def query_jev_captures(conn: sqlite3.Connection, limit: int) -> list[dict[str, A
     """Newest jev_bodies rows for the /captures list table."""
     rows = conn.execute(
         "SELECT id, ts, upstream, model, path, status_code, latency_ms,"
-        " capture_state FROM jev_bodies ORDER BY id DESC LIMIT ?",
+        " capture_state, request_body FROM jev_bodies ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()
     out = []
-    for cid, ts, upstream, model, path, status_code, latency_ms, state in rows:
+    for (
+        cid,
+        ts,
+        upstream,
+        model,
+        path,
+        status_code,
+        latency_ms,
+        state,
+        request_body,
+    ) in rows:
         capture: dict[str, Any] = {
             "id": cid,
             "ts": ts,
@@ -591,6 +613,7 @@ def query_jev_captures(conn: sqlite3.Connection, limit: int) -> list[dict[str, A
             "status_code": status_code,
             "latency_ms": latency_ms,
             "capture_state": state,
+            "request_body": request_body,
         }
         capture["ts_sydney"] = to_sydney(ts)
         out.append(capture)
@@ -1839,10 +1862,48 @@ def pretty_request_json(text: Any) -> str:
     return json.dumps(parsed, indent=2, ensure_ascii=False)
 
 
+def classify_jev_gate(request_body: Any) -> str:
+    if isinstance(request_body, str):
+        try:
+            parsed = json.loads(request_body)
+        except (TypeError, ValueError):
+            return "other"
+    elif isinstance(request_body, dict):
+        parsed = request_body
+    else:
+        return "other"
+    if not isinstance(parsed, dict):
+        return "other"
+    questions = parsed.get("questions")
+    if not isinstance(questions, dict):
+        return "other"
+    has_reaction = "reaction" in questions
+    has_response = any(
+        k in questions for k in ("addresses_bot", "continues_bot_thread", "noise")
+    )
+    if has_reaction and has_response:
+        return "mixed"
+    if has_reaction:
+        return "reaction"
+    if has_response:
+        return "response"
+    return "other"
+
+
 def capture_state_badge(state: Any) -> str:
     key = str(state) if state else ""
     tone = CAPTURE_STATE_TONES.get(key, "none")
     label = CAPTURE_STATE_LABELS.get(key, key or "unknown")
+    return (
+        f'<span class="badge"><span class="dot-s tone-{tone}"></span>'
+        f"<span>{esc(label)}</span></span>"
+    )
+
+
+def jev_gate_badge(request_body: Any) -> str:
+    key = classify_jev_gate(request_body)
+    tone = JEV_GATE_TONES.get(key, "none")
+    label = JEV_GATE_LABELS.get(key, key)
     return (
         f'<span class="badge"><span class="dot-s tone-{tone}"></span>'
         f"<span>{esc(label)}</span></span>"
@@ -1859,7 +1920,7 @@ def _capture_num(value: Any, suffix: str = "") -> str:
 def captures_table_body(captures: list[dict[str, Any]]) -> str:
     if not captures:
         return (
-            '<tr><td colspan="7" class="muted">No jev captures'
+            '<tr><td colspan="8" class="muted">No jev captures'
             " &mdash; capture is opt-in (--capture-jev-bodies) and stores only"
             " openrouter-alpha traffic whose model starts with"
             " typesafe/jev-</td></tr>"
@@ -1871,6 +1932,7 @@ def captures_table_body(captures: list[dict[str, Any]]) -> str:
             f"<tr{row_cls}>"
             f'<td class="num" title="{esc(c.get("ts"))}">{esc(c.get("ts_sydney"))}</td>'
             f"<td>{model_name_html(c.get('model'))}</td>"
+            f"<td>{jev_gate_badge(c.get('request_body'))}</td>"
             f"<td>{esc(c.get('path'))}</td>"
             f'<td class="num">{_capture_num(c.get("status_code"))}</td>'
             f'<td class="num">{_capture_num(c.get("latency_ms"), " ms")}</td>'
@@ -1965,6 +2027,7 @@ def render_captures_page(db_path: str, limit: int) -> tuple[int, bytes]:
             '<div class="scroll-x"><table class="events">'
             "<thead><tr>"
             "<th scope=\"col\">Time</th><th scope=\"col\">Model</th>"
+            "<th scope=\"col\">Gate</th>"
             "<th scope=\"col\">Path</th><th scope=\"col\" class=\"num\">Status</th>"
             "<th scope=\"col\" class=\"num\">Latency</th><th scope=\"col\">State</th>"
             "<th scope=\"col\"><span class=\"sr-only\">View</span></th>"
@@ -2035,6 +2098,7 @@ def render_capture_page(db_path: str, capture_id: int) -> tuple[int, bytes]:
             _capture_meta_row("Status", _capture_num(status)),
             _capture_meta_row("Latency", _capture_num(capture.get("latency_ms"), " ms")),
             _capture_meta_row("State", capture_state_badge(capture.get("capture_state"))),
+            _capture_meta_row("Gate", jev_gate_badge(capture.get("request_body"))),
             _capture_meta_row(
                 "Upstream request id",
                 f'<span class="mono">{esc(request_id)}</span>'
