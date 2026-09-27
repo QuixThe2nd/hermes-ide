@@ -2545,6 +2545,15 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
+            if extra_prompt is not None:
+                # A transient per-run prompt (cronjob(action='run', prompt=...))
+                # cannot cross the external-worker process boundary as a
+                # function argument, but the job dict itself does (payload
+                # "job"). Stamp it in memory — the shared manual_run_prompt /
+                # manual_run_at pickup below consumes it worker-side, and
+                # mark_job_run clears it single-fire (pc_687f93b27a81).
+                job["manual_run_prompt"] = str(extra_prompt)
+                job.setdefault("manual_run_at", _hermes_now().isoformat())
             if _launch_external_cron_worker(job):
                 return True
         except Exception as handoff_error:
