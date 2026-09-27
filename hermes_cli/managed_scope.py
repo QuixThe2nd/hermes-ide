@@ -38,7 +38,11 @@ class ManagedConfigError(Exception):
     Raised ONLY in strict mode (``strict=True``) — the mode the gateway's live-reload
     consumers use. There, a malformed/truncated intermediate file must fail the reload
     attempt (the active runtime keeps running) instead of silently dropping the
-    administrator's pins and letting user values through. The message is deliberately
+    administrator's pins and letting user values through. Also raised by strict
+    expansion (``_expand_env_vars_with``/``apply_managed_overlay(env=..., strict=True)``)
+    when the managed config references a variable the caller-captured snapshot does
+    not hold: the literal ``${VAR}`` text must never be installed into a config
+    field. The message is deliberately
     content-free: parser exceptions embed YAML snippets, and managed file contents —
     which may shape secrets — never reach a log from this path.
     """
@@ -180,10 +184,13 @@ def managed_config_env_snapshot(managed_dir: Optional[Path] = None) -> Dict[str,
 
     Live-reload consumers call this ONCE inside connect()'s profile scope — where
     ``_env_ref_snapshot`` resolves through the active profile's secret scope — and
-    hand the mapping back via ``apply_managed_overlay(env=...)``, so a background
-    poll never reads the process environment or a secret (which may name another
-    profile by then). Refs absent from the mapping stay verbatim at expansion
-    (unresolvable without an env read; the block then fails validation, fail closed).
+    hand the mapping back via ``apply_managed_overlay(env=..., strict=True)``, so a
+    background poll never reads the process environment or a secret (which may name
+    another profile by then). Strict expansion then REJECTS any ref absent from the
+    mapping (a managed edit introducing a new ref fails the reload attempt and
+    keeps the running config; applying it takes a reconnect — a fresh snapshot —
+    or replacing the ref with a concrete value). Non-strict expansion keeps the
+    unresolved-stays-verbatim rule.
     """
     from hermes_cli.config import _env_ref_snapshot
 
@@ -191,12 +198,19 @@ def managed_config_env_snapshot(managed_dir: Optional[Path] = None) -> Dict[str,
     return {name: value for name, value in snapshot.items() if value is not None}
 
 
-def _expand_env_vars_with(obj, env: Mapping[str, str]):
+def _expand_env_vars_with(obj, env: Mapping[str, str], *, strict: bool = False):
     """``hermes_cli.config._expand_env_vars`` against an EXPLICIT mapping, nothing else.
 
-    Same ref shapes (``${VAR}`` / ``${env:VAR}``), same unresolved-stays-verbatim
-    rule — but the lookup never touches ``os.environ`` or the secret scope, so a
-    background poll expands exactly the environment its caller captured.
+    Same ref shapes (``${VAR}`` / ``${env:VAR}``) — but the lookup never touches
+    ``os.environ`` or the secret scope, so a background poll expands exactly the
+    environment its caller captured. With the default ``strict=False`` an
+    unresolved ref stays verbatim, matching ``_expand_env_vars``. ``strict=True``
+    (the live-reload overlay) instead raises ``ManagedConfigError``: a managed
+    edit introducing a ref the connect-time snapshot did not capture must fail
+    the reload attempt — installing the literal ``${VAR}`` text into a channel,
+    criteria or URL field would silently corrupt policy, and resolving it would
+    mean reading an environment the poll is not allowed to trust. The raised
+    message is content-free (no variable name, no value).
     """
     from hermes_cli.config import _ENV_REF_RE, _env_ref_var_name
 
@@ -206,13 +220,20 @@ def _expand_env_vars_with(obj, env: Mapping[str, str]):
             if name is None:
                 return match.group(0)
             value = env.get(name)
-            return value if value is not None else match.group(0)
+            if value is not None:
+                return value
+            if strict:
+                raise ManagedConfigError(
+                    "managed scope: config references a variable outside the "
+                    "captured snapshot"
+                ) from None
+            return match.group(0)
 
         return _ENV_REF_RE.sub(repl, obj)
     if isinstance(obj, dict):
-        return {k: _expand_env_vars_with(v, env) for k, v in obj.items()}
+        return {k: _expand_env_vars_with(v, env, strict=strict) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_expand_env_vars_with(item, env) for item in obj]
+        return [_expand_env_vars_with(item, env, strict=strict) for item in obj]
     return obj
 
 
@@ -249,8 +270,12 @@ def apply_managed_overlay(
     exactly this caller-captured mapping — a background poll never reads the mutable
     process environment or a secret. ``strict`` (same consumers) propagates
     ``ManagedConfigError`` for an existing-but-broken managed file instead of failing
-    open, so a malformed intermediate edit can't silently drop the pins; the default
-    keeps startup's fail-open semantics.
+    open, so a malformed intermediate edit can't silently drop the pins; combined
+    with ``env`` it also raises on any ref the captured mapping does not hold, so a
+    managed edit introducing a NEW ``${VAR}`` after connect fails the reload attempt
+    instead of installing the literal ref text (applying it takes a reconnect — a
+    fresh snapshot — or concrete values). The defaults keep startup's fail-open,
+    unresolved-stays-verbatim semantics.
     """
     if strict:
         # ManagedConfigError propagates: a broken managed file must fail this reload
@@ -268,7 +293,7 @@ def apply_managed_overlay(
         # Imported lazily to avoid an import cycle (config imports managed_scope).
         from hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_root_model_keys
         expanded = (
-            _expand_env_vars_with(managed, env)
+            _expand_env_vars_with(managed, env, strict=strict)
             if env is not None
             else _expand_env_vars(managed)
         )
@@ -280,6 +305,8 @@ def apply_managed_overlay(
             managed_expanded = dict(managed_expanded)
             managed_expanded["model"] = {"default": managed_expanded["model"]}
         return _deep_merge(config, managed_expanded)
+    except ManagedConfigError:
+        raise  # strict expansion failure must fail the attempt, never fail open
     except Exception:  # noqa: BLE001 — overlay must never break a caller
         logger.warning("managed scope: failed to apply config overlay", exc_info=True)
         return config

@@ -26,24 +26,37 @@ Design constraints (see the reaction-gate section of the Discord config referenc
   cannot redirect or disable another adapter's watch, and a managed
   ``reaction_gate.channels``/``criteria``/``decisions_url`` ref keeps the value the
   owning profile captured. Both captured files are stat()ed, so a managed-file
-  edit reloads on the same cadence as a user edit.
+  edit reloads on the same cadence as a user edit. A managed edit introducing a
+  ref the connect-time snapshot did NOT capture is rejected outright (strict
+  expansion — the literal ``${VAR}`` text is never installed into a gate field);
+  applying it takes a reconnect (a fresh snapshot) or concrete values.
+* **Managed-only profiles reload.** A profile with NO user ``config.yaml`` at
+  connect still gets its whole gate from the managed scope: an initially-absent
+  user file reads as the empty mapping exactly as startup reads it, so the boot
+  reconcile and later managed edits apply. This is distinct from a file the
+  watch HAS seen disappearing mid-watch — that deletion fails closed (below).
+  Creating the file later applies normally; the watcher never creates it.
 * **Managed edits fail closed too.** A watched managed file that is malformed,
   truncated, non-mapping or unreadable mid-edit (strict read — see
   ``managed_scope.load_managed_config(strict=True)``) is a failed reload attempt
   like any other: the administrator's previous pins and the active runtime keep
-  running, with one fixed, content-free warning per attempt. Only a VALID managed
-  mapping (including one that removes gate leaves) changes policy. The same holds
+  running, with one fixed, content-free warning per attempt. So is a valid
+  managed file referencing a ``${VAR}`` the connect-time snapshot did not capture
+  (strict expansion — see ``managed_scope._expand_env_vars_with``). Only a VALID
+  managed mapping whose refs all resolve from the captured snapshot (including
+  one that removes gate leaves) changes policy. The same holds
   for a user file whose nested shapes the merge machinery cannot read (e.g. a
   non-mapping ``platforms.discord.extra``): the attempt is skipped, the runtime is
   retained, and the next valid edit applies.
 * **Fail closed, never fail loud.** A detected change that cannot be applied —
-  unreadable or deleted file, invalid YAML, a non-mapping document root
-  (``false``/``[]``/scalar/null/empty — an editor's truncate-write passes through
-  exactly this shape, so it is never read as a deliberate removal), or a block
-  that fails validation — keeps the previously active runtime running unchanged
-  and logs ONE warning per failed reload attempt. Attempts only happen on a stat
-  change, so a broken file left alone is warned about once, not once per poll
-  tick. Only a valid MAPPING whose block is gone (or ``enabled: false``) disables.
+  unreadable file, deletion of a file the watch has seen, invalid YAML, a
+  non-mapping document root (``false``/``[]``/scalar/null/empty — an editor's
+  truncate-write passes through exactly this shape, so it is never read as a
+  deliberate removal), or a block that fails validation — keeps the previously
+  active runtime running unchanged and logs ONE warning per failed reload
+  attempt. Attempts only happen on a stat change, so a broken file left alone is
+  warned about once, not once per poll tick. Only a valid MAPPING whose block is
+  gone (or ``enabled: false``) disables.
 * **Boot reconcile, not boot seed.** The adapter built its gate from the
   platform-config snapshot loaded at gateway start; the file may have moved on
   since, and a replacement adapter can carry a stale cached snapshot. Seeding
@@ -149,6 +162,11 @@ class ReactionGateReloadWatcher:
         # a poll never reads os.environ or a secret, so a mid-flight env flip (or a
         # sibling profile) cannot rewrite a pinned ref.
         self._managed_env = dict(managed_env) if managed_env is not None else None
+        # Whether the user file has EVER been observed present (stat or successful
+        # open). Distinguishes a managed-only profile (no user config.yaml at all —
+        # reads as the empty mapping, as at startup) from the deletion of a known
+        # file mid-watch, which must fail closed.
+        self._user_file_seen = False
         self._apply = apply
         self._log = logger
         self._prefix = f"[{name}] " if name else ""
@@ -233,7 +251,10 @@ class ReactionGateReloadWatcher:
 
     def _stat(self) -> Tuple[Optional[Tuple[int, int]], Optional[Tuple[int, int]]]:
         """``(user, managed)`` stat signatures of the captured files."""
-        return (self._stat_one(self.config_path), self._stat_one(self._managed_file))
+        user = self._stat_one(self.config_path)
+        if user is not None:
+            self._user_file_seen = True
+        return (user, self._stat_one(self._managed_file))
 
     def _load(self) -> Tuple[Any, Optional[str]]:
         """``(block, error)``: the extracted effective block, or ``(None, reason)``.
@@ -242,13 +263,21 @@ class ReactionGateReloadWatcher:
         snippet of the file, and file contents never reach the log. A non-mapping
         document root (``false``/``[]``/scalar/null/empty) is an ERROR, not a
         removal — the startup loader reads that shape as "no user config", and a
-        live reload must never dismantle a running gate over it. The managed
+        live reload must never dismantle a running gate over it. An ABSENT user
+        file splits two ways: never seen by this watch (a managed-only profile
+        with no ``config.yaml`` at all) reads as the empty mapping — exactly what
+        the startup loader sees — so the managed overlay below is the whole
+        effective config and applies; previously seen and now gone is a deletion,
+        which fails closed. The managed
         overlay is part of the effective config at startup, so it is part of it
         here — from the scope captured at connect, never re-resolved at poll time,
         read STRICT: a managed file that exists but is malformed/truncated/
         non-mapping/unreadable mid-edit fails this attempt (the administrator's
         pins and the active runtime keep running) instead of silently dropping
-        the pins and letting user values through. A user file whose nested shapes
+        the pins and letting user values through, and so does a managed edit
+        referencing a variable the connect-time snapshot did not capture (the
+        literal ``${VAR}`` text is never installed into a gate field). A user file
+        whose nested shapes
         break the extraction machinery (e.g. a non-mapping ``platforms.discord.extra``)
         is likewise a failed attempt, not a watcher death: the next valid edit
         applies normally.
@@ -257,7 +286,16 @@ class ReactionGateReloadWatcher:
 
         try:
             with open(self.config_path, "r", encoding="utf-8") as handle:
+                self._user_file_seen = True
                 yaml_cfg = yaml.safe_load(handle)
+        except FileNotFoundError:
+            if self._user_file_seen:
+                # A file this watch HAS seen is gone: deletion, fail closed.
+                return None, "config file deleted"
+            # Never seen: no user config.yaml exists for this profile. Startup
+            # reads that as an empty mapping, so the managed overlay below is
+            # the whole effective config — apply it the same way here.
+            yaml_cfg = {}
         except (OSError, UnicodeError):
             return None, "config file unreadable"
         except yaml.YAMLError:
@@ -270,11 +308,13 @@ class ReactionGateReloadWatcher:
                 yaml_cfg = managed_scope.apply_managed_overlay(
                     yaml_cfg,
                     managed_dir=self._managed_dir,
-                    env=self._managed_env,
+                    # {} when the caller captured no refs: a strict poll must
+                    # never fall back to the ambient process environment.
+                    env=self._managed_env if self._managed_env is not None else {},
                     strict=True,
                 )
             except managed_scope.ManagedConfigError:
-                return None, "managed config unreadable or not a valid mapping"
+                return None, "managed config unreadable, invalid, or has an uncaptured env ref"
         try:
             return extract_reaction_gate_block(yaml_cfg), None
         except Exception:  # noqa: BLE001 — a broken shape fails the attempt, never the watch
