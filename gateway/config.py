@@ -731,6 +731,11 @@ class ReactionGateConfig:
     #: Channel IDs (or exact channel names / ``#names``) opted in. A parent channel
     #: id selects its threads (the adapter's established channel-key convention).
     channels: tuple = ()
+    #: When ``True`` (default), a listed parent channel id also selects its threads.
+    #: When ``False``, a listed parent channel id no longer selects its threads; a
+    #: thread id or exact name/#name listing still matches (name keys are not split
+    #: between parent and thread — list parents by id when using the opt-out).
+    include_threads: bool = True
     #: Whitelisted emojis offered to the judge, in preference order for exact ties.
     emojis: tuple = DEFAULT_REACTION_EMOJIS
     #: Optional per-emoji criteria text overrides; ``None``/``Other`` wording is fixed.
@@ -778,6 +783,8 @@ class ReactionGateConfig:
             result["criteria"] = dict(self.criteria)
         if self.decisions_url:
             result["decisions_url"] = self.decisions_url
+        if not self.include_threads:
+            result["include_threads"] = self.include_threads
         return result
 
     @classmethod
@@ -795,6 +802,22 @@ class ReactionGateConfig:
             # not "gate off" — it would look enabled while doing nothing.
             raise ValueError(f"reaction_gate: unsupported provider {provider!r} (only 'jev')")
         enabled = _coerce_bool(data.get("enabled", False), False)
+        include_threads_raw = data.get("include_threads", True)
+        if include_threads_raw is not None and not isinstance(include_threads_raw, bool):
+            if isinstance(include_threads_raw, str):
+                parsed = _bool_token(include_threads_raw)
+                if parsed is None:
+                    raise ValueError(
+                        f"reaction_gate.include_threads must be a boolean, got {include_threads_raw!r}"
+                    )
+                include_threads = parsed
+            else:
+                raise ValueError(
+                    "reaction_gate.include_threads must be a boolean, got "
+                    f"{type(include_threads_raw).__name__}"
+                )
+        else:
+            include_threads = _coerce_bool(include_threads_raw, True)
         channels = _gate_channel_list(data.get("channels"), "reaction_gate")
         emojis = _reaction_gate_emojis(data.get("emojis"))
         criteria = _reaction_gate_criteria(data.get("criteria"), emojis)
@@ -820,8 +843,8 @@ class ReactionGateConfig:
                     "reaction_gate.decisions_url must be a loopback http(s) URL"
                 )
         return cls(
-            provider=provider, enabled=enabled, channels=channels, emojis=emojis,
-            criteria=criteria, timeout_seconds=timeout_seconds,
+            provider=provider, enabled=enabled, channels=channels, include_threads=include_threads,
+            emojis=emojis, criteria=criteria, timeout_seconds=timeout_seconds,
             context_messages=context_messages, context_chars=context_chars, model=model,
             decisions_url=decisions_url,
         )

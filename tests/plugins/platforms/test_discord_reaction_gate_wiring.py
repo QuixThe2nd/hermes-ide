@@ -484,6 +484,68 @@ class TestMultiGlyphEntryReactions:
         assert "outcome=react:🔥" in reaction_lines[0]
 
 
+class TestIncludeThreadsOptOut:
+    """Parent-channel whitelist without thread inheritance on the reaction gate."""
+
+    @staticmethod
+    def _thread_channel(monkeypatch, parent_id=555, thread_id=9001):
+        parent = _Channel(parent_id, name="general")
+        parent.parent = None
+        parent.parent_id = None
+
+        class ThreadShim:
+            pass
+
+        monkeypatch.setattr(discord, "Thread", ThreadShim)
+        thread = ThreadShim()
+        thread.id = thread_id
+        thread.name = "dev-thread"
+        thread.parent = parent
+        thread.parent_id = parent_id
+        thread.guild = parent.guild
+        return thread, parent
+
+    @pytest.mark.asyncio
+    async def test_thread_skipped_parent_channel_still_consults(self, monkeypatch, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        adapter = _reaction_adapter(
+            reaction={"enabled": True, "channels": ["555"], "include_threads": False},
+        )
+        thread, parent = self._thread_channel(monkeypatch)
+        thread_msg = _message(
+            channel=thread, msg_id=401, content="thread-only secret phrase",
+        )
+        parent_msg = _message(
+            channel=parent, msg_id=402, content="parent channel hello",
+        )
+
+        await adapter._dispatch_discord_message(thread_msg)
+        await adapter._dispatch_discord_message(parent_msg)
+        await _drain(adapter)
+
+        assert choice_judge.calls == 1
+        assert not _reactions(thread_msg)
+        assert _reactions(parent_msg) == [("🔥",)]
+        assert choice_judge.states[0]["candidate"]["content"] == "parent channel hello"
+        assert all(
+            "thread-only secret phrase" not in entry.get("content", "")
+            for entry in choice_judge.states[0]["recent_messages"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_include_threads_still_consults_in_thread(self, monkeypatch, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        adapter = _reaction_adapter(reaction={"enabled": True, "channels": ["555"]})
+        thread, _parent = self._thread_channel(monkeypatch)
+        thread_msg = _message(channel=thread, msg_id=411, content="thread ambient line")
+
+        await adapter._dispatch_discord_message(thread_msg)
+        await _drain(adapter)
+
+        assert choice_judge.calls == 1
+        assert _reactions(thread_msg) == [("🔥",)]
+
+
 class TestEvidenceAcrossRapidMessages:
     """Candidates are buffered at INTAKE, so a rapid successor's consult sees them.
 
