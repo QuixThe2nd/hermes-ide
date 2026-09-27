@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+from gateway.reaction_formula import DEFAULT_DECISION_FORMULA, prepare_decision_formula
 from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
@@ -678,7 +679,7 @@ def _gate_bool(data: dict, key: str, default: bool, label: str) -> bool:
 
 
 #: The fixed abstention options every reaction-gate question carries. They are part of
-#: the product contract (the decision rule sums exactly these two), never config.
+#: the product contract (the default decision formula sums exactly these two), never config.
 REACTION_NONE_OPTION = "None"
 REACTION_OTHER_OPTION = "Other"
 
@@ -785,6 +786,11 @@ class ReactionGateConfig:
     model: str = "typesafe/jev-1.13"
     #: Optional loopback-only override for the Decisions endpoint (see ResponseGateConfig).
     decisions_url: Optional[str] = None
+    #: The decision rule: one Boolean expression over ``abstain``/``none``/``other``/
+    #: ``top``/``second``/``emoji_count`` (see ``gateway/reaction_formula.py`` for the
+    #: safe mini-language). ``None`` or omitted keeps the exact default rule the gate
+    #: always shipped with; an invalid expression refuses to load.
+    decision_formula: Optional[str] = DEFAULT_DECISION_FORMULA
 
     # Validation bounds — the same budgets as the response gate, plus emoji-list caps
     # so one request body stays bounded no matter how wide the whitelist is.
@@ -794,6 +800,28 @@ class ReactionGateConfig:
     MAX_EMOJIS = 48
     MAX_EMOJI_CHARS = 32
     MAX_CRITERIA_CHARS = 500
+
+    def __post_init__(self) -> None:
+        # Validate here — not only in from_dict — so a directly constructed typed
+        # config (tests, tooling, a future caller) cannot bypass formula safety any
+        # more than a YAML block can. ``None`` means "default", matching every other
+        # optional field's absent-spelling.
+        raw = self.decision_formula
+        if raw is None:
+            self.decision_formula = DEFAULT_DECISION_FORMULA
+            return
+        if not isinstance(raw, str):
+            raise ValueError(
+                f"reaction_gate.decision_formula must be a string, got {type(raw).__name__}"
+            )
+        text = raw.strip()
+        if not text:
+            raise ValueError("reaction_gate.decision_formula must be a non-empty expression")
+        try:
+            prepare_decision_formula(text)
+        except ValueError as exc:
+            raise ValueError(f"reaction_gate.decision_formula: {exc}") from None
+        self.decision_formula = text
 
     @property
     def active(self) -> bool:
@@ -822,6 +850,8 @@ class ReactionGateConfig:
             result["include_threads"] = self.include_threads
         if not self.threads_require_membership:
             result["threads_require_membership"] = self.threads_require_membership
+        if self.decision_formula != DEFAULT_DECISION_FORMULA:
+            result["decision_formula"] = self.decision_formula
         return result
 
     @classmethod
@@ -869,12 +899,15 @@ class ReactionGateConfig:
                 raise ValueError(
                     "reaction_gate.decisions_url must be a loopback http(s) URL"
                 )
+        # ``None`` (absent) keeps the default rule; everything else is validated by
+        # ``__post_init__`` — the same single safety check a typed construction gets.
+        decision_formula = data.get("decision_formula")
         return cls(
             provider=provider, enabled=enabled, channels=channels, include_threads=include_threads,
             threads_require_membership=threads_require_membership,
             emojis=emojis, criteria=criteria, timeout_seconds=timeout_seconds,
             context_messages=context_messages, context_chars=context_chars, model=model,
-            decisions_url=decisions_url,
+            decisions_url=decisions_url, decision_formula=decision_formula,
         )
 
 

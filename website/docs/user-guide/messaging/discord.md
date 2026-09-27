@@ -488,7 +488,7 @@ Values outside the documented ranges (threshold outside `0..1`, `timeout_seconds
 
 **Type:** mapping — **Default:** unset (gate off)
 
-An opt-in judge for *reactions*. In the channels you list, the bot asks a remote classifier one `choice` question per message — which single whitelisted emoji best fits as its reaction, or `None` (no reaction fits) or `Other` (a reaction fits but no whitelisted one does) — and adds exactly one reaction when the combined probability of `None` and `Other` is strictly below one half, or when the top emoji's probability is strictly more than five times the runner-up emoji's (abstention options are ignored for that comparison), even if the abstention sum is `0.5` or above. The gate is off unless the block is present, `enabled: true` **and** `channels` names at least one channel; there is no wildcard.
+An opt-in judge for *reactions*. In the channels you list, the bot asks a remote classifier one `choice` question per message — which single whitelisted emoji best fits as its reaction, or `None` (no reaction fits) or `Other` (a reaction fits but no whitelisted one does) — and adds exactly one reaction when the combined probability of `None` and `Other` is strictly below one half, or when the top emoji's probability is strictly more than five times the runner-up emoji's (abstention options are ignored for that comparison), even if the abstention sum is `0.5` or above. That decision rule is itself configurable as `decision_formula` (below); omitting it keeps exactly the rule described here. The gate is off unless the block is present, `enabled: true` **and** `channels` names at least one channel; there is no wildcard.
 
 ```yaml
 discord:
@@ -511,11 +511,14 @@ discord:
     context_messages: 10       # recent same-channel messages sent as evidence
     context_chars: 8000        # total character budget for that evidence block
     model: typesafe/jev-1.13   # judge model; fixed default, no fallback chain
+    decision_formula: 'abstain < 0.5 or (emoji_count >= 2 and top > 5 * second)'  # the default rule, spelled out
     include_threads: true            # a listed parent channel id also selects its threads (default)
     threads_require_membership: true  # in-scope threads stay silent until the bot has participated (default)
 ```
 
 **The decision rule.** The judge returns a probability for every offered option. The bot reacts with the highest-probability whitelisted emoji when **either** `P(None) + P(Other)` is **strictly below `0.5`**, **or** the top emoji's probability is **strictly greater than `5`×** the second-highest emoji's (`None` and `Other` are ignored for that ratio; exactly `5`× does not fire). At `0.5` or above it does nothing unless the runaway-winner branch fires; the reaction is still the argmax emoji. An abstention option is allowed to top the distribution on its own under the first branch: with `None = 0.30`, `Other = 0.19` and `👍 = 0.31` the sum is `0.49`, so the bot reacts with 👍. Under the second branch, with `None = 0.74`, `Other = 0.03`, `👍 = 0.20` and `❤️ = 0.03` the sum is `0.77`, yet the bot reacts with 👍 because `0.20 > 5 × 0.03`. An exact tie between emojis resolves to the one listed first in `emojis`.
+
+**Decision formula.** That rule is the default value of `decision_formula`, and you can edit it. The expression must produce a true/false answer over six fixed numbers: `none` and `other` (the two abstention options' probabilities), `abstain` (their sum), `top` and `second` (the highest and second-highest whitelist-**emoji** probabilities — abstention options never count as the runner-up, and `second` is `0` when the whitelist has no runner-up), and `emoji_count` (how many entries `emojis` lists — the `emoji_count >= 2` guard in the default is what keeps the ratio branch from firing on a single-entry whitelist, since `second` is `0` there). Allowed syntax: finite numeric literals, `True`/`False`, those six names, `+ - *` arithmetic, unary `+`/`-`, the comparisons `< <= > >= == !=`, and `and`/`or`/`not` with parentheses. Nothing else exists in the language — no division, powers, calls, attributes, indexing, strings or names beyond the six — and a mistyped formula refuses to load (the gate stays off / the active gate keeps running) instead of being guessed at; a formula whose root is not a true/false comparison, or that combines types nonsensically (`top and none`), is refused the same way. Formulas are bounded to 200 characters, 100 expression nodes, 12 nesting levels and literals up to `1e9`. When the formula is true the reaction is still the argmax emoji with the configured tie order — the formula only decides *whether* to react. Examples: `'abstain < 0.5 and top > 5 * second'` (both branches must agree), `'abstain < 0.35 or (emoji_count >= 2 and top > 3 * second)'` (a stricter boundary and a gentler runaway ratio), `'top > 0.6 and abstain < 0.8'` (a floor on the winner regardless of runner-up).
 
 **Multi-glyph entries.** An `emojis` entry may hold several emoji glyphs, e.g. `👉👈`. The judge sees it as **one** option (the whole string), and when it wins, the bot adds the glyphs as separate back-to-back reactions in string order — 👉 then 👈. A compound emoji that is one grapheme cluster — `🤦‍♂️` (ZWJ sequence), `❤️` (VS16), skin-tone sequences like `🫱🏻‍🫲🏽`, keycaps like `1️⃣`, flags like `🇦🇺` — stays exactly **one** reaction. Each glyph of a multi-glyph entry is its own API call: if one fails, the rest are still attempted.
 
@@ -533,9 +536,9 @@ discord:
 
 **Fail-closed.** A missing `OPENROUTER_API_KEY`, timeout, transport error, malformed answer, unknown option, or an incoherent probability distribution means *no reaction* — never a fallback emoji and never a text reply. Like the speaking gate, the key is read once at connect time from the profile environment, not from `config.yaml`.
 
-**Live reload.** Edits to the `reaction_gate` block in `config.yaml` are picked up by the running adapter within a few seconds — no restart needed; an invalid edit keeps the active gate.
+**Live reload.** Edits to the `reaction_gate` block in `config.yaml` are picked up by the running adapter within a few seconds — no restart needed; an invalid edit keeps the active gate. That includes `decision_formula`: changing thresholds or flipping `or` to `and` applies on the next decision after the reload, with no restart or reconnect.
 
-Values outside the documented ranges (`timeout_seconds` above `30`, more than `32` emojis, emojis longer than `32` characters, criteria text above `500` characters, oversized context bounds, a `None`/`Other` entry in `emojis` — those two options are fixed) refuse to load or leave the gate off rather than quietly degrading.
+Values outside the documented ranges (`timeout_seconds` above `30`, more than `32` emojis, emojis longer than `32` characters, criteria text above `500` characters, oversized context bounds, a `None`/`Other` entry in `emojis` — those two options are fixed — or an invalid `decision_formula`) refuse to load or leave the gate off rather than quietly degrading.
 
 #### `discord.auto_thread`
 
