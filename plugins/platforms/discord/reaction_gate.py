@@ -4,9 +4,13 @@ The response gate decides whether the bot *speaks*; this sibling decides whether
 *reacts*. For every eligible message in the opted-in channels the judge is asked one
 ``choice`` question over the whitelisted emojis plus the two fixed abstention options
 ``None`` and ``Other``, and the bot adds exactly one reaction — the highest-probability
-whitelisted emoji — when ``P(None) + P(Other) < 0.5`` (strict) **or** when the top emoji's
-probability is strictly more than five times the runner-up emoji's (abstention mass ignored
-for that ratio; at 0.5 or above with no runaway winner, nothing).
+whitelisted emoji — when the configured ``decision_formula`` says so. The default
+formula is the rule this gate always shipped with: react when ``P(None) + P(Other)``
+is strictly below ``0.5`` **or** the top emoji's probability is strictly more than
+five times the runner-up emoji's (abstention mass ignored for that ratio; at ``0.5``
+or above with no runaway winner, nothing). An unchanged config keeps that rule
+exactly; editing the formula (thresholds, ``or`` → ``and``, …) applies live through
+the reload watcher like every other ``reaction_gate`` key.
 
 Design constraints (see the reaction-gate section of the Discord config reference):
 
@@ -16,8 +20,9 @@ Design constraints (see the reaction-gate section of the Discord config referenc
   failure never creates a session, forces a text reply, or blocks one.
 * **Fail closed.** A missing credential, timeout, cancellation, transport error, HTTP
   error, unparsable body, missing option, non-finite/boolean/out-of-range probability,
-  incoherent distribution or unknown option all mean "no reaction". No retries and no
-  fallback provider, so a broken judge can never spam reactions.
+  incoherent distribution, unknown option or an unexpected decision-formula failure
+  all mean "no reaction". No retries and no fallback provider, so a broken judge can
+  never spam reactions.
 * **Bounded.** One request per consulted message (the adapter consults each message id
   at most once), a hard client timeout, a bounded buffered window per conversation, and
   a bounded whitelist (validated at config load).
@@ -38,6 +43,11 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
+from gateway.reaction_formula import (
+    DEFAULT_DECISION_FORMULA,
+    PreparedFormula,
+    prepare_decision_formula,
+)
 from plugins.platforms.discord.response_gate import (
     ChannelContextBuffer,
     GateRuntime,
@@ -50,17 +60,10 @@ from plugins.platforms.discord.response_gate import (
 REACTION_KEY = "reaction"
 
 #: The two fixed abstention options. Their labels and criteria text are part of the
-#: decision rule (the threshold sums exactly these), so they are never configurable.
+#: decision contract (the default formula sums exactly these), so they are never
+#: configurable.
 NONE_OPTION = "None"
 OTHER_OPTION = "Other"
-
-#: React when the combined abstention mass is STRICTLY below this boundary.
-ABSTAIN_MAX_SUM = 0.5
-
-#: Runaway-winner branch: react when the top emoji STRICTLY outscores the
-#: runner-up emoji by more than this ratio, even with abstention mass at or
-#: above the boundary. Abstention options never count as the runner-up.
-RUNAWAY_WINNER_RATIO = 5.0
 
 #: Coherence slack for the offered distribution: enough for float error and rounded
 #: per-option masses, far below anything that could flip the strict 0.5 comparison.
@@ -101,24 +104,55 @@ def _whitelist_labels(emojis: Iterable[str], label_to_entry: Dict[str, str]) -> 
     return tuple(entry_to_label[entry] for entry in emojis)
 
 
-def choose_reaction(probabilities: Dict[str, float], emojis: Iterable[str]) -> Optional[str]:
-    """The decision rule, as one pure function.
+#: The default decision rule, prepared once at import so the per-decision path never
+#: parses anything (formulas arriving from config are prepared once per runtime build).
+_DEFAULT_FORMULA = prepare_decision_formula(DEFAULT_DECISION_FORMULA)
 
-    Returns the highest-probability whitelisted emoji when either ``P(None) + P(Other)``
-    is strictly below :data:`ABSTAIN_MAX_SUM`, or the top emoji's probability is
-    strictly greater than :data:`RUNAWAY_WINNER_RATIO` times the second-highest emoji's
-    (``None`` and ``Other`` are ignored for the ratio; exactly five times does not fire).
-    Otherwise ``None`` (no reaction). An abstention option may top the distribution
-    individually — as long as their SUM stays under the boundary, the best emoji still
-    wins. When the runaway branch fires, the reaction is still the argmax emoji. Exact
-    ties resolve to the emoji that comes first in the configured whitelist order.
+
+def _decision_variables(
+    probabilities: Dict[str, float], emojis: Iterable[str],
+) -> Dict[str, Any]:
+    """The six fixed formula inputs for one offered distribution.
+
+    ``top``/``second`` are the two highest whitelisted-EMOJI probabilities (the two
+    abstention options never count as the runner-up); ``second`` is ``0.0`` when the
+    whitelist has no runner-up, which is why the default formula's ``emoji_count >= 2``
+    guard — not any magnitude floor — decides whether the ratio branch can fire at all.
     """
     entries = tuple(emojis)
-    abstain = float(probabilities.get(NONE_OPTION, 0.0)) + float(probabilities.get(OTHER_OPTION, 0.0))
-    if abstain < ABSTAIN_MAX_SUM:
-        return max(entries, key=lambda emoji: float(probabilities.get(emoji, 0.0)))
+    none_p = float(probabilities.get(NONE_OPTION, 0.0))
+    other_p = float(probabilities.get(OTHER_OPTION, 0.0))
     scores = sorted((float(probabilities.get(emoji, 0.0)) for emoji in entries), reverse=True)
-    if len(scores) >= 2 and scores[0] > RUNAWAY_WINNER_RATIO * scores[1]:
+    return {
+        "none": none_p,
+        "other": other_p,
+        "abstain": none_p + other_p,
+        "top": scores[0] if scores else 0.0,
+        "second": scores[1] if len(scores) > 1 else 0.0,
+        "emoji_count": len(entries),
+    }
+
+
+def choose_reaction(
+    probabilities: Dict[str, float], emojis: Iterable[str],
+    formula: Optional[PreparedFormula] = None,
+) -> Optional[str]:
+    """The decision rule, as one pure function.
+
+    Returns the highest-probability whitelisted emoji when ``formula`` — an expression
+    already validated and prepared by :func:`prepare_decision_formula` (what the client
+    holds), never a raw string — evaluates true; otherwise ``None`` (no reaction).
+    ``None`` selects the default rule, which keeps the exact shipped behavior: react
+    when ``abstain < 0.5`` strictly, or — from two whitelisted entries up — the top
+    emoji strictly outscores the runner-up by more than 5x (exactly five times does
+    not fire). An abstention option may top the distribution individually; only the
+    combined ``abstain`` mass is compared. When the formula fires, the reaction is
+    still the argmax emoji, and exact ties resolve to the emoji that comes first in
+    the configured whitelist order.
+    """
+    entries = tuple(emojis)
+    prepared = _DEFAULT_FORMULA if formula is None else formula
+    if prepared.evaluate(_decision_variables(probabilities, entries)):
         return max(entries, key=lambda emoji: float(probabilities.get(emoji, 0.0)))
     return None
 
@@ -286,6 +320,7 @@ class JevChoiceClient(JevDecisionClient):
         instructions: str,
         decisions_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
+        decision_formula: Optional[str] = None,
     ) -> None:
         question = {
             "type": "choice",
@@ -299,11 +334,17 @@ class JevChoiceClient(JevDecisionClient):
         )
         self._emojis = tuple(emojis)
         self._question = question
+        # Prepare ONCE per runtime (config already validated the text; a build with
+        # an unprepared string still refuses here, loudly, rather than at decision time).
+        self._formula = (
+            prepare_decision_formula(decision_formula)
+            if decision_formula is not None else _DEFAULT_FORMULA
+        )
 
     async def choose(self, state: Dict[str, Any], *, chat_id: Optional[str] = None) -> ReactionDecision:
         """Ask the judge one ``reaction`` choice question about ``state``.
 
-        Returns a :class:`ReactionDecision` whose ``emoji`` is the rule outcome.
+        Returns a :class:`ReactionDecision` whose ``emoji`` is the formula outcome.
         Every failure path raises :class:`ResponseGateError` (the runtime turns that
         into a fail-closed no-reaction).
         """
@@ -313,7 +354,14 @@ class JevChoiceClient(JevDecisionClient):
         )
         probabilities = self._validate_probabilities(answer)
         latency_ms = (time.monotonic() - started) * 1000.0
-        emoji = choose_reaction(probabilities, self._emojis)
+        try:
+            emoji = choose_reaction(probabilities, self._emojis, self._formula)
+        except Exception as exc:
+            # A validated formula cannot fail here; if it ever does, fail closed
+            # through the same sanitized reason path as every other judge failure.
+            raise ResponseGateError(
+                "decision_formula_failed", "decision formula evaluation failed",
+            ) from exc
         abstain = float(probabilities.get(NONE_OPTION, 0.0)) + float(probabilities.get(OTHER_OPTION, 0.0))
         return ReactionDecision(
             emoji=emoji,
@@ -409,6 +457,7 @@ class ReactionGateRuntime:
                 ),
                 instructions=build_reaction_instructions(),
                 decisions_url=getattr(config, "decisions_url", None), logger=logger,
+                decision_formula=getattr(config, "decision_formula", None),
             )
         return cls(
             config=config, client=client, logger=logger, label_to_entry=label_to_entry,
