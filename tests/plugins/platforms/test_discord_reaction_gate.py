@@ -373,6 +373,45 @@ class TestReactionGateConfigFromDict:
                 "enabled": True, "channels": ["555"], "include_threads": "maybe",
             })
 
+    def test_threads_require_membership_defaults_true_when_omitted(self):
+        config = ReactionGateConfig.from_dict({"enabled": True, "channels": ["555"]})
+        assert config.threads_require_membership is True
+        assert ReactionGateConfig.from_dict(None).threads_require_membership is True
+
+    def test_threads_require_membership_explicit_true_and_false(self):
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": True,
+        }).threads_require_membership is True
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": False,
+        }).threads_require_membership is False
+
+    def test_threads_require_membership_recognized_tokens_load(self):
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": "false",
+        }).threads_require_membership is False
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": "true",
+        }).threads_require_membership is True
+
+    def test_threads_require_membership_garbage_refuses_to_load(self):
+        with pytest.raises(ValueError, match="threads_require_membership"):
+            ReactionGateConfig.from_dict({
+                "enabled": True, "channels": ["555"], "threads_require_membership": "maybe",
+            })
+        with pytest.raises(ValueError, match="threads_require_membership"):
+            ReactionGateConfig.from_dict({
+                "enabled": True, "channels": ["555"], "threads_require_membership": 3,
+            })
+
+    def test_to_dict_omits_threads_require_membership_true_includes_false(self):
+        on_by_default = ReactionGateConfig.from_dict({"enabled": True, "channels": ["555"]})
+        assert "threads_require_membership" not in on_by_default.to_dict()
+        opted_out = ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": False,
+        })
+        assert opted_out.to_dict()["threads_require_membership"] is False
+
     def test_omitted_block_is_off(self):
         config = ReactionGateConfig.from_dict(None)
         assert config.enabled is False

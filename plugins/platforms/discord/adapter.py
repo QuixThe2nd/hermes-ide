@@ -2041,13 +2041,32 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Channel keys for a message, or None when the gate is off/not selected."""
         return self._response_gate_channel_keys_in_scope(getattr(message, "channel", None))
 
+    def _gate_thread_membership_ok(self, channel: Any, *, require: bool) -> bool:
+        """Whether a conversation may be consulted under the thread-membership rule.
+
+        The single membership check both gates share. ``require`` false (the
+        ``threads_require_membership: false`` opt-out) keeps the legacy behavior where
+        a listed parent channel selects every thread. A non-thread conversation is
+        never membership-gated. A thread consults only when this bot already
+        participates in it — ``ThreadParticipationTracker``, the same persistent
+        store the inbound dispatch and the send seam mark, never the cache-only
+        ``channel.members``/``channel.me`` (those disagree with it). The gate is
+        scope-first, membership-second: a thread outside the gate's channels is
+        unaffected either way.
+        """
+        if not require or not isinstance(channel, discord.Thread):
+            return True
+        return str(getattr(channel, "id", "") or "") in self._threads
+
     def _response_gate_channel_keys_in_scope(self, channel: Any) -> Optional[set]:
         """Channel keys for one conversation, or None when the gate is off/not selected.
 
         Scope is the gate's own channel opt-in narrowed by the allowed/ignored-channel rule
         ``_handle_message`` already owns: a channel that rule ignores is never consulted, so
         the judge costs no API call outside the channels this bot answers in. Shared by the
-        inbound (observed message) and outbound (delivered reply) observe paths.
+        inbound (observed message) and outbound (delivered reply) observe paths — and by
+        every dispatch path, because live dispatch, recovered dispatch and the admission
+        prefilters all build their candidate through here.
         """
         gate = self._response_gate
         if gate is None:
@@ -2058,6 +2077,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         keys = self._discord_channel_keys_from_channel(channel, parent_id)
         if not gate.selects(keys) or not self._discord_channel_policy_admits(keys):
             return None
+        if not self._gate_thread_membership_ok(
+            channel,
+            require=bool(getattr(gate.config, "threads_require_membership", True)),
+        ):
+            return None  # unjoined thread: the judge never hears it (a ping still bypasses)
         return keys
 
     def _response_gate_bypass(self, message: Any) -> bool:
@@ -2315,6 +2339,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         gate = self._response_gate
         if gate is None:
             return
+        # A delivered final reply IS participation: record it before the scope/membership
+        # checks, so the gate's own rule keeps this conversation visible whatever ingress
+        # produced the reply (a native slash command dispatches through handle_message
+        # and never reaches the inbound path's participation mark).
+        thread_id = str(getattr(channel, "id", "") or "")
+        if isinstance(channel, discord.Thread) and thread_id:
+            self._threads.mark(thread_id)
         keys = self._response_gate_channel_keys_in_scope(channel)
         if keys is None or gate.echo_keys.intersection(keys):
             return  # echo channels carry judge-score lines, not this bot's conversation
@@ -2481,6 +2512,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             or not self._discord_channel_policy_admits(channel_keys)
         ):
             return None
+        if not self._gate_thread_membership_ok(
+            channel,
+            require=bool(getattr(gate.config, "threads_require_membership", True)),
+        ):
+            return None  # unjoined thread: no consultation, no reaction
         return {
             "message_id": str(getattr(message, "id", "") or ""),
             "conversation_id": GateRuntime.conversation_id(channel),
@@ -2662,6 +2698,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             or not self._discord_channel_policy_admits(channel_keys)
         ):
             return
+        if not self._gate_thread_membership_ok(
+            channel,
+            require=bool(getattr(gate.config, "threads_require_membership", True)),
+        ):
+            return  # unjoined thread: no evidence buffered either
         bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
         if not bot_name:
             return

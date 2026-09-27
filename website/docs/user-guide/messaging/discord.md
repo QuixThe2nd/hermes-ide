@@ -467,6 +467,7 @@ discord:
     context_messages: 10      # recent same-channel messages sent as evidence
     context_chars: 8000       # total character budget for that evidence block
     model: typesafe/jev-1.13  # judge model; fixed default, no fallback chain
+    threads_require_membership: true  # threads stay silent until the bot has participated (default)
 ```
 
 **Modes.** `shadow` runs the judge and logs the verdict but never changes behavior — use it to see what the gate *would* have done before trusting it. `enforce` makes the verdict binding: an approved ambient message wakes the bot normally, and every other message in the gated channels stays silent.
@@ -474,6 +475,8 @@ discord:
 **The decision.** Each candidate is judged in one bounded request that asks three `noul` questions (each scored `0..1`): `addresses_bot` — does the message speak directly to the bot by name; `continues_bot_thread` — does it follow up on a conversation the bot was recently part of; `noise` — is it conversational noise with nothing to answer. The verdict is composed from the three components: **allow when `addresses_bot > 0.5`, or when `continues_bot_thread > 0.6` and `noise < 0.4`** — a direct address always admits, and a genuine thread follow-up admits unless the message is noise. A missing or invalid component fails closed (deny). The `threshold` key is still accepted and validated so existing configs keep loading, but it no longer influences the verdict; the composed cutoffs are fixed.
 
 **Explicit triggers never consult it.** `@mentions`, replies to the bot, `mention_patterns` wake words, slash commands, and DMs all keep their existing paths with no judge round-trip. Only unprompted text is judged, and text that pings another human is judged rather than preempted — it may be meant for someone else and still be worth answering.
+
+**Thread membership.** `threads_require_membership` defaults to `true`: the parent channel you list is judged as always, but its *threads* stay silent until the bot has already participated in that thread — an unjoined thread's ambient messages never reach the judge. Pinging the bot in such a thread still wakes it through the normal mention path, and once the bot has answered there, later ambient messages in the same thread are judged. Set `false` to judge every in-scope thread.
 
 **Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel or thread — up to `context_messages` messages and `context_chars` characters. Nothing from other channels, and nothing beyond that window.
 
@@ -508,6 +511,8 @@ discord:
     context_messages: 10       # recent same-channel messages sent as evidence
     context_chars: 8000        # total character budget for that evidence block
     model: typesafe/jev-1.13   # judge model; fixed default, no fallback chain
+    include_threads: true            # a listed parent channel id also selects its threads (default)
+    threads_require_membership: true  # in-scope threads stay silent until the bot has participated (default)
 ```
 
 **The decision rule.** The judge returns a probability for every offered option. The bot reacts with the highest-probability whitelisted emoji when **either** `P(None) + P(Other)` is **strictly below `0.5`**, **or** the top emoji's probability is **strictly greater than `5`×** the second-highest emoji's (`None` and `Other` are ignored for that ratio; exactly `5`× does not fire). At `0.5` or above it does nothing unless the runaway-winner branch fires; the reaction is still the argmax emoji. An abstention option is allowed to top the distribution on its own under the first branch: with `None = 0.30`, `Other = 0.19` and `👍 = 0.31` the sum is `0.49`, so the bot reacts with 👍. Under the second branch, with `None = 0.74`, `Other = 0.03`, `👍 = 0.20` and `❤️ = 0.03` the sum is `0.77`, yet the bot reacts with 👍 because `0.20 > 5 × 0.03`. An exact tie between emojis resolves to the one listed first in `emojis`.
@@ -519,6 +524,8 @@ discord:
 **Independent of [`response_gate`](#discordresponse_gate).** The two gates share only a transport. This one judges *every* eligible message in its channels — `@mentions`, replies, and other bots' conversational messages included, whether or not the speaking gate (or the mention prefilter) would have answered them — and its outcome never feeds back into speaking: a reaction success or failure creates no session, forces no text reply, and blocks none. The channels, verdicts and evidence of the two gates are configured separately and can overlap or not at all.
 
 **Thread scope.** `include_threads` defaults to `true`, so listing a parent channel id also selects its threads. With `include_threads: false`, a listed parent channel **id** no longer selects its threads; opt a thread in directly by its own id or name. Name-based listings match by exact name (parent name forms appear in every thread's key set too), so list parent channels by id when using the opt-out.
+
+**Thread membership.** `threads_require_membership` defaults to `true` and composes with that scope rule: once a thread is in scope, it is still only evaluated after the bot has already participated in that thread — an unjoined thread gets no consultation, no reaction, and buffers no evidence. Set `false` to react in every in-scope thread. The listed parent channel itself is never membership-gated.
 
 **Eligibility.** The bot's own messages, system/lifecycle events (joins, pins, …), DMs, [`ignored_channels`](#discordignored_channels), channels outside `channels`, and messages from users who fail the authorization allowlist are never evaluated and never reacted to. Each message id is considered once no matter how it is delivered (live or backfill), so a duplicate or concurrent delivery cannot double-react.
 

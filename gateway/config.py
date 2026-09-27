@@ -472,6 +472,13 @@ class ResponseGateConfig:
     #: and its exact request shape. Anything non-loopback is refused at load: the
     #: gate posts a bearer credential to whatever URL it is given.
     decisions_url: Optional[str] = None
+    #: When ``True`` (default), threads of a listed parent channel stay silent until
+    #: this bot is already a member of the thread (the adapter's persistent
+    #: participation tracker); the parent channel itself is never membership-gated.
+    #: ``False`` restores judging every in-scope thread. Independent of explicit
+    #: triggers: a ping in an unjoined thread still wakes the bot through the
+    #: mention path, which never consults the gate.
+    threads_require_membership: bool = True
 
     # Validation bounds. Explicit config outside them raises at load time: a mistyped gate
     # must never quietly degrade into "every ambient message is allowed".
@@ -495,6 +502,8 @@ class ResponseGateConfig:
             result["echo_channels"] = list(self.echo_channels)
         if self.decisions_url:
             result["decisions_url"] = self.decisions_url
+        if not self.threads_require_membership:
+            result["threads_require_membership"] = self.threads_require_membership
         return result
 
     @property
@@ -547,11 +556,14 @@ class ResponseGateConfig:
                 raise ValueError(
                     "response_gate.decisions_url must be a loopback http(s) URL"
                 )
+        threads_require_membership = _gate_bool(
+            data, "threads_require_membership", True, "response_gate.threads_require_membership",
+        )
         return cls(
             provider=provider, channels=channels, echo_channels=echo_channels, mode=mode,
             threshold=threshold, timeout_seconds=timeout_seconds,
             context_messages=context_messages, context_chars=context_chars, model=model,
-            decisions_url=decisions_url,
+            decisions_url=decisions_url, threads_require_membership=threads_require_membership,
         )
 
 
@@ -648,6 +660,23 @@ def _response_gate_int(data: dict, key: str, default: int, low: int, high: int, 
     return raw
 
 
+def _gate_bool(data: dict, key: str, default: bool, label: str) -> bool:
+    """Strict bool field for a gate block: bool, or a recognized truthy/falsy token.
+
+    An unrecognized string or a non-bool type refuses to load (naming the field) —
+    a mistyped flag must never quietly take either meaning.
+    """
+    raw = data.get(key, default)
+    if raw is not None and not isinstance(raw, bool):
+        if isinstance(raw, str):
+            parsed = _bool_token(raw)
+            if parsed is None:
+                raise ValueError(f"{label} must be a boolean, got {raw!r}")
+            return parsed
+        raise ValueError(f"{label} must be a boolean, got {type(raw).__name__}")
+    return _coerce_bool(raw, default)
+
+
 #: The fixed abstention options every reaction-gate question carries. They are part of
 #: the product contract (the decision rule sums exactly these two), never config.
 REACTION_NONE_OPTION = "None"
@@ -736,6 +765,12 @@ class ReactionGateConfig:
     #: thread id or exact name/#name listing still matches (name keys are not split
     #: between parent and thread — list parents by id when using the opt-out).
     include_threads: bool = True
+    #: When ``True`` (default), a selected thread stays silent until this bot is
+    #: already a member of it (the adapter's persistent participation tracker); the
+    #: parent channel itself is never membership-gated, and the flag composes with
+    #: ``include_threads`` (scope first, then membership). ``False`` restores
+    #: reacting to every in-scope thread.
+    threads_require_membership: bool = True
     #: Whitelisted emojis offered to the judge, in preference order for exact ties.
     emojis: tuple = DEFAULT_REACTION_EMOJIS
     #: Optional per-emoji criteria text overrides; ``None``/``Other`` wording is fixed.
@@ -785,6 +820,8 @@ class ReactionGateConfig:
             result["decisions_url"] = self.decisions_url
         if not self.include_threads:
             result["include_threads"] = self.include_threads
+        if not self.threads_require_membership:
+            result["threads_require_membership"] = self.threads_require_membership
         return result
 
     @classmethod
@@ -802,22 +839,12 @@ class ReactionGateConfig:
             # not "gate off" — it would look enabled while doing nothing.
             raise ValueError(f"reaction_gate: unsupported provider {provider!r} (only 'jev')")
         enabled = _coerce_bool(data.get("enabled", False), False)
-        include_threads_raw = data.get("include_threads", True)
-        if include_threads_raw is not None and not isinstance(include_threads_raw, bool):
-            if isinstance(include_threads_raw, str):
-                parsed = _bool_token(include_threads_raw)
-                if parsed is None:
-                    raise ValueError(
-                        f"reaction_gate.include_threads must be a boolean, got {include_threads_raw!r}"
-                    )
-                include_threads = parsed
-            else:
-                raise ValueError(
-                    "reaction_gate.include_threads must be a boolean, got "
-                    f"{type(include_threads_raw).__name__}"
-                )
-        else:
-            include_threads = _coerce_bool(include_threads_raw, True)
+        include_threads = _gate_bool(
+            data, "include_threads", True, "reaction_gate.include_threads",
+        )
+        threads_require_membership = _gate_bool(
+            data, "threads_require_membership", True, "reaction_gate.threads_require_membership",
+        )
         channels = _gate_channel_list(data.get("channels"), "reaction_gate")
         emojis = _reaction_gate_emojis(data.get("emojis"))
         criteria = _reaction_gate_criteria(data.get("criteria"), emojis)
@@ -844,6 +871,7 @@ class ReactionGateConfig:
                 )
         return cls(
             provider=provider, enabled=enabled, channels=channels, include_threads=include_threads,
+            threads_require_membership=threads_require_membership,
             emojis=emojis, criteria=criteria, timeout_seconds=timeout_seconds,
             context_messages=context_messages, context_chars=context_chars, model=model,
             decisions_url=decisions_url,
