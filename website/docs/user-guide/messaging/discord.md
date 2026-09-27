@@ -485,7 +485,7 @@ Values outside the documented ranges (threshold outside `0..1`, `timeout_seconds
 
 **Type:** mapping — **Default:** unset (gate off)
 
-An opt-in judge for *reactions*. In the channels you list, the bot asks a remote classifier one `choice` question per message — which single whitelisted emoji best fits as its reaction, or `None` (no reaction fits) or `Other` (a reaction fits but no whitelisted one does) — and adds exactly one reaction when the combined probability of `None` and `Other` is strictly below one half. The gate is off unless the block is present, `enabled: true` **and** `channels` names at least one channel; there is no wildcard.
+An opt-in judge for *reactions*. In the channels you list, the bot asks a remote classifier one `choice` question per message — which single whitelisted emoji best fits as its reaction, or `None` (no reaction fits) or `Other` (a reaction fits but no whitelisted one does) — and adds exactly one reaction when the combined probability of `None` and `Other` is strictly below one half, or when the top emoji's probability is strictly more than five times the runner-up emoji's (abstention options are ignored for that comparison), even if the abstention sum is `0.5` or above. The gate is off unless the block is present, `enabled: true` **and** `channels` names at least one channel; there is no wildcard.
 
 ```yaml
 discord:
@@ -510,7 +510,7 @@ discord:
     model: typesafe/jev-1.13   # judge model; fixed default, no fallback chain
 ```
 
-**The decision rule.** The judge returns a probability for every offered option. The bot reacts with the highest-probability whitelisted emoji — and only when `P(None) + P(Other)` is **strictly below `0.5`**. At `0.5` or above it does nothing. There is no second confidence threshold on top of that sum, and an abstention option is allowed to top the distribution on its own: with `None = 0.30`, `Other = 0.19` and `👍 = 0.31` the sum is `0.49`, so the bot reacts with 👍. An exact tie between emojis resolves to the one listed first in `emojis`.
+**The decision rule.** The judge returns a probability for every offered option. The bot reacts with the highest-probability whitelisted emoji when **either** `P(None) + P(Other)` is **strictly below `0.5`**, **or** the top emoji's probability is **strictly greater than `5`×** the second-highest emoji's (`None` and `Other` are ignored for that ratio; exactly `5`× does not fire). At `0.5` or above it does nothing unless the runaway-winner branch fires; the reaction is still the argmax emoji. An abstention option is allowed to top the distribution on its own under the first branch: with `None = 0.30`, `Other = 0.19` and `👍 = 0.31` the sum is `0.49`, so the bot reacts with 👍. Under the second branch, with `None = 0.74`, `Other = 0.03`, `👍 = 0.20` and `❤️ = 0.03` the sum is `0.77`, yet the bot reacts with 👍 because `0.20 > 5 × 0.03`. An exact tie between emojis resolves to the one listed first in `emojis`.
 
 **Multi-glyph entries.** An `emojis` entry may hold several emoji glyphs, e.g. `👉👈`. The judge sees it as **one** option (the whole string), and when it wins, the bot adds the glyphs as separate back-to-back reactions in string order — 👉 then 👈. A compound emoji that is one grapheme cluster — `🤦‍♂️` (ZWJ sequence), `❤️` (VS16), skin-tone sequences like `🫱🏻‍🫲🏽`, keycaps like `1️⃣`, flags like `🇦🇺` — stays exactly **one** reaction. Each glyph of a multi-glyph entry is its own API call: if one fails, the rest are still attempted.
 
