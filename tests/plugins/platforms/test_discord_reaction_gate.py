@@ -8,6 +8,7 @@ both config.yaml spellings) are pinned here. Adapter-level wiring lives in
 ``test_discord_reaction_gate_wiring.py``; only the HTTP socket is stubbed.
 """
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,7 @@ from plugins.platforms.discord.reaction_gate import (
     NONE_OPTION,
     OTHER_OPTION,
     JevChoiceClient,
+    ReactionGateRuntime,
     build_reaction_criteria,
     build_reaction_instructions,
     choose_reaction,
@@ -276,6 +278,7 @@ class TestReactionGateConfigFromDict:
     def test_defaults_when_omitted(self):
         config = ReactionGateConfig.from_dict({"enabled": True, "channels": [1]})
         assert config.active is True
+        assert config.include_threads is True
         assert config.emojis == DEFAULT_REACTION_EMOJIS
         assert config.criteria == {}
         assert config.model == "typesafe/jev-1.13"
@@ -283,6 +286,20 @@ class TestReactionGateConfigFromDict:
         assert config.context_messages == 10
         assert config.context_chars == 8000
         assert config.decisions_url is None
+
+    def test_include_threads_explicit_true_and_false(self):
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "include_threads": True,
+        }).include_threads is True
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "include_threads": False,
+        }).include_threads is False
+
+    def test_include_threads_garbage_refuses_to_load(self):
+        with pytest.raises(ValueError, match="include_threads"):
+            ReactionGateConfig.from_dict({
+                "enabled": True, "channels": ["555"], "include_threads": "maybe",
+            })
 
     def test_omitted_block_is_off(self):
         config = ReactionGateConfig.from_dict(None)
@@ -335,6 +352,45 @@ class TestReactionGateConfigFromDict:
             "decisions_url": "http://127.0.0.1:9000/decisions",
         })
         assert ReactionGateConfig.from_dict(config.to_dict()) == config
+
+
+class TestReactionGateRuntimeSelects:
+    """Thread opt-out keeps parent-channel inheritance off the reaction gate only."""
+
+    @staticmethod
+    def _runtime(*, include_threads: bool, channels: tuple) -> ReactionGateRuntime:
+        config = ReactionGateConfig.from_dict({
+            "enabled": True, "channels": list(channels), "include_threads": include_threads,
+        })
+        return ReactionGateRuntime.build(config, "test-credential", logger=logging.getLogger("test"))
+
+    @staticmethod
+    def _thread_keys() -> frozenset:
+        return frozenset({
+            "9001", "dev-thread", "#dev-thread", "555", "general", "#general",
+        })
+
+    def test_include_threads_false_parent_id_only_does_not_select_thread(self):
+        gate = self._runtime(include_threads=False, channels=("555",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is False
+
+    def test_include_threads_false_explicit_thread_id_selects(self):
+        gate = self._runtime(include_threads=False, channels=("9001",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is True
+
+    def test_include_threads_false_thread_name_form_still_selects(self):
+        gate = self._runtime(include_threads=False, channels=("#dev-thread",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is True
+
+    def test_include_threads_false_parent_name_form_still_selects_thread(self):
+        # Combined thread keys carry the parent's bare/# name forms; the set cannot
+        # attribute a name to thread vs parent, so an exact parent-name listing matches.
+        gate = self._runtime(include_threads=False, channels=("#general",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is True
+
+    def test_include_threads_true_parent_id_still_selects_thread(self):
+        gate = self._runtime(include_threads=True, channels=("555",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is True
 
 
 class TestConfigLoaderBridge:

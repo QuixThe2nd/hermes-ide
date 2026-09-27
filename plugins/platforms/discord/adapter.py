@@ -2393,7 +2393,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         channel_keys = self._discord_channel_keys_from_channel(
             channel, self._get_parent_channel_id(channel),
         )
-        if not gate.selects(channel_keys) or not self._discord_channel_policy_admits(channel_keys):
+        is_thread = isinstance(channel, discord.Thread)
+        if (
+            not gate.selects(channel_keys, is_thread=is_thread)
+            or not self._discord_channel_policy_admits(channel_keys)
+        ):
             return None
         return {
             "message_id": str(getattr(message, "id", "") or ""),
@@ -2569,7 +2573,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         channel_keys = self._discord_channel_keys_from_channel(
             channel, self._get_parent_channel_id(channel),
         )
-        if not gate.selects(channel_keys) or not self._discord_channel_policy_admits(channel_keys):
+        is_thread = isinstance(channel, discord.Thread)
+        if (
+            not gate.selects(channel_keys, is_thread=is_thread)
+            or not self._discord_channel_policy_admits(channel_keys)
+        ):
             return
         bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
         if not bot_name:

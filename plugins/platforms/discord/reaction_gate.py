@@ -320,6 +320,7 @@ class ReactionGateRuntime:
         self.config = config
         self.client = client
         self.channel_keys = frozenset(config.channels)
+        self.include_threads = bool(getattr(config, "include_threads", True))
         self.buffer = ChannelContextBuffer(
             max_messages=config.context_messages, max_chars=config.context_chars,
         )
@@ -342,14 +343,46 @@ class ReactionGateRuntime:
 
     # --- scope ------------------------------------------------------------
 
-    def selects(self, channel_keys) -> bool:
+    def selects(self, channel_keys, *, is_thread: bool = False) -> bool:
         """True when one of the adapter's channel keys is opted in.
 
         Keys follow the adapter's established convention (exact id, bare name, ``#name``,
-        plus the parent for threads), so a parent channel id selects its threads — while
-        the evidence buffer below stays keyed to the exact conversation only.
+        plus the parent for threads when :attr:`include_threads` is true). With
+        ``include_threads`` false on a thread conversation, a listed parent channel id
+        no longer selects the thread; the thread's own id or an exact name match still
+        does. The evidence buffer below stays keyed to the exact conversation only.
         """
-        return bool(self.channel_keys.intersection(channel_keys or ()))
+        keys = set(channel_keys or ())
+        if not keys:
+            return False
+        if self.include_threads or not is_thread:
+            return bool(self.channel_keys.intersection(keys))
+        # Discord threads are created after their parent channel, so the smaller
+        # snowflake id in the combined key set is the parent's and the larger is the
+        # thread's. Bare/# name forms cannot be attributed to thread vs parent in that
+        # set — a configured name matches by exact name wherever it appears.
+        numeric = sorted((key for key in keys if key.isdigit()), key=int)
+        if len(numeric) < 2:
+            return bool(self.channel_keys.intersection(keys))
+        thread_id = str(numeric[-1])
+        parent_id = str(numeric[0])
+        if thread_id in self.channel_keys:
+            return True
+        for key in keys:
+            if key.isdigit():
+                continue
+            if key.startswith("#"):
+                if key in self.channel_keys:
+                    return True
+                continue
+            hash_name = f"#{key}"
+            if hash_name not in keys:
+                continue
+            if key in self.channel_keys or hash_name in self.channel_keys:
+                return True
+        if parent_id in self.channel_keys:
+            return False
+        return bool(self.channel_keys.intersection(keys))
 
     # --- evidence ---------------------------------------------------------
 
