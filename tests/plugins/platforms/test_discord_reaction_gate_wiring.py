@@ -484,6 +484,71 @@ class TestMultiGlyphEntryReactions:
         assert "outcome=react:🔥" in reaction_lines[0]
 
 
+class TestCustomEmojiJudgeLabels:
+    """Custom guild emojis are judged by short name but reacted with the full token."""
+
+    POG = "<:pog:1553218458882154506>"
+    KEKW = "<:kekw:987654321012345678>"
+
+    @pytest.mark.asyncio
+    async def test_judge_sees_short_names_reaction_uses_full_token(self, choice_judge, caplog):
+        choice_judge.answer = {
+            "pog": 0.80, "kekw": 0.00, "None": 0.10, "Other": 0.10,
+        }
+        adapter = _reaction_adapter(
+            reaction={
+                "enabled": True, "channels": ["555"],
+                "emojis": [self.POG, self.KEKW],
+            },
+        )
+        message = _message(content="that was pog", msg_id=270)
+
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.discord.adapter"):
+            await adapter._dispatch_discord_message(message)
+            await _drain(adapter)
+
+        reaction_question = choice_judge.questions["reaction"]
+        assert set(reaction_question["criteria"]) == {"pog", "kekw", "None", "Other"}
+        assert self.POG not in reaction_question["criteria"]
+        assert _reactions(message) == [(self.POG,)]
+        reaction_lines = [
+            record.message for record in caplog.records
+            if " reaction_gate channel=" in record.message
+        ]
+        assert f"outcome=react:{self.POG}" in reaction_lines[0]
+
+    @pytest.mark.asyncio
+    async def test_native_only_request_unchanged(self, choice_judge):
+        """Regression: without custom emojis the offered criteria keys match entries."""
+        adapter = _reaction_adapter(
+            reaction={"enabled": True, "channels": ["555"], "emojis": ["👉👈", "🔥"]},
+        )
+        message = _message(content="any pointers?")
+
+        await adapter._dispatch_discord_message(message)
+        await _drain(adapter)
+
+        reaction_question = choice_judge.questions["reaction"]
+        assert list(reaction_question["criteria"]) == ["👉👈", "🔥", "None", "Other"]
+
+    @pytest.mark.asyncio
+    async def test_collision_offers_full_tokens(self, choice_judge):
+        a1, a2 = "<:a:111>", "<:a:222>"
+        choice_judge.answer = {a1: 0.80, a2: 0.00, "None": 0.10, "Other": 0.10}
+        adapter = _reaction_adapter(
+            reaction={"enabled": True, "channels": ["555"], "emojis": [a1, a2]},
+        )
+        message = _message(content="pick one", msg_id=271)
+
+        await adapter._dispatch_discord_message(message)
+        await _drain(adapter)
+
+        reaction_question = choice_judge.questions["reaction"]
+        assert set(reaction_question["criteria"]) == {a1, a2, "None", "Other"}
+        assert "a" not in reaction_question["criteria"]
+        assert _reactions(message) == [(a1,)]
+
+
 class TestIncludeThreadsOptOut:
     """Parent-channel whitelist without thread inheritance on the reaction gate."""
 

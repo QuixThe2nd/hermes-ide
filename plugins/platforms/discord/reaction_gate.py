@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -61,6 +62,36 @@ _DISTRIBUTION_TOLERANCE = 0.02
 #: Usage attribution label for the loopback metering override (distinct from the
 #: speaking gate's rows: ``^[A-Za-z0-9._:-]+$``).
 _USAGE_CALLER_LABEL = "discord-reaction-gate"
+
+#: Discord custom emoji whitelist entries use ``<:name:snowflake>``.
+_CUSTOM_EMOJI_RE = re.compile(r"^<:(\w+):\d+>$")
+
+
+def reaction_label_map(emojis: Iterable[str]) -> Dict[str, str]:
+    """Map judge-facing option label to the original whitelist entry.
+
+    Custom guild emojis are labeled by their short ``name``; native entries and
+    any label collision (same short name from different entries) keep the full
+    entry as the label.
+    """
+    entries = tuple(emojis)
+    initial_labels: List[str] = []
+    for entry in entries:
+        match = _CUSTOM_EMOJI_RE.match(entry)
+        initial_labels.append(match.group(1) if match else entry)
+    counts: Dict[str, int] = {}
+    for label in initial_labels:
+        counts[label] = counts.get(label, 0) + 1
+    result: Dict[str, str] = {}
+    for entry, init_label in zip(entries, initial_labels):
+        label = entry if counts[init_label] > 1 else init_label
+        result[label] = entry
+    return result
+
+
+def _whitelist_labels(emojis: Iterable[str], label_to_entry: Dict[str, str]) -> tuple:
+    entry_to_label = {entry: label for label, entry in label_to_entry.items()}
+    return tuple(entry_to_label[entry] for entry in emojis)
 
 
 def choose_reaction(probabilities: Dict[str, float], emojis: Iterable[str]) -> Optional[str]:
@@ -111,6 +142,8 @@ def split_reaction_clusters(entry: str) -> List[str]:
     """
     if not entry:
         return []
+    if _CUSTOM_EMOJI_RE.match(entry):
+        return [entry]
     clusters: List[List[str]] = [[entry[0]]]
     for char in entry[1:]:
         code = ord(char)
@@ -186,6 +219,20 @@ def build_reaction_criteria(
     criteria[NONE_OPTION] = "No reaction is appropriate"
     criteria[OTHER_OPTION] = "A reaction is appropriate but none of the whitelisted emojis fits"
     return criteria
+
+
+def _criteria_for_judge_labels(
+    emojis: Iterable[str],
+    label_to_entry: Dict[str, str],
+    overrides: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Criteria keyed by judge labels; config ``criteria`` overrides stay entry-keyed."""
+    full = build_reaction_criteria(emojis, overrides)
+    entry_to_label = {entry: label for label, entry in label_to_entry.items()}
+    labeled = {entry_to_label[entry]: full[entry] for entry in emojis}
+    labeled[NONE_OPTION] = full[NONE_OPTION]
+    labeled[OTHER_OPTION] = full[OTHER_OPTION]
+    return labeled
 
 
 @dataclass
@@ -315,10 +362,16 @@ class ReactionGateRuntime:
     """
 
     def __init__(
-        self, *, config: Any, client: Optional[JevChoiceClient], logger: logging.Logger,
+        self,
+        *,
+        config: Any,
+        client: Optional[JevChoiceClient],
+        logger: logging.Logger,
+        label_to_entry: Optional[Dict[str, str]] = None,
     ) -> None:
         self.config = config
         self.client = client
+        self.label_to_entry = dict(label_to_entry or {})
         self.channel_keys = frozenset(config.channels)
         self.include_threads = bool(getattr(config, "include_threads", True))
         self.buffer = ChannelContextBuffer(
@@ -330,16 +383,22 @@ class ReactionGateRuntime:
     def build(
         cls, config: Any, credential: Optional[str], *, logger: logging.Logger,
     ) -> "ReactionGateRuntime":
+        label_to_entry = reaction_label_map(config.emojis)
+        labels = _whitelist_labels(config.emojis, label_to_entry)
         client = None
         if credential:
             client = JevChoiceClient(
                 credential=credential, model=config.model,
-                timeout_seconds=config.timeout_seconds, emojis=config.emojis,
-                criteria=build_reaction_criteria(config.emojis, config.criteria),
+                timeout_seconds=config.timeout_seconds, emojis=labels,
+                criteria=_criteria_for_judge_labels(
+                    config.emojis, label_to_entry, config.criteria,
+                ),
                 instructions=build_reaction_instructions(),
                 decisions_url=getattr(config, "decisions_url", None), logger=logger,
             )
-        return cls(config=config, client=client, logger=logger)
+        return cls(
+            config=config, client=client, logger=logger, label_to_entry=label_to_entry,
+        )
 
     # --- scope ------------------------------------------------------------
 

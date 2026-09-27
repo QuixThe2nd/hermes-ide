@@ -2487,6 +2487,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if emoji is None:
                 self._reaction_gate_log(decision, candidate)
                 return
+            emoji = gate.label_to_entry.get(emoji, emoji)
             # A multi-glyph whitelist entry is ONE judge option but is added as one
             # reaction per grapheme cluster, in string order (👉👈 → 👉 then 👈); a
             # compound emoji (🤦‍♂️, 1️⃣, 🇦🇺) is one cluster and stays one reaction.
