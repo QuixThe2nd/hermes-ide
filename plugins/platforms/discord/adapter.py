@@ -1572,12 +1572,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # In-flight consultation tasks; cancelled and awaited in disconnect().
         self._reaction_gate_tasks: set = set()
         # Live reload of the reaction gate's config block (discord.reaction_gate): the
-        # watcher task and the config file it polls. The path is resolved ONCE inside
-        # connect()'s profile scope (the same capture discipline as the credential
-        # above); the watcher itself runs outside any scope and only ever uses the
-        # captured path — never HERMES_HOME or os.environ.
+        # watcher task, the config file it polls, the managed-scope directory whose
+        # overlay is part of the effective config, and the values of that overlay's
+        # ${VAR} refs. All are resolved ONCE inside connect()'s profile scope (the
+        # same capture discipline as the credential above); the watcher itself runs
+        # outside any scope and only ever uses the captured paths/values — never
+        # HERMES_HOME, HERMES_MANAGED_DIR or os.environ.
         self._reaction_gate_reload_task: Optional[asyncio.Task] = None
         self._reaction_gate_config_path: Optional[_Path] = None
+        self._reaction_gate_managed_dir: Optional[_Path] = None
+        self._reaction_gate_managed_env: Optional[Dict[str, str]] = None
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
@@ -2399,31 +2403,44 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _reaction_gate_start_reload_watcher(self) -> None:
         """Watch this profile's config.yaml so a ``reaction_gate`` edit applies live.
 
-        The file path is resolved HERE — this runs from ``connect()`` inside the owning
-        profile's runtime scope (the same capture discipline as the judge credential
-        and the gate-env snapshot). The watcher never re-resolves it: event callbacks
-        and background tasks run outside any profile scope, where ``HERMES_HOME`` can
-        name another profile, so the captured path is the only one it may read.
+        The file path, the managed-scope directory AND the values of the managed
+        config's ``${VAR}`` refs are resolved HERE — this runs from ``connect()``
+        inside the owning profile's runtime scope (the same capture discipline as
+        the judge credential and the gate-env snapshot). The watcher never
+        re-resolves any of them: event callbacks and background tasks run outside
+        any profile scope, where ``HERMES_HOME``/``HERMES_MANAGED_DIR`` — and the
+        process env a managed ref would expand from — can name another profile, so
+        the captured paths and values are the only ones it may read.
         """
         if self._reaction_gate_reload_task is not None:
             # A reconnect starts a fresh watcher; drop the stale one (its disconnect
             # side never ran — see disconnect() for the awaited cancellation).
             self._reaction_gate_reload_task.cancel()
         from hermes_constants import get_hermes_home
+        from hermes_cli import managed_scope
 
         self._reaction_gate_config_path = get_hermes_home() / "config.yaml"
+        self._reaction_gate_managed_dir = managed_scope.get_managed_dir()
+        self._reaction_gate_managed_env = (
+            managed_scope.managed_config_env_snapshot(self._reaction_gate_managed_dir)
+            if self._reaction_gate_managed_dir is not None
+            else None
+        )
         self._reaction_gate_reload_task = start_reaction_gate_reload_watcher(
             config_path=self._reaction_gate_config_path,
             apply=self._reaction_gate_reload,
             logger=logger,
             name=self.name,
+            managed_dir=self._reaction_gate_managed_dir,
+            managed_env=self._reaction_gate_managed_env,
         )
 
     def _reaction_gate_reload(self, block: Any) -> bool:
         """Build and swap the reaction gate from one re-read ``reaction_gate`` block.
 
-        Called by the reload watcher whenever the extracted block changed. The block is
-        validated exactly like startup; a valid block (or a deliberate off) replaces
+        Called once at watcher start (boot reconcile against the current file) and
+        then whenever the extracted block changes. The block is validated exactly
+        like startup; a valid block (or a deliberate off) replaces
         ``self._reaction_gate`` in a single assignment — the whole runtime contract for
         a reload, since every consumer reads the attribute fresh. An invalid block
         returns ``False`` and changes nothing: the previously active gate keeps running.
@@ -2446,6 +2463,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if self._reaction_gate is not None:
                 logger.info("[%s] reaction_gate disabled by config reload (fail closed)", self.name)
             self._reaction_gate = None
+            return True
+        current = self._reaction_gate
+        if current is not None and current.config == reaction_cfg:
+            # The running gate already matches — the watcher's boot reconcile with
+            # an unchanged file lands here, as does a rewrite of the in-force
+            # block. One validation, no rebuild, no log line.
             return True
         self._reaction_gate = ReactionGateRuntime.build(
             reaction_cfg, self._response_gate_credential, logger=logger,
@@ -3215,6 +3238,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         await cancel_task(self._reaction_gate_reload_task)
         self._reaction_gate_reload_task = None
         self._reaction_gate_config_path = None
+        self._reaction_gate_managed_dir = None
+        self._reaction_gate_managed_env = None
         # Reaction consultations are dispatch side effects: cancel any still in flight
         # (their message is gone from this connection's point of view) and drop the
         # once-only registry so a reconnect starts clean.
