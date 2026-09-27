@@ -373,6 +373,45 @@ class TestReactionGateConfigFromDict:
                 "enabled": True, "channels": ["555"], "include_threads": "maybe",
             })
 
+    def test_threads_require_membership_defaults_true_when_omitted(self):
+        config = ReactionGateConfig.from_dict({"enabled": True, "channels": ["555"]})
+        assert config.threads_require_membership is True
+        assert ReactionGateConfig.from_dict(None).threads_require_membership is True
+
+    def test_threads_require_membership_explicit_true_and_false(self):
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": True,
+        }).threads_require_membership is True
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": False,
+        }).threads_require_membership is False
+
+    def test_threads_require_membership_recognized_tokens_load(self):
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": "false",
+        }).threads_require_membership is False
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": "true",
+        }).threads_require_membership is True
+
+    def test_threads_require_membership_garbage_refuses_to_load(self):
+        with pytest.raises(ValueError, match="threads_require_membership"):
+            ReactionGateConfig.from_dict({
+                "enabled": True, "channels": ["555"], "threads_require_membership": "maybe",
+            })
+        with pytest.raises(ValueError, match="threads_require_membership"):
+            ReactionGateConfig.from_dict({
+                "enabled": True, "channels": ["555"], "threads_require_membership": 3,
+            })
+
+    def test_to_dict_omits_threads_require_membership_true_includes_false(self):
+        on_by_default = ReactionGateConfig.from_dict({"enabled": True, "channels": ["555"]})
+        assert "threads_require_membership" not in on_by_default.to_dict()
+        opted_out = ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": False,
+        })
+        assert opted_out.to_dict()["threads_require_membership"] is False
+
     def test_omitted_block_is_off(self):
         config = ReactionGateConfig.from_dict(None)
         assert config.enabled is False
@@ -415,6 +454,30 @@ class TestReactionGateConfigFromDict:
         block = {"enabled": True, "channels": ["555"], **overrides}
         platform = PlatformConfig.from_dict({"enabled": True, "reaction_gate": block})
         assert platform.reaction_gate is None
+
+    def test_invalid_block_records_its_error_on_the_platform(self, caplog):
+        """The contained refusal stays visible: the gate stays off, the platform loads, and
+        the ValueError text lands in ``gate_config_warnings`` for the status surfaces."""
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+        platform = PlatformConfig.from_dict({
+            "enabled": True,
+            "reaction_gate": {
+                "enabled": True, "channels": ["555"],
+                "emojis": [f"e{i:02d}" for i in range(ReactionGateConfig.MAX_EMOJIS + 1)],
+            },
+        })
+        assert platform.reaction_gate is None
+        assert len(platform.gate_config_warnings) == 1
+        assert "reaction_gate: emojis must list at most" in platform.gate_config_warnings[0]
+        # The log line operators already watch is unchanged.
+        assert "Ignoring invalid reaction_gate config (gate stays off)" in caplog.text
+
+    def test_valid_block_records_no_warnings(self):
+        platform = PlatformConfig.from_dict({
+            "enabled": True, "reaction_gate": {"enabled": True, "channels": ["555"]},
+        })
+        assert platform.reaction_gate is not None
+        assert platform.gate_config_warnings == ()
 
     def test_to_dict_round_trip(self):
         config = ReactionGateConfig.from_dict({
