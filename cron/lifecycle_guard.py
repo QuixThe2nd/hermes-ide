@@ -284,6 +284,22 @@ _CLOUD_PLACEHOLDER_MARKERS = frozenset({"Mobile Documents", "CloudStorage"})
 _DATA_SINK_EXECUTABLES = frozenset(
     {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
 )
+# ``python -c`` payloads are interpreter source, not a POSIX shell. A quoted
+# lifecycle phrase (``print('hermes gateway restart' in html)``) is data.
+# Mask the ``-c`` argument unless the payload names a process-exec API — that
+# is how a Python one-liner actually launches a gateway restart
+# (pc_ecfa8ae20555).
+_PYTHON_INTERPRETER_RE = re.compile(
+    r"(?i)^(?:pythonw?|pypy3?)(?:\d+(?:\.\d+)*)?(?:\.exe)?$"
+)
+_PYTHON_PROCESS_EXEC_RE = re.compile(
+    r"(?i)(?:"
+    r"\bos\s*\.\s*(?:system|popen|execv[e]?|execl[ep]?|spawn[vl]?p?)\b|"
+    r"\bsubprocess\s*\.|"
+    r"\basyncio\s*\.\s*create_subprocess|"
+    r"\bPopen\s*\("
+    r")"
+)
 # Argument shapes that smuggle execution back INTO a data sink (command/process substitution, psql
 # `\!`). Any hit disables masking for the whole segment — fail closed to the plain regex verdict.
 _UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
@@ -718,6 +734,37 @@ def contains_launchctl_submit_command(command: str) -> bool:
     return False
 
 
+def _is_python_interpreter(token: str) -> bool:
+    """True when *token* names a CPython/PyPy interpreter (``python3.12.exe`` included)."""
+    return bool(_PYTHON_INTERPRETER_RE.fullmatch(Path(token).name))
+
+
+def _mask_python_c_arguments(arguments: list[str]) -> Optional[list[str]]:
+    """Replace inert ``python -c`` payloads with ``arg``. ``None`` if nothing to mask.
+
+    Payloads that mention ``os.system`` / ``subprocess`` / ``Popen`` stay intact so a
+    one-liner that actually launches a lifecycle command is still blocked.
+    """
+    masked: list[str] = []
+    changed = False
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "-c" and index + 1 < len(arguments):
+            payload = arguments[index + 1]
+            masked.append(token)
+            if _PYTHON_PROCESS_EXEC_RE.search(payload):
+                masked.append(payload)
+            else:
+                masked.append("arg")
+                changed = True
+            index += 2
+            continue
+        masked.append(token)
+        index += 1
+    return masked if changed else None
+
+
 def _mask_data_sink_arguments(text: str) -> str:
     """Replace data-sink executables' arguments with a neutral placeholder.
 
@@ -726,6 +773,9 @@ def _mask_data_sink_arguments(text: str) -> str:
     and a match that survives is a real command. Strictly fail-closed: masking is skipped when the
     line pipes into a shell/interpreter, any argument carries an execution marker, or the line
     cannot be tokenized. Masking can only ALLOW what the plain regex would block, never block more.
+
+    ``python -c`` payloads are the same class when they do not call a process-exec API: the
+    quoted text is source, not a shell command.
     """
     lines_out: list[str] = []
     changed = False
@@ -752,6 +802,13 @@ def _mask_data_sink_arguments(text: str) -> str:
                     changed = True
                     rebuilt.extend(segment[: index + 1])
                     rebuilt.extend("arg" for _ in arguments)
+                    continue
+            if index is not None and _is_python_interpreter(segment[index]):
+                masked_args = _mask_python_c_arguments(segment[index + 1 :])
+                if masked_args is not None:
+                    changed = True
+                    rebuilt.extend(segment[: index + 1])
+                    rebuilt.extend(masked_args)
                     continue
             rebuilt.extend(segment)
         lines_out.append(" ".join(rebuilt))
