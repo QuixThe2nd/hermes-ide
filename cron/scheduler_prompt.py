@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -51,6 +52,13 @@ def _job_skill_names(job: dict) -> list[str]:
 
 
 _MAX_CONTEXT_CHARS = 8000
+# Cron run documents append the delivered report after this heading. Prefer the
+# last match so a quoted heading inside ## Prompt cannot steal the payload.
+_RESPONSE_HEADING_RE = re.compile(r"(?m)^## Response[ \t]*$")
+_USELESS_RESPONSE_RE = re.compile(
+    r"^(?:\(no response generated\)|<\|eos\|>)$",
+    re.IGNORECASE,
+)
 
 _SELF_CONTEXT_INTRO = (
     "The following is this job's most recent output from its previous run. Use it for "
@@ -61,6 +69,27 @@ _UPSTREAM_CONTEXT_INTRO = (
     "The following is the most recent output from a preceding cron job. Use it as context for "
     "your analysis."
 )
+
+
+def _continuity_body(candidate: str) -> str:
+    """Return the previous-run payload that should be injected.
+
+    Agent cron output files wrap the assembled prompt (skills + job prompt)
+    under ``## Prompt`` and the delivered report under ``## Response``.
+    Continuity only needs the report. Injecting the whole file burns
+    ``_MAX_CONTEXT_CHARS`` on the skill dump and truncates before the
+    actual result.
+    """
+    text = (candidate or "").strip()
+    if not text:
+        return ""
+    matches = list(_RESPONSE_HEADING_RE.finditer(text))
+    if not matches:
+        return text
+    body = text[matches[-1].end():].strip()
+    if not body or _USELESS_RESPONSE_RE.fullmatch(body):
+        return ""
+    return body
 
 
 def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
@@ -102,9 +131,13 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                                      "Script gate returned `wakeAgent=false`"))
                     for line in header.splitlines()
                 )
-                if candidate and not silent_audit:
-                    latest_output = candidate
-                    break
+                if not candidate or silent_audit:
+                    continue
+                payload = _continuity_body(candidate)
+                if not payload:
+                    continue
+                latest_output = payload
+                break
             if len(latest_output) > _MAX_CONTEXT_CHARS:
                 latest_output = (
                     latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")
