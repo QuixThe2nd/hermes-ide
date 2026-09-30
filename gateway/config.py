@@ -456,9 +456,9 @@ class ResponseGateConfig:
     #: ``enforce`` lets an approved ambient message through and denies everything else.
     mode: str = "shadow"
     #: Legacy single-score cutoff, still accepted and validated so existing configs keep
-    #: loading. The gate's verdict is composed from three fixed component cutoffs
-    #: (addresses_bot > 0.5, or continues_bot_thread > 0.6 and noise < 0.4); this value
-    #: no longer influences it.
+    #: loading. The gate's verdict is composed from three component cutoffs
+    #: (defaults: addresses_bot > 0.5, or continues_bot_thread > 0.6 and noise < 0.4;
+    #: see the ``*_min``/``noise_max`` fields below); this value no longer influences it.
     threshold: float = 0.8
     #: Per-request budget; a timeout denies (enforce) rather than failing open.
     timeout_seconds: float = 3.0
@@ -480,6 +480,15 @@ class ResponseGateConfig:
     #: triggers: a ping in an unjoined thread still wakes the bot through the
     #: mention path, which never consults the gate.
     threads_require_membership: bool = True
+    #: Per-profile ambient confidence cutoffs (strict comparisons, each finite in
+    #: ``[0, 1]``). A candidate is allowed when ``addresses_bot > addresses_bot_min``
+    #: OR (``continues_bot_thread > continues_bot_thread_min`` AND
+    #: ``noise < noise_max``). The defaults reproduce the gate's historical fixed
+    #: cutoffs exactly; raising them narrows ambient admission. Changes apply on the
+    #: next gateway start — the gate has no live reload.
+    addresses_bot_min: float = 0.5
+    continues_bot_thread_min: float = 0.6
+    noise_max: float = 0.4
 
     # Validation bounds. Explicit config outside them raises at load time: a mistyped gate
     # must never quietly degrade into "every ambient message is allowed".
@@ -505,6 +514,12 @@ class ResponseGateConfig:
             result["decisions_url"] = self.decisions_url
         if not self.threads_require_membership:
             result["threads_require_membership"] = self.threads_require_membership
+        if self.addresses_bot_min != 0.5:
+            result["addresses_bot_min"] = self.addresses_bot_min
+        if self.continues_bot_thread_min != 0.6:
+            result["continues_bot_thread_min"] = self.continues_bot_thread_min
+        if self.noise_max != 0.4:
+            result["noise_max"] = self.noise_max
         return result
 
     @property
@@ -560,11 +575,23 @@ class ResponseGateConfig:
         threads_require_membership = _gate_bool(
             data, "threads_require_membership", True, "response_gate.threads_require_membership",
         )
+        addresses_bot_min = _response_gate_float(
+            data, "addresses_bot_min", 0.5, 0.0, 1.0, "response_gate.addresses_bot_min",
+        )
+        continues_bot_thread_min = _response_gate_float(
+            data, "continues_bot_thread_min", 0.6, 0.0, 1.0, "response_gate.continues_bot_thread_min",
+        )
+        noise_max = _response_gate_float(
+            data, "noise_max", 0.4, 0.0, 1.0, "response_gate.noise_max",
+        )
         return cls(
             provider=provider, channels=channels, echo_channels=echo_channels, mode=mode,
             threshold=threshold, timeout_seconds=timeout_seconds,
             context_messages=context_messages, context_chars=context_chars, model=model,
             decisions_url=decisions_url, threads_require_membership=threads_require_membership,
+            addresses_bot_min=addresses_bot_min,
+            continues_bot_thread_min=continues_bot_thread_min,
+            noise_max=noise_max,
         )
 
 
