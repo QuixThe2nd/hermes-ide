@@ -791,6 +791,19 @@ class _PathReadBudget:
                 _READ_POOL_MAX,
             )
 
+    def unregister(self, db: "SessionDB") -> None:
+        """Remove a closed writer from duplicate-handle diagnostics immediately.
+
+        Parity with ``hermes_state_readpool._PathReadBudget.unregister`` (upstream
+        a7ed109847): the mixin consolidation into hermes_state.py kept the
+        ``close()`` call site but dropped this method, so every ``SessionDB.close()``
+        raised AttributeError and 12 WAL-generation-guard tests failed on a clean
+        checkout. Discard-only: a never-registered (failed-init) handle is a no-op,
+        and the WeakSet already drops garbage-collected members anyway.
+        """
+        with self._lock:
+            self._members.discard(db)
+
     def acquire(self, requester: "SessionDB") -> bool:
         """Take a permit for a new read connection, or refuse.
 
