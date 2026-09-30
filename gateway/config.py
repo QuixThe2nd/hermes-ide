@@ -484,7 +484,8 @@ class ResponseGateConfig:
     #: ``[0, 1]``). A candidate is allowed when ``addresses_bot > addresses_bot_min``
     #: OR (``continues_bot_thread > continues_bot_thread_min`` AND
     #: ``noise < noise_max``). The defaults reproduce the gate's historical fixed
-    #: cutoffs exactly; raising them narrows ambient admission. Changes apply on the
+    #: cutoffs exactly; raising ``addresses_bot_min`` or ``continues_bot_thread_min``
+    #: narrows ambient admission, as does lowering ``noise_max``. Changes apply on the
     #: next gateway start — the gate has no live reload.
     addresses_bot_min: float = 0.5
     continues_bot_thread_min: float = 0.6
