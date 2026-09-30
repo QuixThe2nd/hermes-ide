@@ -285,7 +285,7 @@ def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: st
         return _classify_unreadable_state_db(f, should_fix, state_db_path, _DHH, e)
     # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers.
     # Non-fixing doctor snapshots first so the write probe cannot join the live WAL lifecycle (#50502).
-    _write_reason = _write_health_reason(state_db_path, isolate=not should_fix)
+    _write_reason = _write_health_reason(state_db_path, should_fix=should_fix)
     if _write_reason is not None:
         if _report_structural_damage(f, should_fix, state_db_path, _DHH, _write_reason):
             return
