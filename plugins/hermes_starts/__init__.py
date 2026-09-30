@@ -1518,6 +1518,18 @@ def _seed_thread_session(thread_id: str, thread_name: str, opening_text: str) ->
     the session the gateway will route the thread to (key format verified:
     ``agent:main:discord:thread:<id>:<id>``) makes the first reply continue
     the started conversation. Assistant-role keeps message alternation valid.
+
+    The session key is returned ONLY when the opening is provably durable in
+    the owning session database — neither step of the naive path is
+    acknowledgement: ``get_or_create_session`` returns its routing entry even
+    when the session-row INSERT failed (the write is deferred to the
+    self-healing per-turn peer refresh, #82616), and plain
+    ``append_to_transcript`` QUEUES the row when the DB write fails (a queue
+    acknowledgement is not durability). This thread's first reply is exactly
+    that "next turn", so the repair cannot wait for it: the store's own
+    identity/peer refresh runs first to make the session row exist, then the
+    checked append's commit-plus-read-back is the only accepted proof.
+    ``None`` means the seed did not land and the caller must say so.
     """
     try:
         from gateway.config import GatewayConfig, Platform
@@ -1534,17 +1546,34 @@ def _seed_thread_session(thread_id: str, thread_name: str, opening_text: str) ->
         )
         store = SessionStore(get_hermes_home() / "sessions", GatewayConfig())
         entry = store.get_or_create_session(source)
-        store.append_to_transcript(
+        # The peer refresh INSERTs a missing session row with full identity
+        # (#82616). ``touch_activity=False``: seeding is not user activity and
+        # must not arm the idle/daily reset clock.
+        store.update_session(entry.session_key, touch_activity=False)
+        db = store._db_for_session_id(entry.session_id)
+        if db is None:
+            return None  # no owning store — nothing is provable
+        existing = db.get_messages_as_conversation(entry.session_id)
+    except Exception:
+        return None  # never fail the tool call over seeding
+    # Repeat seeding of the same opening must not duplicate it: an identical
+    # assistant row already in the live transcript IS the seed.
+    for row in existing:
+        if row.get("role") == "assistant" and row.get("content") == opening_text:
+            return entry.session_key
+    try:
+        if not store.append_to_transcript_checked(
             entry.session_id,
             {
                 "role": "assistant",
                 "content": opening_text,
                 "observed": True,
             },
-        )
-        return entry.session_key
+        ):
+            return None
     except Exception:
         return None  # never fail the tool call over seeding
+    return entry.session_key
 
 
 def _handle_start(args: Dict[str, Any], token: str) -> str:
@@ -1817,6 +1846,7 @@ def _send_reserved_start(
             except Exception as exc:
                 warnings.append(f"thread listen mark failed: {exc}")
             seeded_key: Optional[str] = None
+            seed_error: Optional[str] = None
             try:
                 seeded_key = _seed_thread_session(
                     thread_id,
@@ -1824,10 +1854,23 @@ def _send_reserved_start(
                     composed,
                 )
             except Exception as exc:
-                seeded_key = None
-                warnings.append(f"session seed failed: {exc}")
+                seed_error = f"{type(exc).__name__}: {exc}"
             if seeded_key:
                 result["session_seed_key"] = seeded_key
+            else:
+                # Never silently successful: the opening is posted in Discord
+                # but not provably durable in the thread's session, so the
+                # first reply may open a blank conversation. Report it with
+                # the surviving Discord ids; the start stays a success and
+                # nothing is re-sent.
+                detail = f": {seed_error}" if seed_error else ""
+                warnings.append(
+                    f"session seed incomplete{detail}: opening not durable "
+                    f"in the thread session; the first reply in thread "
+                    f"{thread_id} may not see the opening (anchor message "
+                    f"{anchor_id}, thread {thread_id}). No re-send was "
+                    "attempted."
+                )
         if warnings:
             result["warning"] = "; ".join(warnings)
         return json.dumps(result)
