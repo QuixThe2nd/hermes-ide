@@ -41,8 +41,11 @@ ADDRESSES_BOT_KEY = "addresses_bot"
 CONTINUES_THREAD_KEY = "continues_bot_thread"
 NOISE_KEY = "noise"
 
-#: Fixed composition cutoffs (strict comparisons): an ambient candidate is allowed when
+#: Default composition cutoffs (strict comparisons): an ambient candidate is allowed when
 #: ``addresses_bot > 0.5`` OR (``continues_bot_thread > 0.6`` AND ``noise < 0.4``).
+#: A profile may override each cutoff via ``response_gate.addresses_bot_min`` /
+#: ``continues_bot_thread_min`` / ``noise_max``; these constants remain the defaults and
+#: the composition shape (and its strict operators) is unchanged.
 ADDRESSES_BOT_ALLOW = 0.5
 CONTINUES_THREAD_ALLOW = 0.6
 NOISE_ALLOW = 0.4
@@ -204,6 +207,9 @@ class JevDecisionClient:
         decisions_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         usage_caller: str = _USAGE_CALLER_LABEL,
+        addresses_bot_min: float = ADDRESSES_BOT_ALLOW,
+        continues_bot_thread_min: float = CONTINUES_THREAD_ALLOW,
+        noise_max: float = NOISE_ALLOW,
     ) -> None:
         if not credential:
             # Constructed without a credential the caller must not consult us; keep the
@@ -221,6 +227,17 @@ class JevDecisionClient:
                     "config_error", "decisions_url must be a loopback http(s) URL"
                 )
             decisions_url = url
+        for label, cutoff in (
+            ("addresses_bot_min", addresses_bot_min),
+            ("continues_bot_thread_min", continues_bot_thread_min),
+            ("noise_max", noise_max),
+        ):
+            # Config load validates these, but a directly built client must fail
+            # closed too: an unusable cutoff can never widen ambient admission.
+            if isinstance(cutoff, bool) or not isinstance(cutoff, (int, float)):
+                raise ResponseGateError("config_error", f"{label} must be a number")
+            if not math.isfinite(float(cutoff)) or float(cutoff) < 0.0 or float(cutoff) > 1.0:
+                raise ResponseGateError("config_error", f"{label} must be finite in [0, 1]")
         self._credential = credential
         self._model = model
         self._threshold = threshold
@@ -228,13 +245,16 @@ class JevDecisionClient:
         self._questions = questions
         self._decisions_url = decisions_url
         self._usage_caller = usage_caller
+        self._addresses_bot_min = float(addresses_bot_min)
+        self._continues_bot_thread_min = float(continues_bot_thread_min)
+        self._noise_max = float(noise_max)
         self._log = logger or logging.getLogger(__name__)
 
     @property
     def threshold(self) -> float:
         """Legacy single-score cutoff from config; retained for compatibility only.
 
-        The composed decision uses the fixed cutoffs on this module, not this value.
+        The composed decision uses the per-profile component cutoffs, not this value.
         """
         return self._threshold
 
@@ -242,9 +262,12 @@ class JevDecisionClient:
                      chat_id: Optional[str] = None) -> GateDecision:
         """Ask the judge the three gate questions about ``state``, then compose.
 
-        ``allowed`` is ``addresses_bot > 0.5`` OR (``continues_bot_thread > 0.6`` AND
-        ``noise < 0.4``) over the three returned nouls. Every failure path — including
-        any absent or invalid component answer — raises :class:`ResponseGateError`.
+        ``allowed`` is ``addresses_bot > addresses_bot_min`` OR
+        (``continues_bot_thread > continues_bot_thread_min`` AND ``noise < noise_max``)
+        over the three returned nouls, with the cutoffs this client was built with
+        (the config defaults reproduce the historical fixed values exactly). Every
+        failure path — including any absent or invalid component answer — raises
+        :class:`ResponseGateError`.
 
         ``chat_id`` is the exact conversation id (thread id for threads, channel id
         otherwise); it only leaves the process as a usage-attribution header when a
@@ -258,10 +281,10 @@ class JevDecisionClient:
         scores = self._validate_answer(answer)
         latency_ms = (time.monotonic() - started) * 1000.0
         allowed = (
-            scores[ADDRESSES_BOT_KEY] > ADDRESSES_BOT_ALLOW
+            scores[ADDRESSES_BOT_KEY] > self._addresses_bot_min
             or (
-                scores[CONTINUES_THREAD_KEY] > CONTINUES_THREAD_ALLOW
-                and scores[NOISE_KEY] < NOISE_ALLOW
+                scores[CONTINUES_THREAD_KEY] > self._continues_bot_thread_min
+                and scores[NOISE_KEY] < self._noise_max
             )
         )
         return GateDecision(
@@ -550,6 +573,9 @@ class GateRuntime:
                 timeout_seconds=config.timeout_seconds, questions=build_gate_questions(bot_name),
                 decisions_url=getattr(config, "decisions_url", None),
                 logger=logger,
+                addresses_bot_min=getattr(config, "addresses_bot_min", ADDRESSES_BOT_ALLOW),
+                continues_bot_thread_min=getattr(config, "continues_bot_thread_min", CONTINUES_THREAD_ALLOW),
+                noise_max=getattr(config, "noise_max", NOISE_ALLOW),
             )
         return cls(config=config, client=client, logger=logger)
 

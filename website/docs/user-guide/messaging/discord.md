@@ -463,6 +463,9 @@ discord:
       - 1234567890
     mode: shadow              # shadow (default) | enforce
     threshold: 0.8            # legacy single-score key; kept for config compatibility only
+    addresses_bot_min: 0.5        # allow when addresses_bot is above this (default)
+    continues_bot_thread_min: 0.6 # thread-follow-up branch: continues_bot_thread above this...
+    noise_max: 0.4                # ...and noise below this
     timeout_seconds: 3.0      # per-request budget; over budget means deny
     context_messages: 10      # recent same-channel messages sent as evidence
     context_chars: 8000       # total character budget for that evidence block
@@ -472,7 +475,7 @@ discord:
 
 **Modes.** `shadow` runs the judge and logs the verdict but never changes behavior — use it to see what the gate *would* have done before trusting it. `enforce` makes the verdict binding: an approved ambient message wakes the bot normally, and every other message in the gated channels stays silent.
 
-**The decision.** Each candidate is judged in one bounded request that asks three `noul` questions (each scored `0..1`): `addresses_bot` — does the message speak directly to the bot by name; `continues_bot_thread` — does it follow up on a conversation the bot was recently part of; `noise` — is it conversational noise with nothing to answer. The verdict is composed from the three components: **allow when `addresses_bot > 0.5`, or when `continues_bot_thread > 0.6` and `noise < 0.4`** — a direct address always admits, and a genuine thread follow-up admits unless the message is noise. A missing or invalid component fails closed (deny). The `threshold` key is still accepted and validated so existing configs keep loading, but it no longer influences the verdict; the composed cutoffs are fixed.
+**The decision.** Each candidate is judged in one bounded request that asks three `noul` questions (each scored `0..1`): `addresses_bot` — does the message speak directly to the bot by name; `continues_bot_thread` — does it follow up on a conversation the bot was recently part of; `noise` — is it conversational noise with nothing to answer. The verdict is composed from the three components: **allow when `addresses_bot > addresses_bot_min`, or when `continues_bot_thread > continues_bot_thread_min` and `noise < noise_max`** — a direct address always admits, and a genuine thread follow-up admits unless the message is noise. The three cutoffs default to `0.5`, `0.6` and `0.4` (the historical fixed values, so an existing config behaves exactly as before) and each is settable per profile — for example `addresses_bot_min: 0.85`, `continues_bot_thread_min: 0.90`, `noise_max: 0.20` admits only much more confident candidates. Each must be a finite number in `0..1`; anything else refuses to load. The comparisons stay strict, so a score exactly on a cutoff never admits through that branch. Changes apply on the next gateway restart — unlike the reaction gate, this block has no live reload. A missing or invalid component fails closed (deny). The `threshold` key is still accepted and validated so existing configs keep loading, but it no longer influences the verdict.
 
 **Explicit triggers never consult it.** `@mentions`, replies to the bot, `mention_patterns` wake words, slash commands, and DMs all keep their existing paths with no judge round-trip. Only unprompted text is judged, and text that pings another human is judged rather than preempted — it may be meant for someone else and still be worth answering.
 
@@ -482,7 +485,7 @@ discord:
 
 **Fail-closed.** A timeout, a malformed answer, or a missing `OPENROUTER_API_KEY` means a silent deny in `enforce`; the gate never admits on failure. Because a silent deny is easy to miss, `enforce` without a usable key also logs one loud warning at startup — `shadow` does not. The key is read once at connect time from the profile environment, so it must be set before the gateway starts; it is not a `config.yaml` key.
 
-Values outside the documented ranges (threshold outside `0..1`, `timeout_seconds` above `30`, oversized context bounds) refuse to load rather than quietly degrading into "admit everything".
+Values outside the documented ranges (threshold or any of the three cutoffs outside `0..1`, `timeout_seconds` above `30`, oversized context bounds) refuse to load rather than quietly degrading into "admit everything".
 
 #### `discord.reaction_gate`
 
