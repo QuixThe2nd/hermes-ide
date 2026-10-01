@@ -114,6 +114,46 @@ class PapercutsPluginTests(unittest.TestCase):
         bad_action = self.call({"action": "explode"})
         self.assertEqual(bad_action["error"]["code"], "invalid_input")
 
+    def test_list_pagination_enumerates_every_item(self):
+        """A backlog larger than the page size is enumerable exactly once."""
+        ids = []
+        # Distinct word summaries: _normalize maps digits to <n>, so numbered
+        # summaries would fingerprint-dedup into one item.
+        for i in range(12):
+            result = self.log(
+                summary=f"backlog item {chr(ord('a') + i)}", turn=f"t{i + 1}"
+            )
+            self.assertTrue(result["success"])
+            self.assertFalse(result["deduplicated"])
+            ids.append(result["item"]["id"])
+
+        seen = []
+        offset = 0
+        page = None
+        while True:
+            page = self.call(
+                {"action": "list", "limit": 5, "offset": offset}, turn="tpage"
+            )
+            self.assertTrue(page["success"])
+            self.assertEqual(page["total"], 12)
+            self.assertLessEqual(page["count"], 5)
+            seen.extend(item["id"] for item in page["items"])
+            if not page["has_more"]:
+                break
+            offset += page["count"]
+
+        self.assertEqual(sorted(seen), sorted(ids))
+        self.assertEqual(len(seen), len(set(seen)))
+
+    def test_list_offset_beyond_total_is_empty(self):
+        self.log()
+        page = self.call({"action": "list", "limit": 5, "offset": 10}, turn="t9")
+        self.assertTrue(page["success"])
+        self.assertEqual(page["count"], 0)
+        self.assertEqual(page["items"], [])
+        self.assertFalse(page["has_more"])
+        self.assertEqual(page["total"], 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

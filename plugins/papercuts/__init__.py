@@ -120,6 +120,11 @@ PAPERCUTS_SCHEMA = {
                 "maximum": 100,
                 "description": "Maximum list results. Defaults to 50.",
             },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Skip the first N results after sorting. Page with offset += count while has_more is true.",
+            },
         },
         "required": ["action"],
         "additionalProperties": False,
@@ -433,6 +438,10 @@ def _handle_list(args: Dict[str, Any]) -> str:
         limit = max(1, min(100, int(args.get("limit") or 50)))
     except (TypeError, ValueError):
         return _error("invalid_input", "limit must be an integer")
+    try:
+        offset = max(0, int(args.get("offset") or 0))
+    except (TypeError, ValueError):
+        return _error("invalid_input", "offset must be an integer")
 
     with _store_lock():
         items = list(_fold(_read_events_unlocked()).values())
@@ -446,7 +455,11 @@ def _handle_list(args: Dict[str, Any]) -> str:
             -float(item.get("ts_epoch") or 0),
         )
     )
-    items = items[:limit]
+    # Bounded pagination over the deterministic sort: total/has_more let a
+    # caller enumerate a backlog larger than the list cap exactly once
+    # (pc_900b045725f6).
+    total = len(items)
+    items = items[offset : offset + limit]
     return _json(
         {
             "success": True,
@@ -454,6 +467,9 @@ def _handle_list(args: Dict[str, Any]) -> str:
             "status": status,
             "count": len(items),
             "items": items,
+            "total": total,
+            "offset": offset,
+            "has_more": offset + len(items) < total,
             "store": str(_events_path()),
         }
     )
