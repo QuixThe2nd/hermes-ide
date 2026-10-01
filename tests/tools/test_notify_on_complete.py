@@ -355,6 +355,28 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
     )
 
 
+def test_background_without_notify_in_headless_session_does_not_recommend_notify(
+    monkeypatch, tmp_path,
+):
+    """Kanban/cron/one-shot sessions cannot deliver notify_on_complete.
+    Recommending that flag is a false recovery path (pc_9eaef6f2ffd8)."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t-headless-notify")
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    try:
+        result = json.loads(
+            tt.terminal_tool(command="sleep 1", background=True)
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    hint = result.get("hint", "")
+    assert hint, "Headless silent background must still include a hint"
+    assert "notify_on_complete=true" not in hint
+    assert "poll" in hint.lower()
+    assert "not available" in hint.lower()
+
+
 def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
     """The correct shape — bg+notify together — must not nag."""
     tt = _silent_bg_harness(monkeypatch, tmp_path)

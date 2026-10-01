@@ -1894,11 +1894,19 @@ class ProcessRegistry(ProcessCheckpointMixin):
             f"Wait window of {effective_timeout}s elapsed — the process is still running. This is not an error.")
         if session.started_at:
             base_note += f" Uptime: {int(time.time() - session.started_at)}s."
-        base_note += (
-            " notify_on_complete is set: you will be notified on exit — do more work instead of waiting again."
-            if session.notify_on_complete else
-            " Poll again later or use terminal(background=true, "
-            "notify_on_complete=true) next time for automatic notification.")
+        if session.notify_on_complete:
+            base_note += (
+                " notify_on_complete is set: you will be notified on exit — do more work instead of waiting again.")
+        else:
+            from gateway.session_context import async_delivery_supported
+            if async_delivery_supported():
+                base_note += (
+                    " Poll again later or use terminal(background=true, "
+                    "notify_on_complete=true) next time for automatic notification.")
+            else:
+                base_note += (
+                    " Poll again later with process(action='poll') or process(action='wait'). "
+                    "notify_on_complete is not available in this session.")
         result["timeout_note"] = f"{timeout_note}. {base_note}" if timeout_note else base_note
         return result
 
