@@ -82,10 +82,12 @@ describe.skipIf(process.platform !== 'darwin')('Command screenshot native bridge
     await call('settings:set', second.event, false)
     expect(await call('capture', second.event, requests[0]![1])).toEqual({ ok: false, reason: 'expired' })
     expect(native.stop).toHaveBeenCalled()
+
     for (let i = 0; i < 3; i += 1) {
       ipcMain.emit('hermes:screenshot:subscribe', second.event, false)
       ipcMain.emit('hermes:screenshot:subscribe', second.event, true)
     }
+
     expect(second.wc.listenerCount('destroyed')).toBe(1)
     ipcMain.emit('hermes:screenshot:subscribe', second.event, false)
     expect(second.wc.listenerCount('destroyed')).toBe(0)

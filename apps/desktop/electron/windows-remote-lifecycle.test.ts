@@ -102,6 +102,7 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
   )
 
   assert.equal(scripts.length, 4)
+
   for (const script of scripts) {
     assert.doesNotMatch(script, /}\s*;\s*(?:catch|finally)\b/)
     // `$HOME`, `$HOST`, `$PID`, ... are read-only automatic variables: assigning
@@ -109,6 +110,7 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
     // and the marker gate never observes CLEAR.
     assert.doesNotMatch(script, /\$(?:home|host|pid|profile|pwd|input|args|error)\s*=/i)
   }
+
   assert.ok(scripts.slice(0, 2).every(script => /}catch \[Management\.Automation\.ItemNotFoundException\]/.test(script)))
 })
 

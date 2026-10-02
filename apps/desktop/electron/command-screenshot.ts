@@ -110,12 +110,15 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
     if (subscribed === true) {
       if (!recipients.has(event.sender.id)) {
         const id = event.sender.id
+
         const onDestroyed = () => {
           recipients.delete(id)
+
           if (lastRecipient === win) {
             lastRecipient = null
           }
         }
+
         event.sender.once('destroyed', onDestroyed)
         recipients.set(id, () => event.sender.removeListener('destroyed', onDestroyed))
       }
@@ -126,6 +129,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
     } else if (subscribed === false) {
       recipients.get(event.sender.id)?.()
       recipients.delete(event.sender.id)
+
       if (lastRecipient === win) {
         lastRecipient = null
       }
@@ -133,6 +137,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   }
 
   const channels: string[] = []
+
   const handle = (name: string, callback: (event: IpcMainInvokeEvent, value: unknown) => unknown) => {
     const channel = `hermes:screenshot:${name}`
     channels.push(channel)
@@ -162,6 +167,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
 
     if (enabled) {
       start(true)
+
       if (!hasScreenPermission()) {
         // Zero-size thumbnails skip content capture and may never request TCC
         // consent. Request the smallest thumbnail only on explicit opt-in;
@@ -178,6 +184,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   })
   handle('capture', async (event, requestId) => {
     const result = await capture.take(event.sender.id, requestId)
+
     if (result.ok === false && result.reason === 'screen-permission') {
       publish()
     }
@@ -186,9 +193,11 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   })
   handle('permission', async (_event, kind) => {
     const pane = kind === 'input' ? 'Privacy_ListenEvent' : kind === 'screen' ? 'Privacy_ScreenCapture' : null
+
     if (!pane) {
       throw new Error('Unknown screenshot permission')
     }
+
     await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`)
   })
   ipcMain.on('hermes:screenshot:subscribe', onSubscribe)
@@ -208,6 +217,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   }
 
   app.once('will-quit', dispose)
+
   if (enabled) {
     start()
   }

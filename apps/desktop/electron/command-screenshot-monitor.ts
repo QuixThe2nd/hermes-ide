@@ -38,30 +38,39 @@ export function resolveCommandScreenshotMonitorPath(
 
 function parseMessage(line: string): CommandScreenshotCapture | CommandScreenshotStatus | null {
   let value: unknown
+
   try {
     value = JSON.parse(line)
   } catch {
     return null
   }
+
   if (!value || typeof value !== 'object') {
     return null
   }
+
   const message = value as Record<string, unknown>
+
   if (message.type === 'ready') {
     return { type: 'ready' }
   }
+
   if (message.type === 'error' && (message.code === 'permission-required' || message.code === 'unavailable')) {
     return { type: 'error', code: message.code }
   }
+
   if (message.type !== 'capture') {
     return null
   }
+
   const { windowId, width, height } = message
+
   if (typeof windowId !== 'number' || !Number.isInteger(windowId) || windowId <= 0 || windowId > 0xffffffff
     || typeof width !== 'number' || !Number.isFinite(width) || width <= 0
     || typeof height !== 'number' || !Number.isFinite(height) || height <= 0) {
     return null
   }
+
   return { type: 'capture', windowId, width, height }
 }
 
@@ -78,38 +87,48 @@ export class CommandScreenshotMonitor {
     requestPermission = false,
   ): void {
     this.stop()
+
     if ((this.options.platform ?? process.platform) !== 'darwin') {
       onStatus({ type: 'error', code: 'unavailable' })
+
       return
     }
+
     let child: MonitorChild
+
     try {
       child = (this.options.spawn ?? nodeSpawn)(resolveCommandScreenshotMonitorPath(this.options.appPath),
         requestPermission ? ['--request-permission'] : [],
         { stdio: ['pipe', 'pipe', 'ignore'], shell: false, detached: false, windowsHide: true })
     } catch {
       onStatus({ type: 'error', code: 'unavailable' })
+
       return
     }
+
     let ready = false
     let active = true
     let pending = ''
     let killTimer: ReturnType<typeof setTimeout> | undefined
     const startupTimer = setTimeout(() => fail(), this.options.startupTimeoutMs ?? (requestPermission ? 60_000 : 5_000))
     startupTimer.unref()
+
     const dispose = () => {
       active = false
       pending = ''
       clearTimeout(startupTimer)
       child.stdout?.removeListener('data', onData)
+
       if (this.cleanup === stop) {
         this.cleanup = undefined
       }
     }
+
     const terminate = (status: CommandScreenshotStatus) => {
       if (!active) {
         return
       }
+
       dispose()
       child.stdin?.end() // EOF also stops the helper if the parent exits unexpectedly.
       child.kill('SIGTERM')
@@ -117,34 +136,47 @@ export class CommandScreenshotMonitor {
       killTimer.unref()
       onStatus(status)
     }
+
     const fail = () => terminate({ type: 'error', code: 'unavailable' })
+
     const onData = (chunk: Buffer | string) => {
       if (!active) {
         return
       }
+
       if (chunk.length > 65_536) {
         fail()
+
         return
       }
+
       pending += chunk.toString()
       const lines = pending.split('\n')
       pending = lines.pop() ?? ''
+
       if (pending.length > 4_096) {
         fail()
+
         return
       }
+
       for (const line of lines) {
         if (!active) {
           break
         }
+
         if (line.length > 4_096) {
           fail()
+
           break
         }
+
         const message = parseMessage(line)
+
         if (!message) {
           continue
         }
+
         if (message.type === 'capture') {
           if (ready) {
             onCapture(message)
@@ -158,6 +190,7 @@ export class CommandScreenshotMonitor {
         }
       }
     }
+
     const onClose = () => {
       const unexpected = active
       dispose()
@@ -166,10 +199,12 @@ export class CommandScreenshotMonitor {
       child.removeListener('error', fail)
       child.stdin?.removeListener('error', fail)
       child.stdout?.removeListener('error', fail)
+
       if (unexpected) {
         onStatus({ type: 'error', code: 'unavailable' })
       }
     }
+
     const stop = () => terminate({ type: 'stopped' })
     this.cleanup = stop
     child.stdout?.on('data', onData)
@@ -178,6 +213,7 @@ export class CommandScreenshotMonitor {
     child.once('close', onClose)
     child.on('error', fail)
     onStatus({ type: 'starting' })
+
     if (!child.stdout || !child.stdin) {
       fail()
     }

@@ -90,6 +90,7 @@ describe('setGroupChatMembers', () => {
       rooms: { 'name:Core': { name: 'Core', log: [], members: [{ name: 'programmer' }, { name: 'reviewer' }], revision: 7 } },
       deleted: {}
     }
+
     room.chat.$groupChats.set(room.chat.mergeRemoteGroupChatSnapshotIntoRooms(mirror as never, room.chat.$groupChats.get()))
 
     expect(seatedNames(room)).toEqual(['planner', 'programmer'])
@@ -104,6 +105,7 @@ describe('setGroupChatMembers', () => {
   it('keeps a same-named local Bot out when selecting only its Connection counterpart', async () => {
     const room = await loadRoom()
     const local: RosterRow = { name: 'planner', title: 'Local Planner' }
+
     const remote: RosterRow = {
       connectionId: 'remote-1',
       connectionKind: 'remote',
