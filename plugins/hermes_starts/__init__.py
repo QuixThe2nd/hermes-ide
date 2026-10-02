@@ -1530,6 +1530,14 @@ def _seed_thread_session(thread_id: str, thread_name: str, opening_text: str) ->
     identity/peer refresh runs first to make the session row exist, then the
     checked append's commit-plus-read-back is the only accepted proof.
     ``None`` means the seed did not land and the caller must say so.
+
+    Only the store's public surface is used: the dedup read is
+    ``SessionStore.load_transcript`` — the supported transcript read, which
+    follows the same reroute/compression-tip chain writes use and fails
+    CLOSED (``TranscriptReadError``) on a broken canonical read instead of
+    returning a plausible-looking empty list. A session with no resolvable
+    owning store reads as empty here and is then refused by the checked
+    append, so an unprovable seed still yields ``None``.
     """
     try:
         from gateway.config import GatewayConfig, Platform
@@ -1550,10 +1558,7 @@ def _seed_thread_session(thread_id: str, thread_name: str, opening_text: str) ->
         # (#82616). ``touch_activity=False``: seeding is not user activity and
         # must not arm the idle/daily reset clock.
         store.update_session(entry.session_key, touch_activity=False)
-        db = store._db_for_session_id(entry.session_id)
-        if db is None:
-            return None  # no owning store — nothing is provable
-        existing = db.get_messages_as_conversation(entry.session_id)
+        existing = store.load_transcript(entry.session_id)
     except Exception:
         return None  # never fail the tool call over seeding
     # Repeat seeding of the same opening must not duplicate it: an identical
