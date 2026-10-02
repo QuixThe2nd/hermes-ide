@@ -1650,6 +1650,7 @@ export const zh = defineLocale({
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
       upToDateDetail: (tag, backend) => `正在运行 llama.cpp ${tag}（${backend}）——已配置的构建。`,
+      updateToast: next => `本地引擎有新构建（${next}）。可在 设置 → 本地模型 中更新。`,
       activeDetail: '新对话使用此模型——发送首条消息时加载',
       activeNotLoaded: '首条消息时加载',
       loadedPill: '已加载',

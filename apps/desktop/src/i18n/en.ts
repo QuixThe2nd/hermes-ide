@@ -1456,6 +1456,7 @@ export const en: Translations = {
       updating: 'Updating engine…',
       upToDateTitle: 'Engine up to date',
       upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the configured build.`,
+      updateToast: next => `A newer local engine build (${next}) is available. Update from Settings → Local Models.`,
       activeDetail: 'New chats use this model — it loads when you send your first message',
       activeNotLoaded: 'Loads on your first message',
       loadedPill: 'In memory',

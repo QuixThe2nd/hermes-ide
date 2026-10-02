@@ -1271,6 +1271,7 @@ export interface Translations {
       updating: string
       upToDateTitle: string
       upToDateDetail: (tag: string, backend: string) => string
+      updateToast: (next: string) => string
       activeDetail: string
       activeNotLoaded: string
       loadedPill: string

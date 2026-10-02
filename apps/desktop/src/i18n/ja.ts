@@ -1255,6 +1255,7 @@ export const ja = defineLocale({
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
       upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——設定されたビルドです。`,
+      updateToast: next => `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
