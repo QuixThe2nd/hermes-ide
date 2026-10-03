@@ -127,7 +127,7 @@ const WaitHint: FC<{ hint: string }> = ({ hint }) => {
   }
 
   const label =
-    load.kind === 'load' ? t.assistant.thread.loadingLocalModel(load.model) : t.assistant.thread.processingPrompt
+    load.kind === 'load' ? t.assistant.thread.loadingLocalModel(load.model) : t.assistant.thread.processingPrompt(load.detail)
 
   return <ProgressHint label={label} percent={load.percent} />
 }

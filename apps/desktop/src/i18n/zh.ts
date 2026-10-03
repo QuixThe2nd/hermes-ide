@@ -4074,7 +4074,7 @@ export const zh = defineLocale({
       showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
       loadingLocalModel: model => `正在将 ${model} 载入内存`,
-      processingPrompt: '正在处理提示词',
+      processingPrompt: detail => (detail ? `正在处理提示词（${detail} 个 token）` : '正在处理提示词'),
       resumeWhenBackgroundDone: count =>
         count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,
       thinking: '思考中',
