@@ -3500,7 +3500,7 @@ export interface Translations {
       showEarlier: string
       loadingResponse: string
       loadingLocalModel: (model: string) => string
-      processingPrompt: (detail: string) => string
+      processingPrompt: string
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
       thought: string

@@ -136,15 +136,15 @@ def test_load_notice_matches_desktop_wait_filter():
     m = re.match(r"^⏳\s*loading\s+(.+?)\s+into memory\s+—\s+(\d{1,3})%", load)
     assert m and m.group(1) == "Qwen3.6-35B-A3B-UD-Q4_K_M" and m.group(2) == "43"
 
-    prefill = "⚙ processing prompt — 12,288 of ~39,551 tokens (31%)"
+    prefill = "⚙ processing prompt — 31%"
     assert re.match(accept, prefill)
-    p = re.match(r"^⚙\s*processing prompt\s+—\s+([\d,]+)(?:\s+of\s+~([\d,]+))?\s+tokens(?:\s+\((\d{1,3})%\))?", prefill)
-    assert p and p.group(1) == "12,288" and p.group(2) == "39,551" and p.group(3) == "31"
+    p = re.match(r"^⚙\s*processing prompt(?:\s+—\s+(\d{1,3})%)?", prefill)
+    assert p and p.group(1) == "31"
 
-    bare = "⚙ processing prompt — 12,288 tokens"
+    bare = "⚙ processing prompt"
     assert re.match(accept, bare)
-    b = re.match(r"^⚙\s*processing prompt\s+—\s+([\d,]+)(?:\s+of\s+~([\d,]+))?\s+tokens(?:\s+\((\d{1,3})%\))?", bare)
-    assert b and b.group(1) == "12,288" and b.group(2) is None and b.group(3) is None
+    b = re.match(r"^⚙\s*processing prompt(?:\s+—\s+(\d{1,3})%)?", bare)
+    assert b and b.group(1) is None
 
 
 # ── prefill progress ─────────────────────────────────────────
@@ -171,13 +171,13 @@ def test_prefill_notice_for_managed_model(tmp_path, monkeypatch):
         base_url = "http://127.0.0.1:18434/v1"
 
     notice = _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"})
-    assert notice == "⚙ processing prompt — 12,288 of ~39,551 tokens (31%)"
+    assert notice == "⚙ processing prompt — 31%"
 
-    # Counter past the estimate (estimator undercounted): drop the bogus
-    # denominator rather than showing >100%.
+    # Counter past the estimate (estimator undercounted): no honest
+    # denominator, so no percent — never >100%.
     monkeypatch.setattr(cch, "estimate_request_context_tokens", lambda kw: 100)
     notice = _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"})
-    assert notice == "⚙ processing prompt — 12,288 tokens"
+    assert notice == "⚙ processing prompt"
 
 
 def test_load_notice_outranks_prefill(tmp_path, monkeypatch):

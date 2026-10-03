@@ -793,11 +793,10 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
             total = estimate_request_context_tokens(api_kwargs)
             if total and total >= processed:
                 pct = max(0, min(100, round(processed / total * 100)))
-                return (
-                    f"⚙ processing prompt — {processed:,} of ~{total:,} "
-                    f"tokens ({pct}%)"
-                )
-            return f"⚙ processing prompt — {processed:,} tokens"
+                return f"⚙ processing prompt — {pct}%"
+            # Counter past the estimate (estimator undercounted): no honest
+            # denominator, so no percent — the UI shows label-only.
+            return "⚙ processing prompt"
         return None
     except Exception:  # noqa: BLE001 — a status nicety must never break a call
         return None
