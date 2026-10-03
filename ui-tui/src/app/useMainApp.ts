@@ -67,10 +67,7 @@ import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
 import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
-import {
-  CONNECTION_LOST,
-  CONNECTION_LOST_ACTIVITY
-} from './userMessages.js'
+import { CONNECTION_LOST, CONNECTION_LOST_ACTIVITY } from './userMessages.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
 

@@ -9,6 +9,7 @@ import type { AppInstallerStrategyDeps } from './app-installer'
 
 function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}) {
   const calls: string[] = []
+
   const deps: AppInstallerStrategyDeps = {
     python: 'python.exe',
     script: 'check.py',
@@ -21,9 +22,12 @@ function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}) {
     emitUpdateProgress: () => {},
     appVersion: '0.18.2',
     quit: () => { calls.push('quit') },
-    registerPendingRelaunch: () => { calls.push('relaunch-marker'); return true },
+    registerPendingRelaunch: () => { calls.push('relaunch-marker');
+
+ return true },
     ...over
   }
+
   return { deps, calls }
 }
 

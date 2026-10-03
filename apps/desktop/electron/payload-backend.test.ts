@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
 import { test } from 'vitest'
-
-import { createHash } from 'node:crypto'
 
 import { adoptPayloadVenv, installIdForRoot, isBundledInstall, resolvePayload } from './payload-backend'
 
@@ -37,6 +36,7 @@ function writePayload(
   const sp = isWindows
     ? path.join(dir, 'venv', 'Lib', 'site-packages')
     : path.join(dir, 'venv', 'lib', 'python3.11', 'site-packages')
+
   fs.mkdirSync(sp, { recursive: true })
 
   // The self-relative CLI entrypoint (minted launcher exe on win32, bash

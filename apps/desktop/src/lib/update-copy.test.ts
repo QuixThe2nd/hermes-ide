@@ -69,6 +69,7 @@ describe('resolveUpdateCopy', () => {
       latestTag: 'v0.18.3',
       copy
     })
+
     expect(r.body).toBe('Hermes v0.18.3 is ready to install.')
   })
 

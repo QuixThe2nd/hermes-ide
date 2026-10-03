@@ -27,12 +27,14 @@ export class CheckoutStrategy {
   async check(): Promise<UpdaterStatusWire> {
     const status = await this.deps.checkBody()
     status.mechanism = this.mechanism
+
     return status
   }
 
   async apply(opts: { stopSafeBlockers?: boolean }): Promise<UpdaterApplyResultWire> {
     const result = await this.deps.applyBody(opts)
     result.mechanism = this.mechanism
+
     return result
   }
 }
