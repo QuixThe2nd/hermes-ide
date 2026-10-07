@@ -226,8 +226,11 @@ def _get_backend() -> str:
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``). A
     stored backend name is returned as-is — no availability probe, no
     fallback — so the vendor path can raise its own honest error when the
-    selection is broken. The credential/entitlement autodetect ladder runs
-    ONLY when no web selection has ever been stored.
+    selection is broken. The managed ``use_gateway`` selection also resolves
+    to firecrawl with no ladder. Autodetect runs whenever no SHARED web
+    selection was ever stored: per-capability keys (``web.search_backend``,
+    ``web.extract_backend``) name only their own capability and never
+    reroute the other (#113017).
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured:
@@ -243,12 +246,14 @@ def _get_backend() -> str:
             return "firecrawl"
         return configured
 
-    from tools.tool_backend_helpers import selection_exists
+    from tools.tool_backend_helpers import read_selection
 
-    if selection_exists("web"):
-        # A web selection exists (e.g. use_gateway key or per-capability
-        # backends) but the shared backend name is empty — keep the
-        # firecrawl default rather than credential-laddering.
+    if read_selection("web") is not None:
+        # Shared selection exists (use_gateway) but no shared name: keep
+        # the firecrawl default rather than credential-laddering.
+        # Per-capability keys (web.search_backend / web.extract_backend)
+        # name only their own capability and never reroute the other
+        # (#113017).
         return "firecrawl"
 
     # Never-configured install — pick the highest-priority available

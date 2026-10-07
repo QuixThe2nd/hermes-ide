@@ -11,10 +11,15 @@ logger = logging.getLogger("tools.cronjob_tools")
 
 
 def _origin_from_env() -> Optional[Dict[str, str]]:
-    from gateway.session_context import get_session_env
+    from gateway.session_context import async_delivery_supported, get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if not (origin_platform and origin_chat_id):
+        return None
+    # A non-push surface (api_server: request/response, ``send()`` is a stub) cannot receive a
+    # fire-time report, so an origin stamp would make ``deliver=origin`` fail silently on every
+    # fire (#69304). No origin => the home-channel fallback + creation-time notice apply.
+    if not async_delivery_supported():
         return None
     thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
     # Slack stamps every TOP-LEVEL message's own id as the session thread (a per-message
@@ -58,7 +63,16 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
         return None
     try:
         from cron.scheduler import _resolve_delivery_targets
-        if _resolve_delivery_targets(job):
+        targets = _resolve_delivery_targets(job)
+        if targets:
+            # _origin_from_env() dropped a non-push origin (api_server) and the job rerouted to a
+            # home channel: tell the creating client where the report goes (#69304).
+            from gateway.session_context import async_delivery_supported, get_session_env
+            fallback = [t for t in targets if t.get("_resolved_from") == "origin_fallback"]
+            if fallback and get_session_env("HERMES_SESSION_PLATFORM") and not async_delivery_supported():
+                return ("Note: this stateless HTTP API session cannot receive cron delivery, so this "
+                        f"job will report to the home channel {fallback[0]['platform']}:"
+                        f"{fallback[0]['chat_id']} instead of back here.")
             return None
     except Exception:  # resolution unavailable — fall back to the origin signal
         if job.get("origin"):
@@ -66,7 +80,7 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
     return (
         "This is a local-only cron job: its output is saved (view it with "
         "cronjob(action='list')) but will NOT be delivered back into this "
-        "session — CLI/TUI sessions have no live-delivery channel. To be "
+        "session — CLI/TUI and stateless HTTP API sessions have no live-delivery channel. To be "
         "notified when it runs, recreate or update the job with deliver set to "
         "an explicit platform target, e.g. deliver='telegram:-1001234567890'.")
 
@@ -97,12 +111,13 @@ def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> Li
         # warn once here instead of carrying the warning in the schema.
         # thread:<id> is exempt: the auto-created delivery thread IS the
         # token's point, so "no :thread_id segment" describes the feature,
-        # not a mistake.
+        # not a mistake. inbox:<guild_id> is exempt for the same reason
+        # (its thread is auto-created under the provisioned inbox).
         for target in _deliver.split(","):
             parts = target.strip().split(":")
             if (
                 len(parts) == 2
-                and parts[0] not in ("bot-chat", "sms", "thread")
+                and parts[0] not in ("bot-chat", "sms", "thread", "inbox")
                 and parts[1]
                 and not parts[1].startswith("#")):
                 notes.append(
@@ -296,17 +311,22 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
     from hermes_constants import get_hermes_home
     raw = script.strip()
+    scripts_dir = get_hermes_home() / "scripts"
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
+            f"Script path must be relative to {scripts_dir}/. "
             f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename.")
+            f"Place scripts in {scripts_dir}/ and use just the filename.")
 
     from tools.path_security import validate_within_dir
-    scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    if validate_within_dir(scripts_dir / raw, scripts_dir):
+    resolved_script = scripts_dir / raw
+    if validate_within_dir(resolved_script, scripts_dir):
         return f"Script path escapes the scripts directory via traversal: {raw!r}"
+    if not resolved_script.is_file():
+        return (
+            f"Script file not found: {resolved_script}. "
+            f"Create it in {scripts_dir}/ first.")
     return None
 
 

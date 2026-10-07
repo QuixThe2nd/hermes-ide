@@ -338,6 +338,27 @@ class TestSafeRestore:
         assert "README.md" in result["skipped_user_edits"]
         assert "main.py" in result["restored_files"]
 
+    def test_safe_restore_finds_ledger_under_walked_key(self, mgr, work_dir, tmp_path):
+        base = self._checkpoint(mgr, work_dir)
+
+        # A generic project marker in an ancestor dir (e.g. a stray
+        # package.json in /tmp) makes record_agent_write's marker walk key
+        # the ledger to the ancestor, while restore reads the exact dir's
+        # hash.  Safe restore must still find the ledger, or it silently
+        # degrades to a full restore and overwrites user edits.
+        (tmp_path / "package.json").write_text("{}\n")
+
+        (work_dir / "main.py").write_text("agent version\n")
+        (work_dir / "README.md").write_text("user hand edit\n")
+        mgr.record_agent_write(str(work_dir / "main.py"))
+
+        result = mgr.restore(str(work_dir), base, safe=True)
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "print('hello')\n"
+        assert (work_dir / "README.md").read_text() == "user hand edit\n"
+        assert result["restored_files"] == ["main.py"]
+        assert "README.md" in result["skipped_user_edits"]
+
     def test_safe_restore_skips_file_user_edited_after_agent(self, mgr, work_dir):
         base = self._checkpoint(mgr, work_dir)
 
@@ -1048,6 +1069,107 @@ class TestPruneCheckpointsOrphanAllowlist:
         assert not (base / ("eeee" * 4)).exists()
         # The one that only went orphan mid-confirmation must survive.
         assert second_repo.exists()
+
+
+class TestGcOnlyAfterStoreMutation:
+    """``git gc`` rewrites the whole pack (tens of seconds on a GB store). A checkpoint never runs
+    it — it rewrites refs and marks the store gc-pending — and the periodic prune runs it only when
+    a ref actually moved. A store over the cap with every ref at its one-snapshot floor used to gc on
+    every checkpoint AND on every daily prune, stalling tool calls and gateway startup."""
+
+    def test_checkpoint_never_gcs_and_hands_the_reclaim_to_prune(self, checkpoint_base, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
+        gc_calls = []
+        real_gc = cm._gc_store
+        monkeypatch.setattr(cm, "_gc_store", lambda store, wd: gc_calls.append(store) or real_gc(store, wd))
+        work = tmp_path / "big"
+        work.mkdir()
+        (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))  # incompressible → store > 1 MB cap
+        m = CheckpointManager(enabled=True, max_snapshots=50, max_total_size_mb=1)
+        store = checkpoint_base / "store"
+
+        assert m.ensure_checkpoint(str(work), "first") is True
+        assert gc_calls == [] and not (store / ".gc-pending").exists()  # at the floor: nothing to drop
+
+        (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))
+        m.new_turn()
+        assert m.ensure_checkpoint(str(work), "second") is True
+        assert gc_calls == []  # the oldest snapshot was dropped, but the repack is not the tool call's
+        assert (store / ".gc-pending").exists()
+
+        prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)
+        assert len(gc_calls) == 1 and not (store / ".gc-pending").exists()
+
+    def test_prune_gcs_only_when_a_project_was_deleted(self, checkpoint_base, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
+        gc_calls = []
+        monkeypatch.setattr(cm, "_gc_store", lambda store, working_dir: gc_calls.append(store))
+        work = tmp_path / "proj"
+        work.mkdir()
+        (work / "f").write_text("f")
+        CheckpointManager(enabled=True).ensure_checkpoint(str(work), "seed")
+
+        assert prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)["deleted_stale"] == 0
+        assert gc_calls == []
+
+        meta_path = checkpoint_base / "store" / "projects" / f"{_project_hash(str(work))}.json"
+        meta = json.loads(meta_path.read_text())
+        meta["last_touch"] = time.time() - 60 * 86400
+        meta_path.write_text(json.dumps(meta))
+        assert prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)["deleted_stale"] == 1
+        assert len(gc_calls) == 1
+
+
+class TestStoreSelfHealAfterRefsLoss:
+    """The 2026-09-13 / 2026-09-16 outages: git's own background ``gc --auto`` packed every ref
+    in the shared store, deleted the then-empty ``refs/`` tree, and from then on every checkpoint
+    operation failed rc=128 "not a git repository" — ~50 lost snapshots over 18 hours until a
+    human recreated the directories.  The store must heal itself instead: ``_run_git`` repairs
+    the missing dirs and retries the failed command once, and a freshly init'ed store always
+    has the complete bare skeleton."""
+
+    def test_commit_path_survives_refs_dir_deletion(self, mgr, work_dir, checkpoint_base, caplog):
+        """rmtree(store/'refs') — the observed damage — then the public commit path succeeds."""
+        assert mgr.ensure_checkpoint(str(work_dir), "initial") is True
+        mgr.new_turn()
+        store = _store_path(checkpoint_base)
+        shutil.rmtree(store / "refs")
+
+        (work_dir / "main.py").write_text("v2\n")
+        with caplog.at_level(logging.WARNING, logger="tools.checkpoint_manager"):
+            assert mgr.ensure_checkpoint(str(work_dir), "post-damage") is True
+        # The checkpoint succeeded via the self-heal (repair + one retry in _run_git),
+        # not by some silent workaround.
+        assert any("repairing and retrying" in r.getMessage() for r in caplog.records)
+        for subdir in ("refs/heads", "refs/tags", "branches"):
+            assert (store / subdir).is_dir(), subdir
+        assert [c["reason"] for c in mgr.list_checkpoints(str(work_dir))][0] == "post-damage"
+
+    def test_repair_recreates_skeleton_and_is_noop_when_present(self, tmp_path):
+        from tools.checkpoint_manager import _repair_bare_repo_dirs
+
+        store = tmp_path / "store"
+        store.mkdir()
+        _repair_bare_repo_dirs(store)
+        for subdir in ("refs/heads", "refs/tags", "branches"):
+            assert (store / subdir).is_dir(), subdir
+
+        # No-op when they exist: nothing is rebuilt or destroyed.
+        sentinel = store / "refs" / "heads" / ".sentinel"
+        sentinel.write_text("keep me\n")
+        _repair_bare_repo_dirs(store)
+        assert sentinel.read_text() == "keep me\n"
+        for subdir in ("refs/heads", "refs/tags", "branches"):
+            assert (store / subdir).is_dir(), subdir
+
+    def test_init_store_leaves_complete_bare_skeleton(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        for subdir in ("refs/heads", "refs/tags", "branches"):
+            assert (store / subdir).is_dir(), subdir
 
 
 class TestMaybeAutoPruneCheckpoints:

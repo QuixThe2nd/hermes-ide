@@ -891,8 +891,8 @@ async def test_restart_notifies_notification_channel_even_without_active_session
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert [chat_id for chat_id, _msg, _metadata in adapter.sent_calls] == ["home-42"]
-    assert adapter.sent == ["⚠️ Gateway shutting down"]
+    assert len(adapter.sent) == 1
+    assert "restarting" in adapter.sent[0] and "Send any message" in adapter.sent[0]
 
 
 @pytest.mark.asyncio

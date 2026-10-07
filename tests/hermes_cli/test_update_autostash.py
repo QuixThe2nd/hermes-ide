@@ -13,32 +13,15 @@ from hermes_cli import update_cmd
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------
-# The production code now uses ``ensure_uv()`` / ``update_managed_uv()``
-# instead of ``shutil.which("uv")``.  Many tests in this file patch
-# ``shutil.which`` to control whether uv is "available" — these autouse
-# fixtures make the managed_uv functions delegate to the patched
-# ``shutil.which`` so the existing test setup keeps working without
-# per-test changes.
+# The production code resolves uv through ``pm.uv()`` instead of
+# ``shutil.which("uv")``.  Many tests in this file patch ``shutil.which``
+# to control whether uv is "available" — this autouse fixture makes
+# pm.uv delegate to the patched ``shutil.which`` so the existing test
+# setup keeps working without per-test changes.
 @pytest.fixture(autouse=True)
-def _patch_managed_uv(request):
-    """Make managed_uv helpers follow shutil.which mocking in tests."""
-    import shutil
-
-    # resolve_uv delegates to shutil.which("uv") so that test patches
-    # on shutil.which flow through naturally.
-    def _fake_resolve_uv(**kwargs):
-        return shutil.which("uv")
-
-    def _fake_ensure_uv(**kwargs):
-        return shutil.which("uv")
-
-    def _fake_update_managed_uv(**kwargs):
-        return None  # never actually self-update in tests
-
-    with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
-         patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
-        yield
+def _patch_managed_uv(request, patch_pm_uv_to_shutil_which):
+    """Make pm.uv follow shutil.which mocking in tests."""
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -52,19 +35,17 @@ def _patch_gateway_discovery():
     ``sys.exit(1)`` (#78574). Discovery returning nothing makes the phase a
     clean no-op — none of the tests here assert on gateway restarts.
 
-    ``_purge_stale_hermes_modules`` must also be stubbed: it evicts
-    ``hermes_cli.gateway`` from ``sys.modules`` mid-update, and the restart
-    phase's fresh ``from hermes_cli.gateway import ...`` then loads an
-    UNPATCHED copy of the module — silently discarding every mock here and
-    letting real gateway discovery (and real ``os.kill``) run on the dev box.
+    The launchd scope is neutralised too: on a macOS host the restart phase
+    derives labels from the profile layout, so a default profile alone hands
+    it ``ai.hermes.gateway`` and the verify step exits 1 (#111866, #110701).
     """
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
+         patch("hermes_cli.update_cmd_fleet._restart_macos_launchd_gateways", lambda *a, **k: None), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
          patch("hermes_cli.update_inventory.collect_runtime_inventory", return_value=None), \
          patch("hermes_cli.update_inventory.report_unaccounted_runtimes", return_value=False), \
          patch.object(hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **kw: False), \
-         patch.object(hermes_main, "_purge_stale_hermes_modules", lambda *a, **kw: None), \
          patch("hermes_cli.update_receipt.collect_fleet_versions", return_value=[]):
         yield
 
@@ -94,7 +75,6 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "get_missing_config_fields", lambda: [])
     monkeypatch.setattr(hermes_config, "check_config_version", lambda **_kwargs: (5, 5))
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
-    monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
 
 
@@ -119,26 +99,6 @@ def test_refresh_active_memory_provider_dependencies_reinstalls_active_provider(
 
 
 
-
-def test_reload_updated_runtime_modules_restores_new_hermes_constants_symbol(monkeypatch):
-    """A pre-pull module object missing a new helper is repaired by reload."""
-    import hermes_constants
-
-    monkeypatch.delattr(hermes_constants, "apply_subprocess_home_env", raising=False)
-    assert not hasattr(hermes_constants, "apply_subprocess_home_env")
-
-    hermes_main._reload_updated_runtime_modules()
-
-    assert callable(hermes_constants.apply_subprocess_home_env)
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# ff-only fallback to reset --hard on diverged history
-# ---------------------------------------------------------------------------
 
 def _make_update_side_effect(
     current_branch="main",

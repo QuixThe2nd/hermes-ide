@@ -16,7 +16,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
-| **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline — auto-threading is skipped so the channel stays a lightweight chat. |
+| **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline by default — auto-threading is skipped so the channel stays a lightweight chat. Set `discord.free_response_auto_thread: true` to get both mention-free replies and a thread per top-level message. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 | **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
@@ -84,7 +84,7 @@ This guide walks you through the full setup process — from creating your bot o
 
 ### Gateway WebSocket health
 
-Discord REST and the Gateway WebSocket are separate transports. A successful REST response (including `fetch_user()` returning HTTP 200) does not prove that the bot can still receive Gateway events. Hermes therefore combines the ready state, client/socket closure state, socket openness, heartbeat ACK age, and finite heartbeat latency.
+Discord REST and the Gateway WebSocket are separate transports. A successful REST response (including `fetch_user()` returning HTTP 200) does not prove that the bot can still receive Gateway events. Hermes therefore combines the ready state, client/socket closure state, socket openness, heartbeat ACK age, finite heartbeat latency, and — since the dispatch-side dimension — how long it has been since the last parsed Gateway event.
 
 After the configured number of consecutive unhealthy samples, the adapter emits one retryable fatal event. The existing gateway reconnect watcher creates a fresh adapter; the Discord adapter does not start a second unbounded reconnect loop.
 
@@ -96,9 +96,14 @@ discord:
   websocket_liveness_failure_threshold: 2
   websocket_heartbeat_ack_max_age_seconds: 60
   websocket_max_latency_seconds: 30
+  websocket_event_max_silence_seconds: 14400
 ```
 
 The old `liveness_interval_seconds` and `liveness_failure_threshold` names remain compatibility aliases only; they no longer mean REST probing.
+
+Any knob at `0` disables the whole WebSocket liveness probe. Values that fail to parse as a positive number (e.g. `15s`, `nan`, `true`, `-1`) also disable it, and log a warning each time the adapter starts — check `gateway.log` if the probe seems inactive.
+
+`websocket_event_max_silence_seconds` is the exception: it guards a single dimension (event dispatch), so `0` opts out of **that check only** — ready/ACK/latency keep guarding. A socket can stay ESTABLISHED and keep ACKing heartbeats while delivering zero Gateway events; heartbeat ACKs are frames without an event type, so no transport-side check can see that state. The default (4 hours) matches the outage window operators have observed in the field; a quiet guild can legitimately go hours without a single Gateway event, so keep this bound generous unless you know your traffic.
 
 ## Step 1: Create a Discord Application
 
@@ -299,7 +304,9 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
-| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
+| `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins, and voice-linked channels always ignore it. |
+| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
+| `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `true` | Require a literal `<@BOT_ID>` / `<@!BOT_ID>` token to start a bot handoff. Reply metadata alone does not start one. Brief same-sender/channel continuations are admitted as described below. Set to `false` only for trusted relays needing legacy admission. Human messages are unaffected. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -315,13 +322,32 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | No | `false` | When `true`, the bot accepts attachments of any file type (not just the built-in PDF/text/zip/office allowlist). Unknown types are cached to disk and surfaced to the agent as a local path with `application/octet-stream` MIME so it can inspect them with `terminal` / `read_file` / `ffprobe` / etc. |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | No | `33554432` | Maximum bytes per attachment the gateway will download and cache. Default 32 MiB. Set to `0` for no cap (attachments are held in memory while being written, so unlimited carries a real memory cost). |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
-| `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
+| `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Longer quiet period for near-limit Discord splits and continuation chunks from a recently tagged bot in the same channel. |
 
-:::warning Bot-to-bot conversation is not supported
-`DISCORD_ALLOW_BOTS` exists to accept input from a specific trusted bot (e.g. a relay or webhook bot), not to let two Hermes profiles talk to each other. The default, `"none"`, ignores all other bots and is the safe setting.
+### Bot-to-bot handoffs: tag once, collect the burst
 
-Wiring multiple Hermes profiles to reply to one another in a shared channel — by setting `"mentions"` or `"all"` across several profiles — is an unsupported topology. Discord auto-`@mentions` the replied-to author on every reply, so under `"mentions"` two bots will satisfy each other's mention gate and ack-loop. The gateway's bot loop guard bounds the damage rather than preventing it: after 20 bot-authored messages in one channel inside 5 minutes, further bot messages there are dropped for 10 minutes (tunable under `gateway.bot_loop_guard` in `config.yaml`; human messages are never counted). The supported configuration is still to leave `DISCORD_ALLOW_BOTS` at `"none"`. If you must accept a particular bot, scope the acceptance narrowly and never to another auto-replying agent.
-:::
+Bot input remains opt-in (`DISCORD_ALLOW_BOTS=none` by default). When enabled with `mentions` or `all`, **starting a bot handoff requires a literal `<@BOT_ID>` / `<@!BOT_ID>` in the message content by default**. Discord's automatic reply ping alone does not start a handoff. Human-authored messages retain their existing mention behavior.
+
+After an admitted bot mention, Hermes briefly accepts unmentioned follow-ups from **that same bot in that same channel or thread**. Text follow-ups enter the existing text batcher, so a rapidly split response can reach the agent together without repeating the tag on every part. No special sender protocol or part markers are required.
+
+For example, bot A sends `<@BOT_B_ID> Here is the review …`, followed immediately by two untagged text chunks in the same thread. Bot B admits those chunks during the continuation window and batches them with the tagged text. After the window expires, an untagged message or reply ping cannot start another handoff under the default policy. Explicit reciprocal tags remain supported; this prevents accidental reply-metadata loops, not intentionally continued conversations.
+
+#### Timing and limits
+
+The admission window lasts `max(HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS, HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS)` after the admitted mention (2 seconds with the defaults), and each admitted continuation re-arms it, so a long handoff paced at Discord's send rate arrives whole. Separately, each queued text chunk restarts the batch's quiet timer; a tagged bot batch uses the split quiet period even when its first chunk is short. These settings control receiver batching, not sender pacing. Disabling text batching (`HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS=0`) also disables continuation admission.
+
+This is a short-burst heuristic, not guaranteed multipart delivery. A delayed chunk outside the window needs its own mention under the default policy. Unrelated messages from the same bot and channel inside the window can also be admitted. The exception is not restricted to text: attachments and commands may pass admission, but only text enters this batcher; other message types follow their normal handling. Existing channel restrictions and `DISCORD_ALLOW_BOTS=none` still apply. History/backfill behavior is unchanged. The gateway's bot loop guard remains as a backstop: after 20 bot-authored messages in one channel inside 5 minutes, further bot messages there are dropped for 10 minutes (tunable under `gateway.bot_loop_guard` in `config.yaml`; human messages are never counted).
+
+#### Compatibility with trusted relays
+
+The inline-mention requirement now defaults to **true** (previously false), including when `DISCORD_ALLOW_BOTS=all`. If an existing relay intentionally relies on reply pings or unmentioned bot messages, retain the old admission behavior explicitly:
+
+```yaml
+discord:
+  bots_require_inline_mention: false
+```
+
+The existing `DISCORD_BOTS_REQUIRE_INLINE_MENTION=false` environment override is also supported when the YAML option is unset. With this opt-out, `mentions` accepts Discord's resolved mentions, including reply pings, and `all` removes the bot-specific mention requirement; other channel mention rules still apply. An admitted reply ping can also open the continuation window in this compatibility mode. Use it only for trusted relays because it restores the accidental reply-loop risk.
 
 ### Config File (`config.yaml`)
 
@@ -332,8 +358,10 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 discord:
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
+  bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
@@ -345,6 +373,7 @@ discord:
     window_seconds: 21600         # Look back at most 6 hours
     limit: 100                    # Global scan cap per reconnect
     max_dispatches: 10            # Recovery dispatch cap per reconnect
+    max_attempts: 3               # Lifetime re-dispatch cap per message
   channel_prompts: {}             # Per-channel ephemeral system prompts
   voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
   voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
@@ -398,7 +427,121 @@ discord:
 
 If a thread's parent channel is in this list, the thread also becomes mention-free.
 
-Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you want threading behavior, don't list the channel as free-response (use normal `@mention` flow instead).
+Free-response channels also **skip auto-threading** by default — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface.
+
+To opt in to threading for free-response channels, set `discord.free_response_auto_thread: true` (or `DISCORD_FREE_RESPONSE_AUTO_THREAD=true`). In that mode each new top-level message in a free channel still gets its own thread, but the channel remains @mention-free. Requires `discord.auto_thread: true`.
+
+#### `discord.free_response_auto_thread`
+
+**Type:** boolean — **Default:** `false`
+
+When `true`, channels listed in `discord.free_response_channels` also auto-create a thread for each top-level message, instead of answering inline. The channel stays mention-free; it only changes where the conversation lives.
+
+```yaml
+discord:
+  free_response_channels:
+    - 1234567890
+  auto_thread: true                # required — this flag refines it
+  free_response_auto_thread: true  # thread every top-level message there
+```
+
+Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins, voice-linked text channels always reply inline, and reply-type messages are never auto-threaded.
+
+`DISCORD_FREE_RESPONSE_AUTO_THREAD` wins over the `config.yaml` key when both are set — the YAML value only seeds the env var when it isn't already set, like every other `discord.*` bridge.
+
+#### `discord.response_gate`
+
+**Type:** mapping — **Default:** unset (gate off)
+
+An opt-in judge for *ambient* traffic — messages that ping no one. In the channels you list, a remote classifier decides whether an unprompted human message is worth waking the bot for, so a channel can surface the bot without everyone typing `@mention` first. The gate is off unless the block is present **and** `channels` names at least one channel; there is no wildcard and no inheritance from [`free_response_channels`](#discordfree_response_channels).
+
+```yaml
+discord:
+  response_gate:
+    provider: jev             # only provider; anything else refuses to load
+    channels:                 # explicit opt-in list — no "*"
+      - 1234567890
+    mode: shadow              # shadow (default) | enforce
+    threshold: 0.8            # legacy single-score key; kept for config compatibility only
+    addresses_bot_min: 0.5        # allow when addresses_bot is above this (default)
+    continues_bot_thread_min: 0.6 # thread-follow-up branch: continues_bot_thread above this...
+    noise_max: 0.4                # ...and noise below this
+    timeout_seconds: 3.0      # per-request budget; over budget means deny
+    context_messages: 10      # recent same-channel messages sent as evidence
+    context_chars: 8000       # total character budget for that evidence block
+    model: typesafe/jev-1.13  # judge model; fixed default, no fallback chain
+    threads_require_membership: true  # threads stay silent until the bot has participated (default)
+```
+
+**Modes.** `shadow` runs the judge and logs the verdict but never changes behavior — use it to see what the gate *would* have done before trusting it. `enforce` makes the verdict binding: an approved ambient message wakes the bot normally, and every other message in the gated channels stays silent.
+
+**The decision.** Each candidate is judged in one bounded request that asks three `noul` questions (each scored `0..1`): `addresses_bot` — does the message speak directly to the bot by name; `continues_bot_thread` — does it follow up on a conversation the bot was recently part of; `noise` — is it conversational noise with nothing to answer. The verdict is composed from the three components: **allow when `addresses_bot > addresses_bot_min`, or when `continues_bot_thread > continues_bot_thread_min` and `noise < noise_max`** — a direct address always admits, and a genuine thread follow-up admits unless the message is noise. The three cutoffs default to `0.5`, `0.6` and `0.4` (the historical fixed values, so an existing config behaves exactly as before) and each is settable per profile — for example `addresses_bot_min: 0.85`, `continues_bot_thread_min: 0.90`, `noise_max: 0.20` admits only much more confident candidates. Each must be a finite number in `0..1`; anything else refuses to load. The comparisons stay strict, so a score exactly on a cutoff never admits through that branch. Changes apply on the next gateway restart — unlike the reaction gate, this block has no live reload. A missing or invalid component fails closed (deny). The `threshold` key is still accepted and validated so existing configs keep loading, but it no longer influences the verdict.
+
+**Explicit triggers never consult it.** `@mentions`, replies to the bot, `mention_patterns` wake words, slash commands, and DMs all keep their existing paths with no judge round-trip. Only unprompted text is judged, and text that pings another human is judged rather than preempted — it may be meant for someone else and still be worth answering.
+
+**Thread membership.** `threads_require_membership` defaults to `true`: the parent channel you list is judged as always, but its *threads* stay silent until the bot has already participated in that thread — an unjoined thread's ambient messages never reach the judge. Pinging the bot in such a thread still wakes it through the normal mention path, and once the bot has answered there, later ambient messages in the same thread are judged. Set `false` to judge every in-scope thread.
+
+**Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel or thread — up to `context_messages` messages and `context_chars` characters. Nothing from other channels, and nothing beyond that window.
+
+**Fail-closed.** A timeout, a malformed answer, or a missing `OPENROUTER_API_KEY` means a silent deny in `enforce`; the gate never admits on failure. Because a silent deny is easy to miss, `enforce` without a usable key also logs one loud warning at startup — `shadow` does not. The key is read once at connect time from the profile environment, so it must be set before the gateway starts; it is not a `config.yaml` key.
+
+Values outside the documented ranges (threshold or any of the three cutoffs outside `0..1`, `timeout_seconds` above `30`, oversized context bounds) refuse to load rather than quietly degrading into "admit everything".
+
+#### `discord.reaction_gate`
+
+**Type:** mapping — **Default:** unset (gate off)
+
+An opt-in judge for *reactions*. In the channels you list, the bot asks a remote classifier one `choice` question per message — which single whitelisted emoji best fits as its reaction, or `None` (no reaction fits) or `Other` (a reaction fits but no whitelisted one does) — and adds exactly one reaction when the combined probability of `None` and `Other` is strictly below one half, or when the top emoji's probability is strictly more than five times the runner-up emoji's (abstention options are ignored for that comparison), even if the abstention sum is `0.5` or above. That decision rule is itself configurable as `decision_formula` (below); omitting it keeps exactly the rule described here. The gate is off unless the block is present, `enabled: true` **and** `channels` names at least one channel; there is no wildcard.
+
+```yaml
+discord:
+  reaction_gate:
+    enabled: true              # explicit opt-in switch
+    channels:                  # explicit list — no "*"
+      - 1234567890
+    emojis:                    # whitelist; also the exact-tie preference order
+      - 👍
+      - ❤️
+      - 😂
+      - 🎉
+      - 😢
+      - 😮
+      - 🔥
+      - 🤔
+    criteria:                  # optional per-emoji description overrides
+      🎉: "Fits celebrations and shipped work."
+    timeout_seconds: 3.0       # per-request budget; over budget means no reaction
+    context_messages: 10       # recent same-channel messages sent as evidence
+    context_chars: 8000        # total character budget for that evidence block
+    model: typesafe/jev-1.13   # judge model; fixed default, no fallback chain
+    decision_formula: 'abstain < 0.5 or (emoji_count >= 2 and top > 5 * second)'  # the default rule, spelled out
+    include_threads: true            # a listed parent channel id also selects its threads (default)
+    threads_require_membership: true  # in-scope threads stay silent until the bot has participated (default)
+```
+
+**The decision rule.** The judge returns a probability for every offered option. The bot reacts with the highest-probability whitelisted emoji when **either** `P(None) + P(Other)` is **strictly below `0.5`**, **or** the top emoji's probability is **strictly greater than `5`×** the second-highest emoji's (`None` and `Other` are ignored for that ratio; exactly `5`× does not fire). At `0.5` or above it does nothing unless the runaway-winner branch fires; the reaction is still the argmax emoji. An abstention option is allowed to top the distribution on its own under the first branch: with `None = 0.30`, `Other = 0.19` and `👍 = 0.31` the sum is `0.49`, so the bot reacts with 👍. Under the second branch, with `None = 0.74`, `Other = 0.03`, `👍 = 0.20` and `❤️ = 0.03` the sum is `0.77`, yet the bot reacts with 👍 because `0.20 > 5 × 0.03`. An exact tie between emojis resolves to the one listed first in `emojis`.
+
+**Decision formula.** That rule is the default value of `decision_formula`, and you can edit it. The expression must produce a true/false answer over six fixed numbers: `none` and `other` (the two abstention options' probabilities), `abstain` (their sum), `top` and `second` (the highest and second-highest whitelist-**emoji** probabilities — abstention options never count as the runner-up, and `second` is `0` when the whitelist has no runner-up), and `emoji_count` (how many entries `emojis` lists — the `emoji_count >= 2` guard in the default is what keeps the ratio branch from firing on a single-entry whitelist, since `second` is `0` there). Allowed syntax: finite numeric literals, `True`/`False`, those six names, `+ - *` arithmetic, unary `+`/`-`, the comparisons `< <= > >= == !=`, and `and`/`or`/`not` with parentheses. Nothing else exists in the language — no division, powers, calls, attributes, indexing, strings or names beyond the six — and a mistyped formula refuses to load (the gate stays off / the active gate keeps running) instead of being guessed at; a formula whose root is not a true/false comparison, or that combines types nonsensically (`top and none`), is refused the same way. Formulas are bounded to 200 characters, 100 expression nodes, 12 nesting levels and literals up to `1e9`. When the formula is true the reaction is still the argmax emoji with the configured tie order — the formula only decides *whether* to react. Examples: `'abstain < 0.5 and top > 5 * second'` (both branches must agree), `'abstain < 0.35 or (emoji_count >= 2 and top > 3 * second)'` (a stricter boundary and a gentler runaway ratio), `'top > 0.6 and abstain < 0.8'` (a floor on the winner regardless of runner-up).
+
+**Multi-glyph entries.** An `emojis` entry may hold several emoji glyphs, e.g. `👉👈`. The judge sees it as **one** option (the whole string), and when it wins, the bot adds the glyphs as separate back-to-back reactions in string order — 👉 then 👈. A compound emoji that is one grapheme cluster — `🤦‍♂️` (ZWJ sequence), `❤️` (VS16), skin-tone sequences like `🫱🏻‍🫲🏽`, keycaps like `1️⃣`, flags like `🇦🇺` — stays exactly **one** reaction. Each glyph of a multi-glyph entry is its own API call: if one fails, the rest are still attempted.
+
+**Custom guild emojis.** Entries in Discord's `<:name:id>` form are offered to the judge by their short `name` (e.g. `pog`), while the bot still reacts with the full token Discord requires. Optional `criteria:` overrides remain keyed by the full entry as in config. If two whitelist entries would share the same short name (including the same name on different servers), both are offered under their full `<:name:id>` tokens instead.
+
+**Independent of [`response_gate`](#discordresponse_gate).** The two gates share only a transport. This one judges *every* eligible message in its channels — `@mentions`, replies, and other bots' conversational messages included, whether or not the speaking gate (or the mention prefilter) would have answered them — and its outcome never feeds back into speaking: a reaction success or failure creates no session, forces no text reply, and blocks none. The channels, verdicts and evidence of the two gates are configured separately and can overlap or not at all.
+
+**Thread scope.** `include_threads` defaults to `true`, so listing a parent channel id also selects its threads. With `include_threads: false`, a listed parent channel **id** no longer selects its threads; opt a thread in directly by its own id or name. Name-based listings match by exact name (parent name forms appear in every thread's key set too), so list parent channels by id when using the opt-out.
+
+**Thread membership.** `threads_require_membership` defaults to `true` and composes with that scope rule: once a thread is in scope, it is still only evaluated after the bot has already participated in that thread — an unjoined thread gets no consultation, no reaction, and buffers no evidence. Set `false` to react in every in-scope thread. The listed parent channel itself is never membership-gated.
+
+**Eligibility.** The bot's own messages, system/lifecycle events (joins, pins, …), DMs, [`ignored_channels`](#discordignored_channels), channels outside `channels`, and messages from users who fail the authorization allowlist are never evaluated and never reacted to. Each message id is considered once no matter how it is delivered (live or backfill), so a duplicate or concurrent delivery cannot double-react.
+
+**Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel *or thread* — up to `context_messages` messages and `context_chars` characters. The window holds the messages that preceded the candidate when it arrived (never the candidate itself) plus this bot's own delivered final replies, so a user's "thanks" after one of them reads as connected. A thread's evidence never merges its parent channel's history, and nothing from other channels is included. Message text is evidence about the conversation, never instructions to the judge, and logs carry only channel/message ids and the outcome — never message content.
+
+**Fail-closed.** A missing `OPENROUTER_API_KEY`, timeout, transport error, malformed answer, unknown option, or an incoherent probability distribution means *no reaction* — never a fallback emoji and never a text reply. Like the speaking gate, the key is read once at connect time from the profile environment, not from `config.yaml`.
+
+**Live reload.** Edits to the `reaction_gate` block in `config.yaml` are picked up by the running adapter within a few seconds — no restart needed. The reload resolves the block exactly like startup does (including the [managed-scope](/user-guide/managed-scope) overlay and the nested `gateway.platforms.discord` / `platforms.discord` / `gateway.discord` spellings), so a live edit has the same effect as a restart, and administrator-pinned values cannot be bypassed by editing the user file. An invalid edit — broken YAML, a non-mapping document (including an empty file mid-save), or a block that fails validation — keeps the active gate; removing the block from an otherwise valid file, or setting `enabled: false`, turns it off. That includes `decision_formula`: changing thresholds or flipping `or` to `and` applies on the next decision after the reload, with no restart or reconnect.
+
+Values outside the documented ranges (`timeout_seconds` above `30`, more than `32` emojis, emojis longer than `32` characters, criteria text above `500` characters, oversized context bounds, a `None`/`Other` entry in `emojis` — those two options are fixed — or an invalid `decision_formula`) refuse to load or leave the gate off rather than quietly degrading.
 
 #### `discord.auto_thread`
 
@@ -406,7 +549,7 @@ Free-response channels also **skip auto-threading** — the bot replies inline r
 
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
-Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead.
 
 #### `discord.reactions`
 
@@ -530,9 +673,12 @@ discord:
     window_seconds: 3600
     limit: 100
     max_dispatches: 10
+    max_attempts: 3
 ```
 
-If `channels` is empty, Hermes uses `discord.free_response_channels`. Set it to `"*"` only when the bot should inspect every reachable server text channel. The recovery ledger is stored per profile under `gateway/discord_message_recovery.db`, preventing a successfully answered message from being replayed again after a later restart.
+If `channels` is empty, Hermes uses `discord.free_response_channels`. Set it to `"*"` only when the bot should inspect every reachable server text channel. The recovery ledger is stored per profile under `gateway/discord_message_recovery.db`, preventing a successfully answered message from being replayed again after a later restart. A message counts as answered once its turn delivered a final reply, whether or not that reply carried a Discord reply reference (`reply_to_mode: "off"`, streamed replies and media-only replies included).
+
+`max_dispatches` caps one scan; `max_attempts` (default 3) caps how many times a single message can ever be re-dispatched, so a message whose turn keeps failing is not re-run on every reconnect. `window_seconds` is always honoured: the per-channel scan cursor can narrow a scan but never reaches further back than the window.
 
 #### `group_sessions_per_user`
 
@@ -722,7 +868,11 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Click a numbered button to answer, or click **Other** to type a free-form response (the next message you send in that channel becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+
+### Prompt layout
+
+Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
 
 ## Proactive Delivery Targets
 
@@ -739,8 +889,8 @@ Hermes Agent supports Discord voice messages:
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
 
 For the full setup and operational guide, see:
-- [Voice Mode](/user-guide/features/voice-mode)
-- [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)
+- [Voice Mode](../features/voice-mode.md)
+- [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md)
 
 ### Voice Channel Audio Effects (ambient + verbal acks)
 

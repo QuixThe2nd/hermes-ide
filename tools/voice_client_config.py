@@ -95,12 +95,17 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     language = tt._resolve_stt_language(
         provider, stt_config, extra_keys=("language_code",) if provider == "elevenlabs" else ())
     section = _section(stt_config, provider)
+    # Same deadline the gateway's own transcription client applies
+    # (``stt.openai.timeout``; riders such as groq/deepinfra inherit it), so a
+    # slow endpoint fails the Desktop's direct request instead of hanging it.
+    timeout_s = tc._config_number(_section(stt_config, "openai"), "timeout", 60.0)
 
     def direct(wire: str, base_url: Any, api_key: str, model: Any) -> Dict[str, Any]:
-        return _direct(wire, provider, base_url, api_key, model, language=language)
+        return _direct(wire, provider, base_url, api_key, model, language=language, timeout_s=timeout_s)
 
     def env_base_url(env_var: str, default: str) -> str:
-        return str(section.get("base_url") or tt.get_env_value(env_var) or default).strip().rstrip("/")
+        from hermes_cli.config import get_env_value
+        return str(section.get("base_url") or get_env_value(env_var) or default).strip().rstrip("/")
 
     if provider in _STT_KEYED:
         env_var, default_model, base = _STT_KEYED[provider]
@@ -120,7 +125,8 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     if provider == "xai":
         # API key only: an xAI OAuth bearer refreshes server-side mid-session and
         # would strand the client on the first 401.
-        api_key = str(tt.get_env_value("XAI_API_KEY") or "").strip()
+        from hermes_cli.config import get_env_value
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
         if not api_key:
             return _relay("xai oauth (server-managed) or no credentials")
         return direct(STT_WIRE_XAI, env_base_url("XAI_STT_BASE_URL", tc.XAI_STT_BASE_URL), api_key, None)
@@ -172,7 +178,8 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         except (TypeError, ValueError):
             speed = 1.0
         return _direct(TTS_WIRE_OPENAI, "openai", base_url, api_key, model,
-                       voice=oai.get("voice") or tts_tool_openai.DEFAULT_OPENAI_VOICE, speed=speed)
+                       voice=oai.get("voice") or tts_tool_openai.DEFAULT_OPENAI_VOICE, speed=speed,
+                       extra_body=tts_tool_openai._openai_extra_body(oai))
     if provider == "elevenlabs":
         api_key = tts._resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
         if not api_key:

@@ -109,7 +109,7 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     """
     marker = path or update_marker_path()
     try:
-        lines = marker.read_text(encoding="utf-8").splitlines()
+        lines = marker.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return None
     try:
@@ -134,12 +134,12 @@ def describe_holder(holder: UpdateHolder) -> str:
     minutes, seconds = divmod(int(max(holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
     return (
-        f"✗ Another Hermes update is already running (PID {holder.pid}, "
-        f"started {elapsed} ago).\n"
+        f"✗ Another Hermes update is already running (started {elapsed} ago, "
+        f"process {holder.pid}).\n"
         "\n"
-        "  Two updates mutating the same checkout corrupt it: one rewrites\n"
-        "  source while the other is mid-install. Wait for it to finish, or\n"
-        "  close the window/dashboard tab that started it, then retry."
+        "  Running two at once would corrupt the install. Wait for it to finish\n"
+        "  (watch `hermes logs`), or close the Desktop/dashboard window that\n"
+        "  started it, then run `hermes update` again."
     )
 
 
@@ -187,7 +187,7 @@ class UpdateLock:
             return
         self.acquired = False
         try:
-            owner = int(self.path.read_text(encoding="utf-8").splitlines()[0].strip())
+            owner = int(self.path.read_text(encoding="utf-8-sig").splitlines()[0].strip())
         except (OSError, IndexError, ValueError):
             return
         if owner != os.getpid():

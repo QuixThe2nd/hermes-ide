@@ -25,6 +25,7 @@ import pytest
 from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.llm_usage_routes import (
     HERMES_CALLER_LABEL,
+    _caller_label_for_profile,
     _proxied_request,
     _reset_registry,
     activate_routing,
@@ -34,6 +35,7 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 from plugins.llm_usage_proxy.server import (
     CALLER_LABEL_HEADER,
     CALLER_LABEL_MAX_CHARS,
+    CALLER_LABEL_RE,
     CALLER_TOKEN_HEADER,
     KeyStore,
     caller_label_from_user_agent,
@@ -325,6 +327,86 @@ def test_routed_traffic_is_labeled_and_the_label_is_stripped(
     assert CALLER_LABEL_HEADER.lower() not in seen
     rows = wait_for_row_count(proxy.store.path, 1)
     assert rows[0]["caller"] == HERMES_CALLER_LABEL
+
+
+# The label a routed transport stamps is derived once, at construction, from
+# the profile path it is bound to — the request path cannot resolve profiles.
+@pytest.mark.parametrize(
+    "home_name, expected",
+    [
+        # A home that is not under a profiles/ directory is the default
+        # profile: the wire label stays exactly what it always was.
+        ("plain-home", "hermes"),
+        # A named profile home, in either layout.
+        ("profiles/coder", "hermes:coder"),
+        (".hermes/profiles/coder", "hermes:coder"),
+        # A weird profile name is sanitized, never emitted verbatim.
+        ("profiles/bad name!", "hermes:badname"),
+        ("profiles/wow!!such~chars", "hermes:wowsuchchars"),
+        # A name nothing survives sanitizing falls back to the default label.
+        ("profiles/!!!", "hermes"),
+        ("profiles/…", "hermes"),
+        # The whole label is capped at the proxy's limit, prefix included.
+        ("profiles/" + "x" * 80, "hermes:" + "x" * 57),
+    ],
+)
+def test_caller_label_is_derived_from_the_bound_profile_home(
+    tmp_path, monkeypatch, home_name, expected
+):
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    label = _caller_label_for_profile(str(tmp_path / home_name))
+
+    assert label == expected
+    # Whatever the profile name, the proxy always sees a usable label.
+    assert len(label) <= CALLER_LABEL_MAX_CHARS
+    assert CALLER_LABEL_RE.match(label)
+
+
+def test_named_profile_routed_traffic_is_labeled_with_the_profile_name(
+    start_upstream, start_proxy, tmp_path
+):
+    """End to end: a named profile's routed client is attributed "hermes:<name>"."""
+    upstream = start_upstream(respond_json({"ok": True}))
+    proxy = start_proxy(_zai(upstream))
+    logical_base = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
+    home = tmp_path / "profiles" / "coder"
+    home.mkdir(parents=True)
+    token = set_hermes_home_override(str(home))
+    try:
+        _activate(
+            home,
+            proxy_port=proxy.server_address[1],
+            logical_base=logical_base,
+        )
+        with build_keepalive_http_client(logical_base) as client:
+            response = client.post(
+                f"{logical_base}/chat/completions",
+                json={"model": "glm-5", "messages": []},
+                headers={"Authorization": "Bearer sk-route-test"},
+            )
+            assert response.status_code == 200
+    finally:
+        reset_hermes_home_override(token)
+
+    seen = _upstream_headers(upstream)
+    assert CALLER_LABEL_HEADER.lower() not in seen
+    rows = wait_for_row_count(proxy.store.path, 1)
+    assert rows[0]["caller"] == "hermes:coder"
+
+
+def test_named_profile_proxied_request_keeps_a_client_supplied_label():
+    """The profile label is a default, not an override: precedence is unchanged."""
+    request = httpx.Request(
+        "POST",
+        "https://api.example.test/v1/chat/completions",
+        headers={CALLER_LABEL_HEADER: LABEL},
+    )
+    proxied = _proxied_request(
+        request, "http://127.0.0.1:9/p/zai/v1/chat/completions", "hermes:coder"
+    )
+
+    assert proxied.headers[CALLER_LABEL_HEADER] == LABEL
 
 
 # ── 5. The harness User-Agent, and the managed-mode attribution gate ─────────

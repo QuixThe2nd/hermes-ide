@@ -12,6 +12,7 @@ import os
 from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
+from agent.secret_scope import get_secret_str
 from utils import base_url_hostname
 
 logger = logging.getLogger("hermes_cli.runtime_provider")
@@ -35,6 +36,34 @@ def _normalize_base_url_for_match(value) -> str:
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _key_env_secret(entry: Dict[str, Any], label: str) -> str:
+    """The credential named by ``key_env`` / ``api_key_env`` on a config block, or "".
+
+    A declared variable that resolves to nothing is logged: every custom rung substitutes
+    ``no-key-required`` for an empty key (keyless local servers), so a misnamed or unexported
+    variable otherwise surfaces only as the provider's 401/403 (#67453). A block with no key_env at
+    all stays silent — that IS the keyless-server configuration.
+    """
+    key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
+    if not key_env:
+        return ""
+    value = get_secret_str(key_env, "").strip()
+    if not value:
+        logger.warning("%s: key_env %s is set but the variable is empty/unset — the request will carry the "
+                       "placeholder no-key-required and the endpoint will reject it", label, key_env)
+    return value
+
+
+def _model_cfg_key_env_for(model_cfg: Dict[str, Any], base_url: str) -> str:
+    """``model.key_env`` for a bare ``provider: custom`` runtime, only when ``base_url`` IS the
+    configured ``model.base_url`` — the key was declared for that endpoint, never for a direct alias
+    or CUSTOM_BASE_URL pointing elsewhere."""
+    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
+    if not cfg_base_url or cfg_base_url != _clean(base_url).rstrip("/"):
+        return ""
+    return _key_env_secret(model_cfg, "model")
 
 
 def _entry_url(entry: Dict[str, Any]) -> str:
@@ -116,9 +145,9 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         if not isinstance(entry, dict) or not is_provider_enabled(entry):
             continue
         # API key from the env var named by key_env, else the inline api_key. Read BEFORE the
-        # alias match (scope-aware ``_getenv`` fails closed identically for every entry).
+        # alias match (scope-aware ``get_secret_str`` fails closed identically for every entry).
         key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
-        api_key = rp._getenv(key_env, "").strip() if key_env else ""
+        api_key = get_secret_str(key_env, "").strip() if key_env else ""
         if requested_norm not in custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)):
             continue
         base_url = _entry_url(entry)
@@ -252,16 +281,21 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
                               model: Optional[str] = None) -> Optional[str]:
-    """Recover a routable ``custom:<name>`` identity for a bare custom provider. Every path that
-    persists or restores a session's provider override must run the resolved provider through this
-    so a bare ``"custom"`` is upgraded back to its durable menu key. Sources in priority order:
-    (1) ``base_url`` reverse lookup — the one fact that always survives the round-trip when a URL
-    was recorded; (2) ``model`` reverse lookup (``model``/``default_model``/``models`` catalog);
-    (3) the configured provider (arg, ``model.provider``, ``HERMES_INFERENCE_PROVIDER``) when it
-    names a real entry."""
+    """Recover the durable menu identity for a bare custom provider. Match a configured
+    endpoint first, then the ownership-checked managed server, then a configured model or
+    provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
-    identity = (find_custom_provider_identity(base_url) if base_url else None) or (
-        find_custom_provider_identity_by_model(model) if model else None)
+    if base_url:
+        identity = find_custom_provider_identity(base_url)
+        if identity:
+            return identity
+        # The managed server has no custom-provider config entry. Recover its menu key
+        # from the ownership-checked endpoint, never from a model name or a fixed port.
+        from hermes_cli.local_runtime.endpoint import _state_endpoint
+        endpoint = _state_endpoint()
+        if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
+            return "llamacpp"
+    identity = find_custom_provider_identity_by_model(model) if model else None
     if identity:
         return identity
     candidate = str(config_provider or "").strip()
@@ -421,7 +455,9 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
         return pool_result
     # OLLAMA_API_KEY gets its own gate here: without it a `model_aliases:` entry pointing at
     # Ollama Cloud resolved no key at all.
-    candidates = [(explicit_api_key or "").strip(), *rp._host_gated_env_key_candidates(base_url, ollama=True)]
+    # ``model.key_env`` only when this alias endpoint IS the configured model.base_url (#67453).
+    candidates = [(explicit_api_key or "").strip(), _model_cfg_key_env_for(rp._get_model_config(), base_url),
+                  *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     api_key = next((c for c in candidates if rp.has_usable_secret(c)), "")
     return _custom_runtime(rp, base_url, api_key, None, source="direct-alias", requested_provider=requested_provider)
 
@@ -482,7 +518,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     candidates = [
         explicit_key,
         _clean(custom_provider.get("api_key", "")),
-        rp._getenv(_clean(custom_provider.get("key_env", "")), "").strip(),
+        _key_env_secret(custom_provider, f"custom provider '{custom_provider.get('name', requested_provider)}'"),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
     api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")

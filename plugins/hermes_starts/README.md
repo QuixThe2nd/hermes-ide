@@ -43,6 +43,39 @@ Under `plugins.entries.hermes_starts.settings` in `config.yaml`:
 | `quiet_hours` | `23:00-08:00` | Window in `quiet_tz` where starts still post but neither ping nor thread-add happens. Empty string disables the gate. |
 | `quiet_tz` | `Australia/Sydney` | IANA zone used to evaluate `quiet_hours`. |
 
+## Duplicate-start protection
+
+Enable the optional guard under `plugins.entries.hermes_starts.settings`:
+
+```yaml
+dedup_enabled: true
+dedup_window_days: 10
+dedup_max_history: 100
+```
+
+The guard checks the full opening and proposed next step against recent starts before
+posting. Cosmetic copies are rejected locally; reworded proposals use one bounded
+comparison through Hermes's existing auxiliary-model routing. Different proposals
+about the same project remain eligible. No additional credentials or dependencies
+are required. The guard is off by default for backward compatibility.
+
+A duplicate returns `success: false`, `duplicate_start_number`, `duplicate_thread_id`,
+and `duplicate_thread_url` when the destination is known. Read that thread and add
+only material new information; otherwise leave it alone. If the model, history, or
+state is unavailable or invalid, the guard returns a deferred error without posting.
+Do not bypass a refusal by rephrasing or by using a different posting tool.
+
+State persists across sessions. Existing installations rebuild their initial comparison
+window from recent inbox anchors. The window is bounded by both age and entry count;
+older material is not guaranteed to be compared. Semantic matching can still make
+mistakes, so this guard complements checking existing conversations.
+
+Enabled starts serialize their state reads, cooldown checks, comparison and delivery.
+A reservation is saved before sending and retains any known anchor or thread after a
+partial failure. Retrying the same opening therefore cannot assume that a timeout
+means nothing was posted. Inspect the recorded destination before any manual recovery.
+The guard preserves quiet hours, mentions, thread membership and conversation seeding.
+
 ## Multi-guild bots
 
 If the bot is in more than one Discord server, setup returns the guild list and asks you to

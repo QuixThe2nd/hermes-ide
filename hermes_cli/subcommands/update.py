@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 
@@ -88,5 +89,35 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     update_parser.add_argument(
         "--force-venv", action="store_true", default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
+    )
+    update_parser.add_argument(
+        "--no-gateway-restart", action="store_true", default=False,
+        help="Update code and dependencies but skip the final gateway restart. "
+            "Use for cron/automated updates that run inside the gateway process: "
+            "the gateway would otherwise restart its own cgroup and kill the updater. "
+            "Pair with a separate restart step (e.g. a cron that runs 10-15 min later).",
+    )
+    update_parser.add_argument(
+        "--post-swap", default=None, metavar="FILE", help=argparse.SUPPRESS,
+        # Internal: the pre-pull interpreter re-executes itself here after the code swap so the
+        # rest of the update runs on the pulled code (hermes_cli/update_handoff.py).
+    )
+    update_parser.add_argument(
+        "--set-channel", default=None, choices=("main", "stable", "nightly"), metavar="CHANNEL",
+        help="Persist the update channel for THIS install (recorded per install in config.yaml "
+             "under update.installs). 'stable' tracks tagged releases, 'main' the git main branch, "
+             "'nightly' the nightly prereleases (desktop bundles only; source installs normalize "
+             "nightly to main). Installs whose updates an external steward owns (nix, docker, app "
+             "stores) have no channel.",
+    )
+    update_parser.add_argument(
+        "--install-id", action="store_true", default=False,
+        help="Print this install's id and path (the id keys its per-install channel record in "
+             "config.yaml) and exit.",
+    )
+    update_parser.add_argument(
+        "--channel", default=None, choices=("stable", "main", "nightly"), metavar="CHANNEL",
+        help="Track CHANNEL for this run only (transient override; --set-channel persists). "
+             "'stable' updates to the newest tagged release, 'main' to the branch tip.",
     )
     update_parser.set_defaults(func=cmd_update)

@@ -147,6 +147,38 @@ def moa_ask(
     report("starting")
     terminal_sent = False
 
+    # Per-slot roster state for the stage events: one row per configured
+    # advisor, keyed by its stable index into ``reference_models``. None until
+    # the roster resolves, so a config failure emits the count-less failure
+    # event exactly as before. Each published event snapshots the current
+    # state into fresh dicts (the reporter re-allowlists too), so later
+    # mutations never reach an already-published event.
+    slot_states: list[str] | None = None
+    reference_models: list[dict[str, Any]] = []
+
+    def _slots_payload() -> list[dict[str, Any]] | None:
+        if slot_states is None:
+            return None
+        return [
+            {
+                "index": index,
+                "provider": str(slot.get("provider") or ""),
+                "model": str(slot.get("model") or ""),
+                "status": slot_states[index],
+            }
+            for index, slot in enumerate(reference_models)
+        ]
+
+    def _fail_unresolved_slots() -> None:
+        # The invocation is dying without collected results: a slot still
+        # "waiting" never delivered one, so say failed — a terminal embed must
+        # never leave a row claiming to be pending forever.
+        if slot_states is None:
+            return
+        for index, state in enumerate(slot_states):
+            if state == "waiting":
+                slot_states[index] = "failed"
+
     def _terminal(status: str, **counts):
         nonlocal terminal_sent
         report("complete", status=status, **counts)
@@ -176,19 +208,41 @@ def moa_ask(
 
         advisor_total = len(reference_models)
         model_count = len({str(slot.get("model") or "") for slot in reference_models})
+        slot_states = ["waiting"] * advisor_total
 
         def _report_advisors(completed: int) -> None:
             # Live advisor progress: one non-terminal advisors stage per
-            # update, numeric counts only — the fan-out also hands its
-            # callback a provider:model label, and labels must never reach a
-            # stage payload.
+            # update. Counts stay numeric and the roster snapshot carries
+            # identity + status only — the fan-out also hands its callback a
+            # provider:model label, and labels must never reach a stage
+            # payload.
             report(
                 "advisors",
                 advisors=advisor_total,
                 models=model_count,
                 completed=completed,
                 total=advisor_total,
+                slots=_slots_payload(),
             )
+
+        def _on_fanout_progress(
+            done: int,
+            _total: int,
+            _label: Any,
+            index: int | None = None,
+            status: str | None = None,
+        ) -> None:
+            # The fan-out reports WHICH stable slot completed and how, so the
+            # right row flips — out-of-order completions and duplicate
+            # provider/model slots included.
+            if (
+                slot_states is not None
+                and index is not None
+                and 0 <= index < len(slot_states)
+                and status
+            ):
+                slot_states[index] = str(status)
+            _report_advisors(done)
 
         _report_advisors(0)
         ref_messages = _reference_messages([{"role": "user", "content": prompt}])
@@ -198,11 +252,12 @@ def moa_ask(
                 ref_messages,
                 temperature=_preset_temperature(preset, "reference_temperature"),
                 max_tokens=preset.get("reference_max_tokens"),
-                progress_callback=lambda done, _total, _label: _report_advisors(done),
+                progress_callback=_on_fanout_progress,
             )
         except Exception as exc:  # Defensive: individual references already fail soft.
             logger.warning("moa_ask reference fan-out failed: %s", exc)
-            _terminal("failure", advisors=len(reference_models))
+            _fail_unresolved_slots()
+            _terminal("failure", advisors=len(reference_models), slots=_slots_payload())
             return tool_error("MoA reference fan-out failed", success=False)
 
         advisors = []
@@ -222,6 +277,10 @@ def moa_ask(
                 usable += 1
             else:
                 failed += 1
+            if slot_states is not None and index < len(slot_states):
+                # Final truth for this row from the actual output — the same
+                # classification the result JSON reports ("ok" → responded).
+                slot_states[index] = "responded" if status == "ok" else status
             advisors.append(
                 {
                     "provider": str(slot.get("provider") or ""),
@@ -238,6 +297,7 @@ def moa_ask(
             advisors=len(reference_models),
             usable=usable,
             failed=failed,
+            slots=_slots_payload(),
         )
         status = (
             "success"
@@ -263,11 +323,13 @@ def moa_ask(
             advisors=len(reference_models),
             usable=usable,
             failed=failed,
+            slots=_slots_payload(),
         )
         return result
     except Exception:
         if not terminal_sent:
-            report("complete", status="failure")
+            _fail_unresolved_slots()
+            report("complete", status="failure", slots=_slots_payload())
         raise
 
 

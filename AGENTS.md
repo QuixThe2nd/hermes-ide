@@ -104,7 +104,8 @@ itself: preinstalled tooling and prebuilt pipelines are the point of this fork.
 - **E2E validation, not just green unit mocks.** For anything touching
   resolution chains, config propagation, security boundaries, remote
   backends, or file/network I/O, exercise the real path with real imports
-  against a temp `HERMES_HOME`. Mocks hide integration bugs.
+  against a temp `HERMES_HOME` — two of them (A→B→A) when the
+  change touches profile scope. Mocks hide integration bugs.
 - **Cache-, alternation-, and invariant-safe.** Preserve prompt caching, strict
   message role alternation (never two same-role messages in a row; never a
   synthetic user message injected mid-loop), and a system prompt that is
@@ -191,7 +192,10 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
    `hermes <subcommand>` guided by a skill. Default for subscriptions, scheduled tasks,
    service setup (`hermes webhook`, `hermes cron`, `hermes tools`).
 3. **Service-gated tool (`check_fn`)** — needs structured params/returns AND only appears when
-   a prerequisite is configured (Home Assistant tools, memory-provider tools).
+   a prerequisite is configured (Home Assistant tools, memory-provider tools). This rung gates
+   reachability/opt-in process-wide; a capability that varies per SESSION (who is watching) is
+   a named toolset folded in by the toolset resolver, not a `check_fn` — see "Surface capability
+   is a property of the SESSION" below.
 4. **Plugin** — third-party/niche/user-specific; lives in `~/.hermes/plugins/` or a pip
    package, discovered at runtime.
 5. **MCP server (in the catalog)** — genuinely a tool but not core-fundamental. Zero permanent
@@ -327,7 +331,7 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   (`_SLASH_DISPATCH` in `cli.py`, `_command_handler_table` in the gateway are the shape).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
   are not API; external compat is handled ONCE by the compat layer, not per PR.
-- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`, `docs/`,
+- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`,
   `skills/`, and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
   after the refactor). `evals/codebase_navigability/static_metrics.py <tree> <label>` measures
   file/function/CC/elif distributions before/after a large PR in ~2 min.
@@ -1273,7 +1277,9 @@ plan → snapshot → apply → restart-per-kind → verify → report
 - **Snapshot** (`hermes_cli/backup.py`): pre-update quick snapshot for
   EVERY profile (the code swap + fleet restart touch all of them), each
   into its own `state-snapshots/`, identical file set + 1 GiB per-file
-  cap + keep=1. **Never add a partial/tiered snapshot set** — mixed
+  cap + keep=3 (recovery-aware: an older snapshot stays past the limit
+  while it still holds the only usable copy of a DB the newer ones
+  skipped or failed to capture). **Never add a partial/tiered snapshot set** — mixed
   coverage creates torn-restore states across schema generations. Quick
   snapshots are FILE-LOSS RECOVERY (the per-profile cron-jobs safety
   net restores from them), NOT code-rollback insurance; `--backup` full
@@ -1436,6 +1442,19 @@ automatically scope to the active profile.
      when touching any of them, make sure the fail-closed semantics are present;
      do not reintroduce the `except _UnscopedSecretError: val = os.getenv(...)`
      fallback-after-miss shape.
+8. **One process may serve many profiles; code that runs outside a turn binds the owning
+   profile scope explicitly.** A profile = home + secret scope + terminal scope, bound by
+   `gateway/run.py::_profile_runtime_scope` (turn), `tui_gateway/server.py::@_profile_scoped` +
+   `model_switch.py::_session_profile_runtime_scope` (RPC, teardown), `cron/scheduler_provider.py::
+   _profile_cron_scope` (ticker), `gateway/run_agent_cache.py::_run_release_in_profile_scope`
+   (eviction). `os.environ`, module globals and import-time values hold the *launch* profile's, so
+   an unbound read is a silent default-profile leak, never an error: home/config/`.env`-derived
+   module constants are a bug class — key slots by `hermes_home_key()` or resolve at call time.
+   Needs a binding: boot probes (`check_fn`, MCP discovery, hooks), session end/eviction, tickers,
+   deferred callbacks, RPC methods, config readers, thread hops (`spawn_context_thread`), child
+   spawns (`served_profile_child_env`, never `os.environ.copy()`). Fail-closed reads exist only after
+   `set_multiplex_active(True)`. Prove live with two homes (A→B→A) under multiplex, not one temp
+   `HERMES_HOME`. Advisory lint: `scripts/check_profile_scope_patterns.py`.
 
 
 ## Code Shape Rules (all languages)
@@ -1589,7 +1608,12 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   `HERMES_TEST_FILE_RETRIES=0` disables). Pass-on-retry is green but printed under `⚠ FLAKY`
   with both outputs — a bug to fix, not noise. Timing tests must not assume a quiet runner:
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races.
-- **Placement:** `scripts/ci/classify_changes.py` picks jobs by changed files. A Python test
+- **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
+  `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
+  under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,
+  `utils`, `hermes_constants`, packaging) sit directly in `tests/`. No issue numbers in filenames —
+  cite the issue in the module docstring (`test_89315_x.py` → `test_x.py`, "Regression for #89315").
+- **Placement (CI lanes):** `scripts/ci/classify_changes.py` picks jobs by changed files. A Python test
   asserting about `package.json`, `package-lock.json`, `tsconfig.json`, or `.ts/.tsx/.js/
   .mjs/.cjs` sources will not run on a JS-only PR (green on PR, red on `main` where the
   classifier fails open). Such tests belong in the vitest suite, not `tests/*.py`.

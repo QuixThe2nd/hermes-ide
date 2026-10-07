@@ -295,7 +295,7 @@ TOOLSETS = {
             "desktop_preview", "drive_preview", "annotate_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
-            "setup_mcp", "gui_tour", "show_tip",
+            "gui_tour", "show_tip",
         ],
         "includes": []
     },
@@ -705,6 +705,28 @@ TOOLSETS = {
 
 
 
+def _registry():
+    """Live tool registry, or None when tools.registry can't be imported."""
+    try:
+        from tools.registry import registry
+        return registry
+    except Exception:
+        return None
+
+
+def _registry_call(method: str, default):
+    """registry.<method>() or *default* when the registry is unavailable or the call fails."""
+    try:
+        return getattr(_registry(), method)()
+    except Exception:  # registry None (AttributeError) or the call failed
+        return default
+
+
+def _registry_generation() -> Tuple[int, int]:
+    reg = _registry()
+    return (id(reg), getattr(reg, "_generation", 0)) if reg is not None else (0, 0)
+
+
 def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[str, Any]]:
     """
     Get a toolset definition by name.
@@ -834,17 +856,11 @@ def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     return to_remove
 
 
-# Resolution memo keyed on (toolset name, include_registry, registry
-# generation). resolve_toolset() recursively walks toolset includes and, with
-# include_registry=True, merges registry-registered tools on every call —
-# measured ~2us/toolset in isolation but called dozens of times per
-# _get_platform_tools() (per-keystroke /tools completion) and per picker
-# render. The registry exposes a monotonic _generation counter (bumped on
-# every register/deregister/alias/MCP refresh — see tools/registry.py), so a
-# cache entry is valid for as long as the generation is unchanged; external
-# callers never pass ``visited``, so the memo engages exactly at the public
-# entry and the internal cycle-detection recursion stays untouched.
-_resolve_toolset_memo: Dict[Tuple[str, bool, int, int], List[str]] = {}
+# Memo keyed on (name, include_registry, id(registry), registry generation, profile scope);
+# engages only at the public entry (visited is None). The scope is part of the key because a
+# multiplexed process resolves ``mcp-<server>`` per profile overlay: without it profile B got
+# profile A's tool names for a server B never connected (#106005).
+_resolve_toolset_memo: Dict[Tuple[str, bool, int, int, str], List[str]] = {}
 
 
 def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bool = True) -> List[str]:
@@ -869,15 +885,7 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     """
     external_call = visited is None
     if external_call:
-        try:
-            from tools.registry import registry
-
-            registry_id = id(registry)
-            generation = getattr(registry, "_generation", 0)
-        except Exception:
-            registry_id = 0
-            generation = 0
-        memo_key = (name, include_registry, registry_id, generation)
+        memo_key = (name, include_registry, *_registry_generation(), _registry_call("current_scope_key", ""))
         cached = _resolve_toolset_memo.get(memo_key)
         if cached is not None:
             return list(cached)

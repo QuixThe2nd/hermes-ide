@@ -69,6 +69,35 @@ DRAIN_QUEUE_CLAIMED_FILENAME = "drain_message_queue.replaying.json"
 
 _SNAPSHOT_VERSION = 1
 
+# Attribute stamped on every event the durable snapshot owns (set by
+# ``record_drain_event`` on durable acceptance — a fresh append, or an
+# idempotently-dropped re-delivery whose twin is already recorded). The
+# adapter's background pending-turn drain (``platforms/base.py``) reads it to
+# leave the parked in-memory mirror UNCONSUMED: the snapshot is the one owner,
+# and re-running the mirror re-enters the drain gate, which re-records and
+# re-acks the SAME event — the restart-drain completion-amplification loop.
+# Never serialized; replay rebuilds events from the snapshot, so replayed
+# copies arrive clean and drain normally.
+DRAIN_SNAPSHOT_OWNED_ATTR = "_drain_snapshot_owned"
+
+
+def _mark_drain_snapshot_owned(event: MessageEvent) -> None:
+    """Record durable acceptance on the event itself.
+
+    Two receipts, one truth: the ownership stamp above, and the
+    ``_gateway_accepted`` receipt ``wake.admit_internal_event`` requires —
+    without it a successfully queued internal completion reported
+    WakeNotAccepted and the notifier rewound and re-delivered it, growing the
+    snapshot again. Call ONLY on the durably-accepted paths; a refused
+    admission (cap/serialize/IO) must keep both flags unset so the caller
+    stays retryable.
+    """
+    try:
+        setattr(event, DRAIN_SNAPSHOT_OWNED_ATTR, True)
+        event._gateway_accepted = True
+    except Exception:
+        pass
+
 # Routing-relevant SessionSource fields. Session-key derivation
 # (``build_session_key``) and reply anchoring must see the same values the
 # live event carried, or a replayed message would land on a different
@@ -131,6 +160,7 @@ _EVENT_FIELDS = (
     "channel_context",
     "internal",
     "allow_gateway_control",
+    "redelivered",
 )
 
 
@@ -356,11 +386,44 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
     empty pre-drain backlog). A pre-drain backlog lives only in the FIFO;
     records retained for a platform that was down at boot live only in the
     snapshot — ``max`` counts each logical message once.
+
+    A re-delivered copy of a message id already recorded for this session
+    is dropped idempotently (one log line): the first copy IS durably on
+    disk, so True stays an honest ack — the queue holds the message, just
+    not twice. Without this, a platform re-delivery inside the drain window
+    wrote N records and the boot replay injected N turns for one message.
+    Internal synthetic events are exempt from this dedupe.
+
+    Every True return stamps the event (:func:`_mark_drain_snapshot_owned`):
+    the ownership marker the adapter's background pending-turn drain honors,
+    and the ``_gateway_accepted`` receipt ``wake.admit_internal_event``
+    requires. A False return (cap / serialize / IO) leaves both unset, so a
+    failed admission stays retryable.
     """
     path = drain_queue_path()
     events = _load_snapshot_events(path)
     cap = int(getattr(runner, "_BUSY_QUEUE_MAX_PENDING", 32))
     session = str(session_key or "")
+    message_id = str(getattr(event, "message_id", "") or "").strip()
+    if message_id and not getattr(event, "internal", False):
+        for item in events:
+            if item.get("session_key") != session:
+                continue
+            existing_id = str(
+                (item.get("event") or {}).get("message_id", "") or ""
+            ).strip()
+            if existing_id == message_id:
+                logger.info(
+                    "Drain queue already holds message id %s for session %s — "
+                    "dropping the re-delivered copy (one platform message, "
+                    "one queued turn)",
+                    message_id,
+                    session,
+                )
+                # The twin is durably on disk, so this copy is owned too:
+                # the receipt stays honest and the mirror must not run.
+                _mark_drain_snapshot_owned(event)
+                return True
     durable_depth = sum(1 for item in events if item.get("session_key") == session)
     in_memory_depth = 0
     depth_of = getattr(runner, "_queue_depth", None)
@@ -402,6 +465,7 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
             exc_info=True,
         )
         return False
+    _mark_drain_snapshot_owned(event)
     return True
 
 
@@ -786,8 +850,24 @@ def replay_drain_queue(
         return 0
 
     grouped: Dict[str, List[Tuple[MessageEvent, Dict[str, Any]]]] = {}
+    dropped_redeliveries = 0
     for session_key, event, record in claimed:
-        grouped.setdefault(session_key, []).append((event, record))
+        group = grouped.setdefault(session_key, [])
+        message_id = str(getattr(event, "message_id", "") or "").strip()
+        if message_id and any(
+            str(getattr(existing, "message_id", "") or "").strip() == message_id
+            and not getattr(existing, "internal", False)
+            for existing, _existing_record in group
+        ):
+            dropped_redeliveries += 1
+            continue
+        group.append((event, record))
+    if dropped_redeliveries:
+        logger.info(
+            "Dropped %d re-delivered drain record(s) by message id — one "
+            "platform message, one replayed turn",
+            dropped_redeliveries,
+        )
 
     # In-memory mirror of the claim ledger: the records still owed a
     # delivery. Groups leave it (and the on-disk ledger via
@@ -812,6 +892,10 @@ def replay_drain_queue(
             )
             continue
         for event, _record in items:
+            # A replay injection is a re-delivery of an already-received
+            # platform message: mark the event so the model can tell it from
+            # a fresh user message and answer it once, not per copy.
+            event.redelivered = True
             runner._queue_or_replace_pending_event(session_key, event)
         injected[session_key] = adapter
 

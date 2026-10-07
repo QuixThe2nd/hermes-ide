@@ -91,7 +91,7 @@ def _s6_running() -> bool:
     service-manager runtime-registration path inert in production (PR #30136 review).
     """
     try:
-        comm = Path("/proc/1/comm").read_text(encoding="utf-8").strip()
+        comm = Path("/proc/1/comm").read_text(encoding="utf-8-sig").strip()
     except OSError:
         return False
     return comm == "s6-svscan" and Path("/run/s6/basedir").is_dir()
@@ -256,7 +256,7 @@ def _write_gateway_desired_state(name: str, desired_state: str) -> None:
         if not profile_dir.exists():
             return
         try:
-            data = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+            data = json.loads(state_file.read_text(encoding="utf-8-sig")) if state_file.exists() else {}
             if not isinstance(data, dict):
                 data = {}
         except (OSError, json.JSONDecodeError):
@@ -268,6 +268,24 @@ def _write_gateway_desired_state(name: str, desired_state: str) -> None:
         tmp.replace(state_file)
     except OSError:
         return
+
+
+def register_unregistered_profile_gateway(mgr: ServiceManager, profile: str) -> bool:
+    """Register a ``down`` s6 slot for a profile whose directory exists but was never registered.
+
+    `hermes profile create` can only register a slot when it runs inside the container; created
+    from the host against a bind-mounted home, the directory lands where the container reads it
+    but no ``/run/service/gateway-<name>`` exists, and the boot reconciler only notices on the
+    next container restart. Returns False without touching anything unless the directory carries
+    ``SOUL.md`` — the reconciler's own "real profile" marker — so a mistyped ``-p`` name cannot
+    mint a phantom slot. ``start_now=False``: the caller's ordinary ``start`` stays the single
+    owner of the ``desired_state`` write.
+    """
+    profile_dir = _profile_dir_for_gateway_service(f"{S6_SERVICE_PREFIX}{profile}")
+    if not (profile_dir / "SOUL.md").exists():
+        return False
+    mgr.register_profile_gateway(profile, start_now=False)
+    return True
 
 
 # s6-overlay installs its binaries under /command/ and only adds it to PATH inside the supervision

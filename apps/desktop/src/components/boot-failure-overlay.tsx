@@ -1,12 +1,15 @@
 import { useStore } from '@nanostores/react'
+import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
+import { DESKTOP_DOCS_URL } from '@/lib/docs'
 import { openExternalLink } from '@/lib/external-link'
 import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
@@ -43,6 +46,30 @@ type RecoveryView = 'connect' | 'recovery'
 // exited during startup, bootstrap latched, …). Without this the app shell
 // renders dead — "gateway offline", no composer, only a toast — with no way
 // to retry, repair the install, switch the gateway, or find the logs.
+function BootFailureModal({ children, title }: { children: ReactNode; title?: string }) {
+  const [contentNode, setContentNode] = useState<HTMLDivElement | null>(null)
+
+  return (
+    <DialogPrimitive.Root open>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Content aria-describedby={undefined} aria-modal="true" asChild ref={setContentNode}>
+          <div
+            className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
+            // Masks the whole app on boot failure — must stay filled under window
+            // glass. Contract: `[data-glass-opaque]` in styles.css.
+            data-glass-opaque=""
+          >
+            <DialogPortalContainerContext.Provider value={contentNode}>
+              {title ? <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title> : null}
+              {children}
+            </DialogPortalContainerContext.Provider>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  )
+}
+
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
@@ -55,6 +82,10 @@ export function BootFailureOverlay() {
   // A remote/cloud backend that failed to boot is fixable from gateway settings,
   // so the escape hatch earns emphasis (local failures keep it as a quiet ghost).
   const [remoteFailure, setRemoteFailure] = useState(false)
+  // A bundled install (payload ships in-app) has no installer to repair with —
+  // the only recovery is reinstalling the app. Read from the bootstrap state
+  // snapshot so the Repair affordance is replaced by "Reinstall the app".
+  const [bundled, setBundled] = useState(false)
   // Swap the card body to the embedded Gateway settings panel in place of routing
   // to the full Settings page (keeps the user on the recovery surface, no z-index
   // juggling, no second connection form to maintain).
@@ -75,6 +106,31 @@ export function BootFailureOverlay() {
       ?.getRecentLogs()
       .then(res => setLogs(res.lines ?? []))
       .catch(() => undefined)
+  }, [boot.error, visible])
+
+  // Bundled installs carry their runtime as an immutable payload — repair
+  // would re-run an installer that must never fire for them. Resolve the
+  // artifact kind from the bootstrap snapshot (set by main.ts on setup-choice
+  // broadcast) so the recovery actions swap Repair → "Reinstall the app".
+  useEffect(() => {
+    if (!visible) {
+      return
+    }
+
+    let cancelled = false
+
+    void window.hermesDesktop
+      ?.getBootstrapState()
+      .then(snapshot => {
+        if (!cancelled && snapshot) {
+          setBundled(snapshot.bundled)
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
   }, [boot.error, visible])
 
   // Resolve whether this boot failure is a remote-gateway reauth so we can
@@ -179,7 +235,11 @@ export function BootFailureOverlay() {
 
       await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
 
-      let result: { connected?: boolean } | undefined
+      // `error` matters here: the oauth arm (oauthLoginConnectionConfig) and
+      // the cloud cascade can both fail with a reason, and the incomplete
+      // sign-in notice below surfaces it. (DesktopCloudAgentSignInResult has
+      // no error field; oauthLoginConnectionConfig does.)
+      let result: { connected?: boolean; error?: string } | undefined
 
       if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
         const status = await desktop.cloud.status()
@@ -217,7 +277,9 @@ export function BootFailureOverlay() {
       notify({
         kind: 'warning',
         title: t.boot.failure.signInIncompleteTitle,
-        message: t.boot.failure.signInIncompleteMessage
+        message: result?.error
+          ? `${t.boot.failure.signInIncompleteMessage}: ${result.error}`
+          : t.boot.failure.signInIncompleteMessage
       })
     } catch (err) {
       notifyError(err, t.boot.failure.signInFailed)
@@ -325,29 +387,34 @@ export function BootFailureOverlay() {
   } else {
     // Local failure: Use-local is redundant with Retry (both re-target local), so
     // it's dropped here; keep it for remote failures where it's the fall-back.
+    // On a bundled install the Repair affordance is replaced by "Reinstall the
+    // app" — the payload is immutable, so there is no installer to re-run.
     actions = [
       retryAction,
-      {
-        key: 'repair',
-        label: copy.repairInstall,
-        onClick: () => void repair(),
-        icon: <Wrench />,
-        variant: 'secondary',
-        busy: 'repair'
-      },
+      bundled
+        ? {
+            key: 'reinstall',
+            label: copy.reinstallApp,
+            onClick: () => openExternalLink(DESKTOP_DOCS_URL),
+            icon: <ExternalLink />,
+            variant: 'secondary'
+          }
+        : {
+            key: 'repair',
+            label: copy.repairInstall,
+            onClick: () => void repair(),
+            icon: <Wrench />,
+            variant: 'secondary',
+            busy: 'repair'
+          },
       { ...settingsAction, variant: 'ghost' }
     ]
-    hint = copy.repairHint
+    hint = bundled ? copy.bundledReinstallHint : copy.repairHint
   }
 
   if (view === 'connect') {
     return (
-      <div
-        className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
-        // Masks the whole app on boot failure — must stay filled under window
-        // glass. Contract: `[data-glass-opaque]` in styles.css.
-        data-glass-opaque=""
-      >
+      <BootFailureModal title={copy.gatewaySettings}>
         <div className="flex max-h-[86vh] w-full max-w-[46rem] flex-col overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
           {/* Subtle back affordance (projects/overlay idiom): muted → foreground
               on hover, no divider. */}
@@ -365,24 +432,21 @@ export function BootFailureOverlay() {
             </Suspense>
           </div>
         </div>
-      </div>
+      </BootFailureModal>
     )
   }
 
   return (
-    <div
-      className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
-      // Masks the whole app on boot failure — must stay filled under window
-      // glass. Contract: `[data-glass-opaque]` in styles.css.
-      data-glass-opaque=""
-    >
+    <BootFailureModal>
       <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
         <div className="flex items-start gap-3 px-5 py-4">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
-            <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
-            </h2>
+            <DialogPrimitive.Title asChild>
+              <h2 className="text-[0.9375rem] font-semibold tracking-tight">
+                {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
+              </h2>
+            </DialogPrimitive.Title>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
               {remoteReauth ? copy.remoteDescription : cloudDown ? copy.cloudDownDescription : copy.description}
             </p>
@@ -426,6 +490,6 @@ export function BootFailureOverlay() {
           ) : null}
         </div>
       </div>
-    </div>
+    </BootFailureModal>
   )
 }

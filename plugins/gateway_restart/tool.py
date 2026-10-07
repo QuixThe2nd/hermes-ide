@@ -24,6 +24,14 @@ every exit — via a small optional adapter capability, so the tool itself stays
 platform-safe. The original name is captured by a read-only phase before the
 renaming edit is submitted, so even a rename whose response is lost after
 Discord applied it cannot lose the restore.
+
+If ANOTHER confirmed restart queues while this gate is still waiting for the
+word, the shared queue sequence resolves the pending wait with a
+distinguished superseded token and this tool reports
+``{"success": false, "status": "superseded"}`` — never ``cancelled``, which
+would claim the requester replied when the gateway actually bounced out from
+under the wait (see ``gateway.restart`` for the queue-side sweep and the
+resume-seam note that names the bounce post-restart).
 """
 
 from __future__ import annotations
@@ -80,6 +88,14 @@ _BEGIN_RESTART_TIMEOUT_S = 15.0
 
 # The only reply that confirms a restart: this exact word, nothing else.
 _CONFIRM_WORD = "restart"
+
+# Sentinel ``_confirm_restart_with_requester`` returns when the wait was
+# resolved because ANOTHER confirmed restart queued its drain (the drain
+# resolves restart-kind waits with the distinguished
+# ``clarify_gateway.SUPERSEDED_RESPONSE`` token). Distinct from every
+# human-readable cancellation reason so ``handle_restart`` can answer with
+# the truthful superseded result instead of a false "cancelled".
+_SUPERSEDED_CONFIRM = object()
 
 _CONFIRM_PROMPT = (
     "Gateway restart requested — reply with the exact word `restart` "
@@ -204,6 +220,30 @@ def _error_json(message: str) -> str:
 def _cancelled_json(message: str) -> str:
     return json.dumps(
         {"success": False, "error": message, "status": "cancelled"},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _superseded_json() -> str:
+    """The truthful result for a gate whose wait another restart's queue closed.
+
+    Still ``success: false`` — this gate started nothing, so the model must
+    not claim a restart is coming from it — but ``status: "superseded"``,
+    never "cancelled": the requester replied nothing; the gateway bounced
+    out from under the wait. Wording and status come from
+    ``gateway.restart`` so the resume-seam annotator (which matches this
+    exact JSON in a forced victim's transcript tail) can never drift from
+    what the tool emits.
+    """
+    from gateway.restart import SUPERSEDED_RESTART_ERROR, SUPERSEDED_RESTART_STATUS
+
+    return json.dumps(
+        {
+            "success": False,
+            "status": SUPERSEDED_RESTART_STATUS,
+            "error": SUPERSEDED_RESTART_ERROR,
+        },
         separators=(",", ":"),
         ensure_ascii=False,
     )
@@ -599,7 +639,9 @@ def _confirm_restart_with_requester(
 ) -> Optional[str]:
     """Ping the requester and block until they type the exact word.
 
-    Returns ``None`` when the requester confirmed; otherwise a human-readable
+    Returns ``None`` when the requester confirmed; ``_SUPERSEDED_CONFIRM``
+    when ANOTHER confirmed restart's queue resolved the wait (the gateway is
+    bouncing without this gate's confirmation); otherwise a human-readable
     reason the restart must not happen. Runs on the tool's worker thread —
     the blocking wait is a ``threading.Event`` (same primitive as
     ``clarify``), so the gateway event loop stays free while the platform
@@ -701,6 +743,10 @@ def _confirm_restart_with_requester(
     finally:
         _restore_thread_title(adapter, loop, title_restore)
 
+    # The superseded token is checked FIRST: a drain-resolved wait never saw
+    # a reply at all, so it must not fall through into the cancel branch.
+    if response == clarify_gateway.SUPERSEDED_RESPONSE:
+        return _SUPERSEDED_CONFIRM
     if str(response or "").strip() == _CONFIRM_WORD:
         return None
     return (
@@ -746,11 +792,15 @@ def handle_restart(args: dict, **_: Any) -> str:
        blocks until they reply. Only the exact word ``restart`` (after
        ``strip()``, nothing else — not ``Restart``, not ``yes``, not
        ``/restart``) confirms; anything else or empty cancels with
-       ``{"success": false, "status": "cancelled"}``. While the tool waits,
-       a Discord thread is temporarily retitled ``Restart Pending`` and
-       restored to its exact original name on every exit — before the
-       restart can be queued, and cosmetically (a rename or restore failure
-       is logged, never fatal).
+       ``{"success": false, "status": "cancelled"}``. If ANOTHER confirmed
+       restart queues while this gate waits, the drain resolves the wait
+       with the distinguished superseded token and the result is the
+       truthful ``{"success": false, "status": "superseded", ...}`` — never
+       "cancelled", which would claim a reply that never arrived. While the
+       tool waits, a Discord thread is temporarily retitled ``Restart
+       Pending`` and restored to its exact original name on every exit —
+       before the restart can be queued, and cosmetically (a rename or
+       restore failure is logged, never fatal).
     6. After a successful confirm — other work in flight or not — the
        restart is queued immediately, exactly as on the skip path: the
        requester's routing is persisted to ``.restart_notify.json`` for the
@@ -843,6 +893,12 @@ def handle_restart(args: dict, **_: Any) -> str:
                 else _CONFIRM_PROMPT
             ),
         )
+        if confirm_error is _SUPERSEDED_CONFIRM:
+            # Another confirmed restart owns the bounce; this gate started
+            # nothing. Still success=false (no restart to narrate), but
+            # superseded — a "cancelled" here would be a false statement
+            # about a reply that never arrived.
+            return _superseded_json()
         if confirm_error is not None:
             return _cancelled_json(confirm_error)
 

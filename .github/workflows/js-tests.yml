@@ -18,10 +18,24 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@v7.0.0 # immutable release. safe to pin.
         with:
           node-version: 26
           cache: npm
+
+      # The desktop SSH watchdog tests run their probe through a real zsh
+      # login shell (#111949). The ubuntu image ships no zsh and the tests
+      # skip without it, so install it here or those legs never run on CI.
+      #
+      # The desktop portal-session live test drives real Electron windows
+      # (electron/portal-session-live.test.ts) and skips without a display,
+      # so give the runner a virtual one the same way the Playwright lane does.
+      - name: Install zsh and a virtual display for Electron
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y zsh xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
 
       - name: grab npm 12
         run: |

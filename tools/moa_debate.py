@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import random
 import re
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from agent.moa_loop import (
@@ -268,20 +268,40 @@ def _fan_out_per_slot(
     *,
     temperature: float | None,
     max_tokens: int | None,
+    progress_callback: Any = None,
 ) -> list[tuple[str, str, Any]]:
     """Run (slot, messages) pairs in parallel; each slot gets its own prompt.
 
     Mirrors _run_references_parallel's threading model (bare executor +
     context propagation) but allows per-slot messages, which the critique and
     revision rounds need (each critic sees a different, shuffled view).
+    Results are collected in COMPLETION order (as_completed) so a live
+    per-slot progress surface sees a fast later slot respond before a slow
+    earlier one; the returned list stays in task order.
+
+    ``progress_callback(done, total, label, index=idx, status=...)`` matches
+    ``_run_references_parallel``: ``index`` is the task position (the caller
+    maps it to its roster key), ``status`` the ``_slot_progress_status``
+    classification — never the result text. Recursion-guarded slots report as
+    completed-and-skipped the moment their skip note is written. Best-effort:
+    callback failures are logged, never propagated.
     """
     if not tasks:
         return []
     from agent.usage_pricing import CanonicalUsage
-    from agent.moa_loop import _RefAccounting, _slot_label
+    from agent.moa_loop import _RefAccounting, _slot_label, _slot_progress_status
     from tools.thread_context import propagate_context_to_thread
 
+    def _report(done: int, index: int, slot: dict[str, Any], status: str) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(done, len(tasks), _slot_label(slot), index=index, status=status)
+        except Exception:  # pragma: no cover - display must never break a round
+            logger.debug("MoA debate progress_callback failed", exc_info=True)
+
     results: list[tuple[str, str, Any] | None] = [None] * len(tasks)
+    completed = 0
     workers = min(_MAX_WORKERS, len(tasks))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_idx = {}
@@ -292,6 +312,8 @@ def _fan_out_per_slot(
                     "[skipped: MoA presets cannot recursively reference MoA]",
                     _RefAccounting(CanonicalUsage()),
                 )
+                completed += 1
+                _report(completed, idx, slot, "skipped")
                 continue
             future_to_idx[
                 executor.submit(
@@ -302,7 +324,8 @@ def _fan_out_per_slot(
                     max_tokens=max_tokens,
                 )
             ] = idx
-        for future, idx in future_to_idx.items():
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
             try:
                 results[idx] = future.result()
             except Exception as exc:  # _run_reference is no-raise; defensive.
@@ -312,6 +335,8 @@ def _fan_out_per_slot(
                     f"[failed: {exc}]",
                     _RefAccounting(CanonicalUsage()),
                 )
+            completed += 1
+            _report(completed, idx, tasks[idx][0], _slot_progress_status(results[idx][1]))
     return [r for r in results if r is not None]
 
 
@@ -355,6 +380,73 @@ def moa_debate(
     report("starting")
     terminal_sent = False
 
+    # Round-aware per-slot roster state for the stage events. round_order lists
+    # the rounds that actually RAN (a declined revision round never appears);
+    # round_states[round] maps each participating advisor's stable proposal
+    # slot index to its current status. Advisors that sat a round out (their
+    # proposal failed) render as "skipped" for that round — present, never
+    # silently dropped. None until the roster resolves, so config failures
+    # emit the count-less failure event exactly as before. Every published
+    # event snapshots this into fresh dicts (the reporter re-allowlists too),
+    # so later mutations never reach an already-published event.
+    reference_models: list[dict[str, Any]] = []
+    round_states: dict[str, dict[int, str]] = {}
+    round_order: list[str] = []
+
+    def _roster_rows() -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for round_name in round_order:
+            states = round_states[round_name]
+            for index, slot in enumerate(reference_models):
+                rows.append(
+                    {
+                        "index": index,
+                        "provider": str(slot.get("provider") or ""),
+                        "model": str(slot.get("model") or ""),
+                        "round": round_name,
+                        "status": states.get(index, "skipped"),
+                    }
+                )
+        return rows
+
+    def _fail_unresolved() -> None:
+        # The invocation is dying without collected results: a slot still
+        # "waiting" never delivered one, so say failed — a terminal embed must
+        # never leave a row claiming to be pending forever.
+        for states in round_states.values():
+            for index, state in states.items():
+                if state == "waiting":
+                    states[index] = "failed"
+
+    def _round_progress(round_name: str, keys: list[int], advisors_count: int) -> Any:
+        """Fan-out progress → live stage events for one round.
+
+        ``keys`` maps a fan-out task position to its roster key (the advisor's
+        stable proposal slot index), so the RIGHT row flips regardless of
+        completion order or duplicate provider/model slots.
+        """
+        states = round_states[round_name]
+
+        def _on_progress(
+            done: int,
+            _total: int,
+            _label: Any,
+            index: int | None = None,
+            status: str | None = None,
+        ) -> None:
+            key = keys[index] if index is not None and 0 <= index < len(keys) else None
+            if key is not None and key in states and status:
+                states[key] = str(status)
+            report(
+                round_name,
+                advisors=advisors_count,
+                completed=done,
+                total=len(keys),
+                slots=_roster_rows(),
+            )
+
+        return _on_progress
+
     def _terminal(status: str, **counts):
         nonlocal terminal_sent
         report("complete", status=status, **counts)
@@ -382,10 +474,15 @@ def moa_debate(
             )
 
         # ---- Round 1: independent proposals --------------------------------
+        round_states["proposal"] = {i: "waiting" for i in range(len(reference_models))}
+        round_order.append("proposal")
         report(
             "proposal",
             advisors=len(reference_models),
             models=len({str(slot.get("model") or "") for slot in reference_models}),
+            completed=0,
+            total=len(reference_models),
+            slots=_roster_rows(),
         )
         ref_messages = _reference_messages([{"role": "user", "content": prompt}])
         try:
@@ -394,10 +491,14 @@ def moa_debate(
                 ref_messages,
                 temperature=_preset_temperature(preset, "reference_temperature"),
                 max_tokens=preset.get("reference_max_tokens"),
+                progress_callback=_round_progress(
+                    "proposal", list(range(len(reference_models))), len(reference_models)
+                ),
             )
         except Exception as exc:  # Defensive: individual references already fail soft.
             logger.warning("moa_debate proposal fan-out failed: %s", exc)
-            _terminal("failure", advisors=len(reference_models))
+            _fail_unresolved()
+            _terminal("failure", advisors=len(reference_models), slots=_roster_rows())
             return tool_error("MoA debate proposal fan-out failed", success=False)
 
         advisors: list[dict[str, Any]] = []
@@ -409,9 +510,13 @@ def moa_debate(
                 text = "[failed: no result returned]"
             safe_text = redact_sensitive_text(str(text or ""))
             status = _advisor_status(safe_text)
+            round_states["proposal"][index] = (
+                "responded" if status == "ok" else status
+            )
             advisors.append(
                 {
                     "label": label,
+                    "index": index,
                     "provider": str(slot.get("provider") or ""),
                     "model": str(slot.get("model") or ""),
                     "status": status,
@@ -429,6 +534,7 @@ def moa_debate(
                 "failure",
                 advisors=len(reference_models),
                 failed=failed_count,
+                slots=_roster_rows(),
             )
             return tool_error("all debate advisors failed in the proposal round", success=False)
 
@@ -459,11 +565,23 @@ def moa_debate(
                 advisors=len(reference_models),
                 usable=1,
                 failed=failed_count,
+                slots=_roster_rows(),
             )
             return result
 
         # ---- Round 2: cross-critique ---------------------------------------
-        report("critique", advisors=len(ok_advisors))
+        # Only advisors whose proposal succeeded take part; the rest stay in the
+        # roster as skipped-for-this-round rows so failed proposals are never
+        # silently dropped from the final accounting.
+        round_states["critique"] = {a["index"]: "waiting" for a in ok_advisors}
+        round_order.append("critique")
+        report(
+            "critique",
+            advisors=len(ok_advisors),
+            completed=0,
+            total=len(ok_advisors),
+            slots=_roster_rows(),
+        )
         critique_tasks = []
         critic_meta: list[dict[str, Any]] = []
         for critic in ok_advisors:
@@ -487,6 +605,9 @@ def moa_debate(
             critique_tasks,
             temperature=_preset_temperature(preset, "critique_temperature"),
             max_tokens=_derived_max_tokens(preset, "critique_max_tokens", 0.6, 2048),
+            progress_callback=_round_progress(
+                "critique", [critic["index"] for critic in critic_meta], len(ok_advisors)
+            ),
         )
 
         critiques: list[dict[str, Any]] = []
@@ -507,6 +628,9 @@ def moa_debate(
                 # A critique without structured verdicts is not usable as
                 # agreement data; keep the raw text but say so.
                 status = "unparsed"
+            round_states["critique"][critic["index"]] = (
+                "responded" if status == "ok" else status
+            )
             critiques.append(
                 {
                     "critic_label": critic["label"],
@@ -526,7 +650,15 @@ def moa_debate(
         revisions: list[dict[str, Any]] = []
         rounds_completed = 2
         if revision:
-            report("revision", advisors=len(ok_advisors))
+            round_states["revision"] = {a["index"]: "waiting" for a in ok_advisors}
+            round_order.append("revision")
+            report(
+                "revision",
+                advisors=len(ok_advisors),
+                completed=0,
+                total=len(ok_advisors),
+                slots=_roster_rows(),
+            )
             rounds_completed = 3
             revision_tasks = []
             revision_meta: list[dict[str, Any]] = []
@@ -560,6 +692,11 @@ def moa_debate(
                 revision_tasks,
                 temperature=_preset_temperature(preset, "revision_temperature"),
                 max_tokens=_derived_max_tokens(preset, "revision_max_tokens", 0.4, 1536),
+                progress_callback=_round_progress(
+                    "revision",
+                    [advisor["index"] for advisor in revision_meta],
+                    len(ok_advisors),
+                ),
             )
             for idx, advisor in enumerate(revision_meta):
                 if idx < len(revision_outputs):
@@ -568,6 +705,9 @@ def moa_debate(
                     text = "[failed: no result returned]"
                 safe_text = redact_sensitive_text(str(text or ""))
                 status = _advisor_status(safe_text)
+                round_states["revision"][advisor["index"]] = (
+                    "responded" if status == "ok" else status
+                )
                 parsed = _parse_revision(safe_text) if status == "ok" else {
                     "stance": None,
                     "reason": None,
@@ -587,8 +727,10 @@ def moa_debate(
         else:
             # Optional round declined: report the skip explicitly so the embed
             # shows a terminal "skipped" line instead of silently omitting a
-            # round the user may have expected.
-            report("revision_skipped", advisors=len(ok_advisors))
+            # round the user may have expected. "revision" never enters
+            # round_order, so the roster carries no revision rows — a declined
+            # round must not render as a responded one.
+            report("revision_skipped", advisors=len(ok_advisors), slots=_roster_rows())
 
         # ---- Mechanically derived agreement data ---------------------------
         agreement = _derive_agreement(ok_advisors, critiques)
@@ -601,6 +743,7 @@ def moa_debate(
             rounds=rounds_completed,
             usable=len(ok_advisors),
             failed=failed_count,
+            slots=_roster_rows(),
         )
         terminal_status = "partial" if any_failed else "success"
         result = tool_result(
@@ -629,11 +772,13 @@ def moa_debate(
             rounds=rounds_completed,
             usable=len(ok_advisors),
             failed=failed_count,
+            slots=_roster_rows(),
         )
         return result
     except Exception:
         if not terminal_sent:
-            report("complete", status="failure")
+            _fail_unresolved()
+            report("complete", status="failure", slots=_roster_rows())
         raise
 
 

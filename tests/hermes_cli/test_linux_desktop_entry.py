@@ -7,6 +7,7 @@ import os
 import stat
 import struct
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,19 @@ def _parse(entry_text: str) -> dict:
     return values
 
 
+def _strip_exec_env_prefix(exec_line: str) -> str:
+    """Strip the ``env PYTHONPATH=<repo>`` prefix the Exec line carries.
+
+    No-boot-through-venv: a DE launch inherits no environment, so the Exec
+    line carries the repo PYTHONPATH explicitly via ``env`` — every launcher
+    form is wrapped, and tests pin the wrapped command after the prefix.
+    """
+    tokens = exec_line.split(" ")
+    assert tokens[0] == "env"
+    assert tokens[1].startswith("PYTHONPATH=")
+    return " ".join(tokens[2:])
+
+
 def test_install_writes_entry_with_absolute_exec_and_icon(
     tmp_path, xdg_home, monkeypatch
 ):
@@ -84,8 +98,9 @@ def test_install_writes_entry_with_absolute_exec_and_icon(
 
     # Exec must be the absolute path of the resolved binary. The launcher
     # runs with a minimal PATH, so a bare `hermes` would not resolve.
-    assert values["Exec"] == f"{hermes_bin} desktop"
-    assert Path(values["Exec"].split(" ")[0]).is_absolute()
+    exec_line = _strip_exec_env_prefix(values["Exec"])
+    assert exec_line == f"{hermes_bin} desktop"
+    assert Path(exec_line.split(" ")[0]).is_absolute()
 
     # Icon must be an absolute path to the real icon in the checkout.
     icon_path = Path(values["Icon"])
@@ -172,7 +187,12 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     assert exec_line.endswith("-m hermes_cli.main desktop")
-    assert Path(exec_line.split(" ")[0]).is_absolute()
+    # No-boot-through-venv: a DE launch inherits no environment, so the
+    # Exec line carries the repo PYTHONPATH explicitly via `env`.
+    tokens = exec_line.split(" ")
+    assert tokens[0] == "env"
+    assert tokens[1].startswith("PYTHONPATH=")
+    assert Path(tokens[2].strip('"')).is_absolute()
 
 
 # #90292: the shell installer's bash wrapper makes argv[0] the repo `hermes`
@@ -201,7 +221,10 @@ def test_exec_prefixes_interpreter_for_env_shebang_python_script(
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     interpreter = os.path.abspath(sys.executable)
-    assert exec_line.split(" ")[0].strip('"') == interpreter
+    tokens = exec_line.split(" ")
+    assert tokens[0] == "env"
+    assert tokens[1].startswith("PYTHONPATH=")
+    assert tokens[2].strip('"') == interpreter
     assert str(hermes_bin) in exec_line
     assert exec_line.endswith("desktop")
 
@@ -223,7 +246,7 @@ def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypat
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     # A bash wrapper execs the venv python itself — no interpreter prefix.
-    assert exec_line == f"{hermes_bin} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{hermes_bin} desktop"
 
 
 def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch):
@@ -245,7 +268,7 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
 
     # Console-script with the venv's own interpreter in the shebang: correct
     # as-is, prefixing would only add noise.
-    assert exec_line == f"{hermes_bin} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{hermes_bin} desktop"
 
 
 # The persisted entry must be launch-context independent: whatever process
@@ -293,7 +316,7 @@ def test_exec_converges_from_repo_script_argv0_to_installed_wrapper(
 
     # Converged on the durable wrapper — NOT the repo script, and NOT an
     # interpreter-prefixed form pinning sys.executable.
-    assert exec_line == f"{wrapper} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{wrapper} desktop"
 
 
 def test_exec_never_persists_a_bare_interpreter_command(
@@ -324,13 +347,14 @@ def test_exec_never_persists_a_bare_interpreter_command(
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    first_token = exec_line.split(" ")[0].strip('"')
+    bare_exec = _strip_exec_env_prefix(exec_line)
+    first_token = bare_exec.split(" ")[0].strip('"')
     assert Path(first_token) != interpreter
     assert not (
         Path(first_token).name.startswith("python")
-        and "desktop" in exec_line.split(" ", 1)[1]
+        and "desktop" in bare_exec.split(" ", 1)[1]
     ), f"persisted an unrunnable bare-interpreter Exec: {exec_line}"
-    assert exec_line == f"{wrapper} desktop"
+    assert bare_exec == f"{wrapper} desktop"
 
 
 def test_exec_keeps_resolver_fallback_when_no_wrapper_on_path(
@@ -368,8 +392,9 @@ def test_exec_keeps_resolver_fallback_when_no_wrapper_on_path(
 
     # The runnable module fallback — NOT the bare repo script (its env
     # shebang would escape the venv under a DE) and NOT `<python> desktop`.
-    assert exec_line.endswith("-m hermes_cli.main desktop")
-    assert Path(exec_line.split(" ")[0].strip('"')).is_absolute()
+    bare_exec = _strip_exec_env_prefix(exec_line)
+    assert bare_exec.endswith("-m hermes_cli.main desktop")
+    assert Path(bare_exec.split(" ")[0].strip('"')).is_absolute()
     assert str(repo_script) not in exec_line
 
 
@@ -418,7 +443,110 @@ def test_exec_uses_known_wrapper_when_path_lookup_misses(
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
     # The probe found the wrapper despite the PATH miss.
-    assert exec_line == f"{known_wrapper} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{known_wrapper} desktop"
+
+
+def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, xdg_home, monkeypatch):
+    """A PATH hit inside THIS checkout is a launch-context artifact, like argv[0].
+
+    The desktop-update hand-off hands the updater <checkout>/venv/bin at the
+    FRONT of PATH (apps/desktop/electron/main.ts), so argv[0] is the venv
+    console script — checkout-internal, correctly skipped as a durable
+    answer — and the reroute that hides argv[0] re-resolves over PATH and
+    hits THE SAME SCRIPT. The rerouted branch returned that hit outright,
+    persisting the venv form; the next DE launch re-resolves to the durable
+    wrapper and flips the bytes back. Alternating writers alternate the
+    file content (captured: wrapper -> venv -> wrapper inside one update
+    cycle), and every flip rewrites hermes.desktop. A rewrite landing
+    inside a grid launch's STARTING window is the arm for the gnome-shell
+    50.x crash this module already guards against. A PATH hit inside the
+    checkout must fall through to the durable probe.
+    """
+    root = _make_project(tmp_path)
+    venv_script = root / "venv" / "bin" / "hermes"
+    venv_script.parent.mkdir(parents=True)
+    venv_script.write_text("#!/bin/bash\nexec true\n", encoding="utf-8")
+    venv_script.chmod(0o755)
+
+    known_wrapper = tmp_path / "path-home" / ".local" / "bin" / "hermes"
+    known_wrapper.parent.mkdir(parents=True)
+    known_wrapper.write_text(
+        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        encoding="utf-8",
+    )
+    known_wrapper.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path / "path-home"))
+
+    # The hand-off's resolver chain: argv[0] = venv console script; with
+    # argv[0] hidden, the PATH rerun yields the SAME script.
+    def fake_resolve():
+        return sys.argv[0] or str(venv_script)
+
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", fake_resolve)
+    _argv0_context(monkeypatch, str(venv_script))
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert _strip_exec_env_prefix(exec_line) == f"{known_wrapper} desktop"
+    assert str(venv_script) not in exec_line
+
+    # …and the same context a second time re-renders byte-identical content:
+    # the no-op guard then skips the rewrite entirely (no write, no rescan).
+    lde._probe_cache.clear()
+    entry2 = lde.install_desktop_entry(root)
+    assert entry2 is not None
+    assert entry2.read_text(encoding="utf-8") == entry.read_text(encoding="utf-8")
+
+
+def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
+    tmp_path, xdg_home, monkeypatch
+):
+    """`None` from the resolver must still probe known wrapper locations.
+
+    A cold relaunch (argv[0] is not an executable file, e.g. `-c` under
+    `python -m`, and PATH has no `hermes`) makes resolve_hermes_bin return
+    None outright. The early `return primary` that used to fire here skipped
+    the durable-wrapper probe, so the persisted Exec flipped to the bare
+    `<python> -m hermes_cli.main desktop` module form. Each flip between the
+    wrapper and module forms rewrites hermes.desktop on the next launch; any
+    rewrite that lands while gnome-shell's ShellApp for the entry is still
+    STARTING crashes the shell (shell_app_dispose `state == STOPPED`
+    assertion, gnome-shell 50.4). The entry must converge on the durable
+    wrapper wherever it exists.
+    """
+    root = _make_project(tmp_path)
+
+    known_wrapper = tmp_path / "cold-home" / ".local" / "bin" / "hermes"
+    known_wrapper.parent.mkdir(parents=True)
+    known_wrapper.write_text(
+        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        encoding="utf-8",
+    )
+    known_wrapper.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path / "cold-home"))
+
+    # argv[0] is not an executable path at all — the resolver's own chain
+    # yields None with or without argv[0].
+    _argv0_context(monkeypatch, "-c")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert _strip_exec_env_prefix(exec_line) == f"{known_wrapper} desktop"
+
+    # …and the SAME context a second time re-renders byte-identical content:
+    # the no-op guard in install_desktop_entry then skips the rewrite.
+    lde._probe_cache.clear()
+    entry2 = lde.install_desktop_entry(root)
+    assert entry2 is not None
+    assert entry2.read_text(encoding="utf-8") == entry.read_text(encoding="utf-8")
 
 
 def test_exec_rejects_known_wrapper_from_another_checkout(
@@ -659,7 +787,7 @@ def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
-    assert exec_line == f'"{spaced}" desktop'
+    assert _strip_exec_env_prefix(exec_line) == f'"{spaced}" desktop'
 
 
 @pytest.mark.skipif(
@@ -759,8 +887,9 @@ def test_exec_falls_back_to_running_interpreter_when_probe_fails(
 
     # Runnable module form under the RUNNING interpreter - never the
     # unprobeable ELF fake, never a bare "<python> desktop".
-    assert exec_line.endswith("-m hermes_cli.main desktop")
-    first = exec_line.split(" ")[0].strip('"')
+    bare_exec = _strip_exec_env_prefix(exec_line)
+    assert bare_exec.endswith("-m hermes_cli.main desktop")
+    first = bare_exec.split(" ")[0].strip('"')
     assert first == os.path.abspath(sys.executable)
     assert str(interpreter) not in exec_line
 
@@ -982,7 +1111,7 @@ def test_probe_accepts_shell_launcher_wrapper(tmp_path, xdg_home, monkeypatch):
 
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
-    assert exec_line == f"{good_wrapper} desktop"
+    assert _strip_exec_env_prefix(exec_line) == f"{good_wrapper} desktop"
 
 
 def test_install_icon_handles_truncated_png_header(tmp_path, xdg_home, monkeypatch):
@@ -1099,3 +1228,21 @@ def test_install_resizes_decodable_png_to_panel_sizes(
     assert not stale.exists()
     assert struct.unpack(">II", dest_24.read_bytes()[16:24]) == (24, 24)
     assert struct.unpack(">II", dest_256.read_bytes()[16:24]) == (256, 256)
+
+
+def test_deferred_install_skips_heal_after_exit_without_reveal():
+    """Electron exiting without ever revealing a window (boot crash, --version, early quit) must
+    NOT heal the entry: gnome-shell keeps the ShellApp in STARTING until the startup-notification
+    sequence completes or times out, not until the process dies, so a write right after the exit
+    is exactly the #111906 arming condition. The next terminal/updater or revealed launch heals."""
+    calls: list[Path] = []
+    deferred = lde.DeferredDesktopEntryInstall(
+        Path("/proj"), install=lambda root: calls.append(root) or Path("/entry"), settle_seconds=0
+    )
+    deferred.start()
+    time.sleep(0.05)
+    assert calls == []  # nothing is written while the app may still be STARTING
+
+    deferred.finish()
+    assert calls == []
+    assert not deferred._thread.is_alive()

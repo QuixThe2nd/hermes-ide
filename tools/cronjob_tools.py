@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import copy
+
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,8 @@ from cron.jobs import (
     pause_job,
     remove_job,
     resolve_job_ref,
+    resnapshot_all_unpinned,
+    resnapshot_job,
     resume_job,
     update_job)
 from tools.cronjob_prompt_scan import _scan_cron_prompt
@@ -340,13 +344,45 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         return {"claimed": True, "success": False, "error": str(e)}
 
 
+def execute_job_for_event(
+    job_ref: str, extra_prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Fire an existing cron job in response to an external event.
+
+    Public entry point for event-driven triggers (the webhook adapter's
+    ``cron_job`` routes). Resolves ``job_ref`` (ID or name) and
+    fires it through the exact same claimed-run body a manual
+    ``cronjob(action='run')`` uses, so at-most-once claiming, in-flight
+    dedupe, delivery, and ``[SILENT]`` handling stay identical across the
+    scheduler / manual / event paths.
+
+    ``extra_prompt`` is injected as transient per-run context (the job's
+    stored prompt is never mutated), exactly like ``action='run'`` with a
+    ``prompt`` argument.
+
+    Returns the ``_execute_job_now`` result shape:
+    ``{"claimed": bool, "success": bool, "error": str|None}``.
+    """
+    try:
+        job = resolve_job_ref(job_ref)
+    except AmbiguousJobReference as e:
+        return {"claimed": False, "success": False, "error": str(e)}
+    if job is None:
+        return {
+            "claimed": False,
+            "success": False,
+            "error": f"Cron job '{job_ref}' not found.",
+        }
+    return _execute_job_now(job, extra_prompt=extra_prompt)
+
+
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
     """Excerpt of the job's most recent saved output file for the background completion
     block (parent sees what the job produced). Never raises."""
     try:
         from cron.jobs import get_cron_output_dir
         files = sorted((get_cron_output_dir() / job_id).glob("*.md"))
-        text = files[-1].read_text(encoding="utf-8", errors="replace").strip() if files else ""
+        text = files[-1].read_text(encoding="utf-8-sig", errors="replace").strip() if files else ""
         if not text:
             return None
         if len(text) > max_chars:
@@ -451,6 +487,12 @@ def _try_dispatch_background_run(
         — dispatch pool was at capacity; the run executed inline (the claim
         was already taken and must not be stranded).
     """
+    job_id = job["id"]
+    job_name = str(job.get("name") or job_id)
+    # Reap BEFORE the async/sync branch: the one-shot `hermes cron run` path returns early
+    # below, and this is the only moment it heals a stale claim left by a killed prior run (#113923).
+    _reap_stale_executions(job_name)
+
     # Finite sessions cannot route a detached result back after the turn
     # ends — mirror delegate_agent's gate and fall back to sync execution.
     try:
@@ -459,10 +501,6 @@ def _try_dispatch_background_run(
             return None
     except Exception:
         pass
-
-    job_id = job["id"]
-    job_name = str(job.get("name") or job_id)
-    _reap_stale_executions(job_name)
 
     # Routing capture BEFORE the claim: no routable session = no durable consumer for a detached
     # completion, so don't claim-and-dispatch (direct callers like `hermes cron run` exit right after).
@@ -553,6 +591,63 @@ def _with_guidance(result: Dict[str, Any], job: Dict[str, Any], deliver: Optiona
     return result
 
 
+def _cron_inbox_delivery_enforce_enabled() -> bool:
+    """``cron.inbox_delivery_enforce`` (default true): the opt-out for the
+    creation-time inbox-thread rewrite. Read through the same readonly config
+    lane as ``_api_server_base_url``; any read failure keeps the default."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        return bool(cfg_get(
+            load_config_readonly() or {}, "cron", "inbox_delivery_enforce", default=True))
+    except Exception:
+        return True
+
+
+def _enforce_inbox_delivery(
+    deliver: Optional[str], origin: Optional[Dict[str, str]]
+) -> Optional[str]:
+    """Rewrite a job that would root in its creating chat to the ``inbox`` token.
+
+    Operator convention on home-server installs: every cron job gets its own
+    dedicated, job-named thread under the provisioned inbox channel. The
+    rewrite applies only when the EFFECTIVE deliver lane is ``origin`` (the
+    user-supplied value if given, else the create-time default) — jobs naming
+    an explicit target, ``local``, ``thread:`` or ``bot-chat`` pass through
+    untouched — and only when the creating session is a Discord session whose
+    guild (``HERMES_SESSION_SCOPE_ID``, already carried by ``origin``) matches
+    the provisioned inbox's guild. No REST calls at creation time: the inbox
+    comes from local plugin state, the guild from the session env. Gated by
+    ``cron.inbox_delivery_enforce``. Returns the replacement deliver value, or
+    None to keep the value as computed.
+    """
+    from cron.scheduler import INBOX_DELIVER_TOKEN
+    effective = deliver if deliver is not None else ("origin" if origin else "local")
+    if effective.strip().lower() != "origin":
+        return None
+    if not origin or str(origin.get("platform") or "").lower() != "discord":
+        return None
+    scope_id = str(origin.get("scope_id") or "").strip()
+    if not scope_id:
+        return None
+    try:
+        from plugins.hermes_starts import provisioned_inbox
+        inbox = provisioned_inbox() or {}
+    except Exception:
+        logger.debug("cron create: provisioned inbox lookup failed", exc_info=True)
+        return None
+    if not str(inbox.get("channel_id") or "").strip():
+        return None
+    if str(inbox.get("guild_id") or "").strip() != scope_id:
+        return None
+    if not _cron_inbox_delivery_enforce_enabled():
+        return None
+    logger.info(
+        "Cron create: deliver would root in the creating Discord chat (guild %s) "
+        "with a provisioned inbox — rewriting deliver to the inbox thread token",
+        scope_id)
+    return INBOX_DELIVER_TOKEN
+
+
 def _action_create(a: Dict[str, Any]) -> str:
     prompt, script = a["prompt"], a["script"]
     deliver = _normalize_deliver_param(a["deliver"])
@@ -595,10 +690,17 @@ def _action_create(a: Dict[str, Any]) -> str:
         context_from = _apply_continuity(context_from, a["continuity"])
 
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
+    _deliver_arg = _resolve_cron_context_deliver(deliver)
+    _origin = _origin_from_env()
+    # Home-server operator convention: a job that would root in its creating chat
+    # gets its own dedicated, job-named thread under the provisioned inbox instead.
+    _inbox_deliver = _enforce_inbox_delivery(_deliver_arg, _origin)
+    if _inbox_deliver is not None:
+        _deliver_arg = _inbox_deliver
     try:
         job = create_job_with_scheduler_registration(
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
-            deliver=_resolve_cron_context_deliver(deliver), origin=_origin_from_env(), skills=canonical_skills,
+            deliver=_deliver_arg, origin=_origin, skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
             base_url=_normalize_optional_job_value(a["base_url"], strip_trailing_slash=True),
             script=_normalize_optional_job_value(script), context_from=context_from,
@@ -858,8 +960,50 @@ def _action_update(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         {"success": True, "job": _format_job(updated)}, updated, _normalize_deliver_param(a["deliver"])))
 
 
+def _action_resnap(a: Dict[str, Any]) -> str:
+    """Adopt the current global inference resolution without pinning (#44585).
+
+    Bulk (``all=true``) refreshes every unpinned job; single-job resolves
+    ``job_id`` and refreshes just that job. Refuses to guess scope.
+    """
+    if bool(a["all"]):
+        updated = resnapshot_all_unpinned()
+        _notify_provider_jobs_changed_safe()
+        return _dumps({
+            "success": True,
+            "message": (
+                f"Refreshed inference snapshots on {len(updated)} unpinned "
+                "job(s) to the current global resolution. Jobs remain "
+                "unpinned and will track future global changes."),
+            "updated_jobs": [_format_job(j) for j in updated],
+        })
+    job_id = a["job_id"]
+    if not job_id:
+        return tool_error(
+            "resnap requires either `job_id=<id>` (single job) or `all=true` "
+            "(refresh every unpinned job). Refusing to guess scope.",
+            success=False,
+        )
+    job, error = _resolve_job_or_error(job_id)
+    if error is not None:
+        return error
+    assert job is not None  # error is None ⇔ job resolved
+    updated = resnapshot_job(job["id"])
+    if not updated:
+        return tool_error(f"Failed to resnap job '{job_id}'", success=False)
+    _notify_provider_jobs_changed_safe()
+    return _dumps({
+        "success": True,
+        "message": (
+            f"Cron job '{updated['name']}' refreshed to the current "
+            "global inference resolution. It remains unpinned and will "
+            "track future global changes."),
+        "job": _format_job(updated),
+    })
+
+
 # Actions that need no job_id, and job-bound actions (job resolved first).
-_JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list}
+_JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list, "resnap": _action_resnap}
 _JOB_ACTIONS = {
     "remove": _action_remove, "update": _action_update,
     "run": _action_run, "run_now": _action_run, "trigger": _action_run,
@@ -914,6 +1058,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    all: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
@@ -941,9 +1086,26 @@ def cronjob(
         return tool_error(str(e), success=False)
 
 
+def _script_description(home: str) -> str:
+    return (f"Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True "
+            f"the script IS the job). Relative paths resolve under {home}/scripts/; .sh/.bash via bash, else Python. "
+            "On update, '' clears.")
+
+
+def _cronjob_schema_overrides() -> dict:
+    """Rebuild the ``script`` path hint from the ACTIVE profile at every get_definitions(): the
+    static schema is built once per process, but the multiplexed gateway serves every profile from
+    that process, so a path baked in at import would name the launch profile's home (#95685)."""
+    params = copy.deepcopy(CRONJOB_SCHEMA["parameters"])
+    params["properties"]["script"]["description"] = _script_description(display_hermes_home())
+    return {"parameters": params}
+
+
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
     "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
+
+'resnap' adopts the CURRENT global inference resolution for an unpinned job (job_id) or all unpinned jobs (all=true) WITHOUT pinning it, so it keeps tracking future global changes — use after deliberately changing the default model.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
@@ -953,11 +1115,15 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run, resnap. When action=create, the 'schedule' and 'prompt' fields are REQUIRED. When action=resnap, pass either job_id (single job) or all=true (every unpinned job)."
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for update/pause/resume/remove/run. For resnap: the job to adopt the current global inference resolution (omit if all=true)."
+            },
+            "all": {
+                "type": "boolean",
+                "description": "Only for action='resnap'. all=true refreshes the inference snapshot of EVERY unpinned agent job to the current global resolution (bulk 'make everything follow my new default'). Must be explicitly set to true — never implied. Omit (or false) to resnap a single job via job_id."
             },
             "prompt": {
                 "type": "string",
@@ -978,7 +1144,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "deliver": {
                 "type": "string",
-                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,local'. A bare platform name (e.g. 'slack') is NOT a valid target — there is no per-platform default destination; always give an explicit platform:chat_id."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), 'inbox' or 'inbox:<guild_id>' (Discord: resolves to the provisioned inbox channel; on first delivery a job-named thread is auto-created under it and the token is persisted as discord:<inbox_id>:<thread_id>; 'inbox:<guild_id>' additionally validates the guild match; also valid in failure_deliver, where it resolves to the plain inbox channel without minting threads), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,local'. A bare platform name (e.g. 'slack') is NOT a valid target — there is no per-platform default destination; always give an explicit platform:chat_id."
             },
             "failure_deliver": {
                 "type": "string",
@@ -991,7 +1157,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "script": {
                 "type": "string",
-                "description": f"Optional script run each tick; stdout is injected into the agent's prompt as context (with no_agent=True the script IS the job). Relative paths resolve under {display_hermes_home()}/scripts/; .sh/.bash via bash, else Python. On update, '' clears."
+                "description": _script_description("the profile HERMES_HOME")
             },
             "monitor": {
                 "type": "string",
@@ -1048,7 +1214,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason")
+    "paused_reason", "all")
 
 
 def _cronjob_handler(args, **kw):
@@ -1074,6 +1240,7 @@ registry.register(
     handler=_cronjob_handler,
     check_fn=check_cronjob_requirements,
     emoji="⏰",
+    dynamic_schema_overrides=_cronjob_schema_overrides,
 )
 
 

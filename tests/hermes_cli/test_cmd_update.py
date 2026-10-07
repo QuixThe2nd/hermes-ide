@@ -1,6 +1,7 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import hashlib
+import os
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
@@ -46,41 +47,59 @@ def mock_args():
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------
-# The production code now uses ``ensure_uv()`` / ``update_managed_uv()``
-# instead of ``shutil.which("uv")``.  Many tests in this file patch
-# ``shutil.which`` to control whether uv is "available" — these autouse
-# fixtures make the managed_uv functions delegate to the patched
-# ``shutil.which`` so the existing test setup keeps working without
-# per-test changes.
+# The production code resolves uv through ``pm.uv()`` instead of
+# ``shutil.which("uv")``.  Many tests in this file patch ``shutil.which``
+# to control whether uv is "available" — this autouse fixture makes
+# pm.uv delegate to the patched ``shutil.which`` so the existing test
+# setup keeps working without per-test changes.
 @pytest.fixture(autouse=True)
-def _patch_managed_uv(request):
-    """Make managed_uv helpers follow shutil.which mocking in tests."""
-    import shutil
-
-    # resolve_uv delegates to shutil.which("uv") so that test patches
-    # on shutil.which flow through naturally.
-    def _fake_resolve_uv():
-        return shutil.which("uv")
-
-    def _fake_ensure_uv(**_kwargs):
-        return shutil.which("uv")
-
-    def _fake_update_managed_uv(**_kwargs):
-        return None  # never actually self-update in tests
-
-    with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
-         patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
-         patch(
-             "hermes_cli.update_cmd._post_update_sqlite_runtime_status",
-             return_value=(True, None),
-         ):
+def _patch_managed_uv(request, patch_pm_uv_to_shutil_which):
+    """Make pm.uv follow shutil.which mocking in tests."""
+    # Fork: keep the runtime-status no-op (update_cmd re-exports it from
+    # update_cmd_maint); the managed_uv shims are gone with pm.
+    with patch(
+        "hermes_cli.update_cmd._post_update_sqlite_runtime_status",
+        return_value=(True, None),
+    ):
         yield
 
 
 @pytest.fixture(autouse=True)
 def _patch_gateway_discovery(isolated_update_runtime):
-    pass
+    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
+
+    The restart phase used to swallow every exception at debug level, so these
+    end-to-end tests never noticed it touching real gateway discovery. Since
+    the phase is surfaced (#78574: an aborted restart now fails the update),
+    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
+    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
+    Discovery returning nothing makes the phase a clean no-op for every test
+    in this module (none of them assert on gateway restarts).
+    """
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.main._detect_venv_python_processes", return_value=[]), \
+         patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
+         patch("os.kill"), \
+         patch("pm.ensure.sync_venv"), \
+         patch(
+             "hermes_cli.update_inventory.collect_runtime_inventory",
+             return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+         ), \
+         patch("hermes_cli.main._purge_stale_hermes_modules", create=True), \
+         patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None), \
+         patch("hermes_cli.main._resume_windows_gateways_after_update"), \
+         patch(
+             "hermes_cli.main._install_hangup_protection",
+             return_value={
+                 "prev_stdout": None, "prev_stderr": None,
+                 "log_file": None, "installed": False,
+             },
+         ), \
+         patch("hermes_cli.main._finalize_update_output"), \
+         patch("hermes_cli.update_cmd._reload_config_modules", create=True):
+        yield
 
 
 class TestCmdUpdateNpmLockfileCache:
@@ -214,14 +233,15 @@ class TestUpdateManagedPythonEnvIsolation:
     """Regression for the uv-env isolation fix (third-party UV_PYTHON_INSTALL_DIR
     must not hijack the update's pip install).
 
-    The update path builds uv_env via managed_python_env() (drops
-    VIRTUAL_ENV/PYTHONPATH/UV_PYTHON, pins UV_MANAGED_PYTHON=1 + UV_NO_CONFIG=1,
-    forces UV_PYTHON_INSTALL_DIR to .hermes-runtime/python), then re-points
-    VIRTUAL_ENV at this install's venv. These tests lock that contract in.
+    The update path builds uv_env via pm.packages.uv_env(): every UV_* user
+    override and active-venv leak (VIRTUAL_ENV, PYTHONPATH, ...) is STRIPPED
+    rather than re-pinned — pm passes --python explicitly, so no ambient
+    variable may steer which interpreter or install dir uv picks
+    (interpreter-hijack class, #83914). UV_NO_CONFIG=1 is the one pin.
     """
 
-    def test_managed_env_drops_third_party_uv_install_dir(self):
-        from hermes_cli.managed_uv import managed_python_env
+    def test_managed_env_drops_third_party_uv_overrides(self):
+        from pm.packages import uv_env
 
         poisoned = {
             "UV_PYTHON_INSTALL_DIR": r"C:\WorkBuddy\python",
@@ -230,37 +250,71 @@ class TestUpdateManagedPythonEnvIsolation:
             "UV_NO_MANAGED_PYTHON": "1",
             "VIRTUAL_ENV": r"C:\Some\Other\venv",
             "PYTHONPATH": r"C:\Some\site-packages",
+            "PATH": r"C:\Windows",
         }
-        env = managed_python_env()
+        env = uv_env(poisoned)
 
-        # Third-party UV_PYTHON_INSTALL_DIR must not survive into the env.
-        assert env.get("UV_PYTHON_INSTALL_DIR", "") != r"C:\WorkBuddy\python"
+        # Every hijack vector is gone, not overridden.
         assert "WorkBuddy" not in env.get("UV_PYTHON_INSTALL_DIR", "")
-        # Managed pins are set; the hijack guards are explicitly cleared.
-        assert env.get("UV_MANAGED_PYTHON") == "1"
-        assert env.get("UV_NO_CONFIG") == "1"
         assert env.get("UV_PYTHON") is None
         assert env.get("UV_SYSTEM_PYTHON") is None
         assert env.get("UV_NO_MANAGED_PYTHON") is None
         assert env.get("VIRTUAL_ENV") is None
         assert env.get("PYTHONPATH") is None
-        # Sanity: the poisoned values did exist on input (guards the test itself).
-        assert poisoned["UV_PYTHON_INSTALL_DIR"].startswith("C:\\WorkBuddy")
+        # The one pin: user/system uv config must not apply.
+        assert env.get("UV_NO_CONFIG") == "1"
+        # Non-UV env passes through untouched.
+        assert env.get("PATH") == r"C:\Windows"
 
-    def test_update_uv_env_points_venv_and_runtime_store(self):
-        """The update's final uv_env must carry VIRTUAL_ENV=this venv while the
-        managed store path is still the UV_PYTHON_INSTALL_DIR."""
+    def test_update_uv_env_points_venv_after_repoint(self):
+        """The update path re-points VIRTUAL_ENV at this install's venv and
+        re-enables uv config discovery for the project sync."""
+        from pm.packages import uv_env
+
+        env = uv_env()
+        env["VIRTUAL_ENV"] = str(PROJECT_ROOT / "venv")
+        env.pop("UV_NO_CONFIG", None)
+
+        assert env["VIRTUAL_ENV"] == str(PROJECT_ROOT / "venv")
+        assert env.get("UV_NO_CONFIG") is None
+
+
+class TestRepairCurrentCheckoutRuntimeRepair:
+    """Already-up-to-date repair path (#112571 / #113741).
+
+    The managed-runtime repair-observer tests that used to live here went away
+    with the managed_uv module: pm.ensure("uv") owns the uv pin, and the
+    venv-repair path now restores the ``[all]`` group and lazy backends via
+    pm.sync_venv.
+    """
+
+    def test_venv_repair_path_refreshes_memory_provider(self, monkeypatch, tmp_path):
+        """The unhealthy-venv repair path heals memory-provider bridge packages too
+        (parity with pull/ZIP, #113741). Drives _repair_venv_on_current_checkout."""
         from hermes_cli import main as hm
-        from hermes_cli.managed_uv import managed_python_env
 
-        uv_env = managed_python_env()
-        uv_env["VIRTUAL_ENV"] = str(PROJECT_ROOT / "venv")
+        calls: list = []
+        monkeypatch.setattr(hm, "_abort_dependency_sync_if_self_locked", lambda *_a, **k: None)
+        monkeypatch.setattr(update_cmd, "_write_update_incomplete_marker", lambda: None)
+        monkeypatch.setattr(update_cmd, "_venv_core_imports_healthy", lambda: (True, "ok"))
+        monkeypatch.setattr(update_cmd, "project_venv_dir", lambda _root: tmp_path / "venv")
+        monkeypatch.setattr(
+            update_cmd, "venv_python_path", lambda _d, **k: tmp_path / "venv" / "bin" / "python")
+        # pm owns the venv contents now (uv resolution + [all]+lazy sync in one call).
+        monkeypatch.setattr("pm.uv", lambda **k: ("uv", {}))
+        monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
+        monkeypatch.setattr(hm, "_restore_active_tool_dependencies", lambda *a, **k: None)
+        monkeypatch.setattr(
+            hm, "_refresh_active_memory_provider_dependencies", lambda: calls.append("memory"))
+        monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: None)
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
 
-        assert uv_env["VIRTUAL_ENV"] == str(PROJECT_ROOT / "venv")
-        # Managed store stays the install-scoped runtime dir, not a third-party one.
-        assert ".hermes-runtime" in uv_env.get("UV_PYTHON_INSTALL_DIR", "")
-        assert uv_env.get("UV_MANAGED_PYTHON") == "1"
-        assert uv_env.get("UV_NO_CONFIG") == "1"
+        assert update_cmd._repair_venv_on_current_checkout(
+            assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+            had_desktop_app_before_update=False, active_lazy_features=[],
+            active_tool_dependencies=[], _windows_gateway_resume=None,
+        )
+        assert calls == ["memory"]
 
 
 class TestCmdUpdateBranchFallback:
@@ -499,8 +553,8 @@ class TestCmdUpdateBranchFallback:
             hm, "_sync_with_upstream_if_needed"
         ), patch.object(
             hm,
-            "_reload_updated_runtime_modules",
-            # Reaching the reload step IS the proof the post-update path ran
+            "_upgrade_pip_before_lazy_refresh",
+            # Reaching the lazy-refresh step IS the proof the post-update path ran
             # (the bug returned from "Already up to date!" before it). Abort
             # the pipeline right here: everything past this point (skills
             # sync, desktop rebuild, gateway restart, fleet check) would run
@@ -511,7 +565,7 @@ class TestCmdUpdateBranchFallback:
                 cmd_update(mock_args)
 
         assert exit_info.value.code == 0
-        post_update_step.assert_called_once_with()
+        post_update_step.assert_called_once()
         captured = capsys.readouterr()
         assert "Already up to date!" not in captured.out
 
@@ -524,8 +578,6 @@ class TestCmdUpdateBranchFallback:
         ), patch(
             "hermes_cli.config.get_missing_config_fields",
             return_value=[{"key": "new.option", "default": True}],
-        ), patch(
-            "hermes_cli.update_cmd._reload_config_modules"
         ), patch(
             "hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2)
         ), patch(
@@ -568,8 +620,6 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.config.get_missing_config_fields", return_value=[]
         ), patch(
-            "hermes_cli.update_cmd._reload_config_modules"
-        ), patch(
             "hermes_cli.update_cmd._run_config_check_fresh", return_value=(5, 24)
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
@@ -606,8 +656,6 @@ class TestCmdUpdateMigrationPrompt:
             "hermes_cli.config.get_missing_env_vars", return_value=[]
         ), patch(
             "hermes_cli.config.get_missing_config_fields", return_value=[]
-        ), patch(
-            "hermes_cli.update_cmd._reload_config_modules"
         ), patch(
             "hermes_cli.update_cmd._run_config_check_fresh", return_value=(33, 34)
         ), patch(
@@ -649,8 +697,6 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.config.get_missing_config_fields", return_value=cfg_items
         ), patch(
-            "hermes_cli.update_cmd._reload_config_modules"
-        ), patch(
             "hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 24)
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
@@ -669,37 +715,6 @@ class TestCmdUpdateMigrationPrompt:
             assert "FOO_API_KEY" in out
             assert "Foo service API key" in out
             assert "display.new_widget" in out
-
-
-class TestConfigVersionCheckUsesFreshModules:
-    """Regression: config migration must use freshly-reloaded modules, not the
-    sys.modules cache from before git pull.
-
-    Before the fix, ``hermes update`` ran in the PRE-pull Python process.
-    After ``git pull`` updated the source on disk, function-level imports
-    returned the OLD cached ``hermes_cli.config`` module — so
-    ``DEFAULT_CONFIG["_config_version"]`` was stale and
-    ``check_config_version()`` reported ``(33, 33)`` "up to date" even though
-    the freshly-pulled code had v34 with a migration to run. The personality
-    reset migration (#81946) was silently skipped this way.
-    """
-
-    def test_run_config_check_fresh_reloads_modules(self):
-        """_run_config_check_fresh must call _reload_config_modules which
-        force-reloads the config modules from disk.
-
-        Regression: config migration was silently skipped because
-        sys.modules held the OLD hermes_cli.config with the OLD
-        DEFAULT_CONFIG["_config_version"] after git pull.
-        """
-        from unittest.mock import patch
-
-        import hermes_cli.update_cmd as update_cmd
-
-        with patch.object(update_cmd, "_reload_config_modules") as mock_reload:
-            update_cmd._run_config_check_fresh()
-
-        mock_reload.assert_called_once()
 
 
 class TestCmdUpdateProfileSkillSync:
@@ -1224,8 +1239,7 @@ class TestNodeRuntimeNpmResolution:
             patch("hermes_cli.config.load_config", return_value={}),
             patch("subprocess.run", side_effect=fail_git_fetch),
             patch("urllib.request.urlretrieve", side_effect=write_source_zip),
-            patch("hermes_cli.managed_uv.ensure_uv", return_value="uv"),
-            patch("hermes_cli.managed_uv.update_managed_uv"),
+            patch("pm.uv", return_value=("uv", dict(os.environ))),
             patch(
                 "tools.skills_sync.sync_skills",
                 return_value={

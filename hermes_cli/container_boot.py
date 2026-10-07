@@ -79,10 +79,12 @@ def reconcile_profile_gateways(
     actions: list[ReconcileAction] = []
     # Under a multiplexing root gateway named slots are still registered but must not boot from
     # their persisted run intent, or they would become additional multiplex owners.
+    # Explicit opt-in only: the unset default (on) is refused on s6 hosts by the gateway's own boot
+    # guard (per-profile gateways are s6 slots the preflight cannot fold), so the slots keep booting.
     from gateway.config import load_gateway_config
     from utils import is_truthy_value
     try:
-        multiplex_profiles = load_gateway_config().multiplex_profiles
+        multiplex_profiles = load_gateway_config().multiplex_profiles is True
     except Exception:
         log.warning("Unable to load gateway configuration during container boot; using the "
                     "GATEWAY_MULTIPLEX_PROFILES override if set.", exc_info=True)
@@ -211,7 +213,7 @@ def _read_desired_state(profile_dir: Path) -> str | None:
     if not state_file.exists():
         return None
     try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
+        data = json.loads(state_file.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         log.warning("could not read %s; treating as no prior state", state_file)
         return None

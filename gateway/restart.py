@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from hermes_cli.config import DEFAULT_CONFIG
 from utils import atomic_json_write
 
+from gateway import restart_preflight
+
 if TYPE_CHECKING:
     from gateway.session import SessionSource
 
@@ -26,6 +28,21 @@ GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
 # the s6 finish script maps it to exit 125 so the supervisor stops restarting.
 # See #51228.
 GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
+
+
+def map_fatal_config_exit_for_launchd(returncode: int) -> int:
+    """Translate gateway EX_CONFIG so launchd can park the job.
+
+    systemd uses ``RestartPreventExitStatus=78``; s6 maps 78→125. launchd cannot
+    gate on a specific status, and unconditional ``KeepAlive=true`` respawns 78
+    forever (#89477). The generated plist uses ``KeepAlive.SuccessfulExit=false``;
+    mapping 78→0 is a deliberate stop. Exit 75 (please restart) and other
+    failures pass through so KeepAlive still relaunches them. Negative ``wait()``
+    codes (signals) are left to the caller.
+    """
+    if returncode == GATEWAY_FATAL_CONFIG_EXIT_CODE:
+        return 0
+    return returncode
 
 # Set by ``hermes gateway run --external-supervisor``. Unlike systemd's INVOCATION_ID
 # and launchd's XPC_SERVICE_NAME, this survives wrappers that replace the child
@@ -82,7 +99,14 @@ def is_global_startup_conflict(error_code: str | None) -> bool:
 
 
 def is_gateway_supervisor_process(environ: Mapping[str, str] | None = None) -> bool:
-    """Return whether this gateway process is owned by a supervisor."""
+    """Return whether this gateway process is owned by a supervisor that RESTARTS it.
+
+    Selects the exit-75 restart route, so only markers of a manager with a restart policy count:
+    systemd ``INVOCATION_ID``, launchd ``XPC_SERVICE_NAME``, the s6 sentinel, or the explicit
+    ``--external-supervisor`` opt-in. The generalized ``HERMES_SUPERVISED_CHILD`` launcher marker is
+    deliberately NOT read here: the Windows Scheduled-Task launcher sets it without a restart policy
+    (#113670), and routing its ``/restart`` through exit 75 would leave the gateway dead.
+    """
     env = os.environ if environ is None else environ
     xpc_service = env.get("XPC_SERVICE_NAME", "")
     return bool(env.get("INVOCATION_ID") or env.get("HERMES_S6_SUPERVISED_CHILD") or (xpc_service and xpc_service != "0")
@@ -273,6 +297,19 @@ def run_detached_restart_watcher(
     """
     wait_for_pid_exit(pid, poll_s=poll_s)
     spawn_replacement_gateway(project_root)
+def is_supervised_gateway_launch(environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether this gateway was launched by a generated service/launcher rather than a shell.
+
+    Superset of :func:`is_gateway_supervisor_process` that also honours ``HERMES_SUPERVISED_CHILD``,
+    the marker every generated launcher exports (systemd unit, launchd plist, s6 run script, Windows
+    Scheduled Task — see ``hermes_cli.main._apply_profile_override``). This is the identity the
+    self-targeting guards key on: a kill or lifecycle command issued from inside such a gateway takes
+    down the process hosting the caller with nobody at a terminal to bring it back (#113667).
+    """
+    env = os.environ if environ is None else environ
+    if env.get("HERMES_SUPERVISED_CHILD"):
+        return True
+    return is_gateway_supervisor_process(environ)
 
 
 def is_container_restart_context() -> bool:
@@ -331,7 +368,8 @@ async def queue_user_restart(
 
     Every user-restart entry point (the ``/restart`` slash command and the
     agent-callable ``restart`` tool) funnels through this helper so their
-    requester setup can never drift apart: persist the comeback routing
+    requester setup can never drift apart: warn about uncommitted runtime
+    source (the warning-only preflight below), persist the comeback routing
     (the in-memory command source plus the ``.restart_notify.json`` marker the
     next gateway process consumes), offer the opt-in wind-down prompt, then
     hand off to ``request_restart``, which opens the shared drain. Must run on
@@ -358,53 +396,219 @@ async def queue_user_restart(
             "via_service": None,
         }
 
-    # Save the requester's routing info so the new gateway process can
-    # notify them once it comes back online — best-effort, exactly like
-    # every other step before the drain hand-off.
-    if source is not None:
-        try:
-            runner._restart_command_source = dataclasses.replace(
-                source,
-                message_id=str(message_id)
-                if message_id is not None
-                else source.message_id,
-            )
-        except Exception:
-            runner._restart_command_source = source
+    # Warning-only source preflight, BEFORE any requester routing is
+    # persisted: inspect the installed checkout and tell the requester about
+    # uncommitted runtime source. Bounded (scan + delivery budgets), coalesced
+    # across concurrent callers, and never a restart blocker — inspection or
+    # delivery failures only downgrade the notice. Cancellation still
+    # propagates: a cancelled setup must not reach request_restart.
+    preflight_attempt = await restart_preflight.warn_before_user_restart(
+        runner, source
+    )
+    if preflight_attempt is restart_preflight.ACTIVE_OWNER_PENDING:
+        # A concurrent caller's setup still owns the pending restart (its
+        # wind-down offer can outlast a coalescing rider's budget). This
+        # caller lost the race: keep the winner's routing, enter no setup of
+        # its own, and report the shared already-in-progress result. If that
+        # owner's setup fails, it releases the attempt for a later retry.
+        return {
+            "status": "already_in_progress",
+            "active_agents": runner._running_agent_count(),
+            "via_service": None,
+        }
     try:
-        atomic_json_write(
-            _hermes_home / ".restart_notify.json",
-            _restart_notify_payload(source, message_id),
-            indent=None,
-        )
-    except Exception as exc:
-        logger.debug("Failed to write restart notify file: %s", exc)
+        # Ownership recheck after the preflight's awaits: another entry point
+        # (or a signal-initiated drain) may have opened the restart while this
+        # caller was inspecting or delivering. The loser keeps the winner's
+        # routing and sends nothing further.
+        if getattr(runner, "_restart_requested", False) or getattr(runner, "_draining", False):
+            return {
+                "status": "already_in_progress",
+                "active_agents": runner._running_agent_count(),
+                "via_service": None,
+            }
 
-    active_agents = runner._running_agent_count()
-
-    # Opt-in cooperative wind-down: for a native-Discord requester with at
-    # least one other live chat, offer the ⏸️ pause embed *before*
-    # request_restart() opens the drain, so the offer is bound to this
-    # restart cycle (request_restart re-enters the already-open cycle and
-    # mints no second generation). The embed is the only thing that can
-    # trigger a park steer — without it the restart simply waits for the
-    # live sessions to finish on their own. Runners without the capability
-    # (older cores, foreign objects) skip it, and any failure here just
-    # leaves the restart on the natural-wait drain.
-    send_offer = getattr(runner, "_send_restart_wind_down_prompt", None)
-    if callable(send_offer):
+        # Save the requester's routing info so the new gateway process can
+        # notify them once it comes back online — best-effort, exactly like
+        # every other step before the drain hand-off.
+        if source is not None:
+            try:
+                runner._restart_command_source = dataclasses.replace(
+                    source,
+                    message_id=str(message_id)
+                    if message_id is not None
+                    else source.message_id,
+                )
+            except Exception:
+                runner._restart_command_source = source
         try:
-            await send_offer(source)
+            atomic_json_write(
+                _hermes_home / ".restart_notify.json",
+                _restart_notify_payload(source, message_id),
+                indent=None,
+            )
         except Exception as exc:
-            logger.debug("Restart wind-down offer skipped: %s", exc)
+            logger.debug("Failed to write restart notify file: %s", exc)
 
-    via_service = user_restart_via_service()
-    started = runner.request_restart(detached=not via_service, via_service=via_service)
-    return {
-        "status": "restarting" if started else "already_in_progress",
-        "active_agents": active_agents,
-        "via_service": via_service,
-    }
+        active_agents = runner._running_agent_count()
+
+        # Opt-in cooperative wind-down: for a native-Discord requester with at
+        # least one other live chat, offer the ⏸️ pause embed *before*
+        # request_restart() opens the drain, so the offer is bound to this
+        # restart cycle (request_restart re-enters the already-open cycle and
+        # mints no second generation). The embed is the only thing that can
+        # trigger a park steer — without it the restart simply waits for the
+        # live sessions to finish on their own. Runners without the capability
+        # (older cores, foreign objects) skip it, and any failure here just
+        # leaves the restart on the natural-wait drain.
+        send_offer = getattr(runner, "_send_restart_wind_down_prompt", None)
+        if callable(send_offer):
+            try:
+                await send_offer(source)
+            except Exception as exc:
+                logger.debug("Restart wind-down offer skipped: %s", exc)
+
+        # This queued restart supersedes every OTHER pending restart gate in the
+        # process: their confirm waits are moot — the bounce happens no matter
+        # what their requesters reply — and resolving them HERE, with the
+        # distinguished token and BEFORE the drain interrupts anything, lets each
+        # waiting restart tool return the truthful "superseded" result while its
+        # session is still running (the natural-wait drain then collects the
+        # turn normally instead of forcing it). The sweep touches only
+        # restart-kind waits; the confirming gate's own entry is already
+        # resolved by its real reply, and first-writer-wins keeps it that way.
+        try:
+            from tools.clarify_gateway import resolve_restart_waits_superseded
+
+            superseded_gates = resolve_restart_waits_superseded()
+        except Exception as exc:
+            superseded_gates = 0
+            logger.debug("Restart queue: superseded-gate sweep failed: %s", exc)
+        if superseded_gates:
+            logger.info(
+                "Restart queue: %d pending restart gate(s) superseded by this restart",
+                superseded_gates,
+            )
+
+        via_service = user_restart_via_service()
+        started = runner.request_restart(detached=not via_service, via_service=via_service)
+        return {
+            "status": "restarting" if started else "already_in_progress",
+            "active_agents": active_agents,
+            "via_service": via_service,
+        }
+    finally:
+        # Setup resolved (started, failed, or cancelled): drop the provisional
+        # preflight state so a later attempt retries it, and wake any rider.
+        restart_preflight.release_restart_preflight(preflight_attempt)
+
+
+# ── superseded restart gates: one truthful result, one resume-seam note ──────
+#
+# When a confirmed restart queues while ANOTHER restart gate's confirm-wait
+# is still pending, the drain resolves that wait with the distinguished
+# ``tools.clarify_gateway.SUPERSEDED_RESPONSE`` token and the waiting
+# ``restart`` tool answers with the exact JSON below — ``status:
+# "superseded"``, never "cancelled": the requester replied nothing; the
+# process bounced out from under the wait. The constants live here (the
+# module that owns the queue sequence) so the plugin emitting the result and
+# the resume seam annotating it share ONE source of truth and cannot drift.
+
+SUPERSEDED_RESTART_STATUS = "superseded"
+
+SUPERSEDED_RESTART_ERROR = (
+    "Gateway restart was queued by another confirmed restart while this "
+    "confirmation was still waiting. The gateway restarted without this "
+    "gate's confirmation."
+)
+
+# The exact JSON field + error text the restart tool emits for a superseded
+# gate. The resume seam matches tool rows on BOTH so only the tool's own
+# result — never a lookalike another tool happened to echo — is annotated.
+SUPERSEDED_RESTART_RESULT_MARKER = f'"status":"{SUPERSEDED_RESTART_STATUS}"'
+
+# The resume-seam note's own prefix doubles as its idempotency mark: a row
+# already carrying it is never annotated twice.
+SUPERSEDED_RESTART_NOTE_PREFIX = "[system] The gateway was restarted"
+
+
+def is_superseded_restart_tool_result(content: object) -> bool:
+    """True when *content* is the restart tool's superseded result JSON."""
+    text = content if isinstance(content, str) else ""
+    return (
+        SUPERSEDED_RESTART_RESULT_MARKER in text and SUPERSEDED_RESTART_ERROR in text
+    )
+
+
+def _iso8601_utc(value: object) -> str:
+    """Best-effort ISO 8601 UTC stamp: datetime or epoch in, ``...Z`` out.
+
+    ``None`` (or anything unparseable) stamps "now" — the caller's best
+    available proxy for the bounce it is naming.
+    """
+    from datetime import datetime, timezone
+
+    moment = None
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            moment = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            moment = None
+    if moment is None:
+        moment = datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def superseded_restart_resume_note(restarted_at: object = None) -> str:
+    """The one-line bounce note a resumed superseded gate's tool result carries.
+
+    The superseded result itself was computed as the bounce began — truthful
+    about the supersession, stale about everything since. This line names the
+    bounce with a timestamp so the resumed model cannot treat the pre-bounce
+    result as the last word.
+    """
+    return (
+        f"{SUPERSEDED_RESTART_NOTE_PREFIX} at {_iso8601_utc(restarted_at)} by "
+        "another confirmed restart while this confirmation was pending — "
+        "this restart tool result was superseded, not cancelled."
+    )
+
+
+def annotate_superseded_restart_tail(rows: list, *, restarted_at: object = None) -> int:
+    """Suffix the bounce note onto superseded restart results in a transcript tail.
+
+    Operates on the model-facing history rows of a FORCED-resume turn and
+    only on the trailing contiguous tool rows — the final interrupted batch,
+    the same tail :func:`gateway.forced_resume_replay.build_victim_replay_plan`
+    walks. Matching rows keep their original content and gain one appended
+    line (the note rides the EXISTING tool message: no synthetic user or
+    system row, no new persistence pipeline, role alternation untouched).
+    Returns how many rows were annotated; a second pass over the same rows
+    annotates nothing (the note prefix is the idempotency mark).
+    """
+    if not isinstance(rows, list):
+        return 0
+    note = superseded_restart_resume_note(restarted_at)
+    annotated = 0
+    for row in reversed(rows):
+        if not isinstance(row, dict) or row.get("role") != "tool":
+            break
+        content = row.get("content")
+        if not isinstance(content, str):
+            continue
+        if SUPERSEDED_RESTART_NOTE_PREFIX in content:
+            continue
+        if not is_superseded_restart_tool_result(content):
+            continue
+        row["content"] = f"{content}\n{note}"
+        annotated += 1
+    return annotated
 
 
 def _seconds(value: object, fallback: float = 0.0) -> float:

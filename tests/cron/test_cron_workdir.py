@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -47,7 +48,9 @@ class TestNormalizeWorkdir:
 
     def test_tilde_expands(self, tmp_path, monkeypatch):
         from cron.jobs import _normalize_workdir
-        monkeypatch.setenv("HOME", str(tmp_path))
+        # expanduser keys off USERPROFILE on native Windows, HOME elsewhere.
+        home_var = "USERPROFILE" if sys.platform == "win32" else "HOME"
+        monkeypatch.setenv(home_var, str(tmp_path))
         result = _normalize_workdir("~")
         assert result == str(tmp_path.resolve())
 
@@ -320,3 +323,56 @@ class TestRunJobTerminalCwd:
         assert observed["terminal_cwd_during_run"] == baseline
         assert os.environ["TERMINAL_CWD"] == baseline
         assert get_session_cwd(observed["task_id"]) is None
+
+    def test_agent_prerun_script_receives_configured_workdir(
+        self, monkeypatch, tmp_path
+    ):
+        import cron.scheduler as sched
+
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+
+        def run_script(job, script_path, workdir=None, cancel_event=None):
+            observed["script_workdir"] = workdir
+            return True, '{"wakeAgent": false}'
+
+        monkeypatch.setattr(
+            sched, "_run_job_script_with_claim_heartbeat", run_script
+        )
+        success, *_ = sched.run_job(
+            {
+                "id": "agent-script-workdir",
+                "name": "agent-script-workdir",
+                "prompt": "Review the project.",
+                "script": "collect.py",
+                "workdir": str(workdir),
+                "schedule_display": "manual",
+            }
+        )
+
+        assert success is True
+        assert observed["script_workdir"] == str(workdir)
+
+
+def test_build_job_prompt_inline_script_receives_configured_workdir(monkeypatch, tmp_path):
+    """Callers that skip the wake-gate (no cached ``prerun_script``) run the script inline from
+    ``_build_job_prompt``; that path must honour the job's workdir too."""
+    from cron import scheduler_prompt, scheduler_script
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    observed: dict = {}
+
+    def run_script(script_path, workdir=None, cancel_event=None):
+        observed["script_workdir"] = workdir
+        return True, "collected data"
+
+    monkeypatch.setattr(scheduler_script, "_run_job_script", run_script)
+    prompt = scheduler_prompt._build_job_prompt(
+        {"id": "inline", "name": "inline", "prompt": "Review.", "script": "collect.py",
+         "workdir": str(workdir)})
+
+    assert observed["script_workdir"] == str(workdir)
+    assert "collected data" in prompt

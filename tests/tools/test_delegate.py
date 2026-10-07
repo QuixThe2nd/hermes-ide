@@ -168,9 +168,13 @@ class TestDelegateRequirements(unittest.TestCase):
 
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):
+        # Goal is the child's first user turn (see _ChildRun.await_child), not
+        # the system prompt — sending it in both roles duplicates the task for
+        # OAuth Anthropic. The prompt still describes the subagent role.
         prompt = _build_child_system_prompt("Fix the tests")
-        self.assertIn("Fix the tests", prompt)
-        self.assertIn("YOUR TASK", prompt)
+        self.assertNotIn("Fix the tests", prompt)
+        self.assertNotIn("YOUR TASK", prompt)
+        self.assertIn("focused subagent", prompt)
         self.assertNotIn("CONTEXT", prompt)
 
 class TestStripBlockedTools(unittest.TestCase):

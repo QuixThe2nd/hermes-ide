@@ -131,6 +131,22 @@ def _session_store_has_state(session_dir: Path) -> bool:
         return True
 
 
+
+
+def normalize_whatsapp_mention_jid(value: str) -> str:
+    """Return a valid participant JID for an outbound mention, or ``""``."""
+    jid = to_whatsapp_jid(value)
+    user, separator, domain = jid.partition("@")
+    return (
+        jid
+        if separator
+        and user.isascii()
+        and user.isdigit()
+        and domain in {"s.whatsapp.net", "lid"}
+        else ""
+    )
+
+
 def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     """Resolve WhatsApp phone/LID aliases via bridge session mapping files.
 
@@ -163,7 +179,7 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
             if not mapping_path.exists():
                 continue
             try:
-                raw = json.loads(mapping_path.read_text(encoding="utf-8"))
+                raw = json.loads(mapping_path.read_text(encoding="utf-8-sig"))
                 mapped = normalize_whatsapp_identifier(raw)
             except (OSError, json.JSONDecodeError) as exc:
                 logger.debug("whatsapp_identity: failed to read %s: %s", mapping_path, exc)

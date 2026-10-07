@@ -42,13 +42,14 @@ DEFAULT = {
     "npm_lock": True,
     "installer": True,
     "desktop_updater": True,
+    "bootstrap": True,
     "rust": True,
     "mcp_catalog": False,
     "ci_review": True,
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, desktop_updater=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, desktop_updater=False, bootstrap=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -71,6 +72,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "npm_lock": npm_lock,
         "installer": installer,
         "desktop_updater": desktop_updater,
+        "bootstrap": bootstrap,
         "rust": rust,
         "mcp_catalog": mcp_catalog,
         "ci_review": ci_review,
@@ -99,6 +101,20 @@ CASES = {
         _lanes(python=True, site=True),
     ),
     "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
+    # Cross-language contract JSON under apps/: the pytest that pins it against
+    # the Python side must run even when nothing else in the PR is Python.
+    "generated gateway contract → python + frontend": (
+        ["apps/shared/src/gateway-contract.generated.ts"],
+        _lanes(python=True, frontend=True),
+    ),
+    "gateway OpenRPC document → python + frontend": (
+        ["apps/shared/src/gateway-contract.openrpc.json"],
+        _lanes(python=True, frontend=True),
+    ),
+    "desktop slash-registry JSON → python + frontend": (
+        ["apps/desktop/src/lib/desktop-slash-registry.json"],
+        _lanes(python=True, frontend=True),
+    ),
     # The published CIMD document is asserted about by the Python suite, so a
     # lone edit there must not skip the lane that would catch a bad edit.
     "cimd document → python + site": (
@@ -160,7 +176,7 @@ CASES = {
         _lanes(python=True, frontend=True, desktop_updater=True),
     ),
     "desktop-update test → desktop_updater": (
-        ["tests/test_desktop_update_windows_progress.py"],
+        ["tests/scripts/desktop_update/test_desktop_update_windows_progress.py"],
         _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),
     ),
     "updater-process.ts → desktop_updater": (
@@ -173,20 +189,20 @@ CASES = {
     # the ONLY lane a Rust change ran, and the crate's tests never executed.
     "rust source → rust": (
         ["apps/bootstrap-installer/src-tauri/src/powershell.rs"],
-        _lanes(frontend=True, rust=True),
+        _lanes(frontend=True, bootstrap=True, rust=True),
     ),
     "cargo lockfile → rust": (
         ["apps/bootstrap-installer/src-tauri/Cargo.lock"],
-        _lanes(frontend=True, rust=True),
+        _lanes(frontend=True, bootstrap=True, rust=True),
     ),
     # Non-.rs files in the crate still change what cargo builds.
     "tauri config → rust": (
         ["apps/bootstrap-installer/src-tauri/tauri.conf.json"],
-        _lanes(frontend=True, rust=True),
+        _lanes(frontend=True, bootstrap=True, rust=True),
     ),
     "ts source alone → no rust lane": (
         ["apps/bootstrap-installer/src/main.tsx"],
-        _lanes(frontend=True),
+        _lanes(frontend=True, bootstrap=True),
     ),
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
@@ -248,7 +264,7 @@ CASES = {
     ),
     "bootstrap-installer eslint config → ci_review": (
         ["apps/bootstrap-installer/eslint.config.mjs"],
-        _lanes(frontend=True, ci_review=True),
+        _lanes(frontend=True, bootstrap=True, ci_review=True),
     ),
     "prettier config → ci_review": (
         [".prettierrc"],
@@ -257,6 +273,20 @@ CASES = {
     "workflow yml → ci_review (also fail-open all)": (
         [".github/workflows/typecheck.yml"],
         DEFAULT,
+    ),
+    # The bootstrap installer lane: shell installer, dev-checkout wrapper,
+    # and the Tauri app's non-Rust sources.
+    "install.sh → bootstrap lane": (
+        ["scripts/install.sh"],
+        _lanes(python=True, bootstrap=True, python_prod=True),
+    ),
+    "setup-hermes.sh → bootstrap lane": (
+        ["setup-hermes.sh"],
+        _lanes(python=True, bootstrap=True, python_prod=True),
+    ),
+    "tauri installer source → bootstrap + rust": (
+        ["apps/bootstrap-installer/src-tauri/src/lib.rs"],
+        _lanes(frontend=True, bootstrap=True, rust=True),
     ),
     "composite action → ci_review (also fail-open all)": (
         [".github/actions/retry/action.yml"],
@@ -370,14 +400,14 @@ def test_pull_request_changed_files_parses_gh_output(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(
             args[0],
             0,
-            stdout="scripts/install.sh\ntests/test_install_sh_node_deps_workspaces.py\n",
+            stdout="scripts/install.sh\ntests/scripts/install/test_install_sh_node_deps_workspaces.py\n",
             stderr="",
         )
 
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
     assert pull_request_changed_files() == [
         "scripts/install.sh",
-        "tests/test_install_sh_node_deps_workspaces.py",
+        "tests/scripts/install/test_install_sh_node_deps_workspaces.py",
     ]
 
 
@@ -398,7 +428,7 @@ def test_main_recovers_pr_files_instead_of_fail_open_ci_review(monkeypatch, caps
     monkeypatch.setattr(
         _mod,
         "pull_request_changed_files",
-        lambda: ["scripts/install.sh", "tests/test_install_sh_node_deps_workspaces.py"],
+        lambda: ["scripts/install.sh", "tests/scripts/install/test_install_sh_node_deps_workspaces.py"],
     )
     monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)

@@ -178,8 +178,11 @@ def preprocess_context_references(
     except RuntimeError:
         return asyncio.run(coro)
     import concurrent.futures
+    import contextvars
+    # The side thread starts with an empty Context: without the caller's copy the served profile's
+    # HERMES_HOME override is lost and the credential-path guard checks the launch profile's .env.
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+        return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
 
 
 async def preprocess_context_references_async(
@@ -283,7 +286,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
         return None, _binary_reference_block(ref, path)
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     if ref.line_start is not None:
         text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):ref.line_end or ref.line_start])
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
@@ -340,6 +343,9 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
+    from agent.file_safety import is_nt_namespace_path
+    if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
+        raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
     if allowed_root is not None and not _is_under(resolved, allowed_root):
         raise ValueError("path is outside the allowed workspace")
@@ -491,7 +497,7 @@ def _oversized_text_reference_block(ref: ContextReference, path: Path, text_toke
 def _file_metadata(path: Path) -> str:
     if not _is_binary_file(path):
         try:
-            return f"{path.read_text(encoding='utf-8').count(chr(10)) + 1} lines"
+            return f"{path.read_text(encoding='utf-8-sig').count(chr(10)) + 1} lines"
         except Exception:
             pass
     return f"{path.stat().st_size} bytes"

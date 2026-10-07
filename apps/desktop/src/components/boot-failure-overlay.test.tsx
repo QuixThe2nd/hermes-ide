@@ -29,7 +29,23 @@ function stubDesktop(config: Record<string, unknown>, overrides: Record<string, 
   const original = window.hermesDesktop
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getRecentLogs: async () => ({ lines: [] }), getConnectionConfig: async () => config, ...overrides }
+    value: {
+      getRecentLogs: async () => ({ lines: [] }),
+      getConnectionConfig: async () => config,
+      getBootstrapState: async () => ({
+        active: false,
+        manifest: null,
+        stages: {},
+        error: null,
+        log: [],
+        startedAt: null,
+        completedAt: null,
+        setupChoice: null,
+        unsupportedPlatform: null,
+        bundled: false
+      }),
+      ...overrides
+    }
   })
 
   return () => Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: original })
@@ -66,12 +82,32 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('BootFailureOverlay', () => {
+  it('keeps keyboard focus inside the recovery surface', () => {
+    render(
+      <>
+        <button type="button">Background action</button>
+        <BootFailureOverlay />
+      </>
+    )
+
+    const recoverySurface = screen.getByRole('dialog', { name: /Hermes couldn't start/i })
+    const retry = screen.getByRole('button', { name: /retry/i })
+    const backgroundAction = screen.getByText(/background action/i)
+
+    retry.focus()
+    backgroundAction.focus()
+
+    expect(recoverySurface.getAttribute('aria-modal')).toBe('true')
+    expect(recoverySurface.contains(globalThis.document.activeElement)).toBe(true)
+  })
+
   it('swaps to the in-place gateway settings view (no route nav) and back', async () => {
     render(<BootFailureOverlay />)
 
     fireEvent.click(screen.getByRole('button', { name: /gateway settings/i }))
     // Recovery actions give way to the embedded panel (behind a Back control).
     expect(await screen.findByRole('button', { name: /back/i })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: /gateway settings/i }).getAttribute('aria-modal')).toBe('true')
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /back/i }))
@@ -224,6 +260,44 @@ describe('BootFailureOverlay', () => {
       // The electron-built error message (portal / local mode / Discord) is
       // still surfaced in the error box.
       expect(screen.getByText(/ares-3009\.agents\.nousresearch\.com/i)).toBeTruthy()
+    } finally {
+      restore()
+    }
+  })
+
+  it('swaps Repair for "Reinstall the app" on a bundled install', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+
+    const restore = stubDesktop(
+      { mode: 'local' },
+      {
+        getBootstrapState: async () => ({
+          active: false,
+          manifest: null,
+          stages: {},
+          error: null,
+          log: [],
+          startedAt: null,
+          completedAt: null,
+          setupChoice: null,
+          unsupportedPlatform: null,
+          bundled: true
+        }),
+        openExternal
+      }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+
+      // The bundled artifact has no installer to repair with — the action is
+      // a docs link, and the hint says reinstall instead of re-run installer.
+      expect(await screen.findByRole('button', { name: /reinstall the app/i })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /repair install/i })).toBeNull()
+      expect(screen.getByText(/reinstall the app to restore/i)).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: /reinstall the app/i }))
+      await waitFor(() => expect(openExternal).toHaveBeenCalledWith('https://hermes-agent.nousresearch.com/docs/user-guide/desktop'))
     } finally {
       restore()
     }

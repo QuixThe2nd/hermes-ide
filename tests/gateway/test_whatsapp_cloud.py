@@ -873,6 +873,30 @@ class TestInboundMediaDispatch:
         # File still available in media_urls for the agent's other tools
         assert len(event.media_urls) == 1
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, tmp_path, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        adapter = _make_adapter(app_secret="key")
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(side_effect=[
+            MagicMock(status_code=200, json=MagicMock(return_value={
+                "url": "https://lookaside.fbsbx.com/whatsapp/m/doc", "mime_type": "text/plain"})),
+            MagicMock(status_code=200, content=content),
+        ])
+        raw_message = {
+            "from": "1555", "id": "wamid.doc2", "timestamp": "0", "type": "document",
+            "document": {"id": "media_doc_abc", "mime_type": "text/plain", "filename": "notes.txt"},
+        }
+        from gateway.platforms import whatsapp_cloud as wac
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            event = await adapter._build_message_event_from_cloud(
+                raw_message, {"1555": "U"}, {"phone_number_id": "1"})
+
+        assert ("[Content of" in (event.text or "")) is inlined
+        assert event.media_text_inlined == [inlined]
+
 
 # ---------------------------------------------------------------------------
 # Group-shaped message guard
@@ -1332,14 +1356,12 @@ class TestBoundedInteractiveState:
     def test_bounded_put_evicts_oldest(self):
         from collections import OrderedDict
 
-        from gateway.platforms.whatsapp_cloud import (
-            INTERACTIVE_STATE_CACHE_SIZE,
-            WhatsAppCloudAdapter,
-        )
+        from gateway.platforms.helpers import bounded_put
+        from gateway.platforms.whatsapp_cloud import INTERACTIVE_STATE_CACHE_SIZE
 
         cache: OrderedDict = OrderedDict()
         for i in range(INTERACTIVE_STATE_CACHE_SIZE + 10):
-            WhatsAppCloudAdapter._bounded_put(cache, f"id-{i}", "sess")
+            bounded_put(cache, f"id-{i}", "sess", INTERACTIVE_STATE_CACHE_SIZE)
         assert len(cache) == INTERACTIVE_STATE_CACHE_SIZE
         assert "id-0" not in cache
         assert f"id-{INTERACTIVE_STATE_CACHE_SIZE + 9}" in cache
@@ -1399,4 +1421,30 @@ class TestReplyContextResolution:
         assert event.reply_to_message_id is None
         assert event.reply_to_text is None
         assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_sent_image_attaches_the_file(self, tmp_path):
+        """The bot sends an uncaptioned image (a cron job delivering a chart); the user quotes it
+        and asks "what is this?". Meta's ``context`` carries only the wamid, so the bytes must come
+        from the outbound index written at send time — otherwise the agent never sees the image."""
+        adapter = _make_adapter()
+        image = tmp_path / "chart.png"
+        image.write_bytes(b"\x89PNG fake")
+        adapter._upload_media = AsyncMock(return_value=("MEDIA-ID", None))
+        adapter._post_messages = AsyncMock(return_value=([{"id": "wamid.BOT_IMG"}], None))
+        adapter._http_client = MagicMock()
+
+        sent = await adapter.send_image_file("15551234567", str(image))
+        assert sent.success and sent.message_id == "wamid.BOT_IMG"
+
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.REPLY", "type": "text",
+             "text": {"body": "what is this?"},
+             "context": {"id": "wamid.BOT_IMG", "from": "15550000000"}},
+            {"15551234567": "Alice"}, {"display_phone_number": "15550000000"},
+        )
+        assert event is not None
+        assert event.reply_to_is_own_message is True
+        assert event.media_urls == [str(image)]
+        assert event.media_types == ["image/png"]
 

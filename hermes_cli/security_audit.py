@@ -116,7 +116,7 @@ def _discover_plugins(hermes_home: Path) -> list[Component]:
         for filename, parse in _PLUGIN_PIN_FILES:
             path = plugin_dir / filename
             try:
-                pins = parse(path.read_text(encoding="utf-8", errors="replace")) if path.is_file() else []
+                pins = parse(path.read_text(encoding="utf-8-sig", errors="replace")) if path.is_file() else []
             except OSError:
                 continue
             out.extend(Component(name=n, version=v, ecosystem="PyPI", source=f"plugin:{plugin_dir.name}") for n, v in pins)
@@ -171,7 +171,7 @@ def _http_json(url: str, payload: Optional[dict] = None) -> dict:
     req = urllib.request.Request(url, method="GET") if payload is None else urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), method="POST", headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return json.loads(resp.read().decode("utf-8-sig"))
 
 
 def _osv_query_batch(components: list[Component]) -> dict[Component, list[str]]:

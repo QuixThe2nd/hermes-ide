@@ -934,5 +934,217 @@ class TestLongRunningHeartbeatIterationDetail:
         assert GatewayRunner._format_long_running_status_detail(
             None, include_iterations=True
         ) == ""
+    @pytest.mark.asyncio
+    async def test_restart_during_heartbeat_edit_sends_no_fallback_bubble(self, monkeypatch):
+        """The guard is rechecked after the awaited edit: a restart that begins while the edit is
+        in flight must not be followed by a fresh "Working" send when that edit fails (#10990)."""
+        import asyncio
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+        from gateway.turn_context import TurnContext
+
+        monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.01")
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        runner._draining = runner._restart_requested = False
+        adapter = MagicMock()
+        first_send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb-1"))
+        adapter.send = first_send
+
+        async def _edit_then_restart(*a, **k):
+            runner._restart_requested = True  # restart notice goes out while the edit is awaited
+            runner._cooperative_restart_steered_sessions = ["sess"]  # this chat was told (park steer)
+            return SimpleNamespace(success=False)
+
+        adapter.edit_message = AsyncMock(side_effect=_edit_then_restart)
+        runner._adapter_for_source = lambda source: adapter
+        runner._delivery_adapter_for = lambda source: adapter
+        runner._agent_activity_summary = staticmethod(lambda agent: None)
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        disp = MagicMock()
+        disp._display_surface_mode.return_value = "on"
+        disp.resolve_display_setting.return_value = False
+        ctx = TurnContext(source=SimpleNamespace(chat_id="c", platform="telegram"), session_key="sess")
+        ctx.agent_holder[0] = agent
+
+        await asyncio.wait_for(runner._run_agent_notify_long_running(disp, ctx, [None]), 5)
+
+        assert first_send.await_count == 1  # the original heartbeat only
+        adapter.edit_message.assert_awaited_once()
+
+    def test_notification_stops_once_targeted_drain_notice(self):
+        """After the restart notice a heartbeat would contradict it (#10990) — but only for
+        chats actually told about the drain (wind-down embed target or cooperative park
+        steer), not on the bare process-wide flag."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is True
+        runner._restart_requested = True
+        runner._cooperative_restart_steered_sessions = ["sess"]  # cooperative park-steer lane: told
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
+
+
+class TestLongRunningHeartbeatRestartWaitSuppression:
+    """The restart tool parks its turn on a typed-consent gateway clarify
+    (``wait_kind="restart"``) while the user is asked to type the exact word
+    "restart". That chat is waiting on the user, not working, so the
+    long-running heartbeat must stay quiet for the owning session — the same
+    contradiction a post-drain-notice heartbeat would be. Ordinary clarifies,
+    other sessions' restart waits, and resolved waits do not suppress.
+
+    Suppression is expressed by ``_heartbeat_temporarily_suppressed`` — the
+    terminal predicate ``_should_emit_long_running_notification`` stays True
+    throughout, because the consent wait is NOT terminal: it can resolve or be
+    cancelled mid-run and later model/tool work still needs liveness updates.
+    Heartbeat loops skip the suppressed tick (continue) instead of exiting.
+
+    The suppression predicate reads the live clarify registry through the real
+    ``clarify_gateway`` API; entries are registered and cleaned up the same way
+    the restart tool does so the module-level registry doesn't leak between
+    tests.
+    """
+
+    SESS = "restart-wait-hb-sess"
+    OTHER = "restart-wait-hb-other"
+
+    def teardown_method(self):
+        from tools import clarify_gateway
+
+        clarify_gateway.clear_session(self.SESS)
+        clarify_gateway.clear_session(self.OTHER)
+
+    @staticmethod
+    def _qualifying_runner(agent, session_key):
+        """Bare runner whose ``session_key`` turn slot is owned by ``agent``."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {session_key: agent}
+        return runner
+
+    def _register_wait(self, session_key, *, kind):
+        """Register a pending clarify-wait entry through the real registry API."""
+        from tools import clarify_gateway
+
+        entry = clarify_gateway.register(
+            clarify_id=f"hb-restart-wait-{session_key}-{kind}-{time.time_ns()}",
+            session_key=session_key,
+            question="Type restart to confirm",
+            choices=None,
+            wait_kind=kind,
+        )
+        return entry
+
+    def test_no_pending_wait_heartbeat_emitted(self):
+        """The clarify-reader matrix starts at no-suppression: no pending
+        entries for the session at all -> heartbeat still fires."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+
+        assert runner._should_emit_long_running_notification(
+            self.SESS, agent, executor_task=None
+        ) is True
+        assert runner._heartbeat_temporarily_suppressed(self.SESS) is False
+
+    def test_pending_restart_wait_suppresses_heartbeat(self):
+        """Pending restart-kind consent wait for THIS session -> the tick is
+        suppressed, but the consent wait is not terminal: the terminal
+        predicate stays True (the agent is alive and owns the slot)."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+        self._register_wait(self.SESS, kind="restart")
+
+        assert runner._should_emit_long_running_notification(
+            self.SESS, agent, executor_task=None
+        ) is True
+        assert runner._heartbeat_temporarily_suppressed(self.SESS) is True
+
+    def test_pending_clarify_wait_does_not_suppress(self):
+        """An ordinary clarify question parks the turn on the user too, but it
+        is not a restart consent gate: the heartbeat keeps firing."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+        self._register_wait(self.SESS, kind="clarify")
+
+        assert runner._heartbeat_temporarily_suppressed(self.SESS) is False
+
+    def test_restart_wait_for_other_session_does_not_suppress(self):
+        """Suppression is scoped to the session that owns the wait: a
+        restart-kind wait parked in a DIFFERENT session must not silence this
+        session's heartbeat."""
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+        self._register_wait(self.OTHER, kind="restart")
+
+        assert runner._heartbeat_temporarily_suppressed(self.SESS) is False
+
+    def test_suppression_clears_once_wait_resolves(self):
+        """A resolved wait stops counting the moment its event is set — before
+        the waiter even reaps the entry — and stays cleared after the pop."""
+        from tools import clarify_gateway
+
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+        entry = self._register_wait(self.SESS, kind="restart")
+        assert runner._heartbeat_temporarily_suppressed(self.SESS) is True
+
+        assert clarify_gateway.resolve_gateway_clarify(entry.clarify_id, "restart") is True
+        # Resolved-but-not-yet-reaped entries are skipped by the reader.
+        assert runner._heartbeat_temporarily_suppressed(self.SESS) is False
+
+        # The restart tool's waiter reaps the entry on wake; still no suppression.
+        clarify_gateway.wait_for_response(entry.clarify_id, 0)
+        assert runner._heartbeat_temporarily_suppressed(self.SESS) is False
+
+    @pytest.mark.asyncio
+    async def test_suppressed_tick_does_not_terminate_heartbeat_loop(self, monkeypatch):
+        """Regression test: a suppressed tick must SKIP, not end the notifier.
+        With a restart-consent wait pending the loop sends nothing; once the
+        wait resolves mid-run, heartbeats resume on the SAME notifier task."""
+        import asyncio
+        from contextlib import suppress
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+        from gateway.turn_context import TurnContext
+        from tools import clarify_gateway
+
+        monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.01")
+        agent = MagicMock()
+        runner = self._qualifying_runner(agent, self.SESS)
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb-1"))
+        disp = MagicMock()
+        disp._display_surface_mode.return_value = "on"
+        disp.resolve_display_setting.return_value = False
+        runner._adapter_for_source = lambda source: adapter
+        runner._delivery_adapter_for = lambda source: adapter
+        runner._agent_activity_summary = staticmethod(lambda agent: None)
+        ctx = TurnContext(
+            source=SimpleNamespace(chat_id="c", platform="telegram"),
+            session_key=self.SESS,
+        )
+        ctx.agent_holder[0] = agent
+
+        entry = self._register_wait(self.SESS, kind="restart")
+        task = asyncio.create_task(
+            runner._run_agent_notify_long_running(disp, ctx, [None])
+        )
+        try:
+            await asyncio.sleep(0.05)  # several suppressed ticks
+            assert adapter.send.await_count == 0
+            assert not task.done()  # the notifier survived the suppressed ticks
+
+            assert clarify_gateway.resolve_gateway_clarify(entry.clarify_id, "restart") is True
+            await asyncio.sleep(0.05)  # heartbeats resume without a task restart
+            assert adapter.send.await_count >= 1
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 

@@ -50,13 +50,13 @@ def test_exec_start_quotes_paths_with_spaces():
     assert '"/opt/my hermes/bin/python"' in line
 
 
-def test_timer_renders_every_30_minutes_schedule_with_zero_delay(cfg):
+def test_timer_renders_six_hour_schedule_with_zero_delay(cfg):
     body = render_timer_unit(
         schedule=cfg["schedule"],
         randomized_delay_sec=cfg["randomized_delay_sec"],
         accuracy_sec=cfg["accuracy_sec"],
     )
-    assert "OnCalendar=*-*-* *:00,30:00" in body
+    assert "OnCalendar=*-*-* 00,06,12,18:00:00" in body
     assert "Persistent=true" in body
     assert "RandomizedDelaySec=0" in body
     assert "AccuracySec=1s" in body
@@ -98,7 +98,7 @@ def test_reconcile_partial_cfg_uses_canonical_defaults(user_scope, monkeypatch, 
 
     reconcile_units({}, enabled=True, run_systemctl=fake_systemctl)
     timer_body = timer_unit_path(user_scope).read_text(encoding="utf-8")
-    assert "OnCalendar=*-*-* *:00,30:00" in timer_body
+    assert "OnCalendar=*-*-* 00,06,12,18:00:00" in timer_body
     assert "RandomizedDelaySec=0" in timer_body
     assert "AccuracySec=1s" in timer_body
 

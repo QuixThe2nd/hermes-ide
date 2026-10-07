@@ -5,6 +5,7 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -14,7 +15,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -62,6 +63,30 @@ def _clean_env(tmp_path, monkeypatch):
     # Patch the actual API and keep all legacy profile writes in tmp_path.
     isolated_home = tmp_path / "user-home"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: isolated_home))
+
+    # These tests provide client doubles, so they must not attempt a network
+    # install merely because the optional SDK is absent from the test env.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    # The retain-operation path imports this exception solely to classify a
+    # fake client's response. Supply the smallest matching SDK surface so the
+    # mocked tests remain runnable without the optional Hindsight extra.
+    # Only when the real SDK is absent: shadowing an installed SDK with a
+    # fake (no ``__path__``) breaks ``import hindsight_client`` and turns the
+    # pinned-client test into a permanent skip.
+    if importlib.util.find_spec("hindsight_client_api") is not None:
+        return
+    client_api = ModuleType("hindsight_client_api")
+    exceptions = ModuleType("hindsight_client_api.exceptions")
+
+    class NotFoundException(Exception):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args)
+
+    exceptions.NotFoundException = NotFoundException
+    client_api.exceptions = exceptions
+    monkeypatch.setitem(sys.modules, "hindsight_client_api", client_api)
+    monkeypatch.setitem(sys.modules, "hindsight_client_api.exceptions", exceptions)
 
 
 def _make_mock_client():
@@ -128,8 +153,8 @@ def _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, mod
     provider = _provider_for_mode(tmp_path, monkeypatch, mode)
     ensure_calls = []
 
-    def fake_ensure(feature, prompt=True):
-        ensure_calls.append((feature, prompt))
+    def fake_ensure(extra):
+        ensure_calls.append(extra)
 
     class FakeHindsight:
         def __init__(self, **kwargs):
@@ -139,17 +164,17 @@ def _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, mod
 
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
         if name == "hindsight_client":
-            if ensure_calls != [("memory.hindsight", False)]:
+            if ensure_calls != ["hindsight"]:
                 raise ModuleNotFoundError("No module named 'hindsight_client'")
             return SimpleNamespace(Hindsight=FakeHindsight)
         return real_import(name, globals, locals, fromlist, level)
 
-    monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+    monkeypatch.setattr("pm.ensure_import", fake_ensure)
     monkeypatch.setattr(builtins, "__import__", guarded_import)
 
     client = provider._get_client()
 
-    assert ensure_calls == [("memory.hindsight", False)]
+    assert ensure_calls == ["hindsight"]
     assert isinstance(client, FakeHindsight)
     assert client.kwargs == {
         "base_url": "http://localhost:9999",
@@ -939,7 +964,11 @@ class TestPrefetchServerRetainVisibility:
 
     def test_operation_notfound_treated_as_complete(self, provider):
         """A NotFound (completed+evicted) op is treated as done, not pending."""
-        from hindsight_client_api.exceptions import NotFoundException
+        exceptions = pytest.importorskip(
+            "hindsight_client_api.exceptions",
+            reason="Hindsight SDK is not installed",
+        )
+        NotFoundException = exceptions.NotFoundException
 
         client = _make_mock_client()
         client.operations = MagicMock()
@@ -1764,6 +1793,23 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
 
 
+def test_load_config_corrupt_profile_file_falls_through_to_env(tmp_path, monkeypatch):
+    """A corrupt $HERMES_HOME/hindsight/config.json is not the config: the loader falls through
+    (legacy file, then env) instead of returning an empty, silently-unconfigured mapping."""
+    home = tmp_path / "home"
+    (home / "hindsight").mkdir(parents=True)
+    (home / "hindsight" / "config.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    monkeypatch.setenv("HINDSIGHT_MODE", "local")
+    monkeypatch.setenv("HINDSIGHT_BANK_ID", "from-env")
+
+    cfg = _load_config()
+
+    assert cfg["mode"] == "local"
+    assert cfg["banks"]["hermes"]["bankId"] == "from-env"
+
+
 class TestLoadSimpleEnv:
     def test_bom_first_key_is_recognized(self, tmp_path):
         """A Notepad-edited .env carries a BOM; the first key must still parse
@@ -1782,12 +1828,9 @@ class TestPostSetupEnvEncoding:
         monkeypatch.setattr("hermes_cli.memory_setup._curses_select",
                             lambda *a, **kw: 0)  # cloud mode
         monkeypatch.setattr("hermes_cli.config.save_config", lambda c: None)
-        # Skip the dependency install (now routed through lazy_deps, NS-605).
-        import tools.lazy_deps as lazy_deps_mod
-        monkeypatch.setattr(
-            lazy_deps_mod, "install_specs",
-            lambda *a, **kw: lazy_deps_mod.InstallSpecsResult(ok=True),
-        )
+        # Skip the dependency install (now routed through pm).
+        import pm
+        monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: None)
         # First line: API key prompt (readline). Second line: API URL (input).
         monkeypatch.setattr(sys, "stdin", io.StringIO("sk-new\n\n"))
 
@@ -1809,16 +1852,16 @@ class TestPostSetupEnvEncoding:
         assert "﻿" not in content
 
 
-class TestClientAutoUpgradeRoutesThroughLazyDeps:
+class TestClientAutoUpgradeRoutesThroughPm:
     """The initialize()-time hindsight-client auto-upgrade must go through
-    lazy_deps.install_specs() (environment-aware, durable-target on sealed
-    hosted venvs) — never a direct `uv pip install --python sys.executable`
-    subprocess, which fails with EROFS/EACCES on immutable images (NS-605)."""
+    pm.sync_venv (uv.lock owns the pin) — never a direct
+    `uv pip install --python sys.executable` subprocess, which fails with
+    EROFS/EACCES on immutable images (NS-605)."""
 
-    def _init_with_outdated_client(self, tmp_path, monkeypatch, outcome):
+    def _init_with_outdated_client(self, tmp_path, monkeypatch, error=None):
         import importlib.metadata as md
         import subprocess as subprocess_mod
-        import tools.lazy_deps as lazy_deps_mod
+        import pm
 
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1831,10 +1874,13 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
         monkeypatch.setattr(md, "version", lambda name: "0.0.1")
 
         calls = []
-        monkeypatch.setattr(
-            lazy_deps_mod, "install_specs",
-            lambda specs, **kw: calls.append(tuple(specs)) or outcome,
-        )
+
+        def fake_sync(extras=None, **kw):
+            calls.append(tuple(extras or ()))
+            if error is not None:
+                raise error
+
+        monkeypatch.setattr(pm, "sync_venv", fake_sync)
 
         # Regression guard: no direct pip subprocess may run.
         def _no_subprocess(*a, **kw):  # pragma: no cover - fails loudly
@@ -1845,26 +1891,23 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
         provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
         return calls
 
-    def test_upgrade_uses_install_specs_not_subprocess(self, tmp_path, monkeypatch):
-        from plugins.memory.hindsight import _MIN_CLIENT_VERSION
-        from tools.lazy_deps import InstallSpecsResult
-
-        calls = self._init_with_outdated_client(
-            tmp_path, monkeypatch, InstallSpecsResult(ok=True)
-        )
-        assert calls == [(f"hindsight-client>={_MIN_CLIENT_VERSION}",)]
+    def test_upgrade_syncs_extra_not_subprocess(self, tmp_path, monkeypatch):
+        calls = self._init_with_outdated_client(tmp_path, monkeypatch)
+        assert calls == [("hindsight",)]
 
     def test_blocked_upgrade_is_nonfatal_and_surfaces_reason(
         self, tmp_path, monkeypatch, caplog
     ):
         import logging
-        from tools.lazy_deps import InstallSpecsResult
+
+        import pm as pm_pkg
 
         with caplog.at_level(logging.WARNING):
             calls = self._init_with_outdated_client(
                 tmp_path, monkeypatch,
-                InstallSpecsResult(ok=False, blocked=True,
-                                   reason="runtime installs are disabled on this deployment"),
+                error=pm_pkg.InstallError(
+                    "venv", "runtime installs are disabled on this deployment"
+                ),
             )
         assert len(calls) == 1  # attempted exactly once, init still completed
         assert any("runtime installs are disabled" in r.getMessage()
@@ -1934,3 +1977,24 @@ class TestMultiplexBackgroundScope:
                 t.join(timeout=5)
         assert created == ["p1-secret"]
         assert "Daemon started successfully" in (home / "logs" / "hindsight-embed.log").read_text()
+
+
+def test_append_mode_trims_retained_turns_without_dropping_any(provider, monkeypatch):
+    """Append retains ship only the delta, so retained turns leave `_session_turns` (a never-ending
+    session no longer pins every turn) while every turn is still shipped exactly once."""
+    provider._auto_retain = True
+    provider._retain_every_n_turns = 3
+    monkeypatch.setattr(provider, "_ensure_writer", lambda: None)
+    monkeypatch.setattr(provider, "_register_atexit", lambda: None)
+    monkeypatch.setattr(provider, "_resolve_retain_target", lambda doc: ("doc", "append"))
+    shipped: list[str] = []
+    monkeypatch.setattr(provider, "_make_turn_retain_job",
+                        lambda turns, **kw: (lambda: shipped.extend(turns)))
+    provider._retain_queue = MagicMock(put=lambda job: job())
+
+    for i in range(7):
+        provider.sync_turn(f"user {i}", f"assistant {i}")
+
+    assert len(provider._session_turns) == 1  # only the un-retained tail (turn 7)
+    assert provider._last_retained_turn_count == 0
+    assert len(shipped) == 6 and len(set(shipped)) == 6

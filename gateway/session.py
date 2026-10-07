@@ -102,6 +102,7 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
+from gateway.session_identity import transport_profile_of
 from utils import atomic_replace
 from agent.turn_context import extract_api_content_sidecar
 
@@ -959,6 +960,10 @@ class SessionEntry:
     # override is rehydrated after a restart and are never written to disk
     # (see sanitize_model_override / SessionStore.set_model_override).
     model_override: Optional[Dict[str, str]] = None
+    # Profile owning the bot that received this lane's traffic (``RoutingIdentity.transport_profile``,
+    # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
+    # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
+    transport_profile: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -1003,6 +1008,8 @@ class SessionEntry:
             # Defence-in-depth: strip credentials even if a caller stored an
             # unsanitized dict directly on the entry.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.transport_profile:
+            result["transport_profile"] = self.transport_profile
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -1061,6 +1068,7 @@ class SessionEntry:
                 "Invalid session_key: potential directory traversal detected"
             )
 
+        transport_profile = data.get("transport_profile")
         return cls(
             session_key=session_key,
             session_id=session_id,
@@ -1092,6 +1100,7 @@ class SessionEntry:
             reset_had_activity=data.get("reset_had_activity", False),
             prev_session_id=data.get("prev_session_id"),
             model_override=sanitize_model_override(data.get("model_override")),
+            transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
         )
 
 
@@ -1157,23 +1166,23 @@ def is_shared_multi_user_session(
 
 
 def _session_key_namespace(profile: Optional[str]) -> str:
-    """Return the ``agent:<ns>`` namespace prefix for a session key.
-
-    The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
-    ``main`` is a static namespace literal (NOT a branch name — branching keys
-    off ``session_id``, not this slot). Multi-profile multiplexing reuses this
-    slot to carry the profile:
-
-    - default profile (or ``None``/``""``/``"default"``) → ``agent:main`` —
-      BYTE-IDENTICAL to every key ever generated, so existing sessions and all
-      positional parsers (``parts[2]`` == platform, etc.) are unaffected.
-    - named profile ``coder`` → ``agent:coder`` — keeps the same positional
-      layout, just a different namespace, so two profiles serving the same
-      platform/chat never collide.
-    """
+    """``agent:<ns>`` prefix for a session key: default/None profile → ``agent:main``
+    (BYTE-IDENTICAL to every historical key); named profile → ``agent:<name>`` so two
+    profiles serving the same chat never collide. A profile literally named ``main`` would
+    otherwise produce the default's namespace and share every session (routing index, agent
+    cache, store) with it, so it is marked ``main~``: ``~`` is outside the profile-id alphabet,
+    so the marked form can never be another profile's id."""
     if not profile or profile == "default":
         return "agent:main"
-    return f"agent:{profile}"
+    return "agent:main~" if profile == "main" else f"agent:{profile}"
+
+
+def profile_from_session_key_namespace(namespace: str) -> str:
+    """Inverse of :func:`_session_key_namespace` for the ``<ns>`` slot of a key: ``"default"`` for
+    ``main``, ``"main"`` for the marked ``main~``, else the slot is the profile id."""
+    if namespace == "main":
+        return "default"
+    return "main" if namespace == "main~" else namespace
 
 
 def build_session_key(
@@ -1395,7 +1404,9 @@ class SessionStore:
         self._transcript_reroutes: Dict[str, str] = {}
         self._dirty_transcripts: Dict[str, List[Dict[str, Any]]] = {}
         self._transcript_append_failures: Dict[str, int] = {}
-        self._fts_rebuild_attempted = False
+        # Monotonic timestamp of the last FTS5 rebuild attempt, or None before any attempt; see
+        # SessionTranscriptMixin._rebuild_fts_once for the cooldown this gates.
+        self._fts_rebuild_last_attempt_at: Optional[float] = None
         self._has_active_processes_fn = has_active_processes_fn
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
@@ -1613,6 +1624,62 @@ class SessionStore:
             cache[profile] = home
         return home
 
+    @staticmethod
+    def _peer_row(db, *, source: str, session_key: str, raise_on_lookup_error: bool = False,
+                  **peer: Any) -> Optional[Dict[str, Any]]:
+        """``db.find_latest_gateway_session_for_peer`` guarded for a missing store, a SessionDB
+        without the finder, and a failing lookup (debug-logged -> None unless *raise_on_lookup_error*).
+        Extra keyword arguments (user_id/chat_id/chat_type/thread_id) pass through to the finder."""
+        finder = getattr(db, "find_latest_gateway_session_for_peer", None) if db else None
+        if not callable(finder):
+            return None
+        try:
+            return finder(source=source, session_key=session_key, **peer)
+        except Exception as exc:
+            logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
+            if raise_on_lookup_error:
+                raise
+            return None
+
+    def resolve_session_id_for_key(
+        self, session_key: str, *, not_after: Optional[float] = None,
+    ) -> Optional[tuple[str, Any]]:
+        """Resolve a gateway session key to ``(session_id, db)`` for shutdown-flush recovery.
+
+        The routing map (``peek_session_id``) is authoritative: it names the session the message
+        was actually routed to at shutdown. When ``sessions.json`` was pruned, fall back to the
+        durable row under the exact key (the peer finder keeps the reset fence: rows ended only by
+        recoverable reasons match; explicit boundaries do not). A row started after the flush
+        (``started_at > not_after``) cannot be the origin and is never adopted. Never mints a
+        session; None means the caller must preserve the flush file. ``db`` is the store owning
+        the key, so the append lands in the right profile partition. When that store cannot be
+        resolved (``_db_for_key`` fails closed for a profile without a reachable home) the answer
+        is None even if the routing map knows the id: appending to the ambient root store would
+        split one session identity across two physical stores (#66887/#102157).
+        """
+        if not session_key:
+            return None
+        db = self._db_for_key(session_key)
+        if db is None:
+            return None
+        session_id = self.peek_session_id(session_key)
+        if session_id:
+            return session_id, db
+        parts = str(session_key).split(":")
+        platform = parts[2] if len(parts) >= 3 and parts[0] == "agent" else None
+        if not platform:
+            return None
+        # No scope/profile fences here, unlike _query_recoverable_row: with no chat tuple the finder
+        # runs only the `s.session_key = ?` branch in the store _db_for_key picked for this key, so a
+        # hit carries this very key — same profile namespace and (for scoped Slack) same scope_id slot.
+        row = self._peer_row(db, source=platform, session_key=session_key)
+        if not isinstance(row, dict) or not row.get("id"):
+            return None
+        started_at = row.get("started_at")
+        if not_after is not None and started_at is not None and float(started_at) > float(not_after):
+            return None
+        return str(row["id"]), db
+
     def _db_for_key(self, session_key: Optional[str]):
         """The SessionDB holding *session_key*'s rows, whatever scope is active.
 
@@ -1635,9 +1702,16 @@ class SessionStore:
             return pinned
         profile = self._named_profile_for_key(session_key)
         if profile is None:
-            # No named owner — the ambient store is authoritative, exactly as
-            # it was before this helper existed.
-            return self._db
+            # Default-profile (``agent:main``) rows belong to the launch home, not to whichever
+            # profile's scope happens to be active: a scoped drain tick or cron mirror touching a
+            # default chat used to write its rows into the secondary's store (#102157's picture).
+            routing_home = getattr(self, "_routing_home", None)
+            if routing_home is None or not getattr(self.config, "multiplex_profiles", False):
+                return self._db
+            try:
+                return self._open_session_db_for_active_scope(db_path=routing_home / "state.db")
+            except Exception:
+                return None
         home = self._profile_home_for_key(session_key)
         if home is None:
             # A named owner we cannot resolve: the profile is not provisioned
@@ -1806,7 +1880,7 @@ class SessionStore:
         sessions_file = self.sessions_dir / "sessions.json"
         if sessions_file.exists():
             try:
-                with open(sessions_file, "r", encoding="utf-8") as f:
+                with open(sessions_file, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                 imported = 0
                 for key, entry_data in data.items():
@@ -2293,7 +2367,7 @@ class SessionStore:
         if len(parts) < 2 or parts[0] != "agent":
             return None
         namespace = parts[1] or "main"
-        return "default" if namespace == "main" else namespace
+        return profile_from_session_key_namespace(namespace)
 
     @staticmethod
     def _active_profile_name() -> str:
@@ -2450,6 +2524,7 @@ class SessionStore:
             platform=source.platform,
             chat_type=source.chat_type,
             reset_had_activity=bool(had_activity),
+            transport_profile=transport_profile_of(source),
         )
 
     def _find_gateway_session_row(
@@ -2638,13 +2713,17 @@ class SessionStore:
         source: Optional[SessionSource],
         display_name: Optional[str] = None,
         include_compression_ancestors: bool = False,
+        transport_profile: Optional[str] = None,
     ) -> None:
-        """Persist the routing peer for an existing gateway session row."""
+        """Persist the routing peer for an existing gateway session row. ``transport_profile`` is the
+        entry's persisted receiving-bot profile; when the caller has no entry it is read off the
+        source's pinned identity (None = unknown, the column keeps whatever an earlier writer set)."""
         if not self._db_for_key(session_key) or not source:
             return
         recorder = getattr(self._db_for_key(session_key), "record_gateway_session_peer", None)
         if not callable(recorder):
             return
+        from gateway.session_identity import transport_profile_of
         try:
             origin_json = None
             try:
@@ -2662,6 +2741,7 @@ class SessionStore:
                 display_name=display_name or source.chat_name,
                 origin_json=origin_json,
                 include_compression_ancestors=include_compression_ancestors,
+                transport_profile=transport_profile or transport_profile_of(source),
             )
         except TypeError:
             # Older SessionDB without display_name/origin_json kwargs.
@@ -3255,6 +3335,7 @@ class SessionStore:
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
                 prev_session_id=prev_session_id,
+                transport_profile=transport_profile_of(source),
             )
             with self._lock:
                 current = self._entries.get(session_key)
@@ -3283,6 +3364,7 @@ class SessionStore:
                     "chat_type": source.chat_type,
                     "thread_id": source.thread_id,
                     "profile_name": source.profile,
+                    "transport_profile": transport_profile_of(source),
                     # Identity lands atomically in the INSERT (#82616): a
                     # crash after this write can no longer strand the row
                     # unroutable, and lineage survives resets (#12857).
@@ -3379,6 +3461,7 @@ class SessionStore:
             peer_session_id = entry.session_id
             peer_origin = entry.origin
             peer_display_name = entry.display_name
+            peer_transport = entry.transport_profile
         # Metadata-only change on one entry: single-row UPSERT instead of
         # the full index rewrite (see _save_entry). Both writes run outside
         # ``_lock`` so the SQLite commit never blocks routing lookups.
@@ -3388,6 +3471,7 @@ class SessionStore:
             session_key,
             peer_origin,
             display_name=peer_display_name,
+            transport_profile=peer_transport,
         )
 
     def get_session_metadata(
@@ -3781,6 +3865,7 @@ class SessionStore:
                 updated_at=now,
                 origin=old_entry.origin,
                 display_name=display_name if display_name is not None else old_entry.display_name,
+                transport_profile=old_entry.transport_profile,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,
@@ -3803,6 +3888,7 @@ class SessionStore:
                 "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
                 "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
                 "profile_name": old_entry.origin.profile if old_entry.origin else None,
+                "transport_profile": transport_profile_of(old_entry.origin),
                 # Identity + lineage land atomically in the INSERT (#82616,
                 # #12857) — see the get_or_create twin path.
                 "origin_json": _reset_origin_json,
@@ -3889,7 +3975,59 @@ class SessionStore:
             self._save()
             return entry
 
-    def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
+    def rekey_profile_routing(self, old_name: str, new_name: str) -> int:
+        """Rekey the live routing index and reject target collisions before mutation."""
+        from dataclasses import replace as _dc_replace
+        old, new = (old_name or "").strip(), (new_name or "").strip()
+        if not old or not new or old == new:
+            return 0
+        old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
+        with self._lock:
+            moving = [key for key in self._entries if key.startswith(old_ns)]
+            collisions = [
+                new_ns + key[len(old_ns):] for key in moving
+                if new_ns + key[len(old_ns):] in self._entries]
+            if collisions:
+                raise ValueError(
+                    f"profile routing collision while renaming {old!r} to {new!r}: "
+                    f"{collisions[0]!r} already exists")
+            for key in moving:
+                new_key = new_ns + key[len(old_ns):]
+                entry = self._entries.pop(key)
+                origin = entry.origin
+                if origin is not None and getattr(origin, "profile", None) == old:
+                    origin = _dc_replace(origin, profile=new)
+                self._entries[new_key] = _dc_replace(entry, session_key=new_key, origin=origin)
+            if moving:
+                self._save()
+        return len(moving)
+
+    def purge_profile_routing(self, profile: str) -> int:
+        """Drop a deleted profile's live routing entries and persist the drop (#111926, delete side).
+
+        The mirror of :meth:`rekey_profile_routing`, and it has to happen here for the same reason:
+        this index is written back by the owning process, so a durable DB delete made elsewhere is
+        undone by the next save of this in-memory copy — which is how a deleted profile kept
+        resolving. Idempotent; returns the number of entries dropped.
+        """
+        name = (profile or "").strip()
+        if not name:
+            return 0
+        ns = f"agent:{name}:"
+        with self._lock:
+            dropped = [key for key in self._entries if key.startswith(ns)]
+            for key in dropped:
+                self._entries.pop(key, None)
+            if dropped:
+                self._save()
+        return len(dropped)
+
+    # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
+    # background compression on an idle session cannot make it look fresh to the
+    # restart-resume freshness gate (#85709).
+    def switch_session(
+        self, session_key: str, target_session_id: str, *, expected_session_id: Optional[str] = None,
+    ) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
 
         Used by ``/resume`` to restore a previously-named session.
@@ -3897,6 +4035,10 @@ class SessionStore:
         generating a fresh session ID, re-uses ``target_session_id`` so the
         old transcript is loaded on the next message. If the target session was
         previously ended, re-open it so gateway resume semantics match the CLI.
+
+        ``expected_session_id`` makes the repoint a compare-and-swap: ``None`` is returned when
+        the key no longer points at that session, so a caller that resolved against a snapshot
+        across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
         """
         db_end_session_id = None
         new_entry = None
@@ -3908,6 +4050,13 @@ class SessionStore:
                 return None
 
             old_entry = self._entries[session_key]
+
+            if expected_session_id is not None and old_entry.session_id != expected_session_id:
+                logger.info(
+                    "Session switch for %s refused: route moved from %s to %s after the caller's snapshot",
+                    session_key, expected_session_id, old_entry.session_id,
+                )
+                return None
 
             # Don't switch if already on that session
             if old_entry.session_id == target_session_id:
@@ -3925,6 +4074,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                transport_profile=old_entry.transport_profile,
             )
 
             self._entries[session_key] = new_entry
@@ -3955,6 +4105,7 @@ class SessionStore:
                 new_entry.origin if new_entry else None,
                 display_name=new_entry.display_name if new_entry else None,
                 include_compression_ancestors=True,
+                transport_profile=new_entry.transport_profile if new_entry else None,
             )
 
         return new_entry

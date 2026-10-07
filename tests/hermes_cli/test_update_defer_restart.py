@@ -803,7 +803,7 @@ def test_default_up_to_date_still_catches_up_pending_restart(
     _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
     catchups = {"n": 0}
 
-    def _catchup():
+    def _catchup(*_args, **_kwargs):
         catchups["n"] += 1
 
     monkeypatch.setattr(

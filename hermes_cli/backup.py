@@ -14,13 +14,16 @@ import zipfile
 from contextlib import closing, contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 from hermes_constants import (
-    _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home, display_hermes_home,
+    LOCAL_RUNTIME_ROOT_DIRS, _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home,
+    display_hermes_home,
 )
+from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
+    default_new_file_mode,
 )
 
 from hermes_cli.sizefmt import format_bytes as _format_size
@@ -32,6 +35,13 @@ logger = logging.getLogger(__name__)
 # Where ``hermes backup --quick`` / ``/snapshot`` / the pre-update safety net write state
 # snapshots (see ``create_quick_snapshot``); defined here because the exclusion set needs it.
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
+
+
+def _snapshot_recovery_hint() -> str:
+    """How to restore a state snapshot. There is no `hermes snapshot` subcommand — only the /snapshot
+    slash command inside a `hermes` session (hermes_cli/commands.py)."""
+    return ("To restore a newer snapshot, start `hermes` in a terminal and run `/snapshot list`, then "
+            "`/snapshot restore <id>` (CLI only).")
 
 # Directory names to skip (matched against each path component). ``hermes-agent`` only matches at
 # the root (``_should_exclude``) so skill dirs like ``skills/.../hermes-agent/`` survive. The
@@ -59,18 +69,28 @@ _EXCLUDED_DIRS = {
     ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 }
 
-# Hermes-managed runtime downloads (GGUF models, llama.cpp runtimes, managed Node): re-downloaded
-# on demand and routinely tens to hundreds of GB. Matched ONLY at the root of HERMES_HOME and at
-# ``profiles/<name>/`` — a deeper dir of the same name (a skill's ``models/``) is user data.
-_EXCLUDED_ROOT_DIRS = {"models", "runtimes", "node"}
+# Hermes-managed runtime downloads (see ``LOCAL_RUNTIME_ROOT_DIRS``). Matched ONLY at the root of
+# HERMES_HOME and at ``profiles/<name>/`` — a deeper dir of the same name (a skill's ``models/``)
+# is user data.
+_EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS
+
+# ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
+# profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
+# the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
+# subdirs) and the grounded-citations evidence ledger. Only these subdirs are archived.
+_KEPT_CACHE_SUBDIRS = {"images", "audio", "videos", "documents", "screenshots", "citations"}
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True when *rel_path* is, or sits inside, a managed runtime tree at a profile-home root."""
+    """True when *rel_path* is inside a regenerable tree at a profile-home root."""
     parts = rel_path.parts
-    return bool(parts) and (
-        parts[0] in _EXCLUDED_ROOT_DIRS
-        or (len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _EXCLUDED_ROOT_DIRS))
+    if len(parts) >= 3 and parts[0] == "profiles":
+        parts = parts[2:]
+    if not parts:
+        return False
+    if parts[0] in _EXCLUDED_ROOT_DIRS:
+        return True
+    return parts[0] == "cache" and len(parts) >= 2 and parts[1] not in _KEPT_CACHE_SUBDIRS
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:
@@ -85,7 +105,14 @@ _EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
 # The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
 # — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;
 # a plain ``.bak`` suffix rule would drop user files.
-_EXCLUDED_PREFIXES = ("state.db.pre-update-emergency-",)
+# Retired-WAL capture dirs (``<name>.retired-wal-<ts>-<pid>/``) are excluded whole: a
+# ``sqlite3.backup()`` snapshot of the live db paired with the captured ``-wal`` is exactly the
+# torn-restore hazard the sidecar exclusion below exists to prevent, and the capture is an
+# operator-recovery artifact that must move as a unit (manifest + image + WAL), never partially.
+_EXCLUDED_PREFIXES = (
+    "state.db.pre-update-emergency-",
+    f"state.db{RETIRED_GENERATION_DIR_SUFFIX}",
+)
 
 # Files ``hermes import`` must never overwrite, matched by basename so root and named profiles are
 # both covered. They hold runtime state namespaced to the SOURCE machine: ``gateway_state.json``
@@ -218,9 +245,21 @@ def _iter_external_files(base: Path) -> List[Path]:
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
         files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
-                     if not (fp.is_symlink() or fp.name in _EXCLUDED_NAMES
+                     if not (_is_non_regular_path(fp) or fp.name in _EXCLUDED_NAMES
                              or fp.name.endswith(_EXCLUDED_SUFFIXES)))
     return files
+
+
+def _is_non_regular_path(path: Path) -> bool:
+    """True for symlinks, sockets, devices, and other non-regular filesystem entries.
+
+    A failed ``lstat`` is not treated as an exclusion: the archive writer must see the path and
+    report the read failure instead of silently claiming a complete backup.
+    """
+    try:
+        return not stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
 
 
 def _should_exclude(rel_path: Path) -> bool:
@@ -257,7 +296,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             fpath = hermes_root / rel
             # zipfile.write() follows file symlinks, so skip links before any archive write can
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
-            if _should_exclude(rel) or fpath.is_symlink():
+            if _should_exclude(rel) or _is_non_regular_path(fpath):
                 continue
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():
@@ -292,6 +331,21 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
     """
     conn = backup_conn = None
     try:
+        # sqlite3.connect() creates a missing destination with the process
+        # umask, which is commonly 0022 (0644).  Snapshot databases contain
+        # session and tool state, so create the inode owner-only before SQLite
+        # writes its first byte.  O_NOFOLLOW also refuses a planted symlink on
+        # platforms that support it.  Tighten an existing internal staging
+        # file as well (NamedTemporaryFile callers already create it 0600).
+        if os.name != "nt":
+            open_flags = os.O_WRONLY | os.O_CREAT
+            if hasattr(os, "O_NOFOLLOW"):
+                open_flags |= os.O_NOFOLLOW
+            secure_fd = os.open(dst, open_flags, 0o600)
+            try:
+                os.fchmod(secure_fd, 0o600)
+            finally:
+                os.close(secure_fd)
         # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
         # full locked-source deadline instead of adding the default timeout before each callback.
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=0.0)
@@ -609,8 +663,14 @@ def _collect_external_entries() -> tuple[list[tuple[Path, str]], list[str]]:
     return external_to_add, skipped_external
 
 
-def run_backup(args) -> None:
-    """Create a zip backup of the Hermes home directory."""
+def run_backup(args) -> bool:
+    """Create a zip backup of the Hermes home directory.
+
+    True when every selected file landed in the archive (or there was nothing to back up); False
+    when the zip was written but is incomplete — it is kept so the rest can still be restored, and
+    the caller turns False into exit status 1 so a cron/systemd timer never publishes a "successful"
+    archive that is missing state.db. Hard failures keep raising ``SystemExit``.
+    """
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -619,13 +679,13 @@ def run_backup(args) -> None:
 
     try:
         with _backup_operation_lock(hermes_root):
-            _run_backup_locked(args, hermes_root)
+            return _run_backup_locked(args, hermes_root)
     except BackupInProgressError as exc:
         print(f"Error: {exc}")
         raise SystemExit(2) from exc
 
 
-def _run_backup_locked(args, hermes_root: Path) -> None:
+def _run_backup_locked(args, hermes_root: Path) -> bool:
     """Write a full backup while the cross-process backup slot is held."""
     out_path = _resolve_backup_output_path(args.output)
     scan_started = time.monotonic()
@@ -637,7 +697,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     if not files_to_add and not external_to_add:
         logger.info("backup phase=scan status=empty duration_ms=%.1f", (time.monotonic() - scan_started) * 1000)
         print("No files to back up.")
-        return
+        return True
 
     file_count = len(files_to_add) + len(external_to_add)
     logger.info("backup phase=scan status=complete duration_ms=%.1f files=%d",
@@ -682,14 +742,17 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     if skipped_dirs:
         print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
     if errors:
-        _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "  ")
+        _print_capped(f"\n  Archive kept, but {len(errors)} file(s) could not be added:", errors, "  ")
     else:
         print(f"\nRestore with: hermes import {out_path.name}")
+    # Prune only after a complete archive: a timer hitting the same unreadable file every run must
+    # not rotate the last good backups out in favour of incomplete ones.
     keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
-    if keep and out_path.name.startswith(_RUN_BACKUP_PREFIX):
+    if keep and not errors and out_path.name.startswith(_RUN_BACKUP_PREFIX):
         pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
         if pruned:
             print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
+    return not errors
 
 
 # --- Import ---
@@ -712,21 +775,6 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     if len(first_parts) == 1 and first_parts <= {".hermes", "hermes"}:
         return first_parts.pop() + "/"
     return ""
-
-
-def _default_new_file_mode() -> Optional[int]:
-    """The mode ``open(path, "wb")`` gives a file it has to create.
-
-    ``mkstemp`` always creates at 0600, so staging an import through a temp file would tighten
-    every *newly created* file to owner-only — the Docker/NAS volume-mount hazard
-    ``utils._restore_file_mode`` documents.
-    """
-    try:
-        current = os.umask(0o077)
-        os.umask(current)
-    except OSError:
-        return None
-    return 0o666 & ~current
 
 
 def _extract_member_atomically(
@@ -867,7 +915,7 @@ def _import_members(
     db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
     restored = restored_external = 0
     home_dir = Path.home().resolve()
-    new_file_mode = _default_new_file_mode()  # once: every member is published via mkstemp (0600)
+    new_file_mode = default_new_file_mode()  # once: every member is published via mkstemp (0600)
     for member in members:
         # ``_external/`` members restore to their home-relative location (~/.honcho/config.json),
         # NOT under HERMES_HOME; provider configs commonly hold credentials, so tighten to 0600.
@@ -971,8 +1019,7 @@ def run_import(args) -> None:
             for rel, before, after in db_shrunk:
                 print(f"    {rel}: {before[0]} session(s) / {before[1]} message(s)"
                       f" -> {after[0]} / {after[1]}")
-            print("    Anything recorded after the backup was taken is not in it. "
-                  "Recover from a newer backup or snapshot: hermes snapshot list")
+            print(f"    Anything recorded after the backup was taken is not in it. {_snapshot_recovery_hint()}")
         if skipped_runtime:
             _print_capped(f"\n  Preserved {len(skipped_runtime)} runtime state "
                           f"file(s) (kept this machine's, not the backup's):",
@@ -1152,6 +1199,25 @@ def _copy_quick_snapshot_files(
     return manifest, failed_dbs, oversized_skipped
 
 
+def _secure_quick_snapshot_tree(root: Path, snapshot_dir: Path) -> None:
+    """Make a staged quick snapshot owner-only before it is published.
+
+    The staging directory is private from creation, so copied source modes can
+    be normalized safely before the final atomic rename exposes the snapshot.
+    Permission failures are intentionally fatal: publishing a readable
+    recovery bundle is worse than reporting a failed snapshot.
+    """
+    if os.name == "nt":
+        return
+    os.chmod(root, 0o700)
+    os.chmod(snapshot_dir, 0o700)
+    for path in snapshot_dir.rglob("*"):
+        if path.is_dir():
+            os.chmod(path, 0o700)
+        elif path.is_file():
+            os.chmod(path, 0o600)
+
+
 def _create_quick_snapshot_locked(
     label: Optional[str], home: Path, keep: Optional[int], max_file_size: Optional[int]
 ) -> Optional[str]:
@@ -1169,14 +1235,17 @@ def _create_quick_snapshot_locked(
         suffix += 1
     staging_dir = root / f".{snap_id}.{os.getpid()}.partial"
     shutil.rmtree(staging_dir, ignore_errors=True)
-    staging_dir.mkdir(parents=True, exist_ok=False)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "nt":
+        os.chmod(root, 0o700)
+    staging_dir.mkdir(mode=0o700, exist_ok=False)
     logger.info("quick snapshot phase=copy status=started id=%s", snap_id)
     manifest, failed_dbs, oversized_skipped = _copy_quick_snapshot_files(home, staging_dir, max_file_size)
     if failed_dbs:
         # Surface on stdout: a log-and-continue made a missing state.db backup look like a
         # successful pre-update snapshot (#68474).
         print(f"  ⚠ CRITICAL: could not snapshot DB file(s): {', '.join(failed_dbs)}\n"
-              f"  ⚠ If sessions disappear after update, check {root} and run: hermes snapshot list")
+              f"  ⚠ If sessions disappear after the update, check {root}. {_snapshot_recovery_hint()}")
         logger.error("Quick snapshot failed to capture DB file(s): %s", ", ".join(failed_dbs))
     if not manifest:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -1191,6 +1260,7 @@ def _create_quick_snapshot_locked(
     }
     with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+    _secure_quick_snapshot_tree(root, staging_dir)
     os.replace(staging_dir, root / snap_id)
     # Auto-prune (pre-update callers pass a smaller keep so state.db copies don't accumulate).
     # Skip when a DB failed to capture OR was skipped for size (#68805): the snapshot is
@@ -1585,7 +1655,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
 
 _PRE_UPDATE_BACKUPS_DIR = "backups"
 _PRE_UPDATE_PREFIX = "pre-update-"
-_PRE_UPDATE_DEFAULT_KEEP = 5
+_PRE_UPDATE_DEFAULT_KEEP = 3
 _PRE_MIGRATION_PREFIX = "pre-migration-"
 _PRE_MIGRATION_DEFAULT_KEEP = 5
 
@@ -2729,9 +2799,9 @@ def _create_quick_snapshot_locked(
     manifest: Dict[str, int] = {}  # rel_path -> file size
     failed_dbs: list[str] = []  # present *.db that could not be snapshotted
     # #68805: track protected DB files skipped for size — they are snapshot
-    # incompleteness just like a failed copy, so pruning must be suppressed
-    # to preserve the older complete snapshot that may contain the only
-    # recoverable database.
+    # incompleteness just like a failed copy, so pruning below stays
+    # recovery-aware: an older snapshot still holding the only usable copy of
+    # one of these databases is retained past the keep limit.
     oversized_skipped: list[str] = []
 
     for rel in _QUICK_STATE_FILES:
@@ -2859,26 +2929,51 @@ def _create_quick_snapshot_locked(
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    # #68805 review: skip pruning when a present DB failed to capture OR was
-    # skipped for size — either way the snapshot is incomplete and the older
-    # snapshot may contain the only recoverable database.
-    incomplete = failed_dbs or oversized_skipped
-    if not incomplete:
-        _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
-    else:
-        if oversized_skipped:
-            print(
-                "  ⚠ Skipping snapshot prune: DB file(s) skipped for size: "
-                + ", ".join(oversized_skipped)
+    # #68805 → recovery-aware: prune after incomplete snapshots too. The pruner
+    # keeps the newest `keep` snapshots plus the oldest-run snapshots still holding
+    # the only usable copy of a DB this one failed or skipped for size, so repeated
+    # oversized/failed snapshots cannot grow an unbounded chain — while the older
+    # complete snapshot stays recoverable.
+    _prune_quick_snapshots(
+        root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep, hermes_home=home
+    )
+    if oversized_skipped:
+        # Claim a prior recovery point only when another surviving snapshot
+        # actually holds one of the skipped databases (manifest evidence — the
+        # same source the pruner trusts) — a home with no earlier copy must
+        # not be told one exists.
+        prior_recovery = False
+        for other in root.iterdir():
+            if other == snap_dir or not other.is_dir():
+                continue
+            try:
+                with open(other / "manifest.json", encoding="utf-8") as f:
+                    other_files = json.load(f).get("files")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if isinstance(other_files, dict) and any(
+                rel in other_files for rel in oversized_skipped
+            ):
+                prior_recovery = True
+                break
+        print(
+            "  ⚠ Snapshot incomplete: DB file(s) skipped for size: "
+            + ", ".join(oversized_skipped)
+            + (
+                " — older recovery snapshots retained"
+                if prior_recovery
+                else " — no earlier snapshot holds a copy; "
+                     "run a manual backup to capture them"
             )
-            logger.warning(
-                "Quick snapshot skipped oversized DB file(s): %s",
-                ", ".join(oversized_skipped),
-            )
+        )
         logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture "
-            "and/or %d were oversized — preserving older snapshots as "
-            "recovery source",
+            "Quick snapshot skipped oversized DB file(s): %s",
+            ", ".join(oversized_skipped),
+        )
+    if failed_dbs or oversized_skipped:
+        logger.info(
+            "Quick snapshot incomplete (%d DB(s) failed to capture, %d oversized); "
+            "pruned with database recovery retention",
             len(failed_dbs), len(oversized_skipped),
         )
 
@@ -2907,7 +3002,7 @@ def list_quick_snapshots(
         manifest_path = d / "manifest.json"
         if manifest_path.exists():
             try:
-                with open(manifest_path, encoding="utf-8") as f:
+                with open(manifest_path, encoding="utf-8-sig") as f:
                     results.append(json.load(f))
             except (json.JSONDecodeError, OSError):
                 results.append({"id": d.name, "file_count": 0, "total_size": 0})
@@ -2951,7 +3046,7 @@ def restore_quick_snapshot(
     if not manifest_path.exists():
         return False
 
-    with open(manifest_path, encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8-sig") as f:
         meta = json.load(f)
 
     restored = 0
@@ -3445,28 +3540,395 @@ def restore_cron_jobs_all_profiles(
     return restored
 
 
-def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
-    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
+# --- Snapshot DB integrity verdict cache ---
+#
+# The full ``PRAGMA integrity_check`` walks every b-tree page and pruning re-derives
+# coverage on every snapshot, so without a memo each prune re-reads every retained DB
+# copy. A published snapshot is an immutable managed artifact, so a verdict is trusted
+# only while the copy's (dev, ino, size, mtime_ns, ctime_ns) still matches what was
+# recorded when the check ran: replacement, truncation, a rewrite or a chmod all
+# invalidate it. Any cache miss — absent file, unreadable, wrong version, malformed
+# entry, stale identity — is UNKNOWN and costs a fresh full check; it never stands in
+# for a passing one. Corruption that leaves all five identity fields untouched is NOT
+# detected here; detecting it would mean re-reading the file, which is what the cache
+# exists to avoid.
+
+_SNAP_DB_VERDICTS_VERSION = 1
+_SNAP_DB_VERDICTS_NAME = ".db-integrity-cache.json"
+# Identity of a checked copy; ctime is included so a chmod/owner change invalidates a
+# verdict that size and mtime alone would still admit.
+_SNAP_DB_VERDICTS_IDENTITY = (
+    ("dev", "st_dev"), ("ino", "st_ino"), ("size", "st_size"),
+    ("mtime_ns", "st_mtime_ns"), ("ctime_ns", "st_ctime_ns"),
+)
+
+
+def _stat_identity(st: os.stat_result) -> dict:
+    """The file-identity fields a cached verdict is bound to."""
+    return {key: getattr(st, attr) for key, attr in _SNAP_DB_VERDICTS_IDENTITY}
+
+
+def _identity_wellformed(record: object) -> bool:
+    """True when *record* is a well-formed identity mapping."""
+    return isinstance(record, dict) and all(
+        isinstance(record.get(key), int) for key, _attr in _SNAP_DB_VERDICTS_IDENTITY
+    )
+
+
+def _identity_unchanged(record: object, st: os.stat_result) -> bool:
+    """True when *record* is a well-formed identity still matching *st*."""
+    return _identity_wellformed(record) and all(
+        record[key] == getattr(st, attr) for key, attr in _SNAP_DB_VERDICTS_IDENTITY
+    )
+
+
+def _load_db_verdicts(root: Path) -> dict:
+    """Cached verdict entries for snapshots under *root*.
+
+    ``{}`` unless the file is a well-formed current-version cache: anything else is
+    UNKNOWN and costs full re-checks, never a free pass.
+    """
+    path = root / _SNAP_DB_VERDICTS_NAME
+    try:
+        if _is_non_regular_path(path):
+            return {}
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    entries = data.get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, dict) or data.get("version") != _SNAP_DB_VERDICTS_VERSION:
+        return {}
+    return entries
+
+
+def _store_db_verdicts(root: Path, entries: dict) -> None:
+    """Best-effort atomic persist beside the snapshots; a failure only costs re-scans.
+
+    Written 0600 next to owner-only snapshots, and never over a non-regular entry
+    (a planted symlink must not turn into a write elsewhere).
+    """
+    path = root / _SNAP_DB_VERDICTS_NAME
+    try:
+        if _is_non_regular_path(path):
+            return
+        with _atomic_output_path(path) as partial:
+            fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"version": _SNAP_DB_VERDICTS_VERSION, "entries": entries}, f)
+    except OSError as exc:
+        logger.debug("Could not persist snapshot DB integrity verdicts: %s", exc)
+
+
+class _SnapshotDbVerdicts:
+    """Memo of full SQLite integrity verdicts for finalized snapshot DB copies.
+
+    Keyed by snapshot id + relative path and bound to the copy's file identity, so an
+    entry can only ever be read back for the very file it was taken from. Both good
+    and bad verdicts are cached: a bad copy must keep authorizing retention exactly
+    as a good one authorizes eviction.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._entries = _load_db_verdicts(root)
+        self._dirty = False
+
+    @staticmethod
+    def _key(snapshot_id: str, rel: str) -> str:
+        return f"{snapshot_id}/{rel}"
+
+    def lookup(self, snapshot_id: str, rel: str, path: Path) -> Optional[bool]:
+        """Cached verdict for *path*, or ``None`` when absent, stale or malformed."""
+        entry = self._entries.get(self._key(snapshot_id, rel))
+        if not isinstance(entry, dict):
+            return None
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        if not _identity_unchanged(entry.get("id"), st):
+            return None
+        valid = entry.get("valid")
+        return valid if isinstance(valid, bool) else None
+
+    def record(self, snapshot_id: str, rel: str, identity: object, result: dict) -> None:
+        """Persist *result* bound to the identity ``_full_integrity_verdict`` verified.
+
+        The caller hands over the identity that matched both before and after the read;
+        nothing is re-statted here, so a copy swapped in after the check is bound to its
+        *old* identity and the new bytes can never read this verdict back.
+        """
+        if not _identity_wellformed(identity):
+            return
+        self._entries[self._key(snapshot_id, rel)] = {
+            "valid": bool(result.get("valid")),
+            "id": dict(identity),
+        }
+        self._dirty = True
+
+    def save(self) -> None:
+        """Drop entries whose snapshot is gone, then persist when dirty."""
+        if not self._dirty:
+            return
+        groups: Dict[str, dict] = {}
+        for key, entry in self._entries.items():
+            snapshot_id = key.split("/", 1)[0]
+            if snapshot_id:
+                groups.setdefault(snapshot_id, {})[key] = entry
+        for snapshot_id in list(groups):
+            snap_dir = self._root / snapshot_id
+            try:
+                present = snap_dir.is_dir() and (snap_dir / "manifest.json").exists()
+            except OSError:
+                present = False
+            if not present:
+                del groups[snapshot_id]  # pruned away — its verdicts are unreachable
+        self._entries = {
+            key: entry for entries in groups.values() for key, entry in entries.items()
+        }
+        _store_db_verdicts(self._root, self._entries)
+        self._dirty = False
+
+
+def _full_integrity_verdict(path: Path) -> Optional[Tuple[bool, str, Optional[dict]]]:
+    """Full integrity verdict for an immutable snapshot copy, or ``None`` (UNKNOWN).
+
+    Returns ``(valid, message, identity)`` where *identity* is the file identity the
+    read actually covered — matched before and after — and is the only identity a
+    caller may cache the verdict against. Never a fresh restat here.
+
+    max_bytes=0 forces the FULL PRAGMA integrity_check: this verdict can authorize
+    deleting an older snapshot, and a cheaper size-capped probe (header + schema
+    only) passes on corruption outside the first page — a corrupt newer copy would
+    then count as covering the DB and evict the last usable recovery copy of it.
+
+    A copy that cannot be stat'd at all is simply not usable (no coverage — the same
+    answer ``verify_sqlite_integrity`` gives for a missing file) but yields no identity,
+    so nothing is cached for it. ``None`` is reserved for a copy whose identity is not
+    identical before and after the read: one that moved underneath the check proves
+    nothing, and nothing is cached for it either.
+    """
+    try:
+        before = path.stat()
+    except OSError as exc:
+        return False, f"not usable: {exc}", None
+    result = verify_sqlite_integrity(path, check_header=True, run_pragma=True, max_bytes=0)
+    try:
+        after = path.stat()
+    except OSError:
+        return None
+    identity = _stat_identity(before)
+    if not _identity_unchanged(identity, after):
+        return None
+    return bool(result.get("valid")), str(result.get("message", "")), identity
+
+
+def _snapshot_db_coverage(
+    snap_dir: Path,
+    needed: Optional[FrozenSet[str]] = None,
+    skip: FrozenSet[str] = frozenset(),
+    verdicts: Optional[_SnapshotDbVerdicts] = None,
+) -> Optional[frozenset]:
+    """Relative paths of usable SQLite copies inside one quick snapshot.
+
+    The manifest is the source of truth; a legacy/unreadable manifest falls back to
+    judging what is physically on disk. A database only counts when its file is a
+    regular path inside the snapshot (no symlinks, no traversal) and passes the
+    existing full SQLite validation — a manifest entry whose file is missing, zeroed,
+    or corrupt provides no recovery coverage.
+
+    ``needed`` restricts the judgement to those rel paths (``None``: every DB in the
+    snapshot) — the rest are neither scanned nor returned — and lets enumeration stop
+    once all of them are covered; ``skip`` lists rel paths already covered elsewhere,
+    which are neither re-checked nor returned.
+    Returns ``None`` when the snapshot cannot be judged at all — an unresolvable
+    root, or a copy whose identity moved while it was being checked — which callers
+    must read as "covers nothing and must not be deleted", never as "usable".
+    """
+    try:
+        # ``_is_within`` resolves *path* but trusts its root to be resolved already.
+        # Comparing against the raw snap_dir rejected every valid copy when
+        # HERMES_HOME was relative, a symlink, or state-snapshots was a symlink —
+        # coverage came back empty and the pruner evicted the only good older
+        # recovery copy. Resolve the containment root once; the per-file checks
+        # below keep rejecting file symlinks and traversal.
+        snap_res = snap_dir.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    db_rels: Optional[Iterable[str]] = None
+    try:
+        with open(snap_dir / "manifest.json", encoding="utf-8") as f:
+            files = json.load(f).get("files")
+        if isinstance(files, dict):
+            db_rels = [rel for rel in files if isinstance(rel, str)]
+    except (OSError, ValueError, AttributeError):
+        db_rels = None
+    if db_rels is None:
+        def _legacy_walk():
+            for dirpath, _dirnames, filenames in os.walk(snap_dir, followlinks=False):
+                for fname in filenames:
+                    if fname.endswith(".db"):
+                        yield (Path(dirpath) / fname).relative_to(snap_dir).as_posix()
+        db_rels = _legacy_walk()
+
+    covered: set = set()
+    for rel in db_rels:
+        if needed is not None:
+            if not needed or needed <= covered:
+                break  # everything required from this snapshot is already judged
+            if rel not in needed:
+                continue  # not required here: never scanned, never returned
+        if rel in skip or not rel.endswith(".db"):
+            continue
+        # Never follow manifest paths that escape the snapshot or aren't regular files.
+        if rel.startswith(("/", "\\")) or ".." in Path(rel).parts:
+            continue
+        path = snap_dir / rel
+        if _is_non_regular_path(path) or not _is_within(path, snap_res):
+            continue
+        valid: Optional[bool]
+        if verdicts is not None:
+            valid = verdicts.lookup(snap_dir.name, rel, path)
+        else:
+            valid = None
+        if valid is None:
+            verdict = _full_integrity_verdict(path)
+            if verdict is None:
+                return None  # unverifiable copy: this snapshot proves nothing
+            valid, message, identity = verdict
+            if verdicts is not None and identity is not None:
+                verdicts.record(snap_dir.name, rel, identity, {"valid": valid})
+        if valid:
+            covered.add(rel)
+    return frozenset(covered)
+
+
+def _prune_quick_snapshots(
+    root: Path,
+    keep: int = _QUICK_DEFAULT_KEEP,
+    hermes_home: Optional[Path] = None,
+) -> int:
+    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted.
+
+    Recovery-aware (#68805): an older snapshot is retained past the keep limit while it
+    still holds the only usable copy of a database that exists in the live home — per
+    relative path, so different snapshots failing different databases each keep their
+    own recovery source, and a config-only snapshot cannot displace the last database
+    copy. Repeated oversized/failed snapshots therefore stay bounded instead of growing
+    an unbounded chain, and the last usable recovery copy is never evicted.
+
+    Only managed snapshots (real directories with a ``manifest.json``) are counted
+    or deleted — a child symlink never is; in-progress ``.partial`` staging dirs,
+    dot-directories and unrelated entries are never touched either.
+
+    Usability is judged by the FULL integrity check, memoized in
+    ``.db-integrity-cache.json`` beside the snapshots (see
+    ``_SnapshotDbVerdicts``) so repeated prunes stop re-reading every retained copy.
+    A copy with no cached verdict — first time it is ever consulted — is checked in
+    full before it can count as coverage or authorize a deletion: a pre-existing
+    (cold) snapshot costs one scan, not zero.
+    """
     if not root.exists():
         return 0
+    try:
+        # Coverage containment and the verdict cache both want the real location:
+        # a relative or symlinked root must behave exactly like a canonical one.
+        root_res = root.resolve()
+    except (OSError, RuntimeError, ValueError):
+        root_res = root
+    home = hermes_home or (root.parent if root.name == _QUICK_SNAPSHOTS_DIR else None)
 
     dirs = sorted(
         (
             d
             for d in root.iterdir()
-            if d.is_dir() and not d.name.startswith(".") and not d.name.endswith(".partial")
+            # A child symlink is not a managed snapshot: ``is_dir()`` and the
+            # manifest probe both follow it, so a timestamp-named link would
+            # consume a keep slot and its target's DB copies could pass as
+            # recovery coverage, evicting older real snapshots. Skip links
+            # before following them — linked or relative ancestors (HERMES_HOME,
+            # the snapshots root itself) are still fully supported.
+            if not d.is_symlink() and d.is_dir()
+            and not d.name.startswith(".") and not d.name.endswith(".partial")
+            and (d / "manifest.json").exists()
         ),
         key=lambda d: d.name,
         reverse=True,
     )
 
+    # Databases a snapshot should cover: everything the live home's quick-snapshot
+    # walk would attempt to capture. Unresolvable home → no coverage set → plain
+    # keep-based pruning (nothing extra retained, nothing extra deleted).
+    live_dbs: frozenset = frozenset()
+    if home is not None:
+        try:
+            live_dbs = frozenset(
+                rel for _src, rel, _in_dir in _quick_snapshot_candidates(home)
+                if rel.endswith(".db")
+            )
+        except OSError as exc:
+            logger.warning("Quick snapshot prune: could not enumerate live DBs: %s", exc)
+
+    keep = max(keep, 0)
+    # Verdict memo for this prune: loaded once, saved once, and only opened when an
+    # older snapshot is actually up for deletion — steady state (at or under keep)
+    # verifies nothing, so it must not write anything either. A cold copy needs one
+    # full check before its verdict exists; that first scan is unavoidable, the ones
+    # after it are not.
+    verdicts: Optional[_SnapshotDbVerdicts] = None
+    if dirs[keep:]:
+        verdicts = _SnapshotDbVerdicts(root_res)
+
+    # Coverage of the retained window, computed at most once per prune. ``None``
+    # means "could not be proven" (a snapshot that could not be judged) — distinct
+    # from "computed, and covers nothing", which alone may authorize a deletion.
+    retained: list[Optional[set]] = [set()]
+    computed: list[bool] = [False]
+
+    def _retained_coverage() -> Optional[set]:
+        if not computed[0]:
+            computed[0] = True
+            merged: set = set()
+            for d in dirs[:keep]:
+                if live_dbs <= merged:
+                    break  # every DB the live home holds is covered — stop here
+                coverage = _snapshot_db_coverage(
+                    d, needed=live_dbs, skip=frozenset(merged), verdicts=verdicts)
+                if coverage is None:
+                    retained[0] = None
+                    return None
+                merged |= coverage
+            retained[0] = merged
+        return retained[0]
+
     deleted = 0
     for d in dirs[keep:]:
+        if live_dbs:
+            covered = _retained_coverage()
+            if covered is None:
+                # Coverage of the kept window is unproven: retain everything this
+                # round rather than risk evicting a usable recovery copy.
+                continue
+            missing = live_dbs - covered
+            if missing:
+                coverage = _snapshot_db_coverage(
+                    d, needed=frozenset(missing), verdicts=verdicts)
+                if coverage is None:
+                    continue
+                if coverage:
+                    # Still the recovery source for a DB no retained snapshot covers.
+                    retained[0] = covered | coverage
+                    continue
         try:
             shutil.rmtree(d)
             deleted += 1
         except OSError as exc:
             logger.warning("Failed to prune snapshot %s: %s", d.name, exc)
+
+    if verdicts is not None:
+        verdicts.save()
 
     return deleted
 
@@ -3476,7 +3938,11 @@ def prune_quick_snapshots(
     hermes_home: Optional[Path] = None,
 ) -> int:
     """Manually prune quick snapshots. Returns count deleted."""
-    return _prune_quick_snapshots(_quick_snapshot_root(hermes_home), keep=keep)
+    home = hermes_home or get_hermes_home()
+    with _backup_operation_lock(home):
+        return _prune_quick_snapshots(
+            _quick_snapshot_root(home), keep=keep, hermes_home=home
+        )
 
 
 def run_quick_backup(args) -> None:
@@ -3590,7 +4056,10 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
 
 _PRE_UPDATE_BACKUPS_DIR = "backups"
 _PRE_UPDATE_PREFIX = "pre-update-"
-_PRE_UPDATE_DEFAULT_KEEP = 5
+# Default retention for ``create_pre_update_backup``; ``hermes update`` normally forwards the
+# config ``updates.backup_keep`` (default 3) instead — this is the API fallback when no keep
+# is passed and no update config participates.
+_PRE_UPDATE_DEFAULT_KEEP = 3
 
 
 def _pre_update_backup_dir(hermes_home: Optional[Path] = None) -> Path:

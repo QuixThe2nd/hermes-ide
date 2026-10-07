@@ -22,7 +22,7 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
-from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest
+from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest, VoiceLiveSessionRequest
 from typing import Any, Dict, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -161,6 +161,39 @@ async def get_client_voice_config(profile: Optional[str] = None):
         fallback = {"mode": "relay", "reason": "resolution error"}
         return {"ok": True, "stt": fallback, "tts": dict(fallback)}
 
+    return {"ok": True, **result}
+
+
+@router.get("/api/audio/voice-live/status")
+async def get_voice_live_status(profile: Optional[str] = None):
+    """Which voice chat mode the profile selected (``chained`` | ``gpt-live``) and whether GPT-Live
+    can start. Non-secret: the desktop decides which conversation engine to mount from this."""
+    from tools.voice_live import resolve_gpt_live_status
+    with http_failure("GPT-Live status resolution failed", 500, "GPT-Live status failed"):
+        result = await _run_config_scoped(profile, resolve_gpt_live_status)
+    return {"ok": True, **result}
+
+
+@router.post("/api/audio/voice-live/session")
+async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: Optional[str] = None):
+    """Exchange the renderer's WebRTC SDP offer for a GPT-Live session answer.
+
+    The project API key stays on this host; the renderer only receives the session id and the
+    SDP answer. Client delegation is fixed at creation: every ``session.delegation.created`` the
+    renderer receives becomes a Hermes turn on the session it belongs to.
+    """
+    from tools.voice_live import create_webrtc_session
+    # Validate emptiness only: the vendor's SDP parser needs the offer byte-exact, including the
+    # trailing CRLF (a stripped offer answers 400 "failed to unmarshal SDP: EOF").
+    sdp = payload.sdp or ""
+    if not sdp.strip():
+        raise HTTPException(status_code=400, detail="An SDP offer is required")
+    try:
+        result = await _run_config_scoped(profile, lambda: create_webrtc_session(sdp, payload.history))
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
     return {"ok": True, **result}
 
 
@@ -349,7 +382,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
       client → ``{"text": "..."}`` frames (incremental; may combine with done),
                ``{"done": true}`` when the reply is complete,
                ``{"stop": true}`` or disconnect = barge-in
-      server → ``{"type": "start", "sample_rate": N, "channels": 1}``,
+      server → ``{"type": "start", "sample_rate": N, "channels": 1}`` (sent
+               with the first PCM frame, once the provider's rate is final),
                binary PCM frames, then ``{"type": "end"}``
       server → ``{"type": "fallback"}`` when the configured provider has no
                chunked API — the client uses the POST endpoint instead.
@@ -390,9 +424,20 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             await ws.close()
         return
 
-    await ws.send_json(
-        {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
-    )
+    # The start frame is deferred until the first PCM chunk (or end-of-speech):
+    # the OpenAI-compatible streamer only learns the endpoint's real rate from
+    # the response headers inside stream(), and the client opens its
+    # AudioContext at whatever rate the start frame carries.
+    start_sent = False
+
+    async def _send_start():
+        nonlocal start_sent
+        if start_sent:
+            return
+        start_sent = True
+        await ws.send_json(
+            {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
+        )
 
     stop = threading.Event()
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
@@ -472,8 +517,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             chunk = await chunks.get()
             if chunk is None:
                 break
+            await _send_start()
             await ws.send_bytes(chunk)
         if not stop.is_set():
+            await _send_start()
             await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
         pass

@@ -70,6 +70,7 @@ from agent.prompt_caching import (
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
+from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
@@ -81,6 +82,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
+from agent.turn_failure_copy import failed_turn_notice, site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -353,7 +355,13 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     visible = agent._strip_think_blocks(getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
 
     checkpoint_parts = [_INTERRUPT_SCAFFOLD_MARKER]
-    if visible:
+    if is_runaway_repetition(visible):
+        # Runaway shape only (a correct batch-style partial stays replayable): the looped bytes must
+        # reach neither the replayed correction nor the placeholder below (empty ``visible`` takes
+        # the hidden shape).
+        checkpoint_parts.append(REPETITION_LOOP_INTERRUPTED)
+        visible = ""
+    elif visible:
         checkpoint_parts += ["Visible response before the interruption:", visible]
     checkpoint = "\n\n".join(checkpoint_parts)
     correction = f"[Context from the interrupted assistant response]\n{checkpoint}\n\n{text}"
@@ -523,7 +531,7 @@ def _print_guidance(agent, message: str) -> bool:
     if not message:
         return False
     for line in message.splitlines():
-        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
+        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True, diagnostic=True)
     return True
 
 
@@ -928,6 +936,14 @@ _CODEX_ACK_CONTINUATION_NUDGE = (
     "after completing the task.]"
 )
 
+# Re-prompt after a collapsed fragment ended a turn that had done real tool work (#103483). Asks
+# for the same answer again when it WAS complete, so a false positive costs one call, never the answer.
+_DEGENERATE_FINAL_NUDGE = (
+    "[System: Your previous message ended the turn with a fragment that is not a usable answer. "
+    "If the task is unfinished, continue it and then give the complete answer. If that fragment "
+    "WAS your complete answer, send it again exactly as before.]"
+)
+
 # Re-prompt for finish_reason="tool_calls" with empty tool_calls (an interrupt mid-retry can persist it).
 _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "Your previous turn indicated a tool call but none was included. Do not narrate a plan or "
@@ -942,11 +958,6 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
 )
 
 
-# Shared trailer for both content-policy refusal paths so guidance cannot drift.
-_CONTENT_POLICY_RECOVERY_HINT = (
-    "Try rephrasing the request, narrowing the context, or adding a fallback provider with "
-    "`hermes fallback add`."
-)
 
 
 # Memo for send-path tool-call argument canonicalization (re-run on every historical call
@@ -1036,6 +1047,7 @@ def _content_policy_blocked_result(
     return {
         "final_response": final_response, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": f"content_policy_blocked: {error_detail}",
+        "failure_reason": "content_policy_blocked", "failure_retryable": False,
     }
 
 
@@ -1106,9 +1118,10 @@ def _provider_overflow_exhausted_result(
     # providers.
     agent._persist_session(messages, conversation_history)
     return _partial_turn_result(
-        "Context length exceeded: compression could not reduce the rebuilt request below the safe threshold.",
+        site_copy("context_overflow", model=agent.model),
         messages, api_call_count, failed=True, compression_exhausted=True,
         turn_exit_reason="context_compression_exhausted",
+        failure_reason="context_overflow", failure_retryable=False,
     )
 
 
@@ -1334,6 +1347,7 @@ def _preflight_timeout_result(agent, exc, conversation_history) -> Dict[str, Any
     return _partial_turn_result(
         str(exc), list(conversation_history or []), 0,
         failed=True, compression_exhausted=True, turn_exit_reason="context_compression_timeout",
+        failure_reason="context_overflow", failure_retryable=False,
     )
 
 
@@ -1571,11 +1585,18 @@ def _run_conversation_turn(
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
+        codex_result = agent._run_codex_app_server_turn(
             user_message=s.user_message, original_user_message=s.original_user_message,
             messages=s.messages, effective_task_id=s.effective_task_id,
             should_review_memory=s._should_review_memory,
         )
+        from agent.turn_recovery import activate_codex_app_server_fallback
+        if not activate_codex_app_server_fallback(agent, codex_result):
+            return codex_result
+        # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
+        # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
+        s.api_call_count = int(codex_result.get("api_calls") or 0)
+        s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
 
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
@@ -1636,7 +1657,7 @@ def _run_conversation_turn(
     return result
 
 
-def run_conversation(
+def _run_conversation_inlined(
     agent,
     user_message: Any,
     system_message: str = None,
@@ -1652,7 +1673,7 @@ def run_conversation(
     continue_interrupted_turn: bool = False,
     turn_author: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
+    """Run one turn (see ``_run_conversation_inlined``) and export the current-turn boundary.
 
     Every envelope that leaves the loop — success, partial/error, interrupt, retry-exhausted,
     tool-limit, preflight timeout, codex runtime — passes through here, so the
@@ -1694,6 +1715,13 @@ def run_conversation(
 
     Returns:
         Dict: Complete conversation result with final response and message history
+    Upstream graft (503d818ddf07, #76411): images attached natively to this user turn stay
+    visible to ``vision_analyze`` for the turn so the identical pixels are not embedded a
+    second time into the same request. Upstream wraps its ``_run_conversation_turn`` call;
+    the fork inlines the turn loop into ``_run_conversation_inlined``, so the scope here
+    wraps the whole inlined body — same ContextVar, same turn lifetime (the contextmanager
+    resets it in its ``finally``). The trailing boundary export stays inside the inlined
+    body; it never embeds images, so the slightly longer scope is behavior-neutral.
     """
     from agent.turn_context import export_current_turn_boundary
 
@@ -9086,7 +9114,139 @@ def run_conversation(
         turn_api_time=agent._turn_api_time,
         turn_tool_time=agent._turn_tool_time,
     )
-    return export_current_turn_boundary(agent, result, user_message)
+    result = export_current_turn_boundary(agent, result, user_message)
+    _close_durable_failed_turn(agent, result)
+    return result
+
+
+def run_conversation(
+    agent,
+    user_message: Any,
+    system_message: str = None,
+    conversation_history: List[Dict[str, Any]] = None,
+    task_id: str = None,
+    stream_callback: Optional[callable] = None,
+    persist_user_message: Optional[Any] = None,
+    persist_user_timestamp: Optional[float] = None,
+    persist_user_display_kind: Optional[str] = None,
+    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    persist_user_platform_id: Optional[str] = None,
+    moa_config: Optional[dict[str, Any]] = None,
+    continue_interrupted_turn: bool = False,
+    turn_author: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Run one turn (see ``_run_conversation_inlined``) and export the current-turn boundary.
+
+    Every envelope that leaves the loop — success, partial/error, interrupt, retry-exhausted,
+    tool-limit, preflight timeout, codex runtime — passes through here, so the
+    ``{turn_id, current_turn_user_idx}`` pair is stamped beside the exact ``messages`` it
+    addresses, after every history rewrite including post-turn micro-compaction.
+
+    Args:
+        user_message (str): The user's message/question
+        system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
+        conversation_history (List[Dict]): Previous conversation messages (optional)
+        task_id (str): Unique identifier for this task to isolate VMs between concurrent tasks (optional, auto-generated if not provided)
+        stream_callback: Optional callback invoked with each text delta during streaming.
+            Used by the TTS pipeline to start audio generation before the full response.
+            When None (default), API calls use the standard non-streaming path.
+        persist_user_message: Optional clean user message to store in
+            transcripts/history when user_message contains API-only
+            synthetic prefixes.
+        continue_interrupted_turn: Transparent forced-interruption recovery
+            (``gateway.forced_resume_replay``).  Continue the turn that
+            already owns the tail of ``conversation_history`` — its answered
+            tool batch, or its unanswered user row — instead of starting a
+            new user turn.  No user message is appended, no per-input side
+            channels run, and ``user_message`` is ignored (callers pass
+            None), so the first provider request is observationally
+            equivalent to an ordinary uninterrupted tool loop's next call.
+        persist_user_timestamp: Optional platform event timestamp to store
+            as metadata on that persisted user message.
+        persist_user_display_kind: Optional presentation type for a
+            synthesized user turn (``auto_continue``, ``model_switch``, …).
+            Display-only: transcript surfaces render the row as a timeline
+            event instead of a user bubble, while the model still receives
+            the message unchanged.
+        persist_user_display_metadata: Optional payload for that event
+            (e.g. a delegation's task count).
+        persist_user_platform_id: Optional platform-side message id (e.g. the
+            Discord/Telegram message id) to store as metadata on that
+            persisted user message, so restart drain-window recovery can
+            dedup an interrupted turn against the transcript.
+
+    Returns:
+        Dict: Complete conversation result with final response and message history
+    Upstream graft (503d818ddf07, #76411): images attached natively to this user turn stay
+    visible to ``vision_analyze`` for the turn so the identical pixels are not embedded a
+    second time into the same request. Upstream wraps its ``_run_conversation_turn`` call;
+    the fork inlines the turn loop into ``_run_conversation_inlined``, so the scope here
+    wraps the whole inlined body — same ContextVar, same turn lifetime (the contextmanager
+    resets it in its ``finally``). The trailing boundary export stays inside the inlined
+    body; it never embeds images, so the slightly longer scope is behavior-neutral.
+    """
+    from tools.vision_tools_history_budget import native_turn_images
+
+    # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
+    # it does not embed the same pixels a second time into the same request (#76411).
+    with native_turn_images(user_message):
+        return _run_conversation_inlined(
+            agent,
+            user_message,
+            system_message=system_message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+            stream_callback=stream_callback,
+            persist_user_message=persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            persist_user_platform_id=persist_user_platform_id,
+            moa_config=moa_config,
+            continue_interrupted_turn=continue_interrupted_turn,
+            turn_author=turn_author,
+        )
+
+
+def _close_durable_failed_turn(agent, result: Any) -> None:
+    """Append a Hermes-authored assistant boundary when a failed turn left ``user`` as the
+    durable conversation tail (in place, on ``result["messages"]`` and in SessionDB).
+
+    The terminal-failure paths (content-policy refusal, ``_Trunc.end_turn``, retry exhaustion,
+    interrupt before any assistant text) persist the accepted user row and return without
+    reaching ``finalize_turn``; the next prompt then appends a second user row and
+    ``repair_message_sequence`` merges the failed request into the new one. The gateway
+    compensates with ``_hmwa_close_failed_turn``; CLI, TUI/Desktop and ACP hosts hand
+    ``result["messages"]`` straight back as history, so the seam is here.
+
+    Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
+    ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
+    #1630 growth loop; their repair is rotation or a retry. Idempotence is keyed on the DURABLE
+    tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail already closed by
+    another writer is a no-op, and the gateway's own closer then no-ops in turn.
+    """
+    try:
+        if not isinstance(result, dict) or result.get("completed") is True:
+            return
+        if (
+            result.get("compression_exhausted") or result.get("compression_deferred")
+            or result.get("failure_reason") == "context_overflow"
+        ):
+            return
+        messages = result.get("messages")
+        db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+        if not isinstance(messages, list) or not messages or db is None or not session_id:
+            return
+        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) != "user":
+            return
+        # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
+        # hedge over the whole list rather than under-report a possible side effect.
+        start = result.get("current_turn_user_idx")
+        turn_messages = messages[start:] if isinstance(start, int) and 0 <= start < len(messages) else messages
+        append_message(messages, {"role": "assistant", "content": failed_turn_notice(turn_messages)})
+        agent._flush_messages_to_session_db(messages)
+    except Exception:
+        logger.debug("failed-turn boundary not written", exc_info=True)
 
 
 __all__ = ["run_conversation"]

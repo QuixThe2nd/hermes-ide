@@ -183,7 +183,7 @@ def load_pack(path_or_url: str) -> PluginPack:
         raise PackError(f"Pack file not found: {path}")
     if path.stat().st_size > _MAX_PACK_BYTES:
         raise PackError("Pack file exceeds the 1 MiB size limit.")
-    return parse_pack(path.read_text(encoding="utf-8"), source=str(path))
+    return parse_pack(path.read_text(encoding="utf-8-sig"), source=str(path))
 
 
 # ── Resolution (bare index names → owner/repo) + review screen ──────────────────────────────
@@ -317,6 +317,7 @@ def install_pack_plugins(
         _get_disabled_set,
         _get_enabled_set,
         _install_plugin_core,
+        _install_python_dependencies,
         _prompt_plugin_env_vars,
         _run_capability_consent,
         _save_disabled_set,
@@ -350,6 +351,7 @@ def install_pack_plugins(
             _prompt_plugin_env_vars(manifest, console)
         except Exception:
             logger.debug("requires_env prompt failed for %s", installed_name, exc_info=True)
+        _install_python_dependencies(target, console)
 
         enabled = _get_enabled_set()
         disabled = _get_disabled_set()

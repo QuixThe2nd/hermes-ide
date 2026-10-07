@@ -3,6 +3,7 @@ policies and delivery preferences, loaded from config.yaml / gateway.json / env.
 """
 
 import contextlib
+import ipaddress
 import logging
 import math
 import os
@@ -10,9 +11,11 @@ from pathlib import Path
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
+from urllib.parse import urlsplit
 
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+from gateway.reaction_formula import DEFAULT_DECISION_FORMULA, prepare_decision_formula
 from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
@@ -40,37 +43,6 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
         parsed = _bool_token(value)
         return default if parsed is None else parsed
     return is_truthy_value(value, default=default)
-
-
-def _normalize_multiplex_profile_allowlist(value: Any) -> Optional[List[str]]:
-    """Normalize the optional named-profile allowlist: ``None`` = serve all; a malformed
-    outer value fails safe to ``[]`` (default profile only); bad entries are skipped."""
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        logger.warning(
-            "Invalid gateway.multiplex_profile_allowlist (expected a list, got %s); "
-            "serving only the default profile",
-            type(value).__name__,
-        )
-        return []
-
-    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
-
-    normalized: List[str] = []
-    for entry in value:
-        if not isinstance(entry, str):
-            logger.warning("Skipping invalid gateway.multiplex_profile_allowlist entry %r (expected a profile name)", entry)
-            continue
-        try:
-            name = normalize_profile_name(entry)
-            validate_profile_name(name)
-        except ValueError:
-            logger.warning("Skipping invalid gateway.multiplex_profile_allowlist entry %r", entry)
-            continue
-        if name != "default" and name not in normalized:
-            normalized.append(name)
-    return normalized
 
 
 def _env_multiplex_profiles_override() -> "bool | None":
@@ -162,6 +134,14 @@ def coerce_systemd_watchdog_seconds(
 
 def _coerce_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+# "pair" DMs a pairing code, "ignore" drops silently, "decline" sends one polite refusal then goes
+# silent toward that sender for gateway.pairing.DECLINE_DEDUPE_SECONDS (#88028).
+UNAUTHORIZED_DM_BEHAVIORS = {"pair", "ignore", "decline"}
+DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE = (
+    "Hi! I'm a personal assistant and can only chat with my owner, so I can't help you directly. Sorry!"
+)
 
 
 def _normalize_choice(value: Any, choices: set, default: str) -> str:
@@ -268,15 +248,20 @@ class Platform(Enum):
 # Built-in values snapshotted before any dynamic _missing_ lookup.
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
-# Platforms that bind a host TCP port. In a multiplexer only the default profile owns the
-# shared listener, so a SECONDARY profile enabling one is a misconfiguration (single source
-# of truth for gateway/run.py and hermes_cli/web_server.py validation).
+# Platforms that bind a host TCP port. In a multiplexer only the default profile binds: a SECONDARY
+# profile's port-binder is built in shared-listener mode and served at /p/<profile>/<path> on the
+# default's listener (gateway/platforms/shared_ingress.py); api_server/webhook are mirrored there.
 PORT_BINDING_PLATFORM_VALUES = frozenset({
     "webhook", "api_server", "msgraph_webhook", "feishu", "wecom_callback",
     "bluebubbles", "sms", "whatsapp_cloud", "line", "teams",
 })
 # Platforms that only bind in one connection mode (Feishu's default websocket mode is outbound).
 PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
+# Port-binders whose /p/<profile>/ surface is a MIRROR served by the default's own adapter; a secondary
+# never gets an instance of these (api_server: /p/<profile>/v1/..., webhook: profile-bound routes).
+SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
+# Path a client appends to ``<default listener>/p/<profile>`` to reach each mirror.
+SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
 
 def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
@@ -449,6 +434,511 @@ class ChannelOverride:
         return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
 
 
+@dataclass
+class ResponseGateConfig:
+    """Opt-in per-channel response gate (``<platform>.response_gate``).
+
+    A remote judge decides whether *ambient* (unpinged) human messages in the selected
+    channels wake this platform. Explicit triggers (mentions, replies to the bot, commands,
+    DMs) never consult it, and an omitted block means off. Deliberately narrow for the first
+    version: ``provider`` only supports ``jev`` and ``channels`` is an explicit opt-in list —
+    no wildcard and no global expansion.
+    """
+
+    #: Judge backend; ``jev`` (OpenRouter Decisions endpoint) is the only one.
+    provider: str = "jev"
+    #: Channel IDs (or exact channel names / ``#names``) opted in. Empty ⇒ gate off
+    #: unless ``echo_channels`` is set.
+    channels: tuple = ()
+    #: Like ``channels``, but ambient messages here get a one-line judge echo instead of waking the bot.
+    echo_channels: tuple = ()
+    #: ``shadow`` computes and logs the decision but keeps the legacy admission result;
+    #: ``enforce`` lets an approved ambient message through and denies everything else.
+    mode: str = "shadow"
+    #: Legacy single-score cutoff, still accepted and validated so existing configs keep
+    #: loading. The gate's verdict is composed from three component cutoffs
+    #: (defaults: addresses_bot > 0.5, or continues_bot_thread > 0.6 and noise < 0.4;
+    #: see the ``*_min``/``noise_max`` fields below); this value no longer influences it.
+    threshold: float = 0.8
+    #: Per-request budget; a timeout denies (enforce) rather than failing open.
+    timeout_seconds: float = 3.0
+    #: Bounded recent same-conversation messages sent as evidence (exact channel/thread only).
+    context_messages: int = 10
+    #: Total character budget for the buffered context block.
+    context_chars: int = 8000
+    #: Judge model; fixed default, no fallback chain.
+    model: str = "typesafe/jev-1.13"
+    #: Optional loopback-only override for the Decisions endpoint, so judge calls can
+    #: traverse a local metering proxy. ``None`` (default) keeps the fixed endpoint
+    #: and its exact request shape. Anything non-loopback is refused at load: the
+    #: gate posts a bearer credential to whatever URL it is given.
+    decisions_url: Optional[str] = None
+    #: When ``True`` (default), threads of a listed parent channel stay silent until
+    #: this bot is already a member of the thread (the adapter's persistent
+    #: participation tracker); the parent channel itself is never membership-gated.
+    #: ``False`` restores judging every in-scope thread. Independent of explicit
+    #: triggers: a ping in an unjoined thread still wakes the bot through the
+    #: mention path, which never consults the gate.
+    threads_require_membership: bool = True
+    #: Per-profile ambient confidence cutoffs (strict comparisons, each finite in
+    #: ``[0, 1]``). A candidate is allowed when ``addresses_bot > addresses_bot_min``
+    #: OR (``continues_bot_thread > continues_bot_thread_min`` AND
+    #: ``noise < noise_max``). The defaults reproduce the gate's historical fixed
+    #: cutoffs exactly; raising ``addresses_bot_min`` or ``continues_bot_thread_min``
+    #: narrows ambient admission, as does lowering ``noise_max``. Changes apply on the
+    #: next gateway start — the gate has no live reload.
+    addresses_bot_min: float = 0.5
+    continues_bot_thread_min: float = 0.6
+    noise_max: float = 0.4
+
+    # Validation bounds. Explicit config outside them raises at load time: a mistyped gate
+    # must never quietly degrade into "every ambient message is allowed".
+    MAX_TIMEOUT_SECONDS = 30.0
+    MAX_CONTEXT_MESSAGES = 200
+    MAX_CONTEXT_CHARS = 100_000
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "provider": self.provider,
+            "mode": self.mode,
+            "threshold": self.threshold,
+            "timeout_seconds": self.timeout_seconds,
+            "context_messages": self.context_messages,
+            "context_chars": self.context_chars,
+            "model": self.model,
+        }
+        if self.channels:
+            result["channels"] = list(self.channels)
+        if self.echo_channels:
+            result["echo_channels"] = list(self.echo_channels)
+        if self.decisions_url:
+            result["decisions_url"] = self.decisions_url
+        if not self.threads_require_membership:
+            result["threads_require_membership"] = self.threads_require_membership
+        if self.addresses_bot_min != 0.5:
+            result["addresses_bot_min"] = self.addresses_bot_min
+        if self.continues_bot_thread_min != 0.6:
+            result["continues_bot_thread_min"] = self.continues_bot_thread_min
+        if self.noise_max != 0.4:
+            result["noise_max"] = self.noise_max
+        return result
+
+    @property
+    def enabled(self) -> bool:
+        """True when the gate is configured AND has at least one opted-in channel."""
+        return self.provider == "jev" and bool(self.channels or self.echo_channels)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ResponseGateConfig":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError(
+                "response_gate must be a mapping with provider/mode/channels; got "
+                f"{type(data).__name__}"
+            )
+        provider = str(data.get("provider", "jev")).strip().lower()
+        if provider != "jev":
+            # An explicitly configured unknown provider is a config error, not "gate off":
+            # silently ignoring it would look enabled to the operator while doing nothing.
+            raise ValueError(f"response_gate: unsupported provider {provider!r} (only 'jev')")
+
+        mode = str(data.get("mode", "shadow")).strip().lower()
+        if mode not in {"shadow", "enforce"}:
+            # "Invalid mode must not act like enforce": refuse to load instead of guessing.
+            raise ValueError(f"response_gate: mode must be 'shadow' or 'enforce', got {mode!r}")
+
+        channels = _response_gate_channels(data.get("channels"))
+        echo_channels = _response_gate_channels(data.get("echo_channels"))
+        threshold = _response_gate_float(
+            data, "threshold", 0.8, 0.0, 1.0, "response_gate.threshold"
+        )
+        timeout_seconds = _response_gate_float(
+            data, "timeout_seconds", 3.0, 0.0, cls.MAX_TIMEOUT_SECONDS, "response_gate.timeout_seconds",
+            exclusive_min=True,
+        )
+        context_messages = _response_gate_int(
+            data, "context_messages", 10, 1, cls.MAX_CONTEXT_MESSAGES, "response_gate.context_messages",
+        )
+        context_chars = _response_gate_int(
+            data, "context_chars", 8000, 1, cls.MAX_CONTEXT_CHARS, "response_gate.context_chars",
+        )
+        model = str(data.get("model", "typesafe/jev-1.13")).strip()
+        if not model:
+            raise ValueError("response_gate: model must be a non-empty model slug")
+        decisions_url = data.get("decisions_url")
+        if decisions_url is not None:
+            decisions_url = str(decisions_url).strip()
+            if not is_loopback_http_url(decisions_url):
+                raise ValueError(
+                    "response_gate.decisions_url must be a loopback http(s) URL"
+                )
+        threads_require_membership = _gate_bool(
+            data, "threads_require_membership", True, "response_gate.threads_require_membership",
+        )
+        addresses_bot_min = _response_gate_float(
+            data, "addresses_bot_min", 0.5, 0.0, 1.0, "response_gate.addresses_bot_min",
+        )
+        continues_bot_thread_min = _response_gate_float(
+            data, "continues_bot_thread_min", 0.6, 0.0, 1.0, "response_gate.continues_bot_thread_min",
+        )
+        noise_max = _response_gate_float(
+            data, "noise_max", 0.4, 0.0, 1.0, "response_gate.noise_max",
+        )
+        return cls(
+            provider=provider, channels=channels, echo_channels=echo_channels, mode=mode,
+            threshold=threshold, timeout_seconds=timeout_seconds,
+            context_messages=context_messages, context_chars=context_chars, model=model,
+            decisions_url=decisions_url, threads_require_membership=threads_require_membership,
+            addresses_bot_min=addresses_bot_min,
+            continues_bot_thread_min=continues_bot_thread_min,
+            noise_max=noise_max,
+        )
+
+
+def is_loopback_http_url(url: Any) -> bool:
+    """True for a strict loopback http(s) URL suitable for ``response_gate.decisions_url``."""
+    if url is None:
+        return False
+    raw = str(url)
+    if not raw:
+        return False
+    for char in raw:
+        code = ord(char)
+        if code < 0x21 or code == 0x7F:
+            return False
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    if parts.username is not None or parts.password is not None:
+        return False
+    if parts.query or parts.fragment:
+        return False
+    host = parts.hostname
+    if not host:
+        return False
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    if port == 0:
+        return False
+    host_norm = host.lower()
+    if host_norm.endswith("."):
+        host_norm = host_norm[:-1]
+    if host_norm == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if addr.is_loopback:
+        return True
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool(mapped is not None and mapped.is_loopback)
+
+
+def _gate_channel_list(raw: Any, label: str) -> tuple:
+    """Normalize a gate ``channels`` list into non-empty strings; empty/None ⇒ ().
+
+    Accepts a YAML list or the legacy comma-separated string spelling used by the other
+    channel gates. Values are strings of the raw entry (YAML reads bare ids as ints).
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, (list, tuple, set)):
+        parts = [str(part).strip() for part in raw]
+    else:
+        parts = [part.strip() for part in str(raw).split(",")]
+    cleaned = tuple(dict.fromkeys(part for part in parts if part))
+    if "*" in cleaned:
+        # The other channel gates accept "*" as a wildcard; a judge gate must not silently
+        # become a global switch, so an operator has to list channels explicitly.
+        raise ValueError(f"{label}: channels does not support '*'; list channel ids explicitly")
+    return cleaned
+
+
+def _response_gate_channels(raw: Any) -> tuple:
+    return _gate_channel_list(raw, "response_gate")
+
+
+def _response_gate_float(data: dict, key: str, default: float, low: float, high: float,
+                         label: str, *, exclusive_min: bool = False) -> float:
+    """Validated float field: finite, inside ``[low, high]``, else raise (never clamp)."""
+    raw = data.get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(f"{label} must be a number, got {raw!r}")
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"{label} must be finite, got {raw!r}")
+    if value < low or value > high or (exclusive_min and value <= low):
+        raise ValueError(f"{label} must be in the range {low} < value <= {high}, got {value}")
+    return value
+
+
+def _response_gate_int(data: dict, key: str, default: int, low: int, high: int, label: str) -> int:
+    """Validated integer field: inside ``[low, high]``, else raise (never clamp)."""
+    raw = data.get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(f"{label} must be an integer, got {raw!r}")
+    if raw < low or raw > high:
+        raise ValueError(f"{label} must be between {low} and {high}, got {raw}")
+    return raw
+
+
+def _gate_bool(data: dict, key: str, default: bool, label: str) -> bool:
+    """Strict bool field for a gate block: bool, or a recognized truthy/falsy token.
+
+    An unrecognized string or a non-bool type refuses to load (naming the field) —
+    a mistyped flag must never quietly take either meaning.
+    """
+    raw = data.get(key, default)
+    if raw is not None and not isinstance(raw, bool):
+        if isinstance(raw, str):
+            parsed = _bool_token(raw)
+            if parsed is None:
+                raise ValueError(f"{label} must be a boolean, got {raw!r}")
+            return parsed
+        raise ValueError(f"{label} must be a boolean, got {type(raw).__name__}")
+    return _coerce_bool(raw, default)
+
+
+#: The fixed abstention options every reaction-gate question carries. They are part of
+#: the product contract (the default decision formula sums exactly these two), never config.
+REACTION_NONE_OPTION = "None"
+REACTION_OTHER_OPTION = "Other"
+
+#: Default whitelisted emojis offered to the reaction judge (configurable per gate).
+DEFAULT_REACTION_EMOJIS = ("👍", "❤️", "😂", "🎉", "😢", "😮", "🔥", "🤔")
+
+
+def _reaction_gate_emojis(raw: Any) -> tuple:
+    """Normalize the whitelisted ``emojis`` into non-empty unique strings.
+
+    A list (or comma-separated string, mirroring the channel gates) of single emoji
+    or short emoji-sequence entries; ``None`` keeps the default whitelist, while an
+    explicitly configured empty or oversized list refuses to load.
+    """
+    if raw is None:
+        return DEFAULT_REACTION_EMOJIS
+    if isinstance(raw, (list, tuple, set)):
+        parts = [str(part).strip() for part in raw]
+    else:
+        parts = [part.strip() for part in str(raw).split(",")]
+    cleaned = tuple(dict.fromkeys(part for part in parts if part))
+    if not cleaned:
+        raise ValueError("reaction_gate: emojis must list at least one emoji")
+    if len(cleaned) > ReactionGateConfig.MAX_EMOJIS:
+        raise ValueError(
+            f"reaction_gate: emojis must list at most {ReactionGateConfig.MAX_EMOJIS} emojis"
+        )
+    for emoji in cleaned:
+        if len(emoji) > ReactionGateConfig.MAX_EMOJI_CHARS:
+            raise ValueError(
+                f"reaction_gate: emoji entry too long ({len(emoji)} chars): keep one emoji per entry"
+            )
+        if emoji in (REACTION_NONE_OPTION, REACTION_OTHER_OPTION):
+            raise ValueError(
+                "reaction_gate: 'None' and 'Other' are fixed judge options, not whitelisted emojis"
+            )
+    return cleaned
+
+
+def _reaction_gate_criteria(raw: Any, emojis: tuple) -> Dict[str, str]:
+    """Optional per-emoji criteria overrides; the two abstention options stay fixed."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("reaction_gate.criteria must be a mapping of emoji to description")
+    cleaned: Dict[str, str] = {}
+    for key, value in raw.items():
+        emoji = str(key).strip()
+        if emoji not in emojis:
+            raise ValueError("reaction_gate.criteria keys must be whitelisted emojis")
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"reaction_gate.criteria[{emoji!r}] must be a non-empty description")
+        if len(text) > ReactionGateConfig.MAX_CRITERIA_CHARS:
+            raise ValueError(
+                f"reaction_gate.criteria[{emoji!r}] must be at most "
+                f"{ReactionGateConfig.MAX_CRITERIA_CHARS} characters"
+            )
+        cleaned[emoji] = text
+    return cleaned
+
+
+@dataclass
+class ReactionGateConfig:
+    """Opt-in per-channel emoji reaction gate (``<platform>.reaction_gate``).
+
+    An independent judge that decides whether the bot adds ONE whitelisted emoji
+    reaction to a message — every message in the selected channels, not only the
+    ambient ones the :class:`ResponseGateConfig` judge sees. It shares nothing with
+    the speaking gate but the transport: either gate may be on, off, or scoped
+    differently, and neither ever changes the other's verdicts.
+    """
+
+    #: Judge backend; ``jev`` (OpenRouter Decisions endpoint) is the only one.
+    provider: str = "jev"
+    #: Master switch. The gate is off unless this is explicitly ``true`` AND
+    #: ``channels`` names at least one channel — an omitted block never reacts.
+    enabled: bool = False
+    #: Channel IDs (or exact channel names / ``#names``) opted in. A parent channel
+    #: id selects its threads (the adapter's established channel-key convention).
+    channels: tuple = ()
+    #: When ``True`` (default), a listed parent channel id also selects its threads.
+    #: When ``False``, a listed parent channel id no longer selects its threads; a
+    #: thread id or exact name/#name listing still matches (name keys are not split
+    #: between parent and thread — list parents by id when using the opt-out).
+    include_threads: bool = True
+    #: When ``True`` (default), a selected thread stays silent until this bot is
+    #: already a member of it (the adapter's persistent participation tracker); the
+    #: parent channel itself is never membership-gated, and the flag composes with
+    #: ``include_threads`` (scope first, then membership). ``False`` restores
+    #: reacting to every in-scope thread.
+    threads_require_membership: bool = True
+    #: Whitelisted emojis offered to the judge, in preference order for exact ties.
+    emojis: tuple = DEFAULT_REACTION_EMOJIS
+    #: Optional per-emoji criteria text overrides; ``None``/``Other`` wording is fixed.
+    criteria: Dict[str, str] = field(default_factory=dict)
+    #: Per-request budget; a timeout means no reaction (never a reply).
+    timeout_seconds: float = 3.0
+    #: Bounded recent same-conversation messages sent as evidence (exact channel/thread only).
+    context_messages: int = 10
+    #: Total character budget for the buffered context block.
+    context_chars: int = 8000
+    #: Judge model; fixed default, no fallback chain.
+    model: str = "typesafe/jev-1.13"
+    #: Optional loopback-only override for the Decisions endpoint (see ResponseGateConfig).
+    decisions_url: Optional[str] = None
+    #: The decision rule: one Boolean expression over ``abstain``/``none``/``other``/
+    #: ``top``/``second``/``emoji_count`` (see ``gateway/reaction_formula.py`` for the
+    #: safe mini-language). ``None`` or omitted keeps the exact default rule the gate
+    #: always shipped with; an invalid expression refuses to load.
+    decision_formula: Optional[str] = DEFAULT_DECISION_FORMULA
+
+    # Validation bounds — the same budgets as the response gate, plus emoji-list caps
+    # so one request body stays bounded no matter how wide the whitelist is.
+    MAX_TIMEOUT_SECONDS = ResponseGateConfig.MAX_TIMEOUT_SECONDS
+    MAX_CONTEXT_MESSAGES = ResponseGateConfig.MAX_CONTEXT_MESSAGES
+    MAX_CONTEXT_CHARS = ResponseGateConfig.MAX_CONTEXT_CHARS
+    MAX_EMOJIS = 48
+    MAX_EMOJI_CHARS = 32
+    MAX_CRITERIA_CHARS = 500
+
+    def __post_init__(self) -> None:
+        # Validate here — not only in from_dict — so a directly constructed typed
+        # config (tests, tooling, a future caller) cannot bypass formula safety any
+        # more than a YAML block can. ``None`` means "default", matching every other
+        # optional field's absent-spelling.
+        raw = self.decision_formula
+        if raw is None:
+            self.decision_formula = DEFAULT_DECISION_FORMULA
+            return
+        if not isinstance(raw, str):
+            raise ValueError(
+                f"reaction_gate.decision_formula must be a string, got {type(raw).__name__}"
+            )
+        text = raw.strip()
+        if not text:
+            raise ValueError("reaction_gate.decision_formula must be a non-empty expression")
+        try:
+            prepare_decision_formula(text)
+        except ValueError as exc:
+            raise ValueError(f"reaction_gate.decision_formula: {exc}") from None
+        self.decision_formula = text
+
+    @property
+    def active(self) -> bool:
+        """True when the gate is configured, switched on, and has channels + emojis."""
+        return (
+            self.provider == "jev" and self.enabled and bool(self.channels) and bool(self.emojis)
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "provider": self.provider,
+            "enabled": self.enabled,
+            "emojis": list(self.emojis),
+            "timeout_seconds": self.timeout_seconds,
+            "context_messages": self.context_messages,
+            "context_chars": self.context_chars,
+            "model": self.model,
+        }
+        if self.channels:
+            result["channels"] = list(self.channels)
+        if self.criteria:
+            result["criteria"] = dict(self.criteria)
+        if self.decisions_url:
+            result["decisions_url"] = self.decisions_url
+        if not self.include_threads:
+            result["include_threads"] = self.include_threads
+        if not self.threads_require_membership:
+            result["threads_require_membership"] = self.threads_require_membership
+        if self.decision_formula != DEFAULT_DECISION_FORMULA:
+            result["decision_formula"] = self.decision_formula
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ReactionGateConfig":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"reaction_gate must be a mapping with enabled/channels/emojis; got "
+                f"{type(data).__name__}"
+            )
+        provider = str(data.get("provider", "jev")).strip().lower()
+        if provider != "jev":
+            # Same rule as the response gate: an unknown provider is a config error,
+            # not "gate off" — it would look enabled while doing nothing.
+            raise ValueError(f"reaction_gate: unsupported provider {provider!r} (only 'jev')")
+        enabled = _coerce_bool(data.get("enabled", False), False)
+        include_threads = _gate_bool(
+            data, "include_threads", True, "reaction_gate.include_threads",
+        )
+        threads_require_membership = _gate_bool(
+            data, "threads_require_membership", True, "reaction_gate.threads_require_membership",
+        )
+        channels = _gate_channel_list(data.get("channels"), "reaction_gate")
+        emojis = _reaction_gate_emojis(data.get("emojis"))
+        criteria = _reaction_gate_criteria(data.get("criteria"), emojis)
+        timeout_seconds = _response_gate_float(
+            data, "timeout_seconds", 3.0, 0.0, cls.MAX_TIMEOUT_SECONDS,
+            "reaction_gate.timeout_seconds", exclusive_min=True,
+        )
+        context_messages = _response_gate_int(
+            data, "context_messages", 10, 1, cls.MAX_CONTEXT_MESSAGES,
+            "reaction_gate.context_messages",
+        )
+        context_chars = _response_gate_int(
+            data, "context_chars", 8000, 1, cls.MAX_CONTEXT_CHARS, "reaction_gate.context_chars",
+        )
+        model = str(data.get("model", "typesafe/jev-1.13")).strip()
+        if not model:
+            raise ValueError("reaction_gate: model must be a non-empty model slug")
+        decisions_url = data.get("decisions_url")
+        if decisions_url is not None:
+            decisions_url = str(decisions_url).strip()
+            if not is_loopback_http_url(decisions_url):
+                raise ValueError(
+                    "reaction_gate.decisions_url must be a loopback http(s) URL"
+                )
+        # ``None`` (absent) keeps the default rule; everything else is validated by
+        # ``__post_init__`` — the same single safety check a typed construction gets.
+        decision_formula = data.get("decision_formula")
+        return cls(
+            provider=provider, enabled=enabled, channels=channels, include_threads=include_threads,
+            threads_require_membership=threads_require_membership,
+            emojis=emojis, criteria=criteria, timeout_seconds=timeout_seconds,
+            context_messages=context_messages, context_chars=context_chars, model=model,
+            decisions_url=decisions_url, decision_formula=decision_formula,
+        )
+
+
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token
 # warnings; multiplex primary-startup gate in ``gateway.run``). Platforms absent here
 # authenticate another way and must never be skipped for a missing token.
@@ -473,6 +963,18 @@ class PlatformConfig:
     # Dedicated target for gateway lifecycle broadcasts (shutdown/startup)
     # (e.g. a Discord "#gateway-restarts" channel).
     notification_channel: Optional[DeliveryTarget] = None
+
+    # Opt-in per-channel ambient response gate (Discord today); None ⇒ off.
+    response_gate: Optional[ResponseGateConfig] = None
+
+    # Opt-in per-channel emoji reaction gate (Discord today); None ⇒ off. Fully
+    # independent of ``response_gate``: separate scope, verdicts and side effects.
+    reaction_gate: Optional[ReactionGateConfig] = None
+
+    # Boot-time diagnostics, NOT config: the ValueError texts of invalid gate blocks
+    # refused above, so status surfaces can show why a gate is off instead of only the
+    # log. Never serialized by ``to_dict`` (a round-trip must not resurrect them).
+    gate_config_warnings: tuple[str, ...] = ()
 
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
@@ -517,25 +1019,41 @@ class PlatformConfig:
         }
         if self.notification_channel:
             result["notification_channel"] = self.notification_channel.to_dict()
+        if self.response_gate is not None:
+            result["response_gate"] = self.response_gate.to_dict()
+        if self.reaction_gate is not None:
+            result["reaction_gate"] = self.reaction_gate.to_dict()
         if self.channel_overrides:
             result["channel_overrides"] = {cid: ov.to_dict() for cid, ov in self.channel_overrides.items()}
         return result
+
+    # Keys consumed by typed fields; everything else at the top of a platform block is adapter
+    # config and belongs in ``extra`` (see from_dict).
+    _TYPED_KEYS = frozenset({
+        "enabled", "token", "api_key", "home_channel", "notification_channel", "reply_to_mode", "channel_overrides", "extra",
+        "gateway_restart_notification", "typing_indicator", "typing_status_text", "response_gate",
+        "reaction_gate",
+    })
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         data = _coerce_dict(data)
         # A stale ``home_channel`` key (removed feature) is tolerated: ignored
-        # on load and never re-emitted by to_dict().
+        # on load (a _TYPED_KEYS member, so it is never promoted into extra)
+        # and never re-emitted by to_dict().
 
         notification_channel = None
         if isinstance(data.get("notification_channel"), dict):
             notification_channel = DeliveryTarget.from_dict(data["notification_channel"])
 
-        # gateway_restart_notification may be bridged into extra via the
-        # shared-key loop in load_gateway_config(); check both top-level
-        # and extra so YAML ``discord: gateway_restart_notification: false``
-        # works without needing a separate platforms: block.
-        extra = _coerce_dict(data.get("extra", {}))
+        # Adapters read their settings from ``extra`` (``config.extra.get("port")``), but users
+        # write them where the docs and ``hermes config set platforms.webhook.port`` put them:
+        # directly under the platform block. Promote every non-typed top-level key so neither
+        # spelling is silently dropped (#10206); an explicit ``extra:`` value wins on a clash.
+        # gateway_restart_notification may be bridged into extra via the shared-key loop in
+        # load_gateway_config(); the toplevel_or_extra() helper below checks both spots so YAML
+        # ``discord: gateway_restart_notification: false`` works without a separate platforms: block.
+        extra = {**{k: v for k, v in data.items() if k not in cls._TYPED_KEYS}, **_coerce_dict(data.get("extra", {}))}
 
         def toplevel_or_extra(key: str) -> Any:
             value = data.get(key)
@@ -548,11 +1066,37 @@ class PlatformConfig:
             if isinstance(ov_data, dict)
         } if isinstance(raw_overrides, dict) else {}
 
+        # Validated opt-in gate block. Malformed explicit config is refused loudly rather
+        # than clamped: the gate stays off, so a bad threshold/mode can never load as
+        # "silently allow all ambient traffic". The error is contained here (not left to
+        # the platform-block-level ValueError swallow in GatewayConfig.from_dict), because
+        # that would silently drop this whole platform config — the operator would lose
+        # allowlists and the platform itself over a typo in one opt-in feature.
+        gate_config_warnings: tuple[str, ...] = ()
+        try:
+            response_gate = ResponseGateConfig.from_dict(toplevel_or_extra("response_gate"))
+        except ValueError as exc:
+            logger.warning("Ignoring invalid response_gate config (gate stays off): %s", exc)
+            response_gate = None
+            gate_config_warnings = (str(exc),)
+
+        # Same containment discipline as the response gate: a typo in this opt-in
+        # block must not take the whole platform (or its allowlists) down with it.
+        try:
+            reaction_gate = ReactionGateConfig.from_dict(toplevel_or_extra("reaction_gate"))
+        except ValueError as exc:
+            logger.warning("Ignoring invalid reaction_gate config (gate stays off): %s", exc)
+            reaction_gate = None
+            gate_config_warnings += (str(exc),)
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             notification_channel=notification_channel,
+            response_gate=response_gate,
+            reaction_gate=reaction_gate,
+            gate_config_warnings=gate_config_warnings,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
@@ -679,10 +1223,14 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
-    # Opt-in: the default profile's gateway serves every profile on the host (profiles stamped into
-    # session keys, per-profile adapters/credentials). Allowlist None = serve all; [] = default only.
-    multiplex_profiles: bool = False
-    multiplex_profile_allowlist: Optional[List[str]] = None
+    # The default profile's gateway serves every profile on the host (profiles stamped into session
+    # keys, per-profile adapters/credentials). On by default (DEFAULT_CONFIG), but UNSET here is
+    # ``None``: a request the gateway settles at boot, not a verdict. ``hermes_cli.gateway_multiplex_mode
+    # .resolve_multiplex_mode`` runs the migration preflight (default profile, >= 2 profiles, no
+    # secondary running its own gateway, no blocker, migratable host) and only then writes True/False.
+    # An explicit value (config.yaml, GATEWAY_MULTIPLEX_PROFILES, a constructor argument) is honoured
+    # verbatim. Every reader tests truthiness, so an unresolved ``None`` never multiplexes by accident.
+    multiplex_profiles: Optional[bool] = None
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -701,7 +1249,8 @@ class GatewayConfig:
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
-    unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+    unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
+    unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
@@ -711,10 +1260,10 @@ class GatewayConfig:
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
-        "max_concurrent_sessions", "multiplex_profiles", "multiplex_profile_allowlist",
+        "max_concurrent_sessions", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
-        "loop_watchdog_max_strikes", "unauthorized_dm_behavior",
+        "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
     )
 
     # Restart-progress channel renaming (opt-in). When configured with a
@@ -725,7 +1274,6 @@ class GatewayConfig:
     restart_channel_rename: Optional[dict] = None
 
     def __post_init__(self) -> None:
-        self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(self.multiplex_profile_allowlist)
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
 
     def get_connected_platforms(self) -> List[Platform]:
@@ -813,7 +1361,9 @@ class GatewayConfig:
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "profile_routes": [
-                asdict(r) if is_dataclass(r) and not isinstance(r, type) else r for r in self.profile_routes
+                {k: v for k, v in asdict(r).items() if k != "user_id" or v is not None}
+                if is_dataclass(r) and not isinstance(r, type) else r
+                for r in self.profile_routes
             ],
         }
 
@@ -859,9 +1409,10 @@ class GatewayConfig:
         systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             pick("systemd_watchdog_seconds"), key_label("systemd_watchdog_seconds")
         )
-        # env > config.yaml > False: a recognized GATEWAY_MULTIPLEX_PROFILES wins (hosted deployments
-        # stamp it on the container); blank/unrecognized falls through to the top-level VALUE when
-        # not None, else ``gateway.multiplex_profiles``.
+        # env > config.yaml > unset: a recognized GATEWAY_MULTIPLEX_PROFILES wins (hosted deployments
+        # stamp it on the container); blank/unrecognized falls through to the top-level VALUE when not
+        # None, else ``gateway.multiplex_profiles``. Nothing set stays ``None`` so the boot-time guard
+        # (``resolve_multiplex_mode``) can tell "the operator chose" from "the default applies".
         multiplex_profiles = data.get("multiplex_profiles")
         if multiplex_profiles is None:
             multiplex_profiles = nested_gateway.get("multiplex_profiles")
@@ -905,8 +1456,7 @@ class GatewayConfig:
             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
-            multiplex_profiles=_coerce_bool(multiplex_profiles, False),
-            multiplex_profile_allowlist=pick("multiplex_profile_allowlist"),
+            multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
@@ -914,7 +1464,8 @@ class GatewayConfig:
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
             max_concurrent_sessions=max_concurrent_sessions,
-            unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), {"pair", "ignore"}, "pair"),
+            unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
+            unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
@@ -935,7 +1486,7 @@ class GatewayConfig:
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
         """Effective unauthorized-DM behavior. Email is inbox-shaped so it defaults to ``"ignore"``
         unless its own ``unauthorized_dm_behavior`` opts in (a global default does not)."""
-        choice = self._extra_choice(platform, "unauthorized_dm_behavior", {"pair", "ignore"}, self.unauthorized_dm_behavior)
+        choice = self._extra_choice(platform, "unauthorized_dm_behavior", UNAUTHORIZED_DM_BEHAVIORS, self.unauthorized_dm_behavior)
         if choice is not None:
             return choice
         return "ignore" if platform == Platform.EMAIL else self.unauthorized_dm_behavior

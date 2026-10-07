@@ -112,7 +112,7 @@ def _build_external_skill_index() -> Set[str]:
 def _read_manifest() -> Dict[str, str]:
     """``{skill_name: origin_hash}``; v1 plain-name lines get an empty hash (migrates next sync)."""
     try:
-        lines = _manifest_file().read_text(encoding="utf-8").splitlines() if _manifest_file().exists() else []
+        lines = _manifest_file().read_text(encoding="utf-8-sig").splitlines() if _manifest_file().exists() else []
     except OSError:
         return {}
     pairs = (line.partition(":") for line in map(str.strip, lines) if line)
@@ -126,7 +126,8 @@ def _read_suppressed_names() -> set:
 
 def _write_manifest(entries: Dict[str, str]):
     """Atomic v2 write, preserving an existing file's mode/owner (not mkstemp's 0600)."""
-    _manifest_file().parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(_manifest_file().parent)
     try:
         data = "".join(f"{n}:{h}\n" for n, h in sorted(entries.items()))
         atomic_write_text(_manifest_file(), data, tmp_prefix=".bundled_manifest_", preserve_mode=True)

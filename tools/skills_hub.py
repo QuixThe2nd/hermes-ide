@@ -14,9 +14,10 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 import json
 import logging
 import time
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import urljoin
 
 import httpx
@@ -83,16 +84,20 @@ _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
 
 
-def _ssrf_safe_http_get(url: str, *, timeout: int = 20) -> httpx.Response:
+def _ssrf_safe_http_get(url: str, *, timeout: int = 20,
+                        headers: Optional[Dict[str, str]] = None) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
     from tools.url_safety import create_ssrf_safe_client
 
     with create_ssrf_safe_client(timeout=timeout, follow_redirects=False) as client:
-        return client.get(url)
+        return client.get(url, headers=headers)
 
 
-def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
-    """Fetch a URL with SSRF and redirect-target validation (each hop re-checked)."""
+def _guarded_http_get(url: str, *, timeout: int = 20,
+                      headers: Optional[Dict[str, str]] = None) -> Optional[httpx.Response]:
+    """Fetch a URL with SSRF and redirect-target validation (each hop re-checked).
+
+    *headers* are plain request headers (no credentials) and are sent on every hop."""
     from tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
@@ -112,7 +117,7 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             return None
 
         try:
-            resp = _ssrf_safe_http_get(current_url, timeout=timeout)
+            resp = _ssrf_safe_http_get(current_url, timeout=timeout, headers=headers)
         except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
@@ -130,6 +135,70 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
     return None
 
 
+@contextmanager
+def _guarded_http_stream(
+    url: str,
+    *,
+    params: Optional[Dict[str, str]] = None,
+    timeout: int = 20,
+) -> Iterator[Optional[httpx.Response]]:
+    """Stream one response with bounded, policy-checked redirects."""
+    from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client
+
+    current_url = url
+    current_params = params
+    response: Optional[httpx.Response] = None
+    stack = ExitStack()
+
+    try:
+        for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
+            if not is_safe_url(current_url):
+                logger.warning("Blocked unsafe Skills Hub URL: %s", current_url)
+                response = None
+                break
+
+            blocked = check_website_access(current_url)
+            if blocked:
+                logger.info(
+                    "Blocked Skills Hub fetch for %s by rule %s",
+                    blocked["host"],
+                    blocked["rule"],
+                )
+                response = None
+                break
+
+            stack.close()
+            stack = ExitStack()
+            try:
+                client = stack.enter_context(
+                    create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
+                )
+                response = stack.enter_context(
+                    client.stream("GET", current_url, params=current_params)
+                )
+            except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
+                logger.debug("Skills Hub stream failed for %s: %s", current_url, exc)
+                response = None
+                break
+
+            if response.status_code not in _REDIRECT_STATUS_CODES:
+                break
+
+            location = response.headers.get("location")
+            if not location:
+                response = None
+                break
+            current_url = urljoin(current_url, location)
+            current_params = None
+        else:
+            logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
+            response = None
+
+        yield response
+    finally:
+        stack.close()
+
+
 # ---------------------------------------------------------------------------
 # Shared index cache (used by every adapter)
 # ---------------------------------------------------------------------------
@@ -139,7 +208,7 @@ def _read_json_if_fresh(path: Path, ttl: float) -> Optional[Any]:
     try:
         if time.time() - path.stat().st_mtime > ttl:
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -183,7 +252,7 @@ class _JsonStateFile:
 
     def _read(self) -> dict:
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            return json.loads(self.path.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError):
             return json.loads(json.dumps(self.EMPTY))
 

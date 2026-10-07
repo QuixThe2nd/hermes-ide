@@ -758,7 +758,7 @@ class TestMatrixModuleImport:
                 "    if k.startswith('mautrix'): del sys.modules[k]\n"
                 "from unittest.mock import patch\n"
                 "from plugins.platforms.matrix.adapter import check_matrix_requirements\n"
-                "with patch('tools.lazy_deps.ensure', side_effect=ImportError('blocked')):\n"
+                "with patch('pm.extras.ensure_import', side_effect=ImportError('blocked')):\n"
                 "    assert not check_matrix_requirements()\n"
                 "print('OK')\n"
             )],
@@ -780,7 +780,7 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is False
 
     def test_check_requirements_e2ee_optional_no_deps_ok(self, monkeypatch):
@@ -792,8 +792,8 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()), \
-             patch("tools.lazy_deps.ensure_and_bind", return_value=True):
+             patch("pm.extras.missing", return_value=()), \
+             patch("pm.extras.ensure_and_bind", return_value=True):
             assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_requirements_encryption_false_no_e2ee_deps_ok(self, monkeypatch):
@@ -804,7 +804,7 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_requirements_encryption_true_with_e2ee_deps(self, monkeypatch):
@@ -815,7 +815,7 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_e2ee_deps_requires_asyncpg(self, monkeypatch):
@@ -878,11 +878,11 @@ class TestMatrixRequirements:
 
         def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
             called["ensure_and_bind"] = True
-            assert feature == "platform.matrix"
+            assert feature == "matrix"
             return True  # Pretend install succeeded.
 
-        with patch("tools.lazy_deps.feature_missing", return_value=("asyncpg==0.31.0",)), \
-             patch("tools.lazy_deps.ensure_and_bind", side_effect=_fake_ensure_and_bind):
+        with patch("pm.extras.missing", return_value=("asyncpg==0.31.0",)), \
+             patch("pm.extras.ensure_and_bind", side_effect=_fake_ensure_and_bind):
             matrix_mod.check_matrix_requirements()
 
         assert called["ensure_and_bind"], (
@@ -1250,8 +1250,15 @@ class TestMatrixDeviceIdConfig:
         assert mc.extra.get("device_id") == "HERMES_BOT"
 
 
-class TestMatrixSyncLoop:
+def _sync_error(message, **attrs):
+    """Shape of mautrix's MatrixRequestError: message text + structured attrs."""
+    exc = Exception(message)
+    for k, v in attrs.items():
+        setattr(exc, k, v)
+    return exc
 
+
+class TestMatrixSyncLoop:
 
     @pytest.mark.asyncio
     async def test_dispatch_sync_accepts_async_handle_sync(self):
@@ -1323,6 +1330,72 @@ class TestMatrixSyncLoop:
         assert len(captured) == 1
         assert captured[0].text == "hello"
         assert captured[0].source.chat_type == "dm"
+
+    async def _run_sync_loop_with_first_error(self, exc):
+        """Drive _sync_loop: sync() raises exc once, then returns a clean dict and closes."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        calls = {"n": 0}
+
+        async def _sync_side_effect(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise exc
+            adapter._closing = True
+            return {"next_batch": "s1"}
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_side_effect)
+        fake_client.sync_store = MagicMock()
+        fake_client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        fake_client.sync_store.put_next_batch = AsyncMock()
+        adapter._client = fake_client
+        with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            await adapter._sync_loop()
+        return fake_client.sync.await_count, [c.args[0] for c in mock_sleep.await_args_list]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("exc", "expected_sync_calls"),
+        [
+            # Umbrel app-proxy 502: an SVG path coordinate embeds "403".
+            (
+                _sync_error(
+                    '502: <!DOCTYPE html><svg><path d="M17.4517 1403.2C12.7214 1403.2"/></svg>',
+                    http_status=502,
+                ),
+                2,
+            ),
+            # Plain timeout echoing the pagination token, which embeds "401".
+            (
+                asyncio.TimeoutError(
+                    "Connection timeout to host https://matrix.example.org/_matrix/"
+                    "client/v3/sync?timeout=30000&since=s72802_401975_486_12943_11759"
+                ),
+                2,
+            ),
+            # Rate limiting is a non-auth errcode on a non-auth status: retried.
+            (_sync_error("rate limited", errcode="M_LIMIT_EXCEEDED", http_status=429), 2),
+            # Structured 401 with an auth errcode: permanent, loop returns.
+            (_sync_error("Invalid access token", errcode="M_UNKNOWN_TOKEN", http_status=401), 1),
+            # Reverse proxy rewrote the body to HTML and dropped the errcode; the
+            # 401 status alone must still stop the loop.
+            (_sync_error("401: <html>proxy</html>", errcode=None, http_status=401), 1),
+        ],
+        ids=[
+            "502-html-body-with-403-digits",
+            "timeout-since-token-with-401-digits",
+            "429-rate-limited",
+            "401-unknown-token",
+            "401-html-body-no-errcode",
+        ],
+    )
+    async def test_sync_loop_retries_only_non_auth_errors(self, exc, expected_sync_calls):
+        """Transient errors (even when their text embeds auth digits) are retried once
+        with the 5s backoff; structured auth failures return without retrying."""
+        sync_calls, sleeps = await self._run_sync_loop_with_first_error(exc)
+        assert sync_calls == expected_sync_calls
+        assert (5 in sleeps) is (expected_sync_calls == 2)  # the retry backoff, not the 0s dispatch-yield
 
     @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):

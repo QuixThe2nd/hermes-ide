@@ -29,6 +29,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from utils import atomic_json_write, atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 # Pinned: never auto-resolve "latest" — the YAML schema may change between releases.
@@ -279,7 +281,7 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
 
 def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
     """Parse ``sha256sum`` output (``<hex>  <filename>``)."""
-    for line in checksum_file.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in checksum_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         parts = line.strip().split()
         if len(parts) >= 2 and parts[-1] == asset_name:
             return parts[0]
@@ -380,7 +382,7 @@ def mint_proxy_token(prefix: str = "hermes-proxy") -> str:
 def _read_text_or_none(p: Path) -> Optional[str]:
     """Stripped file contents, or None when missing/unreadable/empty."""
     try:
-        return p.read_text(encoding="utf-8").strip() or None
+        return p.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 
@@ -421,7 +423,7 @@ def _config_listen(section: str, *keys: str, config_path: Optional[Path] = None)
     yaml, data = _yaml(), {}
     if yaml is not None:
         with suppress(OSError, yaml.YAMLError):
-            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8-sig")) or {}
     block = data.get(section) or {}
     return _parse_listen(next((block[k] for k in keys if block.get(k)), ""))
 
@@ -577,21 +579,15 @@ def ensure_audit_log(audit_path: Path) -> None:
         ) from exc
 
 
-def _write_state_file_atomic(state: Path, name: str, dump) -> Path:
-    """0600 temp file + atomic replace: the file holds proxy tokens; chmod-after-replace would be a world-readable TOCTOU window."""
-    tmp_path = state / f".{name}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        dump(f)
-    os.chmod(tmp_path, 0o600)
-    os.replace(tmp_path, state / name)
-    return state / name
-
-
 def write_proxy_config(config: Dict) -> Path:
-    """Serialize the config dict to ``<hermes_home>/proxy/proxy.yaml`` (safe_dump, no Python tags)."""
+    """Serialize the config dict to ``<hermes_home>/proxy/proxy.yaml`` (safe_dump, no Python tags).
+
+    The file holds proxy tokens: written 0600 from creation, never at process umask."""
     if (yaml := _yaml()) is None:
         raise RuntimeError("PyYAML is required to write the iron-proxy config but is not installed.")
-    return _write_state_file_atomic(_proxy_state_dir(), "proxy.yaml", lambda f: yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False))
+    path = _proxy_state_dir() / "proxy.yaml"
+    atomic_write_text(path, yaml.safe_dump(config, default_flow_style=False, sort_keys=False), mode=0o600)
+    return path
 
 
 def write_mappings(mappings: List[TokenMapping]) -> Path:
@@ -600,7 +596,9 @@ def write_mappings(mappings: List[TokenMapping]) -> Path:
         "proxy_token": m.proxy_token, "env_name": m.real_env_name, "upstream_hosts": list(m.upstream_hosts),
         "match_headers": list(m.match_headers), "alias_env_names": list(m.alias_env_names),
     } for m in mappings]}
-    return _write_state_file_atomic(_proxy_state_dir(), "mappings.json", lambda f: json.dump(payload, f, indent=2))
+    path = _proxy_state_dir() / "mappings.json"
+    atomic_json_write(path, payload, mode=0o600)
+    return path
 
 
 def load_mappings() -> List[TokenMapping]:
@@ -608,7 +606,7 @@ def load_mappings() -> List[TokenMapping]:
     if not (f := _proxy_state_dir() / "mappings.json").exists():
         return []
     try:
-        payload = json.loads(f.read_text(encoding="utf-8"))
+        payload = json.loads(f.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Failed to read iron-proxy mappings.json: %s", exc)
         return []
@@ -663,7 +661,7 @@ def _read_pid() -> Optional[int]:
 def _pid_proc_starttime(pid: int) -> Optional[str]:
     """/proc/<pid>/stat starttime (field 22) on Linux, else None — cheap PID-recycling detector."""
     try:
-        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8-sig")
     except OSError:
         return None
     # comm may contain spaces/parens, so split after the LAST ")"; field 22 -> tail index 19.

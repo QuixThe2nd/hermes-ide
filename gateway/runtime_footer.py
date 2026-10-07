@@ -20,6 +20,9 @@ Available fields:
 
 ``latency`` is opt-in: it is not in the default field set, so a footer whose
 ``fields`` are unset renders exactly as before.
+``served_model`` is opt-in: it renders ``alias → served`` — the deployment a
+routing proxy reported via ``x-litellm-model-id`` / ``x-litellm-model-api-base``,
+or Hermes' own fallback route; skipped when the served model is the requested one.
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -119,6 +122,7 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           api_time: Optional[float] = None,
                           tool_time: Optional[float] = None,
                           api_calls: Optional[int] = None,
+                          requested_model: Optional[str] = None, served_model: Optional[str] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
@@ -141,10 +145,16 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
         if api_calls is not None and api_calls > 0:
             label = "call" if api_calls == 1 else "calls"
             return f"{api_calls} {label}"
+    def served() -> str:
+        requested = requested_model or model
+        alias = _model_short(requested)
+        if served_model and served_model not in (alias, requested):
+            return f"{alias} → {served_model}"
         return ""
 
     renderers = {
         "model": lambda: _model_short(model),
+        "served_model": served,
         "context_pct": context_pct,
         # Skipped when the caller did not measure (None) or the value is negative.
         "latency": lambda: _format_latency(turn_seconds) if turn_seconds is not None and turn_seconds >= 0 else "",
@@ -162,7 +172,8 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
                       cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
                       turn_time: Optional[float] = None, api_time: Optional[float] = None,
-                      tool_time: Optional[float] = None, api_calls: Optional[int] = None) -> str:
+                      tool_time: Optional[float] = None, api_calls: Optional[int] = None,
+                      requested_model: Optional[str] = None, served_model: Optional[str] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
@@ -174,4 +185,6 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
     return format_runtime_footer(model=model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
                                  turn_time=turn_time, api_time=api_time, tool_time=tool_time,
-                                 api_calls=api_calls, fields=cfg.get("fields") or _DEFAULT_FIELDS)
+                                 api_calls=api_calls,
+                                 requested_model=requested_model, served_model=served_model,
+                                 fields=cfg.get("fields") or _DEFAULT_FIELDS)
