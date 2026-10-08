@@ -35,17 +35,21 @@ from urllib.parse import quote
 #: Fixed Decisions endpoint; optional loopback ``response_gate.decisions_url`` only.
 JEV_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 
-#: Fixed question keys; the gate asks exactly these three noul questions per consultation,
+#: Fixed question keys; the gate asks exactly these four noul questions per consultation,
 #: in one bounded Decisions request.
 ADDRESSES_BOT_KEY = "addresses_bot"
 CONTINUES_THREAD_KEY = "continues_bot_thread"
+JOINS_BOT_THREAD_KEY = "joins_bot_thread"
 NOISE_KEY = "noise"
 
 #: Default composition cutoffs (strict comparisons): an ambient candidate is allowed when
-#: ``addresses_bot > 0.5`` OR (``continues_bot_thread > 0.6`` AND ``noise < 0.4``).
+#: ``addresses_bot > 0.5`` OR ((``continues_bot_thread > 0.6`` OR ``joins_bot_thread > 0.6``)
+#: AND ``noise < 0.4``). ``joins_bot_thread`` shares the continuation cutoff: it is a second,
+#: independent way a message can seek the assistant's answer, not a new knob.
 #: A profile may override each cutoff via ``response_gate.addresses_bot_min`` /
-#: ``continues_bot_thread_min`` / ``noise_max``; these constants remain the defaults and
-#: the composition shape (and its strict operators) is unchanged.
+#: ``continues_bot_thread_min`` / ``noise_max``; these constants remain the defaults.
+#: The strict operators and the original arms are unchanged; the composition gains
+#: exactly one new OR arm (``joins_bot_thread``) under the shared continuation cutoff.
 ADDRESSES_BOT_ALLOW = 0.5
 CONTINUES_THREAD_ALLOW = 0.6
 NOISE_ALLOW = 0.4
@@ -109,8 +113,8 @@ class GateDecision:
     consulted: bool = True
     #: Filled for a judge error (fail-closed deny) so shadow mode can log it.
     error: Optional[str] = None
-    #: Component nouls keyed by question (addresses_bot / continues_bot_thread / noise);
-    #: empty for decisions that never reached the judge.
+    #: Component nouls keyed by question (addresses_bot / continues_bot_thread /
+    #: joins_bot_thread / noise); empty for decisions that never reached the judge.
     scores: Dict[str, float] = field(default_factory=dict)
     evidence: Dict[str, Any] = field(default_factory=dict)
 
@@ -260,11 +264,12 @@ class JevDecisionClient:
 
     async def decide(self, state: Dict[str, Any], *, mode: str,
                      chat_id: Optional[str] = None) -> GateDecision:
-        """Ask the judge the three gate questions about ``state``, then compose.
+        """Ask the judge the four gate questions about ``state``, then compose.
 
         ``allowed`` is ``addresses_bot > addresses_bot_min`` OR
-        (``continues_bot_thread > continues_bot_thread_min`` AND ``noise < noise_max``)
-        over the three returned nouls, with the cutoffs this client was built with
+        ((``continues_bot_thread > continues_bot_thread_min`` OR
+        ``joins_bot_thread > continues_bot_thread_min``) AND ``noise < noise_max``)
+        over the four returned nouls, with the cutoffs this client was built with
         (the config defaults reproduce the historical fixed values exactly). Every
         failure path — including any absent or invalid component answer — raises
         :class:`ResponseGateError`.
@@ -283,7 +288,10 @@ class JevDecisionClient:
         allowed = (
             scores[ADDRESSES_BOT_KEY] > self._addresses_bot_min
             or (
-                scores[CONTINUES_THREAD_KEY] > self._continues_bot_thread_min
+                (
+                    scores[CONTINUES_THREAD_KEY] > self._continues_bot_thread_min
+                    or scores[JOINS_BOT_THREAD_KEY] > self._continues_bot_thread_min
+                )
                 and scores[NOISE_KEY] < self._noise_max
             )
         )
@@ -377,17 +385,17 @@ class JevDecisionClient:
     # --- response validation ----------------------------------------------
 
     def _validate_answer(self, response: Dict[str, Any]) -> Dict[str, float]:
-        """Extract the three component nouls with strict schema checks.
+        """Extract the four component nouls with strict schema checks.
 
         Every gate question must be answered: a missing key, a boolean, a non-number,
         NaN/inf or an out-of-range value on ANY component is a schema mismatch — a judge
-        that answers "yes but not as three numbers" must not be read as an approval.
+        that answers "yes but not as four numbers" must not be read as an approval.
         """
         answers = response.get("answers")
         if not isinstance(answers, dict):
             raise ResponseGateError("schema_mismatch", "Decisions response has no answers object")
         scores: Dict[str, float] = {}
-        for key in (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, NOISE_KEY):
+        for key in (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, JOINS_BOT_THREAD_KEY, NOISE_KEY):
             answer = answers.get(key)
             if not isinstance(answer, dict):
                 raise ResponseGateError("schema_mismatch", f"Decisions response has no {key} answer")
@@ -414,7 +422,7 @@ _EVIDENCE_ONLY_SUFFIX = (
 
 
 def build_gate_questions(bot_name: str) -> Dict[str, Any]:
-    """The gate's fixed three-question policy, in Decisions API question shape.
+    """The gate's fixed four-question policy, in Decisions API question shape.
 
     Each value is a ``type: noul`` question with ``instructions`` and a ``criteria``
     object (``true``/``false`` branches with ``what`` and, where given, ``examples``).
@@ -476,6 +484,51 @@ def build_gate_questions(bot_name: str) -> Dict[str, Any]:
                     "what": "A new topic, or a conversation between other people the "
                             "assistant was never part of",
                     "examples": ["anyone up for ranked tonight"],
+                },
+            },
+        },
+        JOINS_BOT_THREAD_KEY: {
+            "type": "noul",
+            "instructions": (
+                "Is `state.candidate.content` another participant joining an active "
+                "exchange the assistant `state.bot.name` is part of in "
+                "`state.recent_messages`, newly seeking the response of that named "
+                "assistant? If `state.recent_messages` involves a different assistant "
+                "than `state.bot.name`, only wanting the response of "
+                "`state.bot.name` itself counts."
+                + _EVIDENCE_ONLY_SUFFIX
+            ),
+            "criteria": {
+                "true": {
+                    "what": "Someone other than the person the assistant was exchanging "
+                            "with enters that active assistant-engaged exchange wanting "
+                            "the response of the assistant named `state.bot.name`: a "
+                            "fresh question on its subject, or an elliptical follow-up "
+                            "('and X?', 'what about Y?') aimed at obtaining that named "
+                            "assistant's response — others could answer too, but the "
+                            "intent is to get the named assistant's answer. The person "
+                            "may already appear in the history on unrelated topics; "
+                            "what matters is that THIS message newly asks for the named "
+                            "assistant's answer within the active exchange",
+                    "examples": [
+                        "and does that soup work without cream?",
+                        "what about the night train — is it cheaper?",
+                        "ok but which trail would it pick for a beginner",
+                    ],
+                },
+                "false": {
+                    "what": "Topic overlap alone is not joining: a topical comment or "
+                            "opinion that asks the assistant nothing, a question "
+                            "addressed to another human, a quoted or meta instruction, "
+                            "an unrelated topic, a response sought from a different "
+                            "assistant than `state.bot.name`, or no assistant-engaged "
+                            "exchange in the recent history at all",
+                    "examples": [
+                        "yeah that soup works fine without cream",
+                        "sam which train did you end up taking?",
+                        "the example follow-up is 'what about the night train?'",
+                        "anyone up for ranked tonight",
+                    ],
                 },
             },
         },

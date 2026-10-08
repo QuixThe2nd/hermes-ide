@@ -1477,6 +1477,7 @@ from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.response_gate import (
     ADDRESSES_BOT_KEY,
     CONTINUES_THREAD_KEY,
+    JOINS_BOT_THREAD_KEY,
     NOISE_KEY,
     ChannelContextBuffer,
     GateDecision,
@@ -1494,7 +1495,7 @@ from plugins.platforms.discord.reaction_gate_reload import (
 )
 
 #: Component display order for gate echoes/logs (matches the judge's question order).
-_RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, NOISE_KEY)
+_RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, JOINS_BOT_THREAD_KEY, NOISE_KEY)
 
 
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):

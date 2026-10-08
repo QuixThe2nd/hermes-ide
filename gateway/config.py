@@ -457,7 +457,8 @@ class ResponseGateConfig:
     mode: str = "shadow"
     #: Legacy single-score cutoff, still accepted and validated so existing configs keep
     #: loading. The gate's verdict is composed from three component cutoffs
-    #: (defaults: addresses_bot > 0.5, or continues_bot_thread > 0.6 and noise < 0.4;
+    #: (defaults: addresses_bot > 0.5, or (continues_bot_thread > 0.6 or
+    #: joins_bot_thread > 0.6) and noise < 0.4;
     #: see the ``*_min``/``noise_max`` fields below); this value no longer influences it.
     threshold: float = 0.8
     #: Per-request budget; a timeout denies (enforce) rather than failing open.
@@ -482,8 +483,11 @@ class ResponseGateConfig:
     threads_require_membership: bool = True
     #: Per-profile ambient confidence cutoffs (strict comparisons, each finite in
     #: ``[0, 1]``). A candidate is allowed when ``addresses_bot > addresses_bot_min``
-    #: OR (``continues_bot_thread > continues_bot_thread_min`` AND
-    #: ``noise < noise_max``). The defaults reproduce the gate's historical fixed
+    #: OR ((``continues_bot_thread > continues_bot_thread_min`` OR
+    #: ``joins_bot_thread > continues_bot_thread_min``) AND ``noise < noise_max``);
+    #: ``joins_bot_thread`` (a new participant joining the assistant-engaged exchange
+    #: to seek its answer) shares the continuation cutoff — there is no separate knob.
+    #: The defaults reproduce the gate's historical fixed
     #: cutoffs exactly; raising ``addresses_bot_min`` or ``continues_bot_thread_min``
     #: narrows ambient admission, as does lowering ``noise_max``. Changes apply on the
     #: next gateway start — the gate has no live reload.
