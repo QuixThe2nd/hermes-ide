@@ -114,6 +114,7 @@ def adapter(monkeypatch):
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_FREE_RESPONSE_AUTO_THREAD",
         "DISCORD_AUTO_THREAD",
+        "DISCORD_AUTO_THREAD_REPLIES",
         "DISCORD_NO_THREAD_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
         "DISCORD_IGNORED_CHANNELS",
@@ -299,16 +300,26 @@ async def test_short_tagged_bot_chunk_waits_for_followup_window(adapter, monkeyp
 
 @pytest.mark.asyncio
 async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
-    """Quote-replies should stay in-channel instead of trying to create a thread."""
+    """With auto_thread_replies opted out, quote-replies stay in-channel.
+
+    Replies auto-thread by default now; this pins the explicit
+    ``discord.auto_thread_replies: false`` (env: DISCORD_AUTO_THREAD_REPLIES)
+    opt-out restoring the legacy inline reply. The mention makes the reply
+    admitted in an ordinary (non-free-response) channel, so only the reply
+    opt-out can prevent threading.
+    """
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_REPLIES", "false")
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
-    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
     adapter._auto_create_thread = AsyncMock()
 
+    bot_user = adapter._client.user
     message = make_message(
         channel=FakeTextChannel(channel_id=123),
-        content="reply without mention",
+        content=f"<@{bot_user.id}> reply with mention",
+        mentions=[bot_user],
         msg_type=discord_platform.discord.MessageType.reply,
     )
 
@@ -317,7 +328,7 @@ async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
     adapter._auto_create_thread.assert_not_awaited()
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
-    assert event.text == "reply without mention"
+    assert event.text == "reply with mention"
     assert event.source.chat_id == "123"
     assert event.source.chat_type == "group"
 

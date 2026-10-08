@@ -1626,6 +1626,9 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
+        # Quote-replies in eligible channels auto-thread too; False restores the legacy
+        # inline reply. Env: DISCORD_AUTO_THREAD_REPLIES.
+        "auto_thread_replies": True,
         # Free-response channels reply inline by default; true also gives each top-level
         # message in them its own thread (still mention-free). Env: DISCORD_FREE_RESPONSE_AUTO_THREAD.
         "free_response_auto_thread": False,

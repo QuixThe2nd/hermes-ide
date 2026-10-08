@@ -7295,6 +7295,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return True
         return str(raw).strip().lower() in {"true", "1", "yes"}
 
+    def _discord_auto_thread_replies(self) -> bool:
+        """Per-profile ``discord.auto_thread_replies`` flag (default true).
+
+        When true, an admitted quote-reply in an eligible channel auto-threads
+        like any other trigger; ``false`` restores the historical inline
+        reply. Same env-then-config precedence as ``_discord_auto_thread_enabled``
+        (explicit ``DISCORD_AUTO_THREAD_REPLIES`` wins, then ``config.extra``
+        seeded from YAML ``discord.auto_thread_replies``, then default true).
+        """
+        raw = self._gate_raw("auto_thread_replies", "DISCORD_AUTO_THREAD_REPLIES")
+        if raw is None or str(raw).strip() == "":
+            return True
+        return str(raw).strip().lower() in {"true", "1", "yes"}
+
     def _gateway_allow_all_users(self) -> bool:
         """Per-profile GATEWAY_ALLOW_ALL_USERS flag."""
         return self._gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}
@@ -8840,6 +8854,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.auto_thread_replies: Quote-replies also auto-thread (default: true; false = inline)
         #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
         thread_id = None
         parent_channel_id = None
@@ -8912,7 +8927,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 is_free_channel and not self._discord_free_response_auto_thread()
             )
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            # Quote-replies auto-thread by default; discord.auto_thread_replies: false
+            # restores the historical inline reply.
+            reply_skips_thread = is_reply_message and not self._discord_auto_thread_replies()
+            if auto_thread and not skip_thread and not is_voice_linked_channel and not reply_skips_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
@@ -10190,12 +10208,13 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if clarify_mentions_cfg is not None:
         _env_default("DISCORD_CLARIFY_MENTIONS", str(clarify_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
-    # auto_thread & reactions: seeded into extra so the adapter's per-profile
+    # auto_thread flags & reactions: seeded into extra so the adapter's per-profile
     # precedence helper (_gate_raw: explicit env first, then config) honors
-    # ``discord.auto_thread`` even when the env bridge is skipped
-    # (multiplexed secondary profiles) or lost the first-writer race.
+    # ``discord.auto_thread`` / ``discord.auto_thread_replies`` even when the env
+    # bridge is skipped (multiplexed secondary profiles) or lost the first-writer race.
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),
+        ("auto_thread_replies", "DISCORD_AUTO_THREAD_REPLIES"),
         ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),
         ("reactions", "DISCORD_REACTIONS"),
     ):
@@ -10260,9 +10279,9 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env bridge: ``discord:`` config keys → ``DISCORD_*`` env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
-        # (require_mention, free_response_channels, auto_thread, free_response_auto_thread,
-        # reactions, ignored_channels, allowed_channels, no_thread_channels, allow_mentions.*,
-        # reply_to_mode, thread_require_mention)
+        # (require_mention, free_response_channels, auto_thread, auto_thread_replies,
+        # free_response_auto_thread, reactions, ignored_channels, allowed_channels,
+        # no_thread_channels, allow_mentions.*, reply_to_mode, thread_require_mention)
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
         # block that used to live in ``gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,
