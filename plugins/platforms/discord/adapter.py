@@ -2492,13 +2492,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Build the payload for one reaction candidate, or None when never consultable.
 
         Single definition of "reaches the reaction judge", shared by both intake sites.
-        Deliberately WIDER than the speaking gate's candidate rule — mentions, replies
-        and other bots' messages are reaction candidates too — but still narrowed by the
-        rules that prevent loops and privacy leaks: never this bot's own messages, never
-        lifecycle/system events, never DMs, never a channel the allowed/ignored-channel
-        policy refuses, and never a human the user policy would not authorize. The
-        speaking rules keep their own meaning for text: a bot message that never
-        text-wakes this bot can still earn a reaction.
+        Deliberately WIDER than the speaking gate's candidate rule in one way —
+        mentions and replies are reaction candidates too — but still narrowed by the
+        rules that prevent loops and privacy leaks: never this bot's own messages,
+        never other bots' chatter, never lifecycle/system events, never DMs, never a
+        channel the allowed/ignored-channel policy refuses, and never a human the user
+        policy would not authorize. The speaking rules keep their own meaning for
+        text: a human message that never text-wakes this bot can still earn a
+        reaction.
         """
         gate = self._reaction_gate
         if gate is None:
@@ -2514,19 +2515,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             discord.MessageType.default, discord.MessageType.reply,
         }:
             return None  # lifecycle/system events (joins, pins, …) carry nothing to react to
-        if not getattr(author, "bot", False):
-            msg_guild = getattr(message, "guild", None)
-            if msg_guild is None:
-                return None  # guild-less human traffic is DM-shaped; keep it out
-            msg_channel_ids = {str(getattr(channel, "id", "") or "")}
-            parent_id = self._get_parent_channel_id(channel)
-            if parent_id:
-                msg_channel_ids.add(parent_id)
-            if not self._is_allowed_user(
-                str(getattr(author, "id", "") or ""), author,
-                guild=msg_guild, is_dm=False, channel_ids=msg_channel_ids,
-            ):
-                return None  # the user policy that governs speech governs reactions too
+        if getattr(author, "bot", False):
+            return None  # bot chatter is never a reaction candidate (same rule as the speaking gate)
+        msg_guild = getattr(message, "guild", None)
+        if msg_guild is None:
+            return None  # guild-less human traffic is DM-shaped; keep it out
+        msg_channel_ids = {str(getattr(channel, "id", "") or "")}
+        parent_id = self._get_parent_channel_id(channel)
+        if parent_id:
+            msg_channel_ids.add(parent_id)
+        if not self._is_allowed_user(
+            str(getattr(author, "id", "") or ""), author,
+            guild=msg_guild, is_dm=False, channel_ids=msg_channel_ids,
+        ):
+            return None  # the user policy that governs speech governs reactions too
         channel_keys = self._discord_channel_keys_from_channel(
             channel, self._get_parent_channel_id(channel),
         )
@@ -2680,10 +2682,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Buffer one in-scope message as future reaction evidence (cheap, bounded).
 
         Unlike the speaking gate's evidence (human messages plus this bot's replies),
-        reaction evidence also carries other bots' messages: they are reaction
-        candidates too, and the judge should see the conversation they appear in.
-        The candidate's message id rides along so its own consult can drop this entry
-        (intake-time buffering would otherwise make it its own history).
+        reaction evidence carries exactly its candidates: bot chatter is never
+        buffered because it is never a candidate. The candidate's message id rides
+        along so its own consult can drop this entry (intake-time buffering would
+        otherwise make it its own history).
         """
         gate = self._reaction_gate
         if gate is None or candidate is None:
