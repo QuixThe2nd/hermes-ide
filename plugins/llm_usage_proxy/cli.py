@@ -121,6 +121,10 @@ def _live_result(cfg: dict, *, environ=None) -> ReconcileResult:
 
 
 def cmd_status() -> int:
+    if _owner_policy_or_none() is not None:
+        # Shared-owner mode: this profile runs no unit of its own, so the
+        # systemd-oriented status block would only mislead.
+        return _print_owner_status()
     cfg = load_llm_usage_proxy_config()
     result = _live_result(cfg)
     print(format_status(result, cfg=cfg, routing=_routing_state()))
@@ -136,6 +140,118 @@ def cmd_status() -> int:
     return 0
 
 
+def _print_owner_status() -> int:
+    """Status block for shared-owner mode (no systemd involvement)."""
+    from plugins.llm_usage_proxy.owner import (
+        caller_token,
+        describe_policy,
+        owner_policy,
+        verify_owner,
+    )
+
+    policy = owner_policy()
+    if policy is None:
+        print("Shared owner: not configured (per-profile mode).")
+        print(
+            "  Set one with `hermes llm_usage_proxy owner set --endpoint"
+            " http://127.0.0.1:PORT --identity DIGEST [--enforce]`."
+        )
+        return 0
+    print(f"Shared owner: {describe_policy(policy)}")
+    cfg = load_llm_usage_proxy_config()
+    print(f"  Config enabled: {'yes' if cfg['enabled'] else 'no'}")
+    if plugin_explicitly_disabled():
+        print("  Explicit disable: yes (config/plugins.disabled)")
+    state = _routing_state()
+    payload, detail = verify_owner(
+        policy["endpoint"], expect_identity=str(policy.get("identity") or "")
+    )
+    if payload is None:
+        print(f"  Verification: FAILED ({detail})")
+        if policy.get("enforce"):
+            print("  Enforced routing fails closed until the owner verifies.")
+        else:
+            print(
+                "  Routing stands down (traffic direct and unmetered) until"
+                " the owner verifies."
+            )
+        print(
+            f"  Routing: {'active' if state.get('active') else 'inactive'}"
+            f" — {state.get('reason') or 'no reason recorded'}"
+        )
+        return 1
+    routes = payload.get("routes") or {}
+    print(f"  Verification: ok — adopted {_plural(len(routes), 'route')}")
+    for name in sorted(routes):
+        print(f"    {name} -> {routes[name]}")
+    print(
+        f"  Routing: {'active' if state.get('active') else 'inactive'}"
+        f" — {state.get('reason') or 'no reason recorded'}"
+    )
+    if caller_token():
+        print("  Caller token: present (HERMES_USAGE_PROXY_CALLER_TOKEN)")
+    else:
+        print(
+            "  Caller token: MISSING — set HERMES_USAGE_PROXY_CALLER_TOKEN in"
+            " this profile's .env to a token minted on the owner with"
+            " `hermes llm_usage_proxy callers create <name>`."
+        )
+    return 0
+
+
+def cmd_owner(args: argparse.Namespace) -> int:
+    from plugins.llm_usage_proxy.owner import owner_endpoint_parts
+
+    action = getattr(args, "owner_command", None)
+    if action == "set":
+        endpoint = str(args.endpoint or "").strip().rstrip("/")
+        identity = str(args.identity or "").strip()
+        if owner_endpoint_parts(endpoint) is None:
+            print(
+                f"Invalid owner endpoint {endpoint!r}: must be a loopback"
+                " origin with an explicit port (e.g. http://127.0.0.1:8790)."
+            )
+            return 2
+        if not identity:
+            print(
+                "Missing --identity: a shared owner must be named by its"
+                " identity digest (the `Identity:` line of"
+                " `hermes llm_usage_proxy status` on the owner profile)."
+            )
+            return 2
+        _save_section_flag("owner_endpoint", endpoint)
+        _save_section_flag("owner_identity", identity)
+        _save_section_flag("enforce", bool(args.enforce))
+        reconcile_proxy_on_load()
+        rc = _print_owner_status()
+        if rc == 0:
+            print(
+                "Shared-owner routing configured. This profile installs no"
+                " proxy service; every routed model call goes to the owner,"
+                " presenting only this profile's caller token."
+            )
+        return rc
+    if action == "clear":
+        _delete_section_keys("owner_endpoint", "owner_identity", "enforce")
+        try:
+            from hermes_cli.llm_usage_routes import clear_route_table
+
+            clear_route_table("shared owner cleared from config")
+        except Exception:
+            pass
+        print(
+            "Shared owner cleared; in-process routing stood down. This"
+            " profile is back in per-profile mode — run"
+            " `hermes llm_usage_proxy reconcile` (or `enable`) to install and"
+            " route through a proxy of its own, if wanted."
+        )
+        return 0
+    if action == "status":
+        return _print_owner_status()
+    print("usage: hermes llm_usage_proxy owner {set,clear,status}")
+    return 2
+
+
 def _save_enabled_flag(enabled: bool) -> None:
     _save_section_flag("enabled", enabled)
 
@@ -148,6 +264,26 @@ def _save_section_flag(key: str, value: object) -> None:
     section[key] = value
     cfg[CONFIG_SECTION] = section
     save_config(cfg)
+
+
+def _delete_section_keys(*keys: str) -> None:
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    section = dict(cfg.get(CONFIG_SECTION) or {})
+    for key in keys:
+        section.pop(key, None)
+    cfg[CONFIG_SECTION] = section
+    save_config(cfg)
+
+
+def _owner_policy_or_none():
+    from plugins.llm_usage_proxy.owner import owner_policy
+
+    try:
+        return owner_policy()
+    except Exception:
+        return None
 
 
 def _reconcile_after_config_change() -> ReconcileResult:
@@ -191,7 +327,8 @@ def _format_key_store() -> str:
     lines = [f"Key store: {store.path}"]
     routes = described["routes"]
     callers = described["callers"]
-    if not routes and not callers:
+    oauth = described.get("oauth") or {}
+    if not routes and not callers and not oauth:
         lines.append("  (empty — no provider keys, no caller tokens)")
         return "\n".join(lines)
     if routes:
@@ -205,6 +342,14 @@ def _format_key_store() -> str:
                 lines.append(f"      #{index} {fingerprint}")
     else:
         lines.append("  Provider keys: none")
+    if oauth:
+        lines.append(
+            f"  OAuth-managed routes: {_plural(len(oauth), 'route')}"
+            " (the proxy obtains and refreshes these via the canonical auth"
+            " store; no key is stored here)"
+        )
+        for name, provider in sorted(oauth.items()):
+            lines.append(f"    {name}: {provider}")
     if callers:
         lines.append(f"  Caller tokens: {_plural(len(callers), 'caller')}")
         for name, fingerprint in callers.items():
@@ -258,8 +403,42 @@ def cmd_keys(args: argparse.Namespace) -> int:
                     )
                     return 1
                 print(f"{route}: removed key #{args.index}.")
+        elif action == "set-oauth":
+            route = args.route
+            if not is_route_name(route):
+                print(f"Invalid route name {route!r} (lowercase letters, digits, -).")
+                return 2
+            from hermes_cli.llm_proxy_oauth import OAUTH_PROVIDERS
+
+            provider = str(args.provider or "").strip()
+            if provider not in OAUTH_PROVIDERS:
+                print(
+                    f"Unknown OAuth provider {provider!r}; known:"
+                    f" {', '.join(OAUTH_PROVIDERS)}."
+                )
+                return 2
+            store.set_oauth_route(route, provider)
+            print(
+                f"{route}: OAuth-managed via {provider}. The proxy now"
+                " obtains and refreshes upstream OAuth itself through the"
+                " canonical auth store; callers present only their caller"
+                " token."
+            )
+        elif action == "remove-oauth":
+            route = args.route
+            if store.remove_oauth_route(route):
+                print(
+                    f"{route}: OAuth management removed; the route falls"
+                    " back to stored static keys or caller credentials."
+                )
+            else:
+                print(f"{route}: no OAuth mapping stored for that route.")
+                return 1
         else:
-            print("usage: hermes llm_usage_proxy keys {set,list,remove}")
+            print(
+                "usage: hermes llm_usage_proxy keys"
+                " {set,list,remove,set-oauth,remove-oauth}"
+            )
             return 2
     except ValueError as exc:
         print(f"Failed: {exc}")
@@ -304,6 +483,13 @@ def cmd_callers(args: argparse.Namespace) -> int:
 
 
 def cmd_manage_keys(args: argparse.Namespace) -> int:
+    if _owner_policy_or_none() is not None:
+        print(
+            "This profile routes through a shared owner and runs no proxy of"
+            " its own — key-manager mode belongs to the owner profile. Run"
+            " this command there instead."
+        )
+        return 1
     want = str(args.state).strip().lower() in {"on", "true", "yes", "enable", "1"}
     _save_section_flag("manage_keys", want)
     result = _reconcile_after_config_change()
@@ -326,6 +512,19 @@ def cmd_manage_keys(args: argparse.Namespace) -> int:
 
 
 def cmd_enable() -> int:
+    if _owner_policy_or_none() is not None:
+        # Shared-owner mode needs no systemd unit on this profile: enabling
+        # just (re)activates routing through the configured owner.
+        _save_enabled_flag(True)
+        reconcile_proxy_on_load()
+        rc = _print_owner_status()
+        if rc == 0:
+            print(
+                "Shared-owner routing enabled. Newly built model clients"
+                " route through the owner; a gateway restart rebuilds any"
+                " clients created before this change."
+            )
+        return rc
     if not platform_supported():
         print(
             "The bundled LLM usage proxy requires Linux with systemd; "
@@ -349,6 +548,15 @@ def cmd_enable() -> int:
 
 
 def cmd_disable() -> int:
+    if _owner_policy_or_none() is not None:
+        _save_enabled_flag(False)
+        reconcile_proxy_on_load()
+        print(
+            "Shared-owner routing disabled; in-process routing stood down."
+            " The owner proxy itself is untouched — it belongs to another"
+            " profile."
+        )
+        return 0
     _save_enabled_flag(False)
     result = reconcile_proxy_on_load()
     if result is None:
@@ -366,6 +574,11 @@ def cmd_disable() -> int:
 
 
 def cmd_reconcile() -> int:
+    if _owner_policy_or_none() is not None:
+        # Re-verify the owner and re-adopt its route table; there is no unit
+        # to rewrite on this side.
+        reconcile_proxy_on_load()
+        return _print_owner_status()
     result = reconcile_proxy_on_load()
     if result is None:
         result = reconcile_service(
@@ -441,6 +654,62 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         metavar="N",
         help="1-based key number as shown by `keys list`; omit to drop the route",
     )
+    keys_set_oauth = keys_subs.add_parser(
+        "set-oauth",
+        help=(
+            "Mark a route OAuth-managed: the proxy obtains and refreshes the"
+            " upstream OAuth credential itself via the canonical auth store"
+        ),
+    )
+    keys_set_oauth.add_argument("route", help="Route name as shown by `keys list`/`status`")
+    keys_set_oauth.add_argument(
+        "--provider",
+        required=True,
+        help="OAuth provider, e.g. openai-codex or xai-oauth",
+    )
+    keys_remove_oauth = keys_subs.add_parser(
+        "remove-oauth", help="Stop OAuth-managing a route"
+    )
+    keys_remove_oauth.add_argument("route", help="Route name")
+
+    owner = subs.add_parser(
+        "owner",
+        help=(
+            "Shared-owner mode: route this profile's model calls through a"
+            " central proxy it does not run"
+        ),
+    )
+    owner_subs = owner.add_subparsers(dest="owner_command")
+    owner_set = owner_subs.add_parser(
+        "set", help="Name the central proxy (endpoint + identity digest)"
+    )
+    owner_set.add_argument(
+        "--endpoint",
+        required=True,
+        help="Loopback origin of the central proxy, e.g. http://127.0.0.1:8790",
+    )
+    owner_set.add_argument(
+        "--identity",
+        required=True,
+        help=(
+            "Expected identity digest of the central proxy (the `Identity:`"
+            " line of `hermes llm_usage_proxy status` on the owner profile)"
+        ),
+    )
+    owner_set.add_argument(
+        "--enforce",
+        action="store_true",
+        help=(
+            "Fail closed: model inference that cannot go through the owner"
+            " errors instead of going direct"
+        ),
+    )
+    owner_subs.add_parser(
+        "clear", help="Remove the shared-owner config and stand routing down"
+    )
+    owner_subs.add_parser(
+        "status", help="Verify the configured owner and show adopted routes"
+    )
 
     callers = subs.add_parser(
         "callers",
@@ -484,8 +753,10 @@ def llm_usage_proxy_command(args: argparse.Namespace) -> int:
         return cmd_callers(args)
     if sub == "manage-keys":
         return cmd_manage_keys(args)
+    if sub == "owner":
+        return cmd_owner(args)
     print(
         "usage: hermes llm_usage_proxy"
-        " {status,enable,disable,reconcile,serve,keys,callers,manage-keys}"
+        " {status,enable,disable,reconcile,serve,keys,callers,manage-keys,owner}"
     )
     return 2

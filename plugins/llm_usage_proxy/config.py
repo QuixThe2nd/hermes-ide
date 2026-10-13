@@ -74,6 +74,17 @@ def load_llm_usage_proxy_config(raw: Mapping[str, Any] | None = None) -> dict[st
         # with bounded retention. Off by default — storing bodies is a
         # troubleshooting decision, never a silent default.
         "capture_jev_bodies": _coerce_bool(raw.get("capture_jev_bodies"), False),
+        # Shared-owner mode: this profile owns no proxy service of its own and
+        # instead routes through a *named* central proxy (endpoint + expected
+        # identity digest, both explicit — never inherited). Empty endpoint =
+        # per-profile mode (the default everywhere).
+        "owner_endpoint": str(raw.get("owner_endpoint") or "").strip().rstrip("/"),
+        "owner_identity": str(raw.get("owner_identity") or "").strip(),
+        # Fail-closed routing: with enforce on, model inference that cannot be
+        # served through the (shared or per-profile) proxy errors clearly
+        # instead of going direct. Off by default — installs without the
+        # policy keep the historical direct-and-unmetered behavior.
+        "enforce": _coerce_bool(raw.get("enforce"), False),
     }
 
 
@@ -89,6 +100,14 @@ def capture_jev_bodies_enabled(cfg: Mapping[str, Any]) -> bool:
     """Whether a config mapping asks for jev body capture (never raises)."""
     try:
         return _coerce_bool(cfg.get("capture_jev_bodies"), False)
+    except AttributeError:
+        return False
+
+
+def enforce_enabled(cfg: Mapping[str, Any]) -> bool:
+    """Whether a config mapping asks for fail-closed routing (never raises)."""
+    try:
+        return _coerce_bool(cfg.get("enforce"), False)
     except AttributeError:
         return False
 
