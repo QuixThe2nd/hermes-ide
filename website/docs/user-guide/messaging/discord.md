@@ -361,6 +361,7 @@ discord:
   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  auto_thread_replies: true       # Quote-replies also auto-thread (default: true; false = inline)
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
@@ -445,7 +446,7 @@ discord:
   free_response_auto_thread: true  # thread every top-level message there
 ```
 
-Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins, voice-linked text channels always reply inline, and reply-type messages are never auto-threaded.
+Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins, voice-linked text channels always reply inline, and reply-type messages follow [`discord.auto_thread_replies`](#discordauto_thread_replies) (auto-threaded by default).
 
 `DISCORD_FREE_RESPONSE_AUTO_THREAD` wins over the `config.yaml` key when both are set — the YAML value only seeds the env var when it isn't already set, like every other `discord.*` bridge.
 
@@ -549,7 +550,21 @@ Values outside the documented ranges (`timeout_seconds` above `30`, more than `3
 
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
-Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead.
+Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead. Quote-replies (`discord.MessageType.reply`) are auto-threaded like any other admitted message unless [`discord.auto_thread_replies`](#discordauto_thread_replies) is `false`.
+
+#### `discord.auto_thread_replies`
+
+**Type:** boolean — **Default:** `true`
+
+When `true` (the default), an admitted quote-reply in an eligible guild text channel gets its own auto-created thread, exactly like an `@mention` — the referenced message's text and attachments still reach the agent as reply context. Set to `false` to restore the previous behavior where quote-replies are answered inline in the channel:
+
+```yaml
+discord:
+  auto_thread: true           # required — this flag refines it
+  auto_thread_replies: false  # answer quote-replies inline instead of threading them
+```
+
+Requires `discord.auto_thread: true`. All other exclusions still apply: DMs and existing threads are unaffected, and [`discord.no_thread_channels`](#discordno_thread_channels), voice-linked text channels, and free-response channels (unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`) keep their inline replies.
 
 #### `discord.reactions`
 
