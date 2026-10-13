@@ -5795,11 +5795,19 @@ class TurnRunner:
                         error=kwargs.get("summary") or preview,
                         duration_seconds=kwargs.get("duration_seconds"),
                     )
-                    safe_schedule_threadsafe(
-                        self._runner._deliver_platform_notice(ctx.source, _line),
-                        ctx._loop_for_step,
-                        logger=logger,
-                        log_message="subagent failure notice scheduling error",
+                    # A dead-subagent notice is an automatic diagnostic: the
+                    # profile's warning notification policy gates its render.
+                    from gateway.warning_notifications import render_notification
+
+                    render_notification(
+                        lambda: safe_schedule_threadsafe(
+                            self._runner._deliver_platform_notice(ctx.source, _line),
+                            ctx._loop_for_step,
+                            logger=logger,
+                            log_message="subagent failure notice scheduling error",
+                        ),
+                        platform=ctx.source.platform,
+                        user_config=getattr(ctx, "user_config", None),
                     )
             except Exception:
                 logger.debug("subagent failure notice failed", exc_info=True)
@@ -7482,6 +7490,26 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        # The profile's display policy (display.suppress_warning_notifications,
+        # per-platform overrides included; ctx.user_config is the turn's config
+        # snapshot) gates the automatic diagnostics at this sink. Ordinary
+        # lifecycle/progress lines take the unchanged rails below.
+        from gateway.warning_notifications import (
+            is_warning_status,
+            warning_notifications_enabled,
+        )
+
+        if is_warning_status(event_type, message) and not warning_notifications_enabled(
+            ctx.source.platform, getattr(ctx, "user_config", None)
+        ):
+            logger.debug(
+                "status_callback diagnostic hidden by display policy for %s/%s: %s",
+                ctx.source.platform.value if ctx.source.platform else "unknown",
+                event_type,
+                _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+            )
+            return
+
         # Tool-style compression lifecycle (agent/compression_status.py):
         # a DISCORD-ONLY surface. The agent only emits these events for
         # Discord sessions; the belt-and-braces drop below keeps every other
@@ -7622,6 +7650,42 @@ class TurnRunner:
             )
 
         _fut.add_done_callback(_status_send_done)
+
+    def _notice_callback_sync(self, notice) -> None:
+        """Credits / out-of-band notices (usage bands, depletion, restored) fired from the
+        agent's sync worker thread; hop onto the gateway loop to deliver.
+
+        Warn/error and credit-service notices are automatic diagnostics gated by
+        the profile's display policy; other notices deliver exactly as before.
+        """
+        from gateway.warning_notifications import is_diagnostic_notice, render_notification
+
+        ctx = self._ctx
+        if not ctx._status_adapter or not ctx._run_still_current():
+            return
+        diagnostic = is_diagnostic_notice(notice)
+
+        def present() -> None:
+            try:
+                line = render_notice_line(notice)
+            except Exception:
+                logger.debug("render_notice_line failed", exc_info=True)
+                return
+            if not line:
+                return
+            safe_schedule_threadsafe(
+                self._runner._deliver_platform_notice(ctx.source, line),
+                ctx._loop_for_step,
+                logger=logger,
+                log_message="notice_callback delivery scheduling error",
+            )
+
+        render_notification(
+            present,
+            platform=ctx.source.platform,
+            user_config=getattr(ctx, "user_config", None),
+            diagnostic=diagnostic,
+        )
 
     async def _deliver_agent_status_marker(self, marker: tuple) -> None:
         """Send one queued branded agent-viewer status line as its own message.
@@ -8209,24 +8273,7 @@ class TurnRunner:
         # rides the same show path (it's emitted as a success notice, not a
         # clear). The clear callback is a no-op: a sent platform message
         # can't be cleanly retracted, and the band already fired once.
-        def _notice_callback_sync(notice) -> None:
-            if not ctx._status_adapter or not ctx._run_still_current():
-                return
-            try:
-                line = render_notice_line(notice)
-            except Exception:
-                logger.debug("render_notice_line failed", exc_info=True)
-                return
-            if not line:
-                return
-            safe_schedule_threadsafe(
-                self._runner._deliver_platform_notice(ctx.source, line),
-                ctx._loop_for_step,
-                logger=logger,
-                log_message="notice_callback delivery scheduling error",
-            )
-
-        agent.notice_callback = _notice_callback_sync
+        agent.notice_callback = self._notice_callback_sync
         agent.notice_clear_callback = None
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config = reasoning_config
