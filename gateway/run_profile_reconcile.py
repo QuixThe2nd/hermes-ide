@@ -194,6 +194,12 @@ class GatewayProfileReconcileMixin:
             await self._bounded_adapter_teardown(adapter, platform, profile=name)
         # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
         _write_runtime_status_quiet(drop_profile_platforms=name)
+        # Same for its gate-config refusals; the reconcile's closing status write
+        # republishes the accumulator without them.
+        gate_warnings = getattr(self, "_gate_config_warnings", None)
+        if isinstance(gate_warnings, list):
+            drop_prefix = f"{name}:"
+            gate_warnings[:] = [w for w in gate_warnings if not w.startswith(drop_prefix)]
         for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile"):
             store = getattr(self, attr, None)
             if isinstance(store, dict):
