@@ -6107,13 +6107,19 @@ class TurnRunner:
                 _cmd_short = _cmd_short + " ..."
             _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
-        # Verbose mode: show detailed arguments, respects tool_preview_length.
-        # An unlimited preview budget (tool_preview_length <= 0) renders the
-        # same way in "all"/"new" modes: the whole command and ALL arguments,
-        # never a tool-specific builder summary. The budget is this turn's
-        # snapshot, so an interleaved capped-platform turn cannot re-cap it.
         _pl = ctx.tool_preview_max_len
-        if ctx.progress_mode == "verbose" or _pl <= 0:
+        if ctx.progress_mode == "compact":
+            # One logical line per tool: full JSON args, no fence/heading/cap.
+            # Empty/None args render as {}. Falls through to the dedup tail.
+            _args_str = json.dumps(args, ensure_ascii=False, default=str) if args else "{}"
+            msg = f"{emoji} {tool_name}({_args_str})"
+            ctx.last_was_terminal_block[0] = False
+        elif ctx.progress_mode == "verbose" or _pl <= 0:
+            # Verbose mode: show detailed arguments, respects tool_preview_length.
+            # An unlimited preview budget (tool_preview_length <= 0) renders the
+            # same way in "all"/"new" modes: the whole command and ALL arguments,
+            # never a tool-specific builder summary. The budget is this turn's
+            # snapshot, so an interleaved capped-platform turn cannot re-cap it.
             if _code_block_full is not None:
                 ctx.last_was_terminal_block[0] = True
                 ctx.progress_queue.put(_code_block_full)
@@ -6139,7 +6145,7 @@ class TurnRunner:
         # unlike CLI spinners). Terminal commands on markdown platforms get a
         # single-line capped fenced block (built above) instead of the
         # truncated preview.
-        if _code_block_short is not None:
+        elif _code_block_short is not None:
             msg = _code_block_short
             ctx.last_was_terminal_block[0] = True
         elif preview:
