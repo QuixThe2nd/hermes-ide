@@ -303,6 +303,209 @@ def cmd_callers(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_policy_callers(args: argparse.Namespace) -> int:
+    """Policy callers: the routing credential namespace.
+
+    A policy-caller token authenticates per-harness routing WITHOUT arming
+    the global caller-token gate — minting the first one never changes what
+    legacy label-only clients must present.
+    """
+    from plugins.llm_usage_proxy.server import KeyStore
+
+    action = getattr(args, "policy_callers_command", None)
+    store = KeyStore()
+    try:
+        if action == "create":
+            token, rotated = store.create_policy_caller(args.name)
+            print(f"Policy caller token for {args.name}:")
+            print(f"  {token}")
+            print(
+                "Shown once — the key store keeps the token itself, and only"
+                " its fingerprint is ever printed again."
+                + (" A previous token for this caller was replaced." if rotated else "")
+            )
+            print(
+                "Clients present it as 'X-Usage-Caller-Token: <token>' (or a"
+                " Bearer credential). It authenticates routing policy only;"
+                " it does NOT turn on the global caller-token gate."
+            )
+            print(
+                "For Hermes's own routed traffic, store the token in this"
+                " profile's .env (secrets only, never config.yaml) and point"
+                " llm_usage_proxy.caller_token_env at the variable name,"
+                " e.g. .env: HERMES_USAGE_PROXY_CALLER_TOKEN=<token> and"
+                " config.yaml: llm_usage_proxy.caller_token_env:"
+                " HERMES_USAGE_PROXY_CALLER_TOKEN."
+            )
+        elif action == "list":
+            described = store.describe_policy_callers()
+            if described:
+                print(f"Policy callers: {_plural(len(described), 'caller')}")
+                for name, fingerprint in described.items():
+                    print(f"  {name} {fingerprint}")
+            else:
+                print("Policy callers: none — no request can arm routing policies.")
+            return 0
+        elif action == "remove":
+            if store.remove_policy_caller(args.name):
+                print(f"{args.name}: policy caller token revoked.")
+            else:
+                print(f"{args.name}: no such policy caller.")
+                return 1
+        else:
+            print("usage: hermes llm_usage_proxy policy-callers {create,list,remove}")
+            return 2
+    except ValueError as exc:
+        print(f"Failed: {exc}")
+        return 2
+    return 0
+
+
+def _routing_store():
+    from plugins.llm_usage_proxy.routing import RoutingStore, default_routing_path
+
+    return RoutingStore(default_routing_path())
+
+
+def _known_route_names() -> set[str]:
+    """Routes a policy may name: the profile's route table ∪ stored keys."""
+    from plugins.llm_usage_proxy.routes import build_route_table
+    from plugins.llm_usage_proxy.server import KeyStore
+
+    names = set(build_route_table(load_llm_usage_proxy_config()))
+    names.update(KeyStore().describe()["routes"])
+    return names
+
+
+def _route_families() -> dict:
+    """Route name → API families the route's endpoint actually serves.
+
+    Write-time validation must reject entries a route could never serve —
+    the built-in endpoint table covers the known providers, and the
+    operator's ``llm_usage_proxy.route_capabilities`` config declares the
+    rest. Compatibility is never guessed from a route's name.
+    """
+    from plugins.llm_usage_proxy.routes import build_route_table
+    from plugins.llm_usage_proxy.routing import route_family_map
+
+    cfg = load_llm_usage_proxy_config()
+    return route_family_map(build_route_table(cfg), cfg.get("route_capabilities"))
+
+
+def _format_routing(store) -> str:
+    lines = [f"Routing store: {store.path}"]
+    policies = store.policies_snapshot()
+    if policies:
+        for caller, policy in policies.items():
+            state = "enabled" if policy["enabled"] else "disabled"
+            lines.append(f"  {caller} ({state}):")
+            for index, entry in enumerate(policy["entries"], start=1):
+                lines.append(
+                    f"    #{index} {entry['family']}: {entry['route']}"
+                    f" / {entry['model']}"
+                )
+    else:
+        lines.append("  (no policies — all traffic is legacy passthrough)")
+    cooldowns = store.cooldowns_snapshot()
+    if cooldowns:
+        lines.append("  Active cooldowns:")
+        for cooldown in cooldowns:
+            lines.append(
+                f"    {cooldown['route']} / {cooldown['model'] or '-'}"
+                f" until {cooldown['until_iso']}"
+                f" ({cooldown['remaining_seconds']}s left; {cooldown['reason']})"
+            )
+    return "\n".join(lines)
+
+
+def cmd_routing(args: argparse.Namespace) -> int:
+    """Manage per-harness routing policies and 429 cooldowns."""
+    from plugins.llm_usage_proxy.routing import RoutingStateError
+
+    action = getattr(args, "routing_command", None)
+    store = _routing_store()
+    try:
+        if action == "show":
+            print(_format_routing(store))
+            return 0
+        if action == "set":
+            entries = []
+            for raw in args.entry or []:
+                if ":" not in raw:
+                    print(
+                        f"Invalid --entry {raw!r}: expected route:model"
+                        f" (e.g. zai:glm-5)."
+                    )
+                    return 2
+                route, _, model = raw.partition(":")
+                entries.append(
+                    {"route": route.strip(), "model": model.strip(),
+                     "family": args.family}
+                )
+            # `set` replaces this family's slice of the policy and keeps the
+            # other families' entries: selection filters by family first, so
+            # a harness with several request families is configured family by
+            # family. The read-merge-write happens INSIDE the store's
+            # cross-process mutation (set_policy_family) — merging here from
+            # a snapshot would lose a concurrent writer's change. Validates
+            # BEFORE writing: unknown routes/families, bad models,
+            # incompatible endpoint capabilities and duplicates are rejected
+            # and the saved policy is untouched.
+            policy = store.set_policy_family(
+                args.caller,
+                args.family,
+                entries,
+                enabled=not args.disabled,
+                known_routes=_known_route_names(),
+                route_families=_route_families(),
+            )
+            print(
+                f"{args.caller}: policy saved ({'enabled' if not args.disabled else 'disabled'},"
+                f" {_plural(len(policy['entries']), 'entry', 'entries')})."
+                " The running proxy picks it up without a restart."
+            )
+        elif action == "enable":
+            if not store.set_policy_enabled(args.caller, True):
+                print(f"{args.caller}: no saved policy.")
+                return 1
+            print(f"{args.caller}: policy enabled.")
+        elif action == "disable":
+            if not store.set_policy_enabled(args.caller, False):
+                print(f"{args.caller}: no saved policy.")
+                return 1
+            print(
+                f"{args.caller}: policy disabled — entries kept, traffic falls"
+                " back to legacy passthrough."
+            )
+        elif action == "remove":
+            if not store.remove_policy(args.caller):
+                print(f"{args.caller}: no saved policy.")
+                return 1
+            print(f"{args.caller}: policy removed.")
+        elif action == "cooldown-clear":
+            removed = store.clear_cooldowns(route=args.route, model=args.model)
+            if removed:
+                print(f"Cleared {_plural(removed, 'cooldown')}.")
+            else:
+                print("No matching cooldowns.")
+                return 1
+        else:
+            print(
+                "usage: hermes llm_usage_proxy routing"
+                " {show,set,enable,disable,remove,cooldown-clear}"
+            )
+            return 2
+    except ValueError as exc:
+        print(f"Failed: {exc}")
+        return 2
+    except RoutingStateError as exc:
+        # A corrupt routing state file refuses mutations rather than being
+        # silently overwritten by a partial view — say so, don't retry.
+        print(f"Failed: {exc}")
+        return 2
+    return 0
+
+
 def cmd_manage_keys(args: argparse.Namespace) -> int:
     want = str(args.state).strip().lower() in {"on", "true", "yes", "enable", "1"}
     _save_section_flag("manage_keys", want)
@@ -391,6 +594,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
         argv.append("--manage-keys")
     for name, base in sorted(build_route_table(cfg).items()):
         argv.extend(("--upstream", f"{name}={base}"))
+    capabilities = cfg.get("route_capabilities") or {}
+    for name in sorted(capabilities):
+        families = capabilities[name]
+        rendered = (
+            families
+            if isinstance(families, str)
+            else ",".join(str(family) for family in families)
+        )
+        if rendered.strip():
+            argv.extend(("--route-capability", f"{name}={rendered}"))
     return server_main(argv)
 
 
@@ -459,6 +672,82 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     )
     callers_remove.add_argument("name", help="Caller name")
 
+    policy_callers = subs.add_parser(
+        "policy-callers",
+        help=(
+            "Manage policy caller tokens — the routing credential. Unlike"
+            " `callers create`, minting one does NOT arm the global"
+            " caller-token gate, so legacy label-only clients are unaffected"
+        ),
+    )
+    policy_subs = policy_callers.add_subparsers(dest="policy_callers_command")
+    policy_create = policy_subs.add_parser(
+        "create", help="Mint a policy caller token (printed once)"
+    )
+    policy_create.add_argument(
+        "name", help="Policy caller name (the routing policy key)"
+    )
+    policy_subs.add_parser(
+        "list", help="List policy callers and token fingerprints"
+    )
+    policy_remove = policy_subs.add_parser(
+        "remove", help="Revoke a policy caller token"
+    )
+    policy_remove.add_argument("name", help="Policy caller name")
+
+    routing = subs.add_parser(
+        "routing",
+        help="Manage per-harness routing policies and 429 cooldowns",
+    )
+    routing_subs = routing.add_subparsers(dest="routing_command")
+    routing_subs.add_parser("show", help="Show saved policies and live cooldowns")
+    routing_set = routing_subs.add_parser(
+        "set",
+        help=(
+            "Replace one API family's ordered route:model list for a caller"
+            " (other families' entries are kept)"
+        ),
+    )
+    routing_set.add_argument("caller", help="Policy caller name")
+    routing_set.add_argument(
+        "--family",
+        required=True,
+        choices=["chat_completions", "anthropic_messages", "responses"],
+        help="API family these entries serve",
+    )
+    routing_set.add_argument(
+        "--entry",
+        action="append",
+        default=[],
+        metavar="ROUTE:MODEL",
+        help=(
+            "One candidate, in priority order (repeatable). The route must be"
+            " a configured upstream; cross-route entries need stored provider"
+            " keys (`keys set`) before they can serve."
+        ),
+    )
+    routing_set.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Save the policy disabled (entries kept, routing inert)",
+    )
+    routing_enable = routing_subs.add_parser("enable", help="Enable a saved policy")
+    routing_enable.add_argument("caller", help="Policy caller name")
+    routing_disable = routing_subs.add_parser(
+        "disable", help="Disable a policy without losing its entries"
+    )
+    routing_disable.add_argument("caller", help="Policy caller name")
+    routing_remove = routing_subs.add_parser(
+        "remove", help="Delete a caller's policy entirely"
+    )
+    routing_remove.add_argument("caller", help="Policy caller name")
+    cooldown_clear = routing_subs.add_parser(
+        "cooldown-clear",
+        help="Clear 429 cooldowns (all, one route's, or one route+model's)",
+    )
+    cooldown_clear.add_argument("--route", default=None, help="Route name")
+    cooldown_clear.add_argument("--model", default=None, help="Model name")
+
     manage = subs.add_parser(
         "manage-keys",
         help="Turn key-manager mode on or off (adds --manage-keys to the unit)",
@@ -482,10 +771,15 @@ def llm_usage_proxy_command(args: argparse.Namespace) -> int:
         return cmd_keys(args)
     if sub == "callers":
         return cmd_callers(args)
+    if sub == "policy-callers":
+        return cmd_policy_callers(args)
+    if sub == "routing":
+        return cmd_routing(args)
     if sub == "manage-keys":
         return cmd_manage_keys(args)
     print(
         "usage: hermes llm_usage_proxy"
-        " {status,enable,disable,reconcile,serve,keys,callers,manage-keys}"
+        " {status,enable,disable,reconcile,serve,keys,callers,policy-callers,"
+        "routing,manage-keys}"
     )
     return 2
