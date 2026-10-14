@@ -50,7 +50,7 @@ from plugins.quota_channels.core import (
 from plugins.quota_channels.zai_wallets import (
     assign_wallet_ordinals,
     enumerate_zai_wallets,
-    pick_best_zai_reading,
+    pick_best_zai_wallet,
     redact_wallet_error,
     wallet_display_label,
     wallets_from_state_when_unreadable,
@@ -166,6 +166,32 @@ def _normalize_metrics(
     return data, resets, reset_error
 
 
+def _auxiliary_error_secrets(
+    key: str, api_key: Optional[str] = None
+) -> Tuple[Any, ...]:
+    secrets = list(_provider_secrets(key))
+    if api_key:
+        secrets.append(api_key)
+    return tuple(s for s in secrets if s)
+
+
+def _sanitize_auxiliary_error(
+    key: str,
+    message: Optional[str],
+    *,
+    api_key: Optional[str] = None,
+    secrets_before: Tuple[Any, ...] = (),
+) -> Optional[str]:
+    if not message:
+        return message
+    combined = tuple(
+        s
+        for s in (*secrets_before, *_auxiliary_error_secrets(key, api_key))
+        if s
+    )
+    return redact_secrets(message, combined)
+
+
 def _apply_resets(data: Dict[str, Any], resets: Any, reset_error: Optional[str]) -> None:
     if reset_error:
         data["reset_error"] = reset_error
@@ -190,6 +216,7 @@ def _collect_provider_data(
 
     Raises on failure; the caller redacts and retains last-good state.
     """
+    secrets_before = _auxiliary_error_secrets(key, api_key)
     if api_key is not None:
         raw = _zai_quota_metrics(http_fn=http_fn, now_fn=now_fn, api_key=api_key)
     else:
@@ -198,6 +225,13 @@ def _collect_provider_data(
     if key == "grok":
         resets, reset_error = grok_reset_credits(http_fn=http_fn, now_fn=now_fn)
     _apply_resets(data, resets, reset_error)
+    if data.get("reset_error"):
+        data["reset_error"] = _sanitize_auxiliary_error(
+            key,
+            data["reset_error"],
+            api_key=api_key,
+            secrets_before=secrets_before,
+        )
 
     if api_key is not None:
         try:
@@ -340,29 +374,33 @@ def run_collect(
                     any_success = True
             wallets_state[entry_id] = wentry
 
-        # legacy "z.ai" alias = best currently spendable wallet, derived from
-        # last-good wallet data (fresh this tick or retained)
+        # legacy "z.ai" alias = best currently spendable active wallet
+        active_ids = {wallet.entry_id for wallet in wallets}
         wallet_readings = {
             entry_id: _wallet_reading_from_data(wentry["data"])
             for entry_id, wentry in wallets_state.items()
-            if isinstance(wentry.get("data"), Mapping)
+            if entry_id in active_ids and isinstance(wentry.get("data"), Mapping)
         }
         from plugins.fallback_quota_reorder.reliability import rates_for_providers
 
-        alias = pick_best_zai_reading(
+        picked = pick_best_zai_wallet(
             wallet_readings, rates_for_providers(("zai",), now_fn=now_fn)
         )
-        if alias is not None:
-            fresh_marks = [
-                float(wentry["collected_at"])
-                for wentry in wallets_state.values()
-                if isinstance(wentry.get("data"), Mapping) and wentry.get("collected_at")
-            ]
+        if picked is not None:
+            selected_id, alias = picked
+            source = wallets_state.get(selected_id) or {}
             zai_entry = dict(providers_state.get("zai") or {})
-            zai_entry["attempted_at"] = now
+            zai_entry["attempted_at"] = source.get("attempted_at", now)
             zai_entry["data"] = {**alias}
-            zai_entry["collected_at"] = max(fresh_marks) if fresh_marks else now
-            zai_entry["last_error"] = None
+            zai_entry["collected_at"] = source.get("collected_at")
+            zai_entry["last_error"] = source.get("last_error")
+            zai_entry["alias_wallet_entry_id"] = selected_id
+            if source.get("display"):
+                zai_entry["alias_wallet_display"] = source["display"]
+            elif source.get("ordinal") is not None:
+                zai_entry["alias_wallet_display"] = wallet_display_label(
+                    int(source["ordinal"])
+                )
             providers_state["zai"] = zai_entry
 
     state["providers"] = providers_state

@@ -1068,6 +1068,15 @@ def check_minimum_config_from_mapping(config: Mapping[str, Any]) -> bool:
         return False
 
 
+def format_config_parse_error(exc: BaseException) -> str:
+    """Safe YAML/config parse detail: exception class plus line/column only."""
+    name = type(exc).__name__
+    mark = getattr(exc, "problem_mark", None)
+    if mark is not None:
+        return f"{name} at line {mark.line + 1}, column {mark.column + 1}"
+    return name
+
+
 def load_quota_config(
     config_path: Optional[Path] = None,
     *,
@@ -1088,7 +1097,9 @@ def load_quota_config(
         except OSError as exc:
             raise QuotaChannelsError(f"cannot read {config_path}: {exc}") from exc
         except Exception as exc:
-            raise QuotaChannelsError(f"cannot parse {config_path}: {exc}") from exc
+            raise QuotaChannelsError(
+                f"cannot parse {config_path}: {format_config_parse_error(exc)}"
+            ) from exc
     section = raw.get("quota_channels")
     if section is None:
         raise QuotaChannelsError("quota_channels section missing in config.yaml")
@@ -1575,7 +1586,16 @@ def grok_reset_credits(
     try:
         return fetch_grok_reset_credits(http_fn=http_fn, now_fn=now_fn), None
     except Exception as exc:
-        return ResetCredits(0), _error_text(exc)
+        err = _error_text(exc)
+        try:
+            toks = (
+                load_store().get("providers", {}).get("xai-oauth", {}).get("tokens", {})
+            )
+            secrets = (toks.get("access_token"), toks.get("refresh_token"))
+            err = redact_secrets(err, tuple(s for s in secrets if s))
+        except Exception:
+            pass
+        return ResetCredits(0), err
 
 
 def run_grok_provider(

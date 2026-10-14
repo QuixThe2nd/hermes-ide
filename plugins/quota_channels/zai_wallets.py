@@ -380,19 +380,20 @@ def reconcile_zai_wallet_channels(
     return channels, ordinals, high_water, deleted
 
 
-def pick_best_zai_reading(
+def pick_best_zai_wallet(
     wallet_readings: Mapping[str, Mapping[str, Any]],
     reliability: Optional[Mapping[str, ReliabilityRates]] = None,
-) -> Optional[Dict[str, Any]]:
-    """Legacy ``readings.zai`` alias = best currently spendable wallet."""
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Return (entry_id, reading) for the best currently spendable wallet."""
     if not wallet_readings:
         return None
     rates = reliability or {}
+    best_id: Optional[str] = None
     best_entry: Optional[Dict[str, Any]] = None
     best_bucket = 2
     best_score = -1.0
 
-    for entry in wallet_readings.values():
+    for entry_id, entry in wallet_readings.items():
         reading = QuotaReading(
             channel_key="zai",
             provider=ZAI_PROVIDER_SLUG,
@@ -412,8 +413,20 @@ def pick_best_zai_reading(
         if bucket < best_bucket or (bucket == best_bucket and score > best_score):
             best_bucket = bucket
             best_score = score
+            best_id = str(entry_id)
             best_entry = dict(entry)
-    return best_entry
+    if best_id is None or best_entry is None:
+        return None
+    return best_id, best_entry
+
+
+def pick_best_zai_reading(
+    wallet_readings: Mapping[str, Mapping[str, Any]],
+    reliability: Optional[Mapping[str, ReliabilityRates]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Legacy ``readings.zai`` alias = best currently spendable wallet."""
+    picked = pick_best_zai_wallet(wallet_readings, reliability)
+    return picked[1] if picked is not None else None
 
 
 def wallets_from_state_when_unreadable(

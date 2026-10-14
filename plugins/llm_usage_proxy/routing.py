@@ -1062,7 +1062,7 @@ class RoutingStore:
         family: str,
         entries: Any,
         *,
-        enabled: bool = True,
+        enabled: Optional[bool] = None,
         known_routes: Optional[set[str]] = None,
         route_families: Optional[Mapping[str, frozenset[str]]] = None,
     ) -> dict[str, Any]:
@@ -1083,17 +1083,65 @@ class RoutingStore:
             raise ValueError(f"invalid policy caller name: {caller!r}")
         new_entries = validate_entries(entries, known_routes, route_families)
         with self._mutation():
-            existing = self._policies.get(caller) or {"enabled": True, "entries": []}
+            existing = self._policies.get(caller)
+            creating = existing is None
+            if creating:
+                existing = {"enabled": True, "entries": []}
+            if enabled is None:
+                switch = bool(existing["enabled"])
+            else:
+                switch = bool(enabled)
             merged = [e for e in existing["entries"] if e["family"] != family]
             merged.extend(new_entries)
             # The merged policy must still validate as a whole (cross-family
             # duplicates, entry cap); known_routes/families already passed
             # for both halves, so revalidate shape only.
             final = validate_entries(merged)
-            self._policies[caller] = {"enabled": bool(enabled), "entries": final}
+            self._policies[caller] = {"enabled": switch, "entries": final}
             self._policy_errors.pop(caller, None)
             self._save()
-            return {"enabled": bool(enabled), "entries": [dict(e) for e in final]}
+            return {"enabled": switch, "entries": [dict(e) for e in final]}
+
+    def move_policy_entry(
+        self,
+        caller: str,
+        family: str,
+        index: int,
+        direction: int,
+        *,
+        known_routes: Optional[set[str]] = None,
+        route_families: Optional[Mapping[str, frozenset[str]]] = None,
+    ) -> dict[str, Any]:
+        """Reorder one entry within a family without touching the policy switch."""
+        if family not in API_FAMILIES:
+            raise ValueError(
+                f"family must be one of {', '.join(sorted(API_FAMILIES))},"
+                f" got {family!r}"
+            )
+        if not is_policy_caller_name(caller):
+            raise ValueError(f"invalid policy caller name: {caller!r}")
+        target = index + direction
+        with self._mutation():
+            existing = self._policies.get(caller)
+            if existing is None:
+                raise ValueError(f"{caller}: no saved policy")
+            family_entries = [e for e in existing["entries"] if e["family"] == family]
+            if not (0 <= index < len(family_entries)) or not (
+                0 <= target < len(family_entries)
+            ):
+                raise ValueError("move out of range")
+            family_entries[index], family_entries[target] = (
+                family_entries[target],
+                family_entries[index],
+            )
+            merged = [e for e in existing["entries"] if e["family"] != family]
+            merged.extend(family_entries)
+            final = validate_entries(merged, known_routes, route_families)
+            switch = bool(existing["enabled"])
+            self._policies[caller] = {"enabled": switch, "entries": final}
+            self._policy_errors.pop(caller, None)
+            self._save()
+            return {"enabled": switch, "entries": [dict(e) for e in final]}
 
     def set_policy_enabled(self, caller: str, enabled: bool) -> bool:
         """Flip a policy's switch without disturbing its entry order."""

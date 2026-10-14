@@ -268,7 +268,11 @@ def _load_llm_section(cfg: AdminConfig) -> Optional[Mapping[str, Any]]:
     try:
         raw = yaml.safe_load(Path(cfg.config_path).read_text(encoding="utf-8")) or {}
     except Exception as exc:
-        raise AdminBackendUnavailable(f"cannot read {cfg.config_path}: {exc}") from exc
+        from plugins.quota_channels.core import format_config_parse_error
+
+        raise AdminBackendUnavailable(
+            f"cannot read {cfg.config_path}: {format_config_parse_error(exc)}"
+        ) from exc
     section = raw.get("llm_usage_proxy") if isinstance(raw, Mapping) else None
     return section if isinstance(section, Mapping) else {}
 
@@ -391,7 +395,9 @@ def _quota_snapshot(cfg: AdminConfig) -> dict[str, Any]:
             except QuotaChannelsError as exc:
                 config_error = str(exc)
             except Exception as exc:
-                config_error = f"{type(exc).__name__}: {exc}"
+                from plugins.quota_channels.core import format_config_parse_error
+
+                config_error = format_config_parse_error(exc)
         snapshot = collector.read_snapshot(config)
         snapshot["config_error"] = config_error
         return {"available": True, "snapshot": snapshot}
@@ -672,9 +678,6 @@ def _entry_editor(
         f'<input type=hidden name=csrf value="{esc(csrf)}">'
         f'<input type=hidden name=caller value="{esc(caller)}">'
         f'<input type=hidden name=family value="{esc(family)}">'
-        # Carry the policy's current switch so a family edit never silently
-        # re-enables (or disables) it — enable/disable is its own button.
-        + (f'<input type=hidden name=enabled value="1">' if enabled else "")
         + '<p class=muted>Ordered candidates, one <code>route:model</code> per line,'
         " highest priority first. Order is operator priority — nothing reorders it."
         " Edit to add, remove or reorder, then save.</p>"
@@ -750,7 +753,6 @@ def _policies_section(state: dict[str, Any], csrf: str) -> str:
                 f'<form method=post action="/admin/policy/set">'
                 f'<input type=hidden name=csrf value="{esc(csrf)}">'
                 f'<input type=hidden name=caller value="{esc(caller)}">'
-                f'<input type=hidden name=enabled value="1">'
                 f'<p class=muted>Add a family: <select name=family>{options}</select></p>'
                 '<textarea name=entries rows=2 placeholder="route:model"></textarea>'
                 "<button>save family</button></form>"
@@ -1025,27 +1027,29 @@ def _policy_write(cfg: AdminConfig, form: Mapping[str, list[str]]) -> Optional[s
         return f"{caller}: no saved policy."
     if action == "move":
         family = _field(form, "family")
-        policy = store.policy_for(caller)
-        if policy is None:
+        if store.policy_for(caller) is None:
             return f"{caller}: no saved policy."
-        entries = [e for e in policy["entries"] if e["family"] == family]
         try:
             index = int(_field(form, "index"))
             direction = int(_field(form, "direction"))
         except ValueError:
             return "invalid move request"
-        target = index + direction
-        if not (0 <= index < len(entries)) or not (0 <= target < len(entries)):
-            return "move out of range"
-        entries[index], entries[target] = entries[target], entries[index]
-        store.set_policy_family(
-            caller,
-            family,
-            entries,
-            enabled=policy["enabled"],
-            known_routes=known_routes,
-            route_families=route_families,
-        )
+        try:
+            store.move_policy_entry(
+                caller,
+                family,
+                index,
+                direction,
+                known_routes=known_routes,
+                route_families=route_families,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            if "no saved policy" in msg:
+                return f"{caller}: no saved policy."
+            if "move out of range" in msg:
+                return "move out of range"
+            return "invalid move request"
         return None
     # default: full family save (set)
     family = _field(form, "family")
@@ -1061,14 +1065,15 @@ def _policy_write(cfg: AdminConfig, form: Mapping[str, list[str]]) -> Optional[s
         entries.append({"route": route.strip(), "model": model.strip(), "family": family})
     if not entries:
         return "a policy needs at least one route:model entry"
-    # Every set form carries the intended switch explicitly (a hidden field
-    # mirroring the current state in the per-family editor, a checkbox in the
-    # new-policy form), so saving entries never silently flips enablement.
+    if store.policy_for(caller) is None:
+        enabled_switch: Optional[bool] = bool(form.get("enabled"))
+    else:
+        enabled_switch = None
     store.set_policy_family(
         caller,
         family,
         entries,
-        enabled=bool(form.get("enabled")),
+        enabled=enabled_switch,
         known_routes=known_routes,
         route_families=route_families,
     )
