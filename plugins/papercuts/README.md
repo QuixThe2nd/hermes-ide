@@ -51,3 +51,12 @@ hermes papercuts autofix status
 ```
 
 Shows schedule, last run, last status, and next run for the installed job.
+
+## Pagination
+
+`list` sorts by severity, then occurrences, then recency, and pages through the
+sorted result. `limit` (1-100, default 50) sets the page size and `offset`
+(default 0) skips items after sorting. Every response carries `total` (records
+matching the status filter) and `has_more`; keep requesting with
+`offset += count` until `has_more` is false to enumerate a backlog larger than
+the list cap exactly once.
