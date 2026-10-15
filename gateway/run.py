@@ -5673,15 +5673,14 @@ def _format_context_injection_progress(
     are split below the adapter's message cap so Discord/Telegram edits cannot
     fail merely because Honcho returned a healthy amount of autobiography.
 
-    When ``include_content`` is False, return only the source label line with
+    When ``include_content`` is False, return only the heading line with
     no char count, fences, body, or continuation chunks.
     """
     if not isinstance(content, str) or not content:
         return []
 
-    source_label = " + ".join(str(s) for s in sources if s) or "turn"
     if not include_content:
-        return [f"🧠 {source_label} context injected"]
+        return ["🧠 Context Injection"]
 
     from agent.redact import redact_sensitive_text
 
@@ -5696,8 +5695,8 @@ def _format_context_injection_progress(
     # differ, and recalled text must never wake another user by accident.
     visible = visible.replace("@", "@\u200b")
 
-    header = f"🧠 {source_label} context injected (+{max(0, int(injected_chars)):,} chars)"
-    continuation = f"🧠 {source_label} context injected (continued)"
+    header = "🧠 Context Injection"
+    continuation = "🧠 Context Injection"
     measure = message_len_fn if callable(message_len_fn) else len
 
     try:
