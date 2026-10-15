@@ -25,6 +25,25 @@ _SILENT_BACKGROUND_HINT = (
     'daemons).'
 )
 
+# Headless one-shot runners (Kanban workers, cron, hermes -z, stateless HTTP)
+# cannot receive an async completion, so recommending notify_on_complete=true
+# is a false recovery path (pc_9eaef6f2ffd8 / pc_7ddf045def95).
+_HEADLESS_SILENT_BACKGROUND_HINT = (
+    'background=true is silent in this session. notify_on_complete is not available here '
+    '(a one-shot runner such as `hermes -z`, a cron job, a Kanban worker, or a stateless '
+    'HTTP endpoint). Track the session_id and use process(action=\'poll\') or '
+    "process(action='wait') to learn the outcome."
+)
+
+
+def silent_background_hint() -> str:
+    """Hint for background=true without notify/watch. Headless sessions must not
+    be told to re-launch with notify_on_complete=true."""
+    from gateway.session_context import async_delivery_supported
+    if async_delivery_supported():
+        return _SILENT_BACKGROUND_HINT
+    return _HEADLESS_SILENT_BACKGROUND_HINT
+
 # Homebrewed CI pollers built on `gh pr view --json statusCheckRollup` or
 # `gh pr checks | jq` fail silently in known ways (block-buffered stdout never
 # reaches capture, jq null-key edge cases exit the loop, conclusion-vs-status
@@ -170,7 +189,7 @@ def spawn_background_process(
         if pty_disabled_reason:
             result_data["pty_note"] = pty_disabled_reason
         if not notify_on_complete and not watch_patterns:
-            result_data["hint"] = _SILENT_BACKGROUND_HINT
+            result_data["hint"] = silent_background_hint()
         if command and _looks_like_homebrew_ci_poller(command):
             existing = result_data.get("hint", "")
             result_data["hint"] = (existing + "\n\n" + _HOMEBREW_CI_POLLER_HINT if existing
