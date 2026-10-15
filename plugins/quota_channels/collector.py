@@ -192,9 +192,24 @@ def _sanitize_auxiliary_error(
     return redact_secrets(message, combined)
 
 
-def _apply_resets(data: Dict[str, Any], resets: Any, reset_error: Optional[str]) -> None:
+_RESET_READING_FIELDS = (
+    "reset_count",
+    "reset_expiry_seconds",
+    "reset_expiry_horizons",
+    "resets_collected_at",
+)
+
+
+def _apply_resets(
+    data: Dict[str, Any],
+    resets: Any,
+    reset_error: Optional[str],
+    *,
+    collected_at: Optional[float] = None,
+) -> None:
     if reset_error:
         data["reset_error"] = reset_error
+        return
     if resets is None:
         return
     data["reset_count"] = int(resets.count)
@@ -203,6 +218,27 @@ def _apply_resets(data: Dict[str, Any], resets: Any, reset_error: Optional[str])
     if resets.expiry_horizons:
         # each credit's own expiry clock, relative to the collection time
         data["reset_expiry_horizons"] = [float(h) for h in resets.expiry_horizons]
+    if collected_at is not None:
+        data["resets_collected_at"] = float(collected_at)
+        data.pop("resets_stale", None)
+
+
+def _merge_reset_on_failure(
+    data: Dict[str, Any], prior: Optional[Mapping[str, Any]]
+) -> None:
+    """Keep last-good reset readings when an auxiliary reset fetch failed."""
+    if not data.get("reset_error"):
+        return
+    for key in _RESET_READING_FIELDS:
+        data.pop(key, None)
+    had_prior = False
+    if isinstance(prior, Mapping):
+        for key in _RESET_READING_FIELDS:
+            if key in prior:
+                data[key] = prior[key]
+                had_prior = True
+    if had_prior:
+        data["resets_stale"] = True
 
 
 def _collect_provider_data(
@@ -221,10 +257,11 @@ def _collect_provider_data(
         raw = _zai_quota_metrics(http_fn=http_fn, now_fn=now_fn, api_key=api_key)
     else:
         raw = QUOTA_METRICS[key](http_fn=http_fn, now_fn=now_fn)
+    collected_at = float(now_fn())
     data, resets, reset_error = _normalize_metrics(key, raw)
     if key == "grok":
         resets, reset_error = grok_reset_credits(http_fn=http_fn, now_fn=now_fn)
-    _apply_resets(data, resets, reset_error)
+    _apply_resets(data, resets, reset_error, collected_at=collected_at)
     if data.get("reset_error"):
         data["reset_error"] = _sanitize_auxiliary_error(
             key,
@@ -239,15 +276,99 @@ def _collect_provider_data(
                 http_fn=http_fn, now_fn=now_fn, api_key=api_key
             )
         except Exception as exc:
-            data["token_error"] = redact_secrets(_error_text(exc), (api_key,))
+            data["token_error"] = _sanitize_auxiliary_error(
+                key,
+                _error_text(exc),
+                api_key=api_key,
+                secrets_before=secrets_before,
+            )
     elif key in TOKEN_FETCHERS:
         try:
             data["tokens_7d"] = TOKEN_FETCHERS[key](http_fn=http_fn, now_fn=now_fn)
         except Exception as exc:
-            data["token_error"] = redact_secrets(
-                _error_text(exc), _provider_secrets(key)
+            data["token_error"] = _sanitize_auxiliary_error(
+                key,
+                _error_text(exc),
+                secrets_before=secrets_before,
             )
     return data
+
+
+_WALLET_UNAVAILABLE = (
+    "wallet credential unavailable (env reference unresolved or pool unreadable)"
+)
+_WALLET_REMOVED = "wallet removed (no longer in credential pool)"
+_ZAI_POOL_EMPTY = "no z.ai wallets in credential pool"
+
+
+def _reconcile_retired_wallet_entries(
+    wallets_state: Dict[str, Any],
+    active_ids: set,
+    now: float,
+    *,
+    pool_unreadable: bool,
+    authoritative_empty: bool,
+) -> None:
+    for entry_id, wentry in list(wallets_state.items()):
+        if entry_id in active_ids or not isinstance(wentry, Mapping):
+            continue
+        patched = dict(wentry)
+        patched["attempted_at"] = now
+        if authoritative_empty or not pool_unreadable:
+            patched["last_error"] = _WALLET_REMOVED
+        else:
+            patched["last_error"] = _WALLET_UNAVAILABLE
+        wallets_state[entry_id] = patched
+
+
+def _bind_zai_alias(
+    providers_state: Dict[str, Any],
+    wallets_state: Dict[str, Any],
+    wallets: List[Any],
+    now: float,
+    now_fn: NowFn,
+    *,
+    authoritative_empty: bool,
+) -> None:
+    from plugins.fallback_quota_reorder.reliability import rates_for_providers
+
+    active_ids = {wallet.entry_id for wallet in wallets}
+    wallet_readings = {
+        entry_id: _wallet_reading_from_data(wentry["data"])
+        for entry_id, wentry in wallets_state.items()
+        if entry_id in active_ids
+        and isinstance(wentry.get("data"), Mapping)
+        and not wentry.get("last_error")
+    }
+    zai_entry = dict(providers_state.get("zai") or {})
+    zai_entry["attempted_at"] = now
+    if authoritative_empty:
+        zai_entry["last_error"] = _ZAI_POOL_EMPTY
+        zai_entry.pop("alias_wallet_entry_id", None)
+        zai_entry.pop("alias_wallet_display", None)
+        providers_state["zai"] = zai_entry
+        return
+    picked = pick_best_zai_wallet(
+        wallet_readings, rates_for_providers(("zai",), now_fn=now_fn)
+    )
+    if picked is None:
+        if not wallet_readings:
+            zai_entry["last_error"] = zai_entry.get("last_error") or _ZAI_POOL_EMPTY
+            zai_entry.pop("alias_wallet_entry_id", None)
+            zai_entry.pop("alias_wallet_display", None)
+        providers_state["zai"] = zai_entry
+        return
+    selected_id, alias = picked
+    source = wallets_state.get(selected_id) or {}
+    zai_entry["data"] = {**alias}
+    zai_entry["collected_at"] = source.get("collected_at")
+    zai_entry["last_error"] = source.get("last_error")
+    zai_entry["alias_wallet_entry_id"] = selected_id
+    if source.get("display"):
+        zai_entry["alias_wallet_display"] = source["display"]
+    elif source.get("ordinal") is not None:
+        zai_entry["alias_wallet_display"] = wallet_display_label(int(source["ordinal"]))
+    providers_state["zai"] = zai_entry
 
 
 def _wallet_reading_from_data(data: Mapping[str, Any]) -> Dict[str, Any]:
@@ -296,12 +417,14 @@ def run_collect(
 
     wallets: List[Any] = []
     pool_unreadable = False
+    zai_authoritative_empty = False
     ordinals: Dict[str, int] = {}
     if zai_enabled:
         hermes_home = _hermes_home()
         wallets, pool_unreadable = enumerate_zai_wallets(hermes_home)
         if pool_unreadable and not wallets:
             wallets = wallets_from_state_when_unreadable(legacy_state, hermes_home)
+        zai_authoritative_empty = not pool_unreadable and not wallets
         state["zai_pool_unreadable"] = bool(pool_unreadable)
         if wallets:
             # Ordinal identity is shared with the Discord tick; the Discord
@@ -326,11 +449,14 @@ def run_collect(
             continue
         entry = dict(providers_state.get(key) or {})
         entry["attempted_at"] = now
+        secrets_before = _auxiliary_error_secrets(key)
+        prior_data = entry.get("data") if isinstance(entry.get("data"), Mapping) else None
         try:
             data = _collect_provider_data(key, http_fn=http_fn, now_fn=now_fn)
+            _merge_reset_on_failure(data, prior_data)
         except Exception as exc:
-            entry["last_error"] = redact_secrets(
-                _error_text(exc), _provider_secrets(key)
+            entry["last_error"] = _sanitize_auxiliary_error(
+                key, _error_text(exc), secrets_before=secrets_before
             )
         else:
             entry["data"] = data
@@ -339,69 +465,60 @@ def run_collect(
             any_success = True
         providers_state[key] = entry
 
-    if zai_enabled and wallets:
-        for wallet in wallets:
-            entry_id = wallet.entry_id
-            wentry = dict(wallets_state.get(entry_id) or {})
-            ordinal = ordinals.get(entry_id)
-            if ordinal is not None:
-                wentry["ordinal"] = int(ordinal)
-                wentry["display"] = (
-                    "z.ai"
-                    if len(wallets) == 1
-                    else wallet_display_label(int(ordinal))
-                )
-            wentry["attempted_at"] = now
-            if not wallet.runtime_api_key:
-                wentry["last_error"] = (
-                    "wallet credential unavailable "
-                    "(env reference unresolved or pool unreadable)"
-                )
-            else:
-                try:
-                    data = _collect_provider_data(
-                        "zai",
-                        http_fn=http_fn,
-                        now_fn=now_fn,
-                        api_key=wallet.runtime_api_key,
-                    )
-                except Exception as exc:
-                    wentry["last_error"] = redact_wallet_error(exc, wallet)
-                else:
-                    wentry["data"] = data
-                    wentry["collected_at"] = now
-                    wentry["last_error"] = None
-                    any_success = True
-            wallets_state[entry_id] = wentry
-
-        # legacy "z.ai" alias = best currently spendable active wallet
+    if zai_enabled:
         active_ids = {wallet.entry_id for wallet in wallets}
-        wallet_readings = {
-            entry_id: _wallet_reading_from_data(wentry["data"])
-            for entry_id, wentry in wallets_state.items()
-            if entry_id in active_ids and isinstance(wentry.get("data"), Mapping)
-        }
-        from plugins.fallback_quota_reorder.reliability import rates_for_providers
-
-        picked = pick_best_zai_wallet(
-            wallet_readings, rates_for_providers(("zai",), now_fn=now_fn)
+        if wallets:
+            for wallet in wallets:
+                entry_id = wallet.entry_id
+                wentry = dict(wallets_state.get(entry_id) or {})
+                ordinal = ordinals.get(entry_id)
+                if ordinal is not None:
+                    wentry["ordinal"] = int(ordinal)
+                    wentry["display"] = (
+                        "z.ai"
+                        if len(wallets) == 1
+                        else wallet_display_label(int(ordinal))
+                    )
+                wentry["attempted_at"] = now
+                if not wallet.runtime_api_key:
+                    wentry["last_error"] = _WALLET_UNAVAILABLE
+                else:
+                    prior_data = (
+                        wentry.get("data")
+                        if isinstance(wentry.get("data"), Mapping)
+                        else None
+                    )
+                    try:
+                        data = _collect_provider_data(
+                            "zai",
+                            http_fn=http_fn,
+                            now_fn=now_fn,
+                            api_key=wallet.runtime_api_key,
+                        )
+                        _merge_reset_on_failure(data, prior_data)
+                    except Exception as exc:
+                        wentry["last_error"] = redact_wallet_error(exc, wallet)
+                    else:
+                        wentry["data"] = data
+                        wentry["collected_at"] = now
+                        wentry["last_error"] = None
+                        any_success = True
+                wallets_state[entry_id] = wentry
+        _reconcile_retired_wallet_entries(
+            wallets_state,
+            active_ids,
+            now,
+            pool_unreadable=pool_unreadable,
+            authoritative_empty=zai_authoritative_empty,
         )
-        if picked is not None:
-            selected_id, alias = picked
-            source = wallets_state.get(selected_id) or {}
-            zai_entry = dict(providers_state.get("zai") or {})
-            zai_entry["attempted_at"] = source.get("attempted_at", now)
-            zai_entry["data"] = {**alias}
-            zai_entry["collected_at"] = source.get("collected_at")
-            zai_entry["last_error"] = source.get("last_error")
-            zai_entry["alias_wallet_entry_id"] = selected_id
-            if source.get("display"):
-                zai_entry["alias_wallet_display"] = source["display"]
-            elif source.get("ordinal") is not None:
-                zai_entry["alias_wallet_display"] = wallet_display_label(
-                    int(source["ordinal"])
-                )
-            providers_state["zai"] = zai_entry
+        _bind_zai_alias(
+            providers_state,
+            wallets_state,
+            wallets,
+            now,
+            now_fn,
+            authoritative_empty=zai_authoritative_empty,
+        )
 
     state["providers"] = providers_state
     state["wallets"] = wallets_state
@@ -415,7 +532,10 @@ def run_collect(
 
 
 def _absolute_data(
-    data: Optional[Mapping[str, Any]], collected_at: Optional[float]
+    data: Optional[Mapping[str, Any]],
+    collected_at: Optional[float],
+    *,
+    now: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(data, Mapping):
         return None
@@ -425,11 +545,24 @@ def _absolute_data(
             out["reset_at"] = float(collected_at) + float(data["reset_seconds"])
         except (KeyError, TypeError, ValueError):
             pass
+        reset_base = data.get("resets_collected_at")
+        if reset_base is None:
+            reset_base = collected_at
         horizons = data.get("reset_expiry_horizons")
         if isinstance(horizons, (list, tuple)):
             out["reset_expiry_at"] = [
-                float(collected_at) + float(h) for h in horizons
+                float(reset_base) + float(h) for h in horizons
             ]
+        if data.get("reset_expiry_seconds") is not None and "reset_expiry_at" not in out:
+            try:
+                out["reset_expiry_at"] = float(reset_base) + float(
+                    data["reset_expiry_seconds"]
+                )
+            except (TypeError, ValueError):
+                pass
+        if data.get("resets_stale") and reset_base is not None and now is not None:
+            out["resets_stale"] = True
+            out["resets_age_seconds"] = float(now) - float(reset_base)
     return out
 
 
@@ -461,7 +594,11 @@ def _entry_snapshot(
         "age_seconds": age_seconds,
         "stale": stale,
         "error": error,
-        "data": _absolute_data(data, float(collected_at) if collected_at else None),
+        "data": _absolute_data(
+            data,
+            float(collected_at) if collected_at else None,
+            now=now,
+        ),
     }
 
 

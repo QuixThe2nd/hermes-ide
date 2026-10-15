@@ -1087,10 +1087,10 @@ class RoutingStore:
             creating = existing is None
             if creating:
                 existing = {"enabled": True, "entries": []}
-            if enabled is None:
-                switch = bool(existing["enabled"])
+            if creating:
+                switch = bool(enabled) if enabled is not None else True
             else:
-                switch = bool(enabled)
+                switch = bool(existing["enabled"])
             merged = [e for e in existing["entries"] if e["family"] != family]
             merged.extend(new_entries)
             # The merged policy must still validate as a whole (cross-family

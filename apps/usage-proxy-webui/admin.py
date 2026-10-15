@@ -1065,15 +1065,12 @@ def _policy_write(cfg: AdminConfig, form: Mapping[str, list[str]]) -> Optional[s
         entries.append({"route": route.strip(), "model": model.strip(), "family": family})
     if not entries:
         return "a policy needs at least one route:model entry"
-    if store.policy_for(caller) is None:
-        enabled_switch: Optional[bool] = bool(form.get("enabled"))
-    else:
-        enabled_switch = None
+    create_enabled: Optional[bool] = bool(form.get("enabled"))
     store.set_policy_family(
         caller,
         family,
         entries,
-        enabled=enabled_switch,
+        enabled=create_enabled,
         known_routes=known_routes,
         route_families=route_families,
     )

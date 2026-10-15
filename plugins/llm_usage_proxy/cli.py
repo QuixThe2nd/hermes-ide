@@ -451,16 +451,17 @@ def cmd_routing(args: argparse.Namespace) -> int:
             # BEFORE writing: unknown routes/families, bad models,
             # incompatible endpoint capabilities and duplicates are rejected
             # and the saved policy is untouched.
+            create_enabled = False if args.disabled else None
             policy = store.set_policy_family(
                 args.caller,
                 args.family,
                 entries,
-                enabled=not args.disabled,
+                enabled=create_enabled,
                 known_routes=_known_route_names(),
                 route_families=_route_families(),
             )
             print(
-                f"{args.caller}: policy saved ({'enabled' if not args.disabled else 'disabled'},"
+                f"{args.caller}: policy saved ({'enabled' if policy['enabled'] else 'disabled'},"
                 f" {_plural(len(policy['entries']), 'entry', 'entries')})."
                 " The running proxy picks it up without a restart."
             )
