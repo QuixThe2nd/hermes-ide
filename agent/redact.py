@@ -840,6 +840,41 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     return text
 
 
+def _redact_json_credentials_value_aware(text: str) -> str:
+    """JSON-only, value-gated pass for unclassified file reads (pc_44352d33).
+
+    ``file_read=True`` implies ``code_file=True`` so source/config dumps stay
+    readable. The gap that created the incident: a credential artifact whose
+    filename gave no hint (``deploy-config.json``, a tool token cache) rendered
+    its opaque prefix-less credential verbatim, because the ENV/YAML/JSON
+    assignment passes were all skipped and no vendor prefix matched. JSON is the
+    one shape where the key is already from the restricted credential-name set
+    (``_JSON_FIELD_RE`` — no keyword check needed, same set the full pass uses)
+    and the value is a quoted literal, so the value's shape alone can gate:
+    opaque ⇒ non-reusable sentinel (#35519), short/prose fixtures untouched.
+    YAML/ENV forms deliberately stay passthrough on unclassified reads —
+    ``5|ADS_API_TOKEN: …`` is pinned by TestSecretFileAssignmentRedaction.
+    """
+    if '"' not in text or ':' not in text:
+        return text
+
+    def _sub(m):
+        value = m.group(2)
+        # Already masked by an earlier pass (``***`` or a sentinel): masking again
+        # only erases the vendor label the sentinel deliberately kept (see
+        # _should_redact_assignment's identical guard).
+        if value == "***" or value.startswith("«redacted"):
+            return m.group(0)
+        # Programmatic env-lookup values name a variable, not a secret (#2852).
+        if _ENV_LOOKUP_VALUE_RE.match(value):
+            return m.group(0)
+        if not _looks_like_opaque_credential(value):
+            return m.group(0)
+        return f'{m.group(1)}: "{_mask_token_nonreusable(value)}"'
+
+    return _JSON_FIELD_RE.sub(_sub, text)
+
+
 def _redact_url_credentials(text: str, code_file: bool) -> str:
     """DB connection-string passwords and bare-token URL userinfo (``://`` text only)."""
     def _redact_db(m):
@@ -928,6 +963,13 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)
+    elif file_read:
+        # Unclassified file read (filename gave no secret hint). The full assignment
+        # passes stay off (source/config dumps stay readable), but JSON credentials
+        # are value-gated: an opaque prefix-less literal under a credential-named key
+        # is masked with the non-reusable sentinel (pc_44352d33). secret_file=True
+        # never reaches this branch — its code_file was forced off above.
+        text = _redact_json_credentials_value_aware(text)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
