@@ -1,6 +1,6 @@
 """#106475: with a single credential, a Codex ChatGPT-account entitlement 400 must fail closed —
 the rejected slug is skipped by the fallback walk and restore_primary_runtime must not switch back
-and announce an unverified "Primary model restored" that would oscillate forever.
+and announce an unverified "Model switched to" that would oscillate forever.
 """
 
 from types import SimpleNamespace
@@ -90,4 +90,4 @@ def test_restore_primary_runtime_is_gated_on_rejected_primary_slug():
 
     _, restored, emitted = _run("some-other-slug")
     assert restored is True
-    assert any("Primary model restored" in n for n in emitted)
+    assert any("Model switched to" in n for n in emitted)

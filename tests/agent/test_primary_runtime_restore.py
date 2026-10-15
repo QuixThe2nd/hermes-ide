@@ -176,7 +176,6 @@ class TestRestorePrimaryRuntime:
         agent.model = "primary-model"
         agent._primary_runtime["model"] = "primary-model"
         original_model = agent.model
-        original_provider = agent.provider
         mock_client = _mock_resolve()
         with patch(
             "agent.auxiliary_client.resolve_provider_client",
@@ -189,10 +188,7 @@ class TestRestorePrimaryRuntime:
         with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
 
-        assert emitted == [
-            f"✅ Primary model restored: {original_model} via {original_provider}; "
-            "fallback anthropic/claude-sonnet-4 via openrouter is no longer active."
-        ]
+        assert emitted == [f"✅ Model switched to {original_model}"]
 
     def test_does_not_label_temporary_model_restore_as_fallback_recovery(self):
         """`/model --once` reuses restore with no provider fallback lifecycle."""
@@ -207,14 +203,14 @@ class TestRestorePrimaryRuntime:
             assert agent._restore_primary_runtime() is True
 
         # The runtime change re-probes compression feasibility (a diagnostic, not a restore label).
-        assert [m for m in emitted if "restored" in str(m).lower() or "fallback" in str(m).lower()] == []
+        assert [m for m in emitted if "model switched" in str(m).lower()] == []
 
     def test_restore_retry_preserves_fallback_identity_after_partial_failure(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         )
-        agent.model = "primary-model"
-        agent._primary_runtime["model"] = "primary-model"
+        agent.model = "glm-5.3-flash"
+        agent._primary_runtime["model"] = "glm-5.3-flash"
         mock_client = _mock_resolve()
         with patch(
             "agent.auxiliary_client.resolve_provider_client",
@@ -235,10 +231,7 @@ class TestRestorePrimaryRuntime:
             assert agent._restore_primary_runtime() is False
             assert agent._restore_primary_runtime() is True
 
-        assert emitted == [
-            "✅ Primary model restored: primary-model via custom; "
-            "fallback anthropic/claude-sonnet-4 via openrouter is no longer active."
-        ]
+        assert emitted == ["✅ Model switched to glm-5.3-flash"]
 
     def test_resets_fallback_index(self):
         """After restore, the full fallback chain should be available again."""
