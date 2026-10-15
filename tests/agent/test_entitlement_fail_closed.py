@@ -1,6 +1,6 @@
 """#106475: with a single credential, a Codex ChatGPT-account entitlement 400 must fail closed —
 the rejected slug is skipped by the fallback walk and restore_primary_runtime must not switch back
-and announce an unverified "Model switched to" that would oscillate forever.
+and announce an unverified "Primary model restored" that would oscillate forever.
 """
 
 from types import SimpleNamespace
