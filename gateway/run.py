@@ -14626,6 +14626,31 @@ class GatewayRunner(
         if steered and is_steer_mode and event.source.platform == Platform.DISCORD:
             if not self._busy_steer_ack_enabled(event, session_key):
                 return True
+            # ⏩ steer receipt is a reactions feature — honor the adapter's
+            # reactions opt-out; skip is silent (no bubble) per busy-steer contract.
+            reactions_gate = getattr(adapter, "_reactions_enabled", None)
+            if not callable(reactions_gate):
+                logger.debug(
+                    "Discord busy-steer reaction skipped (missing _reactions_enabled) "
+                    "for session %s",
+                    session_key,
+                )
+                return True
+            try:
+                if not reactions_gate():
+                    logger.debug(
+                        "Discord busy-steer reaction suppressed (reactions disabled) "
+                        "for session %s",
+                        session_key,
+                    )
+                    return True
+            except Exception:
+                logger.debug(
+                    "Discord busy-steer reaction gate failed for session %s",
+                    session_key,
+                    exc_info=True,
+                )
+                return True
             add_reaction = getattr(adapter, "_add_reaction", None)
             raw = getattr(event, "raw_message", None)
             if not callable(add_reaction) or raw is None:
