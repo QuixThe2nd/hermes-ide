@@ -2073,10 +2073,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     """
     try:
         from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL as _XAI_DEFAULT_BASE
+        from hermes_cli.auth import AuthError
         override = (_scoped_key_env("HERMES_XAI_BASE_URL") or _scoped_key_env("XAI_BASE_URL")).rstrip("/")
         owner_token = _shared_owner_caller_token_for(override or _XAI_DEFAULT_BASE)
         if owner_token:
             return owner_token, override or _XAI_DEFAULT_BASE
+    except AuthError:
+        raise
     except Exception:
         pass
     try:
@@ -2982,16 +2985,22 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    codex_token = _pool_runtime_api_key(entry) if pool_present else None
     codex_override = _codex_base_url_override()
-    if codex_token:
-        base_url = codex_override or _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+    codex_base_key = codex_override or _CODEX_AUX_BASE_URL
+    owner_token = _shared_owner_caller_token_for(codex_base_key)
+    if owner_token:
+        codex_token = owner_token
+        base_url = codex_base_key
     else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = codex_override or _CODEX_AUX_BASE_URL
+        pool_present, entry = _select_pool_entry("openai-codex")
+        codex_token = _pool_runtime_api_key(entry) if pool_present else None
+        if codex_token:
+            base_url = codex_override or _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+        else:
+            codex_token = _read_codex_access_token()
+            if not codex_token:
+                return None, None
+            base_url = codex_override or _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token, base_url=base_url,
