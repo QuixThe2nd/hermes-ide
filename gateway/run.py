@@ -14621,6 +14621,30 @@ class GatewayRunner(
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 
+        # Mobile Discord clients treat reactions as lighter-weight steer receipts
+        # than a bot reply bubble; steer delivery is unchanged.
+        if steered and is_steer_mode and event.source.platform == Platform.DISCORD:
+            if not self._busy_steer_ack_enabled(event, session_key):
+                return True
+            add_reaction = getattr(adapter, "_add_reaction", None)
+            raw = getattr(event, "raw_message", None)
+            if not callable(add_reaction) or raw is None:
+                logger.debug(
+                    "Discord busy-steer reaction skipped (missing _add_reaction or raw_message) "
+                    "for session %s",
+                    session_key,
+                )
+                return True
+            try:
+                await add_reaction(raw, "⏩")
+            except Exception as exc:
+                logger.debug(
+                    "Discord busy-steer reaction failed for session %s: %s",
+                    session_key,
+                    exc,
+                )
+            return True
+
         # Debounce before consulting config-heavy display settings. Rapid
         # follow-ups should be processed but should not trigger another config
         # read just to discover that no ack will be sent.
