@@ -353,9 +353,39 @@ def _bind_zai_alias(
     )
     if picked is None:
         if not wallet_readings:
-            zai_entry["last_error"] = zai_entry.get("last_error") or _ZAI_POOL_EMPTY
-            zai_entry.pop("alias_wallet_entry_id", None)
-            zai_entry.pop("alias_wallet_display", None)
+            failed_id: Optional[str] = None
+            failed_rank: Optional[tuple] = None
+            for wallet in wallets:
+                if wallet.entry_id not in active_ids:
+                    continue
+                wentry = wallets_state.get(wallet.entry_id)
+                if not isinstance(wentry, Mapping) or not wentry.get("last_error"):
+                    continue
+                ordinal = wentry.get("ordinal")
+                rank = (
+                    0 if ordinal is not None else 1,
+                    int(ordinal) if ordinal is not None else 0,
+                    wallet.entry_id,
+                )
+                if failed_rank is None or rank < failed_rank:
+                    failed_rank = rank
+                    failed_id = wallet.entry_id
+            if failed_id is not None:
+                source = wallets_state.get(failed_id) or {}
+                zai_entry["last_error"] = source.get("last_error")
+                zai_entry.pop("data", None)
+                zai_entry.pop("collected_at", None)
+                zai_entry["alias_wallet_entry_id"] = failed_id
+                if source.get("display"):
+                    zai_entry["alias_wallet_display"] = source["display"]
+                elif source.get("ordinal") is not None:
+                    zai_entry["alias_wallet_display"] = wallet_display_label(
+                        int(source["ordinal"])
+                    )
+            else:
+                zai_entry["last_error"] = zai_entry.get("last_error") or _ZAI_POOL_EMPTY
+                zai_entry.pop("alias_wallet_entry_id", None)
+                zai_entry.pop("alias_wallet_display", None)
         providers_state["zai"] = zai_entry
         return
     selected_id, alias = picked

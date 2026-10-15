@@ -1802,7 +1802,23 @@ def _split_proxy_path(raw_path: str) -> tuple[Optional[str], str, str]:
     return (upstream or None), rest, query
 
 
-def _upstream_request_target(base_url: str, rest: str, query: str) -> str:
+_POLICY_CHAT_COMPLETIONS_CANONICAL_REST = "v1/chat/completions"
+
+
+def _canonical_policy_chat_completions_rest(rest: str) -> str:
+    """OpenAI-style ``v1/chat/completions`` tail for policy cross-route reroutes."""
+    if (rest or "").lstrip("/") == _POLICY_CHAT_COMPLETIONS_CANONICAL_REST:
+        return "chat/completions"
+    return rest
+
+
+def _upstream_request_target(
+    base_url: str,
+    rest: str,
+    query: str,
+    *,
+    policy_cross_route_chat_completions: bool = False,
+) -> str:
     """Origin-form request-target for the upstream (path + query only).
 
     http.client sends absolute-form when handed a full URL, which is proxy
@@ -1810,10 +1826,19 @@ def _upstream_request_target(base_url: str, rest: str, query: str) -> str:
     prepended to the routed rest here and the netloc never appears in it. An
     empty *rest* (the request was for the base path itself) keeps the base
     path exactly — no invented trailing slash.
+
+    When ``policy_cross_route_chat_completions`` is set, a routed rest of
+    ``v1/chat/completions`` is rewritten to ``chat/completions`` before the
+    base prefix is applied — Kimi- and Z.AI-style bases already carry their own
+    version segment. This applies only on policy cross-route Chat Completions
+    reroutes; native and same-route paths pass ``rest`` through unchanged.
     """
+    effective_rest = rest
+    if policy_cross_route_chat_completions:
+        effective_rest = _canonical_policy_chat_completions_rest(rest)
     split = urlsplit(base_url)
-    if rest:
-        target = (split.path or "").rstrip("/") + "/" + rest.lstrip("/")
+    if effective_rest:
+        target = (split.path or "").rstrip("/") + "/" + effective_rest.lstrip("/")
     else:
         target = split.path or "/"
     if query:
@@ -2701,7 +2726,16 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                     break
                 cand_base = self.upstreams[cand_route]
                 cand_split = urlsplit(cand_base)
-                cand_target = _upstream_request_target(cand_base, rest, query)
+                cross_route_attempt = cand_route != upstream_name
+                cand_target = _upstream_request_target(
+                    cand_base,
+                    rest,
+                    query,
+                    policy_cross_route_chat_completions=(
+                        cross_route_attempt
+                        and plan.family == _routing.FAMILY_CHAT_COMPLETIONS
+                    ),
+                )
                 cand_body = body
                 if cand_model is not None and body:
                     rewritten_body = _routing.rewrite_request_model(body, cand_model)

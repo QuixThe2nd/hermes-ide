@@ -135,6 +135,19 @@ hermes llm_usage_proxy routing disable hermes           # entries kept, routing 
   rather than guessing compatibility from a route's name. The Codex
   subscription Responses API is its own capability and is NOT interchangeable
   with an arbitrary OpenAI-compatible deployment.
+* **Per-family route aliases.** One provider often needs multiple upstream
+  bases: declare separate routes (for example `kimi` with
+  `anthropic_messages` only versus `kimi-chat` with base
+  `https://api.kimi.com/coding/v1` and `chat_completions` only). Policies
+  reference the alias that matches the family; the arriving route's slug does
+  not imply capability.
+* **Chat Completions path on cross-route policy reroutes.** Clients normally
+  call `/p/<route>/v1/chat/completions`. When a policy moves a Chat
+  Completions request to a *different* route, the proxy rewrites that tail to
+  `chat/completions` before prepending the candidate's base URL (so Z.AI gets
+  `…/chat/completions`, Kimi chat gets `…/coding/v1/chat/completions`). Direct
+  traffic and same-route policy hits keep `v1/chat/completions` verbatim;
+  Anthropic `v1/messages`, Responses, and opaque paths are unchanged.
 * **Operator priority, never reshuffled.** Entries are tried in saved order;
   quota scores never reorder them. The client-selected model is replaced by the
   chosen entry's model (everything else in the request body is preserved
