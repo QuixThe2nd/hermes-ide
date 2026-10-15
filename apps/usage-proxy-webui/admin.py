@@ -939,7 +939,9 @@ def _read_body(handler) -> Optional[bytes]:
     if length <= 0:
         return b""
     if length > MAX_POST_BYTES:
-        # Drain a bounded prefix so the connection stays usable, then refuse.
+        # Refuse oversized bodies without leaving a suffix in the keep-alive
+        # buffer (the unread tail would be parsed as another request).
+        handler.close_connection = True
         handler.rfile.read(MAX_POST_BYTES)
         return None
     return handler.rfile.read(length)
@@ -1087,6 +1089,15 @@ def handle_post(handler, cfg: AdminConfig, parsed) -> Response:
     route = parsed.path
     raw = _read_body(handler)
     if raw is None:
+        length_hdr = handler.headers.get("Content-Length") or "0"
+        try:
+            too_large = int(length_hdr) > MAX_POST_BYTES
+        except ValueError:
+            too_large = False
+        if too_large:
+            handler.close_connection = True
+            headers = _SECURITY_HEADERS + (("Connection", "close"),)
+            return 413, _PLAIN, b"request body too large\n", headers
         return 413, _PLAIN, b"request body too large\n", _SECURITY_HEADERS
 
     if route == "/admin/login":
