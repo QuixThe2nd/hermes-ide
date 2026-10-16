@@ -55,6 +55,7 @@ import os
 import re
 import ssl
 import threading
+from pathlib import Path
 from typing import Any, Mapping, Optional
 from urllib.parse import quote, urlsplit
 
@@ -557,6 +558,211 @@ def _caller_label_for_profile(profile: str) -> str:
     return (f"{HERMES_CALLER_LABEL}:{cleaned}")[:_CALLER_LABEL_MAX_CHARS]
 
 
+def _profile_config_section(profile: str, section: str) -> Optional[Mapping[str, Any]]:
+    """The *profile's own* ``config.yaml`` section, or None when absent.
+
+    ``profile`` is a constructor-bound profile key — an absolute HERMES_HOME
+    path, never the ambient context. Reading the ambient config
+    (``load_config_readonly``) would bind whatever profile happens to be
+    active at request time, so this reads the bound profile's file directly.
+
+    ABSENT degrades to None (legacy unconfigured): no file, an empty or
+    comment-only file, or no such section. A PRESENT but unusable config —
+    unreadable file, unparseable YAML, a non-mapping top level, or a
+    non-mapping section — raises :class:`CallerTokenConfigError` instead: an
+    explicit caller-token configuration must never silently become
+    unconfigured because the file could not be read, which would send the
+    opted-in profile's traffic tokenless and bypass its routing policy.
+    Messages name the file and the shape of the defect only — never parser
+    excerpts or config content, which may sit next to secret material.
+    """
+    path = os.path.join(str(profile), "config.yaml")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise CallerTokenConfigError(
+            f"{path} exists but could not be read ({type(exc).__name__}) —"
+            " this profile's routed traffic refuses to run while its"
+            " caller-token configuration cannot be read; fix the file (or"
+            " remove it to run unconfigured)"
+        ) from None
+    if not text.strip():
+        return None
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    if yaml is None:
+        # Non-empty config but no parser: unconfigured cannot be verified.
+        raise CallerTokenConfigError(
+            f"{path} has content but PyYAML is unavailable to parse it —"
+            " this profile's routed traffic refuses to run while its"
+            " caller-token configuration cannot be read"
+        ) from None
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError:
+        # Deliberately NOT str(exc): parser messages quote the offending
+        # line, which may carry secret material.
+        raise CallerTokenConfigError(
+            f"{path} is not valid YAML — fix the file (or remove it to run"
+            " unconfigured); this profile's routed traffic refuses to run"
+            " while its caller-token configuration cannot be read"
+        ) from None
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise CallerTokenConfigError(
+            f"{path} top level is {type(raw).__name__}, expected a mapping —"
+            " fix the file (or remove it to run unconfigured); this profile's"
+            " routed traffic refuses to run while its caller-token"
+            " configuration cannot be read"
+        )
+    value = raw.get(section)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise CallerTokenConfigError(
+            f"{section} in {path} is {type(value).__name__}, expected a"
+            " mapping of option names to values — fix the section (or remove"
+            " it to run unconfigured); this profile's routed traffic refuses"
+            " to run while its caller-token configuration cannot be read"
+        )
+    return value
+
+
+def _profile_secret(profile: str, name: str) -> Optional[str]:
+    """The env var *name* resolved against *profile*'s own secret scope.
+
+    Profile-bound, fail-closed: the bound profile's scope is built explicitly
+    and installed for the duration of the resolve — the AMBIENT
+    ``_SECRET_SCOPE`` contextvar (whichever profile's turn happens to be
+    active under multiplexing) is never consulted, so profile B's active
+    scope can never answer for profile A. For the process's own profile the
+    resolve still goes through ``agent.secret_scope.get_secret`` so
+    single-profile deployments keep process-env injection (systemd,
+    ``op run``) as the scope-overlay fallback; for any OTHER profile the
+    profile's own mapping is read directly and NEVER touches os.environ,
+    which under multiplexing holds the default profile's values
+    (#72348/#86905 class).
+    """
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        get_secret,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    try:
+        from hermes_constants import get_process_hermes_home
+
+        own_profile = os.path.realpath(str(profile)) == os.path.realpath(
+            str(get_process_hermes_home())
+        )
+    except Exception:
+        own_profile = False
+    try:
+        scope = build_profile_secret_scope(Path(profile))
+    except Exception:
+        scope = {}
+    if own_profile:
+        # Install the bound profile's OWN scope for this resolve: a scope hit
+        # is the profile's secret; a miss falls through to os.environ only
+        # when multiplexing is off (single-profile env injection), and under
+        # multiplexing returns None rather than borrowing the ambient
+        # profile's value.
+        scope_token = set_secret_scope(scope)
+        try:
+            value = get_secret(name)
+        except Exception:
+            value = None
+        finally:
+            reset_secret_scope(scope_token)
+        return value or None
+    return scope.get(name) or None
+
+
+class CallerTokenConfigError(RuntimeError):
+    """The profile's caller-token configuration is present but unusable.
+
+    Raised at the transport boundary (client/transport construction): an
+    explicitly configured reference that cannot be resolved — or a raw secret
+    placed in config.yaml — must fail LOUDLY, never silently degrade the
+    opted-in profile to unrouted, unmetered traffic. Messages name the config
+    key, the referenced variable and the profile path — never secret
+    material.
+    """
+
+
+def _caller_token_for_profile(profile: str) -> Optional[str]:
+    """The profile's configured policy caller token, or None.
+
+    Explicit opt-in for per-harness routing policies. Config holds a
+    REFERENCE, never the secret: ``llm_usage_proxy.caller_token_env`` names a
+    variable in the profile's own ``.env`` (secrets live in the secret store,
+    so config reads/dashboard/diffs never carry a token). When set, Hermes's
+    routed traffic presents the resolved token as ``X-Usage-Caller-Token`` so
+    the proxy can authenticate the caller and apply its saved routing policy.
+    Without the config value nothing is sent and wire behavior is
+    byte-identical to before — in particular this never arms the proxy's
+    global caller-token gate, and the ``X-Usage-Caller`` label stays
+    attribution-only.
+
+    The reference is resolved against the *bound* profile (the one that built
+    the transport), not the ambient context, so a multiplexed process can
+    never attach profile A's token to profile B's traffic. An explicitly
+    configured but unresolvable reference is a configuration ERROR and raises
+    :class:`CallerTokenConfigError` at this owning boundary: traffic that was
+    opted into routing must never silently go out tokenless (which would
+    bypass the policy the operator configured).
+    """
+    from plugins.llm_usage_proxy.config import CONFIG_SECTION
+
+    section = _profile_config_section(profile, CONFIG_SECTION)
+    if section is None:
+        return None
+    if str(section.get("caller_token") or "").strip():
+        raise CallerTokenConfigError(
+            f"llm_usage_proxy.caller_token in {profile}/config.yaml is a raw"
+            " secret in ordinary YAML and is REFUSED — move the token into the"
+            " profile's .env and set llm_usage_proxy.caller_token_env to the"
+            " variable name instead"
+        )
+    name_value = section.get("caller_token_env")
+    if name_value is None:
+        return None
+    if not isinstance(name_value, str):
+        # A non-string reference is malformed config, not a variable name:
+        # stringifying it into the error would quote config content (which
+        # may sit next to secrets), so name the key and the expected type
+        # only.
+        raise CallerTokenConfigError(
+            f"llm_usage_proxy.caller_token_env in {profile}/config.yaml must"
+            " be the NAME of an environment variable as a string, got"
+            f" {type(name_value).__name__} — fix the reference (or remove it"
+            " to run unconfigured); this profile's routed traffic refuses to"
+            " run tokenless rather than silently bypassing its routing policy"
+        )
+    name = name_value.strip()
+    if not name:
+        return None
+    try:
+        token = _profile_secret(profile, name)
+    except Exception:
+        token = None
+    if token:
+        return token
+    raise CallerTokenConfigError(
+        f"llm_usage_proxy.caller_token_env in {profile}/config.yaml names"
+        f" {name} but it is not set in that profile's .env — fix the reference"
+        " (or remove it); this profile's routed traffic refuses to run"
+        " tokenless rather than silently bypassing its routing policy"
+    )
+
+
 # ── per-request chat attribution ─────────────────────────────────────────────
 
 # The session vars read for chat attribution (see gateway.session_context):
@@ -694,7 +900,10 @@ def chat_attribution_headers() -> dict[str, str]:
 
 
 def _proxied_request(
-    request: Any, target: str, caller_label: str = HERMES_CALLER_LABEL
+    request: Any,
+    target: str,
+    caller_label: str = HERMES_CALLER_LABEL,
+    caller_token: Optional[str] = None,
 ) -> Any:
     """Build the request actually sent to the proxy from the logical one.
 
@@ -710,10 +919,18 @@ def _proxied_request(
     them. Both are attribution for the proxy's ledger only — neither is a
     credential and both are stripped before the proxy forwards anything
     upstream.
+
+    ``caller_token`` is different: it IS a credential (a policy caller token
+    resolved from the profile's own ``.env`` via the
+    ``llm_usage_proxy.caller_token_env`` config reference), sent as
+    ``X-Usage-Caller-Token`` so the proxy can authenticate this harness for
+    per-harness routing policies. It travels in the dedicated header, never
+    in Authorization, so the request's own provider credential is untouched
+    for passthrough routes; the proxy strips it before forwarding.
     """
     import httpx
 
-    from plugins.llm_usage_proxy.server import CALLER_LABEL_HEADER
+    from plugins.llm_usage_proxy.server import CALLER_LABEL_HEADER, CALLER_TOKEN_HEADER
 
     headers = request.headers.copy()
     logical = urlsplit(str(request.url))
@@ -721,6 +938,8 @@ def _proxied_request(
         headers["Host"] = logical.netloc
     if not headers.get(CALLER_LABEL_HEADER):
         headers[CALLER_LABEL_HEADER] = caller_label
+    if caller_token and not headers.get(CALLER_TOKEN_HEADER):
+        headers[CALLER_TOKEN_HEADER] = caller_token
     try:
         for header, value in chat_attribution_headers().items():
             if not headers.get(header):
@@ -745,7 +964,7 @@ def _make_sync_wrapper() -> type:
     class _RoutedSyncTransport(httpx.BaseTransport):
         """Sync transport view that reroutes matching requests to the proxy."""
 
-        __slots__ = ("_inner", "_profile", "_caller_label")
+        __slots__ = ("_inner", "_profile", "_caller_label", "_caller_token")
 
         def __init__(self, inner: Any, profile: str) -> None:
             self._inner = inner
@@ -755,6 +974,7 @@ def _make_sync_wrapper() -> type:
             # Computed from that same bound path once, here, where the
             # profile context that built the client still applies.
             self._caller_label = _caller_label_for_profile(self._profile)
+            self._caller_token = _caller_token_for_profile(self._profile)
 
         # Introspection seams (socket-abort sweeps, tests) look at ``_pool``.
         @property
@@ -771,7 +991,9 @@ def _make_sync_wrapper() -> type:
             if target is None:
                 return self._inner.handle_request(request)
             response = self._inner.handle_request(
-                _proxied_request(request, target, self._caller_label)
+                _proxied_request(
+                    request, target, self._caller_label, self._caller_token
+                )
             )
             # Keep the SDK-visible request pointing at the logical provider
             # URL (error messages, retry decisions, logging).
@@ -790,12 +1012,13 @@ def _make_async_wrapper() -> type:
     class _RoutedAsyncTransport(httpx.AsyncBaseTransport):
         """Async transport view that reroutes matching requests to the proxy."""
 
-        __slots__ = ("_inner", "_profile", "_caller_label")
+        __slots__ = ("_inner", "_profile", "_caller_label", "_caller_token")
 
         def __init__(self, inner: Any, profile: str) -> None:
             self._inner = inner
             self._profile = str(profile)
             self._caller_label = _caller_label_for_profile(self._profile)
+            self._caller_token = _caller_token_for_profile(self._profile)
 
         @property
         def _pool(self) -> Any:
@@ -811,7 +1034,9 @@ def _make_async_wrapper() -> type:
             if target is None:
                 return await self._inner.handle_async_request(request)
             response = await self._inner.handle_async_request(
-                _proxied_request(request, target, self._caller_label)
+                _proxied_request(
+                    request, target, self._caller_label, self._caller_token
+                )
             )
             response.request = request
             return response
@@ -877,6 +1102,13 @@ def wrap_mounts_for_usage_routing(
         return {
             scheme: wrapper_cls(transport, key) for scheme, transport in mounts.items()
         }
+    except CallerTokenConfigError:
+        # An explicitly configured caller-token reference that cannot be
+        # resolved is a CONFIGURATION ERROR, not a routing miss: it must fail
+        # client construction loudly. Swallowing it here would send this
+        # profile's traffic direct and unrouted — silently bypassing the
+        # routing policy the operator opted into.
+        raise
     except Exception:
         # A routing failure must never take client construction down; the
         # traffic simply stays unmetered (visible via routing_state()).
@@ -908,6 +1140,10 @@ def build_sync_routed_client(
         return httpx.Client(
             transport=_SYNC_WRAPPER(httpx.HTTPTransport(), key), **kwargs
         )
+    except CallerTokenConfigError:
+        # Same contract as wrap_mounts_for_usage_routing: a broken explicit
+        # caller-token reference fails loudly, never silently unrouted.
+        raise
     except Exception:
         return None
 
@@ -921,6 +1157,7 @@ def _reset_registry() -> None:
 
 
 __all__ = [
+    "CallerTokenConfigError",
     "activate_routing",
     "base_url_routable",
     "build_sync_routed_client",

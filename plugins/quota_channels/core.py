@@ -993,13 +993,17 @@ def normalize_enabled_providers(raw: Any) -> Dict[str, bool]:
     )
 
 
-def validate_quota_config(section: Mapping[str, Any]) -> dict:
+def validate_quota_config(
+    section: Mapping[str, Any],
+    *,
+    require_discord: bool = True,
+) -> dict:
     if not isinstance(section, Mapping):
         raise QuotaChannelsError("quota_channels config must be a mapping")
 
     guild_id = section.get("guild_id")
     category_id = section.get("category_id")
-    if not guild_id or not category_id:
+    if require_discord and (not guild_id or not category_id):
         raise QuotaChannelsError(
             "quota_channels requires guild_id and category_id in config.yaml"
         )
@@ -1021,21 +1025,25 @@ def validate_quota_config(section: Mapping[str, Any]) -> dict:
         if not enabled.get(key, False):
             continue
         channel_id = channel_ids.get(key)
-        if not channel_id:
+        if require_discord and not channel_id:
             raise QuotaChannelsError(
                 f"quota_channels.channel_ids.{key} required when {key} is enabled"
             )
-        active.append((key, label, str(channel_id)))
+        active.append((key, label, str(channel_id) if channel_id else ""))
 
     if not active:
+        if require_discord:
+            raise QuotaChannelsError(
+                "quota_channels requires at least one enabled provider with a channel id"
+            )
         raise QuotaChannelsError(
-            "quota_channels requires at least one enabled provider with a channel id"
+            "quota_channels requires at least one enabled provider"
         )
 
     return {
-        "guild_id": str(guild_id),
-        "category_id": str(category_id),
-        "channel_ids": {key: cid for key, _, cid in active},
+        "guild_id": str(guild_id) if guild_id else "",
+        "category_id": str(category_id) if category_id else "",
+        "channel_ids": {key: cid for key, _, cid in active if cid},
         "providers": active,
         "quota_interval_seconds": int(
             section.get("quota_interval_seconds", DEFAULT_QUOTA_INTERVAL_SECONDS)
@@ -1060,7 +1068,20 @@ def check_minimum_config_from_mapping(config: Mapping[str, Any]) -> bool:
         return False
 
 
-def load_quota_config(config_path: Optional[Path] = None) -> dict:
+def format_config_parse_error(exc: BaseException) -> str:
+    """Safe YAML/config parse detail: exception class plus line/column only."""
+    name = type(exc).__name__
+    mark = getattr(exc, "problem_mark", None)
+    if mark is not None:
+        return f"{name} at line {mark.line + 1}, column {mark.column + 1}"
+    return name
+
+
+def load_quota_config(
+    config_path: Optional[Path] = None,
+    *,
+    require_discord: bool = True,
+) -> dict:
     if config_path is None:
         try:
             from hermes_cli.config import load_config_readonly
@@ -1076,11 +1097,13 @@ def load_quota_config(config_path: Optional[Path] = None) -> dict:
         except OSError as exc:
             raise QuotaChannelsError(f"cannot read {config_path}: {exc}") from exc
         except Exception as exc:
-            raise QuotaChannelsError(f"cannot parse {config_path}: {exc}") from exc
+            raise QuotaChannelsError(
+                f"cannot parse {config_path}: {format_config_parse_error(exc)}"
+            ) from exc
     section = raw.get("quota_channels")
     if section is None:
         raise QuotaChannelsError("quota_channels section missing in config.yaml")
-    return validate_quota_config(section)
+    return validate_quota_config(section, require_discord=require_discord)
 
 
 def discord_headers() -> dict:
@@ -1563,7 +1586,16 @@ def grok_reset_credits(
     try:
         return fetch_grok_reset_credits(http_fn=http_fn, now_fn=now_fn), None
     except Exception as exc:
-        return ResetCredits(0), _error_text(exc)
+        err = _error_text(exc)
+        try:
+            toks = (
+                load_store().get("providers", {}).get("xai-oauth", {}).get("tokens", {})
+            )
+            secrets = (toks.get("access_token"), toks.get("refresh_token"))
+            err = redact_secrets(err, tuple(s for s in secrets if s))
+        except Exception:
+            pass
+        return ResetCredits(0), err
 
 
 def run_grok_provider(
