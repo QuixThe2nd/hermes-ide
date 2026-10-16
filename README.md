@@ -84,7 +84,7 @@ Research has a lane of its own. `delegate_research` hands a substantial research
 
 Agents are very good at ignoring the nice coding lane you built and editing the source anyway. The code-lane-gate plugin blocks in-context source edits everywhere by default, inside a git repo or not. Set `CODE_LANE_GATE_E2E=0` to opt out. Terminal writes are still a known v1 bypass.
 
-One model is usually enough. When it is not, `moa_ask` and `moa_debate` give you multi-model consults and debates without leaving the chat. Both tools were restored from the archive. Reference advisors stay pinned to their configured models: unavailable advisors are reported as failed instead of being replaced by another model under the original label; same-provider recovery remains available.
+One model is usually enough. When it is not, `moa_ask` and `moa_debate` give you multi-model consults and debates without leaving the chat. Both tools were restored from the archive. Reference advisors do not enter configured or automatic fallback chains when their client is missing or request recovery fails; those failures stay attached to the selected advisor. Provider-specific same-client recovery remains unchanged, including Nous catalog self-healing.
 
 `pr_intent_watch` watches this fork for new PRs and comments on what the change is trying to do, whether it is worth considering, and whether the claimed bug sounds real. It is an intent review, not a code review; the watcher never sees the diff.
 
