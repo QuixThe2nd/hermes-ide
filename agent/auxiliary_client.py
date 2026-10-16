@@ -7192,6 +7192,10 @@ def _resolve_call_client(
             # raising (fallback entries may use OAuth / credential-pool auth).
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+                if task == "moa_reference":
+                    nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
+                    raise AuxiliaryClientUnavailable(
+                        nous_detail or missing_provider_credentials_message(_explicit))
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit)
                 if fb_client is None:
@@ -7592,6 +7596,11 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     regardless of user intent. Auth errors from an explicit provider may only use the task's
     own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
+    if task == "moa_reference":
+        logger.debug(
+            "Auxiliary %s%s: skipping provider fallback — MoA reference is pinned to %s",
+            task or "call", tag, resolved_provider)
+        return None
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
     # and connection failures are capacity problems, not request constraints. See #26803: daily token quota
