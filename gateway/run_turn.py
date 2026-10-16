@@ -2172,7 +2172,7 @@ class GatewayTurnMixin:
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
-                inbound_message_id=str(event.message_id) if event.message_id else None,
+                inbound_message_id=self._inbound_message_id_for_event(event),
                 channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
