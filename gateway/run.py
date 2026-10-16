@@ -14621,6 +14621,13 @@ class GatewayRunner(
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 
+        # Mobile Discord clients treat reactions as lighter-weight steer receipts
+        # than a bot reply bubble; steer delivery is unchanged.
+        if await self._maybe_react_discord_busy_steer(
+            event, adapter, session_key, steered=steered, is_steer_mode=is_steer_mode
+        ):
+            return True
+
         # Debounce before consulting config-heavy display settings. Rapid
         # follow-ups should be processed but should not trigger another config
         # read just to discover that no ack will be sent.
