@@ -1311,6 +1311,52 @@ class TestLifecycleGuardModule:
             command, cwd="/tmp"
         ) is False
 
+    def test_python_c_quoted_lifecycle_phrase_is_data(self):
+        """pc_ecfa8ae20555: a python -c one-liner that only *mentions* a
+        lifecycle phrase inside a string is reading data, not restarting
+        the gateway."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = (
+            "python3 -c "
+            "\"html=open('dist/ugg-pos.html').read(); "
+            "print('hermes gateway restart' in html)\""
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(command) is False
+
+    def test_python_c_marker_count_one_liner_is_allowed(self):
+        """Sibling of pc_ecfa8ae20555: counting the word restart in HTML."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = (
+            "python3 -c "
+            "\"from pathlib import Path; "
+            "html=Path('dist/ugg-pos.html').read_text(); "
+            "print(html.count('restart'), html.count('stop'))\""
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(command) is False
+
+    def test_python_c_os_system_lifecycle_still_blocked(self):
+        """Masking inert -c data must not hide os.system of a lifecycle command."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = "python3 -c \"import os; os.system('hermes gateway restart')\""
+        assert contains_gateway_lifecycle_command_or_referenced_script(command) is True
+
+    def test_usr_bin_python_c_os_system_lifecycle_still_blocked(self):
+        """Absolute interpreter + os.system of a systemctl lifecycle command."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        command = (
+            "/usr/bin/python3 -c "
+            "\"import os; os.system('systemctl --user restart hermes-gateway')\""
+        )
+        assert contains_gateway_lifecycle_command_or_referenced_script(command) is True
+
     def test_non_shell_shebang_script_content_not_walked(self, tmp_path):
         """A directly executed shim with a non-shell shebang
         (``#!/usr/bin/env node``) is interpreted by node, never shell-parsed.
