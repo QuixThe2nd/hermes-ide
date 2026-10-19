@@ -55,6 +55,7 @@ import os
 import re
 import ssl
 import threading
+from pathlib import Path
 from typing import Any, Mapping, Optional
 from urllib.parse import quote, urlsplit
 
@@ -92,16 +93,35 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _MAX_PROFILE_STATES = 64
 
 
+class UsageRoutingError(RuntimeError):
+    """Fail-closed routing refused to send a request directly.
+
+    Raised only for profiles whose ``llm_usage_proxy.enforce`` policy is on:
+    the destination could not be served through the verified (shared-owner or
+    per-profile) proxy — routing inactive, or no registered route covers it —
+    so the request errors clearly instead of silently going direct. Never
+    raised without the policy: installs without it keep the historical
+    direct-and-unmetered behavior.
+    """
+
+
 class _RoutingState:
     """Route table plus its trust flag for exactly one Hermes profile."""
 
-    __slots__ = ("proxy_origin", "routes", "active", "inactive_reason")
+    __slots__ = ("proxy_origin", "routes", "active", "inactive_reason", "enforced", "owner")
 
     def __init__(self) -> None:
         self.proxy_origin = ""
         self.routes: dict[str, str] = {}
         self.active = False
         self.inactive_reason = _INACTIVE_REASON
+        # Fail-closed policy flag (llm_usage_proxy.enforce). Independent of
+        # the table: it must survive a failed verification so an enforced
+        # profile keeps refusing direct egress while its proxy is down.
+        self.enforced = False
+        # Shared-owner endpoint this table was adopted from ("" = per-profile
+        # proxy). Status/attribution only.
+        self.owner = ""
 
 
 # profile key → state. The dict is only mutated under ``_LOCK``, and a
@@ -220,6 +240,8 @@ def register_route_table(
     routes: Mapping[str, str],
     *,
     profile: Optional[str] = None,
+    enforced: bool = False,
+    owner: str = "",
 ) -> list[str]:
     """Install the route table (name → real upstream base URL) for a profile.
 
@@ -228,6 +250,10 @@ def register_route_table(
     every *other* profile's table untouched in all cases). Does NOT activate
     routing — :func:`activate_routing` does, after the proxy's identity has
     been verified.
+
+    ``enforced`` records the profile's fail-closed policy with the table;
+    ``owner`` names the shared-owner endpoint the table was adopted from
+    (empty for a per-profile proxy).
     """
     errors: list[str] = []
     origin = str(proxy_origin or "").strip().rstrip("/")
@@ -261,10 +287,28 @@ def register_route_table(
         state = _state_for_write_locked(resolve_profile_key(profile))
         state.proxy_origin = origin
         state.routes = dict(cleaned)
+        state.enforced = bool(enforced)
+        state.owner = str(owner or "")
         # Re-verify activation against the new table from the caller.
         state.active = False
         state.inactive_reason = "route table registered; proxy identity not verified"
     return []
+
+
+def configure_policy(
+    *, enforced: bool, owner: str = "", profile: Optional[str] = None
+) -> None:
+    """Record a profile's fail-closed policy independently of any table.
+
+    Called by the plugin lifecycle from config *before* verification: the
+    flag must be known to the transport wrappers even when no table is (yet)
+    registered — a verified table later overwrites both fields via
+    :func:`register_route_table`.
+    """
+    with _LOCK:
+        state = _state_for_write_locked(resolve_profile_key(profile))
+        state.enforced = bool(enforced)
+        state.owner = str(owner or "")
 
 
 def activate_routing(*, profile: Optional[str] = None) -> None:
@@ -413,6 +457,8 @@ def _default_routing_state() -> dict[str, Any]:
         "reason": _INACTIVE_REASON,
         "proxy_origin": "",
         "routes": {},
+        "enforced": False,
+        "owner": "",
     }
 
 
@@ -428,7 +474,39 @@ def routing_state(*, profile: Optional[str] = None) -> dict[str, Any]:
         snapshot["reason"] = "" if state.active else state.inactive_reason
         snapshot["proxy_origin"] = state.proxy_origin
         snapshot["routes"] = dict(state.routes)
+        snapshot["enforced"] = state.enforced
+        snapshot["owner"] = state.owner
         return snapshot
+
+
+def is_enforced(*, profile: Optional[str] = None) -> bool:
+    """True when the profile's fail-closed routing policy is on.
+
+    Deliberately does NOT run the lazy bootstrap: this is a cheap check used
+    to decide transport wrapping, and the bootstrap path already consults it
+    after reconciling.
+    """
+    with _LOCK:
+        state = _STATES.get(resolve_profile_key(profile))
+        return bool(state.enforced) if state is not None else False
+
+
+def _enforced_for_transport(profile: Optional[str] = None) -> bool:
+    """Whether transport construction must fail closed, without bootstrapping.
+
+    Shared-owner ``enforce`` is read from config via :func:`owner_policy` so
+    incompatible transport settings are rejected before route adoption. The
+    per-profile proxy path uses the adopted routing-state flag instead.
+    """
+    try:
+        from plugins.llm_usage_proxy.owner import owner_policy
+
+        policy = owner_policy()
+        if policy is not None:
+            return bool(policy.get("enforce"))
+    except Exception:
+        pass
+    return is_enforced(profile=profile)
 
 
 def _match_route(routes: Mapping[str, str], url: str) -> Optional[tuple[str, str, str]]:
@@ -505,6 +583,45 @@ def base_url_routable(base_url: Any, *, profile: Optional[str] = None) -> bool:
     return _match_route(routes, str(base_url or "")) is not None
 
 
+def _safe_url_for_message(url: str) -> str:
+    """scheme://host/path with no query — query strings can carry keys."""
+    split = urlsplit(str(url or ""))
+    return f"{split.scheme}://{split.netloc}{split.path}"
+
+
+def _enforcement_failure(profile: str, url: str) -> Optional[str]:
+    """Why an enforced profile must refuse to send *url* directly, or None.
+
+    None whenever the profile is not enforced (fail-open is the historical
+    default) or routing is active — per-request route matching has already
+    happened by the time this runs, so an active table means the URL simply
+    has no route: an unknown inference destination, which the policy refuses
+    to send direct.
+    """
+    with _LOCK:
+        state = _STATES.get(resolve_profile_key(profile))
+        if state is None or not state.enforced:
+            return None
+        active = state.active
+        has_routes = bool(state.routes)
+        reason = state.inactive_reason
+    target = _safe_url_for_message(url)
+    if not has_routes or not active:
+        detail = reason or "routing is inactive"
+        return (
+            f"enforced llm_usage_proxy routing: {detail}; the request to {target}"
+            " was NOT sent directly (fail-closed). Restore the proxy and run"
+            " `hermes llm_usage_proxy reconcile`, or turn llm_usage_proxy.enforce"
+            " off to allow direct egress."
+        )
+    return (
+        f"enforced llm_usage_proxy routing: no registered route covers {target};"
+        " the request was NOT sent directly (fail-closed). Add the destination to"
+        " the proxy's route table (llm_usage_proxy.upstreams on the owning"
+        " profile) or turn llm_usage_proxy.enforce off to allow direct egress."
+    )
+
+
 # ── httpx transport wrappers ─────────────────────────────────────────────────
 
 
@@ -555,6 +672,211 @@ def _caller_label_for_profile(profile: str) -> str:
     if not cleaned:
         return HERMES_CALLER_LABEL
     return (f"{HERMES_CALLER_LABEL}:{cleaned}")[:_CALLER_LABEL_MAX_CHARS]
+
+
+def _profile_config_section(profile: str, section: str) -> Optional[Mapping[str, Any]]:
+    """The *profile's own* ``config.yaml`` section, or None when absent.
+
+    ``profile`` is a constructor-bound profile key — an absolute HERMES_HOME
+    path, never the ambient context. Reading the ambient config
+    (``load_config_readonly``) would bind whatever profile happens to be
+    active at request time, so this reads the bound profile's file directly.
+
+    ABSENT degrades to None (legacy unconfigured): no file, an empty or
+    comment-only file, or no such section. A PRESENT but unusable config —
+    unreadable file, unparseable YAML, a non-mapping top level, or a
+    non-mapping section — raises :class:`CallerTokenConfigError` instead: an
+    explicit caller-token configuration must never silently become
+    unconfigured because the file could not be read, which would send the
+    opted-in profile's traffic tokenless and bypass its routing policy.
+    Messages name the file and the shape of the defect only — never parser
+    excerpts or config content, which may sit next to secret material.
+    """
+    path = os.path.join(str(profile), "config.yaml")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise CallerTokenConfigError(
+            f"{path} exists but could not be read ({type(exc).__name__}) —"
+            " this profile's routed traffic refuses to run while its"
+            " caller-token configuration cannot be read; fix the file (or"
+            " remove it to run unconfigured)"
+        ) from None
+    if not text.strip():
+        return None
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    if yaml is None:
+        # Non-empty config but no parser: unconfigured cannot be verified.
+        raise CallerTokenConfigError(
+            f"{path} has content but PyYAML is unavailable to parse it —"
+            " this profile's routed traffic refuses to run while its"
+            " caller-token configuration cannot be read"
+        ) from None
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError:
+        # Deliberately NOT str(exc): parser messages quote the offending
+        # line, which may carry secret material.
+        raise CallerTokenConfigError(
+            f"{path} is not valid YAML — fix the file (or remove it to run"
+            " unconfigured); this profile's routed traffic refuses to run"
+            " while its caller-token configuration cannot be read"
+        ) from None
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise CallerTokenConfigError(
+            f"{path} top level is {type(raw).__name__}, expected a mapping —"
+            " fix the file (or remove it to run unconfigured); this profile's"
+            " routed traffic refuses to run while its caller-token"
+            " configuration cannot be read"
+        )
+    value = raw.get(section)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise CallerTokenConfigError(
+            f"{section} in {path} is {type(value).__name__}, expected a"
+            " mapping of option names to values — fix the section (or remove"
+            " it to run unconfigured); this profile's routed traffic refuses"
+            " to run while its caller-token configuration cannot be read"
+        )
+    return value
+
+
+def _profile_secret(profile: str, name: str) -> Optional[str]:
+    """The env var *name* resolved against *profile*'s own secret scope.
+
+    Profile-bound, fail-closed: the bound profile's scope is built explicitly
+    and installed for the duration of the resolve — the AMBIENT
+    ``_SECRET_SCOPE`` contextvar (whichever profile's turn happens to be
+    active under multiplexing) is never consulted, so profile B's active
+    scope can never answer for profile A. For the process's own profile the
+    resolve still goes through ``agent.secret_scope.get_secret`` so
+    single-profile deployments keep process-env injection (systemd,
+    ``op run``) as the scope-overlay fallback; for any OTHER profile the
+    profile's own mapping is read directly and NEVER touches os.environ,
+    which under multiplexing holds the default profile's values
+    (#72348/#86905 class).
+    """
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        get_secret,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    try:
+        from hermes_constants import get_process_hermes_home
+
+        own_profile = os.path.realpath(str(profile)) == os.path.realpath(
+            str(get_process_hermes_home())
+        )
+    except Exception:
+        own_profile = False
+    try:
+        scope = build_profile_secret_scope(Path(profile))
+    except Exception:
+        scope = {}
+    if own_profile:
+        # Install the bound profile's OWN scope for this resolve: a scope hit
+        # is the profile's secret; a miss falls through to os.environ only
+        # when multiplexing is off (single-profile env injection), and under
+        # multiplexing returns None rather than borrowing the ambient
+        # profile's value.
+        scope_token = set_secret_scope(scope)
+        try:
+            value = get_secret(name)
+        except Exception:
+            value = None
+        finally:
+            reset_secret_scope(scope_token)
+        return value or None
+    return scope.get(name) or None
+
+
+class CallerTokenConfigError(RuntimeError):
+    """The profile's caller-token configuration is present but unusable.
+
+    Raised at the transport boundary (client/transport construction): an
+    explicitly configured reference that cannot be resolved — or a raw secret
+    placed in config.yaml — must fail LOUDLY, never silently degrade the
+    opted-in profile to unrouted, unmetered traffic. Messages name the config
+    key, the referenced variable and the profile path — never secret
+    material.
+    """
+
+
+def _caller_token_for_profile(profile: str) -> Optional[str]:
+    """The profile's configured policy caller token, or None.
+
+    Explicit opt-in for per-harness routing policies. Config holds a
+    REFERENCE, never the secret: ``llm_usage_proxy.caller_token_env`` names a
+    variable in the profile's own ``.env`` (secrets live in the secret store,
+    so config reads/dashboard/diffs never carry a token). When set, Hermes's
+    routed traffic presents the resolved token as ``X-Usage-Caller-Token`` so
+    the proxy can authenticate the caller and apply its saved routing policy.
+    Without the config value nothing is sent and wire behavior is
+    byte-identical to before — in particular this never arms the proxy's
+    global caller-token gate, and the ``X-Usage-Caller`` label stays
+    attribution-only.
+
+    The reference is resolved against the *bound* profile (the one that built
+    the transport), not the ambient context, so a multiplexed process can
+    never attach profile A's token to profile B's traffic. An explicitly
+    configured but unresolvable reference is a configuration ERROR and raises
+    :class:`CallerTokenConfigError` at this owning boundary: traffic that was
+    opted into routing must never silently go out tokenless (which would
+    bypass the policy the operator configured).
+    """
+    from plugins.llm_usage_proxy.config import CONFIG_SECTION
+
+    section = _profile_config_section(profile, CONFIG_SECTION)
+    if section is None:
+        return None
+    if str(section.get("caller_token") or "").strip():
+        raise CallerTokenConfigError(
+            f"llm_usage_proxy.caller_token in {profile}/config.yaml is a raw"
+            " secret in ordinary YAML and is REFUSED — move the token into the"
+            " profile's .env and set llm_usage_proxy.caller_token_env to the"
+            " variable name instead"
+        )
+    name_value = section.get("caller_token_env")
+    if name_value is None:
+        return None
+    if not isinstance(name_value, str):
+        # A non-string reference is malformed config, not a variable name:
+        # stringifying it into the error would quote config content (which
+        # may sit next to secrets), so name the key and the expected type
+        # only.
+        raise CallerTokenConfigError(
+            f"llm_usage_proxy.caller_token_env in {profile}/config.yaml must"
+            " be the NAME of an environment variable as a string, got"
+            f" {type(name_value).__name__} — fix the reference (or remove it"
+            " to run unconfigured); this profile's routed traffic refuses to"
+            " run tokenless rather than silently bypassing its routing policy"
+        )
+    name = name_value.strip()
+    if not name:
+        return None
+    try:
+        token = _profile_secret(profile, name)
+    except Exception:
+        token = None
+    if token:
+        return token
+    raise CallerTokenConfigError(
+        f"llm_usage_proxy.caller_token_env in {profile}/config.yaml names"
+        f" {name} but it is not set in that profile's .env — fix the reference"
+        " (or remove it); this profile's routed traffic refuses to run"
+        " tokenless rather than silently bypassing its routing policy"
+    )
 
 
 # ── per-request chat attribution ─────────────────────────────────────────────
@@ -694,7 +1016,10 @@ def chat_attribution_headers() -> dict[str, str]:
 
 
 def _proxied_request(
-    request: Any, target: str, caller_label: str = HERMES_CALLER_LABEL
+    request: Any,
+    target: str,
+    caller_label: str = HERMES_CALLER_LABEL,
+    caller_token: Optional[str] = None,
 ) -> Any:
     """Build the request actually sent to the proxy from the logical one.
 
@@ -710,10 +1035,18 @@ def _proxied_request(
     them. Both are attribution for the proxy's ledger only — neither is a
     credential and both are stripped before the proxy forwards anything
     upstream.
+
+    ``caller_token`` is different: it IS a credential (a policy caller token
+    resolved from the profile's own ``.env`` via the
+    ``llm_usage_proxy.caller_token_env`` config reference), sent as
+    ``X-Usage-Caller-Token`` so the proxy can authenticate this harness for
+    per-harness routing policies. It travels in the dedicated header, never
+    in Authorization, so the request's own provider credential is untouched
+    for passthrough routes; the proxy strips it before forwarding.
     """
     import httpx
 
-    from plugins.llm_usage_proxy.server import CALLER_LABEL_HEADER
+    from plugins.llm_usage_proxy.server import CALLER_LABEL_HEADER, CALLER_TOKEN_HEADER
 
     headers = request.headers.copy()
     logical = urlsplit(str(request.url))
@@ -721,6 +1054,8 @@ def _proxied_request(
         headers["Host"] = logical.netloc
     if not headers.get(CALLER_LABEL_HEADER):
         headers[CALLER_LABEL_HEADER] = caller_label
+    if caller_token and not headers.get(CALLER_TOKEN_HEADER):
+        headers[CALLER_TOKEN_HEADER] = caller_token
     try:
         for header, value in chat_attribution_headers().items():
             if not headers.get(header):
@@ -745,7 +1080,7 @@ def _make_sync_wrapper() -> type:
     class _RoutedSyncTransport(httpx.BaseTransport):
         """Sync transport view that reroutes matching requests to the proxy."""
 
-        __slots__ = ("_inner", "_profile", "_caller_label")
+        __slots__ = ("_inner", "_profile", "_caller_label", "_caller_token")
 
         def __init__(self, inner: Any, profile: str) -> None:
             self._inner = inner
@@ -755,6 +1090,7 @@ def _make_sync_wrapper() -> type:
             # Computed from that same bound path once, here, where the
             # profile context that built the client still applies.
             self._caller_label = _caller_label_for_profile(self._profile)
+            self._caller_token = _caller_token_for_profile(self._profile)
 
         # Introspection seams (socket-abort sweeps, tests) look at ``_pool``.
         @property
@@ -769,9 +1105,14 @@ def _make_sync_wrapper() -> type:
         def handle_request(self, request: Any) -> Any:
             target = reroute_url(request.url, profile=self._profile)
             if target is None:
+                failure = _enforcement_failure(self._profile, str(request.url))
+                if failure is not None:
+                    raise UsageRoutingError(failure)
                 return self._inner.handle_request(request)
             response = self._inner.handle_request(
-                _proxied_request(request, target, self._caller_label)
+                _proxied_request(
+                    request, target, self._caller_label, self._caller_token
+                )
             )
             # Keep the SDK-visible request pointing at the logical provider
             # URL (error messages, retry decisions, logging).
@@ -790,12 +1131,13 @@ def _make_async_wrapper() -> type:
     class _RoutedAsyncTransport(httpx.AsyncBaseTransport):
         """Async transport view that reroutes matching requests to the proxy."""
 
-        __slots__ = ("_inner", "_profile", "_caller_label")
+        __slots__ = ("_inner", "_profile", "_caller_label", "_caller_token")
 
         def __init__(self, inner: Any, profile: str) -> None:
             self._inner = inner
             self._profile = str(profile)
             self._caller_label = _caller_label_for_profile(self._profile)
+            self._caller_token = _caller_token_for_profile(self._profile)
 
         @property
         def _pool(self) -> Any:
@@ -809,9 +1151,14 @@ def _make_async_wrapper() -> type:
         async def handle_async_request(self, request: Any) -> Any:
             target = reroute_url(request.url, profile=self._profile)
             if target is None:
+                failure = _enforcement_failure(self._profile, str(request.url))
+                if failure is not None:
+                    raise UsageRoutingError(failure)
                 return await self._inner.handle_async_request(request)
             response = await self._inner.handle_async_request(
-                _proxied_request(request, target, self._caller_label)
+                _proxied_request(
+                    request, target, self._caller_label, self._caller_token
+                )
             )
             response.request = request
             return response
@@ -842,7 +1189,9 @@ def wrap_mounts_for_usage_routing(
     this client*:
 
     * a route table is registered whose bases cover this client's base URL
-      (per-request matching stays authoritative for redirects etc.);
+      (per-request matching stays authoritative for redirects etc.) — OR the
+      profile's fail-closed policy (``llm_usage_proxy.enforce``) is on, in
+      which case the wrapper is what refuses direct egress per request;
     * TLS policy still verifies the upstream (``verify is True`` or an
       ``ssl.SSLContext``, see :func:`_verified_tls_policy`): a disabled
       verification (``verify=False``) must not be silently traded for the
@@ -857,13 +1206,29 @@ def wrap_mounts_for_usage_routing(
     and per-client close semantics are preserved exactly.
     """
     try:
-        if not _verified_tls_policy(verify) or not mounts:
+        key = resolve_profile_key(profile)
+        if not mounts:
+            if _enforced_for_transport(profile=key):
+                raise UsageRoutingError(
+                    "enforced llm_usage_proxy routing: cannot wrap an empty mount"
+                    " table for routing; failing closed instead of building a"
+                    " direct client"
+                )
+            return mounts
+        if not _verified_tls_policy(verify):
+            if _enforced_for_transport(profile=key):
+                raise UsageRoutingError(
+                    "enforced llm_usage_proxy routing: disabled TLS verification"
+                    " (verify=False) is incompatible with enforced shared-owner"
+                    " routing; failing closed instead of sending traffic direct"
+                    " or trading TLS policy for the proxy's upstream settings"
+                )
             return mounts
         # May run the one-shot lazy bootstrap, so a CLI that never loaded the
         # plugin still gets its enabled profile's verified routing in time for
         # this client.
         key = _entry_profile(profile)
-        if not base_url_routable(base_url, profile=key):
+        if not base_url_routable(base_url, profile=key) and not is_enforced(profile=key):
             return mounts
         global _SYNC_WRAPPER, _ASYNC_WRAPPER
         if async_mode:
@@ -877,9 +1242,30 @@ def wrap_mounts_for_usage_routing(
         return {
             scheme: wrapper_cls(transport, key) for scheme, transport in mounts.items()
         }
-    except Exception:
-        # A routing failure must never take client construction down; the
-        # traffic simply stays unmetered (visible via routing_state()).
+    except UsageRoutingError:
+        raise
+    except CallerTokenConfigError:
+        # An explicitly configured caller-token reference that cannot be
+        # resolved is a CONFIGURATION ERROR, not a routing miss: it must fail
+        # client construction loudly. Swallowing it here would send this
+        # profile's traffic direct and unrouted — silently bypassing the
+        # routing policy the operator opted into.
+        raise
+    except Exception as exc:
+        # A routing failure must never take client construction down — unless
+        # the profile's policy is fail-closed, in which case an unwrappable
+        # client is exactly the direct-egress path the policy forbids.
+        try:
+            if is_enforced(profile=profile):
+                raise UsageRoutingError(
+                    "enforced llm_usage_proxy routing: the HTTP client could not"
+                    f" be wrapped for routing ({type(exc).__name__}); failing"
+                    " closed instead of building a direct client"
+                ) from exc
+        except UsageRoutingError:
+            raise
+        except Exception:
+            pass
         return mounts
 
 
@@ -889,17 +1275,20 @@ def build_sync_routed_client(
     """httpx.Client for SDK paths that build their own transport (Anthropic).
 
     Returned only when this *base_url* is routable under default TLS policy
-    for the profile constructing the client; ``None`` means "let the SDK build
-    its default client" (direct, unmetered). The client's transport is bound
-    to that profile for its whole lifetime. Like the mount-wrapper seam, this
-    may run the one-shot lazy bootstrap first, so an enabled profile whose
-    plugin never loaded still gets routing in time for this client.
+    for the profile constructing the client — or unconditionally when the
+    profile's fail-closed policy is on (the wrapper is then what refuses
+    direct egress). ``None`` means "let the SDK build its default client"
+    (direct, unmetered), which an enforced profile never gets. The client's
+    transport is bound to that profile for its whole lifetime. Like the
+    mount-wrapper seam, this may run the one-shot lazy bootstrap first, so an
+    enabled profile whose plugin never loaded still gets routing in time for
+    this client.
     """
     try:
         import httpx
 
         key = _entry_profile(profile)
-        if not base_url_routable(base_url, profile=key):
+        if not base_url_routable(base_url, profile=key) and not is_enforced(profile=key):
             return None
         global _SYNC_WRAPPER
         if _SYNC_WRAPPER is None:
@@ -908,7 +1297,24 @@ def build_sync_routed_client(
         return httpx.Client(
             transport=_SYNC_WRAPPER(httpx.HTTPTransport(), key), **kwargs
         )
-    except Exception:
+    except UsageRoutingError:
+        raise
+    except CallerTokenConfigError:
+        # Same contract as wrap_mounts_for_usage_routing: a broken explicit
+        # caller-token reference fails loudly, never silently unrouted.
+        raise
+    except Exception as exc:
+        try:
+            if is_enforced(profile=profile):
+                raise UsageRoutingError(
+                    "enforced llm_usage_proxy routing: the routed HTTP client"
+                    f" could not be built ({type(exc).__name__}); failing closed"
+                    " instead of letting the SDK build a direct one"
+                ) from exc
+        except UsageRoutingError:
+            raise
+        except Exception:
+            pass
         return None
 
 
@@ -921,12 +1327,16 @@ def _reset_registry() -> None:
 
 
 __all__ = [
+    "CallerTokenConfigError",
+    "UsageRoutingError",
     "activate_routing",
     "base_url_routable",
     "build_sync_routed_client",
     "chat_attribution_headers",
     "clear_route_table",
+    "configure_policy",
     "deactivate_routing",
+    "is_enforced",
     "register_route_table",
     "reroute_url",
     "resolve_profile_key",

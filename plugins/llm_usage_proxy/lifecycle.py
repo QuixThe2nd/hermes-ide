@@ -27,6 +27,7 @@ from plugins.llm_usage_proxy.config import (
     load_llm_usage_proxy_config,
     plugin_explicitly_disabled,
 )
+from plugins.llm_usage_proxy.owner import owner_policy, verify_owner
 from plugins.llm_usage_proxy.probe import wait_for_verified_health
 from plugins.llm_usage_proxy.routes import proxy_origin
 from plugins.llm_usage_proxy.server import DEFAULT_PORT
@@ -42,6 +43,103 @@ logger = logging.getLogger(__name__)
 # How long on_gateway_start waits for a verified /health after enabling the
 # unit before giving up and leaving traffic direct (visible, unmetered).
 HEALTH_WAIT_TIMEOUT_SEC = 8.0
+
+
+def _reconcile_shared_owner(
+    policy: dict,
+    *,
+    enabled: bool,
+    apply_routing: bool = True,
+) -> None:
+    """Verify and adopt the configured shared owner. Never touches systemd.
+
+    The route table is adopted from the owner's verified ``/health`` — the
+    exact mapping the serving process forwards to — so this profile resolves
+    no provider endpoint (and reads no provider secret) itself. The
+    enforcement flag is registered *before* verification: it is policy, not
+    health, and an enforced profile must fail closed even while the owner is
+    unreachable. Returns None always (there is no unit to report on).
+    """
+    if not apply_routing:
+        return None
+    try:
+        from hermes_cli import llm_usage_routes as routing
+
+        routing.configure_policy(
+            enforced=bool(policy.get("enforce")), owner=str(policy.get("endpoint") or "")
+        )
+        if not enabled:
+            routing.clear_route_table("llm_usage_proxy disabled in config")
+            return None
+
+        endpoint = str(policy.get("endpoint") or "")
+        payload = None
+        detail = "not probed"
+        # A few quick polls: a restarting owner may drop the first probe.
+        for attempt in range(3):
+            payload, detail = verify_owner(
+                endpoint, expect_identity=str(policy.get("identity") or "")
+            )
+            if payload is not None:
+                break
+        if payload is None:
+            routing.deactivate_routing(
+                f"shared owner {endpoint} did not verify ({detail}); model"
+                " inference "
+                + (
+                    "fails closed (enforced)"
+                    if policy.get("enforce")
+                    else "stays direct and unmetered"
+                )
+            )
+            logger.warning(
+                "llm_usage_proxy shared owner %s not verified (%s); routing %s",
+                endpoint,
+                detail,
+                "fails closed" if policy.get("enforce") else "stays direct",
+            )
+            return None
+
+        routes = payload.get("routes")
+        if not isinstance(routes, dict) or not all(
+            isinstance(name, str) and isinstance(base, str)
+            for name, base in routes.items()
+        ):
+            routing.deactivate_routing(
+                f"shared owner {endpoint} reported no usable route table;"
+                " routing stands down"
+            )
+            return None
+
+        errors = routing.register_route_table(
+            endpoint,
+            routes,
+            enforced=bool(policy.get("enforce")),
+            owner=endpoint,
+        )
+        if errors:
+            routing.deactivate_routing(
+                f"shared owner route table rejected: {errors[0]}; routing stands down"
+            )
+            logger.warning(
+                "llm_usage_proxy shared owner route table rejected: %s",
+                "; ".join(errors),
+            )
+            return None
+
+        routing.activate_routing()
+        logger.info(
+            "llm_usage_proxy shared-owner routing active via %s for %d route(s)%s: %s",
+            endpoint,
+            len(routes),
+            " (enforced, fail-closed)" if policy.get("enforce") else "",
+            ", ".join(sorted(routes)),
+        )
+    except Exception as exc:
+        logger.warning(
+            "llm_usage_proxy shared-owner activation skipped: %s", exc, exc_info=True
+        )
+    return None
 
 
 def reconcile_proxy_on_load(
@@ -70,6 +168,12 @@ def reconcile_proxy_on_load(
 
     cfg = load_llm_usage_proxy_config()
     enabled = not plugin_explicitly_disabled() and bool(cfg.get("enabled", False))
+    # Shared-owner mode: this profile runs no proxy service of its own; it
+    # verifies the explicitly configured central proxy and adopts its route
+    # table. systemd is never involved on this side of the arrangement.
+    policy = owner_policy(cfg)
+    if policy is not None:
+        return _reconcile_shared_owner(policy, enabled=enabled, apply_routing=apply_routing)
     port = int(cfg.get("port") or 0) or DEFAULT_PORT
     identity = profile_identity()
     # Never raises; (None, ...) means no table is resolvable in this process
@@ -99,6 +203,11 @@ def reconcile_proxy_on_load(
 
     try:
         from hermes_cli import llm_usage_routes as routing
+
+        # Per-profile mode honours the same fail-closed policy knob; it is
+        # registered before any verification so an enforced profile fails
+        # closed even while its proxy is down.
+        routing.configure_policy(enforced=bool(cfg.get("enforce")), owner="")
 
         if not enabled:
             if routing.routing_state()["routes"] or routing.routing_state()["active"]:
@@ -142,7 +251,9 @@ def reconcile_proxy_on_load(
             )
             return result
 
-        errors = routing.register_route_table(proxy_origin(port), table)
+        errors = routing.register_route_table(
+            proxy_origin(port), table, enforced=bool(cfg.get("enforce"))
+        )
         if errors:
             routing.deactivate_routing(
                 f"route table rejected: {errors[0]}; traffic stays direct"
