@@ -99,7 +99,9 @@ START_CONVERSATION_SCHEMA = {
     "description": (
         "Start a new conversation with the human — call at-will when you have something "
         "worth initiating, even if the user's current prompt did not ask for it. This is "
-        "for a new conversation the human should see, not status/progress updates and not "
+        "for a new conversation the human should see, not status/progress updates, never "
+        "a deliverable for task work (research reports, answers, fixes, and other task "
+        "results go to the task's own thread or delivery route, not here), and not "
         "auto-resolvable bugs (use papercuts for those). Use sparingly and honestly, in "
         "your own voice. It may be personal, business, good or bad feedback, advice, a "
         "noticed pattern, a compliment, a question, a joke, an idea, a disagreement, or "

@@ -8,7 +8,7 @@ import os
 import re
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional

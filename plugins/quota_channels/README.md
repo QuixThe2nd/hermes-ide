@@ -120,6 +120,24 @@ Debug JSON on success:
 python3 /path/to/hermes-agent/plugins/quota_channels/run.py --debug
 ```
 
+## Collection-only mode (no Discord)
+
+`--collect-only` runs the same provider collectors and Z.AI wallet enumeration without any Discord token, guild/category/channel IDs, renames, channel reconciliation or Discord requests. The `quota_channels` config section validates without Discord fields in this mode (`guild_id`/`category_id`/`channel_ids` stay optional); the legacy Discord tick keeps requiring them and is unchanged.
+
+```bash
+python3 /path/to/hermes-agent/plugins/quota_channels/run.py --collect-only --debug
+python3 /path/to/hermes-agent/plugins/quota_channels/run.py --print-snapshot
+```
+
+Collection is interval-gated by the same `quota_interval_seconds` (`--force-quota` bypasses), tracked in its own state file `HERMES_HOME/quota_channels_collector.json` — it never advances the Discord tick's `last_quota_success`. Wallet ordinals stay shared with the Discord tick so `z.ai N` names the same credential in both surfaces; Discord channel mappings are passed through untouched.
+
+The snapshot (also returned by `plugins.quota_channels.collector.read_snapshot(config)`, schema version 1) is the read contract for display consumers:
+
+- `providers.<key>` and `wallets[]` entries carry `status` (`fresh` / `stale` / `error` / `unknown` / `disabled`), `collected_at`, `attempted_at`, `age_seconds`, `stale`, a sanitized `error`, and last-good `data`.
+- `data` holds `pct`, `reset_seconds`, absolute `reset_at`, optional `reset_count`, `reset_expiry_seconds`, per-credit `reset_expiry_horizons` plus absolute `reset_expiry_at`, `tokens_7d`, and Cursor's `cursor_auto_pct` / `cursor_api_pct`.
+- A failed refresh reports `error` and retains the previous reading with its age — a failure is never persisted as zero quota. Readings older than `stale_after_seconds` (2× the interval) report `stale`; providers never successfully collected report `unknown`.
+- Top-level `last_collect_attempt` / `last_collect_success` / `next_collect_due_at`, `zai_pool_unreadable`, and a sanitized `state_error` cover the file itself. No credentials ever appear in the state file or snapshot.
+
 ## Tool
 
 When the `quota_channels` toolset is enabled, the model may call:

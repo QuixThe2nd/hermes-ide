@@ -279,14 +279,25 @@ def _wrap_usage_routed_mounts(
     ``hermes_cli/llm_usage_routes.wrap_mounts_for_usage_routing``. Kept as a
     lazy local so a missing module or any routing failure can never break
     client construction; unaffected traffic simply stays unmetered.
+
+    ``UsageRoutingError`` (the fail-closed policy refusing to build a direct
+    client) is deliberately re-raised: swallowing it into ``return None``
+    would let the SDK build a direct client, which is exactly the egress an
+    enforced profile forbids.
     """
     try:
-        from hermes_cli.llm_usage_routes import wrap_mounts_for_usage_routing
+        from hermes_cli.llm_usage_routes import (
+            UsageRoutingError,
+            wrap_mounts_for_usage_routing,
+        )
     except ImportError:
         return mounts
-    return wrap_mounts_for_usage_routing(
-        mounts, base_url=base_url, verify=verify, async_mode=async_mode
-    )
+    try:
+        return wrap_mounts_for_usage_routing(
+            mounts, base_url=base_url, verify=verify, async_mode=async_mode
+        )
+    except UsageRoutingError:
+        raise
 
 
 def build_keepalive_http_client(
@@ -320,6 +331,19 @@ def build_keepalive_http_client(
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None
+        if proxy is not None:
+            try:
+                from hermes_cli.llm_usage_routes import UsageRoutingError, _enforced_for_transport
+                if _enforced_for_transport():
+                    raise UsageRoutingError(
+                        "enforced llm_usage_proxy routing: an environment HTTP"
+                        " proxy (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY) is"
+                        " incompatible with enforced shared-owner routing;"
+                        " failing closed instead of egressing direct through"
+                        " the env proxy"
+                    )
+            except UsageRoutingError:
+                raise
         if proxy is None:
             happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
             # One pool serves every agent in the process, so its ceiling must cover a whole
@@ -366,7 +390,12 @@ def build_keepalive_http_client(
             mounts=mounts or None,
             verify=verify,
         )
-    except Exception:
+    except Exception as exc:
+        # Fail-closed routing policy must survive this construction path: a
+        # swallowed UsageRoutingError would return None and let the SDK build
+        # a direct client — exactly the egress the policy forbids.
+        if type(exc).__name__ == "UsageRoutingError":
+            raise
         return None
 
 
