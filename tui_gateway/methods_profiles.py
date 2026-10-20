@@ -456,6 +456,11 @@ def _(rid, params: dict) -> dict:
             # launch-only credentials). launch_profile_policy owns this transition.
             from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
             activate_multi_profile_hosting()
+            # External sources first — a secondary asked about here may never have been served in
+            # this process, so its snapshot is unrecorded and the scope would miss those secrets
+            # (mirroring `model_switch._profile_runtime_scope_tokens`). No env mutation.
+            from hermes_cli.env_loader import hydrate_profile_secret_sources
+            hydrate_profile_secret_sources(profile_dir)
             secret_scope = build_profile_secret_scope(profile_dir)
         secret_token = set_secret_scope(secret_scope)
         try:
