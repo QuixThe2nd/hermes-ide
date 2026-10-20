@@ -321,6 +321,23 @@ class GeminiStreamer(StreamingTTSProvider):
         yield from _capped(_sse_chunks(), "Gemini streaming TTS")
 
 
+def _xai_proxy_pinned(section: Optional[Dict] = None) -> bool:
+    """True when ``tts.xai.proxy_provider`` pins a proxy lane. The chunked API is WebSocket-only
+    and cannot cross an HTTP passthrough, and the WS lane would authenticate with a NATIVE
+    xAI bearer — so a pinned proxy always fails closed to the (proxied, same-voice) sync path,
+    even when ``tts.xai.streaming_url`` is explicitly set (that URL is a direct-origin WS
+    endpoint; honoring it under a proxy pin would send a native credential to a proxy-scoped
+    lane). There is no proxy-scoped WS routing to substitute."""
+    cfg = section
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config
+            cfg = (load_config().get("tts") or {}).get("xai") or {}
+        except Exception:
+            cfg = {}
+    return bool(str((cfg or {}).get("proxy_provider") or "").strip())
+
+
 @register("xai")
 class XAIStreamer(StreamingTTSProvider):
     """xAI WebSocket TTS (``wss://api.x.ai/v1/tts``) → binary PCM frames (24 kHz mono int16).
@@ -329,12 +346,27 @@ class XAIStreamer(StreamingTTSProvider):
     seam).
 
     Salvaged from PR #47588 (@Cdddo): xAI's chunked TTS API is WebSocket-only (``wss://api.x.ai/v1/tts``).
+
+    ``tts.xai.proxy_provider`` cannot proxy this lane: the chunked API is WebSocket-only and an
+    HTTP passthrough (e.g. LiteLLM ``pass_through_endpoints``) cannot carry it. When a proxy is
+    configured the streamer reports itself UNAVAILABLE regardless of ``tts.xai.streaming_url`` —
+    that URL names a direct-origin WebSocket whose auth is a NATIVE xAI bearer, which a proxy
+    pin must never use (fail closed — never silently fall back to direct api.x.ai); the
+    dispatcher then speaks per-sentence via the sync TTS path, which DOES honor the proxy with
+    the same voice/model.
     """
 
     @staticmethod
     def available() -> bool:
         try:
             from tools.xai_http import resolve_xai_http_credentials
+            if _xai_proxy_pinned():
+                logger.warning(
+                    "xai streaming TTS disabled: tts.xai.proxy_provider is configured and the "
+                    "WebSocket chunked API cannot cross an HTTP passthrough (an explicit "
+                    "streaming_url would still use a native direct-origin credential); "
+                    "sync TTS (proxied) still serves speech")
+                return False
             # Same ordering as the sync path: the subscription OAuth bearer
             # authorizes but 403s on metered TTS, so an explicit key wins (#87045).
             return bool(str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip())
@@ -356,6 +388,10 @@ class XAIStreamer(StreamingTTSProvider):
         import websockets
         from tools.tts_tool_providers import DEFAULT_XAI_VOICE_ID
         from tools.xai_http import resolve_xai_http_credentials
+        if _xai_proxy_pinned(self.section):
+            raise RuntimeError(
+                "tts.xai.proxy_provider is configured, so the chunked WebSocket API (direct-origin, "
+                "native-credential) must not be used; use the (proxied) sync TTS path")
         api_key = str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip()
         if not api_key:
             raise RuntimeError("No xAI credentials for streaming TTS")

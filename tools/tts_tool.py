@@ -480,7 +480,16 @@ def _xai_requirements() -> bool:
         # Same ordering as _generate_xai_tts / XAIStreamer: an explicit key wins over the
         # subscription OAuth bearer (which 403s on metered /v1/tts) — never touch the OAuth
         # pool for an availability probe when a key is configured. See #87045, #113727.
-        return bool(resolve_xai_http_credentials(prefer_api_key=True).get("api_key"))
+        # With tts.xai.proxy_provider set, ONLY the named providers: entry counts (fail closed,
+        # no native OAuth/XAI_API_KEY probe) so a proxy-only profile keeps the tool and a
+        # missing entry/secret disables it instead of escaping as an exception.
+        proxy_provider = str((_load_tts_config().get("xai") or {}).get("proxy_provider") or "").strip()
+        if proxy_provider:
+            from tools.xai_http import resolve_xai_proxied_credentials
+            creds = resolve_xai_proxied_credentials(proxy_provider)
+        else:
+            creds = resolve_xai_http_credentials(prefer_api_key=True)
+        return bool(str(creds.get("api_key") or "").strip())
     except Exception:
         return False
 

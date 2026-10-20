@@ -285,16 +285,23 @@ def _clamped_number(raw: Any, cast, lo, hi):
 
 
 def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    from tools.xai_http import resolve_xai_http_credentials
+    from tools.xai_http import resolve_xai_http_credentials, resolve_xai_proxied_credentials
 
-    # TTS is API-billed: a subscription OAuth bearer can authorize chat while
-    # returning 403 for /v1/tts, so prefer an explicit XAI_API_KEY over OAuth.
-    # See #87045, #88040.
-    creds = resolve_xai_http_credentials(prefer_api_key=True)
+    xai_config = tts_config.get("xai") or {}
+    # ``tts.xai.proxy_provider: <name>`` routes POST {base}/tts through a named ``providers:``
+    # entry (e.g. a LiteLLM passthrough fronting xAI) — fail-closed via
+    # resolve_xai_proxied_credentials; the proxy's own key is sent, never the xAI OAuth bearer.
+    proxy_provider = str(xai_config.get("proxy_provider") or "").strip()
+    if proxy_provider:
+        creds = resolve_xai_proxied_credentials(proxy_provider)
+    else:
+        # TTS is API-billed: a subscription OAuth bearer can authorize chat while
+        # returning 403 for /v1/tts, so prefer an explicit XAI_API_KEY over OAuth.
+        # See #87045, #88040.
+        creds = resolve_xai_http_credentials(prefer_api_key=True)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise ValueError("No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.")
-    xai_config = tts_config.get("xai") or {}
     voice_id = str(xai_config.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
     language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
     sample_rate, bit_rate = (int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE)),
@@ -311,7 +318,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         int, 0, 2)
     text_normalization = _config_bool(
         xai_config.get("text_normalization"), DEFAULT_XAI_TEXT_NORMALIZATION_DEFAULT)
-    if creds.get("provider") == "xai-oauth":
+    if creds.get("provider") == "xai-oauth" or str(creds.get("provider") or "").startswith("xai-proxy:"):
         base_url = creds.get("base_url")
     else:
         from hermes_cli.config import get_env_value
