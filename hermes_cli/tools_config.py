@@ -106,9 +106,10 @@ def gui_toolset_label(label: str) -> str:
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
 #
-# X search is off by default for users without xAI credentials, but
-# auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
-# set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
+# X search is off by default without a configured credential path, but
+# auto-enables when native xAI creds exist (OAuth / XAI_API_KEY) or
+# ``x_search.proxy_provider`` resolves via the tool readiness boundary —
+# mirroring the HASS_TOKEN → homeassistant auto-enable below. The
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
@@ -558,15 +559,19 @@ def _explicit_toolsets(
 
 def _composite_toolsets(toolset_names: List[str], platform: str, explicitly_configured: bool) -> Set[str]:
     """Enabled set inferred from composite names by reverse-mapping tool names (only while no explicit list is
-    saved). ``x_search`` is not in any composite, so inject it when xAI creds exist and exempt it from default-off."""
+    saved). ``x_search`` is not in any composite, so inject it when the x_search readiness boundary passes
+    (native xAI creds or ``x_search.proxy_provider``) and exempt it from default-off."""
     from toolsets import resolve_toolset
 
     all_tool_names = {t for ts_name in toolset_names for t in resolve_toolset(ts_name)}
     enabled = _configurable_subset_of(all_tool_names, platform)
     default_off = _default_off_toolsets(platform, explicitly_configured)
-    if _toolset_allowed_for_platform("x_search", platform) and _xai_credentials_present():
-        enabled.add("x_search")
-        default_off.discard("x_search")
+    if _toolset_allowed_for_platform("x_search", platform):
+        from tools.x_search_tool import check_x_search_requirements
+
+        if check_x_search_requirements():
+            enabled.add("x_search")
+            default_off.discard("x_search")
     return enabled - default_off
 
 
