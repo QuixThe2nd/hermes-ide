@@ -902,7 +902,12 @@ class GatewayAdapterLifecycleMixin:
                     self.pairing_stores[name] = (
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
-            write_runtime_status(served_profiles=served)
+            write_runtime_status(
+                served_profiles=served,
+                # Always passed (even empty): a reconcile that re-scanned or unserved
+                # profiles replaces the warning list instead of inheriting stale ones.
+                gate_config_warnings=list(getattr(self, "_gate_config_warnings", None) or []),
+            )
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises

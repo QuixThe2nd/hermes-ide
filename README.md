@@ -48,6 +48,16 @@ Power users will have noticed that when Hermes is used too much, Discord rate li
 
 Stock Hermes is also inconsistent about when it pings you, so you end up jumping between threads checking which one needs input. Hermes IDE avoids pinging you on iterations or mid-run messages, but will reply to you or ping you on the final message. I found this simple change improved my productivity a lot, because I stopped burning mental bandwidth rotating between 20 chats for hours straight waiting for one to complete. The long-running heartbeat is a phase line by default: it names the current wait and how long that wait has lasted — `⏳ terminal 1m42s` while a tool is in flight, `⏳ grok-4.6 38s` while waiting on the next model response, `⏳ packing 12s` once the last tool has returned and the next call is being packed — with no iteration counter or provider diagnostics. Set `display.platforms.discord.long_running_notifications: true` for the old verbose diagnostic line, `generic` for the plain `⏳ still working` phrase, or `false` to turn heartbeats off. While a gateway restart is waiting on your typed confirmation, the heartbeat stays quiet entirely — the chat is waiting on you, not on Hermes, and a progress bubble there would read as noise.
 
+Gateway tool progress can use **compact** mode for one logical line per tool call — e.g. `📄 read_file({"path": "README.md", "limit": 100})` — with full JSON arguments and no preview truncation:
+
+```yaml
+display:
+  tool_progress_command: true   # optional: cycle modes with /verbose
+  platforms:
+    discord:
+      tool_progress: compact
+```
+
 The smaller edges are handled too. Sessions use your stable username instead of a server nickname. `DISCORD_ALLOWED_GUILDS` lets any member of a listed server talk to the bot without changing DM access. Threads rename once after the first reply lands, not halfway through a turn. Progress updates respect each platform's real message limit. Quote-replies in auto-threaded channels get their own thread by default, keeping the parent channel clean; set `discord.auto_thread_replies: false` to answer them inline instead.
 
 Multiplexed profiles use their own `display.reasoning_style`. Compact mode renders `💭 thought for Xs` and can include an `(N tokens)` count for the turn. Streaming previews and interim updates stay standalone, and only the completed final answer reply-pings you. If an auto-threaded root turn cannot attach a reply reference, the final message uses an inline mention instead.
@@ -74,7 +84,7 @@ Research has a lane of its own. `delegate_research` hands a substantial research
 
 Agents are very good at ignoring the nice coding lane you built and editing the source anyway. The code-lane-gate plugin blocks in-context source edits everywhere by default, inside a git repo or not. Set `CODE_LANE_GATE_E2E=0` to opt out. Terminal writes are still a known v1 bypass.
 
-One model is usually enough. When it is not, `moa_ask` and `moa_debate` give you multi-model consults and debates without leaving the chat. Both tools were restored from the archive.
+One model is usually enough. When it is not, `moa_ask` and `moa_debate` give you multi-model consults and debates without leaving the chat. Both tools were restored from the archive. Reference advisors do not enter configured or automatic fallback chains when their client is missing or request recovery fails; those failures stay attached to the selected advisor. Provider-specific same-client recovery remains unchanged, including Nous catalog self-healing.
 
 `pr_intent_watch` watches this fork for new PRs and comments on what the change is trying to do, whether it is worth considering, and whether the claimed bug sounds real. It is an intent review, not a code review; the watcher never sees the diff.
 
@@ -106,7 +116,7 @@ Allowlisted groups can also observe unmentioned chatter with `observe_unmentione
 
 A stalled gateway should not look dead. `display.retry_progress` adds a live provider retry and fallback bubble during stalls; it is off by default. Replies can also end with a timing split for total, API, tools, and other time, which is off by default upstream. Tool previews are capped at `display.tool_preview_length`; 0 (the Discord default) shows the full command and all arguments.
 
-A gate that fails its config check fails safe and now says so. An invalid `response_gate` or `reaction_gate` block keeps the platform loading with that gate off, and the validation error surfaces in `hermes gateway status`, `/api/status`, and the dashboard's Channels page instead of only the log — so a gate that never runs cannot masquerade as a gate that was never configured.
+A gate that fails its config check fails safe and now says so. An invalid `response_gate` or `reaction_gate` block keeps the platform loading with that gate off, and the validation error surfaces in `hermes gateway status`, `/api/status`, and the dashboard's Channels page instead of only the log — so a gate that never runs cannot masquerade as a gate that was never configured. The notice clears only after an accepted effective change (the gate corrected or disabled at boot, reconcile, or live reload) or once the profile is removed; a rejected reload keeps the previous gate running, so its notice stays.
 
 Important status and warning notices a platform outage swallowed are not lost either: when the transport marks a notice send as a transient failure, the delivery ledger retains it, and the same reconnect that revives the adapter replays it into the original chat (thread included, prefixed with a ♻️ recovered-notice marker, no pings). Notices already delivered never replay, and a failed restart confirmation is never revived — instead its cancellation explanation is what comes back after reconnect.
 

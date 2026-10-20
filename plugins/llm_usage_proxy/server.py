@@ -56,6 +56,17 @@ Security posture:
     Streaming responses are never captured (the request plus an explicit
     streamed marker only), and bodies past the buffered cap are stored
     truncated with an explicit marker rather than silently shortened.
+  * Per-harness routing policies (``routing.json`` next to the ledger, see
+    routing.py) let an operator pin an ordered route+model list per API
+    family for authenticated POLICY callers — a distinct ``policy_callers``
+    token namespace in the key store whose creation never arms the global
+    caller-token gate, so legacy label-only clients are unaffected. A caller
+    label or User-Agent can never arm a policy. On a 429 received before
+    anything was sent downstream, the exact (route, model) earns a bounded
+    persistent cooldown and the next permitted candidate is tried; auth
+    failures, 400s, 5xx and network errors never retry. Requests carrying
+    endpoint-owned continuation state (``previous_response_id``,
+    ``conversation``) always stay on their arriving route.
 
 Honesty rules for the accounting:
   * Usage completeness (final / partial / missing) is recorded separately
@@ -89,9 +100,18 @@ import time
 import zlib
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection, HTTPSConnection, HTTPException
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 from urllib.parse import unquote, urlsplit
+
+# The routing sibling is stdlib-only like this file, but the systemd unit
+# executes server.py directly (sys.path[0] is this directory, not the repo
+# root), so the package import has a plain-sibling fallback.
+try:
+    from plugins.llm_usage_proxy import routing as _routing
+except ImportError:  # direct script execution: server.py run as __main__
+    import routing as _routing  # type: ignore[no-redef]
 
 logger = logging.getLogger("llm-usage-proxy")
 
@@ -221,6 +241,28 @@ CREATE TABLE IF NOT EXISTS jev_bodies (
 CREATE INDEX IF NOT EXISTS idx_jev_bodies_ts ON jev_bodies (ts);
 """
 
+# Routing decision journal: one row per policy-evaluated request saying what
+# the router decided and why (selection, skips, cooldowns, failover). A table
+# of its own — never new usage_events columns — so the ledger's shape is
+# untouched, and it is only created when the proxy runs with key-manager mode
+# (the only mode where policy callers can authenticate), mirroring the
+# jev_bodies gate: a default-off proxy's DB stays byte-identical.
+ROUTING_DECISIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS routing_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    caller TEXT NOT NULL,
+    family TEXT,
+    arrived_route TEXT NOT NULL,
+    arrived_model TEXT,
+    selected_route TEXT,
+    selected_model TEXT,
+    reason TEXT NOT NULL,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_routing_decisions_ts ON routing_decisions (ts);
+"""
+
 # Hop-by-hop headers (RFC 2616 §13.5.1 + common additions) — never forwarded
 # in either direction. Host/Content-Length are handled explicitly instead.
 HOP_BY_HOP = {
@@ -254,19 +296,36 @@ UNATTRIBUTED_CALLER = "unattributed"
 # key — once per request, so a dead key cannot turn into a retry storm.
 KEY_RETRY_STATUSES = frozenset({401, 429})
 
-# OAuth-managed routes (keys.json "oauth" section: route → provider id). For
-# those the proxy itself obtains and refreshes the upstream OAuth credential
-# through the canonical Hermes auth store (the ``hermes_cli.llm_proxy_oauth``
-# helper, which owns refresh + cross-process locks) — clients still present
-# only their caller token.
-# A cached token this close to expiry is refreshed before use.
+# OAuth-managed routes (keys.json "oauth" section: route → provider id).
 OAUTH_REFRESH_SKEW_SEC = 60.0
-# Cache TTL when the helper reports no expiry (defensive; real OAuth access
-# tokens are JWTs and always carry one).
 OAUTH_FALLBACK_TTL_SEC = 240.0
-# One helper invocation may wait out a store lock plus a token-endpoint
-# round trip; bound it so a wedged refresh cannot park a request forever.
 OAUTH_HELPER_TIMEOUT_SEC = 75.0
+
+# Policy routing: a 429 answered before anything was sent downstream marks a
+# bounded persistent cooldown on exactly (route, model) and the next
+# permitted candidate is tried. The attempt bound counts ACTUAL HTTP SENDS,
+# alternate-key rotation included: at most MAX_POLICY_ATTEMPTS candidates are
+# planned, each costs one send plus at most one legacy key-rotation resend,
+# and MAX_POLICY_SENDS hard-caps the total so a long policy can never hammer
+# the fleet on one request.
+POLICY_FAILOVER_STATUS = 429
+MAX_POLICY_ATTEMPTS = 4
+MAX_POLICY_SENDS = 2 * MAX_POLICY_ATTEMPTS
+
+# Headers that name an account/credential boundary rather than a request.
+# When a policy moves a request across routes they are ALWAYS stripped (the
+# target route's own stored key is injected instead): forwarding e.g. a Codex
+# OAuth ``ChatGPT-Account-Id`` to an unrelated provider would leak the source
+# account across the credential boundary.
+ACCOUNT_BOUND_HEADERS = frozenset(
+    {
+        "authorization",
+        "x-api-key",
+        "chatgpt-account-id",
+        "openai-organization",
+        "openai-project",
+    }
+)
 
 # Usage completeness values (how authoritative the token numbers are).
 USAGE_FINAL = "final"  # terminal usage event observed per provider rules
@@ -948,11 +1007,13 @@ class UsageStore:
         capture_jev_bodies: bool = False,
         capture_retention_hours: float = CAPTURE_RETENTION_HOURS,
         capture_max_rows: int = CAPTURE_MAX_ROWS,
+        routing_journal: bool = False,
     ):
         self.path = path
         self._capture_enabled = bool(capture_jev_bodies)
         self._capture_retention_hours = max(0.0, float(capture_retention_hours))
         self._capture_max_rows = max(1, int(capture_max_rows))
+        self._routing_journal = bool(routing_journal)
         os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
@@ -964,6 +1025,8 @@ class UsageStore:
             self._conn.execute(SCHEMA_CHAT_INDEX)
             if self._capture_enabled:
                 self._conn.executescript(JEV_BODIES_SCHEMA)
+            if self._routing_journal:
+                self._conn.executescript(ROUTING_DECISIONS_SCHEMA)
         _ensure_mode_0600(self.path)
 
     def _migrate(self) -> None:
@@ -1090,6 +1153,57 @@ class UsageStore:
                 (self._capture_max_rows,),
             )
         _ensure_mode_0600(self.path)
+
+    def insert_routing_decision(
+        self,
+        *,
+        caller: str,
+        family: Optional[str],
+        arrived_route: str,
+        arrived_model: Optional[str],
+        selected_route: Optional[str],
+        selected_model: Optional[str],
+        reason: str,
+        detail: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """One routing-decision row: what the router did and why.
+
+        ``detail`` carries the attempt/skip list as JSON — route names,
+        models, statuses, cooldown seconds, skip reasons; never request
+        bodies, headers, or credentials. A no-op unless the journal table
+        exists (key-manager mode).
+        """
+        if not self._routing_journal:
+            return
+        detail_text = json.dumps(dict(detail), sort_keys=True) if detail else None
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO routing_decisions (ts, caller, family, arrived_route,"
+                " arrived_model, selected_route, selected_model, reason, detail)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                    caller,
+                    family,
+                    arrived_route,
+                    arrived_model,
+                    selected_route,
+                    selected_model,
+                    reason,
+                    detail_text,
+                ),
+            )
+        _ensure_mode_0600(self.path)
+
+    def recent_routing_decisions(self, limit: int) -> list[dict[str, Any]]:
+        if not self._routing_journal:
+            return []
+        limit = max(1, min(int(limit), 500))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM routing_decisions ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def recent(self, limit: int) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 500))
@@ -1306,11 +1420,14 @@ class KeyStore:
     ledger. Clients hold caller tokens only; a caller token is never a
     provider credential, and the proxy never hands a provider key back out.
 
-    A third section, ``oauth``, maps a route name to the OAuth provider id
-    whose credential the *proxy itself* obtains and refreshes (Codex, xAI —
-    providers with no static API key to store). Only the provider id is
-    persisted here; the tokens live exclusively in the canonical Hermes
-    auth store the helper refreshes under its cross-process locks.
+    A second caller namespace, ``policy_callers``, holds the tokens that arm
+    per-harness routing policies. It exists so an operator can authenticate
+    routing clients WITHOUT turning on the global caller-token gate: the
+    ``callers`` map alone drives that gate (``caller_count``), so minting the
+    first policy caller never changes what legacy label-only clients must
+    present. A policy token is still a real credential — ``caller_for_token``
+    accepts it — it simply lives in a namespace whose creation cannot break
+    old clients.
 
     Reads re-read the file when it changed on disk, so ``hermes
     llm_usage_proxy keys set`` and ``callers create`` take effect on a running
@@ -1323,6 +1440,7 @@ class KeyStore:
         self._lock = threading.Lock()
         self._routes: dict[str, tuple[str, ...]] = {}
         self._callers: dict[str, str] = {}
+        self._policy_callers: dict[str, str] = {}
         self._oauth: dict[str, str] = {}
         self._stamp: Optional[tuple[int, int]] = None
         self._load()
@@ -1335,12 +1453,22 @@ class KeyStore:
             return self._routes.get(route, ())
 
     def caller_count(self) -> int:
+        """Tokens that arm the global caller gate — the ``callers`` map ONLY.
+
+        Policy callers deliberately do not count: minting one must never
+        change what legacy label-only clients have to present.
+        """
         with self._lock:
             self._maybe_reload()
             return len(self._callers)
 
     def caller_for_token(self, token: str) -> Optional[str]:
-        """The caller name a token belongs to, or None when it is unknown."""
+        """The caller name a token belongs to, or None when it is unknown.
+
+        Both namespaces authenticate — a policy token is a real credential
+        the operator minted — so a policy caller also satisfies the global
+        attribution gate on deployments where that gate is armed.
+        """
         if not token:
             return None
         # Bytes, not str: compare_digest rejects non-ASCII *str* outright, and
@@ -1348,25 +1476,51 @@ class KeyStore:
         presented = token.encode("utf-8", "replace")
         with self._lock:
             self._maybe_reload()
-            for name, stored in self._callers.items():
+            for store in (self._callers, self._policy_callers):
+                for name, stored in store.items():
+                    if hmac.compare_digest(stored.encode("utf-8"), presented):
+                        return name
+        return None
+
+    def policy_caller_for_token(self, token: str) -> Optional[str]:
+        """The POLICY caller a token belongs to — the routing credential.
+
+        This is the only lookup that arms policy routing: a label or a
+        User-Agent can never match here, so a forged attribution header can
+        never steer a request through someone's routing policy.
+        """
+        if not token:
+            return None
+        presented = token.encode("utf-8", "replace")
+        with self._lock:
+            self._maybe_reload()
+            for name, stored in self._policy_callers.items():
                 if hmac.compare_digest(stored.encode("utf-8"), presented):
                     return name
         return None
 
+    def policy_caller_count(self) -> int:
+        with self._lock:
+            self._maybe_reload()
+            return len(self._policy_callers)
+
     def oauth_provider_for(self, route: str) -> Optional[str]:
-        """The OAuth provider id a route is managed with, or None."""
         with self._lock:
             self._maybe_reload()
             return self._oauth.get(route)
 
     def oauth_routes(self) -> dict[str, str]:
-        """``{route: provider_id}`` for every OAuth-managed route."""
         with self._lock:
             self._maybe_reload()
             return dict(self._oauth)
 
     def describe(self) -> dict[str, dict[str, object]]:
-        """Route/caller names with fingerprints only — never secret values."""
+        """Route/caller names with fingerprints only — never secret values.
+
+        The shape is exactly ``{"routes": ..., "callers": ...}`` for the
+        existing consumers; policy callers are reported separately by
+        :meth:`describe_policy_callers`.
+        """
         with self._lock:
             self._maybe_reload()
             described: dict[str, dict[str, object]] = {
@@ -1379,14 +1533,36 @@ class KeyStore:
                     for name, token in sorted(self._callers.items())
                 },
             }
-            # Provider ids are configuration, not credentials. Omitted when
-            # empty so the longstanding {"routes", "callers"} shape is stable
-            # for existing consumers.
             if self._oauth:
                 described["oauth"] = dict(sorted(self._oauth.items()))
             return described
 
+    def describe_policy_callers(self) -> dict[str, str]:
+        """Policy-caller names with token fingerprints only."""
+        with self._lock:
+            self._maybe_reload()
+            return {
+                name: key_fingerprint(token)
+                for name, token in sorted(self._policy_callers.items())
+            }
+
     # ── writes ───────────────────────────────────────────────────────────
+
+    @contextmanager
+    def _mutation(self) -> Iterator[None]:
+        """Reload→mutate→save under a cross-PROCESS flock.
+
+        The proxy, the CLI and any future admin server are separate
+        processes sharing this one file; the instance threading.Lock cannot
+        stop a read/update/os.replace here from overwriting another
+        writer's key/caller change. Same proven discipline as RoutingStore:
+        an exclusive flock on a sibling lock file wraps an UNCONDITIONAL
+        reload (the mtime shortcut is not trusted mid-write) and the save.
+        """
+        with _routing.file_mutex(self.path + ".lock"):
+            with self._lock:
+                self._load()
+                yield
 
     def set_route_keys(self, route: str, keys: list[str]) -> tuple[str, ...]:
         """Replace a route's key list (order is the rotation order)."""
@@ -1399,8 +1575,7 @@ class KeyStore:
                 cleaned.append(key)
         if not cleaned:
             raise ValueError(f"no keys given for route {route!r}")
-        with self._lock:
-            self._maybe_reload()
+        with self._mutation():
             self._routes[route] = tuple(cleaned)
             self._save()
             return self._routes[route]
@@ -1409,8 +1584,7 @@ class KeyStore:
         """Drop a route and all of its keys. True when something was removed."""
         if not is_route_name(route):
             raise ValueError(f"invalid route name: {route!r}")
-        with self._lock:
-            self._maybe_reload()
+        with self._mutation():
             if route not in self._routes:
                 return False
             del self._routes[route]
@@ -1419,8 +1593,7 @@ class KeyStore:
 
     def remove_route_key(self, route: str, index: int) -> Optional[str]:
         """Remove the 1-based key *index* shown by ``keys list``."""
-        with self._lock:
-            self._maybe_reload()
+        with self._mutation():
             keys = self._routes.get(route)
             if not keys or not 1 <= index <= len(keys):
                 return None
@@ -1438,19 +1611,41 @@ class KeyStore:
         if not is_caller_name(name):
             raise ValueError(f"invalid caller name: {name!r}")
         token = secrets.token_urlsafe(24)
-        with self._lock:
-            self._maybe_reload()
+        with self._mutation():
             rotated = name in self._callers
             self._callers[name] = token
             self._save()
             return token, rotated
 
     def remove_caller(self, name: str) -> bool:
-        with self._lock:
-            self._maybe_reload()
+        with self._mutation():
             if name not in self._callers:
                 return False
             del self._callers[name]
+            self._save()
+            return True
+
+    def create_policy_caller(self, name: str) -> tuple[str, bool]:
+        """Mint a POLICY caller token; replaces the token when *name* exists.
+
+        Unlike :meth:`create_caller` this never arms the global caller-token
+        gate: the token authenticates routing policy only (and, where the
+        gate is already armed, satisfies attribution like any credential).
+        """
+        if not is_caller_name(name):
+            raise ValueError(f"invalid caller name: {name!r}")
+        token = secrets.token_urlsafe(24)
+        with self._mutation():
+            rotated = name in self._policy_callers
+            self._policy_callers[name] = token
+            self._save()
+            return token, rotated
+
+    def remove_policy_caller(self, name: str) -> bool:
+        with self._mutation():
+            if name not in self._policy_callers:
+                return False
+            del self._policy_callers[name]
             self._save()
             return True
 
@@ -1461,16 +1656,14 @@ class KeyStore:
         provider = str(provider or "").strip()
         if not is_route_name(provider):
             raise ValueError(f"invalid OAuth provider id: {provider!r}")
-        with self._lock:
-            self._maybe_reload()
+        with self._mutation():
             self._oauth[route] = provider
             self._save()
             return provider
 
     def remove_oauth_route(self, route: str) -> bool:
         """Drop a route's OAuth management. True when something was removed."""
-        with self._lock:
-            self._maybe_reload()
+        with self._mutation():
             if route not in self._oauth:
                 return False
             del self._oauth[route]
@@ -1495,7 +1688,7 @@ class KeyStore:
         path = self.path
         self._stamp = self._stamp_file(path)
         if self._stamp is None:
-            self._routes, self._callers, self._oauth = {}, {}, {}
+            self._routes, self._callers, self._policy_callers, self._oauth = {}, {}, {}, {}
             return
         try:
             with open(path, "r", encoding="utf-8") as handle:
@@ -1509,10 +1702,11 @@ class KeyStore:
                 path,
                 redact_text(str(exc)),
             )
-            self._routes, self._callers, self._oauth = {}, {}, {}
+            self._routes, self._callers, self._policy_callers, self._oauth = {}, {}, {}, {}
             return
         routes: dict[str, tuple[str, ...]] = {}
         callers: dict[str, str] = {}
+        policy_callers: dict[str, str] = {}
         oauth: dict[str, str] = {}
         if isinstance(raw, Mapping):
             raw_routes = raw.get("routes")
@@ -1530,6 +1724,11 @@ class KeyStore:
                 for name, token in raw_callers.items():
                     if is_caller_name(str(name)) and isinstance(token, str) and token:
                         callers[str(name)] = token
+            raw_policy = raw.get("policy_callers")
+            if isinstance(raw_policy, Mapping):
+                for name, token in raw_policy.items():
+                    if is_caller_name(str(name)) and isinstance(token, str) and token:
+                        policy_callers[str(name)] = token
             raw_oauth = raw.get("oauth")
             if isinstance(raw_oauth, Mapping):
                 for name, provider in raw_oauth.items():
@@ -1539,7 +1738,12 @@ class KeyStore:
                         and is_route_name(provider.strip())
                     ):
                         oauth[str(name)] = provider.strip()
-        self._routes, self._callers, self._oauth = routes, callers, oauth
+        self._routes, self._callers, self._policy_callers, self._oauth = (
+            routes,
+            callers,
+            policy_callers,
+            oauth,
+        )
         _ensure_mode_0600(path)  # a store written loose by an older version
 
     def _save(self) -> None:
@@ -1551,6 +1755,7 @@ class KeyStore:
             "version": 1,
             "routes": {name: list(keys) for name, keys in sorted(self._routes.items())},
             "callers": dict(sorted(self._callers.items())),
+            "policy_callers": dict(sorted(self._policy_callers.items())),
             "oauth": dict(sorted(self._oauth.items())),
         }
         handle_fd, tmp_path = tempfile.mkstemp(
@@ -1841,7 +2046,23 @@ def _split_proxy_path(raw_path: str) -> tuple[Optional[str], str, str]:
     return (upstream or None), rest, query
 
 
-def _upstream_request_target(base_url: str, rest: str, query: str) -> str:
+_POLICY_CHAT_COMPLETIONS_CANONICAL_REST = "v1/chat/completions"
+
+
+def _canonical_policy_chat_completions_rest(rest: str) -> str:
+    """OpenAI-style ``v1/chat/completions`` tail for policy cross-route reroutes."""
+    if (rest or "").lstrip("/") == _POLICY_CHAT_COMPLETIONS_CANONICAL_REST:
+        return "chat/completions"
+    return rest
+
+
+def _upstream_request_target(
+    base_url: str,
+    rest: str,
+    query: str,
+    *,
+    policy_cross_route_chat_completions: bool = False,
+) -> str:
     """Origin-form request-target for the upstream (path + query only).
 
     http.client sends absolute-form when handed a full URL, which is proxy
@@ -1849,10 +2070,19 @@ def _upstream_request_target(base_url: str, rest: str, query: str) -> str:
     prepended to the routed rest here and the netloc never appears in it. An
     empty *rest* (the request was for the base path itself) keeps the base
     path exactly — no invented trailing slash.
+
+    When ``policy_cross_route_chat_completions`` is set, a routed rest of
+    ``v1/chat/completions`` is rewritten to ``chat/completions`` before the
+    base prefix is applied — Kimi- and Z.AI-style bases already carry their own
+    version segment. This applies only on policy cross-route Chat Completions
+    reroutes; native and same-route paths pass ``rest`` through unchanged.
     """
+    effective_rest = rest
+    if policy_cross_route_chat_completions:
+        effective_rest = _canonical_policy_chat_completions_rest(rest)
     split = urlsplit(base_url)
-    if rest:
-        target = (split.path or "").rstrip("/") + "/" + rest.lstrip("/")
+    if effective_rest:
+        target = (split.path or "").rstrip("/") + "/" + effective_rest.lstrip("/")
     else:
         target = split.path or "/"
     if query:
@@ -1894,6 +2124,22 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         """True only when the unit was started with --capture-jev-bodies."""
         return bool(getattr(self.server, "capture_jev_bodies", False))
 
+    @property
+    def routing_store(self) -> Optional[_routing.RoutingStore]:
+        return getattr(self.server, "routing_store", None)
+
+    @property
+    def route_families(self) -> Mapping[str, frozenset]:
+        """Route name → API families the route's endpoint actually serves.
+
+        Computed once at server construction from the built-in endpoint
+        capability table plus the operator's declared overrides
+        (``--route-capability`` / ``llm_usage_proxy.route_capabilities``);
+        see :func:`routing.route_family_map`. Compatibility is a property of
+        the endpoint, never guessed from a route's name.
+        """
+        return getattr(self.server, "route_families", {})
+
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
         # Raw access logging is disabled outright: the default request line
         # embeds the full path *with query string*, and query strings can
@@ -1913,6 +2159,15 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             return
         if route == "/usage":
             self._send_recent_usage()
+            return
+        if route == "/routing/policies":
+            self._send_routing_policies()
+            return
+        if route == "/routing/cooldowns":
+            self._send_routing_cooldowns()
+            return
+        if route == "/routing/decisions":
+            self._send_routing_decisions()
             return
         if route.startswith("/p/"):
             self._proxy()
@@ -1952,10 +2207,104 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                     return
         self._send_json(200, {"rows": self.store.recent(limit)})
 
-    def _send_json(self, status: int, payload: Mapping[str, Any]) -> None:
+    # ── routing read endpoints ───────────────────────────────────────────
+    #
+    # Loopback readbacks of the routing state: policies, live cooldowns, and
+    # the decision journal. None of these carry secrets — route names, model
+    # names, and caller names only (the same caller names the usage ledger
+    # already publishes on /usage). Writes stay file-side (CLI/webui write
+    # routing.json; this process reloads on mtime), so there is no
+    # unauthenticated mutation surface here at all.
+
+    def _send_routing_policies(self) -> None:
+        store = self.routing_store
+        key_store = self.key_store if self.manage_keys else None
+        key_counts = (
+            {
+                name: (
+                    len(key_store.route_keys(name))
+                    or (1 if key_store.oauth_provider_for(name) else 0)
+                )
+                for name in self.upstreams
+            }
+            if key_store is not None
+            else {}
+        )
+        policies = store.policies_snapshot() if store is not None else {}
+        route_families = self.route_families
+        now = time.time()
+        enriched: dict[str, Any] = {}
+        for caller, policy in policies.items():
+            entries = []
+            for entry in policy["entries"]:
+                cooldown = (
+                    store.active_cooldown(entry["route"], entry["model"], now)
+                    if store is not None
+                    else None
+                )
+                usability = None
+                if entry["route"] not in self.upstreams:
+                    usability = "unknown_route"
+                elif entry["family"] not in route_families.get(
+                    entry["route"], frozenset()
+                ):
+                    # The endpoint does not serve this entry's API family (or
+                    # declares no capabilities at all) — planning will skip
+                    # it; say so here instead of presenting it as usable.
+                    usability = "incompatible_family"
+                elif cooldown is not None:
+                    usability = "cooldown"
+                entries.append(
+                    {
+                        **entry,
+                        "usable": usability is None,
+                        "unusable_reason": usability,
+                        "cooldown_until": cooldown.get("until") if cooldown else None,
+                    }
+                )
+            enriched[caller] = {"enabled": policy["enabled"], "entries": entries}
+        self._send_json(
+            200,
+            {
+                "manage_keys": self.manage_keys,
+                "policy_callers": (
+                    sorted(key_store.describe_policy_callers())
+                    if key_store is not None
+                    else []
+                ),
+                "route_key_counts": key_counts,
+                "policies": enriched,
+            },
+        )
+
+    def _send_routing_cooldowns(self) -> None:
+        store = self.routing_store
+        cooldowns = store.cooldowns_snapshot() if store is not None else []
+        self._send_json(200, {"cooldowns": cooldowns})
+
+    def _send_routing_decisions(self) -> None:
+        query = urlsplit(self.path).query
+        limit = 50
+        for part in query.split("&"):
+            if part.startswith("limit="):
+                try:
+                    limit = int(part[len("limit=") :])
+                except ValueError:
+                    self._send_json(400, {"error": "limit must be an integer"})
+                    return
+        self._send_json(200, {"rows": self.store.recent_routing_decisions(limit)})
+
+    def _send_json(
+        self,
+        status: int,
+        payload: Mapping[str, Any],
+        headers: Optional[list[tuple[str, str]]] = None,
+    ) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        for name, value in headers or ():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
@@ -2022,7 +2371,14 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
             remaining -= len(chunk)
         return b"".join(parts)
 
-    def _forward_headers(self, upstream_netloc: str) -> list[tuple[str, str]]:
+    def _forward_headers(
+        self,
+        upstream_netloc: str,
+        *,
+        drop_authorization: bool = False,
+        drop_x_api_key: bool = False,
+        drop_account_bound: bool = False,
+    ) -> list[tuple[str, str]]:
         """Request headers minus hop-by-hop and Connection-nominated headers.
 
         Both caller headers are dropped too: the token is a credential for
@@ -2032,6 +2388,17 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         harness*, ledger-only attribution a provider has no business seeing.
         Every drop is by lowercased name, so a malformed or undecodable value
         is stripped exactly like a valid one.
+
+        ``drop_authorization`` removes the Authorization header because its
+        bearer was CONSUMED as a local caller token: a credential minted for
+        this proxy must never reach an upstream. ``drop_x_api_key`` is the
+        same withholding for an x-api-key whose VALUE matched a local
+        credential — whichever header authenticated the request, the local
+        token itself never crosses. ``drop_account_bound``
+        (cross-route policy moves) strips every account/credential-bound
+        header (ACCOUNT_BOUND_HEADERS — an OAuth account id valid for the
+        source provider means nothing to, and must never leak to, an
+        unrelated one); the caller then injects the target route's own key.
         """
         connection_tokens = {
             token.strip().lower()
@@ -2053,7 +2420,14 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         )
         forwarded = []
         for name, value in self.headers.items():
-            if name.lower() in skip:
+            lowered = name.lower()
+            if lowered in skip:
+                continue
+            if drop_account_bound and lowered in ACCOUNT_BOUND_HEADERS:
+                continue
+            if drop_authorization and lowered == "authorization":
+                continue
+            if drop_x_api_key and lowered == "x-api-key":
                 continue
             forwarded.append((name, value))
         forwarded.append(("Host", upstream_netloc))
@@ -2181,390 +2555,46 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         except sqlite3.Error as exc:
             logger.error("failed to record usage row: %s", redact_text(str(exc)))
 
+    def _record_routing_decision(
+        self,
+        *,
+        plan: "_routing.RoutingPlan",
+        arrived_route: str,
+        arrived_model: Optional[str],
+        selected_route: Optional[str],
+        selected_model: Optional[str],
+        reason: str,
+        attempts: list[dict[str, Any]],
+    ) -> None:
+        """Decision-journal row for a policy-evaluated request.
+
+        Route names, model names, statuses and reasons only — never bodies,
+        headers, or credentials. A journal failure must never fail the
+        request it describes.
+        """
+        detail: Optional[dict[str, Any]] = None
+        if attempts or plan.skips:
+            detail = {"attempts": attempts, "skips": plan.skips}
+        try:
+            self.store.insert_routing_decision(
+                caller=plan.policy_caller or "",
+                family=plan.family,
+                arrived_route=arrived_route,
+                arrived_model=arrived_model,
+                selected_route=selected_route,
+                selected_model=selected_model,
+                reason=reason,
+                detail=detail,
+            )
+        except sqlite3.Error as exc:
+            logger.error(
+                "failed to record routing decision: %s", redact_text(str(exc))
+            )
+
     def _proxy(self) -> None:
-        started = time.monotonic()
-        upstream_name, rest, query = _split_proxy_path(self.path)
-        if not upstream_name or upstream_name not in self.upstreams:
-            # Close rather than drain an unread body off a keep-alive socket.
-            self.close_connection = True
-            self._send_json(404, {"error": f"unknown upstream '{upstream_name or ''}'"})
-            return
-        base_url = self.upstreams[upstream_name]
-        split_base = urlsplit(base_url)
-        target = _upstream_request_target(base_url, rest, query)
-        # The routed path only (never the query — it can carry keys on some
-        # providers) is what we store.
-        routed_path = rest
+        from plugins.llm_usage_proxy.server_policy import execute_proxy_request
 
-        body = None
-        try:
-            body = self._read_request_body()
-        except (HTTPException, OSError, ValueError) as exc:
-            self.close_connection = True
-            self._send_json(400, {"error": redact_text(str(exc))})
-            return
-
-        model = extract_request_model(body) if body else None
-        if body:
-            rewritten = maybe_inject_stream_options(body, routed_path)
-            if rewritten is not None:
-                body = rewritten
-
-        # Key-manager mode. The caller is identified first (and refused before
-        # anything is sent upstream), then the incoming credential is swapped
-        # for one of the route's own keys. Without --manage-keys the swap and
-        # the gate below do not run: this is a credential passthrough and the
-        # client's Authorization reaches the upstream exactly as it arrived.
-        #
-        # Attribution is wider than the token check: every row gets a caller,
-        # managed mode or not. A matched caller token wins — it is proof of
-        # who held the token — then the X-Usage-Caller label, then the
-        # well-known harness User-Agent. The label and the UA are never
-        # credentials, so neither authenticates against the token check; they
-        # name the row, and in managed mode they are what the attribution gate
-        # accepts in place of a token.
-        label = self._presented_caller_label()
-        ua_caller = caller_label_from_user_agent(self.headers.get("User-Agent"))
-        caller: Optional[str] = None
-        chat_type, chat_id, chat_name = self._presented_chat_identity()
-        managed_key: Optional[str] = None
-        managed_position = -1
-        route_key_count = 0
-        key_store = self.key_store if self.manage_keys else None
-        if key_store is not None:
-            caller, auth_error = self._authenticate_caller(key_store)
-            if auth_error is not None:
-                self._send_json(401, {"error": auth_error})
-                self._record_rejection(
-                    upstream=upstream_name,
-                    path=routed_path,
-                    model=model,
-                    status=401,
-                    started=started,
-                    caller=caller or label,
-                    chat_type=chat_type,
-                    chat_id=chat_id,
-                    chat_name=chat_name,
-                )
-                return
-        if caller is None:
-            caller = label if label is not None else ua_caller
-
-        # The attribution gate. Managed mode must be able to say who is
-        # calling before anything leaves the proxy: token, label, or known
-        # harness UA — any one names the row, and a request nothing can name
-        # is refused (still a ledger row, under the sentinel caller) rather
-        # than forwarded as traffic the ledger cannot attribute. It gates on
-        # --manage-keys alone, not on caller tokens existing: the deployment
-        # runs tokenless (Hermes's routed traffic is label-attributed), and a
-        # token-count condition would leave this gate forever inert there.
-        if self.manage_keys and caller is None:
-            self._send_json(
-                401,
-                {
-                    "error": (
-                        "unattributed request: send a caller token, an"
-                        " 'X-Usage-Caller: <label>' header, or a known harness"
-                        " User-Agent"
-                    )
-                },
-            )
-            self._record_rejection(
-                upstream=upstream_name,
-                path=routed_path,
-                model=model,
-                status=401,
-                started=started,
-                caller=UNATTRIBUTED_CALLER,
-                chat_type=chat_type,
-                chat_id=chat_id,
-                chat_name=chat_name,
-            )
-            return
-
-        oauth_credential: Optional[tuple[str, dict[str, str]]] = None
-        if key_store is not None:
-            route_keys = key_store.route_keys(upstream_name)
-            route_key_count = len(route_keys)
-            if route_keys and self.rotator is not None:
-                managed_key, managed_position = self.rotator.issue(upstream_name)
-            elif key_store.oauth_provider_for(upstream_name):
-                # OAuth-managed route with no static keys: the proxy itself
-                # holds the upstream credential. An unresolvable one fails the
-                # request clearly — never a silent passthrough of the caller
-                # token to the provider.
-                oauth = self.oauth_provider
-                if oauth is not None:
-                    oauth_credential = oauth.credential_for(upstream_name)
-                if oauth_credential is None:
-                    self._send_json(
-                        502,
-                        {
-                            "error": (
-                                f"upstream OAuth credential for route"
-                                f" '{upstream_name}' is unavailable; see the"
-                                " proxy journal for the helper error"
-                            )
-                        },
-                    )
-                    self._record_rejection(
-                        upstream=upstream_name,
-                        path=routed_path,
-                        model=model,
-                        status=502,
-                        started=started,
-                        caller=caller,
-                        chat_type=chat_type,
-                        chat_id=chat_id,
-                        chat_name=chat_name,
-                    )
-                    return
-
-        # Opt-in jev body capture: the sink exists only for requests that pass
-        # the gate, so everything else streams through untouched. ``ts`` is the
-        # request's own start time; the row itself is written at finish().
-        capture: Optional[JevBodyCapture] = None
-        capture_ts: Optional[str] = None
-        if should_capture_jev_body(self.capture_jev_bodies, upstream_name, model):
-            capture = JevBodyCapture(MAX_REQUEST_BODY_BYTES)
-            capture_ts = datetime.now(timezone.utc).isoformat(
-                timespec="milliseconds"
-            )
-
-        conn: Optional[HTTPConnection] = None
-        status_code: Optional[int] = None
-        request_id: Optional[str] = None
-        scanner: Optional[UsageScanner] = None
-        outcome = OUTCOME_UPSTREAM_ERROR
-        headers_sent = False
-        try:
-
-            def _open_and_send(
-                key: Optional[str],
-                extra_headers: Optional[Mapping[str, str]] = None,
-            ) -> tuple[HTTPConnection, Any]:
-                nonlocal conn
-                if split_base.scheme == "https":
-                    connection: HTTPConnection = HTTPSConnection(
-                        split_base.netloc,
-                        timeout=CONNECT_TIMEOUT_SEC,
-                        context=ssl.create_default_context(),
-                    )
-                else:
-                    connection = HTTPConnection(
-                        split_base.netloc, timeout=CONNECT_TIMEOUT_SEC
-                    )
-                # Bound to the outer name before the request so the finally
-                # below closes this connection even if connect/request raises.
-                conn = connection
-                headers = self._forward_headers(split_base.netloc)
-                if key is not None:
-                    headers = apply_upstream_auth(headers, key)
-                if extra_headers:
-                    headers = apply_oauth_headers(headers, extra_headers)
-                body_for_request = body if body is not None else (
-                    b"" if self.command in ("POST", "PUT", "PATCH") else None
-                )
-                if body is not None:
-                    headers.append(("Content-Length", str(len(body))))
-                # http.client applies the socket timeout to connects AND reads;
-                # stretch it once connected so long streams are not cut short.
-                connection.request(
-                    self.command, target, body=body_for_request, headers=dict(headers)
-                )
-                if connection.sock is not None:
-                    connection.sock.settimeout(STREAM_TIMEOUT_SEC)
-                return connection, connection.getresponse()
-
-            if oauth_credential is not None:
-                conn, resp = _open_and_send(
-                    oauth_credential[0], oauth_credential[1]
-                )
-            else:
-                conn, resp = _open_and_send(managed_key)
-            if (
-                managed_key is not None
-                and resp.status in KEY_RETRY_STATUSES
-                and route_key_count > 1
-                and self.rotator is not None
-            ):
-                # One retry per request with the route's next key: a rotated-out
-                # or revoked credential should not surface to the client, and a
-                # rate-limited one gets a second key before the client backs off.
-                retry_key, retry_position = self.rotator.step(
-                    upstream_name, managed_position
-                )
-                if retry_key is not None:
-                    logger.info(
-                        "upstream %s answered %s with key %s; retrying with its next key",
-                        upstream_name,
-                        resp.status,
-                        key_fingerprint(managed_key),
-                    )
-                    conn.close()
-                    conn, resp = _open_and_send(retry_key)
-            elif (
-                oauth_credential is not None
-                and resp.status == 401
-                and self.oauth_provider is not None
-            ):
-                # One retry with a freshly resolved OAuth credential: the
-                # cached token may have been revoked or rotated out upstream.
-                # The refetch goes through the canonical store's lock (a peer
-                # that already rotated the grant is adopted, never replayed).
-                self.oauth_provider.invalidate(upstream_name)
-                refreshed = self.oauth_provider.credential_for(upstream_name)
-                if refreshed is not None and refreshed[0] != oauth_credential[0]:
-                    logger.info(
-                        "upstream %s answered 401 with the cached OAuth token;"
-                        " retrying with a refreshed one",
-                        upstream_name,
-                    )
-                    conn.close()
-                    oauth_credential = refreshed
-                    conn, resp = _open_and_send(refreshed[0], refreshed[1])
-
-            status_code = resp.status
-            for header in REQUEST_ID_HEADERS:
-                value = resp.getheader(header)
-                if value:
-                    request_id = value
-                    break
-
-            # Response hop-by-hop set: static list plus any header the
-            # upstream's Connection header nominates for dropping.
-            resp_connection_tokens = {
-                token.strip().lower()
-                for token in (resp.getheader("Connection") or "").split(",")
-                if token.strip()
-            }
-            resp_headers = []
-            raw_length = resp.getheader("Content-Length")
-            try:
-                content_length: Optional[int] = (
-                    int(raw_length) if raw_length is not None else None
-                )
-            except ValueError:
-                content_length = None
-            chunked_upstream = (
-                "chunked"
-                in (resp.getheader("Transfer-Encoding") or "").lower()
-            )
-            for name, value in resp.getheaders():
-                lowered = name.lower()
-                if lowered in HOP_BY_HOP or lowered in resp_connection_tokens:
-                    continue
-                if lowered == "content-length":
-                    continue
-                resp_headers.append((name, value))
-
-            content_type = resp.getheader("Content-Type") or ""
-            content_encoding = resp.getheader("Content-Encoding") or ""
-            scanner = UsageScanner(content_type, content_encoding, capture)
-
-            self.send_response_only(resp.status, resp.reason)
-            for name, value in resp_headers:
-                self.send_header(name, value)
-            framing_known = content_length is not None and not chunked_upstream
-            if framing_known:
-                self.send_header("Content-Length", str(content_length))
-            else:
-                self.send_header("Transfer-Encoding", "chunked")
-            self.end_headers()
-            headers_sent = True
-
-            relay_body = (
-                self.command != "HEAD"
-                and resp.status >= 200
-                and resp.status not in NO_BODY_STATUSES
-            )
-            if not relay_body:
-                resp.close()
-                outcome = OUTCOME_COMPLETED
-            else:
-                outcome = self._relay_response(resp, scanner, framing_known)
-        except _ClientGoneError:
-            outcome = OUTCOME_ABORTED
-            self.close_connection = True
-        except (OSError, HTTPException, ssl.SSLError, ValueError) as exc:
-            outcome = OUTCOME_UPSTREAM_ERROR
-            # Upstream failure: keep the detail out of logs unless scrubbed —
-            # exception text routinely embeds full URLs (which can carry
-            # userinfo on misconfigured upstreams).
-            detail = redact_text(f"{type(exc).__name__}: {exc}")
-            logger.warning("upstream %s failed: %s", upstream_name, detail)
-            if not headers_sent:
-                try:
-                    self._send_json(502, {"error": f"upstream unavailable: {detail}"})
-                except OSError:
-                    self.close_connection = True
-            else:
-                # Mid-stream failure after headers were sent: the client
-                # connection can no longer be framed honestly; hang it up so
-                # the truncation is visible instead of silently "complete".
-                self.close_connection = True
-        finally:
-            if conn is not None:
-                conn.close()
-            if scanner is not None:
-                # Flush the parser even when the relay died mid-stream: a
-                # partial event whose usage already arrived is real usage.
-                scanner.finish()
-            latency_ms = int((time.monotonic() - started) * 1000)
-            # Whatever usage the scanner genuinely observed before the
-            # failure is kept — errors must not discard real numbers.
-            usage = scanner.usage if scanner is not None else None
-            completeness = (
-                scanner.completeness if scanner is not None else USAGE_MISSING
-            )
-            if outcome != OUTCOME_COMPLETED and completeness == USAGE_FINAL:
-                # An interrupted stream's numbers are real but not
-                # authoritative — never promote them to final.
-                completeness = USAGE_PARTIAL
-            try:
-                self.store.insert(
-                    upstream=upstream_name,
-                    model=(scanner.model if scanner else None) or model,
-                    usage=usage,
-                    status_code=status_code,
-                    latency_ms=latency_ms,
-                    path=routed_path or "/",
-                    request_id=request_id,
-                    outcome=outcome,
-                    usage_complete=completeness,
-                    caller=caller,
-                    chat_type=chat_type,
-                    chat_id=chat_id,
-                    chat_name=chat_name,
-                )
-            except sqlite3.Error as exc:
-                logger.error("failed to record usage row: %s", redact_text(str(exc)))
-            if capture is not None:
-                # The capture row says what it holds: complete, streamed
-                # (SSE — request only), incomplete (the relay died or the
-                # body's compression stream failed), or truncated at the cap.
-                # A failed ledger write above must not skip this one.
-                try:
-                    self.store.insert_jev_body(
-                        ts=capture_ts
-                        or datetime.now(timezone.utc).isoformat(
-                            timespec="milliseconds"
-                        ),
-                        upstream=upstream_name,
-                        model=model,
-                        path=routed_path or "/",
-                        request_id=request_id,
-                        status_code=status_code,
-                        latency_ms=latency_ms,
-                        capture_state=capture.state(outcome),
-                        request_body=capture.request_text(body),
-                        response_body=capture.response_text(outcome),
-                    )
-                except sqlite3.Error as exc:
-                    logger.error(
-                        "failed to record jev body capture: %s",
-                        redact_text(str(exc)),
-                    )
+        execute_proxy_request(self)
 
     def _relay_response(
         self, resp: Any, scanner: UsageScanner, framing_known: bool
@@ -2615,14 +2645,32 @@ class UsageProxyServer(ThreadingHTTPServer):
         manage_keys: bool = False,
         keys_path: Optional[str] = None,
         capture_jev_bodies: bool = False,
+        routing_path: Optional[str] = None,
+        route_capabilities: Optional[Mapping[str, Any]] = None,
     ):
+        resolved_db_path = db_path or default_db_path()
+        # The routing decision journal lives in the ledger only in key-manager
+        # mode — the only mode where a policy caller can authenticate, so the
+        # only mode where decisions exist. A passthrough proxy's DB stays
+        # byte-identical to one that never had the feature.
         self.store = UsageStore(
-            db_path or default_db_path(), capture_jev_bodies=capture_jev_bodies
+            resolved_db_path,
+            capture_jev_bodies=capture_jev_bodies,
+            routing_journal=bool(manage_keys),
         )
         resolved = dict(DEFAULT_UPSTREAMS)
         for name, base in (upstreams or {}).items():
             resolved[name] = base
         self.upstreams = _validate_upstreams(resolved, port=port)
+        # Endpoint API capabilities: which API families each route's endpoint
+        # genuinely serves (built-in table + operator overrides). A route with
+        # no declared capabilities cannot be targeted by a policy — validation
+        # rejects the entry at write time and planning skips it — rather than
+        # guessing compatibility from the route's name. Invalid overrides fail
+        # startup here, not mid-request.
+        self.route_families = _routing.route_family_map(
+            self.upstreams, route_capabilities
+        )
         self.identity = str(identity or "")
         # Key-manager mode is opt-in per process: without the flag no caller is
         # ever refused and no Authorization header is ever rewritten.
@@ -2634,6 +2682,13 @@ class UsageProxyServer(ThreadingHTTPServer):
         self.rotator = KeyRotator(self.key_store) if self.key_store else None
         self.oauth_provider = (
             OAuthCredentialProvider(self.key_store) if self.key_store else None
+        )
+        # Routing policies/cooldowns: one file next to the ledger, reloaded on
+        # mtime. Policy routing arms only for authenticated policy callers
+        # (which requires key-manager mode); the store itself is always
+        # present so the readback endpoints answer consistently.
+        self.routing_store = _routing.RoutingStore(
+            routing_path or _routing.default_routing_path(resolved_db_path)
         )
         super().__init__((BIND_HOST, int(port)), UsageProxyHandler)
 
@@ -2693,6 +2748,24 @@ def parse_upstream_args(pairs: list[str]) -> dict[str, str]:
     return upstreams
 
 
+def parse_route_capability_args(pairs: list[str]) -> dict[str, str]:
+    """Parse ``name=family[,family]`` from repeated ``--route-capability``.
+
+    The values stay comma-separated strings: :func:`routing.route_family_map`
+    validates them (unknown family names fail startup, loudly) when the map
+    is built.
+    """
+    capabilities: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ValueError(
+                f"--route-capability expects name=family[,family], got {pair!r}"
+            )
+        name, _, families = pair.partition("=")
+        capabilities[name.strip()] = families.strip()
+    return capabilities
+
+
 def compute_identity(value: str) -> str:
     """Stable short identity digest for /health (never the raw value)."""
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:16]
@@ -2733,11 +2806,31 @@ def main(argv: Optional[list[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--routing-path",
+        default=None,
+        help=(
+            "Path to the routing state file (per-harness policies + 429"
+            " cooldowns; default: routing.json next to --db)"
+        ),
+    )
+    parser.add_argument(
         "--upstream",
         action="append",
         default=[],
         metavar="NAME=URL",
         help="Override/add an upstream base URL (repeatable)",
+    )
+    parser.add_argument(
+        "--route-capability",
+        action="append",
+        default=[],
+        metavar="NAME=FAMILY[,FAMILY]",
+        help=(
+            "Declare the API families a route's endpoint serves"
+            " (chat_completions, anthropic_messages, responses; repeatable)."
+            " Overrides the built-in endpoint capability table; a route with"
+            " no declared capabilities cannot be targeted by routing policies"
+        ),
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -2761,6 +2854,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             manage_keys=args.manage_keys,
             keys_path=args.keys_path,
             capture_jev_bodies=args.capture_jev_bodies,
+            routing_path=args.routing_path,
+            route_capabilities=parse_route_capability_args(args.route_capability),
         )
     except (ValueError, OSError, sqlite3.Error) as exc:
         print(

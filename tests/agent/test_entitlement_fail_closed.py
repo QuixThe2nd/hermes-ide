@@ -90,4 +90,4 @@ def test_restore_primary_runtime_is_gated_on_rejected_primary_slug():
 
     _, restored, emitted = _run("some-other-slug")
     assert restored is True
-    assert any("Primary model restored" in n for n in emitted)
+    assert any("Model switched to" in n for n in emitted)
