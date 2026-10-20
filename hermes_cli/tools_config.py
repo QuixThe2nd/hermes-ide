@@ -570,9 +570,10 @@ def _composite_toolsets(
     saved). ``x_search`` is not in any composite, so inject it when credentials are ready and exempt it from
     default-off.
 
-    Native path: cheap offline ``_xai_credentials_present()`` (hot paths like the ``/tools`` completer).
-    When ``x_search.proxy_provider`` is pinned in the passed config, the shipped readiness boundary runs
-    instead — fail-closed on a bad pin even if native xAI creds exist; no native fallback.
+    Native path: cheap offline ``_xai_credentials_present()`` when ``x_search.proxy_provider`` is absent,
+    null, or a blank string (hot paths like the ``/tools`` completer). A non-blank string pin runs the
+    shipped readiness boundary instead. Malformed explicit pins (any non-string value) fail closed with
+    no credential probe — they must not coerce into the native path or invoke readiness/auth boundaries.
     """
     from toolsets import resolve_toolset
 
@@ -581,13 +582,15 @@ def _composite_toolsets(
     default_off = _default_off_toolsets(platform, explicitly_configured)
     if _toolset_allowed_for_platform("x_search", platform):
         cfg = config if isinstance(config, dict) else {}
-        proxy_provider = str(_cfg_section(cfg, "x_search").get("proxy_provider") or "").strip()
-        if proxy_provider:
+        proxy_provider_raw = _cfg_section(cfg, "x_search").get("proxy_provider")
+        if proxy_provider_raw is None or isinstance(proxy_provider_raw, str) and not proxy_provider_raw.strip():
+            x_search_ready = _xai_credentials_present()
+        elif not isinstance(proxy_provider_raw, str):
+            x_search_ready = False
+        else:
             from tools.x_search_tool import check_x_search_requirements
 
             x_search_ready = check_x_search_requirements()
-        else:
-            x_search_ready = _xai_credentials_present()
         if x_search_ready:
             enabled.add("x_search")
             default_off.discard("x_search")
