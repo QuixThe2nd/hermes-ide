@@ -434,34 +434,60 @@ def _(rid, params: dict) -> dict:
     name, profile_dir, err = _resolve_profile(rid, params)
     if err is not None:
         return err
+    # Launch home keeps the launch policy's scope: its `.env`/external sources OVER the launch env
+    # (live pre-multiplex, frozen at activation), so env-only credentials (systemd / `op run`) stay
+    # visible after the fail-closed flip. A secondary home gets its own files-only scope — never the
+    # process env — mirroring `model_switch._profile_runtime_scope_tokens`.
+    try:
+        is_launch_home = profile_dir.resolve() == _lazy(
+            "hermes_constants", "get_process_hermes_home")().resolve()
+    except OSError:
+        is_launch_home = False
     with _hermes_home_scope(profile_dir):
-        from agent.skill_utils import iter_skill_index_files
-        from hermes_cli.config import load_config
-        from hermes_cli.skills_config import get_disabled_skills
-        cfg = load_config() or {}
-        disabled = {s.lower() for s in get_disabled_skills(cfg)}
-        skills_root = profile_dir / "skills"
-        installed = [
-            {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
-            for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
-        toolsets_out, pinned_set = _describe_toolsets(cfg)
-        soul_path = profile_dir / "SOUL.md"
-        soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
-        mcp_cfg = cfg.get("mcp_servers")
-        mcp_out = _try(lambda: [
-            {"name": str(srv_name), "enabled": not is_truthy_value(entry.get("disabled", False)),
-             "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
-            for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
-            if isinstance(entry, dict)
-        ], []) if isinstance(mcp_cfg, dict) else []
-        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-        meta = _try(lambda: _lazy("hermes_cli.profiles", "read_profile_meta")(profile_dir), {})
-        return _ok(rid, {
-            "name": name, "description": str(meta.get("description") or ""), "soul": soul,
-            "model": {"provider": str(model_cfg.get("provider") or ""),
-                      "default": str(model_cfg.get("default") or "")},
-            "skills": installed, "toolsets": toolsets_out,
-            "toolsets_pinned": pinned_set is not None, "mcp_servers": mcp_out})
+        from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+        if is_launch_home:
+            from tui_gateway.launch_profile_policy import launch_secret_scope
+            secret_scope = launch_secret_scope(profile_dir)
+        else:
+            # FIRST secondary home this process serves: freeze the launch env and flip
+            # unscoped reads fail-closed NOW, not at some later activation — a files-only
+            # scope alone is not enough while multiplexing is inactive (get_secret still
+            # falls through to os.environ on a scoped miss, so the secondary would borrow
+            # launch-only credentials). launch_profile_policy owns this transition.
+            from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+            activate_multi_profile_hosting()
+            secret_scope = build_profile_secret_scope(profile_dir)
+        secret_token = set_secret_scope(secret_scope)
+        try:
+            from agent.skill_utils import iter_skill_index_files
+            from hermes_cli.config import load_config
+            from hermes_cli.skills_config import get_disabled_skills
+            cfg = load_config() or {}
+            disabled = {s.lower() for s in get_disabled_skills(cfg)}
+            skills_root = profile_dir / "skills"
+            installed = [
+                {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
+                for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
+            toolsets_out, pinned_set = _describe_toolsets(cfg)
+            soul_path = profile_dir / "SOUL.md"
+            soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
+            mcp_cfg = cfg.get("mcp_servers")
+            mcp_out = _try(lambda: [
+                {"name": str(srv_name), "enabled": not is_truthy_value(entry.get("disabled", False)),
+                 "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
+                for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
+                if isinstance(entry, dict)
+            ], []) if isinstance(mcp_cfg, dict) else []
+            model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+            meta = _try(lambda: _lazy("hermes_cli.profiles", "read_profile_meta")(profile_dir), {})
+            return _ok(rid, {
+                "name": name, "description": str(meta.get("description") or ""), "soul": soul,
+                "model": {"provider": str(model_cfg.get("provider") or ""),
+                          "default": str(model_cfg.get("default") or "")},
+                "skills": installed, "toolsets": toolsets_out,
+                "toolsets_pinned": pinned_set is not None, "mcp_servers": mcp_out})
+        finally:
+            reset_secret_scope(secret_token)
 
 
 def _configure_ui_meta(profile_dir, params, applied) -> None:
