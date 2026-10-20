@@ -191,6 +191,22 @@ def build_exec_start_argv(
     )
     for name in sorted(resolved):
         argv.extend(("--upstream", f"{name}={resolved[name]}"))
+    # Operator-declared endpoint API capabilities ride argv too (the unit's
+    # server.py is stdlib-only and never reads config.yaml itself). Names and
+    # family identifiers only — no secret ever travels here.
+    capabilities = cfg.get("route_capabilities")
+    if isinstance(capabilities, Mapping):
+        for name in sorted(capabilities):
+            families = capabilities[name]
+            if isinstance(families, str):
+                rendered = families
+            else:
+                try:
+                    rendered = ",".join(str(family) for family in families)
+                except TypeError:
+                    continue
+            if rendered.strip():
+                argv.extend(("--route-capability", f"{name}={rendered}"))
     return argv
 
 

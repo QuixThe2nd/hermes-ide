@@ -5673,15 +5673,14 @@ def _format_context_injection_progress(
     are split below the adapter's message cap so Discord/Telegram edits cannot
     fail merely because Honcho returned a healthy amount of autobiography.
 
-    When ``include_content`` is False, return only the source label line with
+    When ``include_content`` is False, return only the heading line with
     no char count, fences, body, or continuation chunks.
     """
     if not isinstance(content, str) or not content:
         return []
 
-    source_label = " + ".join(str(s) for s in sources if s) or "turn"
     if not include_content:
-        return [f"🧠 {source_label} context injected"]
+        return ["🧠 Context Injection"]
 
     from agent.redact import redact_sensitive_text
 
@@ -5696,8 +5695,8 @@ def _format_context_injection_progress(
     # differ, and recalled text must never wake another user by accident.
     visible = visible.replace("@", "@\u200b")
 
-    header = f"🧠 {source_label} context injected (+{max(0, int(injected_chars)):,} chars)"
-    continuation = f"🧠 {source_label} context injected (continued)"
+    header = "🧠 Context Injection"
+    continuation = "🧠 Context Injection"
     measure = message_len_fn if callable(message_len_fn) else len
 
     try:
@@ -16697,6 +16696,8 @@ class GatewayRunner(
 
     async def _drain_startup_restore_queue(self) -> int:
         """Replay inbound messages queued while startup auto-resume ran."""
+        from gateway.platforms.event import inbound_platform_message_id
+
         drained = 0
         queue = getattr(self, "_startup_restore_queue", None)
         if queue is None:
@@ -16711,6 +16712,28 @@ class GatewayRunner(
                     getattr(getattr(source, "platform", None), "value", None),
                 )
                 continue
+            inbound_id = inbound_platform_message_id(event)
+            if inbound_id and adapter is not None:
+                try:
+                    mid = str(inbound_id)
+                    has_active = getattr(adapter, "_discord_message_has_active_claim", None)
+                    is_complete = getattr(adapter, "_discord_message_is_persistently_complete", None)
+                    if callable(has_active) and has_active(mid):
+                        logger.info(
+                            "Skipping startup-restore replay: Discord ledger active claim "
+                            "on inbound %s",
+                            mid,
+                        )
+                        continue
+                    if callable(is_complete) and is_complete(mid):
+                        logger.info(
+                            "Skipping startup-restore replay: Discord ledger terminal "
+                            "completion on inbound %s",
+                            mid,
+                        )
+                        continue
+                except Exception:
+                    logger.debug("startup-restore ledger dedupe check failed", exc_info=True)
             # Mark this replay so _handle_message does not queue it again while
             # the restore gate remains closed for any fresh inbound arrivals.
             try:
@@ -17317,6 +17340,73 @@ class GatewayRunner(
             logger.debug("recoverable notice recording failed", exc_info=True)
             return False
 
+    _RESUME_INBOUND_METADATA_KEY = "_resume_inbound_message_id"
+
+    @staticmethod
+    def _inbound_message_id_for_event(event: MessageEvent) -> Optional[str]:
+        from gateway.platforms.event import inbound_platform_message_id
+        return inbound_platform_message_id(event)
+
+    def _resume_inbound_platform_message_id(self, session_key: str) -> Optional[str]:
+        """Platform id of the turn that was interrupted, if durably recorded."""
+        try:
+            stored = self.session_store.get_session_metadata(
+                session_key, self._RESUME_INBOUND_METADATA_KEY, None,
+            )
+        except Exception:
+            logger.debug(
+                "resume inbound id lookup failed for %s", session_key, exc_info=True,
+            )
+            return None
+        return str(stored) if stored else None
+
+    async def _persist_resume_inbound_for_event(
+        self, session_key: str, event: MessageEvent,
+    ) -> None:
+        inbound_id = self._inbound_message_id_for_event(event)
+        if not inbound_id:
+            if getattr(event, "internal", False):
+                await self._clear_resume_inbound_metadata(session_key)
+            return
+        try:
+            await self.async_session_store.set_session_metadata(
+                session_key, self._RESUME_INBOUND_METADATA_KEY, str(inbound_id),
+            )
+        except Exception:
+            logger.debug(
+                "Failed to persist resume inbound id for %s", session_key, exc_info=True,
+            )
+
+    async def _capture_resume_inbound_for_interrupted_session(
+        self, session_key: str, agent: Any,
+    ) -> None:
+        if agent is _AGENT_PENDING_SENTINEL:
+            return
+        platform_id = getattr(agent, "_persist_user_message_platform_id", None)
+        if not platform_id:
+            await self._clear_resume_inbound_metadata(session_key)
+            return
+        try:
+            await self.async_session_store.set_session_metadata(
+                session_key,
+                self._RESUME_INBOUND_METADATA_KEY,
+                str(platform_id),
+            )
+        except Exception:
+            logger.debug(
+                "Failed to capture resume inbound id for %s", session_key, exc_info=True,
+            )
+
+    async def _clear_resume_inbound_metadata(self, session_key: str) -> None:
+        try:
+            await self.async_session_store.set_session_metadata(
+                session_key, self._RESUME_INBOUND_METADATA_KEY, None,
+            )
+        except Exception:
+            logger.debug(
+                "clear resume inbound metadata failed for %s", session_key, exc_info=True,
+            )
+
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
@@ -17437,12 +17527,26 @@ class GatewayRunner(
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
-            # system note before the turn runs.
+            # system note before the turn runs.  Hand off the interrupted
+            # inbound id via ``ledger_message_id`` (not ``message_id``) so
+            # transcript dedupe and the Discord recovery ledger stay aligned.
+            inbound_id = self._resume_inbound_platform_message_id(entry.session_key)
+            if inbound_id:
+                claim_fn = getattr(adapter, "claim_startup_resume_inbound", None)
+                if callable(claim_fn):
+                    try:
+                        claim_fn(inbound_id, source)
+                    except Exception:
+                        logger.debug(
+                            "Discord resume ledger claim failed for %s",
+                            inbound_id, exc_info=True,
+                        )
             event = MessageEvent(
                 text="",
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                ledger_message_id=inbound_id,
             )
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
@@ -20562,6 +20666,7 @@ class GatewayRunner(
                         _sk,
                         "restart_timeout" if self._restart_requested else "shutdown_timeout",
                     )
+                    await self._capture_resume_inbound_for_interrupted_session(_sk, _agent)
                     _pre_drain_keys.append(_sk)
                 except Exception as _e:
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
@@ -20688,6 +20793,7 @@ class GatewayRunner(
                         continue
                     try:
                         await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
+                        await self._capture_resume_inbound_for_interrupted_session(_sk, _agent)
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
@@ -25493,6 +25599,7 @@ class GatewayRunner(
                     "Failed to persist last-user-message-id for %s",
                     session_key, exc_info=True,
                 )
+        await self._persist_resume_inbound_for_event(session_key, event)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
                 binding = (await self._session_db.get_telegram_topic_binding(
@@ -27334,9 +27441,7 @@ class GatewayRunner(
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
-                inbound_message_id=(
-                    str(event.message_id) if event.message_id else None
-                ),
+                inbound_message_id=self._inbound_message_id_for_event(event),
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
@@ -27460,6 +27565,7 @@ class GatewayRunner(
                 else:
                     try:
                         await self.async_session_store.clear_resume_pending(session_key)
+                        await self._clear_resume_inbound_metadata(session_key)
                     except Exception as _e:
                         logger.debug(
                             "clear_resume_pending failed for %s: %s",

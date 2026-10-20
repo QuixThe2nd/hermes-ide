@@ -2483,7 +2483,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if current is not None and current.config == reaction_cfg:
             # The running gate already matches — the watcher's boot reconcile with
             # an unchanged file lands here, as does a rewrite of the in-force
-            # block. One validation, no rebuild, no log line.
+            # block. One validation, no rebuild, no log line. The boot-diagnostic
+            # repair still runs: this is exactly the boot-reconcile path where a
+            # stale "gate stayed off" refusal would otherwise survive a now-valid
+            # config (it only touches the reaction_gate warning, not response_gate's).
+            self._reaction_gate_repair_boot_warning()
             return True
         self._reaction_gate = ReactionGateRuntime.build(
             reaction_cfg, self._response_gate_credential, logger=logger,
@@ -3967,19 +3971,59 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
         self._with_discord_recovery_db(_op)
 
-    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
-        if not self._missed_message_backfill_enabled():
+    @staticmethod
+    def _discord_inbound_message_id(event: MessageEvent) -> str:
+        from gateway.platforms.event import inbound_platform_message_id
+        return inbound_platform_message_id(event) or ""
+
+    def _seed_discord_inbound_row(self, message_id: str, source, *, status: str) -> None:
+        if not self._missed_message_backfill_enabled() or not message_id:
             return
-        message = event.raw_message
-        self._record_discord_message_seen(message, status="processing")
-        message_id = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
-        if not message_id:
-            return
+        channel_id = str(getattr(source, "chat_id", "") or "")
+        thread_id = str(getattr(source, "thread_id", "") or "") or None
+        parent_id = None
         now = self._utc_now_iso()
 
         def _op(conn):
             conn.execute(
-                "UPDATE discord_messages SET status='processing', emoji_ack=?, updated_at=? WHERE message_id=?",
+                """
+                INSERT INTO discord_messages (
+                    message_id, channel_id, thread_id, parent_channel_id,
+                    author_id, created_at, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    channel_id=excluded.channel_id,
+                    thread_id=excluded.thread_id,
+                    parent_channel_id=excluded.parent_channel_id,
+                    status=CASE WHEN discord_messages.status='responded' THEN discord_messages.status ELSE excluded.status END,
+                    updated_at=excluded.updated_at
+                """,
+                (message_id, channel_id, thread_id, parent_id, "", None, status, now),
+            )
+        self._with_discord_recovery_db(_op)
+
+    def claim_startup_resume_inbound(self, message_id: str, source) -> None:
+        """Mark the interrupted inbound as in-flight before backfill can re-dispatch it."""
+        self._seed_discord_inbound_row(str(message_id), source, status="processing")
+
+    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
+        message_id = self._discord_inbound_message_id(event)
+        if not message_id:
+            return
+        message = event.raw_message
+        if message is not None:
+            self._record_discord_message_seen(message, status="processing")
+        else:
+            self._seed_discord_inbound_row(message_id, event.source, status="processing")
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_messages SET "
+                "status=CASE WHEN status='responded' THEN status ELSE 'processing' END, "
+                "emoji_ack=?, updated_at=? WHERE message_id=?",
                 (1 if emoji_ack else 0, now, message_id),
             )
         self._with_discord_recovery_db(_op)
@@ -3987,7 +4031,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _record_discord_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         if not self._missed_message_backfill_enabled():
             return
-        message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
+        message_id = self._discord_inbound_message_id(event)
         if not message_id:
             return
         now = self._utc_now_iso()
