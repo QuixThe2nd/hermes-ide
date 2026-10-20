@@ -14622,26 +14622,9 @@ class GatewayRunner(
 
         # Mobile Discord clients treat reactions as lighter-weight steer receipts
         # than a bot reply bubble; steer delivery is unchanged.
-        if steered and is_steer_mode and event.source.platform == Platform.DISCORD:
-            if not self._busy_steer_ack_enabled(event, session_key):
-                return True
-            add_reaction = getattr(adapter, "_add_reaction", None)
-            raw = getattr(event, "raw_message", None)
-            if not callable(add_reaction) or raw is None:
-                logger.debug(
-                    "Discord busy-steer reaction skipped (missing _add_reaction or raw_message) "
-                    "for session %s",
-                    session_key,
-                )
-                return True
-            try:
-                await add_reaction(raw, "⏩")
-            except Exception as exc:
-                logger.debug(
-                    "Discord busy-steer reaction failed for session %s: %s",
-                    session_key,
-                    exc,
-                )
+        if await self._maybe_react_discord_busy_steer(
+            event, adapter, session_key, steered=steered, is_steer_mode=is_steer_mode
+        ):
             return True
 
         # Debounce before consulting config-heavy display settings. Rapid
