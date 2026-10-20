@@ -327,7 +327,12 @@ def _xai_proxy_pinned(section: Optional[Dict] = None) -> bool:
     xAI bearer — so a pinned proxy always fails closed to the (proxied, same-voice) sync path,
     even when ``tts.xai.streaming_url`` is explicitly set (that URL is a direct-origin WS
     endpoint; honoring it under a proxy pin would send a native credential to a proxy-scoped
-    lane). There is no proxy-scoped WS routing to substitute."""
+    lane). There is no proxy-scoped WS routing to substitute.
+
+    Only an unset/absent/blank-string pin means "not pinned". Any other non-string value
+    (``False``, ``0``, ``[]``, ``{}`` …) is a malformed EXPLICIT pin and still counts as
+    pinned — it must fail this WS lane closed rather than erase into "unpinned" and send a
+    native credential (same contract as the sync path in ``tts_tool_providers._generate_xai_tts``)."""
     cfg = section
     if cfg is None:
         try:
@@ -335,7 +340,10 @@ def _xai_proxy_pinned(section: Optional[Dict] = None) -> bool:
             cfg = (load_config().get("tts") or {}).get("xai") or {}
         except Exception:
             cfg = {}
-    return bool(str((cfg or {}).get("proxy_provider") or "").strip())
+    value = (cfg or {}).get("proxy_provider")
+    if value is None or isinstance(value, str) and not value.strip():
+        return False
+    return True
 
 
 @register("xai")

@@ -60,6 +60,22 @@ def _get_x_search_int(key: str, default: int, floor: int) -> int:
         return default
 
 
+def _proxy_provider_pin() -> str:
+    """``x_search.proxy_provider`` lane name, or ``""`` when unset/blank (native credential path).
+
+    Any other non-string value (``False``, ``0``, ``[]``, ``{}`` …) is a malformed EXPLICIT
+    pin and raises — it must never erase into "unpinned" and fall back to native OAuth/
+    ``XAI_API_KEY`` (same contract as ``hermes_cli.tools_config_providers._resolve_row_proxy_lane``).
+    """
+    value = _load_x_search_config().get("proxy_provider")
+    if value is None or isinstance(value, str) and not value.strip():
+        return ""
+    if not isinstance(value, str):
+        raise RuntimeError(
+            f"x_search.proxy_provider must be a string, got {type(value).__name__}: {value!r}")
+    return value.strip()
+
+
 def _resolve_xai_bearer() -> Tuple[str, str, str]:
     """Return ``(api_key, base_url, source)``; ``source`` is ``"xai-oauth"`` or ``"xai"``. Raises RuntimeError
     when no credential is usable (expiry between registration and call -> clean tool error, not a 401).
@@ -75,7 +91,7 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
     :func:`tools.xai_http.resolve_xai_proxied_credentials` — fail-closed when the entry or its
     ``key_env`` secret is missing; absent the key, behavior is unchanged.
     """
-    proxy_provider = str(_load_x_search_config().get("proxy_provider") or "").strip()
+    proxy_provider = _proxy_provider_pin()  # raises on a malformed explicit pin — never fall back to native
     if proxy_provider:
         creds = resolve_xai_proxied_credentials(proxy_provider)
     else:
@@ -99,7 +115,7 @@ def check_x_search_requirements() -> bool:
     proxy lane). Malformed config/resolver errors are unavailable, not exceptions.
     """
     try:
-        proxy_provider = str(_load_x_search_config().get("proxy_provider") or "").strip()
+        proxy_provider = _proxy_provider_pin()
         if proxy_provider:
             creds = resolve_xai_proxied_credentials(proxy_provider)
         else:

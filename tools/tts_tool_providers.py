@@ -291,7 +291,13 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     # ``tts.xai.proxy_provider: <name>`` routes POST {base}/tts through a named ``providers:``
     # entry (e.g. a LiteLLM passthrough fronting xAI) — fail-closed via
     # resolve_xai_proxied_credentials; the proxy's own key is sent, never the xAI OAuth bearer.
-    proxy_provider = str(xai_config.get("proxy_provider") or "").strip()
+    # A non-string explicit pin (False, 0, [] …) is malformed and raises here — never erased
+    # into "unpinned" to fall back to native OAuth/XAI_API_KEY.
+    pin_value = xai_config.get("proxy_provider")
+    if pin_value is not None and not isinstance(pin_value, str):
+        raise ValueError(
+            f"tts.xai.proxy_provider must be a string, got {type(pin_value).__name__}: {pin_value!r}")
+    proxy_provider = str(pin_value or "").strip()
     if proxy_provider:
         creds = resolve_xai_proxied_credentials(proxy_provider)
     else:

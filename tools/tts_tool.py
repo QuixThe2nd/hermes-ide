@@ -474,6 +474,22 @@ def _minimax_requirements() -> bool:
         return False
 
 
+def _xai_tts_proxy_pin() -> str:
+    """``tts.xai.proxy_provider`` lane name, or ``""`` when unset/blank (native credential path).
+
+    Any other non-string value (``False``, ``0``, ``[]``, ``{}`` …) is a malformed EXPLICIT pin
+    and raises — it must never erase into "unpinned" and probe native OAuth/``XAI_API_KEY``
+    (same contract as ``hermes_cli.tools_config_providers._resolve_row_proxy_lane``).
+    """
+    value = (_load_tts_config().get("xai") or {}).get("proxy_provider")
+    if value is None or isinstance(value, str) and not value.strip():
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"tts.xai.proxy_provider must be a string, got {type(value).__name__}: {value!r}")
+    return value.strip()
+
+
 def _xai_requirements() -> bool:
     try:
         from tools.xai_http import resolve_xai_http_credentials
@@ -483,7 +499,7 @@ def _xai_requirements() -> bool:
         # With tts.xai.proxy_provider set, ONLY the named providers: entry counts (fail closed,
         # no native OAuth/XAI_API_KEY probe) so a proxy-only profile keeps the tool and a
         # missing entry/secret disables it instead of escaping as an exception.
-        proxy_provider = str((_load_tts_config().get("xai") or {}).get("proxy_provider") or "").strip()
+        proxy_provider = _xai_tts_proxy_pin()
         if proxy_provider:
             from tools.xai_http import resolve_xai_proxied_credentials
             creds = resolve_xai_proxied_credentials(proxy_provider)

@@ -66,7 +66,21 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
 
 
 def _proxy_provider_pin() -> str:
-    return str(load_image_gen_config("openai-codex").get("proxy_provider") or "").strip()
+    """Pinned named-provider lane, or ``""`` when unset/blank (native Codex OAuth path).
+
+    Only ``None``/absent or a blank string mean "no lane". Any other non-string value
+    (``False``, ``0``, ``[]``, ``{}`` …) is a malformed EXPLICIT pin and raises — it must
+    never silently erase into "unpinned" and fall back to native OAuth (same contract as
+    ``hermes_cli.tools_config_providers._resolve_row_proxy_lane``).
+    """
+    value = load_image_gen_config("openai-codex").get("proxy_provider")
+    if value is None or isinstance(value, str) and not value.strip():
+        return ""
+    if not isinstance(value, str):
+        raise RuntimeError(
+            f"image_gen.openai-codex.proxy_provider must be a string, "
+            f"got {type(value).__name__}: {value!r}")
+    return value.strip()
 
 
 def _resolve_proxy_credentials(provider_name: str) -> Dict[str, str]:
@@ -285,7 +299,10 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
     def is_available(self) -> bool:
         if not _httpx_available():
             return False
-        pin = _proxy_provider_pin()
+        try:
+            pin = _proxy_provider_pin()
+        except RuntimeError:
+            return False
         if pin:
             try:
                 _resolve_proxy_credentials(pin)
@@ -337,9 +354,16 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         except Exception as exc:
             return fail(f"Invalid image input for Codex image editing: {exc}", "invalid_image_input")
 
-        pin = _proxy_provider_pin()
         proxy_credentials: Optional[Dict[str, str]] = None
         token: Optional[str] = None
+        try:
+            pin = _proxy_provider_pin()
+        except RuntimeError as exc:
+            return fail(
+                f"OpenAI Codex image proxy is misconfigured ({exc}). "
+                "Fix image_gen.openai-codex.proxy_provider or the named providers: entry.",
+                "auth_required",
+            )
         if pin:
             try:
                 proxy_credentials = _resolve_proxy_credentials(pin)
