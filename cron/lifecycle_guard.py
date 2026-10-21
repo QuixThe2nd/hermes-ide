@@ -774,7 +774,12 @@ _KNOWN_TEXT_STDIN_CONSUMERS = frozenset({"cat", "grep", "egrep", "fgrep"})
 
 
 def _split_line_on_pipe_operators(line: str) -> list[str]:
-    """Split *line* on real ``|``/``|&`` operators outside quotes (``||`` is not a pipe)."""
+    """Split *line* on real ``|``/``|&`` operators outside quotes and shell comments.
+
+    An unquoted ``#`` at word-start (line start or after whitespace) begins a comment through
+    end-of-line; characters in the comment are not pipe operators or command words.
+    ``||`` is not a pipe.
+    """
     segments: list[str] = []
     current: list[str] = []
     in_single = in_double = escape = False
@@ -818,6 +823,9 @@ def _split_line_on_pipe_operators(line: str) -> list[str]:
             current.append(character)
             position += 1
             continue
+        if character == "#" and (position == 0 or line[position - 1].isspace()):
+            current.append(line[position:])
+            break
         if character == "|":
             if position + 1 < len(line) and line[position + 1] == "|":
                 current.append("|")
