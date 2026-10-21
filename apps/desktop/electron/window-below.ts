@@ -192,6 +192,7 @@ const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
     const staged = resolveOutsideAsar(
       path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js')
     )
+
     let stagedError = 'not staged in this build'
 
     if (fs.existsSync(staged)) {
