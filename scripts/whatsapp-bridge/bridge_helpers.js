@@ -255,6 +255,21 @@ export function buildLocationPayload({ latitude, longitude, name, address } = {}
   return { location };
 }
 
+// Normalise raw numbers or JIDs for group participant updates to
+// <digits>@s.whatsapp.net. Australian 10-digit numbers with a leading 0
+// become 61…; other digit shapes (already carrying their country code)
+// pass through unchanged. Throws on input with no digits.
+export function normaliseParticipantJid(participant) {
+  const digits = String(participant || '').replace(/\D/g, '');
+  if (!digits) {
+    throw new Error(`participant has no digits: ${participant}`);
+  }
+  const number = digits.length === 10 && digits.startsWith('0')
+    ? `61${digits.slice(1)}`
+    : digits;
+  return `${number}@s.whatsapp.net`;
+}
+
 function textFromQuotedMessage(quotedMessage) {
   const content = unwrapMessageEnvelopes(quotedMessage);
   if (!content) return '';
