@@ -5,6 +5,25 @@
 # Resolver: resolution order
 # ---------------------------------------------------------------------------
 
+class TestToolProgressProvenance:
+    def test_winning_source_controls_mode_and_intent(self):
+        from gateway.display_config import resolve_tool_progress
+
+        cases = [
+            ({}, None, ("off", False)),
+            ({}, "all", ("all", True)),
+            ({"tool_progress": None}, "all", ("all", True)),
+            ({"platforms": {"slack": {"tool_progress": None}}}, "off", ("off", True)),
+            ({"tool_progress_overrides": {"slack": None}}, "new", ("new", True)),
+            ({"tool_progress": False}, "all", ("off", True)),
+            ({"tool_progress": "all", "platforms": {"slack": {"tool_progress": None}}}, "off", ("all", True)),
+            ({"tool_progress": "off", "tool_progress_overrides": {"slack": "new"}}, "all", ("new", True)),
+            ({"tool_progress_overrides": {"slack": "off"}, "platforms": {"slack": {"tool_progress": "all"}}}, None, ("all", True)),
+        ]
+        for display, env, expected in cases:
+            assert resolve_tool_progress({"display": display}, "slack", env) == expected
+
+
 class TestResolveDisplaySetting:
     """resolve_display_setting() resolves with correct priority."""
 
@@ -108,6 +127,24 @@ class TestYAMLNormalisation:
         assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
         assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "generic"
 
+    def test_long_running_notifications_accepts_phase_mode(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "whatsapp": {
+                        "thinking_progress": "phase",
+                        "interim_assistant_messages": "phase",
+                        "long_running_notifications": "phase",
+                    }
+                }
+            }
+        }
+        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
+        assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "phase"
+
     def test_thinking_progress_string_false_normalised_to_false(self):
         from gateway.display_config import resolve_display_setting
 
@@ -155,10 +192,28 @@ class TestPlatformDefaults:
         # default on Telegram (mobile chat is cramped enough without
         # "iteration 21/60" debug detail).
         assert resolve_display_setting({}, "telegram", "busy_ack_detail") is False
-        # Discord keeps all of these on (desktop-first, more vertical space).
+        # Discord keeps interim commentary and busy-ack detail on
+        # (desktop-first, more vertical space), but its long-running
+        # heartbeat defaults to the phase line ("⏳ terminal 1m42s" /
+        # "⏳ grok-4.6 38s" / "⏳ packing 12s") rather than the raw
+        # diagnostic join.
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
-        assert resolve_display_setting({}, "discord", "long_running_notifications") is True
+        assert resolve_display_setting({}, "discord", "long_running_notifications") == "phase"
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
+
+    def test_discord_long_running_generic_still_resolves_when_configured(self):
+        """Users can opt Discord back into the catalog phrase ("generic")."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"discord": {"long_running_notifications": "generic"}},
+            }
+        }
+        assert (
+            resolve_display_setting(config, "discord", "long_running_notifications")
+            == "generic"
+        )
 
     def test_slack_workspace_chatter_defaults(self):
         """Slack should not leave permanent heartbeat/debug breadcrumbs in channels."""

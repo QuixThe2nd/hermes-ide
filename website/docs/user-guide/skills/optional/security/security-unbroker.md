@@ -15,13 +15,13 @@ Autonomously remove your info from data-broker sites.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/unbroker` |
-| Path | `optional-skills/security/unbroker` |
+| Path | `optional-skills/security\unbroker` |
 | Version | `1.0.0` |
 | Author | SHL0MS (github.com/SHL0MS) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `privacy`, `data-broker`, `opt-out`, `ccpa`, `gdpr`, `security`, `doxxing` |
-| Related skills | [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace), [`agentmail`](/docs/user-guide/skills/optional/email/email-agentmail), [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya), [`scrapling`](/docs/user-guide/skills/optional/research/research-scrapling), [`osint-investigation`](/docs/user-guide/skills/optional/research/research-osint-investigation) |
+| Related skills | [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`agentmail`](../email/email-agentmail.md), [`himalaya`](../../bundled/email/email-himalaya.md), [`scrapling`](../research/research-scrapling.md), [`osint-investigation`](../research/research-osint-investigation.md) |
 
 ## Reference: full SKILL.md
 
@@ -75,7 +75,7 @@ verifying re-scan.
 
 ## Prerequisites
 
-- `python3` (stdlib only; no extra packages needed for the core engine).
+- `python` (stdlib only; no extra packages needed for the core engine).
 - **Optional upgrades** (the skill works zero-config without these; `setup --auto` turns on every
   one it detects, reading credentials from the shell env **and from `$HERMES_HOME/.env`** so keys
   Hermes already loads for its own tools are picked up without re-exporting - each one converts a
@@ -112,7 +112,7 @@ verifying re-scan.
 Run everything through the `terminal` tool. From this skill's directory:
 
 ```bash
-PDD="python3 scripts/pdd.py"
+PDD="python scripts/pdd.py"
 ```
 
 The engine stores data under `$PDD_DATA_DIR` (default `$HERMES_HOME/unbroker`), written
@@ -134,7 +134,7 @@ breaks reading the dossier).
 | `$PDD drop <subject> [--filed]` | **The one-shot legal lever**: one CA DROP request deletes from ALL registered brokers; `--filed` records it |
 | `$PDD plan <subject> [--priority crucial]` | Per-broker tier + method + `search_vectors` + the exact fields to disclose |
 | `$PDD plan <subject> --batch` | **Reduce view**: overlays ledger state, groups brokers by next action (unscanned/found/indirect/blocked/in_progress/done), collapses ownership clusters, **orders `found` cluster-parents-first + emits a tailored `parent_playbook`**, prints `next_actions` |
-| `$PDD fanout <subject> [--priority crucial] [--size 5]` | Batch brokers into parallel `delegate_task` subagents (auto for large runs; batches of 5 - 8+ time out) |
+| `$PDD fanout <subject> [--priority crucial] [--size 5]` | Batch brokers into parallel `delegate_agent` subagents (auto for large runs; batches of 5 - 8+ time out) |
 | `$PDD record <subject> <broker> <state> [--found true] [--evidence JSON] [--disclosed F --channel C] [--reason "..."]` | Update the ledger (validated state machine); **auto-stamps `next_recheck_at`** |
 | `$PDD show <subject> <broker>` | Read back a case's recorded state + evidence + disclosure log (so the parent re-verifies a subagent's `found` without re-deriving the listing URL) |
 | `$PDD send-email <subject> <broker> --listing <url> [--kind ccpa_indirect ...]` | Render + record the request (recipient locked to the broker's own address). **browser** mode returns a `compose` payload to send via webmail (no password); **programmatic** mode SMTP-sends |
@@ -156,7 +156,7 @@ For anything past a couple of brokers, run this as **map → reduce → act**, n
   what unlocks cluster dedup and prioritization below. **Default: the parent drives `web_extract`
   probes directly** - most people-search sites render name/phone/address results as static HTML that
   `web_extract` reads in seconds. Escalate to `browser_*` only for the few JS-only sites, and to
-  `delegate_task` subagents only for genuinely *reasoning*-heavy work (large-scale namesake/relative
+  `delegate_agent` subagents only for genuinely *reasoning*-heavy work (large-scale namesake/relative
   disambiguation). **Do NOT hand a browser-toolset subagent a big list of brokers to crawl** - in the
   field this timed out repeatedly (600s, ~5-6 brokers each, no summary) because browser navigation is
   heavy; the ledger writes that survived came at 10x the cost of parent `web_extract`. A `blocked`
@@ -234,7 +234,7 @@ recording `found` and before any deletion.
    accumulates in `q.human_digest`. In `autonomy=full`, execute actions without pausing; honor
    `confirm_first` in `assisted` mode.
 4. **Scanning (when `next` says so).** For `fanout_scan`: run `$PDD fanout <subject>` and **spawn one
-   `delegate_task` subagent per `batch`, in parallel, passing that batch's ready-made `brief`** - do
+   `delegate_agent` subagent per `batch`, in parallel, passing that batch's ready-made `brief`** - do
    not scan all brokers yourself sequentially. For `scan_inline`: scan the few brokers yourself.
    Either way, each broker gets **every** `search_vectors` entry via the `references/methods.md`
    ladder (`web_extract` → `site:` probe → `browser_navigate` → `scrapling`), a 404 is INCONCLUSIVE
@@ -325,7 +325,7 @@ recording `found` and before any deletion.
 ## Verification
 
 - `scripts/run_tests.sh tests/skills/test_unbroker_skill.py` (hermetic; no network), or the
-  dependency-free runner `python3 tests/skills/test_unbroker_skill.py`.
+  dependency-free runner `python tests/skills/test_unbroker_skill.py`.
 - Dry run: `$PDD setup --auto && $PDD doctor && SID=$($PDD intake --full-name "Test Person"
-  --email t@example.com --consent | python3 -c 'import sys,json;print(json.load(sys.stdin)["subject_id"])')
+  --email t@example.com --consent | python -c 'import sys,json;print(json.load(sys.stdin)["subject_id"])')
   && $PDD next "$SID"` and confirm a readiness summary plus an ordered action queue.

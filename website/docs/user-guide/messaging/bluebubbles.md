@@ -112,7 +112,6 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_WEBHOOK_HOST` | No | `127.0.0.1` | Webhook listener bind address |
 | `BLUEBUBBLES_WEBHOOK_PORT` | No | `8645` | Webhook listener port |
 | `BLUEBUBBLES_WEBHOOK_PATH` | No | `/bluebubbles-webhook` | Webhook URL path |
-| `BLUEBUBBLES_HOME_CHANNEL` | No | — | Phone/email for cron delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | No | — | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |
 | `BLUEBUBBLES_REQUIRE_MENTION` | No | `false` | Require a mention pattern before responding in group chats |

@@ -52,15 +52,27 @@ def _start(pm, chat_id="61400000000@s.whatsapp.net", **kw):
 
 
 def _start_origin(pm, chat_id="61400000000@s.whatsapp.net", **kw):
-    args = {"chat_id": chat_id, "goal": kw.pop("goal", "Agree picnic time")}
+    # background=true: the renamed origin-side tool now BLOCKS on its
+    # foreground default (uniform delegation lifecycle), and these tests
+    # only need a started mission. The envelope is merged with the mission
+    # lookup so assertions written against the old start payload keep
+    # testing the same things.
+    args = {"chat_id": chat_id, "goal": kw.pop("goal", "Agree picnic time"), "background": True}
     args.update(kw)
-    return json.loads(
+    started = json.loads(
         pm.handle_dispatch_assistant(
             args,
             session_key="agent:main:discord:thread:abc:abc",
             session_id="sess-1",
         )
     )
+    assert started["status"] == "dispatched", started
+    mission = pm.find_active_mission_for_chat(chat_id)
+    assert mission is not None
+    started["ok"] = True
+    started["mission_id"] = mission["mission_id"]
+    started["chat_type"] = mission.get("chat_type")
+    return started
 
 
 class TestDispatchAgent:

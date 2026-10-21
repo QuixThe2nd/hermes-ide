@@ -44,7 +44,6 @@ hermes gateway setup
 ```
 SIMPLEX_WS_URL=ws://127.0.0.1:5225
 SIMPLEX_ALLOWED_USERS=<contact-id-1>,<contact-id-2>
-SIMPLEX_HOME_CHANNEL=<contact-id>
 ```
 
 | 变量 | 是否必填 | 说明 |
@@ -52,8 +51,6 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 | `SIMPLEX_WS_URL` | 是 | simplex-chat 守护进程的 WebSocket URL |
 | `SIMPLEX_ALLOWED_USERS` | 建议填写 | 允许使用 Agent 的联系人 ID，以逗号分隔 |
 | `SIMPLEX_ALLOW_ALL_USERS` | 可选 | 设为 `true` 以允许所有联系人（请谨慎使用） |
-| `SIMPLEX_HOME_CHANNEL` | 可选 | cron 任务投递的默认联系人 ID |
-| `SIMPLEX_HOME_CHANNEL_NAME` | 可选 | 主频道的可读标签 |
 
 ## 查找联系人 ID
 
@@ -72,7 +69,7 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 cronjob(
     action="create",
     schedule="every 1h",
-    deliver="simplex",          # uses SIMPLEX_HOME_CHANNEL
+    deliver="simplex:<contact-id>",  # 显式联系人或群组目标
     prompt="Check for alerts and summarise."
 )
 ```

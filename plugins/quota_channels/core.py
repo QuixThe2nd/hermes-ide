@@ -24,6 +24,7 @@ from plugins.fallback_quota_reorder.core import (
     CHANNEL_KEY_TO_PROVIDER as _FALLBACK_CHANNEL_KEY_TO_PROVIDER,
     QuotaReading,
     is_low_quota,
+    sanitize_reset_expiry_horizons,
     score_provider,
 )
 from plugins.fallback_quota_reorder.reliability import (
@@ -41,15 +42,23 @@ PROVIDER_SPECS: Tuple[Tuple[str, str], ...] = (
     ("zai", "z.ai"),
     ("cursor", "Cursor"),
     ("grok", "Grok"),
-    ("openrouter", "OpenRouter"),
 )
 
 DEFAULT_QUOTA_INTERVAL_SECONDS = 1800
 DEFAULT_POST_QUOTA_DELAY_SECONDS = 31
 
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+# canonical per-credit detail behind the usage payload's available_count
+CODEX_RESET_CREDITS_URL = (
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+)
 KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
 ZAI_USAGE_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
+# Read-only manual reset-card list; the mutating
+# /biz/customer-package-reset/use endpoint is never called.
+ZAI_RESET_LIST_URL = (
+    "https://api.z.ai/api/biz/customer-package-reset/list?targetType=PERSONAL"
+)
 CURSOR_USAGE_URL = (
     "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
 )
@@ -71,27 +80,21 @@ CURSOR_AGG_USAGE_URL = (
 
 TOKEN_WINDOW_DAYS = 7
 
+# Only credits of this reset type spend against the Codex quota channel, and
+# only this status means the credit is still genuinely spendable.
+CODEX_RESET_TYPE = "codex_rate_limits"
+CODEX_RESET_STATUS_AVAILABLE = "available"
+
 STATE_FILENAME = "quota_channels_state.json"
 
 # Dynamic category label prefix: "Models • <ts> • Next: <time>".
 CATEGORY_PREFIX = "Models"
 
 # Quota key -> routing provider slug, used to load per-provider reliability
-# from the fallback ledger. Mirrors fallback_quota_reorder's channel map plus
-# the virtual OpenRouter row.
+# from the fallback ledger. Mirrors fallback_quota_reorder's channel map.
 QUOTA_KEY_TO_PROVIDER: Dict[str, str] = {
     **_FALLBACK_CHANNEL_KEY_TO_PROVIDER,
-    "openrouter": "openrouter",
 }
-
-# The OpenRouter voice channel is a virtual row for the unlimited Ox Alpha
-# model (openrouter/stealth/ox-alpha): there is no quota API to call, so the
-# channel carries a managed label with a synthetic full wallet — 100% against
-# exactly 168h, the score's reference horizon (same numbers as
-# fallback_quota_reorder.unlimited_reading()).
-OPENROUTER_PCT = 100
-OPENROUTER_RESET_SECONDS = 7 * 86400  # 604800s = 168h
-OPENROUTER_LABEL = "OpenRouter"
 
 # Display ranks are `bucket * stride - score`; the stride must exceed any
 # possible score so the low-quota bucket always sorts after every healthy
@@ -99,6 +102,7 @@ OPENROUTER_LABEL = "OpenRouter"
 # pending usage-limit resets stack one full wallet each, so the stride only
 # breaks past ~99k simultaneous resets — far off any real account.
 _RANK_BUCKET_STRIDE = 1e9
+_NEVER_SCORED_RANK = 2 * _RANK_BUCKET_STRIDE
 
 
 class QuotaChannelsError(Exception):
@@ -184,28 +188,46 @@ def _state_reading_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
         "reset_seconds": entry["reset_seconds"],
         "label": entry["label"],
     }
-    # pending usage-limit resets (Codex/Grok rows) feed the shared
+    # pending usage-limit resets (Codex/Grok/z.ai rows) feed the shared
     # spendability score; rows without the fields stay in the legacy shape
     if "reset_count" in entry:
         persisted["reset_count"] = entry["reset_count"]
     if "reset_expiry_seconds" in entry:
         persisted["reset_expiry_seconds"] = entry["reset_expiry_seconds"]
+    if isinstance(entry.get("reset_expiry_horizons"), (list, tuple)):
+        # per-credit expiry clocks; readers sanitize entries, never trust them
+        persisted["reset_expiry_horizons"] = list(entry["reset_expiry_horizons"])
     return persisted
 
 
 def save_state(
     readings: Optional[Mapping[str, Mapping[str, Any]]] = None,
     now_fn: NowFn = time.time,
+    *,
+    wallet_state: Optional[Mapping[str, Any]] = None,
 ) -> int:
     # readings: per-provider slug -> {'pct', 'reset_seconds', 'label',
-    # optionally 'reset_count'/'reset_expiry_seconds'} from the tick that
-    # just succeeded; failed providers stay absent (no stale merge).
+    # optionally 'reset_count'/'reset_expiry_seconds'/'reset_expiry_horizons'}
+    # from the tick that just succeeded; failed providers stay absent (no
+    # stale merge) unless wallet_state carries a merged readings dict.
+    prior = load_state()
     state: Dict[str, Any] = {"last_quota_success": int(now_fn())}
     if readings is not None:
         state["readings"] = {
             str(key): _state_reading_entry(entry)
             for key, entry in readings.items()
         }
+    elif isinstance(prior.get("readings"), Mapping):
+        state["readings"] = prior["readings"]
+    for key in (
+        "zai_wallet_ordinals",
+        "zai_wallet_channels",
+        "zai_wallet_ordinal_high_water",
+    ):
+        if wallet_state is not None and key in wallet_state:
+            state[key] = wallet_state[key]
+        elif key in prior:
+            state[key] = prior[key]
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
@@ -218,6 +240,29 @@ def save_state(
     except OSError as exc:
         raise QuotaChannelsError(f"cannot write {path}: {exc}") from exc
     return state["last_quota_success"]
+
+
+def save_wallet_state(
+    wallet_channels: Mapping[str, str],
+    wallet_ordinals: Mapping[str, int],
+    wallet_high_water: int,
+) -> None:
+    """Persist wallet Discord mappings without advancing quota success or readings."""
+    state = dict(load_state())
+    state["zai_wallet_channels"] = dict(wallet_channels)
+    state["zai_wallet_ordinals"] = dict(wallet_ordinals)
+    state["zai_wallet_ordinal_high_water"] = int(wallet_high_water)
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent), prefix=".quota-state.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, indent=2)
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise QuotaChannelsError(f"cannot write {path}: {exc}") from exc
 
 
 def default_http(req: urllib.request.Request, timeout: float = 25.0) -> Tuple[int, bytes]:
@@ -307,6 +352,12 @@ class ResetCredits(NamedTuple):
 
     count: int
     expiry_secs: Optional[float] = None
+    # each counted credit's own future expiry horizon, earliest first. This is
+    # the per-credit state the fallback score spends on — one full wallet per
+    # horizon, never the earliest clock times the count. ``expiry_secs`` stays
+    # the single display clock (the earliest horizon) and empty means no
+    # per-credit detail exists, so the legacy count + one-clock shape applies.
+    expiry_horizons: Tuple[float, ...] = ()
 
 
 def _reset_countdown(seconds: float) -> str:
@@ -370,6 +421,86 @@ def parse_codex_reset_credits(text: str) -> Optional[ResetCredits]:
     except (TypeError, ValueError, OverflowError):
         return None
     return ResetCredits(max(0, count))
+
+
+def _parse_iso8601_epoch(value: Any) -> Optional[float]:
+    """Epoch seconds for an ISO-8601 timestamp, or None when unreadable."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        # a naive timestamp is ambiguous, so it counts as unknown
+        return None
+    return parsed.timestamp()
+
+
+def parse_codex_reset_credit_details(
+    text: str,
+    now_fn: NowFn = time.time,
+) -> Optional[ResetCredits]:
+    """Available codex_rate_limits credits plus the real expiry they spend on.
+
+    Reads the canonical `rate-limit-reset-credits` payload: each entry in
+    `credits` carries `reset_type`, `status`, `granted_at`, `expires_at` and
+    `title`. Only credits that are genuinely available for Codex rate limits
+    are counted, and each one's own future expiry horizon is kept in
+    `ResetCredits.expiry_horizons` — earliest first — so scoring never treats
+    one clock as standing for the whole stack. `expiry_secs` remains the
+    earliest horizon and is display-only: the compact channel-name countdown.
+    A readable `expires_at` that is already past means the credit cannot be
+    spent, so it is not counted at all; a missing or malformed `expires_at`
+    leaves that credit counted but contributing no horizon.
+
+    Returns None when the payload is not the expected shape, so the caller
+    keeps the count the usage payload already reported.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    credits = payload.get("credits")
+    if not isinstance(credits, list):
+        # No per-credit detail to read: the root total is all the payload
+        # offers, and its expiry stays unknown — never the quota reset clock.
+        if "available_count" not in payload:
+            return None
+        try:
+            count = int(payload["available_count"] or 0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return ResetCredits(max(0, count))
+    now = now_fn()
+    count = 0
+    horizons: List[float] = []
+    for credit in credits:
+        if not isinstance(credit, Mapping):
+            continue
+        if credit.get("reset_type") != CODEX_RESET_TYPE:
+            continue
+        status = str(credit.get("status") or "").strip().lower()
+        if status != CODEX_RESET_STATUS_AVAILABLE:
+            continue
+        expires_at = _parse_iso8601_epoch(credit.get("expires_at"))
+        if expires_at is None:
+            # the expiry is unknowable, but the credit itself still counts
+            count += 1
+            continue
+        remaining = expires_at - now
+        if remaining <= 0:
+            # already past its expiry, so it is not genuinely spendable
+            continue
+        count += 1
+        horizons.append(remaining)
+    horizons.sort()
+    return ResetCredits(count, horizons[0] if horizons else None, tuple(horizons))
 
 
 def format_codex_name(
@@ -443,7 +574,34 @@ def format_kimi_name(remaining: int, reset_secs: float) -> str:
     return f"Kimi: {remaining}% \u2022 {format_reset_left(reset_secs)}"
 
 
-def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
+# Z.AI usage-limit window unit codes observed on the live payload:
+# unit 3 is the 5-hour rolling window, unit 6 the weekly one.
+ZAI_LIMIT_UNIT_FIVE_HOUR = 3
+
+# Z.AI emits naive `YYYY-MM-DD HH:MM:SS` platform timestamps; the platform's
+# documented dates are Singapore/China time, so they read as UTC+8 — never as
+# server-local or UTC wall time.
+ZAI_PLATFORM_TZ = timezone(timedelta(hours=8))
+ZAI_PLATFORM_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _zai_platform_epoch(value: Any) -> Optional[float]:
+    """Epoch seconds for a naive Z.AI platform timestamp read as UTC+8.
+
+    Anything but a clean `YYYY-MM-DD HH:MM:SS` string is unreadable — a
+    tz-qualified string is NOT reinterpreted, because guessing at a shape the
+    platform has never emitted would invent a clock.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.strptime(value.strip(), ZAI_PLATFORM_TIME_FORMAT)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=ZAI_PLATFORM_TZ).timestamp()
+
+
+def _zai_usage_limits(text: str) -> List[Mapping[str, Any]]:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -462,21 +620,30 @@ def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
     for entry in limits:
         if not isinstance(entry, Mapping):
             raise QuotaChannelsError("z.ai: invalid limits fields in usage payload")
+    return limits
+
+
+def _zai_selected_window(limits: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    # The longest window is the plan's real quota horizon: larger unit
+    # (weeks > days > hours > minutes), then larger number, then the later
+    # reset edge. A 5h rolling window often resets LATER than the weekly
+    # one, so nextResetTime alone would pick the wrong window. Legacy
+    # entries without unit/number rank as (0, 0, ...) and only win when
+    # no window carries them — the old max-nextResetTime behavior.
+    return max(
+        limits,
+        key=lambda window: (
+            window.get("unit") or 0,
+            window.get("number") or 0,
+            window.get("nextResetTime") or 0,
+        ),
+    )
+
+
+def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
+    limits = _zai_usage_limits(text)
     try:
-        # The longest window is the plan's real quota horizon: larger unit
-        # (weeks > days > hours > minutes), then larger number, then the later
-        # reset edge. A 5h rolling window often resets LATER than the weekly
-        # one, so nextResetTime alone would pick the wrong window. Legacy
-        # entries without unit/number rank as (0, 0, ...) and only win when
-        # no window carries them — the old max-nextResetTime behavior.
-        weekly = max(
-            limits,
-            key=lambda window: (
-                window.get("unit") or 0,
-                window.get("number") or 0,
-                window.get("nextResetTime") or 0,
-            ),
-        )
+        weekly = _zai_selected_window(limits)
         used = int(weekly.get("percentage", 0))
         reset_ms = float(weekly.get("nextResetTime") or 0)
     except (AttributeError, TypeError, ValueError) as exc:
@@ -486,21 +653,95 @@ def parse_zai_usage(text: str, now_fn: NowFn = time.time) -> Tuple[int, float]:
     return remaining, reset_secs
 
 
+def _zai_reset_list_field(window: Mapping[str, Any]) -> str:
+    """Which reset-card list refills the quota window the z.ai row represents.
+
+    The row represents the longest declared span. A 5h-only payload (the
+    selected window is unit 3) is refilled by ``fiveHourResets``; anything
+    longer — the usual weekly (unit 6) row — is refilled by ``weekResets``,
+    because a weekly reset refills both the weekly and the 5h window. A 5h
+    reset must never score as a weekly full wallet, so the lists are never
+    mixed.
+    """
+    if window.get("unit") == ZAI_LIMIT_UNIT_FIVE_HOUR:
+        return "fiveHourResets"
+    return "weekResets"
+
+
+def parse_zai_reset_cards(
+    text: str,
+    window: Mapping[str, Any],
+    now_fn: NowFn = time.time,
+) -> ResetCredits:
+    """Usable manual reset cards from customer-package-reset/list.
+
+    Strict about the envelope — unreadable JSON, a non-200 ``code``, a
+    non-mapping ``data``, or a missing/mis-typed card list all raise so the
+    caller degrades with a ``reset_error`` instead of trusting a shape the
+    platform never emitted. Inside the list, only entries with
+    ``available is true`` count, and a card whose readable ``expireTime``
+    (naive platform time, read as UTC+8) is already past cannot be spent, so
+    it is not counted at all. A missing or malformed ``expireTime`` keeps
+    the card counted but contributes no horizon — no clock is invented.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise QuotaChannelsError("z.ai: invalid reset-list payload JSON") from exc
+    if not isinstance(payload, dict):
+        raise QuotaChannelsError("z.ai: invalid reset-list payload JSON")
+    if payload.get("code") is not None and payload.get("code") != 200:
+        raise QuotaChannelsError(f"z.ai: reset-list error response: {text[:200]}")
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        raise QuotaChannelsError("z.ai: invalid data in reset-list payload")
+    field = _zai_reset_list_field(window)
+    cards = data.get(field)
+    if not isinstance(cards, list):
+        raise QuotaChannelsError(f"z.ai: no {field} list in reset-list payload")
+    now = now_fn()
+    count = 0
+    horizons: List[float] = []
+    for card in cards:
+        if not isinstance(card, Mapping):
+            continue
+        if card.get("available") is not True:
+            continue
+        expires_at = _zai_platform_epoch(card.get("expireTime"))
+        if expires_at is None:
+            # the expiry is unknowable, but the card itself still counts
+            count += 1
+            continue
+        remaining = expires_at - now
+        if remaining <= 0:
+            # already past its expiry, so it is not genuinely spendable
+            continue
+        count += 1
+        horizons.append(remaining)
+    horizons.sort()
+    return ResetCredits(count, horizons[0] if horizons else None, tuple(horizons))
+
+
 def format_zai_name(
     remaining: int,
     reset_secs: float,
     *,
+    display_label: str = "z.ai",
     tokens_7d: Optional[int] = None,
     preserved_token_segment: Optional[str] = None,
+    resets: Optional[ResetCredits] = None,
 ) -> str:
     reset_part = format_reset_left(reset_secs)
     if tokens_7d is not None:
-        mid = f"{format_compact_tokens(tokens_7d)} tok/7d"
+        name = f"{display_label}: {remaining}% \u2022 {format_compact_tokens(tokens_7d)} tok/7d"
     elif preserved_token_segment:
-        mid = preserved_token_segment
+        name = f"{display_label}: {remaining}% \u2022 {preserved_token_segment}"
     else:
-        return f"z.ai: {remaining}% \u2022 {reset_part}"
-    return f"z.ai: {remaining}% \u2022 {mid} \u2022 {reset_part}"
+        name = f"{display_label}: {remaining}%"
+    name += f" \u2022 {reset_part}"
+    if resets is not None:
+        name += f" \u2022 {format_resets_segment(resets)}"
+    return name
 
 
 def parse_cursor_usage(
@@ -702,16 +943,6 @@ def format_grok_name(
     return name
 
 
-def format_openrouter_name() -> str:
-    """Managed label for the virtual unlimited Ox Alpha row.
-
-    Static by design: the wallet is synthetic (100% / Unlimited), so the name
-    never changes between ticks and Discord renames are naturally idempotent.
-    """
-
-    return f"{OPENROUTER_LABEL}: {OPENROUTER_PCT}% \u2022 Unlimited"
-
-
 def _fmt_clock(dt: datetime) -> str:
     hour = dt.hour % 12 or 12
     suffix = "am" if dt.hour < 12 else "pm"
@@ -762,13 +993,17 @@ def normalize_enabled_providers(raw: Any) -> Dict[str, bool]:
     )
 
 
-def validate_quota_config(section: Mapping[str, Any]) -> dict:
+def validate_quota_config(
+    section: Mapping[str, Any],
+    *,
+    require_discord: bool = True,
+) -> dict:
     if not isinstance(section, Mapping):
         raise QuotaChannelsError("quota_channels config must be a mapping")
 
     guild_id = section.get("guild_id")
     category_id = section.get("category_id")
-    if not guild_id or not category_id:
+    if require_discord and (not guild_id or not category_id):
         raise QuotaChannelsError(
             "quota_channels requires guild_id and category_id in config.yaml"
         )
@@ -779,12 +1014,10 @@ def validate_quota_config(section: Mapping[str, Any]) -> dict:
 
     raw_enabled = section.get("enabled_providers")
     if raw_enabled is None:
-        # An absent enabled_providers means "the wired rows": the original
-        # five providers always, and the newer OpenRouter row only once its
-        # channel ID exists — so a legacy five-ID config keeps validating
-        # unchanged and picks the virtual row up as soon as it is wired.
+        # An absent enabled_providers means "every wired row". A legacy
+        # channel_ids entry for the retired OpenRouter row is inert: its
+        # key is no longer a spec, so it activates nothing.
         enabled = {key: True for key, _ in PROVIDER_SPECS}
-        enabled["openrouter"] = bool(channel_ids.get("openrouter"))
     else:
         enabled = normalize_enabled_providers(raw_enabled)
     active: List[Tuple[str, str, str]] = []
@@ -792,21 +1025,25 @@ def validate_quota_config(section: Mapping[str, Any]) -> dict:
         if not enabled.get(key, False):
             continue
         channel_id = channel_ids.get(key)
-        if not channel_id:
+        if require_discord and not channel_id:
             raise QuotaChannelsError(
                 f"quota_channels.channel_ids.{key} required when {key} is enabled"
             )
-        active.append((key, label, str(channel_id)))
+        active.append((key, label, str(channel_id) if channel_id else ""))
 
     if not active:
+        if require_discord:
+            raise QuotaChannelsError(
+                "quota_channels requires at least one enabled provider with a channel id"
+            )
         raise QuotaChannelsError(
-            "quota_channels requires at least one enabled provider with a channel id"
+            "quota_channels requires at least one enabled provider"
         )
 
     return {
-        "guild_id": str(guild_id),
-        "category_id": str(category_id),
-        "channel_ids": {key: cid for key, _, cid in active},
+        "guild_id": str(guild_id) if guild_id else "",
+        "category_id": str(category_id) if category_id else "",
+        "channel_ids": {key: cid for key, _, cid in active if cid},
         "providers": active,
         "quota_interval_seconds": int(
             section.get("quota_interval_seconds", DEFAULT_QUOTA_INTERVAL_SECONDS)
@@ -831,7 +1068,20 @@ def check_minimum_config_from_mapping(config: Mapping[str, Any]) -> bool:
         return False
 
 
-def load_quota_config(config_path: Optional[Path] = None) -> dict:
+def format_config_parse_error(exc: BaseException) -> str:
+    """Safe YAML/config parse detail: exception class plus line/column only."""
+    name = type(exc).__name__
+    mark = getattr(exc, "problem_mark", None)
+    if mark is not None:
+        return f"{name} at line {mark.line + 1}, column {mark.column + 1}"
+    return name
+
+
+def load_quota_config(
+    config_path: Optional[Path] = None,
+    *,
+    require_discord: bool = True,
+) -> dict:
     if config_path is None:
         try:
             from hermes_cli.config import load_config_readonly
@@ -847,11 +1097,13 @@ def load_quota_config(config_path: Optional[Path] = None) -> dict:
         except OSError as exc:
             raise QuotaChannelsError(f"cannot read {config_path}: {exc}") from exc
         except Exception as exc:
-            raise QuotaChannelsError(f"cannot parse {config_path}: {exc}") from exc
+            raise QuotaChannelsError(
+                f"cannot parse {config_path}: {format_config_parse_error(exc)}"
+            ) from exc
     section = raw.get("quota_channels")
     if section is None:
         raise QuotaChannelsError("quota_channels section missing in config.yaml")
-    return validate_quota_config(section)
+    return validate_quota_config(section, require_discord=require_discord)
 
 
 def discord_headers() -> dict:
@@ -992,6 +1244,52 @@ def fetch_codex_usage(
     return http_text(req, http_fn=http_fn)
 
 
+def fetch_codex_reset_credit_details(
+    access: str,
+    http_fn: HttpFn = default_http,
+) -> Tuple[int, str]:
+    # same authenticated Codex path as wham/usage, so it shares the OAuth
+    # refresh-on-401 handling the caller already applies
+    req = urllib.request.Request(
+        CODEX_RESET_CREDITS_URL,
+        headers={"Authorization": f"Bearer {access}", "User-Agent": "codex-cli"},
+    )
+    return http_text(req, http_fn=http_fn)
+
+
+def codex_reset_credit_details(
+    access: str,
+    store: dict,
+    refresh_token: Optional[str] = None,
+    *,
+    http_fn: HttpFn = default_http,
+    now_fn: NowFn = time.time,
+) -> Tuple[Optional[ResetCredits], Optional[str]]:
+    """Reset-credit details plus any fetch error; never raises.
+
+    Mirrors grok_reset_credits: one OAuth refresh on 401, and any failure or
+    malformed payload degrades to None so the caller keeps what the usage
+    payload already reported instead of failing the tick.
+    """
+    secrets: List[Any] = [access, refresh_token]
+    try:
+        status, text = fetch_codex_reset_credit_details(access, http_fn=http_fn)
+        if status == 401:
+            access = refresh_codex_tokens(store, http_fn=http_fn)
+            secrets.append(access)
+            status, text = fetch_codex_reset_credit_details(access, http_fn=http_fn)
+        if status != 200:
+            raise QuotaChannelsError(
+                f"codex reset-credits endpoint returned {status}: {text[:200]}"
+            )
+        credits = parse_codex_reset_credit_details(text, now_fn=now_fn)
+        if credits is None:
+            raise QuotaChannelsError("codex: invalid reset-credits payload JSON")
+        return credits, None
+    except Exception as exc:
+        return None, redact_secrets(_error_text(exc), secrets)
+
+
 def fetch_kimi_usage(
     api_key: str,
     http_fn: HttpFn = default_http,
@@ -1015,6 +1313,43 @@ def fetch_zai_usage(
         headers={"Authorization": api_key, "User-Agent": "hermes-quota-channel"},
     )
     return http_text(req, http_fn=http_fn)
+
+
+def fetch_zai_reset_list(
+    api_key: str,
+    http_fn: HttpFn = default_http,
+) -> Tuple[int, str]:
+    # read-only list of manual reset cards; same raw-key Authorization
+    # convention as the usage endpoints (a Bearer prefix is NOT used)
+    req = urllib.request.Request(
+        ZAI_RESET_LIST_URL,
+        headers={"Authorization": api_key, "User-Agent": "hermes-quota-channel"},
+    )
+    return http_text(req, http_fn=http_fn)
+
+
+def zai_reset_cards(
+    api_key: str,
+    window: Mapping[str, Any],
+    http_fn: HttpFn = default_http,
+    now_fn: NowFn = time.time,
+) -> Tuple[Optional[ResetCredits], Optional[str]]:
+    """Usable z.ai reset cards plus any fetch error; never raises.
+
+    A failed or unparseable reset-list lookup degrades to None so the caller
+    drops the resets segment and persists no reset fields, while the normal
+    quota reading stays fresh — the same graceful-degradation style as the
+    Codex details lookup.
+    """
+    try:
+        status, text = fetch_zai_reset_list(api_key, http_fn=http_fn)
+        if status != 200:
+            raise QuotaChannelsError(
+                f"z.ai reset-list endpoint returned {status}: {text[:200]}"
+            )
+        return parse_zai_reset_cards(text, window, now_fn=now_fn), None
+    except Exception as exc:
+        return None, redact_secrets(_error_text(exc), (api_key,))
 
 
 def fetch_cursor_usage(
@@ -1071,7 +1406,7 @@ def fetch_grok_resets(
 def _codex_quota_metrics(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
-) -> Tuple[int, float, Optional[ResetCredits]]:
+) -> Tuple[int, float, Optional[ResetCredits], Optional[str]]:
     store = load_store()
     toks = store.get("providers", {}).get("openai-codex", {}).get("tokens", {})
     access = toks.get("access_token")
@@ -1086,14 +1421,30 @@ def _codex_quota_metrics(
             f"codex usage endpoint returned {status}: {text[:200]}"
         )
     remaining, reset_secs = parse_codex_usage(text)
-    return remaining, reset_secs, parse_codex_reset_credits(text)
+    resets = parse_codex_reset_credits(text)
+    reset_error: Optional[str] = None
+    if resets is not None and resets.count:
+        # The usage payload only totals the credits; the details endpoint
+        # carries the expiry each one really spends on. A failed or malformed
+        # lookup keeps the count and drops the expiry — never the quota
+        # reset clock, which would overstate the credit's urgency.
+        details, reset_error = codex_reset_credit_details(
+            access,
+            store,
+            toks.get("refresh_token"),
+            http_fn=http_fn,
+            now_fn=now_fn,
+        )
+        if details is not None:
+            resets = details
+    return remaining, reset_secs, resets, reset_error
 
 
 def run_codex_provider(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str]:
-    remaining, reset_secs, resets = _codex_quota_metrics(
+    remaining, reset_secs, resets, _ = _codex_quota_metrics(
         http_fn=http_fn, now_fn=now_fn
     )
     return format_codex_name(remaining, reset_secs, resets=resets), reset_secs, "Codex"
@@ -1120,19 +1471,35 @@ def run_kimi_provider(
 def _zai_quota_metrics(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
-) -> Tuple[int, float]:
-    status, text = fetch_zai_usage(zai_api_key(), http_fn=http_fn)
+    api_key: Optional[str] = None,
+) -> Tuple[int, float, Optional[ResetCredits], Optional[str]]:
+    key = api_key if api_key is not None else zai_api_key()
+    status, text = fetch_zai_usage(key, http_fn=http_fn)
     if status != 200:
         raise QuotaChannelsError(f"z.ai usage endpoint returned {status}: {text[:200]}")
-    return parse_zai_usage(text, now_fn=now_fn)
+    limits = _zai_usage_limits(text)
+    try:
+        window = _zai_selected_window(limits)
+        used = int(window.get("percentage", 0))
+        reset_ms = float(window.get("nextResetTime") or 0)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise QuotaChannelsError("z.ai: invalid limits fields in usage payload") from exc
+    remaining = max(0, 100 - used)
+    reset_secs = max(0.0, reset_ms / 1000 - now_fn())
+    # read-only reset-card lookup against the window the row represents; a
+    # failure degrades to None + a redacted error, never a stale quota read
+    resets, reset_error = zai_reset_cards(key, window, http_fn=http_fn, now_fn=now_fn)
+    return remaining, reset_secs, resets, reset_error
 
 
 def run_zai_provider(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str]:
-    remaining, reset_secs = _zai_quota_metrics(http_fn=http_fn, now_fn=now_fn)
-    return format_zai_name(remaining, reset_secs), reset_secs, "z.ai"
+    remaining, reset_secs, resets, _ = _zai_quota_metrics(
+        http_fn=http_fn, now_fn=now_fn
+    )
+    return format_zai_name(remaining, reset_secs, resets=resets), reset_secs, "z.ai"
 
 
 def _cursor_quota_metrics(
@@ -1219,7 +1586,16 @@ def grok_reset_credits(
     try:
         return fetch_grok_reset_credits(http_fn=http_fn, now_fn=now_fn), None
     except Exception as exc:
-        return ResetCredits(0), _error_text(exc)
+        err = _error_text(exc)
+        try:
+            toks = (
+                load_store().get("providers", {}).get("xai-oauth", {}).get("tokens", {})
+            )
+            secrets = (toks.get("access_token"), toks.get("refresh_token"))
+            err = redact_secrets(err, tuple(s for s in secrets if s))
+        except Exception:
+            pass
+        return ResetCredits(0), err
 
 
 def run_grok_provider(
@@ -1240,8 +1616,9 @@ PROVIDER_RUNNERS = {
 }
 
 QUOTA_METRICS = {
-    # codex alone returns a trailing pending-resets element (same payload);
-    # every entry ends with reset_secs, which is all callers rely on.
+    # codex and zai return trailing pending-resets elements (ResetCredits and
+    # any reset fetch error); every entry ends with reset_secs, which is all
+    # callers rely on.
     "codex": _codex_quota_metrics,
     "kimi": _kimi_quota_metrics,
     "zai": _zai_quota_metrics,
@@ -1273,6 +1650,7 @@ def _format_channel_name(
             reset_secs,
             tokens_7d=tokens_7d,
             preserved_token_segment=preserved_token_segment,
+            resets=resets,
         )
     if key == "cursor":
         auto_remaining, api_remaining = metrics
@@ -1486,8 +1864,9 @@ def fetch_codex_tokens_7d(
 def fetch_zai_tokens_7d(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
+    api_key: Optional[str] = None,
 ) -> int:
-    key = zai_api_key()
+    key = api_key if api_key is not None else zai_api_key()
     try:
         status, text = fetch_zai_model_usage(key, http_fn=http_fn, now_fn=now_fn)
         if status != 200:
@@ -1543,12 +1922,19 @@ def quota_display_ranks(
     is_low_quota() rule sinks behind every healthy entry, and equal ranks
     keep the caller's insertion order — which is PROVIDER_SPECS order — so
     ties stay stable.
+
+    The reset term is per-credit whenever the reading carries
+    ``reset_expiry_horizons``; the single ``reset_expiry_seconds`` countdown
+    the channel name displays is never multiplied by the count to stand in
+    for the whole stack.
     """
 
     rates = reliability or {}
     ranks: Dict[str, float] = {}
     for key, entry in readings.items():
         provider = QUOTA_KEY_TO_PROVIDER.get(key, key)
+        if str(key).startswith("zai:"):
+            provider = "zai"
         reading = QuotaReading(
             channel_key=key,
             provider=provider,
@@ -1560,6 +1946,9 @@ def quota_display_ranks(
                 None
                 if entry.get("reset_expiry_seconds") is None
                 else float(entry["reset_expiry_seconds"])
+            ),
+            reset_expiry_horizons=sanitize_reset_expiry_horizons(
+                entry.get("reset_expiry_horizons")
             ),
         )
         score = score_provider(reading, rates.get(provider))
@@ -1667,28 +2056,23 @@ def run_provider_quota(
     http_fn: HttpFn = default_http,
     now_fn: NowFn = time.time,
 ) -> Tuple[str, float, str, str, Dict[str, Any]]:
-    if key == "openrouter":
-        # Virtual Ox Alpha row: no quota API is called — the wallet is
-        # synthetic (100% against 168h). Only the managed Discord label and
-        # the state reading are written.
-        name = format_openrouter_name()
-        rename = rename_channel(channel_id, name, headers, http_fn=http_fn)
-        return OPENROUTER_LABEL, float(OPENROUTER_RESET_SECONDS), name, rename, {}
-
     raw = QUOTA_METRICS[key](http_fn=http_fn, now_fn=now_fn)
     resets: Optional[ResetCredits] = None
+    reset_error: Optional[str] = None
     if key == "cursor":
         auto_remaining, api_remaining, reset_secs = raw
         fmt_metrics: Any = (auto_remaining, api_remaining)
-    elif key == "codex":
-        # Live `_codex_quota_metrics` returns (remaining, reset_secs, ResetCredits).
-        # Existing tests (and any stub) still return the 2-tuple
-        # (remaining, reset_secs); missing credits omit the segment.
-        if len(raw) == 3:
+    elif key in ("codex", "zai"):
+        # Live `_codex_quota_metrics`/`_zai_quota_metrics` return (remaining,
+        # reset_secs, ResetCredits, reset_error). Existing tests (and any
+        # stub) still return the 3-tuple without the error or the 2-tuple
+        # without credits; missing pieces just omit the segment / the note.
+        if len(raw) == 4:
+            remaining, reset_secs, resets, reset_error = raw
+        elif len(raw) == 3:
             remaining, reset_secs, resets = raw
         else:
             remaining, reset_secs = raw
-            resets = None
         fmt_metrics = remaining
     else:
         remaining, reset_secs = raw
@@ -1699,16 +2083,20 @@ def run_provider_quota(
     provider_info: Dict[str, Any] = {}
     if key == "grok":
         resets, reset_error = grok_reset_credits(http_fn=http_fn, now_fn=now_fn)
-        if reset_error:
-            provider_info["reset_error"] = reset_error
+    if reset_error:
+        provider_info["reset_error"] = reset_error
     if resets is not None:
         # pending usage-limit resets feed the shared spendability score; they
         # ride provider_info into the state reading and the debug output.
-        # resets=None means the credits block was unreadable (Codex), which
-        # adds no term and persists no fields.
+        # resets=None means the reset lookup was unreadable (Codex details /
+        # z.ai list), which adds no term and persists no fields.
         provider_info["reset_count"] = resets.count
         if resets.expiry_secs is not None:
             provider_info["reset_expiry_seconds"] = resets.expiry_secs
+        if resets.expiry_horizons:
+            # each credit's own expiry clock; reset_expiry_seconds above stays
+            # the earliest one and is display-only, never a stand-in for all
+            provider_info["reset_expiry_horizons"] = list(resets.expiry_horizons)
 
     name = _format_channel_name(key, fmt_metrics, reset_secs, resets=resets)
 
@@ -1755,6 +2143,58 @@ def update_category(
     )
 
 
+def run_zai_wallet_quota(
+    api_key: str,
+    channel_id: str,
+    display_label: str,
+    headers: dict,
+    http_fn: HttpFn = default_http,
+    now_fn: NowFn = time.time,
+) -> Tuple[str, float, str, str, Dict[str, Any]]:
+    """Quota + token enrichment for one Z.AI wallet credential."""
+    raw = _zai_quota_metrics(http_fn=http_fn, now_fn=now_fn, api_key=api_key)
+    remaining, reset_secs, resets, reset_error = raw
+    provider_info: Dict[str, Any] = {}
+    if reset_error:
+        provider_info["reset_error"] = reset_error
+    if resets is not None:
+        provider_info["reset_count"] = resets.count
+        if resets.expiry_secs is not None:
+            provider_info["reset_expiry_seconds"] = resets.expiry_secs
+        if resets.expiry_horizons:
+            provider_info["reset_expiry_horizons"] = list(resets.expiry_horizons)
+
+    name = format_zai_name(
+        remaining, reset_secs, display_label=display_label, resets=resets
+    )
+    try:
+        tokens_7d = fetch_zai_tokens_7d(http_fn=http_fn, now_fn=now_fn, api_key=api_key)
+        provider_info["tokens_7d"] = tokens_7d
+        name = format_zai_name(
+            remaining,
+            reset_secs,
+            display_label=display_label,
+            tokens_7d=tokens_7d,
+            resets=resets,
+        )
+    except Exception as exc:
+        provider_info["token_error"] = redact_secrets(_error_text(exc), (api_key,))
+        current_name = fetch_channel_name(channel_id, headers, http_fn=http_fn)
+        preserved = parse_token_segment_from_name(current_name or "")
+        if preserved:
+            provider_info["tokens_7d"] = "preserved"
+            name = format_zai_name(
+                remaining,
+                reset_secs,
+                display_label=display_label,
+                preserved_token_segment=preserved,
+                resets=resets,
+            )
+
+    rename = rename_channel(channel_id, name, headers, http_fn=http_fn)
+    return display_label, reset_secs, name, rename, provider_info
+
+
 def run_tick(
     config: dict,
     *,
@@ -1763,6 +2203,8 @@ def run_tick(
     now_fn: NowFn = time.time,
     http_fn: HttpFn = default_http,
 ) -> dict:
+    from plugins.quota_channels import zai_wallets
+
     state = load_state()
     interval = config["quota_interval_seconds"]
     did_quota = quota_due(state, interval, force, now_fn=now_fn)
@@ -1779,15 +2221,75 @@ def run_tick(
 
     if did_quota:
         successes: List[Tuple[str, str, str]] = []
+        prior_readings = state.get("readings") or {}
+        if not isinstance(prior_readings, Mapping):
+            prior_readings = {}
         readings: Dict[str, Dict[str, Any]] = {}
-        # Same reliability ledger and thresholds the fallback reorder uses;
-        # with no samples a provider stays neutral (1.0) and only its quota
-        # and reset horizon move the score.
+        wallet_state: Dict[str, Any] = {}
+        zai_enabled = any(key == "zai" for key, _, _ in config["providers"])
+        wallets: List[zai_wallets.ZaiWallet] = []
+        pool_unreadable = False
+        zai_authoritative_empty = False
+        wallet_channels: Dict[str, str] = dict(state.get("zai_wallet_channels") or {})
+        wallet_ordinals: Dict[str, int] = dict(state.get("zai_wallet_ordinals") or {})
+        wallet_high_water = int(state.get("zai_wallet_ordinal_high_water") or 0)
+
+        if zai_enabled:
+            hermes_home = _hermes_home()
+            wallets, pool_unreadable = zai_wallets.enumerate_zai_wallets(hermes_home)
+            if pool_unreadable and not wallets:
+                wallets = zai_wallets.wallets_from_state_when_unreadable(
+                    state, hermes_home
+                )
+            zai_authoritative_empty = not pool_unreadable and not wallets
+            should_reconcile = (
+                not pool_unreadable
+                or any(wallet.runtime_api_key for wallet in wallets)
+            )
+            if should_reconcile:
+                def _persist_wallet_maps(channels, ordinals, high_water) -> None:
+                    nonlocal wallet_channels, wallet_ordinals, wallet_high_water
+                    wallet_channels = dict(channels)
+                    wallet_ordinals = dict(ordinals)
+                    wallet_high_water = int(high_water)
+                    save_wallet_state(
+                        wallet_channels, wallet_ordinals, wallet_high_water
+                    )
+
+                try:
+                    (
+                        wallet_channels,
+                        wallet_ordinals,
+                        wallet_high_water,
+                        _deleted,
+                    ) = zai_wallets.reconcile_zai_wallet_channels(
+                        config,
+                        wallets,
+                        state,
+                        pool_unreadable=pool_unreadable,
+                        headers=headers,
+                        http_fn=http_fn,
+                        persist=_persist_wallet_maps,
+                    )
+                except zai_wallets.ZaiWalletError as exc:
+                    provider_results["z.ai"] = {"error": str(exc)}
+                wallet_state = {
+                    "zai_wallet_channels": wallet_channels,
+                    "zai_wallet_ordinals": wallet_ordinals,
+                    "zai_wallet_ordinal_high_water": wallet_high_water,
+                }
+
         reliability = rates_for_providers(
             (QUOTA_KEY_TO_PROVIDER.get(key, key) for key, _, _ in config["providers"]),
             now_fn=now_fn,
         )
+        if wallets:
+            reliability = dict(reliability)
+            reliability.setdefault("zai", rates_for_providers(("zai",), now_fn=now_fn).get("zai"))
+
         for key, label, channel_id in config["providers"]:
+            if key == "zai" and (wallets or zai_authoritative_empty):
+                continue
             try:
                 prov_label, reset_secs, channel_name, rename, provider_info = (
                     run_provider_quota(
@@ -1813,23 +2315,135 @@ def run_tick(
                 "reset_seconds": reset_secs,
                 "label": prov_label,
             }
-            # pending usage-limit resets ride along so the fallback reorder
-            # scores the same spendability from precise state as from names
             if "reset_count" in provider_info:
                 reading_entry["reset_count"] = provider_info["reset_count"]
             if "reset_expiry_seconds" in provider_info:
                 reading_entry["reset_expiry_seconds"] = provider_info[
                     "reset_expiry_seconds"
                 ]
+            if "reset_expiry_horizons" in provider_info:
+                reading_entry["reset_expiry_horizons"] = provider_info[
+                    "reset_expiry_horizons"
+                ]
             readings[key] = reading_entry
-            successes.append((label, channel_id, key))
-        if successes:
+            successes.append((prov_label, channel_id, key))
+
+        if zai_enabled and wallets:
+            for wallet in wallets:
+                entry_id = wallet.entry_id
+                ordinal = wallet_ordinals.get(entry_id)
+                if ordinal is None:
+                    ordinal, _ = zai_wallets.assign_wallet_ordinals([wallet], state)
+                    ordinal = ordinal[entry_id]
+                if len(wallets) == 1:
+                    display = "z.ai"
+                else:
+                    display = zai_wallets.wallet_display_label(int(ordinal))
+                channel_id = wallet_channels.get(entry_id)
+                if not channel_id or not wallet.runtime_api_key:
+                    continue
+                reading_key = zai_wallets.wallet_reading_key(entry_id)
+                try:
+                    prov_label, reset_secs, channel_name, rename, provider_info = (
+                        run_zai_wallet_quota(
+                            wallet.runtime_api_key,
+                            channel_id,
+                            display,
+                            headers,
+                            http_fn=http_fn,
+                            now_fn=now_fn,
+                        )
+                    )
+                except Exception as exc:
+                    msg = zai_wallets.redact_wallet_error(exc, wallet)
+                    provider_results[display] = {"error": msg}
+                    prior = prior_readings.get(reading_key)
+                    if isinstance(prior, Mapping):
+                        readings[reading_key] = dict(prior)
+                    continue
+                remaining = _remaining_from_name(channel_name, display)
+                provider_results[display] = {
+                    # keep an earlier reconcile error filed under the same label
+                    **(provider_results.get(display) or {}),
+                    "remaining": remaining,
+                    "reset_seconds": reset_secs,
+                    "rename": rename,
+                    **provider_info,
+                }
+                reading_entry = {
+                    "pct": _reading_pct(remaining),
+                    "reset_seconds": reset_secs,
+                    "label": display,
+                }
+                if "reset_count" in provider_info:
+                    reading_entry["reset_count"] = provider_info["reset_count"]
+                if "reset_expiry_seconds" in provider_info:
+                    reading_entry["reset_expiry_seconds"] = provider_info[
+                        "reset_expiry_seconds"
+                    ]
+                if "reset_expiry_horizons" in provider_info:
+                    reading_entry["reset_expiry_horizons"] = provider_info[
+                        "reset_expiry_horizons"
+                    ]
+                readings[reading_key] = reading_entry
+                successes.append((display, channel_id, reading_key))
+
+            alias = zai_wallets.pick_best_zai_reading(
+                {
+                    key: entry
+                    for key, entry in readings.items()
+                    if str(key).startswith("zai:")
+                },
+                reliability,
+            )
+            if alias is not None:
+                readings["zai"] = {**alias, "label": "z.ai"}
+
+        zai_keys_unavailable = pool_unreadable or (
+            bool(wallets) and any(not wallet.runtime_api_key for wallet in wallets)
+        )
+        if zai_keys_unavailable:
+            for key, entry in prior_readings.items():
+                key_str = str(key)
+                if (key_str.startswith("zai:") or key_str == "zai") and key not in readings:
+                    if isinstance(entry, Mapping):
+                        readings[key] = dict(entry)
+
+        sort_participants: List[Tuple[str, str, str]] = list(successes)
+        if zai_enabled and wallet_channels:
+            success_keys = {key for _, _, key in successes}
+            for entry_id, channel_id in wallet_channels.items():
+                reading_key = zai_wallets.wallet_reading_key(entry_id)
+                if reading_key in success_keys:
+                    continue
+                ordinal = wallet_ordinals.get(entry_id)
+                if ordinal is not None:
+                    if len(wallets) == 1:
+                        display = "z.ai"
+                    else:
+                        display = zai_wallets.wallet_display_label(int(ordinal))
+                else:
+                    display = reading_key
+                sort_participants.append((display, channel_id, reading_key))
+
+        if sort_participants:
             ranks = quota_display_ranks(readings, reliability)
-            entries = [(label, channel_id, ranks[key]) for label, channel_id, key in successes]
+            entries: List[Tuple[str, str, float]] = []
+            for label, channel_id, key in sort_participants:
+                if key in ranks:
+                    entries.append((label, channel_id, ranks[key]))
+                elif str(key).startswith("zai:"):
+                    entries.append((label, channel_id, _NEVER_SCORED_RANK))
+                else:
+                    entries.append((label, channel_id, ranks[key]))
             sorted_channels = sort_voice_channels(
                 config, entries, headers, http_fn=http_fn
             )
-            last = save_state(readings, now_fn=now_fn)
+
+        if successes:
+            last = save_state(
+                readings, now_fn=now_fn, wallet_state=wallet_state or None
+            )
 
     category_status = update_category(
         config["category_id"],

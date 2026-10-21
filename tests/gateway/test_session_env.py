@@ -43,7 +43,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
         user_name="alice",
         thread_id="17585",
     )
-    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    context = SessionContext(source=source, connected_platforms=[], notification_channels={})
 
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
@@ -97,7 +97,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
         user_name="alice",
         thread_id="17585",
     )
-    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    context = SessionContext(source=source, connected_platforms=[], notification_channels={})
 
     tokens = runner._set_session_env(context)
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
@@ -212,7 +212,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
     context = SessionContext(
         source=source,
         connected_platforms=[],
-        home_channels={},
+        notification_channels={},
         session_key="agent:main:telegram:dm:2144471399",
     )
 

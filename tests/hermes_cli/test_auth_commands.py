@@ -262,6 +262,181 @@ def test_auth_add_non_registry_configured_provider_preserves_endpoint(
     assert entry["base_url"] == "https://private.example/v1"
 
 
+ZAI_CODING_URL = "https://api.z.ai/api/coding/paas/v4"
+ZAI_GENERAL_URL = "https://api.z.ai/api/paas/v4"
+
+
+def _clear_zai_env(monkeypatch):
+    for var in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "GLM_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _clear_kimi_env(monkeypatch):
+    for var in ("KIMI_API_KEY", "KIMI_CODING_API_KEY", "KIMI_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_auth_add_zai_manual_key_explicit_base_url_wins_without_probe(
+    tmp_path, monkeypatch
+):
+    """A manually added z.ai key honors an explicit GLM_BASE_URL verbatim.
+
+    The override must skip the endpoint probe entirely — the user told us
+    where the key lives.
+    """
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _clear_zai_env(monkeypatch)
+    monkeypatch.setenv("GLM_BASE_URL", ZAI_CODING_URL)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    def _probe_must_not_run(*args, **kwargs):
+        raise AssertionError("explicit GLM_BASE_URL must skip the z.ai probe")
+
+    monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _probe_must_not_run)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "zai"
+        auth_type = "api-key"
+        api_key = "zai-coding-key"
+        label = "coding"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["zai"][0]
+    assert entry["base_url"] == ZAI_CODING_URL
+
+
+def test_auth_add_zai_manual_key_without_override_uses_detected_endpoint(
+    tmp_path, monkeypatch
+):
+    """Without GLM_BASE_URL, a manual z.ai key must land on the endpoint the
+    shared detector resolves for that key — not blindly on the registry's
+    general endpoint, which 429s with code 1113 for Coding Plan keys
+    (insufficient balance / no resource package).
+
+    The detector is stubbed (no real network) to the coding-plan result the
+    live probe would return for such a key.
+    """
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _clear_zai_env(monkeypatch)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    probe_keys = []
+
+    def _fake_detect(api_key, *args, **kwargs):
+        probe_keys.append(api_key)
+        return {
+            "id": "coding-global",
+            "base_url": ZAI_CODING_URL,
+            "model": "glm-5.3",
+            "label": "Global (Coding Plan)",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _fake_detect)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "zai"
+        auth_type = "api-key"
+        api_key = "zai-coding-key"
+        label = "coding"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["zai"][0]
+    # The key's own endpoint (coding plan), never the general endpoint that
+    # rejects it with 1113.
+    assert entry["base_url"] == ZAI_CODING_URL
+    assert entry["base_url"] != ZAI_GENERAL_URL
+    # The supplied token reached the shared detector.
+    assert probe_keys == ["zai-coding-key"]
+
+
+def test_auth_add_kimi_manual_sk_kimi_key_routes_to_kimi_code_endpoint(
+    tmp_path, monkeypatch
+):
+    """A manually added ``sk-kimi-`` key must be stored against the Kimi Code
+    endpoint, mirroring env seeding's key-prefix auto-detection."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _clear_kimi_env(monkeypatch)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth import KIMI_CODE_BASE_URL
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "kimi-coding"
+        auth_type = "api-key"
+        api_key = "sk-kimi-manual-key"
+        label = "kimi code"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["kimi-coding"][0]
+    assert entry["base_url"] == KIMI_CODE_BASE_URL
+
+
+def test_auth_add_kimi_manual_key_explicit_base_url_wins(tmp_path, monkeypatch):
+    """An explicit KIMI_BASE_URL beats prefix auto-detection for manual adds."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _clear_kimi_env(monkeypatch)
+    monkeypatch.setenv("KIMI_BASE_URL", "https://proxy.moonshot.example/v1")
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "kimi-coding"
+        auth_type = "api-key"
+        api_key = "sk-kimi-manual-key"
+        label = "kimi proxy"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"]["kimi-coding"][0]
+    assert entry["base_url"] == "https://proxy.moonshot.example/v1"
+
+
+def test_auth_add_openrouter_manual_key_keeps_constant_base_url(
+    tmp_path, monkeypatch
+):
+    """OpenRouter manual adds keep the well-known constant endpoint."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_constants import OPENROUTER_BASE_URL
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openrouter"
+        auth_type = "api-key"
+        api_key = "sk-or-manual"
+        label = "personal"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = next(
+        item
+        for item in payload["credential_pool"]["openrouter"]
+        if item["source"] == "manual"
+    )
+    assert entry["base_url"] == OPENROUTER_BASE_URL
+
+
 def test_auth_list_includes_non_registry_configured_provider(
     tmp_path, monkeypatch, capsys
 ):
@@ -292,6 +467,45 @@ def test_auth_list_includes_non_registry_configured_provider(
     auth_list_command(type("Args", (), {"provider": None})())
 
     assert "private-groq (1 credentials):" in capsys.readouterr().out
+
+
+def test_auth_list_shows_entry_id_and_priority(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "ab12cd",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "secret-1",
+                    },
+                    {
+                        "id": "ef56gh",
+                        "label": "backup",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "secret-2",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_list_command
+
+    auth_list_command(type("Args", (), {"provider": "openrouter"})())
+
+    out = capsys.readouterr().out
+    assert "id=ab12cd priority=0" in out
+    assert "id=ef56gh priority=1" in out
 
 
 def test_interactive_auth_add_accepts_non_registry_configured_provider(
@@ -568,6 +782,56 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     assert "openai-codex" not in payload.get("providers", {})
     # First add activated the provider; second add left it as-is.
     assert payload["active_provider"] == "openai-codex"
+
+
+def _codex_jwt(email: str, account_id: str, subject: str) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+    claims = {"email": email, "sub": subject, "https://api.openai.com/auth": {"chatgpt_account_id": account_id}}
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"{header}.{payload}.signature"
+
+
+def _add_codex_twice(tmp_path, monkeypatch, capsys, second_token: str) -> str:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    codex_login = {"base_url": "https://chatgpt.com/backend-api/codex", "last_refresh": "2026-09-01T00:00:00Z"}
+    logins = iter([
+        {"tokens": {"access_token": _codex_jwt("me@example.com", "acct-A", "user-1"), "refresh_token": "rt-1"}, **codex_login},
+        {"tokens": {"access_token": second_token, "refresh_token": "rt-2"}, **codex_login},
+    ])
+    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", lambda: next(logins))
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+    capsys.readouterr()
+    auth_add_command(_Args())
+    return capsys.readouterr().err
+
+
+def test_auth_add_codex_warns_when_login_is_same_account_as_pooled_entry(tmp_path, monkeypatch, capsys):
+    """A second ``hermes auth add openai-codex`` for the SAME OpenAI account must tell the user
+    which existing credential it duplicates (#47096): the two logins share one token family and
+    the provider revokes the older one, so the extra entry buys no quota. Different accounts
+    get no warning — they rotate independently.
+    """
+    from agent.credential_pool import load_pool
+
+    err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("me@example.com", "acct-A", "user-1"))
+    assert "same OpenAI account as openai-codex credential #1" in err
+    assert '"me@example.com"' in err and "hermes auth remove openai-codex 1" in err
+    # The warning informs; it never blocks the add.
+    assert len(load_pool("openai-codex").entries()) == 2
+
+
+def test_auth_add_codex_stays_quiet_for_a_different_account(tmp_path, monkeypatch, capsys):
+    err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("other@example.com", "acct-B", "user-2"))
+    assert "same OpenAI account" not in err
 
 
 def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):
@@ -959,12 +1223,16 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
         "suppressed_sources": {"anthropic": ["hermes_pkce"]},
     }))
 
-    # Stub the readers so only hermes_pkce is "available"; claude_code returns None
-    import agent.anthropic_adapter as aa
-    monkeypatch.setattr(aa, "read_hermes_oauth_credentials", lambda: {
+    # Stub the readers so only hermes_pkce is "available"; claude_code returns None.
+    # Stub agent.anthropic_credentials — the module _seed_from_singletons imports
+    # the readers from (agent.anthropic_adapter merely re-exports them). Stubbing
+    # the adapter left the real reader active, so a developer machine with real
+    # ~/.claude/.credentials.json seeded a claude_code entry and failed the test.
+    import agent.anthropic_credentials as ac
+    monkeypatch.setattr(ac, "read_hermes_oauth_credentials", lambda: {
         "accessToken": "tok", "refreshToken": "r", "expiresAt": 9999999999000,
     })
-    monkeypatch.setattr(aa, "read_claude_code_credentials", lambda: None)
+    monkeypatch.setattr(ac, "read_claude_code_credentials", lambda: None)
 
     from agent.credential_pool import _seed_from_singletons
     entries = []
@@ -1110,3 +1378,101 @@ def test_auth_remove_env_seeded_dotenv_with_bom_no_shell_hint(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "Cleared DEEPSEEK_API_KEY from .env" in out
     assert "still set in your shell environment" not in out
+
+
+def test_qwen_oauth_login_marks_active_through_moved_owner(monkeypatch):
+    """`_mark_qwen_oauth_active` lives in `auth_qwen`; the login flow must reach it
+    without depending on a re-export from the `auth` facade (AttributeError on head before)."""
+    import hermes_cli.auth_commands as auth_commands
+    import hermes_cli.auth_qwen as auth_qwen
+
+    creds = {"access_token": "tok"}
+    marked = []
+    monkeypatch.setattr(
+        auth_commands.auth_mod, "resolve_qwen_runtime_credentials", lambda **kw: creds
+    )
+    monkeypatch.setattr(auth_qwen, "_mark_qwen_oauth_active", lambda c: marked.append(c))
+
+    assert auth_commands._qwen_oauth_login(None) is creds
+    assert marked == [creds]
+
+
+def test_auth_add_openrouter_oauth_persists_pkce_key_without_touching_api_key_default(tmp_path, monkeypatch):
+    """`hermes auth add openrouter --type oauth` stores the PKCE-minted key as an ``api_key`` pool row
+    (OpenRouter returns a plain key, no refresh pair) that ``resolve_provider("auto")`` picks up with no
+    env var — same as a pasted key; the bare `--api-key` path keeps its API-key default."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("hermes_cli.auth._openrouter_pkce_login", lambda **kw: {"api_key": "sk-or-v1-from-pkce"})
+
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Oauth:
+        provider = "openrouter"
+        auth_type = "oauth"
+        api_key = None
+        label = "browser-login"
+        timeout = None
+        no_browser = True
+
+    class _Plain:
+        provider = "openrouter"
+        auth_type = None  # no --type: must NOT fall into the OAuth flow
+        api_key = "sk-or-v1-pasted"
+        label = "pasted"
+
+    auth_add_command(_Oauth())
+    # No env var, no config.yaml provider: the pooled PKCE key alone must make openrouter resolvable.
+    assert resolve_provider("auto") == "openrouter"
+    auth_add_command(_Plain())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    by_source = {e["source"]: e for e in payload["credential_pool"]["openrouter"]}
+    assert by_source["manual:openrouter_pkce"]["auth_type"] == "api_key"
+    assert by_source["manual:openrouter_pkce"]["access_token"] == "sk-or-v1-from-pkce"
+    assert by_source["manual:openrouter_pkce"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert by_source["manual"]["access_token"] == "sk-or-v1-pasted"
+
+
+def test_openrouter_loopback_callback_binds_nonce_path_and_rejects_forged_redirect(monkeypatch):
+    """The CSRF nonce lives in the callback PATH (OpenRouter echoes no ``state``): a redirect that
+    knows the port but not the nonce is a 404 and never yields a code; the genuine path does."""
+    import threading
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    import hermes_cli.auth_openrouter as orm
+
+    seen: dict = {}
+
+    def _browser(url):
+        callback = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["callback_url"][0]
+        seen["callback"] = callback
+        forged = callback.rsplit("/", 1)[0] + "/forged-nonce?code=evil"
+
+        def _redirects():
+            try:
+                urllib.request.urlopen(forged, timeout=5)
+            except urllib.error.HTTPError as exc:
+                seen["forged_status"] = exc.code
+            with urllib.request.urlopen(f"{callback}?code=good-code", timeout=5) as resp:
+                seen["genuine_status"] = resp.status
+
+        threading.Thread(target=_redirects, daemon=True).start()
+        return True
+
+    monkeypatch.setattr(orm, "_can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr(orm.webbrowser, "open", _browser)
+
+    code = orm._openrouter_loopback_code(
+        {"code_challenge": "c", "code_challenge_method": "S256"}, open_browser=True, timeout_seconds=10)
+
+    parsed = urllib.parse.urlparse(seen["callback"])
+    assert parsed.hostname == "127.0.0.1" and parsed.path.startswith("/callback/") and len(parsed.path) > 20
+    assert seen["forged_status"] == 404
+    assert seen["genuine_status"] == 200
+    assert code == "good-code"

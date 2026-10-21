@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -36,7 +37,7 @@ CHANNEL_KEY_TO_PROVIDER: Dict[str, str] = {
 # Providers with a manual usage-limit resets API — the only ones whose
 # pending resets earn the additive score term. Reset fields that leak into
 # any other provider's channel name, state row, or reading are inert.
-RESET_CREDIT_PROVIDERS = frozenset({"openai-codex", "xai-oauth"})
+RESET_CREDIT_PROVIDERS = frozenset({"openai-codex", "xai-oauth", "zai"})
 # the quota channel keys whose provider is in RESET_CREDIT_PROVIDERS
 RESET_CREDIT_CHANNEL_KEYS = frozenset(
     key
@@ -54,17 +55,6 @@ LOW_QUOTA_PCT = 5
 MIN_HOURS_REMAINING = 1.0 / 60.0  # 1 minute; zero hours would divide by zero
 REFERENCE_HOURS = 168.0  # one week — the score's neutral time horizon
 
-# Ox Alpha (openrouter/stealth/ox-alpha) is free/unlimited: treat it like a
-# fresh account with zero usage — 100% synthetic quota against the full
-# REFERENCE_HOURS window, so neutral uptime scores exactly 1.0 and observed
-# uptime derates it through the same factors as everyone else. Only this
-# exact route gets the treatment; every other openrouter model is an
-# ordinary unscored entry without a real reading.
-UNLIMITED_PROVIDER = "openrouter"
-UNLIMITED_MODEL = "stealth/ox-alpha"
-UNLIMITED_PCT = 100
-UNLIMITED_RESET_SECONDS = 7 * 86400  # 604800s = 168h = REFERENCE_HOURS
-
 DISCORD_USER_AGENT = "Hermes Agent (https://hermes-agent.nousresearch.com)"
 
 _COUNTDOWN_GROUP = r"(\d+)(d|h|m) left"
@@ -74,7 +64,7 @@ _TOK_SEGMENT = r"(?: • \d+(?:\.\d+)?[KMB]? tok/7d)?"
 _RESETS_SEGMENT = r"(?: • (\d+) resets?(?: in (\d+)(d|h|m))?)?"
 
 STANDARD_NAME_RE = re.compile(
-    rf"^(Codex|Kimi|Grok|z\.ai): (\d+)%{_TOK_SEGMENT} • {_COUNTDOWN_GROUP}"
+    rf"^(Codex|Kimi|Grok|z\.ai(?: \d+)?): (\d+)%{_TOK_SEGMENT} • {_COUNTDOWN_GROUP}"
     rf"{_RESETS_SEGMENT}$"
 )
 CURSOR_NAME_RE = re.compile(
@@ -93,12 +83,19 @@ class QuotaReading:
     channel_name: str
     pct: int
     reset_seconds: float
-    # pending manual usage-limit resets (Codex/Grok only). ``reset_count`` of
+    # pending manual usage-limit resets (providers with a resets API only —
+    # Codex/Grok/z.ai). ``reset_count`` of
     # 0 means no extra wallets; ``reset_expiry_seconds`` of None means the
-    # provider exposes no reset-expiry clock, so the reset term falls back to
-    # the usage-reset countdown.
+    # expiry is unknown, so the credit stays counted but scores nothing —
+    # the usage-reset countdown is never borrowed as a stand-in.
     reset_count: int = 0
     reset_expiry_seconds: Optional[float] = None
+    # each counted credit's own future expiry, when the richer per-credit
+    # state exists. None/empty means it does not, so the single
+    # ``reset_expiry_seconds`` clock keeps its legacy whole-stack meaning;
+    # a non-empty list scores every credit on its own clock exactly once and
+    # never multiplies one clock by the count.
+    reset_expiry_horizons: Optional[Tuple[float, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -210,7 +207,7 @@ def parse_channel_name(channel_key: str, channel_name: str) -> Optional[QuotaRea
                 else parse_countdown_seconds(int(match.group(6)), match.group(7))
             )
         else:
-            # Kimi/z.ai have no resets API: a resets segment that polluted
+            # Kimi/Cursor have no resets API: a resets segment that polluted
             # their name parses, but never reaches the reading
             reset_count = 0
             reset_expiry_seconds = None
@@ -227,52 +224,17 @@ def parse_channel_name(channel_key: str, channel_name: str) -> Optional[QuotaRea
     )
 
 
-def is_unlimited_route(provider: object, model: object) -> bool:
-    """True only for the exact ``openrouter/stealth/ox-alpha`` route.
-
-    Provider and model are case-normalized the same way entry identities
-    are (strip + lower), so ``OpenRouter/Stealth/OX-Alpha`` also matches —
-    but no other openrouter model ever does.
-    """
-    return (
-        str(provider or "").strip().lower() == UNLIMITED_PROVIDER
-        and str(model or "").strip().lower() == UNLIMITED_MODEL
-    )
-
-
-def unlimited_reading() -> QuotaReading:
-    """Synthetic full-wallet reading for the unlimited Ox Alpha route.
-
-    100% quota against exactly REFERENCE_HOURS, so with no reliability
-    samples the route scores exactly 1.0 and observed uptime is the only
-    thing that moves it.
-    """
-
-    return QuotaReading(
-        channel_key="",
-        provider=UNLIMITED_PROVIDER,
-        channel_name="",
-        pct=UNLIMITED_PCT,
-        reset_seconds=UNLIMITED_RESET_SECONDS,
-    )
-
-
 def reading_for_entry(
     entry: Mapping[str, Any],
     readings_by_provider: Mapping[str, QuotaReading],
 ) -> Optional[QuotaReading]:
-    """The reading that scores ``entry``: real channel data, else synthetic.
+    """The reading that scores ``entry``: real channel data, else None.
 
-    Real per-provider readings win; the synthetic unlimited reading only
-    fills the exact Ox Alpha route, which has no quota channel of its own.
+    Only real per-provider readings score; an entry without one — including
+    any ``openrouter`` route — is an ordinary unscored tail entry.
     """
     provider = str(entry.get("provider") or "").strip().lower()
-    reading = readings_by_provider.get(provider)
-    if reading is not None:
-        return reading
-    if is_unlimited_route(provider, entry.get("model")):
-        return unlimited_reading()
-    return None
+    return readings_by_provider.get(provider)
 
 
 def load_state() -> dict:
@@ -377,6 +339,7 @@ def readings_from_names(
     names: Mapping[str, str],
     precise_readings: Optional[Mapping[str, Tuple[int, float]]] = None,
     precise_reset_fields: Optional[Mapping[str, Tuple[int, Optional[float]]]] = None,
+    precise_reset_horizons: Optional[Mapping[str, Tuple[float, ...]]] = None,
 ) -> Dict[str, QuotaReading]:
     readings: Dict[str, QuotaReading] = {}
     for key in CHANNEL_KEYS:
@@ -401,6 +364,12 @@ def readings_from_names(
                 # ones; state that predates them keeps what the name showed
                 overrides["reset_count"] = resets[0]
                 overrides["reset_expiry_seconds"] = resets[1]
+            horizons = (precise_reset_horizons or {}).get(key)
+            if horizons is not None:
+                # richer per-credit state outranks the single display clock
+                # for scoring; the name's one countdown never stands in for
+                # the whole stack while it exists
+                overrides["reset_expiry_horizons"] = horizons
             reading = replace(base, **overrides)
         if reading is not None:
             readings[reading.provider] = reading
@@ -414,10 +383,10 @@ def _fresh_quota_state_readings(
 ) -> Mapping[str, Any]:
     """quota_channels state readings mapping, or {} when unusable.
 
-    The one freshness gate shared by ``load_precise_readings`` and
-    ``load_precise_reset_fields``: empty when the state file is
-    missing/corrupt, predates the readings schema, or its
-    last_quota_success is older than 2 * quota_interval_seconds — callers
+    The one freshness gate shared by ``load_precise_readings``,
+    ``load_precise_reset_fields`` and ``load_precise_reset_horizons``: empty
+    when the state file is missing/corrupt, predates the readings schema, or
+    its last_quota_success is older than 2 * quota_interval_seconds — callers
     then fall back to strict channel-name parsing.
     """
     from plugins.quota_channels.core import state_path as quota_state_path
@@ -505,6 +474,57 @@ def load_precise_reset_fields(
     return fields
 
 
+def sanitize_reset_expiry_horizons(raw: Any) -> Tuple[float, ...]:
+    """Scoreable per-credit reset-expiry horizons (seconds) from ``raw``.
+
+    Each entry must be a positive finite number; malformed entries —
+    non-numeric, non-finite, or non-positive values — are dropped, never
+    fatal, so a hand-edited or half-written state row cannot fail the tick
+    or the reorder. Anything that is not a list/tuple at all sanitizes to an
+    empty tuple, which callers treat as "no richer list exists".
+    """
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    horizons: List[float] = []
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        horizon = float(value)
+        if not math.isfinite(horizon) or horizon <= 0.0:
+            continue
+        horizons.append(horizon)
+    return tuple(horizons)
+
+
+def load_precise_reset_horizons(
+    quota_interval_seconds: int,
+    *,
+    now_fn: NowFn = time.time,
+) -> Dict[str, Tuple[float, ...]]:
+    """Map slug -> per-credit reset-expiry horizons from quota_channels state.
+
+    Same state file and freshness rules as ``load_precise_readings``. Only
+    rows whose provider has a resets API (see ``RESET_CREDIT_PROVIDERS``)
+    appear, and only when at least one sanitized horizon survives — a row
+    whose richer list is missing, empty, or entirely malformed is absent, so
+    scoring falls back to the legacy ``reset_count`` +
+    ``reset_expiry_seconds`` shape instead of losing the term or inferring
+    that every credit shares the display clock.
+    """
+    entries = _fresh_quota_state_readings(quota_interval_seconds, now_fn=now_fn)
+    horizons: Dict[str, Tuple[float, ...]] = {}
+    for slug, entry in entries.items():
+        if not isinstance(entry, Mapping):
+            continue
+        provider = str(CHANNEL_KEY_TO_PROVIDER.get(slug, slug)).strip().lower()
+        if provider not in RESET_CREDIT_PROVIDERS:
+            continue
+        clean = sanitize_reset_expiry_horizons(entry.get("reset_expiry_horizons"))
+        if clean:
+            horizons[str(slug)] = clean
+    return horizons
+
+
 def _entry_identity(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
     from hermes_cli.fallback_config import _entry_identity as fallback_identity
 
@@ -559,13 +579,25 @@ def _reset_credit_count(reading: QuotaReading) -> int:
     """The pending-reset count that actually scores for ``reading``.
 
     Contract gate: only providers with a resets API
-    (``RESET_CREDIT_PROVIDERS`` — Codex/Grok) have reset credits, so a
+    (``RESET_CREDIT_PROVIDERS`` — Codex/Grok/z.ai) have reset credits, so a
     reset field injected into any other provider's reading counts as zero
     everywhere: no score term, no low-quota escape.
     """
     if str(reading.provider).strip().lower() not in RESET_CREDIT_PROVIDERS:
         return 0
     return max(0, int(reading.reset_count))
+
+
+def _scored_reset_horizons(reading: QuotaReading) -> Tuple[float, ...]:
+    """The per-credit expiry horizons that score for ``reading``.
+
+    Same contract gate as ``_reset_credit_count``: horizons injected into a
+    provider without a resets API are inert. Malformed entries are dropped
+    by ``sanitize_reset_expiry_horizons`` rather than trusted.
+    """
+    if str(reading.provider).strip().lower() not in RESET_CREDIT_PROVIDERS:
+        return ()
+    return sanitize_reset_expiry_horizons(reading.reset_expiry_horizons)
 
 
 def score_provider(
@@ -576,7 +608,7 @@ def score_provider(
 
     score = (remaining_term + reset_term) * rate_24h * rate_1h
     remaining_term = quota_frac * (REFERENCE_HOURS / hours_remaining)
-    reset_term     = reset_count * (REFERENCE_HOURS / hours_reset_expires)
+    reset_term     = sum over credits of REFERENCE_HOURS / hours_credit_expires
 
     Time enters inversely: the sooner a wallet refills, the more urgent it
     is to burn it now, while a wallet resetting in exactly REFERENCE_HOURS
@@ -585,42 +617,50 @@ def score_provider(
     one minute so a nearly-reset wallet is not divided by zero.
 
     Each pending manual usage-limit reset adds its own full wallet
-    (quota fraction 1.0) on the reset-expiry clock — additive and stackable,
-    with no cap. The invariant: one pending reset at 0% remaining scores
-    exactly like zero resets at 100% remaining when the two clocks match.
-    Providers without a reset-expiry API (Codex) reuse the usage-reset
-    countdown for the reset term, which is what makes that invariant hold
-    for them; a count of 0 adds nothing. Only Codex/Grok have a resets API
+    (quota fraction 1.0) on its own expiry clock — additive and stackable,
+    with no cap. When the richer per-credit horizons are known
+    (``reset_expiry_horizons``), every credit is scored exactly once on its
+    own clock: credits expiring in 3d and 9d score 168/72 + 168/216, never
+    2 * 168/72. A credit whose expiry is unknown is simply absent from that
+    list: it stays counted (``reset_count``) and lifts the wallet out of the
+    low-quota sink, but adds nothing — urgency is not measurable, so no
+    other clock is borrowed as a stand-in. Without a richer list the legacy
+    single-clock shape keeps its meaning: ``reset_count`` credits all on the
+    one ``reset_expiry_seconds`` clock, which is exactly what a channel name
+    or a pre-list state row reports. Only Codex/Grok/z.ai have a resets API
     at all — reset fields on any other provider are inert (see
-    ``_reset_credit_count``).
+    ``_reset_credit_count`` and ``_scored_reset_horizons``).
     """
     hours = max(float(reading.reset_seconds) / 3600.0, MIN_HOURS_REMAINING)
     quota_frac = max(0.0, min(float(reading.pct) / 100.0, 1.0))
     resolved = rates or ReliabilityRates()
     remaining_term = quota_frac * (REFERENCE_HOURS / hours)
-    reset_count = _reset_credit_count(reading)
+    horizons = _scored_reset_horizons(reading)
     reset_term = 0.0
-    if reset_count:
-        # no separate expiry clock (Codex): the reset wallet spends on the
-        # same countdown as the remaining quota
-        expiry_source = (
-            reading.reset_seconds
-            if reading.reset_expiry_seconds is None
-            else reading.reset_expiry_seconds
+    if horizons:
+        reset_term = sum(
+            REFERENCE_HOURS / max(horizon / 3600.0, MIN_HOURS_REMAINING)
+            for horizon in horizons
         )
-        reset_hours = max(float(expiry_source) / 3600.0, MIN_HOURS_REMAINING)
-        reset_term = reset_count * (REFERENCE_HOURS / reset_hours)
+    else:
+        reset_count = _reset_credit_count(reading)
+        if reset_count and reading.reset_expiry_seconds is not None:
+            reset_hours = max(
+                float(reading.reset_expiry_seconds) / 3600.0, MIN_HOURS_REMAINING
+            )
+            reset_term = reset_count * (REFERENCE_HOURS / reset_hours)
     return (remaining_term + reset_term) * resolved.rate_24h * resolved.rate_1h
 
 
 def is_low_quota(reading: QuotaReading) -> bool:
     """True when the reading sinks into the low-quota bucket.
 
-    A 0% wallet with at least one pending usage-limit reset is equivalent
-    to a full one (the reset term replaces the remaining term), so it stays
-    in the healthy bucket; only a genuinely empty wallet with zero pending
-    resets sinks. Resets only exist for Codex/Grok — an injected count on
-    any other provider sinks with the wallet it polluted.
+    A 0% wallet with at least one pending usage-limit reset still holds
+    spendable capacity, so it stays in the healthy bucket (even when that
+    reset's expiry is unknown and it therefore scores nothing); only a
+    genuinely empty wallet with zero pending resets sinks. Resets only exist
+    for Codex/Grok/z.ai — an injected count on any other provider sinks with
+    the wallet it polluted.
     """
     return reading.pct < LOW_QUOTA_PCT and _reset_credit_count(reading) <= 0
 
@@ -674,13 +714,70 @@ def current_primary(config: Mapping[str, Any]) -> Optional[PrimarySlot]:
     return PrimarySlot(provider=provider, model=model)
 
 
-def _unlimited_chain_entry(
-    entries: Sequence[Mapping[str, Any]],
-) -> Optional[Mapping[str, Any]]:
-    for entry in entries:
-        if is_unlimited_route(entry.get("provider"), entry.get("model")):
-            return entry
-    return None
+def _slots_match(left: PrimarySlot, right: PrimarySlot) -> bool:
+    return (
+        left.provider.strip().lower() == right.provider.strip().lower()
+        and left.model.strip() == right.model.strip()
+    )
+
+
+def _entry_matches_slot(entry: Mapping[str, Any], slot: PrimarySlot) -> bool:
+    provider = str(entry.get("provider") or "").strip().lower()
+    model = str(entry.get("model") or "").strip()
+    return provider == slot.provider.strip().lower() and model == slot.model.strip()
+
+
+def _parse_pinned_primary(config: Mapping[str, Any]) -> Optional[PrimarySlot]:
+    """Return the operator-pinned primary when configured; None when disabled."""
+    section = config.get("fallback_quota_reorder")
+    if not isinstance(section, Mapping):
+        return None
+    raw = section.get("pinned_primary")
+    if raw is None or raw == {}:
+        return None
+    if not isinstance(raw, Mapping):
+        raise FallbackQuotaReorderError(
+            "fallback_quota_reorder.pinned_primary must be a mapping with "
+            "provider and model keys"
+        )
+    provider = str(raw.get("provider") or "").strip()
+    model = str(raw.get("model") or "").strip()
+    if not provider:
+        raise FallbackQuotaReorderError(
+            "fallback_quota_reorder.pinned_primary.provider must be a non-empty string"
+        )
+    if not model:
+        raise FallbackQuotaReorderError(
+            "fallback_quota_reorder.pinned_primary.model must be a non-empty string"
+        )
+    return PrimarySlot(provider=provider, model=model)
+
+
+# A pin promotion swaps only model.provider/model.default; any nonempty
+# endpoint/key/mode override on either side is dropped or misrouted.
+PIN_PROMOTION_OVERRIDE_FIELDS = (
+    "base_url",
+    "inference_base_url",
+    "api_key",
+    "api",
+    "key_env",
+    "api_key_env",
+    "api_mode",
+)
+
+
+def _reject_pin_promotion_overrides(mapping: Any, label: str, pin: PrimarySlot) -> None:
+    fields = [
+        field for field in PIN_PROMOTION_OVERRIDE_FIELDS
+        if isinstance(mapping, Mapping) and str(mapping.get(field) or "").strip()
+    ]
+    if fields:
+        raise FallbackQuotaReorderError(
+            f"pinned primary {pin.provider}/{pin.model}: the {label} sets "
+            f"routing/credential field(s) {', '.join(fields)} that a "
+            "provider/model-only swap would drop or misroute; configure the "
+            "pinned route as primary directly, then pin it"
+        )
 
 
 def compute_primary_slot(
@@ -691,21 +788,58 @@ def compute_primary_slot(
 ) -> Optional[PrimarySlot]:
     """Pick the primary winner among scored candidates with a chain entry.
 
-    Candidates are the tracked providers with a reading plus the unlimited
-    ``openrouter/stealth/ox-alpha`` route, all scored with the same
-    ``score_provider`` math — Ox Alpha through its synthetic full-quota
-    reading. Only candidates that have a desired_entries entry with a
-    non-empty model string can be promoted — the model string has to come
-    from somewhere. A top scorer without a chain entry is skipped, and the
-    best scorer WITH one wins instead. The current primary is scored too
-    (an untracked primary such as a plain openrouter route scores 0) and
-    wins ties. Ties between eligible tracked providers resolve to the
-    lowest CHANNEL_KEYS index; the unlimited route competes after them, so
-    it only wins by beating the best tracked score outright. Returns None
-    — "leave the primary alone" — when there is no usable current primary,
-    no eligible candidate at all, or none beats the current primary's
-    score.
+    Candidates are the tracked providers with a reading, all scored with
+    the same ``score_provider`` math. Only candidates that have a
+    desired_entries entry with a non-empty model string can be promoted —
+    the model string has to come from somewhere. A top scorer without a
+    chain entry is skipped, and the best scorer WITH one wins instead. The
+    ``compute_desired_order`` low-quota bucket applies to this race too, on
+    BOTH sides of the comparison: candidates bucket healthy (0) / sunk (1),
+    and so does the current primary — an untracked primary such as an
+    openrouter route is unscored (bucket 2). Buckets are compared before
+    any raw score: a sunk current primary loses the slot to a healthy
+    winner however large its number (a 4%/1m wallet scores 403.2 yet is
+    still nearly empty), a sunk winner never displaces a healthy primary,
+    and every scored winner outranks an untracked one. Raw scores decide
+    only inside one bucket, where the current primary wins exact ties.
+    Ties between eligible tracked providers resolve to the lowest
+    CHANNEL_KEYS index. Returns None — "leave the primary alone" — when
+    there is no usable current primary, no eligible candidate at all, or
+    none outranks the current primary's bucket-then-score standing.
+
+    When ``fallback_quota_reorder.pinned_primary`` is set, the configured
+    route wins the slot regardless of quota scores so an operator-chosen
+    primary survives automatic rotation; malformed pins or a target that is
+    neither the current primary nor a fallback entry fail loudly instead of
+    being ignored.
     """
+    pin = _parse_pinned_primary(config)
+    if pin is not None:
+        current = current_primary(config)
+        if current is not None and _slots_match(current, pin):
+            return None
+        if current is None:
+            raise FallbackQuotaReorderError(
+                "pinned primary requires a usable current primary (both "
+                "model.provider and model.default set) to rotate out; "
+                "configure the pinned route as primary directly, then pin it"
+            )
+        for entry in desired_entries:
+            if _entry_matches_slot(entry, pin):
+                _reject_pin_promotion_overrides(
+                    config.get("model"), "current model mapping", pin
+                )
+                _reject_pin_promotion_overrides(entry, "selected fallback entry", pin)
+                return PrimarySlot(
+                    provider=str(entry.get("provider") or "").strip(),
+                    model=str(entry.get("model") or "").strip(),
+                )
+        raise FallbackQuotaReorderError(
+            "pinned primary "
+            f"{pin.provider}/{pin.model} was not found in the fallback chain "
+            "or current primary"
+        )
+
     current = current_primary(config)
     if current is None:
         return None
@@ -719,18 +853,25 @@ def compute_primary_slot(
     rates = reliability or {}
     current_slug = current.provider.lower()
     current_reading = readings.get(current_slug)
-    if current_reading is not None:
-        current_score: Optional[float] = score_provider(
-            current_reading, rates.get(current_slug)
-        )
-    elif is_unlimited_route(current.provider, current.model):
-        current_score = score_provider(
-            unlimited_reading(), rates.get(current_slug)
-        )
-    else:
-        current_score = None
+    current_score: Optional[float] = (
+        score_provider(current_reading, rates.get(current_slug))
+        if current_reading is not None
+        else None
+    )
 
-    best: Optional[Tuple[float, Mapping[str, Any]]] = None
+    # (bucket, score, entry): bucket 1 is the low-quota sink, so a healthy
+    # candidate beats a sunk one at any raw score — a sub-5% wallet with no
+    # pending reset can carry the highest number in the race (its
+    # hours-remaining denominator floors at one minute) yet sink behind
+    # every healthy entry in the chain; the primary race must sink with it.
+    best: Optional[Tuple[int, float, Mapping[str, Any]]] = None
+
+    def _consider(reading: QuotaReading, entry: Mapping[str, Any], score: float) -> None:
+        nonlocal best
+        bucket = 1 if is_low_quota(reading) else 0
+        if best is None or (bucket, -score) < (best[0], -best[1]):
+            best = (bucket, score, entry)
+
     for key in CHANNEL_KEYS:  # CHANNEL_KEYS order breaks score ties
         provider = CHANNEL_KEY_TO_PROVIDER[key]
         reading = readings.get(provider)
@@ -739,22 +880,28 @@ def compute_primary_slot(
         entry = entry_by_provider.get(provider)
         if entry is None or not str(entry.get("model") or "").strip():
             continue
-        score = score_provider(reading, rates.get(provider))
-        if best is None or score > best[0]:
-            best = (score, entry)
-
-    unlimited = _unlimited_chain_entry(desired_entries)
-    if unlimited is not None:
-        score = score_provider(unlimited_reading(), rates.get(UNLIMITED_PROVIDER))
-        if best is None or score > best[0]:
-            best = (score, unlimited)
+        _consider(reading, entry, score_provider(reading, rates.get(provider)))
 
     if best is None:
         return None
-    if (current_score or 0.0) >= best[0]:
+    # the race ranks the current primary by the chain's bucket order —
+    # healthy (0) before sunk (1) before unscored (2) — and compares that
+    # bucket against the winner's BEFORE any raw score: a sunk current
+    # primary cannot keep the slot on its number alone (a 4%/1m wallet
+    # scores 403.2 yet is still nearly empty), and a sunk winner never
+    # displaces a healthy one. An untracked primary is unscored — bucket 2 —
+    # so every scored winner outranks it. Raw scores (ties to the current)
+    # decide only inside one bucket.
+    if current_reading is not None:
+        current_bucket = 1 if is_low_quota(current_reading) else 0
+    else:
+        current_bucket = 2
+    if current_bucket < best[0]:
+        return None
+    if current_bucket == best[0] and (current_score or 0.0) >= best[1]:
         return None
 
-    winner = best[1]
+    winner = best[2]
     return PrimarySlot(
         provider=str(winner.get("provider") or "").strip(),
         model=str(winner.get("model") or "").strip(),
@@ -769,9 +916,8 @@ def _chain_rank_key(
     """Ordering key mirroring the compute_desired_order buckets.
 
     (0) healthy scored, (1) low-quota scored, (2) unscored; within the
-    scored buckets higher score sorts earlier via ``-score``. The unlimited
-    Ox Alpha route lands in the healthy bucket via its synthetic reading;
-    any other openrouter model without a real reading is unscored.
+    scored buckets higher score sorts earlier via ``-score``. Any entry
+    without a real reading — every openrouter model included — is unscored.
     """
     reading = reading_for_entry(entry, readings)
     if reading is None:
@@ -793,9 +939,8 @@ def rotate_chain_for_primary(
     Drops the promoted provider's entry (it graduates to the primary slot)
     and splices an entry for the displaced previous primary in by the
     compute_desired_order buckets: healthy before low-quota before unscored,
-    score descending within the scored buckets. A displaced Ox Alpha primary
-    re-enters by its synthetic score; any other untracked previous primary
-    (score 0) lands at the END of the chain.
+    score descending within the scored buckets. An untracked displaced
+    previous primary (score 0) lands at the END of the chain.
     """
     rates = reliability or {}
     displaced_entry = {"provider": displaced.provider, "model": displaced.model}
@@ -1025,6 +1170,7 @@ def run_reorder(
         names,
         load_precise_readings(quota_interval_seconds, now_fn=now_fn),
         load_precise_reset_fields(quota_interval_seconds, now_fn=now_fn),
+        load_precise_reset_horizons(quota_interval_seconds, now_fn=now_fn),
     )
 
     from hermes_cli.config import load_config
@@ -1040,8 +1186,8 @@ def run_reorder(
     primary_previous = current_primary(config)
     # Reliability is needed for every scored or current candidate of the
     # primary selection, not just the fallback entries: a promoted primary
-    # (Ox Alpha included) is absent from fallback_providers, yet its rates
-    # decide whether it keeps the slot.
+    # is absent from fallback_providers, yet its rates decide whether it
+    # keeps the slot.
     reliability_providers = {
         str(entry.get("provider") or "") for entry in current_entries
     }

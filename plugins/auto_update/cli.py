@@ -1,4 +1,12 @@
-"""CLI for ``hermes auto_update {status,enable,disable,reconcile,run}``."""
+"""CLI for ``hermes auto_update {status,enable,disable,reconcile,run,activate}``.
+
+``activate`` is the fail-closed half of the two-phase flow: it restarts the
+fleet onto a prepared update only when Hermes is idle *and* the prepared
+generation can be strictly proven (marker, bound receipt, and checkout SHA
+all agreeing) — re-validated under the stock updater lock, with the fleet
+re-inspected after any restart before the obligation is cleared. Anything it
+cannot prove is a nonzero exit that keeps the obligation, never a success.
+"""
 
 from __future__ import annotations
 
@@ -147,6 +155,87 @@ def cmd_run() -> int:
     return 0 if outcome.code == 0 else outcome.code
 
 
+def cmd_activate() -> int:
+    """Finish a prepared update — but only when Hermes is idle.
+
+    Phase B of a scheduler tick, dispatched by ``run_scheduled_update`` in a
+    FRESH process. That is what makes the import below safe: this interpreter
+    loads the code the prepare phase just pulled, while the parent tick (still
+    running pre-pull modules) never touches it.
+
+    Contract:
+
+    - nothing pending → silent no-op, exit 0;
+    - pending without proof the preparation finished → exit 1, nothing
+      restarted. The generic marker is written as soon as HEAD advances,
+      i.e. before dependency sync / build / migration, so a preparation
+      that failed late leaves exactly this shape and the next (up-to-date)
+      tick must not restart the fleet onto it. Only a ``--defer-restart``
+      run that finished every preparation step — and durably published its
+      prepared generation into ``fleet_restart_prepared`` — leaves a
+      record that parses;
+    - pending, prepared, but Hermes is busy → exit 0 and leave the marker, so
+      the prepared update waits for a later tick (or a manual ``/restart``);
+    - pending, prepared, and idle → take the SAME lock a stock/manual update
+      holds, re-check idleness, then the strict activation: every piece of
+      durable state (marker, bound receipt, HEAD, plan, live fleet) is
+      re-read and re-validated under that lock, so no updater can move HEAD
+      or the generation between the inspection and the restart. Lock
+      contention is a retryable non-success (exit 2) that preserves the
+      obligation.
+    """
+    from hermes_cli import update_cmd
+
+    if not update_cmd._pending_fleet_restart_needed():
+        return 0
+
+    if not update_cmd._fleet_restart_pending_prepared():
+        print("⚠ Update is pending but was never fully prepared —")
+        print("  not activating it. Run `hermes update` to finish (or repair)")
+        print("  the preparation first.")
+        return 1
+
+    from plugins.auto_update.idle import evaluate_idle
+
+    settings = load_auto_update_config()
+
+    def _busy() -> int:
+        snapshot = evaluate_idle(idle_minutes=int(settings["idle_minutes"]))
+        if snapshot.idle:
+            return 0
+        blocker = snapshot.blockers[0].code if snapshot.blockers else "busy"
+        print(f"→ Hermes is busy ({blocker}) — prepared update stays pending.")
+        return 1
+
+    # Idle FIRST, deliberately: waiting for Hermes to go quiet can take whole
+    # ticks, and the updater lock must never be held across that wait.
+    if _busy():
+        return 0
+
+    from hermes_cli.update_lock import (
+        UPDATE_EXIT_CONCURRENT,
+        UpdateLock,
+        describe_holder,
+    )
+
+    lock = UpdateLock()
+    if not lock.acquire():
+        print(describe_holder(lock.holder))
+        return UPDATE_EXIT_CONCURRENT
+    try:
+        # Re-check under the lock: the fleet may have gone busy (or idle)
+        # while we were acquiring it.
+        if _busy():
+            return 0
+        # Re-reads and strictly re-validates the marker, its bound receipt,
+        # the checkout HEAD, the runtime plan and the live fleet before it
+        # restarts anything — and clears the obligation only when the fleet
+        # is demonstrably serving the prepared generation.
+        return update_cmd._activate_pending_fleet_restart_strict()
+    finally:
+        lock.release()
+
+
 def register_management_cli(subparser: argparse.ArgumentParser):
     """Register management subcommands only (no ``run`` oneshot entrypoint)."""
     subs = subparser.add_subparsers(dest="auto_update_command")
@@ -166,6 +255,12 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         "run",
         help="Run one scheduled update attempt (systemd oneshot entrypoint)",
     )
+    subs.add_parser(
+        "activate",
+        help=(
+            "Restart the fleet onto a fully prepared update, but only when idle"
+        ),
+    )
 
 
 def auto_update_command(args: argparse.Namespace) -> int:
@@ -180,7 +275,9 @@ def auto_update_command(args: argparse.Namespace) -> int:
         return cmd_reconcile()
     if sub == "run":
         return cmd_run()
-    print("usage: hermes auto_update {status,enable,disable,reconcile,run}")
+    if sub == "activate":
+        return cmd_activate()
+    print("usage: hermes auto_update {status,enable,disable,reconcile,run,activate}")
     return 2
 
 

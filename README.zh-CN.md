@@ -105,7 +105,7 @@ Hermes 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Teleg
 | 压缩上下文 / 查看用量 | `/compress`、`/usage`、`/insights [--days N]` | `/compress`、`/usage`、`/insights [days]` |
 | 浏览技能 | `/skills` 或 `/<skill-name>` | `/skills` 或 `/<skill-name>` |
 | 中断当前工作 | `Ctrl+C` 或发送新消息 | `/stop` 或发送新消息 |
-| 平台特定状态 | `/platforms` | `/status`、`/sethome` |
+| 平台特定状态 | `/platforms` | `/status`、`/platform` |
 
 完整命令列表请参阅 [CLI 指南](https://hermes-agent.nousresearch.com/docs/user-guide/cli) 和 [消息网关指南](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)。
 

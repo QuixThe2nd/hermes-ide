@@ -119,7 +119,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 ```
 
 :::tip
-To get a **Channel ID**: click the channel name → **View Info**. The Channel ID is shown in the info panel. You'll need this if you want to set a home channel manually.
+To get a **Channel ID**: click the channel name → **View Info**. The Channel ID is shown in the info panel. You'll need this when configuring explicit delivery targets (for example a cron job's `deliver` target or a `notification_channel`).
 :::
 
 ## Step 5: Configure Hermes Agent
@@ -179,23 +179,11 @@ The bot should connect to your Mattermost server within a few seconds. Send it a
 You can run `hermes gateway` in the background or as a systemd service for persistent operation. See the deployment docs for details.
 :::
 
-## Home Channel
+## Proactive Delivery Targets
 
-You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:
+Cron jobs and reminders deliver to an explicit target you configure per job — for example `hermes cron edit <id> --deliver mattermost:abc123def456ghi789jkl012mn` (a channel ID copied from the channel's View Info panel).
 
-### Using the Slash Command
-
-Type `/sethome` in any Mattermost channel where the bot is present. That channel becomes the home channel.
-
-### Manual Configuration
-
-Add this to your `~/.hermes/.env`:
-
-```bash
-MATTERMOST_HOME_CHANNEL=abc123def456ghi789jkl012mn
-```
-
-Replace the ID with the actual channel ID (click the channel name → View Info → copy the ID).
+Gateway lifecycle notices (restart/shutdown) go to the platform's **notification channel**: run `/setnotify` in the destination channel to designate it, and `/clearnotify` to remove it.
 
 ## Reply Mode
 

@@ -70,6 +70,12 @@ class _StubCtx:
         self._status_thread_metadata = None
         self._loop_for_step = object()
         self._cleanup_progress = False
+        # Tool progress off → the ordered-queue rail at run.py's
+        # tool_progress_enabled check is skipped; deliveries ride the direct
+        # rail, which is what these tests observe.
+        self.tool_progress_enabled = False
+        self.progress_queue = None
+        self._native_slack_task_cards = False
 
     def _run_still_current(self):
         return True

@@ -5,19 +5,29 @@ That blocks new threads for as long as the slowest session keeps running.
 
 This module is the weaker fix that still covers that symptom:
 
-1. Snapshot every live chat (except the /restart requester) at the moment
-   the park steer is sent. Persist that list so the next process can see it.
-2. Steer each live chat agent once: park at a safe pause and end the turn.
-3. Mark those sessions ``resume_pending`` with ``cooperative_restart``.
-4. Startup auto-resume continues ONLY sessions from that snapshot. Leftover
+1. Steer each live chat (except the /restart requester) once: park at a
+   safe pause and end the turn.
+2. Persist exactly the session keys whose agent ACCEPTED that steer —
+   nothing else — so the next process can see who parked on request.
+3. Mark only those accepted sessions ``resume_pending`` with
+   ``cooperative_restart``.
+4. Startup auto-resume continues ONLY sessions from that receipt. Leftover
    ``resume_pending`` flags on chats that were idle at steer time stay idle.
 
-An empty snapshot is a real receipt: resume nobody. A missing file means
-the previous process never started a cooperative restart (crash / drain
-timeout / older build) and the usual resume_pending scan still applies.
+An empty accepted set is a real receipt: the pause was requested and
+nobody accepted, so resume nobody. A missing file means the previous
+process never started a cooperative restart (crash / older build) and the
+usual resume_pending scan still applies.
 
 Cron and API-server work are not steered — they have no chat loop that can
 park on request. The existing drain wait still covers them.
+
+Since the opt-in change, none of this runs merely because a restart began.
+``request_restart()`` drains and waits naturally. The park steer fires only
+when the requester explicitly opts in — today via the ``⏸️`` reaction on the
+Discord wind-down embed offered beside a user-requested restart — and the
+snapshot is taken at that reaction, not at restart-request time. See
+:meth:`GatewayRunner.accept_restart_wind_down_opt_in`.
 """
 
 from __future__ import annotations
@@ -25,7 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -43,6 +53,112 @@ COOPERATIVE_RESTART_STEER = (
     "Do not wait for the user. Do not ask questions. Stop after you have "
     "reached a pausable state."
 )
+
+
+# ── Opt-in pause reaction ────────────────────────────────────────────────
+# Discord renders the "double vertical bar" pause glyph with or without the
+# emoji variation selector (U+FE0F) depending on the client, and a custom
+# guild emoji named "pause" arrives as ``<:pause:12345>`` — which is a
+# *different* emoji and must NOT authorize anything. Normalize to exactly one
+# canonical string before comparing.
+
+PAUSE_EMOJI = "⏸️"
+_PAUSE_EMOJI_ALIASES = ("⏸", "⏸️")
+
+# Distinct from tools/discord_resolve_tool.py's "hermes ticket resolution"
+# marker: the two reaction features share one dispatcher but never one prompt.
+WIND_DOWN_FOOTER_MARKER = "hermes restart wind-down"
+
+# How long a valid ⏸️ reaction may wait for an offer embed that is still
+# being delivered (the message send plus the seeded-reaction round trip)
+# before it is answered as offer-less. Generous for two REST calls, and a
+# hard bound so a wedged Discord request can never pin a reaction handler.
+RESTART_WIND_DOWN_SEND_WAIT_SECONDS = 5.0
+
+WIND_DOWN_TERMINAL_OPTED_IN = "opted_in"
+WIND_DOWN_TERMINAL_NO_TARGETS = "no_targets"
+WIND_DOWN_TERMINAL_DRAINED = "drained"
+WIND_DOWN_TERMINAL_CLOSED = "closed"
+
+# No "safety cap" terminal exists: a user-requested restart never proceeds
+# while active work remains, so no terminal edit may say a cap was reached
+# or that the restart is proceeding over live work. The only completions are
+# drained / opted-in / no-targets / closed.
+
+
+def normalize_pause_emoji(name: Optional[str]) -> Optional[str]:
+    """Return the canonical pause emoji, or None for anything else."""
+    if not name:
+        return None
+    candidate = str(name).strip()
+    return PAUSE_EMOJI if candidate in _PAUSE_EMOJI_ALIASES else None
+
+
+def restart_wind_down_prompt_spec() -> Dict[str, Any]:
+    """Pure-data fields for the ⏸️ opt-in embed the Discord adapter renders.
+
+    Deliberately carries no part of ``COOPERATIVE_RESTART_STEER`` — that text
+    is an instruction for the *agent*, and the embed is addressed to the user.
+    """
+    return {
+        "title": "⏳ Waiting for active sessions",
+        "description": (
+            "The gateway will restart when active sessions finish. "
+            f"React with {PAUSE_EMOJI} to ask them to pause safely now."
+        ),
+        "footer": f"{WIND_DOWN_FOOTER_MARKER} • pause offer",
+    }
+
+
+def restart_wind_down_terminal_spec(
+    kind: str, *, accepted: int = 0
+) -> Dict[str, Any]:
+    """Pure-data fields for the terminal edit that retires an opt-in embed.
+
+    Every branch names the state in user terms; internal session keys never
+    appear. Unknown kinds fall back to the generic closed copy rather than
+    raising — a bad reason string must not block the terminal edit.
+    """
+    plural = "" if accepted == 1 else "s"
+    if kind == WIND_DOWN_TERMINAL_OPTED_IN and accepted <= 0:
+        # Zero accepted steers is a real outcome (every live agent refused the
+        # steer): the count must stay honest without promising that nobody
+        # will continue automatically.
+        copy = (
+            "⏸️ Pause requested",
+            "No active sessions accepted the safe-pause message; they will "
+            "finish on their own before the restart.",
+        )
+    else:
+        copy = {
+            WIND_DOWN_TERMINAL_OPTED_IN: (
+                f"⏸️ Pausing {accepted} active session{plural}",
+                f"{accepted} active session{plural} accepted the safe-pause message "
+                "and will continue automatically after the restart.",
+            ),
+            WIND_DOWN_TERMINAL_NO_TARGETS: (
+                "⏸️ Nothing left to pause",
+                "The active sessions already finished, so the restart is proceeding.",
+            ),
+            WIND_DOWN_TERMINAL_DRAINED: (
+                "✅ Active sessions finished",
+                "Active sessions finished and the restart is proceeding.",
+            ),
+            WIND_DOWN_TERMINAL_CLOSED: (
+                "⏸️ Restart wind-down closed",
+                "This prompt is no longer active.",
+            ),
+        }.get(kind)
+        if copy is None:
+            copy = (
+                "⏸️ Restart wind-down closed",
+                "This prompt is no longer active.",
+            )
+    return {
+        "title": copy[0],
+        "description": copy[1],
+        "footer": f"{WIND_DOWN_FOOTER_MARKER} • {kind.replace('_', ' ')}",
+    }
 
 
 def is_cooperative_restart_reason(reason: Optional[str]) -> bool:
@@ -95,8 +211,17 @@ def resume_allowlist_path():
     return get_hermes_home() / "gateway" / RESUME_ALLOWLIST_FILENAME
 
 
-def write_resume_allowlist(session_keys: Iterable[str]) -> list[str]:
-    """Persist the steer-time active-chat snapshot. Empty is a real receipt."""
+def write_resume_allowlist(session_keys: Iterable[str]) -> bool:
+    """Persist exactly the accepted-steer receipt. Empty is a real receipt.
+
+    Returns True only when the accepted set — empty included — is durably on
+    disk. A failed write must not leave an older cycle's receipt standing in
+    for this one: the next boot would read those stale keys as "resume
+    exactly these" for a cycle that never steered them. So on failure the
+    stale file is explicitly invalidated (best-effort unlink); if even that
+    fails, the caller keeps its "written" latch unset so the cycle-finalize
+    path clears the receipt again before anything can rely on it.
+    """
     keys: list[str] = []
     seen: set[str] = set()
     for raw in session_keys:
@@ -112,10 +237,20 @@ def write_resume_allowlist(session_keys: Iterable[str]) -> list[str]:
         )
     except Exception:
         logger.warning(
-            "cooperative restart: failed to persist resume allowlist",
+            "cooperative restart: failed to persist the accepted-steer "
+            "resume receipt; invalidating any stale receipt",
             exc_info=True,
         )
-    return keys
+        try:
+            resume_allowlist_path().unlink(missing_ok=True)
+        except OSError:
+            logger.debug(
+                "cooperative restart: could not invalidate the stale resume "
+                "receipt after a failed write",
+                exc_info=True,
+            )
+        return False
+    return True
 
 
 def load_resume_allowlist() -> Optional[set[str]]:
@@ -155,6 +290,25 @@ def consume_resume_allowlist() -> Optional[set[str]]:
     return allowlist
 
 
+def clear_resume_allowlist() -> bool:
+    """Drop a snapshot this process never wrote.
+
+    A restart cycle that ends without an opt-in must not leave an older
+    cycle's receipt behind for the next boot to consume: ``consume`` would
+    read it as "resume exactly these" even though nothing steered them this
+    time. Missing file is success — there was nothing to drop.
+    """
+    try:
+        resume_allowlist_path().unlink(missing_ok=True)
+    except OSError:
+        logger.debug(
+            "cooperative restart: could not clear stale resume allowlist",
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 def should_auto_resume_session(
     session_key: str, allowlist: Optional[set[str]]
 ) -> bool:
@@ -164,33 +318,30 @@ def should_auto_resume_session(
     return bool(session_key) and session_key in allowlist
 
 
-def snapshot_active_sessions_for_restart(runner: Any) -> list[str]:
-    """Log and persist live chats at the moment the park steer is sent."""
-    keys = [session_key for session_key, _agent in iter_steerable_agents(runner)]
-    written = write_resume_allowlist(keys)
-    logger.info(
-        "Cooperative restart snapshot: %d active chat(s) at steer time%s",
-        len(written),
-        f" ({', '.join(written[:8])})" if written else "",
-    )
-    return written
-
-
 def steer_running_agents_for_restart(runner: Any) -> list[str]:
     """Inject a one-shot park steer into each live chat agent.
 
     Returns the session keys that accepted a steer. Never interrupts. A
     missing ``steer()`` or a rejected empty agent is skipped.
+
+    Every key this pass ATTEMPTED (accepted or not) is folded into
+    ``runner._cooperative_restart_sessions``, which is what makes the steer
+    exactly-once per session: a later pass — or a duplicate opt-in — skips
+    them instead of re-asking. Rejected keys are recorded but are the
+    caller's business alone: only accepted keys may be persisted or marked.
     """
     steered: list[str] = []
     already = getattr(runner, "_cooperative_restart_sessions", None)
-    seen = set(already) if already else set()
+    attempted = list(already) if already else []
+    seen = set(attempted)
     for session_key, agent in iter_steerable_agents(runner):
         if session_key in seen:
             continue
         steer = getattr(agent, "steer", None)
         if not callable(steer):
             continue
+        attempted.append(session_key)
+        seen.add(session_key)
         try:
             accepted = bool(steer(COOPERATIVE_RESTART_STEER))
         except Exception:
@@ -202,6 +353,7 @@ def steer_running_agents_for_restart(runner: Any) -> list[str]:
             continue
         if accepted:
             steered.append(session_key)
+    runner._cooperative_restart_sessions = attempted
     return steered
 
 

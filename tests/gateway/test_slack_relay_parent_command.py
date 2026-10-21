@@ -1,7 +1,7 @@
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 from gateway.relay.ws_transport import _event_from_wire
 
 
@@ -21,8 +21,6 @@ def _wire(text: str, *, platform: str = "slack") -> dict:
 @pytest.mark.parametrize(
     ("wire_text", "expected"),
     [
-        ("/hermes sethome", "/sethome"),
-        ("/hermes\tsethome", "/sethome"),
         (
             "/hermes model gpt-5.6 --provider openai",
             "/model gpt-5.6 --provider openai",

@@ -847,3 +847,73 @@ class TestRuntimeModelConfigDropsStaleKeys:
         assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
 
 
+
+
+class TestRetiredOxAlphaRouteResume:
+    """A session row persisted on the retired openrouter/stealth/ox-alpha
+    route must not be restored over the migrated (promoted) config — the
+    v41 migration removed the route because every request on it now fails.
+    Exact-route match only: a custom provider/base_url serving the same
+    model id is a different, still-valid route and keeps restoring."""
+
+    def test_retired_route_row_yields_no_overrides(self):
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "stealth/ox-alpha",
+            "model_config": json.dumps(
+                {
+                    "model": "stealth/ox-alpha",
+                    "provider": "openrouter",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_mode": "chat_completions",
+                }
+            ),
+            "billing_provider": "openrouter",
+        }
+        assert _stored_session_runtime_overrides(row) == {}
+
+    def test_retired_route_billing_provider_row_yields_no_overrides(self):
+        """billing_provider-only rows name the same dead route."""
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "stealth/ox-alpha",
+            "model_config": None,
+            "billing_provider": "openrouter",
+        }
+        assert _stored_session_runtime_overrides(row) == {}
+
+    def test_custom_endpoint_same_model_id_still_restores(self):
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "stealth/ox-alpha",
+            "model_config": json.dumps(
+                {
+                    "model": "stealth/ox-alpha",
+                    "provider": None,
+                    "base_url": "http://127.0.0.1:65534/v1",
+                    "api_mode": "chat_completions",
+                }
+            ),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+        assert overrides["model_override"]["model"] == "stealth/ox-alpha"
+        assert overrides["model_override"]["base_url"] == "http://127.0.0.1:65534/v1"
+
+    def test_named_custom_provider_same_model_id_still_restores(self, monkeypatch):
+        import hermes_cli.runtime_provider as rp
+
+        monkeypatch.setattr(rp, "is_routable_provider", lambda _p: True)
+        from tui_gateway.server import _stored_session_runtime_overrides
+
+        row = {
+            "model": "stealth/ox-alpha",
+            "model_config": json.dumps(
+                {"model": "stealth/ox-alpha", "provider": "my-gateway"}
+            ),
+        }
+        overrides = _stored_session_runtime_overrides(row)
+        assert overrides["provider_override"] == "my-gateway"
+        assert overrides["model_override"]["model"] == "stealth/ox-alpha"

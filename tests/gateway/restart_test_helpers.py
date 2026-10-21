@@ -8,14 +8,15 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
 )
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
 
 class RestartTestAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+    def __init__(self, platform: Platform = Platform.TELEGRAM):
+        super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent: list[str] = []
         self.sent_calls: list[tuple[str, str, object]] = []
 
@@ -41,22 +42,30 @@ def make_restart_source(
     chat_id: str = "123456",
     chat_type: str = "dm",
     thread_id: str | None = None,
+    platform: Platform = Platform.TELEGRAM,
+    user_id: str | None = "u1",
+    **extra,
 ) -> SessionSource:
-    return SessionSource(
-        platform=Platform.TELEGRAM,
+    source = SessionSource(
+        platform=platform,
         chat_id=chat_id,
         chat_type=chat_type,
-        user_id="u1",
+        user_id=user_id,
         thread_id=thread_id,
     )
+    for key, value in extra.items():
+        setattr(source, key, value)
+    return source
 
 
 def make_restart_runner(
     adapter: BasePlatformAdapter | None = None,
+    *,
+    platform: Platform = Platform.TELEGRAM,
 ) -> tuple[GatewayRunner, BasePlatformAdapter]:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={platform: PlatformConfig(enabled=True, token="***")}
     )
     runner._running = True
     runner._shutdown_event = asyncio.Event()
@@ -74,11 +83,23 @@ def make_restart_runner(
     runner._restart_task_started = False
     runner._restart_detached = False
     runner._restart_via_service = False
-    runner._detached_restart_helper_started = False
+    runner._detached_restart_watcher_started = False
     runner._restart_command_source = None
+    runner._restart_generation = 0
+    runner._restart_cycle_open = False
+    runner._restart_wind_down_nonce = None
+    runner._restart_wind_down_offer = None
+    runner._restart_wind_down_accepted = False
+    runner._restart_wind_down_allowlist_written = False
+    runner._restart_wind_down_finalized = False
+    runner._restart_wind_down_final_reason = None
+    runner._restart_wind_down_send_in_flight = None
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._restart_after_turn_timeout = DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
     runner._cron_drain_timeout = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
+    runner._signal_interrupt_grace_timeout = (
+        DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    )
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"
     runner._update_prompt_pending = {}
@@ -97,20 +118,30 @@ def make_restart_runner(
     runner._handle_active_session_busy_message = (
         GatewayRunner._handle_active_session_busy_message.__get__(runner, GatewayRunner)
     )
-    runner.begin_user_restart = GatewayRunner.begin_user_restart.__get__(
-        runner, GatewayRunner
-    )
+    # The upstream merge that folded the restart flow into the monolithic
+    # runner dropped GatewayRunner.begin_user_restart while callers and these
+    # bindings survived; bind defensively so helper consumers don't crash.
+    _begin_user_restart = getattr(GatewayRunner, "begin_user_restart", None)
+    if _begin_user_restart is not None:
+        runner.begin_user_restart = _begin_user_restart.__get__(runner, GatewayRunner)
+    _stage_and_promote = getattr(GatewayRunner, "_stage_and_promote_restart_marker", None)
+    if _stage_and_promote is not None:
+        runner._stage_and_promote_restart_marker = _stage_and_promote.__get__(
+            runner, GatewayRunner
+        )
+    _rollback_aborted = getattr(GatewayRunner, "_rollback_aborted_user_restart", None)
+    if _rollback_aborted is not None:
+        runner._rollback_aborted_user_restart = _rollback_aborted.__get__(
+            runner, GatewayRunner
+        )
     runner._handle_restart_command = GatewayRunner._handle_restart_command.__get__(
-        runner, GatewayRunner
-    )
-    runner._handle_set_home_command = GatewayRunner._handle_set_home_command.__get__(
         runner, GatewayRunner
     )
     runner._send_restart_notification = GatewayRunner._send_restart_notification.__get__(
         runner, GatewayRunner
     )
-    runner._send_home_channel_startup_notifications = (
-        GatewayRunner._send_home_channel_startup_notifications.__get__(runner, GatewayRunner)
+    runner._send_notification_channel_startup_notifications = (
+        GatewayRunner._send_notification_channel_startup_notifications.__get__(runner, GatewayRunner)
     )
     runner._status_action_label = GatewayRunner._status_action_label.__get__(
         runner, GatewayRunner
@@ -133,6 +164,23 @@ def make_restart_runner(
     runner._active_work_count = GatewayRunner._active_work_count.__get__(
         runner, GatewayRunner
     )
+    runner._active_deferred_agent_worker_count = (
+        GatewayRunner._active_deferred_agent_worker_count.__get__(
+            runner, GatewayRunner
+        )
+    )
+    runner._pending_background_task_count = (
+        GatewayRunner._pending_background_task_count.__get__(runner, GatewayRunner)
+    )
+    runner._authoritative_active_work_count = (
+        GatewayRunner._authoritative_active_work_count.__get__(runner, GatewayRunner)
+    )
+    runner._probed_active_work_count = (
+        GatewayRunner._probed_active_work_count.__get__(runner, GatewayRunner)
+    )
+    runner._slash_drain_gate_notice = GatewayRunner._slash_drain_gate_notice.__get__(
+        runner, GatewayRunner
+    )
     runner._persist_active_agents = GatewayRunner._persist_active_agents.__get__(
         runner, GatewayRunner
     )
@@ -148,8 +196,10 @@ def make_restart_runner(
     runner._get_cached_session_source = GatewayRunner._get_cached_session_source.__get__(
         runner, GatewayRunner
     )
-    runner._launch_detached_restart_command = GatewayRunner._launch_detached_restart_command.__get__(
-        runner, GatewayRunner
+    runner._launch_detached_restart_watcher = (
+        GatewayRunner._launch_detached_restart_watcher.__get__(
+            runner, GatewayRunner
+        )
     )
     runner._await_active_work_before_restart = (
         GatewayRunner._await_active_work_before_restart.__get__(runner, GatewayRunner)
@@ -160,6 +210,33 @@ def make_restart_runner(
             runner, GatewayRunner
         )
     )
+    runner._begin_restart_cycle = GatewayRunner._begin_restart_cycle.__get__(
+        runner, GatewayRunner
+    )
+    runner._restart_wind_down_offer_eligible = (
+        GatewayRunner._restart_wind_down_offer_eligible.__get__(runner, GatewayRunner)
+    )
+    runner._send_restart_wind_down_prompt = (
+        GatewayRunner._send_restart_wind_down_prompt.__get__(runner, GatewayRunner)
+    )
+    runner._open_restart_wind_down_send = (
+        GatewayRunner._open_restart_wind_down_send.__get__(runner, GatewayRunner)
+    )
+    runner._close_restart_wind_down_send = (
+        GatewayRunner._close_restart_wind_down_send.__get__(runner, GatewayRunner)
+    )
+    runner._await_restart_wind_down_send = (
+        GatewayRunner._await_restart_wind_down_send.__get__(runner, GatewayRunner)
+    )
+    runner.accept_restart_wind_down_opt_in = (
+        GatewayRunner.accept_restart_wind_down_opt_in.__get__(runner, GatewayRunner)
+    )
+    runner._finalize_restart_wind_down_offer = (
+        GatewayRunner._finalize_restart_wind_down_offer.__get__(runner, GatewayRunner)
+    )
+    runner._wedged_agent_count = GatewayRunner._wedged_agent_count.__get__(
+        runner, GatewayRunner
+    )
     runner._is_user_authorized = lambda _source: True
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
@@ -168,8 +245,8 @@ def make_restart_runner(
     runner.session_store._entries = {}
     runner.delivery_router = MagicMock()
 
-    platform_adapter = adapter or RestartTestAdapter()
+    platform_adapter = adapter or RestartTestAdapter(platform)
     platform_adapter.set_message_handler(AsyncMock(return_value=None))
     platform_adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
-    runner.adapters = {Platform.TELEGRAM: platform_adapter}
+    runner.adapters = {platform: platform_adapter}
     return runner, platform_adapter

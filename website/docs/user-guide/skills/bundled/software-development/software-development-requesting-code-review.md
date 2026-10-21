@@ -15,13 +15,13 @@ Pre-commit review: security scan, quality gates, auto-fix.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development/requesting-code-review` |
+| Path | `skills/software-development\requesting-code-review` |
 | Version | `2.0.0` |
 | Author | Hermes Agent (adapted from obra/superpowers + MorAlekss) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `code-review`, `security`, `verification`, `quality`, `pre-commit`, `auto-fix` |
-| Related skills | [`subagent-driven-development`](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development), [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) |
+| Related skills | [`subagent-driven-development`](../../optional/software-development/software-development-subagent-driven-development.md), [`test-driven-development`](./software-development-test-driven-development.md), [`github`](./software-development-github.md) |
 
 ## Reference: full SKILL.md
 
@@ -45,8 +45,8 @@ quality gates, an independent reviewer subagent, and an auto-fix loop.
 
 **Skip for:** documentation-only changes, pure config tweaks, or when user says "skip verification".
 
-**This skill vs github-code-review:** This skill verifies YOUR changes before committing.
-`github-code-review` reviews OTHER people's PRs on GitHub with inline comments.
+**This skill vs github:** This skill verifies YOUR changes before committing.
+`github` reviews OTHER people's PRs on GitHub with inline comments.
 
 ## Step 1 — Get the diff
 
@@ -142,13 +142,13 @@ Quick scan before dispatching the reviewer:
 
 ## Step 5 — Independent reviewer subagent
 
-Call `delegate_task` directly — it is NOT available inside execute_code or scripts.
+Call `delegate_agent` directly — it is NOT available inside execute_code or scripts.
 
 The reviewer gets ONLY the diff and static scan results. No shared context with
 the implementer. Fail-closed: unparseable response = fail.
 
 ```python
-delegate_task(
+delegate_agent(
     goal="""You are an independent code reviewer. You have no context about how
 these changes were made. Review the git diff and return ONLY valid JSON.
 
@@ -217,7 +217,7 @@ Spawn a THIRD agent context — not you (the implementer), not the reviewer.
 It fixes ONLY the reported issues:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="""You are a code fix agent. Fix ONLY the specific issues listed below.
 Do NOT refactor, rename, or change anything else. Do NOT add features.
 
@@ -291,7 +291,7 @@ tests exist, tests pass, no regressions.
 - **Empty diff** — check `git status`, tell user nothing to verify
 - **Not a git repo** — skip and tell user
 - **Large diff (>15k chars)** — split by file, review each separately
-- **delegate_task returns non-JSON** — retry once with stricter prompt, then treat as FAIL
+- **delegate_agent returns non-JSON** — retry once with stricter prompt, then treat as FAIL
 - **False positives** — if reviewer flags something intentional, note it in fix prompt
 - **No test framework found** — skip regression check, reviewer verdict still runs
 - **Lint tools not installed** — skip that check silently, don't fail

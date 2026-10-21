@@ -67,7 +67,7 @@ const info: SessionInfo = {
     clarify: ['clarify'],
     code_execution: ['execute_code'],
     cronjob: ['cronjob'],
-    delegation: ['delegate_task'],
+    delegation: ['delegate_agent'],
     file: ['patch', 'read_file', 'search_files', 'write_file']
   },
   update_behind: 1,

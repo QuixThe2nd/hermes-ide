@@ -38,10 +38,6 @@ optional_env:
     description: "Spawn the Node sidecar on connect (true/false, default true)"
     prompt: "Auto-start the sidecar?"
     password: false
-  - name: PHOTON_NODE_BIN
-    description: "Path to the node binary (default: shutil.which('node'))"
-    prompt: "Node executable path"
-    password: false
   - name: PHOTON_DASHBOARD_HOST
     description: "Photon Dashboard API host (default https://app.photon.codes)"
     prompt: "Dashboard host"
@@ -58,6 +54,10 @@ optional_env:
     description: "Allow any sender to trigger the bot (dev only — disables allowlist)"
     prompt: "Allow all users? (true/false)"
     password: false
+  - name: PHOTON_READ_RECEIPTS
+    description: "Mark inbound iMessages read after forwarding to Hermes (true/false, default true)"
+    prompt: "Send read receipts? (true/false)"
+    password: false
   - name: PHOTON_REQUIRE_MENTION
     description: "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"
     prompt: "Require a mention in group chats?"
@@ -65,14 +65,6 @@ optional_env:
   - name: PHOTON_MENTION_PATTERNS
     description: "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)"
     prompt: "Group mention patterns"
-    password: false
-  - name: PHOTON_HOME_CHANNEL
-    description: "Default Photon target for cron / notification delivery: Spectrum space id, DM GUID, or bare E.164 phone number"
-    prompt: "Home Photon target"
-    password: false
-  - name: PHOTON_HOME_CHANNEL_NAME
-    description: "Human label for the home channel"
-    prompt: "Home channel display name"
     password: false
   - name: PHOTON_TELEMETRY
     description: "Enable Spectrum SDK telemetry in the sidecar (true/false, default false; toggle with `hermes photon telemetry on|off`)"

@@ -11,6 +11,7 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import web_server
+import hermes_cli.web_server_gateway as _web_server_gateway
 
 
 @pytest.fixture
@@ -56,8 +57,24 @@ def _patch_provider(monkeypatch, streamer, cap=4000):
     monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: cap)
 
 
+class _RateLearningStreamer(_FakeStreamer):
+    """Mimics the OpenAI-compatible streamer: the true PCM rate is only known once
+    the endpoint's response headers arrive inside stream()."""
+
+    def stream(self, text):
+        self.sample_rate = 44100
+        yield from super().stream(text)
 
 
+def test_start_frame_carries_rate_learned_during_first_stream(stream_client, monkeypatch):
+    streamer = _RateLearningStreamer([b"\x01\x02"])
+    _patch_provider(monkeypatch, streamer)
+
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
+        assert conn.receive_json() == {"type": "start", "sample_rate": 44100, "channels": 1}
+        assert conn.receive_bytes() == b"\x01\x02"
+        assert conn.receive_json() == {"type": "end"}
 
 
 def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
@@ -65,10 +82,10 @@ def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
     _patch_provider(monkeypatch, streamer)
 
     with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
         start = conn.receive_json()
         assert start == {"type": "start", "sample_rate": 24000, "channels": 1}
 
-        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
         assert conn.receive_bytes() == b"\x01\x02\x03\x04"
         assert conn.receive_bytes() == b"\x05\x06"
         assert conn.receive_json() == {"type": "end"}
@@ -87,12 +104,12 @@ def test_long_text_is_split_across_provider_requests(stream_client, monkeypatch)
     _patch_provider(monkeypatch, streamer, cap=24)
 
     with stream_client.websocket_connect(_url()) as conn:
-        assert conn.receive_json()["type"] == "start"
         conn.send_text(
             json.dumps(
                 {"text": "First sentence here. Second sentence here. Third one.", "done": True}
             )
         )
+        assert conn.receive_json()["type"] == "start"
         # One PCM frame per split piece, then end.
         frames = 0
         while True:
@@ -113,7 +130,7 @@ def test_long_text_is_split_across_provider_requests(stream_client, monkeypatch)
 
 def test_split_text_respects_cap_and_preserves_content():
     text = "Alpha beta. Gamma delta epsilon. Zeta eta theta iota kappa."
-    pieces = web_server._split_text_for_speak_stream(text, 30)
+    pieces = _web_server_gateway._split_text_for_speak_stream(text, 30)
     assert pieces
     assert all(len(piece) <= 30 for piece in pieces)
     joined = " ".join(pieces)

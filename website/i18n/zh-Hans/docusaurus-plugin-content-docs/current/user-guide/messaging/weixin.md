@@ -79,10 +79,6 @@ WEIXIN_ALLOWED_USERS=user_id_1,user_id_2
 
 # 可选：恢复旧版多行拆分行为
 # WEIXIN_SPLIT_MULTILINE_MESSAGES=true
-
-# 可选：cron/通知的默认频道
-WEIXIN_HOME_CHANNEL=chat_id
-WEIXIN_HOME_CHANNEL_NAME=Home
 ```
 
 ### 3. 启动网关
@@ -288,8 +284,6 @@ iLink Bot API 要求在每条出站消息中回传 `context_token`（针对特�
 | `WEIXIN_GROUP_POLICY` | — | `disabled` | 群组访问策略：`open`、`allowlist`、`disabled` |
 | `WEIXIN_ALLOWED_USERS` | — | _（空）_ | 私信白名单的逗号分隔用户 ID |
 | `WEIXIN_GROUP_ALLOWED_USERS` | — | _（空）_ | 群组白名单的逗号分隔**群聊 ID**（非成员用户 ID）。变量名为历史遗留，实际填写的是群 ID 而非用户 ID。 |
-| `WEIXIN_HOME_CHANNEL` | — | — | cron/通知输出的聊天 ID |
-| `WEIXIN_HOME_CHANNEL_NAME` | — | `Home` | 默认频道的显示名称 |
 | `WEIXIN_ALLOW_ALL_USERS` | — | — | 网关级别的允许所有用户标志（由配置向导使用） |
 
 ## 故障排查
@@ -301,6 +295,7 @@ iLink Bot API 要求在每条出站消息中回传 `context_token`（针对特�
 | `Weixin startup failed: WEIXIN_ACCOUNT_ID is required` | 在 `.env` 中设置 `WEIXIN_ACCOUNT_ID`，或运行 `hermes gateway setup` |
 | `Another local Hermes gateway is already using this Weixin token` | 先停止另一个网关实例——每个 token 只允许一个轮询器 |
 | 会话过期（`errcode=-14`） | 登录会话已过期。重新运行 `hermes gateway setup` 扫描新二维码 |
+| 主动发送（cron / 通知）失败并报 `ret=-2 errmsg=prepare failed` 或 `unknown error` | 对方的 `context_token` 已失效（近期没有收到其入站消息）。适配器将其视为会话失效而非限流，并且会不带 token 重发一次，因此消息仍能送达。只有其他 `-2` 响应才会触发限流退避/冷却 |
 | 配置过程中二维码过期 | 二维码最多自动刷新 3 次。若持续过期，请检查网络连接 |
 | Bot 不响应私信 | 检查 `WEIXIN_DM_POLICY`——若设置为 `allowlist`，发送方必须在 `WEIXIN_ALLOWED_USERS` 中 |
 | Bot 忽略群消息 | 群组策略默认为 `disabled`。设置 `WEIXIN_GROUP_POLICY=open` 或 `allowlist`——但请注意，扫码登录的 iLink bot 身份（`...@im.bot`）通常根本无法接收普通微信群消息。若网关日志中没有群消息的原始入站事件，限制来自 iLink 侧，而非 Hermes。 |

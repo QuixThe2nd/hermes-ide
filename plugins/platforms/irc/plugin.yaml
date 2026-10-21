@@ -48,7 +48,3 @@ optional_env:
     description: "Allow anyone in the channel to talk to the bot (dev only)"
     prompt: "Allow all users? (true/false)"
     password: false
-  - name: IRC_HOME_CHANNEL
-    description: "Channel for cron / notification delivery (defaults to IRC_CHANNEL)"
-    prompt: "Home channel (or empty)"
-    password: false

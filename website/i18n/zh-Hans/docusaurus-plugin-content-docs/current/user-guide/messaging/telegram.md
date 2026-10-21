@@ -44,7 +44,7 @@ Hermes Agent 与 Telegram 集成，作为功能完整的对话机器人。连接
 ```
 help - Show help information
 new - Start a new conversation
-sethome - Set this chat as the home channel
+setnotify - Set this chat as the notification channel
 ```
 :::
 
@@ -262,30 +262,31 @@ TELEGRAM_PROXY=socks5://127.0.0.1:1080
 
 代理同时适用于主 Telegram 连接和备用 IP 传输。如果未设置 Telegram 专用代理，gateway 会回退到 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（或 macOS 系统代理自动检测）。
 
-## 主频道
+## 定时投递
 
-在任意 Telegram 聊天（私聊或群组）中使用 `/sethome` 命令，将其指定为**主频道**。定时任务（cron 任务）的结果会投递到此频道。
-
-也可以在 `~/.hermes/.env` 中手动设置：
+在 Telegram 聊天中使用 `/cron` 创建的 cron 任务会将结果投递回该聊天（任务捕获的 origin）。要投递到其他位置 — 或任务没有捕获 origin 时 — 设置显式的 `platform:chat_id[:thread_id]` 目标：
 
 ```bash
-TELEGRAM_HOME_CHANNEL=-1001234567890
-TELEGRAM_HOME_CHANNEL_NAME="My Notes"
+hermes cron edit <id> --deliver telegram:-1001234567890
 ```
+
+`deliver` 值无法解析到目标的任务会记录一条投递错误，提示你设置显式目标；输出永远不会被静默丢弃。
 
 :::tip
 群聊 ID 是负数（例如 `-1001234567890`）。你的个人私聊 ID 与你的用户 ID 相同。
 :::
 
+Gateway 生命周期通知（重启/关机）发送到平台的**通知频道**：在目标聊天中运行 `/setnotify` 指定它。
+
 ### 话题模式下的 Cron 投递
 
-如果你在机器人私聊中启用了话题模式，投递到根聊天的 cron 消息会落入仅限系统的大厅——在那里回复不会开启会话，你会看到"主聊天保留给系统命令"的提示。创建一个专用论坛话题（例如 `Cron`）并设置：
+如果你在机器人私聊中启用了话题模式，投递到根聊天的 cron 消息会落入仅限系统的大厅——在那里回复不会开启会话，你会看到"主聊天保留给系统命令"的提示。创建一个专用论坛话题（例如 `Cron`），并在任务的投递目标后附加该话题的 thread ID：
 
 ```bash
-TELEGRAM_CRON_THREAD_ID=<topic_thread_id>
+hermes cron edit <id> --deliver telegram:<chat_id>:<topic_thread_id>
 ```
 
-`TELEGRAM_CRON_THREAD_ID` 仅针对 cron 投递覆盖 `TELEGRAM_HOME_CHANNEL_THREAD_ID`。在该话题中的回复会继续该话题的现有会话。
+在该话题中的回复会继续该话题的现有会话。
 
 ## 语音消息
 
@@ -633,7 +634,7 @@ platforms:
 
 带有 `skill` 字段的话题会在该话题中新会话开始时自动加载该技能。这与在对话开始时输入 `/skill-name` 完全相同——技能内容会注入到第一条消息中，后续消息在对话历史中可以看到它。
 
-例如，带有 `skill: arxiv` 的话题会在其会话重置时（由于空闲超时、每日重置或手动 `/reset`）预加载 arxiv 技能。
+例如，带有 `skill: arxiv` 的话题会在其会话重置时（手动 `/new` 或 `/reset`）预加载 arxiv 技能。
 
 :::tip
 在配置之外创建的话题（例如通过手动调用 Telegram API）会在 `forum_topic_created` 服务消息到达时自动被发现。你也可以在 gateway 运行时向配置中添加话题——它们会在下次缓存未命中时被拾取。
@@ -757,7 +758,7 @@ Hermes 会确认会话标题，并重放最后一条助手消息以提供上下�
 - 论坛启用私聊中的 General（置顶顶部）话题被视为根大厅，无论 Telegram 是以 `message_thread_id=1` 还是无 thread_id 投递其消息
 - 根大厅提醒每个聊天每 30 秒限速一条——忘记话题模式已开启并在根目录输入十条 prompt 的用户不会收到十条回复
 - BotFather 设置截图每个聊天每 5 分钟限速一次发送——在 Threads Settings 仍然禁用时重复尝试 `/topic` 不会重复上传同一张图片
-- 在话题内启动的 `/background <prompt>` 会将结果投递回同一话题；后台会话不会触发所属话题的自动重命名
+- 在话题内启动的 `/bg <prompt>` 会将结果投递回同一话题；后台会话不会触发所属话题的自动重命名
 - `/topic` 本身受机器人用户授权检查限制——未授权的私聊会收到拒绝而非激活
 
 ### 禁用多会话模式
@@ -894,9 +895,15 @@ gateway:
     telegram:
       extra:
         rich_messages: true
+        rich_drafts: false
+        allow_cjk_rich_messages: false
 ```
 
-这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
+这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。`rich_drafts` 控制私聊流式预览是否使用富渲染（`sendRichMessageDraft`），默认关闭，因为 Telegram Desktop/macOS 可能在聊天重绘前视觉叠加富草稿帧；关闭时，预览以纯文本流式显示，最终消息仍以原生富消息送达。
+
+CJK 文本（中文、日文、韩文以及罕见汉字扩展）默认仍走旧版 MarkdownV2 路径，因为受影响的 Telegram Desktop/macOS 客户端曾将 Bot API 富消息渲染成重叠的 CJK 字形。如果你使用不受影响的客户端，并希望 CJK 内容里的表格、任务列表、折叠详情和公式走原生富渲染，可以在 `rich_messages: true` 旁显式设置 `allow_cjk_rich_messages: true`，接受该客户端侧风险。
+
+如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 
@@ -1196,7 +1203,7 @@ telegram:
 
 点击按钮回答，或点击 **Other** 输入自由形式的回复（你发送的下一条消息成为答案）。开放式 `clarify` 调用（无预设选项）跳过按钮，直接捕获你的下一条消息。
 
-通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `600` 秒）。如果你在超时内没有响应，Agent 会以哨兵消息解除阻塞并适应，而不是挂起。
+通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `3600` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，Agent 会以哨兵消息解除阻塞并适应，而不是挂起。
 
 ## 推送通知音量
 

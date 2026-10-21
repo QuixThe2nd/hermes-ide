@@ -87,6 +87,7 @@ curl http://localhost:8644/health
 | `deliver` | 否 | 响应发送目标：`github_comment`、`telegram`、`discord`、`slack`、`signal`、`sms`、`whatsapp`、`matrix`、`mattermost`、`homeassistant`、`email`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`，或 `log`（默认）。 |
 | `deliver_extra` | 否 | 额外的投递配置——键取决于 `deliver` 类型（例如 `repo`、`pr_number`、`chat_id`）。值支持与 `prompt` 相同的 `{dot.notation}` 模板语法。 |
 | `deliver_only` | 否 | 若为 `true`，完全跳过 agent——渲染后的 `prompt` 模板直接作为消息体投递。零 LLM token 消耗，亚秒级投递。参见[直接投递模式](#direct-delivery-mode)了解使用场景。要求 `deliver` 为真实目标（非 `log`）。 |
+| `cron_job` | 否 | 每次事件触发一个已有的 cron 任务（按 ID 或名称），而不是启动新的 webhook agent 会话。渲染后的 `prompt` 作为单次运行的临时上下文；以任务自身的 prompt、skills、模型和投递设置为准。与 `deliver_only` 互斥。参见[事件触发的 Cron 任务](#event-triggered-cron-jobs)。 |
 
 ### 完整示例
 
@@ -223,7 +224,7 @@ webhooks:
         message_thread_id: "42"
 ```
 
-若 `deliver_extra` 中未提供 `chat_id`，则回退到目标平台配置的主频道。
+若 `deliver_extra` 中未提供 `chat_id`，投递会以“no delivery target”错误失败——请始终为目标平台设置显式 `chat_id`。
 
 ---
 
@@ -301,23 +302,23 @@ platforms:
 |-------------|-------------|
 | `log` | 将响应记录到 gateway 日志输出。这是默认值，适合测试使用。 |
 | `github_comment` | 通过 `gh` CLI 将响应作为 PR/issue 评论发布。需要 `deliver_extra.repo` 和 `deliver_extra.pr_number`。`gh` CLI 必须安装并在 gateway 主机上完成认证（`gh auth login`）。 |
-| `telegram` | 将响应路由到 Telegram。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `discord` | 将响应路由到 Discord。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `slack` | 将响应路由到 Slack。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `signal` | 将响应路由到 Signal。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `sms` | 通过 Twilio 将响应路由到 SMS。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `whatsapp` | 将响应路由到 WhatsApp。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `matrix` | 将响应路由到 Matrix。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `mattermost` | 将响应路由到 Mattermost。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `homeassistant` | 将响应路由到 Home Assistant。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `email` | 将响应路由到 Email。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `dingtalk` | 将响应路由到 DingTalk。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `feishu` | 将响应路由到 Feishu/Lark。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `wecom` | 将响应路由到 WeCom。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `weixin` | 将响应路由到 Weixin（微信）。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
-| `bluebubbles` | 将响应路由到 BlueBubbles（iMessage）。使用主频道，或在 `deliver_extra` 中指定 `chat_id`。 |
+| `telegram` | 将响应路由到 Telegram。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `discord` | 将响应路由到 Discord。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `slack` | 将响应路由到 Slack。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `signal` | 将响应路由到 Signal。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `sms` | 通过 Twilio 将响应路由到 SMS。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `whatsapp` | 将响应路由到 WhatsApp。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `matrix` | 将响应路由到 Matrix。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `mattermost` | 将响应路由到 Mattermost。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `homeassistant` | 将响应路由到 Home Assistant。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `email` | 将响应路由到 Email。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `dingtalk` | 将响应路由到 DingTalk。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `feishu` | 将响应路由到 Feishu/Lark。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `wecom` | 将响应路由到 WeCom。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `weixin` | 将响应路由到 Weixin（微信）。在 `deliver_extra` 中指定目标 `chat_id`。 |
+| `bluebubbles` | 将响应路由到 BlueBubbles（iMessage）。在 `deliver_extra` 中指定目标 `chat_id`。 |
 
-跨平台投递时，目标平台也必须在 gateway 中启用并连接。若 `deliver_extra` 中未提供 `chat_id`，响应将发送到该平台配置的主频道。
+跨平台投递时，目标平台也必须在 gateway 中启用并连接。`deliver_extra` 中的目标 `chat_id` 为必填——缺少时投递会以“no delivery target”错误失败。
 
 ---
 
@@ -392,6 +393,54 @@ hermes webhook subscribe antenna-matches \
 - 直接投递模式下 `skills` 字段被忽略（不运行 agent，无处注入 skill）。
 - 模板渲染使用与 agent 模式相同的 `{dot.notation}` 语法，包括 `{__raw__}` token。
 - 幂等性使用相同的 `X-GitHub-Delivery` / `X-Request-ID` 请求头——携带相同 ID 的重试返回 `status=duplicate` 且**不**重复投递。
+
+---
+
+## 事件触发的 Cron 任务 {#event-triggered-cron-jobs}
+
+在路由上设置 `cron_job`，即可在事件到达时触发一个**已有的 cron 任务**——无需按固定周期轮询，也不会启动新的 webhook agent 会话。这让任何定时任务都能变成事件驱动的任务：把原有的定时计划保留为兜底扫描（或设为低频），让 webhook 在事情真正发生的那一刻立即触发它。
+
+
+工作原理：
+
+1. 事件经过与其他路由相同的 HMAC 认证、速率限制、`events`/`filters`/`script` 过滤和幂等去重。
+2. 路由的 `prompt` 模板根据 payload 渲染后，作为**单次运行的临时上下文**注入任务（与 `cronjob(action='run', prompt=...)` 走同一条通道——任务存储的 prompt 永远不会被修改）。
+3. 任务通过与调度器相同的 at-most-once 认领机制触发，因此 webhook 突发流量不会重复触发正在运行的任务，任务自身的投递目标会收到输出。
+
+### 示例：在收到 review 反馈时触发 PR 审查任务
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        pr-feedback:
+          events: ["pull_request_review"]
+          secret: "github-webhook-secret"
+          cron_job: "pr-review-sweeper"        # 已有任务的 ID 或名称
+          prompt: |
+            {repository.full_name} 的 PR #{number} 收到了来自
+            {review.user.login} 的新审查反馈：{review.body}
+```
+
+### 通过 CLI
+
+```bash
+hermes webhook subscribe pr-feedback \
+  --events "pull_request_review" \
+  --cron-job "pr-review-sweeper" \
+  --prompt "PR #{number} 收到反馈：{review.body}"
+```
+
+创建订阅时会立即校验任务引用，拼写错误会当场报错。
+
+### 注意事项
+
+- `cron_job` 与 `deliver_only` 互斥（路由同时设置两者时适配器拒绝启动）。cron 任务自行处理投递。
+- `cron_job` 路由会忽略路由级的 `deliver`、`deliver_extra` 和 `skills` 字段——以任务自身的设置为准。
+- 已暂停/已禁用的任务不会被触发；事件会被记录并丢弃。
+- POST 立即返回 `202 Accepted`；任务在后台运行。
 
 ---
 

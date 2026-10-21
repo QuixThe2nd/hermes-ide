@@ -24,7 +24,7 @@ description: "逐步指南：为整个团队搭建一个 Telegram 机器人，�
 
 开始前，请确保你已具备：
 
-- **已在服务器或 VPS 上安装 Hermes Agent**（不是你的笔记本——机器人需要持续运行）。如尚未安装，请参阅[安装指南](/getting-started/installation)。
+- **已在服务器或 VPS 上安装 Hermes Agent**（不是你的笔记本——机器人需要持续运行）。如尚未安装，请参阅[安装指南](../getting-started/installation.md)。
 - **一个 Telegram 账号**（机器人所有者）
 - **已配置 LLM 提供商**——至少在 `~/.hermes/.env` 中配置了 OpenAI、Anthropic 或其他受支持提供商的 API 密钥
 
@@ -254,20 +254,11 @@ hermes pairing clear-pending
 
 ## 第五步：配置机器人
 
-### 设置主频道
+### 为定时任务选择投递目标
 
-**主频道**是机器人投递 cron 任务结果和主动消息的地方。没有主频道，定时任务将无处发送输出。
+Cron 任务的结果发送到显式的 `telegram:<chat_id>` 目标，因此先决定哪个群组或聊天接收它们（例如 team-updates 群组）。每个 cron 任务在创建时指定自己的目标——参见[用 Cron 实现自动化](/guides/automate-with-cron)。
 
-**方式 1：** 在机器人所在的任意 Telegram 群组或聊天中使用 `/sethome` 命令。
-
-**方式 2：** 在 `~/.hermes/.env` 中手动设置：
-
-```bash
-TELEGRAM_HOME_CHANNEL=-1001234567890
-TELEGRAM_HOME_CHANNEL_NAME="Team Updates"
-```
-
-要查找频道 ID，可将 [@userinfobot](https://t.me/userinfobot) 添加到群组——它会报告该群组的聊天 ID。
+要查找聊天 ID，可将 [@userinfobot](https://t.me/userinfobot) 添加到群组——它会报告该群组的聊天 ID。
 
 ### 配置工具进度显示
 
@@ -291,7 +282,7 @@ display:
 
 通过编辑 `~/.hermes/SOUL.md` 自定义机器人的沟通方式：
 
-完整指南请参阅[在 Hermes 中使用 SOUL.md](/guides/use-soul-with-hermes)。
+完整指南请参阅[在 Hermes 中使用 SOUL.md](./use-soul-with-hermes.md)。
 
 ```markdown
 # Soul
@@ -338,7 +329,7 @@ github.com/myorg/myproject for:
 Format as a brief standup-style summary.
 ```
 
-Agent 会自动创建一个 cron 任务，并将结果投递到你提问的聊天（或主频道）。
+Agent 会自动创建一个 cron 任务，并将结果投递到你提问的聊天。
 
 ### 服务器健康检查
 
@@ -428,13 +419,13 @@ hermes gateway stop && hermes gateway start
 
 你已经拥有一个可用的团队 Telegram 助手。以下是一些后续步骤：
 
-- **[安全指南](/user-guide/security)**——深入了解授权、容器隔离和命令审批
-- **[消息 Gateway](/user-guide/messaging)**——gateway 架构、会话管理和聊天命令的完整参考
-- **[Telegram 设置](/user-guide/messaging/telegram)**——平台专属详情，包括语音消息和 TTS
-- **[定时任务](/user-guide/features/cron)**——高级 cron 调度，含投递选项和 cron 表达式
-- **[上下文文件](/user-guide/features/context-files)**——用于项目知识的 AGENTS.md、SOUL.md 和 .cursorrules
-- **[个性设置](/user-guide/features/personality)**——内置个性预设和自定义角色定义
-- **添加更多平台**——同一 gateway 可同时运行 [Discord](/user-guide/messaging/discord)、[Slack](/user-guide/messaging/slack) 和 [WhatsApp](/user-guide/messaging/whatsapp)
+- **[安全指南](../user-guide/security.md)**——深入了解授权、容器隔离和命令审批
+- **[消息 Gateway](../user-guide/messaging/index.md)**——gateway 架构、会话管理和聊天命令的完整参考
+- **[Telegram 设置](../user-guide/messaging/telegram.md)**——平台专属详情，包括语音消息和 TTS
+- **[定时任务](../user-guide/features/cron.md)**——高级 cron 调度，含投递选项和 cron 表达式
+- **[上下文文件](../user-guide/features/context-files.md)**——用于项目知识的 AGENTS.md、SOUL.md 和 .cursorrules
+- **[个性设置](../user-guide/features/personality.md)**——内置个性预设和自定义角色定义
+- **添加更多平台**——同一 gateway 可同时运行 [Discord](../user-guide/messaging/discord.md)、[Slack](../user-guide/messaging/slack.md) 和 [WhatsApp](../user-guide/messaging/whatsapp.md)
 
 ---
 

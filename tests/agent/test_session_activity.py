@@ -1,15 +1,33 @@
 """Unit tests for the shared session activity observation contract."""
 
+import sys
 from types import SimpleNamespace
+
+import pytest
 
 from agent.session_activity import (
     ACTIVITY_DESCRIPTION_MAX,
     ActivityProvenance,
     bound_activity_description,
     build_activity_snapshot,
+    format_iteration_progress,
     normalize_activity_provenance,
     reset_session_activity_persist_window,
 )
+
+
+@pytest.mark.parametrize(
+    "max_iterations, expected",
+    [
+        (sys.maxsize, "iteration 3"),  # AIAgent's default: unbounded, so no ceiling is shown
+        (None, "iteration 3"),
+        (250, "iteration 3/250"),  # a real budget (e.g. delegation.max_iterations) keeps N/M
+    ],
+)
+def test_format_iteration_progress_hides_unbounded_ceiling(max_iterations, expected):
+    out = format_iteration_progress(3, max_iterations)
+    assert out == expected
+    assert str(sys.maxsize) not in out
 
 
 def test_bound_activity_description_truncates():
@@ -94,3 +112,42 @@ def test_build_activity_snapshot_preserves_compression_transition_provenances():
         assert snap["provenance"] == provenance.value
         assert snap["last_activity_description"] == desc
         assert snap["seconds_since_activity"] == 5.0
+
+
+def test_build_activity_snapshot_phase_seconds_measures_current_phase():
+    """phase_seconds counts from the phase start, not the last liveness
+    refresh — the two clocks diverge for any wait over the heartbeat
+    cadence."""
+    snap = build_activity_snapshot(
+        last_activity_at=125.0,
+        last_activity_description="executing tool: terminal",
+        phase_started_at=100.0,
+        now=130.0,
+    )
+    assert snap["phase_started_at"] == 100.0
+    assert snap["phase_seconds"] == 30.0
+    assert snap["seconds_since_activity"] == 5.0
+
+
+def test_build_activity_snapshot_without_phase_start_yields_none():
+    snap = build_activity_snapshot(
+        last_activity_at=100.0,
+        last_activity_description="starting API call #1",
+        phase_started_at=None,
+        now=130.0,
+    )
+    assert snap["phase_started_at"] is None
+    assert snap["phase_seconds"] is None
+
+
+def test_build_activity_snapshot_phase_start_in_the_future_yields_none():
+    """A phase start after the clock (skew between stamp and read) must not
+    produce a negative elapsed."""
+    snap = build_activity_snapshot(
+        last_activity_at=100.0,
+        last_activity_description="starting API call #1",
+        phase_started_at=140.0,
+        now=130.0,
+    )
+    assert snap["phase_started_at"] == 140.0
+    assert snap["phase_seconds"] is None

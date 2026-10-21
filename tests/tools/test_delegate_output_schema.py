@@ -1,4 +1,4 @@
-"""T1-24: structured-output schema on delegate_task.
+"""T1-24: structured-output schema on delegate_agent.
 
 Per-task ``output_schema`` (JSON Schema object): the child receives the
 schema as an explicit output contract, the parent validates the child's
@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
-    delegate_task,
+    delegate_agent,
 )
 from tools.delegation_output_schema import (
     append_output_contract,
@@ -263,9 +263,79 @@ class TestRunSingleChildSchemaValidation:
         assert len(child.calls) == 1
         assert entry.get("schema_valid") is False
 
+    def test_schema_failure_reported_as_failed_not_completed(self):
+        """Regression: a final answer that still violates the declared
+        output contract after the bounded retry (here the classic empty
+        ``{}`` fallback) must be reported status="failed", not
+        "completed". Otherwise the batch report prints a ✓ and
+        orchestrators that read only status/icon accept an empty verdict
+        — schema_valid/schema_errors carry the detail, but status must
+        agree with them."""
+        child = _StubChild(["not json at all", "{}"])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["schema_valid"] is False
+        assert entry["schema_errors"]
+        assert entry["status"] == "failed"
+        # the failed entry names the schema violation, not the generic
+        # "no response" error — the child DID respond, unusably
+        assert "output_schema" in entry.get("error", "")
+        # the invalid final text is still propagated for debugging
+        assert entry["summary"] == "{}"
+
+    def test_schema_failure_without_retry_reported_as_failed(self):
+        """Same class, first-try path: retry turn raises, leaving the
+        original non-JSON answer in place — status must still be failed."""
+        child = _StubChild(["nope"])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        original = child.run_conversation
+
+        def flaky(user_message, task_id=None, **kw):
+            if child.calls:
+                raise RuntimeError("child died on retry")
+            return original(user_message, task_id=task_id, **kw)
+
+        child.run_conversation = flaky
+        entry = _run(child)
+        assert entry["schema_valid"] is False
+        assert entry["status"] == "failed"
+
+    def test_schema_valid_entry_still_completed(self):
+        """Guard: schema_valid=True keeps status="completed" untouched."""
+        child = _StubChild(['{"city": "Berlin"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert "error" not in entry
+
+    def test_retry_turn_runs_in_delegated_child_context(self, monkeypatch):
+        """The retry is a second run_conversation on the child, issued from the parent's
+        thread where HERMES_KANBAN_TASK is set. Unwrapped it carries the worker's identity,
+        so the kanban stop guard nudges the child toward a board tool it does not have
+        (#109735 / #87671)."""
+        from agent.delegation_context import is_delegated_child_context
+        from tools.delegate_tool_child_run import _validate_child_output_schema
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+        seen: list = []
+
+        class _Child(_StubChild):
+            session_id = "sess-child"
+
+            def run_conversation(self, user_message, task_id=None, **_kwargs):
+                seen.append(is_delegated_child_context())
+                return super().run_conversation(user_message, task_id, **_kwargs)
+
+        child = _Child(['{"city": "Berlin"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        _validate_child_output_schema(child, {"final_response": "not json", "api_calls": 1}, 0, "child-0", None)
+        assert seen == [True]
+        assert is_delegated_child_context() is False
+
 
 # ---------------------------------------------------------------------------
-# delegate_task dispatch-time schema handling
+# delegate_agent dispatch-time schema handling
 # ---------------------------------------------------------------------------
 
 
@@ -292,7 +362,7 @@ class TestDelegateTaskDispatch:
                 },
             ),
         ):
-            out = delegate_task(
+            out = delegate_agent(
                 tasks=[
                     {"goal": "Summarize the release notes for module A", "output_schema": "not-a-dict"},
                     {"goal": "Summarize the release notes for module B"},
@@ -317,7 +387,7 @@ class TestDelegateTaskDispatch:
                 },
             ),
         ):
-            out = delegate_task(
+            out = delegate_agent(
                 tasks=[
                     {"goal": "Summarize the release notes for module A", "output_schema": {"type": 42}},
                     {"goal": "Summarize the release notes for module B"},
@@ -355,11 +425,12 @@ class TestDelegateTaskDispatch:
                 side_effect=fake_build,
             ),
         ):
-            out = delegate_task(
+            out = delegate_agent(
                 goal="produce the address",
                 context="base context",
                 output_schema=ADDRESS_SCHEMA,
                 parent_agent=_make_mock_parent(),
+                background=False,
             )
         payload = json.loads(out)
         assert "OUTPUT CONTRACT" in (captured.get("context") or "")

@@ -21,7 +21,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _cmd_update_check, cmd_update
+from hermes_cli.main import cmd_update
+from hermes_cli.update_cmd import _cmd_update_check
 
 
 # ---------- cmd_update (apply path) ----------
@@ -29,9 +30,10 @@ from hermes_cli.main import _cmd_update_check, cmd_update
 
 @patch("hermes_cli.config.is_managed", return_value=False)
 @patch("hermes_cli.config.detect_install_method", return_value="docker")
+@patch("hermes_cli.version_info.get_version_info")
 @patch("subprocess.run")
 def test_cmd_update_in_docker_prints_guidance_and_exits(
-    mock_run, _mock_method, _mock_managed, capsys
+    mock_run, _mock_version, _mock_method, _mock_managed, capsys
 ):
     """``hermes update`` inside Docker → friendly message + exit 2, no git calls.
 

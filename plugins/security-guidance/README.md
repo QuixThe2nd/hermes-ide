@@ -12,7 +12,7 @@ can fix the code or briefly document why the construct is safe.
 This is layer 1 of Anthropic's `security-guidance` plugin design — a fast
 first-pass that runs locally with zero LLM tokens spent. Layers 2 and 3 (LLM
 diff review on turn end, agentic commit review) are not ported; the agent
-can already run those kinds of reviews on demand via `delegate_task`.
+can already run those kinds of reviews on demand via `delegate_agent`.
 
 ## Coverage (25 rules)
 
@@ -66,7 +66,7 @@ plugins:
   PR can wire layer 2 to a cheap auxiliary model with explicit opt-in.
 * **No agentic commit review.** Anthropic's layer 3 spawns an SDK subagent
   with `Read`/`Grep`/`Glob` to trace data flow on `git commit`. That's a
-  follow-up that would build on `delegate_task`.
+  follow-up that would build on `delegate_agent`.
 * **No project-local rules file.** Anthropic's `.claude/claude-security-guidance.md`
   is read by their layer 2/3 LLM prompts, not the pattern scanner. We can
   add an analogous `.hermes/security-guidance.md` once layer 2 lands.

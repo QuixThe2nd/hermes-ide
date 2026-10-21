@@ -10,7 +10,6 @@ from plugins.fallback_quota_reorder.core import (
     compute_desired_order,
     reading_for_entry,
     score_provider,
-    unlimited_reading,
 )
 from plugins.fallback_quota_reorder.reliability import ReliabilityRates
 
@@ -90,9 +89,8 @@ class TestScoreMonotonicity:
 
 class TestComputeDesiredOrder:
     def test_plain_openrouter_is_not_first_anymore(self):
-        # no provider-wide openrouter precedence: without a reading (and it
-        # is not the unlimited ox-alpha route) it is an ordinary unscored
-        # tail entry
+        # no provider-wide openrouter precedence: without a reading it is an
+        # ordinary unscored tail entry
         entries = [
             {"provider": "xai-oauth", "model": "grok"},
             {"provider": "openrouter", "model": "or"},
@@ -200,43 +198,78 @@ class TestComputeDesiredOrder:
         assert providers == ["xai-oauth", "openai-codex", "openrouter"]
 
 
-class TestUnlimitedRouteScoring:
-    """Ox Alpha (openrouter/stealth/ox-alpha) synthetic-wallet contracts."""
+class TestRetiredOxAlphaRouteNotSynthesized:
+    """The retired openrouter/stealth/ox-alpha route is never synthesized.
 
-    def test_neutral_unlimited_route_scores_exactly_one(self):
-        # 100% synthetic quota against exactly REFERENCE_HOURS: 1.0 * 1.0,
-        # exactly — the neutral point every other score is measured against
-        assert score_provider(unlimited_reading()) == 1.0
+    It once scored through a synthetic 100%/168h wallet; now, like every
+    other openrouter model, it has no reading of its own and tails unscored.
+    """
 
-    def test_poor_uptime_loses_to_a_healthier_scored_provider(self):
+    def test_no_synthetic_reading_for_the_exact_route(self):
+        assert (
+            reading_for_entry(
+                {"provider": "openrouter", "model": "stealth/ox-alpha"}, {}
+            )
+            is None
+        )
+        # case variants of the retired pair match nothing either
+        assert (
+            reading_for_entry(
+                {"provider": "OpenRouter", "model": "Stealth/OX-Alpha"}, {}
+            )
+            is None
+        )
+
+    def test_retired_route_stays_in_the_stable_unscored_tail(self):
+        # regression: an unscored OpenRouter route never gains synthetic
+        # quota — it keeps its relative order behind every scored entry
+        entries = [
+            {"provider": "openrouter", "model": "stealth/ox-alpha"},
+            {"provider": "openai-codex", "model": "codex"},
+            {"provider": "custom-a", "model": "a"},
+        ]
+        readings = {"openai-codex": _reading("openai-codex", 90, 3600, "codex")}
+        ordered = compute_desired_order(entries, readings)
+        assert [entry["provider"] for entry in ordered] == [
+            "openai-codex",
+            "openrouter",
+            "custom-a",
+        ]
+
+    def test_retired_route_loses_to_any_scored_provider_even_at_neutral(self):
+        # the retired route once scored exactly 1.0 at the reference horizon
+        # and beat a 0.9 codex; a real 0.9 wallet now wins outright
         entries = [
             {"provider": "openrouter", "model": "stealth/ox-alpha"},
             {"provider": "openai-codex", "model": "codex"},
         ]
         readings = {
             "openai-codex": _reading(
-                "openai-codex", 100, int(REFERENCE_HOURS * 3600), "codex"
+                "openai-codex", 90, int(REFERENCE_HOURS * 3600), "codex"
             )
         }
         reliability = {
             "openrouter": ReliabilityRates(rate_24h=0.4, rate_1h=1.0),
         }
         ordered = compute_desired_order(entries, readings, reliability=reliability)
-        # derated ox-alpha 1.0*0.4=0.4 loses to codex's neutral 1.0
         assert [entry["provider"] for entry in ordered] == [
             "openai-codex",
             "openrouter",
         ]
 
-    def test_real_reading_beats_the_synthetic_wallet(self):
+    def test_real_reading_still_scores_any_provider(self):
+        # readings are keyed by provider alone: a genuine openrouter reading
+        # (whenever one exists) still scores, model string irrelevant
         real = _reading("openrouter", 50, 3600, "grok")
-        assert reading_for_entry(
-            {"provider": "openrouter", "model": "stealth/ox-alpha"}, {"openrouter": real}
-        ) is real
+        assert (
+            reading_for_entry(
+                {"provider": "openrouter", "model": "stealth/ox-alpha"},
+                {"openrouter": real},
+            )
+            is real
+        )
 
     def test_other_openrouter_models_stay_unscored(self):
-        # the synthetic wallet is for the exact ox-alpha route only: any
-        # other openrouter model has no real reading and tails unscored
         assert (
             reading_for_entry({"provider": "openrouter", "model": "stealth/other"}, {})
             is None

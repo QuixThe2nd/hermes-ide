@@ -1,6 +1,6 @@
-# delegate_task: diagnosing "my batch was capped"
+# delegate_agent: diagnosing "my batch was capped"
 
-When a user reports `delegate_task` ran fewer subagents than they asked for
+When a user reports `delegate_agent` ran fewer subagents than they asked for
 (e.g. "I set max_concurrent_children: 15 but only 9 ran"), there are exactly
 **three** code paths in Hermes that cap a batch. If none of them fired, the
 cap came from the **model itself** — not from Hermes — and the user's
@@ -14,17 +14,17 @@ which reads `delegation.max_concurrent_children` from `config.yaml`
 (env fallback `DELEGATION_MAX_CONCURRENT_CHILDREN`, default 3). Floor of 1.
 **No hard ceiling.**
 
-1. **Per-call hard reject** — `tools/delegate_tool.py` (~line 1953).
+1. **Per-call hard reject** — `tools/delegate_tool.py` (~line 3851).
    If `len(tasks) > max_children`, the call returns a `tool_error` with the
    exact message: `"Too many tasks: {N} provided, but
    max_concurrent_children is {M}. ..."` The model sees this as a failed
    tool call and usually retries with fewer tasks.
 
-2. **Per-turn truncator** — `run_agent.py::AIAgent._cap_delegate_task_calls`
-   (~line 5708). If the model emits *multiple separate* `delegate_task`
+2. **Per-turn truncator** — `run_agent.py::AIAgent._cap_delegate_agent_calls`
+   (~line 5198). If the model emits *multiple separate* `delegate_agent`
    tool_calls in a single assistant turn, the count of those calls is
    truncated to `max_children`. Logs as
-   `Truncated N excess delegate_task call(s) to enforce
+   `Truncated N excess delegate_agent call(s) to enforce
    max_concurrent_children=M limit` at WARNING.
 
 3. **Cost-warning** — same `_get_max_concurrent_children()`. When the
@@ -43,7 +43,7 @@ When a user says "delegate is capped at N":
 hermes config get delegation.max_concurrent_children
 
 # 2. Did Hermes' truncator or rejector actually fire?
-grep -E "Truncated.*delegate_task|Too many tasks" ~/.hermes/logs/agent.log | tail
+grep -E "Truncated.*delegate_agent|Too many tasks" ~/.hermes/logs/agent.log | tail
 # If neither line appears, neither cap path executed.
 
 # 3. Confirm the resolver returns what config says (in venv with hermes on path)
@@ -73,7 +73,7 @@ attribution to the system rather than admitting a self-imposed limit).
 
 Tell the model explicitly in the prompt:
 
-> "Send all 13 tasks in **one** `delegate_task` call with a `tasks` array
+> "Send all 13 tasks in **one** `delegate_agent` call with a `tasks` array
 > of 13 items. Do not split into multiple calls. The runtime supports
 > this; `delegation.max_concurrent_children` is set to 15."
 

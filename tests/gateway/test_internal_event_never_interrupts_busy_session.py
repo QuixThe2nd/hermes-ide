@@ -1,7 +1,7 @@
 """Regression test: internal synthetic events must never interrupt a busy session.
 
 Reported by @Heeervas (June 2026): an ``async_delegation`` completion from a
-``delegate_task(background=true)`` subagent re-enters the originating gateway
+``delegate_agent(background=true)`` subagent re-enters the originating gateway
 session as an internal ``MessageEvent``. When that session was busy running a
 turn, the completion was treated exactly like a user TEXT message and hit the
 default ``busy_input_mode='interrupt'`` path — calling
@@ -39,12 +39,11 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
-from gateway.platforms.base import (  # noqa: E402
-    MessageEvent,
-    MessageType,
+from gateway.platforms.base import (
     SessionSource,
     build_session_key,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner  # noqa: E402
 
 

@@ -6,8 +6,9 @@ description: >
   Buzz gateway adapter for Hermes Agent.
   Connects to a Buzz community relay (Block's open-source human+agent
   collaboration platform built on Nostr) and relays messages between
-  channels/DMs and the Hermes agent.  Pure stdlib — shells out to the
-  buzz CLI binary (JSON in/out); no Python packages required.
+  channels/DMs and the Hermes agent. Relay operations shell out to the
+  buzz CLI binary (JSON in/out); verified inbound media uses Hermes' bundled
+  HTTP client.
 author: Nous Research
 # ``requires_env`` entries are surfaced in ``hermes config`` UI via the
 # platform-plugin env var injector in ``hermes_cli/config.py``.
@@ -33,10 +34,6 @@ optional_env:
     description: "Comma-separated channel UUIDs to watch (default: all joined channels)"
     prompt: "Channel UUIDs (comma-separated)"
     password: false
-  - name: BUZZ_HOME_CHANNEL
-    description: "Channel UUID for cron / notification delivery (defaults to the first watched channel)"
-    prompt: "Home channel UUID (or empty)"
-    password: false
   - name: BUZZ_ALLOWED_USERS
     description: "Comma-separated npubs or hex pubkeys allowed to talk to the agent"
     prompt: "Allowed users (comma-separated)"
@@ -56,4 +53,8 @@ optional_env:
   - name: BUZZ_CREDENTIALS_FILE
     description: "JSON credentials file holding the nsec (fallback when BUZZ_PRIVATE_KEY is unset)"
     prompt: "Credentials file path (or empty)"
+    password: false
+  - name: BUZZ_REPLY_IN_THREAD
+    description: "Thread replies under the triggering message (true/false, default: true); false posts flat to the channel timeline"
+    prompt: "Reply in thread? (true/false)"
     password: false

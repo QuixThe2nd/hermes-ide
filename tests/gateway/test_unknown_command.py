@@ -2,7 +2,7 @@
 
 Without this warning, unknown slash commands get forwarded to the LLM as plain
 text, which often leads to silent failure (e.g. the model inventing a bogus
-delegate_task call instead of telling the user the command doesn't exist).
+delegate_agent call instead of telling the user the command doesn't exist).
 """
 
 from datetime import datetime
@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 

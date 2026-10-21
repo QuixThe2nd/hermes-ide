@@ -2,7 +2,7 @@
 
 Covers conversation snapshotting, reviewer-task composition,
 auxiliary.review credential resolution, background dispatch through
-delegate_task (including the internal per-call ``credentials_cfg``
+delegate_agent (including the internal per-call ``credentials_cfg``
 override), and the shared dispatch-note formatter.
 """
 
@@ -97,15 +97,21 @@ def test_build_review_task_includes_excerpt_and_prompt():
         {"role": "user", "text": "review my PR"},
         {"role": "assistant", "text": "PR #99 opened"},
     ]
-    goal, context = build_review_task(snap, "focus on security")
-    assert "reviewer" in goal.lower()
+    prompt = "focus on security\n" + "keep these instructions intact " * 20
+    goal, context = build_review_task(snap, prompt)
+    assert goal.startswith("Review: focus on security ")
+    assert len(goal) <= 80 and "\n" not in goal
+    assert goal.endswith("…")
+    assert re_mod._REVIEW_GOAL in context
     assert "[USER]" in context and "[PRIMARY AGENT]" in context
     assert "PR #99 opened" in context
-    assert "focus on security" in context
+    assert prompt.strip() in context
 
 
 def test_build_review_task_without_prompt_has_no_instruction_block():
     goal, context = build_review_task([{"role": "user", "text": "hi"}])
+    assert goal == "Review recent work"
+    assert re_mod._REVIEW_GOAL in context
     assert "Additional review instructions" not in context
 
 
@@ -147,7 +153,7 @@ def test_load_review_credentials_cfg_missing_section(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# delegate_task credentials_cfg override (the internal /review routing hook)
+# delegate_agent credentials_cfg override (the internal /review routing hook)
 # ---------------------------------------------------------------------------
 
 def _fake_parent():
@@ -160,7 +166,7 @@ def _fake_parent():
     return parent
 
 
-def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
+def test_delegate_agent_credentials_cfg_overrides_delegation_config(monkeypatch):
     """The per-call credentials_cfg dict must reach the credential resolver
     instead of the global delegation config section."""
     import tools.delegate_tool as dt
@@ -188,7 +194,7 @@ def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
     )
 
     override = {"provider": "openrouter", "model": "review-model-x"}
-    out = dt.delegate_task(
+    out = dt.delegate_agent(
         goal="review this",
         background=True,
         parent_agent=_fake_parent(),
@@ -243,7 +249,8 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     # The reviewer briefing carries the conversation excerpt + user prompt.
     assert "PR #77 opened" in built["context"]
     assert "check the tests" in built["context"]
-    assert "reviewer" in built["goal"].lower()
+    assert built["goal"].startswith("Review: ")
+    assert re_mod._REVIEW_GOAL in built["context"]
 
     # The completion re-enters via the shared queue like any subagent.
     deadline = time.monotonic() + 5.0
@@ -483,8 +490,8 @@ def test_review_registered_in_every_aux_surface():
     mirror _AUX_TASK_SLOTS by convention (shared "Must match" comments).
     """
     from hermes_cli.config import DEFAULT_CONFIG
-    from hermes_cli.main import _AUX_TASKS
-    from hermes_cli.web_server import _AUX_TASK_SLOTS
+    from hermes_cli.main_provider_setup import _AUX_TASKS
+    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
 
     assert "review" in DEFAULT_CONFIG["auxiliary"], \
         "review missing from DEFAULT_CONFIG['auxiliary']"
@@ -504,12 +511,13 @@ def test_review_registered_in_every_aux_surface():
 # ---------------------------------------------------------------------------
 
 def test_format_dispatch_note_dispatched():
+    prompt = "security\n" * 100
     note = format_dispatch_note(
-        {"status": "dispatched", "review_model": "opus"}, "security"
+        {"status": "dispatched", "review_model": "opus"}, prompt
     )
-    assert "dispatched on opus" in note
-    assert "focus: security" in note
-    assert "re-enter" in note
+    assert "Review started" in note and "return here" in note
+    assert "security" not in note and "\n" not in note
+    assert len(note) < 80
 
 
 def test_format_dispatch_note_sync_fallback():

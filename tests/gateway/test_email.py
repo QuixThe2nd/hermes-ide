@@ -23,26 +23,6 @@ from unittest.mock import patch, MagicMock, AsyncMock, ANY
 from gateway.platforms.base import SendResult
 
 
-class TestConfigEnvOverrides(unittest.TestCase):
-    """Verify email config is loaded from environment variables."""
-
-
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_IMAP_HOST": "imap.test.com",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-        "EMAIL_HOME_ADDRESS": "user@test.com",
-    }, clear=False)
-    def test_email_home_channel_loaded(self):
-        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        home = config.platforms[Platform.EMAIL].home_channel
-        self.assertIsNotNone(home)
-        self.assertEqual(home.chat_id, "user@test.com")
-
-
 class TestCheckRequirements(unittest.TestCase):
     """Verify check_email_requirements function."""
 
@@ -238,7 +218,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_image_attachment_sets_photo_type(self):
         """Email with image attachment should set message type to PHOTO."""
         import asyncio
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         adapter = self._make_adapter()
         captured_events = []
 
@@ -431,6 +411,27 @@ class TestSendMethods(unittest.TestCase):
         finally:
             os.unlink(tmp_path)
 
+
+    def test_send_document_threads_on_explicit_reply_to(self):
+        """An explicit reply_to wins over the cached thread context for attachment sends (#10131)."""
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {"subject": "Old", "message_id": "<cached@test.com>"}
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"doc")
+            tmp_path = f.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+                result = asyncio.run(adapter.send_document("user@test.com", tmp_path, reply_to="<explicit@test.com>"))
+                self.assertTrue(result.success)
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["In-Reply-To"], "<explicit@test.com>")
+                self.assertEqual(sent_msg["References"], "<explicit@test.com>")
+        finally:
+            os.unlink(tmp_path)
 
     def test_get_chat_info(self):
         """get_chat_info should return email address as chat info."""
@@ -939,6 +940,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "ID", "UIDPLUS")
         mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \

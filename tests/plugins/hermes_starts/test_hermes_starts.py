@@ -620,7 +620,12 @@ class TestStartMention:
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
         _write_state(_isolate_env)
-        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
+        # defaults to the overnight window, which would silently suppress the
+        # mention whenever the test runs during those hours in quiet_tz.
+        _write_plugin_settings(
+            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
+        )
 
         result = _call(
             hermes_starts_module,
@@ -736,7 +741,12 @@ class TestLongOpeningSplit:
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
         _write_state(_isolate_env)
-        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
+        # defaults to the overnight window, which would silently suppress the
+        # mention whenever the test runs during those hours in quiet_tz.
+        _write_plugin_settings(
+            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
+        )
 
         result = _call(
             hermes_starts_module,
@@ -775,7 +785,12 @@ class TestLongOpeningSplit:
         into the thread.
         """
         _write_state(_isolate_env)
-        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
+        # defaults to the overnight window, which would silently suppress the
+        # mention whenever the test runs during those hours in quiet_tz.
+        _write_plugin_settings(
+            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
+        )
 
         opening = "x" * 1940
         result = _call(
@@ -872,7 +887,12 @@ class TestMemberAddFailure:
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
         _write_state(_isolate_env)
-        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
+        # defaults to the overnight window, which would silently suppress the
+        # mention whenever the test runs during those hours in quiet_tz.
+        _write_plugin_settings(
+            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
+        )
         discord_router.fail_thread_member = True
 
         result = _call(
@@ -905,7 +925,12 @@ class TestSessionSeeding:
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
         _write_state(_isolate_env)
-        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
+        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
+        # defaults to the overnight window, which would silently suppress the
+        # mention whenever the test runs during those hours in quiet_tz.
+        _write_plugin_settings(
+            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
+        )
 
         result = _call(
             hermes_starts_module,
@@ -1031,6 +1056,8 @@ class TestForbiddenWords:
             [
                 hermes_starts_module.START_CONVERSATION_SCHEMA["description"],
                 json.dumps(hermes_starts_module._WELCOME_EMBED),
+                hermes_starts_module.STRUCTURAL_ASKS_SECTION_ID,
+                hermes_starts_module.STRUCTURAL_ASKS_GUIDANCE,
             ]
         )
 
@@ -1044,38 +1071,46 @@ class TestForbiddenWords:
 
 
 class TestPluginDiscovery:
-    def test_register_via_mock_ctx(self, hermes_starts_module):
+    def test_register_adds_tool_and_prompt_section(self, hermes_starts_module):
+        """register() adds the tool and the structural-asks section with the
+        expected id, position, explicit bound, and static content."""
+        from hermes_cli.plugins import (
+            MAX_SYSTEM_PROMPT_SECTION_CHARS,
+            PluginContext,
+            PluginManifest,
+            PluginManager,
+        )
         from tools.registry import registry
 
-        captured = {}
+        manager = PluginManager()
+        ctx = PluginContext(
+            PluginManifest(name="hermes_starts", key="hermes_starts", source="bundled"),
+            manager,
+        )
+        hermes_starts_module.register(ctx)
 
-        class _Ctx:
-            def register_tool(self, name, toolset, schema, handler, **kwargs):
-                captured["name"] = name
-                captured["toolset"] = toolset
-                captured["schema"] = schema
-                captured["handler"] = handler
-                captured["kwargs"] = kwargs
-                registry.register(
-                    name=name,
-                    toolset=toolset,
-                    schema=schema,
-                    handler=handler,
-                    check_fn=kwargs.get("check_fn"),
-                    emoji=kwargs.get("emoji"),
-                )
-
-        hermes_starts_module.register(_Ctx())
-        assert captured["name"] == "start_conversation"
-        assert captured["toolset"] == "hermes_starts"
-
-        entry = registry.get_entry("start_conversation")
+        entry = registry.snapshot_registration(
+            "start_conversation", scope=manager.scope_key
+        )
         assert entry is not None
         assert entry.toolset == "hermes_starts"
 
+        section = manager._system_prompt_sections["hermes_starts.structural_asks"]
+        assert section.content == hermes_starts_module.STRUCTURAL_ASKS_GUIDANCE
+        assert section.position == "after_memory"
+        assert section.plugin == "hermes_starts"
+        assert section.max_chars == hermes_starts_module.STRUCTURAL_ASKS_MAX_CHARS
+        assert 0 < section.max_chars <= MAX_SYSTEM_PROMPT_SECTION_CHARS
+        assert len(section.content) <= section.max_chars
+
     def test_discover_via_plugin_manager(self, _isolate_env):
+        # Pop only the plugin module for a fresh import. Popping
+        # ``hermes_cli.plugins`` as well silently swaps the module object in
+        # sys.modules, which breaks later tests that monkeypatch
+        # ``plugins._plugin_manager`` (the real-prompt tests in
+        # tests/agent/test_plugin_prompt_sections.py).
         for key in list(sys.modules):
-            if key.startswith(("plugins.hermes_starts", "hermes_cli.plugins")):
+            if key.startswith("plugins.hermes_starts"):
                 del sys.modules[key]
 
         from hermes_cli.plugins import PluginManager
@@ -1092,3 +1127,112 @@ class TestPluginDiscovery:
         entry = registry.get_entry("start_conversation")
         assert entry is not None
         assert entry.toolset == "hermes_starts"
+
+
+class TestStructuralAsksGuidance:
+    """Content contract for the guidance text: the load-bearing semantics."""
+
+    def test_content_contract(self, hermes_starts_module):
+        guidance = hermes_starts_module.STRUCTURAL_ASKS_GUIDANCE
+        bound = hermes_starts_module.STRUCTURAL_ASKS_MAX_CHARS
+
+        # Self-improvement is a valid proactive topic, with or without a task,
+        # and an ask states the four required elements.
+        for phrase in (
+            "effectiveness, autonomy, and working relationship",
+            "even when no current task asks for them",
+            "structural ask",
+            "instructions",
+            "access",
+            "tools or integrations",
+            "permission or resource limits",
+            "working habit",
+            "recurring friction or a concrete opportunity",
+            "exact change",
+            "why it matters",
+            "least sufficient",
+            "material downside",
+        ):
+            assert phrase in guidance, f"guidance must cover {phrase!r}"
+
+        # Ordinary starts are preserved; invented inner life is not allowed,
+        # and asks are never reduced to serving the current task.
+        assert "workflow tips and casual starts" in guidance
+        assert "Do not invent desires, feelings, constraints, or needs" in guidance
+        assert "the subject is the work" not in guidance
+
+        # Generic: no local identities or deployment assumptions, and the
+        # block stays small inside its explicit bound.
+        forbidden = re.compile(
+            r"Quix|Parsa|Big Steve|Discord|snowflake|homelab|"
+            r"/root/|/home/|\.json|config\.yaml|sentience",
+            re.IGNORECASE,
+        )
+        assert not forbidden.search(guidance)
+        assert not re.search(r"\b\d{17,20}\b", guidance)
+        assert len(guidance) < 900
+        assert 0 < len(guidance) <= bound <= 1_000
+
+
+class TestPromptSectionPluginManager:
+    """The real discovery path carries the section only when the plugin loads."""
+
+    SECTION_ID = "hermes_starts.structural_asks"
+
+    @staticmethod
+    def _discover():
+        for key in list(sys.modules):
+            if key.startswith("plugins.hermes_starts"):
+                del sys.modules[key]
+        from hermes_cli.plugins import PluginManager
+
+        mgr = PluginManager()
+        mgr.discover_and_load(force=True)
+        return mgr
+
+    def test_section_rendered_when_plugin_loaded(
+        self, _isolate_env, hermes_starts_module
+    ):
+        from tools.registry import registry
+
+        mgr = self._discover()
+        loaded = mgr._plugins.get("hermes_starts")
+        assert loaded is not None and loaded.enabled is True
+
+        rendered = mgr.render_system_prompt_sections({"session_id": "session-1"})
+        match = [item for item in rendered if item.id == self.SECTION_ID]
+        assert len(match) == 1
+        assert match[0].content == hermes_starts_module.STRUCTURAL_ASKS_GUIDANCE
+        assert match[0].plugin == "hermes_starts"
+        # The tool rides along in the same discovery pass, in this manager's scope.
+        assert (
+            registry.snapshot_registration(
+                "start_conversation", scope=mgr.scope_key
+            )
+            is not None
+        )
+
+    def test_section_absent_when_plugin_disabled(self, _isolate_env):
+        from tools.registry import registry
+
+        (_isolate_env / "config.yaml").write_text(
+            json.dumps({"plugins": {"disabled": ["hermes_starts"]}}),
+            encoding="utf-8",
+        )
+
+        mgr = self._discover()
+        loaded = mgr._plugins.get("hermes_starts")
+        assert loaded is not None
+        assert loaded.enabled is False
+        assert loaded.error == "disabled via config"
+
+        rendered = mgr.render_system_prompt_sections({"session_id": "session-1"})
+        assert all(item.id != self.SECTION_ID for item in rendered)
+        assert self.SECTION_ID not in mgr._system_prompt_sections
+        # Disabling removes both halves of the feature together.
+        assert (
+            registry.snapshot_registration(
+                "start_conversation", scope=mgr.scope_key
+            )
+            is None
+        )

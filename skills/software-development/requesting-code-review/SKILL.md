@@ -1,14 +1,14 @@
 ---
 name: requesting-code-review
 description: "Pre-commit review: security scan, quality gates, auto-fix."
-version: 2.0.0
+version: 2.1.0
 author: Hermes Agent (adapted from obra/superpowers + MorAlekss)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [code-review, security, verification, quality, pre-commit, auto-fix]
-    related_skills: [subagent-driven-development, plan, test-driven-development, github-code-review]
+    related_skills: [subagent-driven-development, test-driven-development, github]
 ---
 
 # Pre-Commit Code Verification
@@ -27,8 +27,8 @@ quality gates, an independent reviewer subagent, and an auto-fix loop.
 
 **Skip for:** documentation-only changes, pure config tweaks, or when user says "skip verification".
 
-**This skill vs github-code-review:** This skill verifies YOUR changes before committing.
-`github-code-review` reviews OTHER people's PRs on GitHub with inline comments.
+**This skill vs github:** This skill verifies YOUR changes before committing.
+`github` reviews OTHER people's PRs on GitHub with inline comments.
 
 ## Step 1 — Get the diff
 
@@ -124,13 +124,18 @@ Quick scan before dispatching the reviewer:
 
 ## Step 5 — Independent reviewer subagent
 
-Call `delegate_task` directly — it is NOT available inside execute_code or scripts.
+**Interactive sessions only.** In a one-shot run (`hermes chat -q`, `--oneshot`, a
+benchmark harness) there is no one to hand the verdict to and a fresh subagent re-pays
+the whole system prompt plus a repo re-read: skip Steps 5 and 7, apply the Step 4
+checklist to the diff yourself, run the tests, and go to Step 8.
+
+Call `delegate_agent` directly — it is NOT available inside execute_code or scripts.
 
 The reviewer gets ONLY the diff and static scan results. No shared context with
 the implementer. Fail-closed: unparseable response = fail.
 
 ```python
-delegate_task(
+delegate_agent(
     goal="""You are an independent code reviewer. You have no context about how
 these changes were made. Review the git diff and return ONLY valid JSON.
 
@@ -193,13 +198,13 @@ Suggestions (non-blocking): [list]
 
 ## Step 7 — Auto-fix loop
 
-**Maximum 2 fix-and-reverify cycles.**
+**Maximum 2 fix-and-reverify cycles. Interactive sessions only (see Step 5).**
 
 Spawn a THIRD agent context — not you (the implementer), not the reviewer.
 It fixes ONLY the reported issues:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="""You are a code fix agent. Fix ONLY the specific issues listed below.
 Do NOT refactor, rename, or change anything else. Do NOT add features.
 
@@ -273,7 +278,7 @@ tests exist, tests pass, no regressions.
 - **Empty diff** — check `git status`, tell user nothing to verify
 - **Not a git repo** — skip and tell user
 - **Large diff (>15k chars)** — split by file, review each separately
-- **delegate_task returns non-JSON** — retry once with stricter prompt, then treat as FAIL
+- **delegate_agent returns non-JSON** — retry once with stricter prompt, then treat as FAIL
 - **False positives** — if reviewer flags something intentional, note it in fix prompt
 - **No test framework found** — skip regression check, reviewer verdict still runs
 - **Lint tools not installed** — skip that check silently, don't fail

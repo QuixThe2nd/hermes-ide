@@ -2,7 +2,7 @@
 
 MemoryStore instances pointing at the same database file must share one
 process-wide SQLite connection and one re-entrant lock. Multiple providers
-coexist in a single process (the main agent plus every delegate_task
+coexist in a single process (the main agent plus every delegate_agent
 subagent); when each instance owned a private connection they raced as
 independent WAL writers and intermittently failed with "database is locked".
 

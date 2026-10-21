@@ -21,7 +21,7 @@ approval:
   prompt_smart_deny: "      Choice [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Timeout - denying command"
+  timeout:         "      ⏱ No answer in {waited} — the command was not run. Ask again to retry, or raise the limit: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ Allowed once"
   allowed_session: "      ✓ Allowed for this session"
   allowed_always:  "      ✓ Added to permanent allowlist"
@@ -83,8 +83,16 @@ gateway:
     always_plural:         "✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming..."
 
   background:
-    usage:                 "Usage: /background <prompt>\nExample: /background Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
+    usage:                 "Usage: /bg <prompt>\nExample: /bg Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
     started:               "🔄 Background task started: \"{preview}\"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done."
+
+  btw:
+    usage:                 "Usage: /btw <question>\nExample: /btw which file was that error in?\n\nAnswers a quick side question about this conversation without interrupting it. For an independent background task, use /bg <prompt>."
+    no_history:            "No conversation yet — send your question as a normal message instead."
+    no_provider:           "❌ Cannot answer side question: no provider credentials configured."
+    started:               "💬 Side question: \"{preview}\"\nAnswering from a snapshot of this conversation — the current work continues."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw failed: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Session database not available."
@@ -113,6 +121,7 @@ gateway:
     summary_failed:        "⚠️ Summary generation failed ({error}). {count} historical message(s) were removed and replaced with a placeholder; earlier context is no longer recoverable. Consider checking your auxiliary.compression model configuration."
     aborted:               "⚠️ Compression aborted ({error}). No messages were dropped — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model configuration."
     aux_failed:            "ℹ️ Configured compression model `{model}` failed ({error}). Recovered using your main model — context is intact — but you may want to check `auxiliary.compression.model` in config.yaml."
+    turnhold_deferred:     "ℹ️ Context compression deferred — summary still streaming. Continuing without compression this turn."
     failed:                "Compression failed: {error}"
 
   debug:
@@ -132,8 +141,8 @@ gateway:
 
   fast:
     not_supported:         "⚡ /fast is only available for OpenAI models that support Priority Processing."
-    status:                "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, status"
+    status:                "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|status>`"
+    unknown_arg:           "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (this session only)"
     label_fast:            "FAST"
@@ -143,6 +152,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\n\nCurrent mode: `{mode}`\n\nPick an option:"
     choice_fast:           "fast — Priority Processing on"
     choice_normal:         "normal — standard processing"
+    choice_auto:           "auto — fast for the first seconds of every turn"
+    choice_cold:           "cold — fast for the first turn of a session only"
 
   footer:
     status:                "📎 Runtime footer: **{state}**\nFields: `{fields}`\nPlatform: `{platform}`"
@@ -183,7 +194,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
@@ -272,6 +283,7 @@ gateway:
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.\nFuture messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "No named sessions found.\nUse `/title My Session` to name your current session, then `/resume My Session` to return to it later."
+    all_requires_admin: "_Note: `--all` (cross-chat listing) requires a configured admin; showing this chat's sessions only._"
     list_header:           "📋 **Named Sessions**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -305,11 +317,6 @@ gateway:
     no_changes:            "No changes."
     failed:                "{error}"
 
-  set_home:
-    save_failed:           "Failed to save home channel: {error}"
-    success:               "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."
-    discord_pointer:       "💡 Want the full setup? `/sethomeserver` provisions a whole home server — chat, notifications, memory, quotas, and speeds — all wired up."
-
   set_home_server:
     discord_only:          "⚠️ `/sethomeserver` only works on Discord — it provisions Discord categories, channels, and webhooks."
     relay_blocked:         "⚠️ This message arrived through a relay that can't authenticate Discord guild targets. Run `/sethomeserver` from a native Discord message."
@@ -318,15 +325,15 @@ gateway:
     confirm_required:      "⚠️ Your home server is already set to guild `{current}`.\nRun `/sethomeserver confirm` to move it to guild `{guild_id}`. Nothing is ever deleted, but the new guild will be provisioned from scratch."
     save_failed:           "Failed to save home server setting: {error}"
     provision_failed:      "❌ Provisioning failed: {error}"
-    success:               "🏠 Home server provisioned for guild `{guild_id}`.\n**Created {created_count}:** {created_list}\n**Welcome messages posted:** {embeds_count}\n**Wired:** {wired_list} ({wired_count})\n**Modules enabled:** {modules_count}/5\nHome channel: {home_channel_state} — existing home and notification channels are never overwritten.\nRe-syncs run automatically at most once per hour."
+    success:               "🏠 Home server provisioned for guild `{guild_id}`.\n**Created {created_count}:** {created_list}\n**Welcome messages posted:** {embeds_count}\n**Wired:** {wired_list} ({wired_count})\n**Modules enabled:** {modules_count}/5\nExisting notification channels are never overwritten.\nRe-syncs run automatically at most once per hour."
 
   set_notify:
     save_failed:           "Failed to save notification channel: {error}"
-    success:               "✅ Gateway lifecycle notifications set to **{name}** (ID: {chat_id}).\nGateway shutdown/startup broadcasts will be delivered here instead of the home channel."
+    success:               "✅ Gateway lifecycle notifications set to **{name}** (ID: {chat_id}).\nGateway shutdown/startup broadcasts will be delivered here."
 
   clear_notify:
     failed:                "Failed to clear notification channel: {error}"
-    success:               "✅ Notification channel cleared.\nGateway lifecycle broadcasts return to the home channel."
+    success:               "✅ Notification channel cleared.\nGateway lifecycle broadcasts are skipped until a notification channel is set."
 
   context:
     header:                "🧠 **Context Window**"
@@ -361,6 +368,7 @@ gateway:
     last_activity:         "**Last Activity:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · free tier · nous/welcome · /login to sign in"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
@@ -406,7 +414,7 @@ gateway:
     not_git_repo:            "✗ Not a git repository — cannot update."
     hermes_cmd_not_found:    "✗ Could not locate the `hermes` command. Hermes is running, but the update command could not find the executable on PATH or via the current Python interpreter. Try running `hermes update` manually in your terminal."
     start_failed:            "✗ Failed to start update: {error}"
-    starting:                "⚕ Starting Hermes update… I'll stream progress here."
+    starting:                "☤ Starting Hermes update… I'll stream progress here."
 
   usage:
     rate_limits:              "⏱️ **Rate Limits:** {state}"
@@ -446,10 +454,11 @@ gateway:
   verbose:
     not_enabled:           "The `/verbose` command is not enabled for messaging platforms.\n\nEnable it in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Tool progress: **OFF** — no tool activity shown."
-    mode_new:              "⚙️ Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40)."
-    mode_all:              "⚙️ Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40)."
+    mode_new:              "⚙️ Tool progress: **NEW** — shown when tool changes (previews capped at `display.tool_preview_length`; 0 = full)."
+    mode_all:              "⚙️ Tool progress: **ALL** — every tool call shown (previews capped at `display.tool_preview_length`; 0 = full)."
     mode_verbose:          "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments."
     mode_log:              "⚙️ Tool progress: **LOG** — silent in chat; tool calls written to ~/.hermes/logs/tool_calls.log."
+    mode_compact:          "⚙️ Tool progress: **COMPACT** — one line per tool: `name({full JSON args})`."
     saved_suffix:          "_(saved for **{platform}** — takes effect on next message)_"
     save_failed:           "_(could not save to config: {error})_"
 

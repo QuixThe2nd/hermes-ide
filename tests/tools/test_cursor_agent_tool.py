@@ -123,6 +123,7 @@ class _FakePopen:
     ):
         del stderr, stdin, start_new_session, kwargs
         self.cmd = cmd
+        self.args = cmd  # subprocess.run builds CompletedProcess from this
         self.cwd = cwd
         self.stdout = stdout
         self._returncode: int | None = None
@@ -147,6 +148,27 @@ class _FakePopen:
         if self._returncode is None:
             self._returncode = 0
         return self._returncode
+
+    @property
+    def returncode(self):
+        return self._returncode
+
+    def communicate(self, input=None, timeout=None):
+        # ``subprocess.run`` (used by the git helpers) requires the Popen
+        # contract: context manager + communicate(). No output, prompt exit.
+        del input, timeout
+        if self._returncode is None:
+            self._returncode = 0
+        return (b"", b"")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self.kill()
+        self.wait()
+        return False
 
     def set_exit(self, code: int) -> None:
         self._returncode = code
@@ -537,7 +559,12 @@ def test_explicit_model_adds_payload_id(monkeypatch, tmp_path):
 
     assert captured["payload"]["model"] == {"id": "composer-2.5"}
     assert captured["api_key"] == "test-secret-key"
-    assert "env" not in captured["payload"]  # Cursor-hosted, no machine routing
+    # Machine-routed to the stable My Machines worker on this machine.
+    assert captured["payload"]["env"] == {
+        "type": "machine",
+        "name": captured["payload"]["name"],
+    }
+    assert captured["payload"]["name"] == cursor_agent_tool.CURSOR_MACHINE_NAME
 
 
 @pytest.mark.parametrize("force_value", [False, "false", "0", True])
@@ -576,7 +603,7 @@ def test_force_does_not_enable_pushes(monkeypatch, tmp_path, force_value):
     assert payload["autoCreatePR"] is False
     assert payload["skipReviewerRequest"] is True
     assert payload["workOnCurrentBranch"] is False
-    assert "env" not in captured["payload"]
+    assert payload["env"] == {"type": "machine", "name": payload["name"]}
 
 
 def test_handler_force_string_false(monkeypatch, tmp_path):
@@ -613,7 +640,10 @@ def test_handler_force_string_false(monkeypatch, tmp_path):
     )
 
     assert captured["payload"]["autoCreatePR"] is False
-    assert "env" not in captured["payload"]
+    assert captured["payload"]["env"] == {
+        "type": "machine",
+        "name": captured["payload"]["name"],
+    }
 
 
 def test_parse_distinct_call_ids_same_args_produce_two_records():
@@ -1379,7 +1409,9 @@ def test_build_create_agent_payload_no_pr_side_effects():
         starting_ref="main",
         force=True,
     )
-    assert "env" not in payload  # Cursor-hosted runs carry no machine routing
+    # Machine-routed runs carry the worker name in env, matching the top-level name.
+    assert payload["env"] == {"type": "machine", "name": "hermes-abc"}
+    assert payload["env"]["name"] == payload["name"]
     assert payload["repos"] == [{"url": "https://github.com/acme/demo", "startingRef": "main"}]
     assert payload["autoCreatePR"] is False
     assert payload["skipReviewerRequest"] is True
@@ -1692,6 +1724,39 @@ def test_progress_url_is_exact_api_value(monkeypatch, tmp_path):
     expected = f"https://cursor.com/agents/{_default_client_agent_id()}"
     assert result["progress_url"] == expected
     assert notices == [f"Cursor Cloud Agent: {expected}"]
+
+
+def test_rearm_background_cursor_emits_viewer_status_notice(monkeypatch, tmp_path):
+    from tools import cursor_agent_tool
+
+    notices: list[str] = []
+    monkeypatch.setattr(cursor_agent_tool, "_emit_progress_notice", lambda message: notices.append(message))
+    monkeypatch.setattr(cursor_agent_tool, "load_cursor_api_key", lambda: "test-key")
+    monkeypatch.setattr(
+        cursor_agent_tool,
+        "_dispatch_cursor_background",
+        lambda **kwargs: json.dumps({"status": "dispatched", "delegation_id": "deleg_x"}),
+    )
+    receipt = {
+        "delivery_mode": "background",
+        "cloud_agent_id": "bc-test123",
+        "cloud_run_id": "run-x",
+        "delegation_id": "deleg_x",
+    }
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    note = cursor_agent_tool._rearm_background_cursor(
+        hermes_session_id="sess",
+        tool_call_id="call-1",
+        receipt_path=receipt_path,
+        receipt=receipt,
+        args={},
+    )
+
+    assert note is not None
+    assert "Re-armed" in note
+    assert notices == ["Cursor Cloud Agent: https://cursor.com/agents/bc-test123"]
 
 
 def test_is_terminal_run_status():

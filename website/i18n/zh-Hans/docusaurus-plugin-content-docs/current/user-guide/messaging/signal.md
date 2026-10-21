@@ -108,7 +108,6 @@ SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # 逗号分隔的 E.164 号码�
 
 # 可选
 SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # 启用群组（省略则禁用，* 表示全部）
-SIGNAL_HOME_CHANNEL=+1234567890                  # cron 任务的默认投递目标
 ```
 
 然后启动 gateway：
@@ -254,4 +253,3 @@ Signal 单条消息上限为 **8,000 字符**。Hermes 会自动将更长的回�
 | `SIGNAL_ALLOWED_USERS` | 否 | — | 逗号分隔的手机号/UUID |
 | `SIGNAL_GROUP_ALLOWED_USERS` | 否 | — | 要监听的群组 ID，或 `*` 表示全部（省略则禁用群组） |
 | `SIGNAL_ALLOW_ALL_USERS` | 否 | `false` | 允许任意用户交互（跳过白名单） |
-| `SIGNAL_HOME_CHANNEL` | 否 | — | cron 任务的默认投递目标 |

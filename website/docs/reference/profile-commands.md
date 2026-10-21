@@ -80,12 +80,13 @@ Creates a new profile.
 | Argument / Option | Description |
 |-------------------|-------------|
 | `<name>` | Name for the new profile. Must be a valid directory name (alphanumeric, hyphens, underscores). |
-| `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, and skills from the current profile. |
-| `--clone-all` | Copy everything (config, memories, skills, cron, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints. |
+| `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, skills, and the curated `memories/MEMORY.md` / `memories/USER.md` from the current profile. Sessions, `state.db` and cron jobs are not copied. |
+| `--clone-all` | Copy everything (config, memories, skills, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints — and cron jobs, which stay bound to the source profile (a clone that inherited them would fire every job twice). When the source is the default profile, the machine-scoped local-model trees (`models/`, `runtimes/`, `node/`) are also skipped — the same trees `hermes backup` excludes. |
 | `--clone-from <profile>` | Clone config/skills/SOUL from a specific profile instead of the current one. Implies `--clone` unless paired with `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
 | `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
 | `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-bundled-skills` marker into the profile so future `hermes update` runs won't re-seed the bundled set, and refuses to combine with `--clone`, `--clone-from`, or `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. To toggle this on an already-created profile (including the default `~/.hermes`), use `hermes skills opt-out` / `hermes skills opt-in`. |
+| `--read-only` | Make the profile's **file tools read-only**: the `file_readonly` toolset (`read_file`, `search_files`) replaces `file`, so `write_file` and `patch` never reach the model. Writes a `platform_toolsets` selection into the profile's `config.yaml` — for `cli` on a fresh create, or for every platform the (cloned) config already had a saved list for; a bare composite entry such as `hermes-discord` is expanded so it can't re-import the write tools implicitly. Composes with `--clone`/`--clone-from`/`--clone-all`, `--no-skills`, and `--no-alias`. Only file tools are affected — `terminal` and `code_execution` stay as they were. To go back, run `hermes -p <name> tools enable file` (which swaps the read-only variant back out). |
 
 Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. If you want a profile to start in a specific project, set `terminal.cwd` in that profile's `config.yaml`.
 
@@ -106,6 +107,9 @@ hermes profile create work2 --clone-from work
 
 # Clone everything from a specific profile
 hermes profile create work2-backup --clone-from work --clone-all
+
+# Read-only files: read_file + search_files, no write_file or patch
+hermes profile create researcher --read-only
 ```
 
 ## `hermes profile describe`
@@ -174,6 +178,8 @@ hermes profile show <name>
 
 Displays details about a profile including its home directory, configured model, gateway status, skills count, and configuration file status.
 
+The skills count here (and in `hermes profile list`) is counted on the spot. The Desktop and dashboard profile lists are polled every few seconds, so they show the last known count instead and refresh it in the background — a freshly started backend may briefly show `0` skills for a profile until the first background count lands, and a skill you just installed appears in those lists within about a minute.
+
 This shows the profile's Hermes home directory, not the terminal working directory. Terminal commands start from `terminal.cwd` (or the launch directory on the local backend when `cwd: "."`).
 
 | Argument | Description |
@@ -240,6 +246,77 @@ Renames a profile. Updates the directory and shell alias.
 hermes profile rename mybot assistant
 # ~/.hermes/profiles/mybot → ~/.hermes/profiles/assistant
 # ~/.local/bin/mybot → ~/.local/bin/assistant
+```
+
+The rename also migrates the profile's persisted session/routing identity — session keys
+(`agent:<old>:*`), `sessions.profile_name`, heartbeats, and routing/delivery rows — to the new
+name. A live multiplexed gateway owns that migration (it holds the routing index in memory), so
+when it is running the CLI delegates to it. Checkpoint (`/rollback`) history of workspaces that
+live inside the profile directory is rekeyed to their new path as well, so it stays reachable
+after the rename; `hermes profile migrate-identity` retries that step too if it was reported as
+failed.
+
+## `hermes profile migrate-identity`
+
+```bash
+hermes profile migrate-identity <old-name> <new-name>
+```
+
+Retries the identity migration of a rename that already completed. Run it if `hermes profile
+rename` warned that the live gateway could not migrate session identity: restart the gateway
+(it reloads the routing index from the database, so the migration lands), or stop it — with no
+gateway holding the store the command performs the durable rewrite itself.
+
+The migration is driven by the rows that still name `<old>`, so `profiles/<old>` does not have
+to exist; only `<new>` is checked. Idempotent — re-running a completed migration succeeds with
+nothing left to rekey. Exits non-zero when a live gateway refuses the migration, when a
+database rejects the rewrite (a routing collision, a lock, or one of the two databases failing
+while the other succeeds), naming the database and error.
+
+**Example:**
+
+```bash
+hermes profile rename mybot assistant
+# ⚠ Profile was renamed, but the live gateway could not migrate session identity (…).
+#   Restart the gateway, then run:
+#     hermes profile migrate-identity mybot assistant
+
+hermes profile migrate-identity mybot assistant
+# ✓ Session/routing identity migrated: mybot → assistant
+```
+
+## `hermes profile purge-identity`
+
+```bash
+hermes profile purge-identity <name>
+```
+
+Retries the identity purge of a delete that already completed. Run it if `hermes profile delete`
+reported that its session/routing identity settlement is still pending: restart the gateway (it
+reloads the routing index from the database, so the purge lands), or stop it — with no gateway
+holding the store the command performs the durable delete itself.
+
+The purge keys off `<name>` alone, so the profile directory does not have to exist — but a profile
+that is live again under that name is refused: identity is settled by name, so purging it would take
+the new profile's routing with it. Routing keys (`agent:<name>:*`), heartbeat rows and the profile's
+Telegram topic bindings/mode rows are deleted; `delivery_obligations` rows are marked `abandoned`
+rather than dropped, so pending delivery state is not lost silently. Session rows are not deleted by
+the purge itself — it settles identity, not history; whether a conversation record outlives a delete
+is decided by `hermes profile delete`, which removes the profile's own `profiles/<name>/`, its
+`state.db` included. Idempotent — re-running a completed purge succeeds with nothing left to purge.
+Exits non-zero when the name is a live profile again, when a live gateway refuses the purge, or when
+a database rejects the delete (a lock, or a partial failure).
+
+**Example:**
+
+```bash
+hermes profile delete mybot
+# ⚠ Profile was deleted, but the live gateway could not purge its session identity (…).
+#   Restart the gateway, then run:
+#     hermes profile purge-identity mybot
+
+hermes profile purge-identity mybot
+# ✓ Session/routing identity purged: mybot
 ```
 
 ## `hermes profile export`
@@ -357,8 +434,12 @@ hermes profile update <name> [--force-config] [--yes]
 ```
 
 Re-clones the distribution from its recorded source and applies updates.
-Distribution-owned files (SOUL.md, skills/, cron/, mcp.json) are
-overwritten; user data (memories, sessions, auth, .env) is never touched.
+Distribution-owned files (SOUL.md, mcp.json) are overwritten and the
+skills and cron jobs the distribution ships are replaced; skills or cron
+jobs you added under `skills/` or `cron/` yourself stay in place. User data
+(memories, sessions, auth, .env) is never touched. A symlinked `skills/`,
+`cron/` or skill category directory is refused before anything is written — replace the link with a real
+directory and re-run.
 
 `config.yaml` is preserved by default to keep your local overrides.
 Pass `--force-config` to reset it to the distribution's shipped config.

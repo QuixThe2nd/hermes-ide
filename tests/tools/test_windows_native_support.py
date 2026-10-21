@@ -107,7 +107,8 @@ class TestTerminatePidRoutingOnWindows:
             return result
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
-        status.terminate_pid(12345, force=True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
+        status.terminate_pid(12345, force=True, expected_start_time=123456)
 
         assert captured["args"][0] == "taskkill"
         assert "/PID" in captured["args"]
@@ -126,8 +127,9 @@ class TestTerminatePidRoutingOnWindows:
             return result
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
         with pytest.raises(OSError, match="cannot be terminated"):
-            status.terminate_pid(12345, force=True)
+            status.terminate_pid(12345, force=True, expected_start_time=123456)
 
     def test_graceful_on_windows_uses_os_kill_sigterm(self, monkeypatch):
         """Non-force path calls os.kill with SIGTERM (Windows has no SIGKILL).
@@ -165,7 +167,8 @@ class TestTerminatePidRoutingOnWindows:
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
         monkeypatch.setattr(status.os, "kill", fake_kill)
-        status.terminate_pid(42, force=True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123456)
+        status.terminate_pid(42, force=True, expected_start_time=123456)
 
         assert captured["pid"] == 42
         assert captured["sig"] == signal.SIGTERM
@@ -193,7 +196,7 @@ class TestSigkillFallback:
     @pytest.mark.parametrize(
         "module_path, line_pattern",
         [
-            ("hermes_cli.kanban_db", 'getattr(signal, "SIGKILL", signal.SIGTERM)'),
+            ("hermes_cli.kanban_db_dispatch", 'getattr(signal, "SIGKILL", signal.SIGTERM)'),
         ],
     )
     def test_module_uses_getattr_fallback(self, module_path, line_pattern):
@@ -363,16 +366,16 @@ class TestWebServerPtyBridgeGuard:
 
     def test_import_guard_present_in_source(self):
         root = Path(__file__).resolve().parents[2]
-        source = (root / "hermes_cli" / "web_server.py").read_text(encoding="utf-8")
+        source = (root / "hermes_cli" / "web_server_chat.py").read_text(encoding="utf-8")
         assert "_PTY_BRIDGE_AVAILABLE" in source
         assert "except ImportError" in source, (
-            "web_server.py must wrap the pty_bridge import in try/except ImportError"
+            "web_server_chat.py must wrap the pty_bridge import in try/except ImportError"
         )
 
     def test_pty_handler_checks_availability_flag(self):
         """The /api/pty handler must short-circuit when the bridge is unavailable."""
         root = Path(__file__).resolve().parents[2]
-        source = (root / "hermes_cli" / "web_server.py").read_text(encoding="utf-8")
+        source = (root / "hermes_cli" / "web_routers" / "chat_ws.py").read_text(encoding="utf-8")
         assert "if not _PTY_BRIDGE_AVAILABLE" in source, (
             "/api/pty handler must return a friendly error when PTY is unavailable"
         )
@@ -538,34 +541,40 @@ class TestTuiGatewayEntrySignalGuards:
 
 
 # ---------------------------------------------------------------------------
-# hermes_cli/kanban_db.py waitpid guard
+# hermes_cli/kanban_db_dispatch.py waitpid guard
 # ---------------------------------------------------------------------------
 
 
 class TestKanbanWaitpidWindowsGuard:
     """os.WNOHANG doesn't exist on Windows — the dispatcher tick reap loop
-    must be gated behind ``os.name != "nt"``."""
+    must be gated behind a Windows check (``os.name != "nt"`` or the
+    monkeypatchable ``_kb._IS_WINDOWS`` flag from ``kanban_db``)."""
 
     def test_source_gates_waitpid_loop(self):
         root = Path(__file__).resolve().parents[2]
-        source = (root / "hermes_cli" / "kanban_db.py").read_text(encoding="utf-8")
+        source = (root / "hermes_cli" / "kanban_db_dispatch.py").read_text(encoding="utf-8")
         # Find the waitpid call and confirm it's inside a POSIX gate.
         idx = source.find("os.waitpid(-1, os.WNOHANG)")
         assert idx > 0, "waitpid call must exist"
-        # Look backwards up to 400 chars for the gate. Accept either form:
-        #   `if os.name != "nt":` (run iff POSIX), or
-        #   `if os.name == "nt": return []` (early-return guard).
-        # Both correctly keep the waitpid loop off Windows; the early-return
-        # form is stronger because the rest of the function never runs.
-        preamble = source[max(0, idx - 400):idx]
+        # Look backwards up to 600 chars for the gate (the Windows branch
+        # that polls Popen handles sits between the guard and the waitpid
+        # loop). Accept any of:
+        #   `if os.name != "nt":` (run iff POSIX),
+        #   `if os.name == "nt": return []` (early-return guard), or
+        #   `if _kb._IS_WINDOWS: ... return reaped` (early-return via the
+        #   kanban_db flag, which tests flip instead of faking sys.platform).
+        # All keep the waitpid loop off Windows; the early-return forms are
+        # stronger because the rest of the function never runs.
+        preamble = source[max(0, idx - 600):idx]
         guard_patterns = (
             'os.name != "nt"',
             "os.name != 'nt'",
             'os.name == "nt"',  # early-return guard
             "os.name == 'nt'",
+            "_kb._IS_WINDOWS",  # early-return guard via kanban_db flag
         )
         assert any(p in preamble for p in guard_patterns), (
-            "os.waitpid(-1, os.WNOHANG) must sit behind an os.name guard "
+            "os.waitpid(-1, os.WNOHANG) must sit behind a Windows guard "
             f"(checked patterns: {guard_patterns})"
         )
 
@@ -595,10 +604,11 @@ class TestCodeExecutionTransportTcpFallback:
         )
 
     def test_server_side_branches_on_use_tcp_rpc(self):
+        # The local RPC listener lives in the session kernel (tools/code_kernel.py).
         root = Path(__file__).resolve().parents[2]
-        source = (root / "tools" / "code_execution_tool.py").read_text(encoding="utf-8")
-        assert "_use_tcp_rpc = _IS_WINDOWS" in source
-        assert 'rpc_endpoint = f"tcp://{_host}:{_port}"' in source
+        source = (root / "tools" / "code_kernel.py").read_text(encoding="utf-8")
+        assert "if _IS_WINDOWS:" in source
+        assert 'rpc_endpoint = f"tcp://{host}:{port}"' in source
 
 
 # ---------------------------------------------------------------------------
@@ -607,12 +617,12 @@ class TestCodeExecutionTransportTcpFallback:
 
 
 class TestCronSchedulerBashResolution:
-    """cron.scheduler must NOT hardcode /bin/bash — .sh scripts need a
+    """cron.scheduler_script (the pre-run script runner) must NOT hardcode /bin/bash — .sh scripts need a
     dynamically-resolved bash so Windows (Git Bash) works."""
 
     def test_source_uses_shutil_which_for_bash(self):
         root = Path(__file__).resolve().parents[2]
-        source = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
+        source = (root / "cron" / "scheduler_script.py").read_text(encoding="utf-8")
         # The old hardcoded path should be gone as the sole bash source.
         # It may still appear as a POSIX fallback after shutil.which(), so
         # we check for the shutil.which call near the .sh/.bash branch.
@@ -622,7 +632,7 @@ class TestCronSchedulerBashResolution:
 
     def test_error_message_when_bash_missing(self):
         root = Path(__file__).resolve().parents[2]
-        source = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
+        source = (root / "cron" / "scheduler_script.py").read_text(encoding="utf-8")
         # The graceful-failure message must mention "bash not found" so
         # Windows users without Git Bash see an actionable error instead
         # of a WinError 2 traceback.
@@ -715,7 +725,8 @@ class TestLocalEnvironmentWindowsTempDir:
         source = (root / "tools" / "environments" / "local.py").read_text(encoding="utf-8")
         assert "if _IS_WINDOWS:" in source
         assert "get_hermes_home" in source
-        assert 'cache_dir = get_hermes_home() / "cache" / "terminal"' in source
+        assert 'get_hermes_home() / "cache" / "terminal"' in source
+        assert "_default_terminal_temp_dir()" in source
 
 
 class TestLocalEnvironmentPathInjectionGated:
@@ -744,7 +755,7 @@ class TestGitBashPathNormalization:
 
     def test_posix_noop(self):
         """Must NOT mutate paths on Linux/macOS."""
-        from cli import _normalize_git_bash_path
+        from hermes_cli.worktree_ops import _normalize_git_bash_path
         if sys.platform != "win32":
             assert _normalize_git_bash_path("/home/teknium/foo") == "/home/teknium/foo"
             assert _normalize_git_bash_path("/c/Users/foo") == "/c/Users/foo"
@@ -759,7 +770,7 @@ class TestGitBashPathNormalization:
         ``windows_only``: the function's whole job is producing native
         Windows paths, which is only meaningful where ``os.sep`` is ``\\``.
         """
-        import cli as cli_mod
+        from hermes_cli import worktree_ops as cli_mod
         assert cli_mod._normalize_git_bash_path("/c/Users/foo") == r"C:\Users\foo"
         assert cli_mod._normalize_git_bash_path("/C/Users/foo") == r"C:\Users\foo"
         assert cli_mod._normalize_git_bash_path("/cygdrive/d/data") == r"D:\data"
@@ -778,13 +789,13 @@ class TestWorktreeSymlinkFallback:
 
     def test_source_has_symlink_fallback(self):
         root = Path(__file__).resolve().parents[2]
-        source = (root / "cli.py").read_text(encoding="utf-8")
+        source = (root / "hermes_cli" / "worktree_ops.py").read_text(encoding="utf-8")
         # Look for the try/except that handles OSError around os.symlink
         # with a shutil.copytree fallback.
         assert "os.symlink(str(src_resolved), str(dst))" in source
         assert "except (OSError, NotImplementedError)" in source
         assert "shutil.copytree" in source
-        assert 'sys.platform == "win32"' in source
+        assert 'sys.platform != "win32"' in source
 
 
 # ---------------------------------------------------------------------------
@@ -992,7 +1003,7 @@ class TestWindowlessGatewayRestartSpec:
 
 
 # ---------------------------------------------------------------------------
-# gateway/run.py :: GatewayRunner._launch_detached_restart_command
+# gateway/run.py :: GatewayRunner._launch_detached_restart_watcher
 # outer watcher Popen breakaway-denied fallback (PR #42993)
 # ---------------------------------------------------------------------------
 
@@ -1023,14 +1034,13 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         from types import SimpleNamespace
 
         return SimpleNamespace(
-            _detached_restart_helper_started=False,
-            _restart_drain_timeout=0.0,
+            _detached_restart_watcher_started=False,
         )
 
     @classmethod
     def _drive(cls, gr):
         asyncio.run(
-            gr.GatewayRunner._launch_detached_restart_command(cls._fake_self())
+            gr.GatewayRunner._launch_detached_restart_watcher(cls._fake_self())
         )
 
     def test_outer_watcher_retries_without_breakaway_on_oserror(self, monkeypatch):
@@ -1039,8 +1049,6 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
             windows_detach_flags_without_breakaway,
             windows_detach_popen_kwargs,
         )
-
-        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
 
         calls = []
 
@@ -1051,6 +1059,9 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
             return MagicMock()
 
         monkeypatch.setattr("subprocess.Popen", fake_popen)
+        # Popen is a recording fake here, so run the real (non-isolated) watcher
+        # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
         self._drive(gr)
 
@@ -1059,12 +1070,15 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
         # argv is identical across primary and fallback, and every current
         # watcher parameter survives:
-        #   [watcher_python, "-c", <script>, str(pid), str(restart_after_s), *cmd_argv]
+        #   [watcher_python, "-c", <bootstrap>, str(old_pid), project_root]
         assert argv1 == argv2
         assert argv1[1] == "-c"
         assert argv1[3] == str(os.getpid())
-        assert float(argv1[4]) >= 5.0  # restart deadline preserved
-        assert argv1[-2:] == ["gateway", "restart"]
+        assert argv1[-1] == str(Path(gr.__file__).resolve().parent.parent)
+        # The bootstrap is the shared watcher contract, not the legacy CLI.
+        assert "run_detached_restart_watcher" in argv1[2]
+        assert "gateway restart" not in " ".join(argv1)
+        assert "--replace" not in argv1
 
         # Scrubbed env preserved and identical on both calls.
         assert kw1["env"] is kw2["env"]
@@ -1099,8 +1113,6 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
     def test_outer_watcher_happy_path_spawns_once(self, monkeypatch):
         import gateway.run as gr
 
-        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
-
         calls = []
         monkeypatch.setattr(
             "subprocess.Popen",
@@ -1108,6 +1120,9 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         )
         warn = MagicMock()
         monkeypatch.setattr(gr.logger, "warning", warn)
+        # Popen is a recording fake here, so run the real (non-isolated) watcher
+        # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
         self._drive(gr)
 
@@ -1119,8 +1134,6 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
     ):
         import gateway.run as gr
 
-        monkeypatch.setattr(gr, "_resolve_hermes_bin", lambda: ["hermes"])
-
         calls = []
 
         def always_fail(argv, **kwargs):
@@ -1130,6 +1143,9 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         monkeypatch.setattr("subprocess.Popen", always_fail)
         warn = MagicMock()
         monkeypatch.setattr(gr.logger, "warning", warn)
+        # Popen is a recording fake here, so run the real (non-isolated) watcher
+        # spawn path rather than the HERMES_TEST_ISOLATION no-op branch.
+        monkeypatch.delenv("HERMES_TEST_ISOLATION", raising=False)
 
         # Deterministic sentinel in the environment the watcher inherits
         # (watcher_env = os.environ.copy()); the warning must never echo it.

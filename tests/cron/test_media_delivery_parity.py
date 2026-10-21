@@ -30,7 +30,8 @@ from pathlib import Path
 
 import pytest
 
-from cron.scheduler import _deliver_result, _send_media_via_adapter
+from cron.scheduler import _deliver_result
+from cron.scheduler_delivery import _send_media_via_adapter
 
 
 @pytest.fixture()
@@ -231,7 +232,7 @@ class TestMediaPolicyEnvBridge:
         (home / "config.yaml").write_text(
             "gateway:\n"
             "  strict: true\n"
-            f"  media_delivery_allow_dirs: [{str(allow_dir)!r}]\n"
+            f"  media_delivery_allow_dirs: ['{str(allow_dir)}']\n"
             "  trust_recent_files: false\n"
         )
         monkeypatch.setenv("HERMES_HOME", str(home))

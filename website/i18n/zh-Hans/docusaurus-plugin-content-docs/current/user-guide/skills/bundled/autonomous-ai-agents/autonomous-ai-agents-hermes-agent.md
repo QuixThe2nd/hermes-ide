@@ -260,7 +260,7 @@ hermes uninstall            Uninstall Hermes
 /stop                Kill background processes
 /rollback [N]        Restore filesystem checkpoint
 /snapshot [sub]      Create or restore state snapshots of Hermes config/state (CLI)
-/background <prompt> Run prompt in background
+/bg <prompt> Run prompt in background
 /queue <prompt>      Queue for next turn
 /steer <prompt>      Inject a message after the next tool call without interrupting
 /agents (/tasks)     Show active agents and running tasks
@@ -279,7 +279,7 @@ hermes uninstall            Uninstall Hermes
 /verbose             Cycle: off → new → all → verbose
 /voice [on|off|tts]  Voice mode
 /yolo                Toggle approval bypass
-/busy [sub]          Control what Enter does while Hermes is working (CLI)
+/busy [sub]          Control how messages behave while Hermes works (CLI + gateway)
                      (subcommands: queue, steer, interrupt, status)
 /indicator [style]   Pick the TUI busy-indicator style (CLI)
                      (styles: kaomoji, emoji, unicode, ascii)
@@ -308,7 +308,6 @@ hermes uninstall            Uninstall Hermes
 /approve             Approve a pending command (gateway)
 /deny                Deny a pending command (gateway)
 /restart             Restart gateway (gateway)
-/sethome             Set current chat as home channel (gateway)
 /update              Update Hermes to latest (gateway)
 /topic [sub]         Enable or inspect Telegram DM topic sessions (gateway)
 /platforms (/gateway) Show platform connection status (gateway)
@@ -365,7 +364,7 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 | 节 | 键选项 |
 |---------|-------------|
 | `model` | `default`, `provider`, `base_url`, `api_key`, `context_length` |
-| `agent` | `max_turns` (90), `tool_use_enforcement` |
+| `agent` | `max_turns` (256), `tool_use_enforcement` |
 | `terminal` | `backend` (local/docker/ssh/modal), `cwd`, `timeout` (180) |
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
 | `display` | `skin`, `tool_progress`, `show_reasoning`, `show_cost` |

@@ -8,7 +8,7 @@ Adapted from the GSD (Get Shit Done) project's context-budget reference — MIT 
 
 Every workflow that spawns agents or reads significant content must follow these:
 
-1. **Never read agent definition files.** `delegate_task` auto-loads them — you reading them too just doubles the cost.
+1. **Never read agent definition files.** `delegate_agent` auto-loads them — you reading them too just doubles the cost.
 2. **Never inline large files into subagent prompts.** Tell the agent to read the file from disk with `read_file` instead. The subagent gets full content; your context stays lean.
 3. **Read depth scales with context window.** See the table below.
 4. **Delegate heavy work to subagents.** The orchestrator routes; it doesn't execute.

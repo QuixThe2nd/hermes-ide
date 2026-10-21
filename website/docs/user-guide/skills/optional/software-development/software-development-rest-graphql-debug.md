@@ -15,13 +15,13 @@ Debug REST/GraphQL APIs: status codes, auth, schemas, repro.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/software-development/rest-graphql-debug` |
-| Path | `optional-skills/software-development/rest-graphql-debug` |
+| Path | `optional-skills/software-development\rest-graphql-debug` |
 | Version | `1.2.0` |
 | Author | eren-karakus0 |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `api`, `rest`, `graphql`, `http`, `debugging`, `testing`, `curl`, `integration` |
-| Related skills | [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
+| Related skills | [`systematic-debugging`](../../bundled/software-development/software-development-systematic-debugging.md), [`test-driven-development`](../../bundled/software-development/software-development-test-driven-development.md) |
 
 ## Reference: full SKILL.md
 
@@ -76,7 +76,7 @@ terminal("""curl -X POST https://api.example.com/users \\
 terminal('curl -sI https://api.example.com/health')
 
 # Pretty-print JSON
-terminal('curl -s https://api.example.com/users | python3 -m json.tool')
+terminal('curl -s https://api.example.com/users | python -m json.tool')
 ```
 
 ### GraphQL via terminal
@@ -482,10 +482,10 @@ Pull the spec for the endpoint you're debugging instead of guessing:
 web_extract(urls=["https://docs.example.com/api/v1/users"])
 ```
 
-### delegate_task — for full CRUD test sweeps
+### delegate_agent — for full CRUD test sweeps
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Test all CRUD endpoints for /api/v1/users",
     context="""
 Follow the rest-graphql-debug skill (optional-skills/software-development/rest-graphql-debug).

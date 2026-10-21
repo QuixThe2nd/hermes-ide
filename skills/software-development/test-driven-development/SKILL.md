@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [testing, tdd, development, quality, red-green-refactor]
-    related_skills: [systematic-debugging, plan, subagent-driven-development]
+    related_skills: [systematic-debugging, subagent-driven-development]
 ---
 
 # Test-Driven Development (TDD)
@@ -316,12 +316,12 @@ terminal("pytest tests/test_feature.py::test_name -v")
 terminal("pytest tests/ -q")
 ```
 
-### With delegate_task
+### With delegate_agent
 
 When dispatching subagents for implementation, enforce TDD in the goal:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Implement [feature] using strict TDD",
     context="""
     Follow test-driven-development skill:

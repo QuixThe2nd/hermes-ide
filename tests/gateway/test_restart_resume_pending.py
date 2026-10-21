@@ -32,8 +32,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform
-from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.config import GatewayConfig, DeliveryTarget, Platform
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import (
     _AGENT_PENDING_SENTINEL,
     _auto_continue_freshness_window,
@@ -313,6 +314,22 @@ class TestResumePendingSystemNote:
         assert "skip any unfinished work" not in note
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
+
+    def test_new_message_note_resumes_where_left_off(self):
+        """A user message arriving while resume was pending points the model
+        at the NEW ask but resumes the interrupted work, not skips it."""
+        note = build_resume_recovery_note("restart_timeout", "please continue")
+        assert "resume where you left off" in note
+        assert "NEW message" in note
+        assert "skip any unfinished work" not in note
+        assert "Do NOT re-execute old tool calls" in note
+
+    def test_interactive_empty_message_note_resumes_where_left_off(self):
+        """The interactive empty-message note (report + ask what next) must
+        no longer tell the model to skip the unfinished work either."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "resume where you left off" in note
+        assert "skip any unfinished work" not in note
 
 
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
@@ -766,27 +783,120 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
 
 
 # ---------------------------------------------------------------------------
+# Fresh-boot turn-machinery warm-up gate (#99373)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fresh_boot_gate_stays_closed_until_warmup_completes(monkeypatch):
+    """#99373 regression: on a fresh boot (no resume_pending sessions) the
+    inbound gate must NOT open while the turn-machinery warm-up is still
+    running — a message in that window used to be served with a skeleton
+    system prompt (no context tier, no tool schemas)."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []  # fresh boot: nothing to resume
+
+    monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "5")
+
+    warmup_done = asyncio.Event()
+    runner._startup_warmup_task = asyncio.create_task(warmup_done.wait())
+
+    handled: list[str] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        handled.append(event.text)
+
+    adapter.handle_message = fake_handle_message
+
+    source = make_restart_source(chat_id="fresh-boot-chat")
+    inbound = MessageEvent(
+        text="early-bird", message_type=MessageType.TEXT, source=source
+    )
+    # Inbound during the warm-up window queues instead of dispatching.
+    assert await runner._handle_message(inbound) is None
+    assert runner._startup_restore_queue == [inbound]
+
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # Warm-up still running -> gate still closed, nothing dispatched.
+    assert not finish_task.done()
+    assert runner._startup_restore_in_progress is True
+    assert handled == []
+
+    warmup_done.set()
+    await asyncio.wait_for(finish_task, timeout=5)
+
+    # Gate opened only after warm-up; the queued message replayed.
+    assert runner._startup_restore_in_progress is False
+    assert handled == ["early-bird"]
+    assert runner._startup_restore_queue == []
+
+
+@pytest.mark.asyncio
+async def test_wedged_warmup_cannot_hold_gate_shut_past_timeout(monkeypatch):
+    """Availability bound (#99373 / #98473 premise): a wedged warm-up must
+    not make the gateway permanently unavailable — the gate opens after the
+    bounded wait and the warm-up continues in the background."""
+    runner, _adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+
+    monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "0.1")
+
+    never = asyncio.Event()
+    wedged = asyncio.create_task(never.wait())
+    runner._startup_warmup_task = wedged
+
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+
+    assert runner._startup_restore_in_progress is False
+    assert not wedged.done()  # warm-up not cancelled, continues in background
+    wedged.cancel()
+
+
+@pytest.mark.asyncio
+async def test_warmup_disabled_by_nonpositive_timeout(monkeypatch):
+    """gateway_startup_warmup_timeout <= 0 restores historical lazy init."""
+    runner, _adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+
+    monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "0")
+    runner._start_startup_warmup()
+    assert runner._startup_warmup_task is None
+
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+    assert runner._startup_restore_in_progress is False
+
+
+# ---------------------------------------------------------------------------
 # Shutdown banner wording
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_restart_notifies_home_channel_even_without_active_sessions():
+async def test_restart_notifies_notification_channel_even_without_active_sessions():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="home-42",
-        name="Ops Home",
+        name="Ops Restarts",
     )
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert adapter.sent == ["⚠️ Gateway shutting down"]
+    assert len(adapter.sent) == 1
+    assert "restarting" in adapter.sent[0] and "Send any message" in adapter.sent[0]
 
 
 @pytest.mark.asyncio
-async def test_restart_home_channel_notification_not_deduped_across_threads():
+async def test_restart_notification_channel_broadcast_not_deduped_across_threads():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
     session_key = "agent:main:telegram:group:999"
@@ -800,10 +910,10 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
         )
     )
     runner._running_agents[session_key] = MagicMock()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+    runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
         chat_id="999",
-        name="Ops Home",
+        name="Ops Restarts",
     )
 
     await runner._notify_active_sessions_of_shutdown()

@@ -10,7 +10,7 @@ description: "Set up Hermes Agent as an SMS chatbot via Twilio"
 Hermes connects to SMS through the [Twilio](https://www.twilio.com/) API. People text your Twilio phone number and get AI responses back — same conversational experience as Telegram or Discord, but over standard text messages.
 
 :::info Shared Credentials
-The SMS gateway shares credentials with the optional [telephony skill](/reference/skills-catalog). If you've already set up Twilio for voice calls or one-off SMS, the gateway works with the same `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER`.
+The SMS gateway shares credentials with the optional [telephony skill](../../reference/skills-catalog.md). If you've already set up Twilio for voice calls or one-off SMS, the gateway works with the same `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PHONE_NUMBER`.
 :::
 
 ---
@@ -53,9 +53,6 @@ TWILIO_PHONE_NUMBER=+15551234567
 
 # Security: restrict to specific phone numbers (recommended)
 SMS_ALLOWED_USERS=+15559876543,+15551112222
-
-# Optional: set a home channel for cron job delivery
-SMS_HOME_CHANNEL=+15559876543
 ```
 
 ---
@@ -130,8 +127,6 @@ Text your Twilio number — Hermes will respond via SMS.
 | `SMS_INSECURE_NO_SIGNATURE` | No | Set to `true` to disable signature validation (local dev only — **not for production**) |
 | `SMS_ALLOWED_USERS` | No | Comma-separated E.164 phone numbers allowed to chat |
 | `SMS_ALLOW_ALL_USERS` | No | Set to `true` to allow anyone (not recommended) |
-| `SMS_HOME_CHANNEL` | No | Phone number for cron job / notification delivery |
-| `SMS_HOME_CHANNEL_NAME` | No | Display name for the home channel (default: `Home`) |
 
 ---
 

@@ -15,13 +15,13 @@ description: "4-phase root cause debugging: understand bugs before fixing"
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development/systematic-debugging` |
+| Path | `skills/software-development\systematic-debugging` |
 | Version | `1.1.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `debugging`, `troubleshooting`, `problem-solving`, `root-cause`, `investigation` |
-| Related skills | [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan), [`subagent-driven-development`](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development) |
+| Related skills | [`test-driven-development`](./software-development-test-driven-development.md), [`subagent-driven-development`](../../optional/software-development/software-development-subagent-driven-development.md) |
 
 ## Reference: full SKILL.md
 
@@ -388,12 +388,12 @@ Use these Hermes tools during Phase 1:
 - **`terminal`** — Run tests, check git history, reproduce bugs
 - **`web_search`/`web_extract`** — Research error messages, library docs
 
-### With delegate_task
+### With delegate_agent
 
 For complex multi-component debugging, dispatch investigation subagents:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Investigate why [specific test/behavior] fails",
     context="""
     Follow systematic-debugging skill:

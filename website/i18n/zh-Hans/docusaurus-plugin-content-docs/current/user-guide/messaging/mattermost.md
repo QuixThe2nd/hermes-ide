@@ -119,7 +119,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 ```
 
 :::tip
-要获取**频道 ID**：点击频道名称 → **查看信息**。频道 ID 显示在信息面板中。如果你想手动设置主频道，需要用到它。
+要获取**频道 ID**：点击频道名称 → **查看信息**。频道 ID 显示在信息面板中。配置显式投递目标（例如 cron 任务的 `deliver` 目标或 `notification_channel`）时会用到它。
 :::
 
 ## 第五步：配置 Hermes Agent
@@ -179,23 +179,11 @@ hermes gateway
 你可以在后台运行 `hermes gateway`，或将其配置为 systemd 服务以持续运行。详情参见部署文档。
 :::
 
-## 主频道
+## 主动投递目标
 
-你可以指定一个"主频道"，机器人将在此频道发送主动消息（例如 cron 任务输出、提醒和通知）。有两种设置方式：
+Cron 任务和提醒投递至你为每个任务配置的显式目标——例如 `hermes cron edit <id> --deliver mattermost:abc123def456ghi789jkl012mn`（频道 ID 从频道的"查看信息"面板复制）。
 
-### 使用斜杠命令
-
-在机器人所在的任意 Mattermost 频道中输入 `/sethome`。该频道即成为主频道。
-
-### 手动配置
-
-在你的 `~/.hermes/.env` 中添加：
-
-```bash
-MATTERMOST_HOME_CHANNEL=abc123def456ghi789jkl012mn
-```
-
-将 ID 替换为实际的频道 ID（点击频道名称 → 查看信息 → 复制 ID）。
+网关生命周期通知（重启/关闭）发送至平台的**通知频道**：在目标频道中运行 `/setnotify` 进行指定，运行 `/clearnotify` 取消。
 
 ## 回复模式
 

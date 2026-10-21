@@ -91,9 +91,9 @@ class TestBuildToolPreview:
 
 
 
-    def test_delegate_task_batch_preview_respects_max_len(self):
+    def test_delegate_agent_batch_preview_respects_max_len(self):
         result = build_tool_preview(
-            "delegate_task",
+            "delegate_agent",
             {"tasks": [{"goal": "A" * 80}, {"goal": "B" * 80}]},
             max_len=30,
         )
@@ -105,6 +105,21 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+    @pytest.mark.parametrize("max_len", [1, 2, 3, 4])
+    def test_tiny_max_len_never_exceeded(self, max_len):
+        """max_len is a hard cap on every preview path — dedicated builder (terminal), generic
+        fallback key (web_search), and the cute head-truncated path (#9439)."""
+        from agent.display import _cute_path, set_tool_preview_max_len
+        long = "abcdefghijklmnopqrstuvwxyz"
+        for tool, args in (("terminal", {"command": long}), ("web_search", {"query": long})):
+            preview = build_tool_preview(tool, args, max_len=max_len)
+            assert preview and len(preview) <= max_len, (tool, preview)
+        set_tool_preview_max_len(max_len)
+        try:
+            assert len(_cute_path("/" + long + "/file.py")) <= max_len
+        finally:
+            set_tool_preview_max_len(0)
 
 
 class TestPrepareToolPreview:

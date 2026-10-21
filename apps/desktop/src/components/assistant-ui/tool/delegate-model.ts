@@ -31,7 +31,7 @@ export type DelegateRowStatus = SubagentStatus | 'dispatched'
 
 const field = (record: Record<string, unknown>, key: string): string => firstStringField(record, [key])
 
-/** The goals a `delegate_task` call dispatched, in task order. */
+/** The goals a `delegate_agent` call dispatched, in task order. */
 export function delegateGoals(args: unknown): string[] {
   const record = parseMaybeObject(args)
   const tasks = Array.isArray(record.tasks) ? record.tasks : []

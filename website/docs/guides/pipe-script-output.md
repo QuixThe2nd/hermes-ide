@@ -29,14 +29,14 @@ maintain.
 ## Quick Start
 
 ```bash
-# Plain text to the home channel for a platform
-hermes send --to telegram "deploy finished"
+# Plain text to a specific chat
+hermes send --to telegram:-1001234567890 "deploy finished"
 
 # Pipe in stdout from anything
 echo "RAM 92%" | hermes send --to telegram:-1001234567890
 
 # Send a file
-hermes send --to discord:#ops --file /tmp/report.md
+hermes send --to discord:#ops --file ~/.hermes/cache/scratch/report.md
 
 # Attach a subject/header line
 hermes send --to slack:#eng --subject "[CI] build.log" --file build.log
@@ -70,7 +70,6 @@ hermes send --list telegram
 
 | Format | Example | Meaning |
 |--------|---------|---------|
-| `platform` | `telegram` | Send to the platform's configured home channel |
 | `platform:chat_id` | `telegram:-1001234567890` | Specific numeric chat / group / user |
 | `platform:chat_id:thread_id` | `telegram:-1001234567890:17585` | Specific thread or Telegram forum topic |
 | `platform:#channel` | `discord:#ops` | Human-friendly channel name (resolved against the channel directory) |
@@ -186,8 +185,22 @@ msg_id=$(hermes send --to discord:#ops --json "build started" \
 **Usually no.** For any bot-token platform — Telegram, Discord, Slack,
 Signal, SMS, WhatsApp Cloud API, and most others — `hermes send` calls
 the platform's REST endpoint directly using credentials from
-`~/.hermes/.env` and `~/.hermes/config.yaml`. It's a standalone subprocess
+`~/.hermes/.env` and `~/.hermes/config.yaml` (or the equivalent files under
+your resolved Hermes home — `%LOCALAPPDATA%\hermes` on Windows, or the profile
+directory when `HERMES_HOME` / `-p` is set). It's a standalone subprocess
 that exits as soon as the message is delivered.
+
+If a platform reports `not configured`, the error lists the exact files it
+read and what each one held, e.g.
+`Looked in: C:\Users\me\AppData\Local\hermes\.env (no DISCORD_BOT_TOKEN),
+C:\Users\me\AppData\Local\hermes\config.yaml (no platforms.discord block),
+environment (DISCORD_BOT_TOKEN unset), external secret sources (none configured)`.
+When a gateway started from the same home has that platform connected, the
+token only exists in the gateway's process environment — add it to that home's
+`.env` so `hermes send` can use it. When your shell is scoped to a profile home
+(`HERMES_HOME=<root>/profiles/<name>`) but the connected gateway runs from the
+default root, the error says so — the gateway never read the profile's `.env`,
+and `hermes send --list` points at the root's `channel_directory.json`.
 
 A live gateway is only required for **plugin platforms** that rely on a
 persistent adapter connection (for example, a custom plugin that keeps
@@ -241,9 +254,9 @@ If you just need to pipe a raw string, reach for `hermes send`.
 
 ## Related
 
-- [Automate Anything with Cron](/guides/automate-with-cron) —
+- [Automate Anything with Cron](./automate-with-cron.md) —
   scheduled jobs whose output auto-delivers to any platform.
-- [Gateway Internals](/developer-guide/gateway-internals) —
+- [Gateway Internals](../developer-guide/gateway-internals.md) —
   the delivery router that `hermes send` shares with cron delivery.
-- [Messaging Platform Setup](/user-guide/messaging/) —
+- [Messaging Platform Setup](../user-guide/messaging/index.md) —
   one-time configuration for each platform.

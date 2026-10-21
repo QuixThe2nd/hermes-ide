@@ -28,7 +28,7 @@ from __future__ import annotations
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.session import SessionSource
@@ -119,7 +119,7 @@ async def test_exec_approval_flat_mode_posts_at_dm_root():
 async def test_exec_approval_forwards_run_py_thread_stamp_untouched():
     """The adapter must forward run.py's thread stamp verbatim: the approval
     card posts INTO the stamped thread. Any adapter-side re-derivation or
-    strip exiled the card to the home channel (2026-07-27 report)."""
+    strip exiled the card to the chat root (2026-07-27 report)."""
     adapter, stub = _wire("D1", "dm", scope_id="T1")
     md = {
         "thread_id": "1700000000.000100",

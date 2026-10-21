@@ -4,22 +4,29 @@
 // node_modules/ or tsx at runtime.
 //
 // Output:
-//   dist/electron-main.mjs    (MJS bundle — entry point for packaged app)
-//   dist/electron-preload.js (CJS bundle — loaded via BrowserWindow preload)
+//   dist/electron-main.mjs          (MJS bundle — entry point for packaged app)
+//   dist/electron-preload.js        (CJS bundle — loaded via BrowserWindow preload)
+//   dist/preview-guest-preload.js   (CJS bundle — preview <webview> guest preload)
 //
 // `electron` and `node-pty` are external (provided by the runtime / staged
 // separately via stage-native-deps).
 import { build } from 'esbuild'
+import { createRequire } from 'node:module'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
+import { buildCommandScreenshotMonitor } from './build-command-screenshot-monitor.mjs'
+
+const require = createRequire(import.meta.url)
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const distDir = resolve(root, 'dist')
 mkdirSync(distDir, { recursive: true })
+// Stage for both --dev and release bundles; non-mac hosts skip this helper.
+buildCommandScreenshotMonitor({ distDir })
 
-const mainEntry = resolve(root, 'electron/main.ts')
+const mainEntry = resolve(root, 'electron/entry.ts')
 const mainOut = resolve(distDir, 'electron-main.mjs')
 const preloadEntry = resolve(root, 'electron/preload.ts')
 const preloadOut = resolve(distDir, 'electron-preload.js')
@@ -29,9 +36,31 @@ const external = ['electron', 'node-pty', 'get-windows', 'fs']
 // behaves like a packaged build. Dev bundles (`--dev`) leave the env alone
 // so HERMES_DESKTOP_DEV_SERVER / source-tree resolution keep working.
 const isDev = process.argv.includes('--dev')
+
+// The install stamp is baked INTO the bundle: the define below sets the
+// __HERMES_INSTALL_STAMP__ global to the stamp OBJECT literal (the JSON
+// text is a valid JS expression, so no string round-trip). A baked
+// constant cannot be missing, stale, or edited after signing.
+// `npm run build` writes build/install-stamp.json immediately before this
+// script runs, so a missing file here is a broken build, not a thin one.
+// Dev bundles bake nothing — install-stamp.ts's typeof guard yields null,
+// because a dev run has no artifact to be truthful about (a stale stamp
+// from a previous build would lie about provenance).
+function bakedInstallStamp() {
+  const raw = readFileSync(resolve(root, 'build/install-stamp.json'), 'utf8')
+  JSON.parse(raw) // fail the build on malformed output, not first launch
+  return raw
+}
+
 const define = isDev
   ? {}
-  : { 'process.env.HERMES_DESKTOP_IS_PACKAGED': JSON.stringify(true) }
+  : {
+      'process.env.HERMES_DESKTOP_IS_PACKAGED': JSON.stringify(true),
+      '__HERMES_INSTALL_STAMP__': bakedInstallStamp(),
+      // The product identity (name object, appId, deep-link scheme)
+      // baked the same way electron-builder gets it
+      '__HERMES_PRODUCT_IDENTITY__': JSON.stringify(require('../product-identity.cjs')),
+    }
 
 // Bundle main.ts → dist/electron-main.mjs
 await build({
@@ -63,3 +92,21 @@ await build({
   logLevel: 'info',
 })
 console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}`)
+
+// Bundle preview-guest-preload-entry.ts → dist/preview-guest-preload.js
+// (main.ts hands this path to the preview webview via will-attach-webview)
+const guestPreloadEntry = resolve(root, 'electron/preview-guest-preload-entry.ts')
+const guestPreloadOut = resolve(distDir, 'preview-guest-preload.js')
+
+await build({
+  entryPoints: [guestPreloadEntry],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node20',
+  outfile: guestPreloadOut,
+  external,
+  define,
+  logLevel: 'info',
+})
+console.log(`bundled ${guestPreloadOut}${isDev ? ' (dev)' : ''}`)

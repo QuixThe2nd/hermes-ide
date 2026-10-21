@@ -131,7 +131,6 @@ GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=/home/you/.hermes/google-chat-sa.json
 GOOGLE_CHAT_ALLOWED_USERS=you@yourdomain.com,coworker@yourdomain.com
 
 # 可选
-GOOGLE_CHAT_HOME_CHANNEL=spaces/AAAA...         # cron 任务的默认投递目标
 GOOGLE_CHAT_MAX_MESSAGES=1                      # Pub/Sub FlowControl；1 表示每个会话串行执行命令
 GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — 在途消息字节上限
 ```
@@ -143,6 +142,8 @@ GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — 在途消息字节�
 ```bash
 python -m plugins.platforms.google_chat.oauth --install-deps
 ```
+
+在 Docker / hosted 镜像中 `/opt/hermes/.venv` 只读。该安装程序通过 `tools.lazy_deps` 写入 `HERMES_LAZY_INSTALL_TARGET`（官方镜像为 `/opt/data/lazy-packages`），而不是 site-packages。完成后重启 gateway。发布镜像也会预装 `[google-chat]` extra，新容器不必在首次启动时再装。
 
 启动 gateway（网关）：
 

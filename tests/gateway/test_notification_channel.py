@@ -1,15 +1,15 @@
-"""Notification channels: route lifecycle broadcasts away from the home chat.
+"""Notification channels: route gateway lifecycle broadcasts to a chosen chat.
 
-A platform's ``notification_channel`` (same HomeChannel shape as
-``home_channel``) becomes the destination for gateway shutdown/startup
-broadcasts so the home channel stays free for conversation (e.g. a dedicated
-"#gateway-restarts" channel). Covers the config round-trip, the per-platform
-routing decision in both broadcast paths — with the existing suppression,
-dedup, and thread-metadata contracts preserved — and the /setnotify +
-/clearnotify handlers.
+A platform's ``notification_channel`` (a DeliveryTarget) is the destination
+for gateway shutdown/startup broadcasts, keeping conversation chats free of
+operator-flavored notices (e.g. a dedicated "#gateway-restarts" channel).
+Covers the config round-trip, the per-platform routing decision in both
+broadcast paths — with the existing suppression, dedup, and thread-metadata
+contracts preserved — and the /setnotify + /clearnotify handlers.
 """
 
 import json
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,7 +17,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import (
     GatewayConfig,
-    HomeChannel,
+    DeliveryTarget,
     Platform,
     PlatformConfig,
     clear_notification_channel,
@@ -39,20 +39,12 @@ def _notify_channel(
     platform: Platform = Platform.TELEGRAM,
     chat_id: str = "restarts-chat",
     thread_id: str | None = None,
-) -> HomeChannel:
-    return HomeChannel(
+) -> DeliveryTarget:
+    return DeliveryTarget(
         platform=platform,
         chat_id=chat_id,
         name="gateway-restarts",
         thread_id=thread_id,
-    )
-
-
-def _home_channel(chat_id: str = "home-chat") -> HomeChannel:
-    return HomeChannel(
-        platform=Platform.TELEGRAM,
-        chat_id=chat_id,
-        name="Telegram Home",
     )
 
 
@@ -67,7 +59,6 @@ class TestNotificationChannelConfig:
     def test_platform_config_roundtrip(self):
         pc = PlatformConfig(
             enabled=True,
-            home_channel=_home_channel(),
             notification_channel=_notify_channel(thread_id="99"),
         )
         restored = PlatformConfig.from_dict(pc.to_dict())
@@ -76,30 +67,26 @@ class TestNotificationChannelConfig:
         assert restored.notification_channel.chat_id == "restarts-chat"
         assert restored.notification_channel.thread_id == "99"
         assert restored.notification_channel.platform == Platform.TELEGRAM
-        # Home channel survives alongside the notification channel.
-        assert restored.home_channel is not None
-        assert restored.home_channel.chat_id == "home-chat"
 
     def test_absent_notification_channel_roundtrips_to_none(self):
         d = PlatformConfig().to_dict()
         assert "notification_channel" not in d
         assert PlatformConfig.from_dict(d).notification_channel is None
 
-    def test_get_notification_channel_mirrors_home_lookup(self):
+    def test_get_notification_channel_is_per_platform(self):
         config = GatewayConfig(
             platforms={
                 Platform.TELEGRAM: PlatformConfig(
-                    home_channel=_home_channel(),
                     notification_channel=_notify_channel(),
                 ),
-                Platform.DISCORD: PlatformConfig(home_channel=_home_channel("d-home")),
+                Platform.DISCORD: PlatformConfig(),
             }
         )
 
         assert config.get_notification_channel(Platform.TELEGRAM).chat_id == "restarts-chat"
-        # Platform without one keeps current behavior.
+        # Platform without one resolves nothing.
         assert config.get_notification_channel(Platform.DISCORD) is None
-        # Unknown platform mirrors get_home_channel's None.
+        # Unknown platform resolves nothing.
         assert config.get_notification_channel(Platform.SLACK) is None
 
     def test_persist_writes_and_clear_removes(self):
@@ -129,12 +116,11 @@ async def test_shutdown_broadcast_routes_to_notification_channel(tmp_path, monke
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = _home_channel()
     runner.config.platforms[Platform.TELEGRAM].notification_channel = _notify_channel()
 
     await runner._notify_active_sessions_of_shutdown()
 
-    # Exactly one broadcast — to the notification channel, never the home chat.
+    # Exactly one broadcast — to the notification channel.
     assert _sent_chat_ids(adapter) == ["restarts-chat"]
     # The ♻️ comeback marker pairs with where the ⚠️ actually landed.
     marker = json.loads((tmp_path / ".shutdown_notify.json").read_text())
@@ -142,15 +128,15 @@ async def test_shutdown_broadcast_routes_to_notification_channel(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_shutdown_broadcast_falls_back_to_home_when_unset(tmp_path, monkeypatch):
+async def test_shutdown_broadcast_skipped_when_unset(tmp_path, monkeypatch):
+    """No notification channel and no active sessions → nothing is sent."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = _home_channel()
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert _sent_chat_ids(adapter) == ["home-chat"]
+    assert adapter.sent_calls == []
 
 
 @pytest.mark.asyncio
@@ -160,7 +146,6 @@ async def test_shutdown_suppression_flag_still_honored_with_notification_channel
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = _home_channel()
     runner.config.platforms[Platform.TELEGRAM].notification_channel = _notify_channel()
     runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
 
@@ -175,7 +160,6 @@ async def test_shutdown_dedup_when_notification_chat_already_pinged(tmp_path, mo
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = _home_channel()
     runner.config.platforms[Platform.TELEGRAM].notification_channel = _notify_channel()
 
     source = make_restart_source(chat_id="restarts-chat")
@@ -186,7 +170,7 @@ async def test_shutdown_dedup_when_notification_chat_already_pinged(tmp_path, mo
     await runner._notify_active_sessions_of_shutdown()
 
     # Active-session interrupt ping only — the broadcast is deduped against
-    # it, and the home channel is not used as a second destination.
+    # it, and no second destination is used.
     assert _sent_chat_ids(adapter) == ["restarts-chat"]
 
 
@@ -200,15 +184,14 @@ async def test_shutdown_drain_marker_suppression_still_honored(tmp_path, monkeyp
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = _home_channel()
     runner.config.platforms[Platform.TELEGRAM].notification_channel = _notify_channel()
     runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
     dc.write_drain_request(principal="nas", suppress_notification=True)
 
     await runner._notify_active_sessions_of_shutdown()
 
-    # Only the active-session ping survives; neither the notification
-    # channel nor the home channel gets the broadcast.
+    # Only the active-session ping survives; the notification
+    # channel gets no broadcast.
     sent_chat_ids = set(_sent_chat_ids(adapter))
     assert sent_chat_ids == {"999"}
 
@@ -221,12 +204,11 @@ async def test_startup_broadcast_routes_to_notification_channel(tmp_path, monkey
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = _home_channel()
     runner.config.platforms[Platform.TELEGRAM].notification_channel = _notify_channel(
         thread_id="99"
     )
 
-    delivered = await runner._send_home_channel_startup_notifications()
+    delivered = await runner._send_notification_channel_startup_notifications()
 
     assert delivered == {("telegram", "restarts-chat", "99")}
     assert _sent_chat_ids(adapter) == ["restarts-chat"]
@@ -236,16 +218,23 @@ async def test_startup_broadcast_routes_to_notification_channel(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_startup_broadcast_falls_back_to_home_when_unset(tmp_path, monkeypatch):
+async def test_startup_broadcast_skips_with_info_log_when_unset(
+    tmp_path, monkeypatch, caplog
+):
+    """No notification channel anywhere → the broadcast is skipped, with one
+    INFO line saying so (never a fallback destination)."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = _home_channel()
 
-    delivered = await runner._send_home_channel_startup_notifications()
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        delivered = await runner._send_notification_channel_startup_notifications()
 
-    assert delivered == {("telegram", "home-chat", None)}
-    assert _sent_chat_ids(adapter) == ["home-chat"]
+    assert delivered == set()
+    assert adapter.sent_calls == []
+    assert any(
+        "no notification channel configured" in r.getMessage() for r in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -255,11 +244,10 @@ async def test_startup_suppression_flag_still_honored_with_notification_channel(
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = _home_channel()
     runner.config.platforms[Platform.TELEGRAM].notification_channel = _notify_channel()
     runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
 
-    delivered = await runner._send_home_channel_startup_notifications()
+    delivered = await runner._send_notification_channel_startup_notifications()
 
     assert delivered == set()
     assert adapter.sent_calls == []
@@ -296,22 +284,6 @@ async def test_setnotify_persists_and_updates_running_config(tmp_path, monkeypat
     # Persisted through the real config path (isolated HERMES_HOME).
     raw = load_config()
     assert raw["platforms"]["telegram"]["notification_channel"]["chat_id"] == "restarts-42"
-
-
-@pytest.mark.asyncio
-async def test_setnotify_leaves_home_channel_alone(tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    runner, _adapter = make_restart_runner()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = _home_channel()
-
-    await runner._handle_set_notify_command(
-        _notify_event(make_restart_source(chat_id="restarts-42"))
-    )
-
-    assert runner.config.get_home_channel(Platform.TELEGRAM).chat_id == "home-chat"
-    raw = load_config()
-    assert "home_channel" not in raw["platforms"]["telegram"]
 
 
 @pytest.mark.asyncio
@@ -365,6 +337,6 @@ def test_setnotify_and_clearnotify_registered_across_gateway_surfaces():
         assert any(f"/{name}" in line for line in gateway_help_lines())
         assert name in {menu_name for menu_name, _desc in telegram_bot_commands()}
 
-    # Hyphenated aliases resolve to the canonical names, like set-home → sethome.
+    # Hyphenated aliases resolve to the canonical names.
     assert resolve_command("set-notify").name == "setnotify"
     assert resolve_command("clear-notify").name == "clearnotify"

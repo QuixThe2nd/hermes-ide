@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from hermes_state import AsyncSessionDB
 from gateway.session import (
     SessionContext,
@@ -106,7 +106,7 @@ def _context_for(source: SessionSource) -> SessionContext:
     return SessionContext(
         source=source,
         connected_platforms=[Platform.MATRIX],
-        home_channels={},
+        notification_channels={},
         session_key=build_session_key(source),
         session_id="session-test",
     )

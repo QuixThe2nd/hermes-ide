@@ -1,5 +1,6 @@
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import { isTodoToolName } from '@/lib/todos'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -54,6 +55,30 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
 
 export function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
   return Object.keys(patch).length > 0
+}
+
+/** Keep the runtime-state object when a heartbeat only restates cached fields.
+ *  `$sessionStates` feeds every mounted session surface, so an equivalent spread
+ *  re-renders them all at the heartbeat cadence. */
+export function applySessionInfoStatePatch(
+  state: ClientSessionState,
+  patch: SessionRuntimeStatePatch
+): ClientSessionState {
+  if (
+    (patch.branch === undefined || patch.branch === state.branch) &&
+    (patch.cwd === undefined || patch.cwd === state.cwd) &&
+    (patch.fast === undefined || patch.fast === state.fast) &&
+    (patch.model === undefined || patch.model === state.model) &&
+    (patch.personality === undefined || patch.personality === state.personality) &&
+    (patch.provider === undefined || patch.provider === state.provider) &&
+    (patch.reasoningEffort === undefined || patch.reasoningEffort === state.reasoningEffort) &&
+    (patch.serviceTier === undefined || patch.serviceTier === state.serviceTier) &&
+    (patch.yolo === undefined || patch.yolo === state.yolo)
+  ) {
+    return state
+  }
+
+  return { ...state, ...patch }
 }
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
@@ -118,9 +143,9 @@ export function toTodoPayload(payload: GatewayEventPayload | undefined): Gateway
     return undefined
   }
 
-  const isTodo = payload.name === 'todo' || (!payload.name && Object.hasOwn(payload, 'todos'))
+  const isTodo = isTodoToolName(payload.name) || (!payload.name && Object.hasOwn(payload, 'todos'))
 
-  return isTodo ? { ...payload, name: 'todo', tool_id: payload.tool_id || 'todo-live' } : undefined
+  return isTodo ? { ...payload, name: 'todo_list', tool_id: payload.tool_id || 'todo-live' } : undefined
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -154,7 +179,9 @@ export function delegateTaskPayloads(
   phase: 'running' | 'complete',
   sourceEventType?: string
 ): Record<string, unknown>[] {
-  if (payload?.name !== 'delegate_task') {
+  // Accept both spellings: live events say delegate_agent, replayed
+  // transcripts may still say delegate_task.
+  if (payload?.name !== 'delegate_agent' && payload?.name !== 'delegate_task') {
     return []
   }
 
@@ -165,7 +192,7 @@ export function delegateTaskPayloads(
   const resultStatus = typeof result.status === 'string' ? result.status.toLowerCase() : ''
   const failedResult = Boolean(payload.error) || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
   const status = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
-  const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_task'
+  const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_agent'
   const progressText = firstString(payload.preview, payload.message, payload.context)
 
   const eventType =
@@ -189,13 +216,13 @@ export function delegateTaskPayloads(
       task_count: tasks.length,
       task_index: index,
       text: eventType === 'subagent.progress' ? progressText || goal : undefined,
-      tool_name: eventType === 'subagent.start' ? 'delegate_task' : undefined,
+      tool_name: eventType === 'subagent.start' ? 'delegate_agent' : undefined,
       tool_preview: eventType === 'subagent.start' ? progressText : undefined,
       toolsets: Array.isArray(task.toolsets) ? task.toolsets : Array.isArray(args.toolsets) ? args.toolsets : [],
       event_type: eventType,
       output_tail:
         phase === 'complete' && summary
-          ? [{ is_error: Boolean(payload.error), preview: summary, tool: 'delegate_task' }]
+          ? [{ is_error: Boolean(payload.error), preview: summary, tool: 'delegate_agent' }]
           : undefined
     }
   })

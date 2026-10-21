@@ -63,6 +63,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `feishu_doc` | `feishu_doc_read` | 读取飞书/Lark 文档内容。由飞书文档评论智能回复处理器使用。 |
 | `feishu_drive` | `feishu_drive_add_comment`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment` | 飞书/Lark 云盘评论操作。仅限评论 agent 使用；不在 `hermes-cli` 或其他消息工具集上暴露。 |
 | `file` | `patch`, `read_file`, `search_files`, `write_file` | 文件读取、写入、搜索和编辑。 |
+| `file_readonly` | `read_file`, `search_files` | `file` 的只读镜像，面向沙箱/研究型 profile。默认关闭，需显式启用：`hermes tools enable file_readonly`（会在该平台把 `file` 换出），或用 `hermes profile create <name> --read-only` 创建 profile。 |
 | `homeassistant` | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` | 通过 Home Assistant 进行智能家居控制。仅在设置 `HASS_TOKEN` 时可用。 |
 | `computer_use` | `computer_use` | 通过 cua-driver 进行后台 macOS 桌面控制——不抢占光标/焦点。适用于任何支持工具调用的模型。仅限 macOS；需要 `cua-driver` 在 `$PATH` 中。 |
 | `image_gen` | `image_generate` | 通过 FAL.ai 进行文本生成图像（支持可选的 OpenAI / xAI 后端）。 |

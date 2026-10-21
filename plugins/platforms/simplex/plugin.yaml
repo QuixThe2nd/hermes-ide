@@ -39,14 +39,6 @@ optional_env:
       member's traffic).
     prompt: "Allowed group IDs (comma-separated, or '*' for any)"
     password: false
-  - name: SIMPLEX_HOME_CHANNEL
-    description: "Default contact/group ID for cron / notification delivery"
-    prompt: "Home channel contact/group ID (or empty)"
-    password: false
-  - name: SIMPLEX_HOME_CHANNEL_NAME
-    description: "Human label for the home channel (defaults to the ID)"
-    prompt: "Home channel display name (or empty)"
-    password: false
   - name: HERMES_SIMPLEX_TEXT_BATCH_DELAY
     description: >-
       Quiet-period seconds (default: 0.8) used to concatenate rapid-fire

@@ -110,7 +110,7 @@ Read these before every investigation step. Violating them invalidates the repor
 
 ## Phase 2: Parallel Evidence Collection
 
-Spawn up to 5 specialist investigator sub-agents using `delegate_task` (batch mode, max 3 concurrent). Each investigator has a **single data source** and must not mix sources.
+Spawn up to 5 specialist investigator sub-agents using `delegate_agent` (batch mode, max 3 concurrent). Each investigator has a **single data source** and must not mix sources.
 
 > **Orchestrator note**: Pass the IOC list from Phase 1 and the investigation time window in the `context` field of each delegated task.
 
@@ -323,7 +323,7 @@ A hypothesis must:
 - Typosquatting: near-identical package name targeting misspellers
 - Credential Leak: token/key accidentally committed then force-pushed to erase
 
-For each hypothesis, spawn a `delegate_task` sub-agent to attempt to find disconfirming evidence before confirming.
+For each hypothesis, spawn a `delegate_agent` sub-agent to attempt to find disconfirming evidence before confirming.
 
 ---
 

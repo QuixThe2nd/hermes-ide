@@ -253,22 +253,38 @@ class TestDefaultModelFromCache:
 
 
     def test_shipped_manifest_labels_preferred_default(self, isolated_home):
-        """Contract with the in-repo manifest: both provider blocks label the
-        same default entry the code constant points at."""
+        """Contract with the in-repo manifest: every provider that carries a
+        silent-default spelling labels exactly that entry ``"default": true``,
+        and the silent-default provider's block labels the canonical
+        constant (the no-override pair a fresh install lands on)."""
         import hermes_cli.model_catalog as model_catalog
-        from hermes_cli.models import PREFERRED_SILENT_DEFAULT_MODEL
+        from hermes_cli.models import (
+            PREFERRED_SILENT_DEFAULT_MODEL,
+            PREFERRED_SILENT_DEFAULT_MODEL_IDS,
+            PREFERRED_SILENT_DEFAULT_PROVIDER,
+        )
 
         repo_root = Path(model_catalog.__file__).resolve().parent.parent
         manifest = json.loads(
             (repo_root / "website" / "static" / "api" / "model-catalog.json").read_text()
         )
-        for provider in ("openrouter", "nous"):
-            block = manifest["providers"][provider]
-            labeled = [m["id"] for m in block["models"] if m.get("default")]
-            assert labeled == [PREFERRED_SILENT_DEFAULT_MODEL], (
-                f"{provider}: exactly one entry must be labeled default and it "
-                f"must match PREFERRED_SILENT_DEFAULT_MODEL"
+        for provider, expected in PREFERRED_SILENT_DEFAULT_MODEL_IDS.items():
+            block = manifest["providers"].get(provider)
+            assert block is not None, (
+                f"{provider}: manifest must carry a block — it has a "
+                f"silent-default spelling"
             )
+            labeled = [m["id"] for m in block["models"] if m.get("default")]
+            assert labeled == [expected], (
+                f"{provider}: exactly one entry must be labeled default and it "
+                f"must match the provider's PREFERRED_SILENT_DEFAULT_MODEL_IDS entry"
+            )
+        labeled = [
+            m["id"]
+            for m in manifest["providers"][PREFERRED_SILENT_DEFAULT_PROVIDER]["models"]
+            if m.get("default")
+        ]
+        assert labeled == [PREFERRED_SILENT_DEFAULT_MODEL]
 
 
 class TestProviderOverride:
@@ -307,6 +323,30 @@ class TestProviderOverride:
         assert result == [("override/model", "custom")]
 
 
+class TestRefreshCadence:
+    def test_default_ttl_is_twenty_minutes_and_legacy_hours_honoured(self):
+        from hermes_cli import model_catalog
+
+        with patch("hermes_cli.config.load_config", return_value={"model_catalog": {"ttl_minutes": 20}}):
+            assert model_catalog.refresh_interval_seconds() == 20 * 60
+        # A user-set legacy ttl_hours still wins while ttl_minutes sits at its default.
+        with patch("hermes_cli.config.load_config", return_value={"model_catalog": {"ttl_minutes": 20, "ttl_hours": 3}}):
+            assert model_catalog.refresh_interval_seconds() == 3 * 3600
+
+    def test_refresh_catalogs_forces_every_source(self):
+        from hermes_cli import model_catalog
+
+        with patch.object(model_catalog, "_load_catalog_config", return_value={
+            "enabled": True, "url": "http://master", "ttl_hours": 1.0, "providers": {},
+        }), patch.object(model_catalog, "get_catalog", return_value=_valid_manifest()) as gc, \
+             patch("hermes_cli.models.fetch_openrouter_models") as orm, \
+             patch("hermes_cli.models.fetch_nous_recommended_models") as nous:
+            assert model_catalog.refresh_catalogs() is True
+        gc.assert_called_once_with(force_refresh=True)
+        orm.assert_called_once_with(force_refresh=True)
+        nous.assert_called_once_with(force_refresh=True)
+
+
 class TestIntegrationWithModelsModule:
     """Exercise the fallback paths via the real callers in hermes_cli.models."""
 
@@ -330,7 +370,7 @@ class TestIntegrationWithModelsModule:
         from hermes_cli.models import get_curated_nous_model_ids
         importlib.reload(model_catalog)
         try:
-            from hermes_cli.model_switch import list_picker_providers
+            from hermes_cli.model_switch_providers import list_picker_providers
 
             active_home = Path(os.environ["HERMES_HOME"])
             (active_home / "auth.json").write_text(
@@ -379,10 +419,8 @@ class TestIntegrationWithModelsModule:
         from hermes_cli.models import get_curated_nous_model_ids
         importlib.reload(model_catalog)
         try:
-            from hermes_cli.model_switch import (
-                list_authenticated_providers,
-                list_picker_providers,
-            )
+            from hermes_cli.model_switch import list_authenticated_providers
+            from hermes_cli.model_switch_providers import list_picker_providers
 
             active_home = Path(os.environ["HERMES_HOME"])
             (active_home / "auth.json").write_text(

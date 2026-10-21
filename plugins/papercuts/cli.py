@@ -17,7 +17,7 @@ DEFAULT_SCHEDULE = "30 8 * * *"
 DEFAULT_DELIVER = "local"
 DEFAULT_MAX_FIXES = 3
 DEFAULT_REMOTE = "origin"
-DEFAULT_COMMIT_NAME = "Hermes Agent"
+DEFAULT_COMMIT_NAME = "hermes ide agent"
 DEFAULT_COMMIT_EMAIL = "hermes-autofix@localhost"
 ENABLED_TOOLSETS = ["papercuts", "file", "terminal", "skills", "session_search"]
 

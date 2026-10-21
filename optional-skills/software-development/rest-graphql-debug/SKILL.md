@@ -465,10 +465,10 @@ Pull the spec for the endpoint you're debugging instead of guessing:
 web_extract(urls=["https://docs.example.com/api/v1/users"])
 ```
 
-### delegate_task — for full CRUD test sweeps
+### delegate_agent — for full CRUD test sweeps
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Test all CRUD endpoints for /api/v1/users",
     context="""
 Follow the rest-graphql-debug skill (optional-skills/software-development/rest-graphql-debug).

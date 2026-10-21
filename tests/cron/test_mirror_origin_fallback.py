@@ -1,26 +1,19 @@
-"""Mirror eligibility for origin-fallback and explicit cron delivery targets.
+"""Mirror eligibility for origin and explicit cron delivery targets.
 
 Field report (enterprise, 2026-08-17): `cron.mirror_delivery: true` with
 `deliver: origin` delivered the brief to Slack but never appended it to the
 reply-facing gateway session, so a user reply hit a session with no context.
 
-Root cause: the job was created by a provisioning script, so it carries no
-captured origin. `deliver: origin` falls back to the home channel — the
-user's actual conversation — but `_target_matches_origin` returns False for
-an empty origin, so the mirror and the in_channel seed never fire. The June
-origin-scoping refactor (c06ceb3232) correctly excluded broadcasts, but the
-origin-FALLBACK target is not a broadcast: it is the best available stand-in
-for the user's primary conversation.
-
 Design under test:
-- Delivery targets carry a `mirror_eligibility` tag set at resolution time:
-  * origin match            -> eligible (unchanged)
-  * origin-fallback (deliver=origin, no origin) -> eligible (NEW)
+- Delivery targets carry `_resolved_from` provenance used to determine mirror eligibility:
+  * origin match            -> eligible
   * explicit platform:chat  -> eligible ONLY with per-job attach_to_session
-    (NEW, opt-in; the global flag never activates explicit targets)
-  * `all` / bare-platform expansion -> never eligible (unchanged invariant)
-- Dedup across tokens (e.g. "origin,all" hitting the same chat) OR-merges
-  eligibility so token order cannot strip it.
+    (opt-in; the global flag never activates explicit targets)
+- There is no per-platform default destination: ``origin`` without a captured
+  origin, a bare platform token, and ``all`` each resolve NO target (the
+  unresolved-outcome contract lives in test_unresolved_delivery_contract.py).
+- Dedup across tokens (e.g. "origin,slack:<origin chat>" in either order)
+  OR-merges eligibility so token order cannot strip it.
 - The in_channel flat-session seed requires a DM-shaped target or a known
   user_id: group-channel session keys are user-isolated, and a seed without
   user_id would create an orphan session no reply ever resolves to.
@@ -28,18 +21,8 @@ Design under test:
 
 import pytest
 
-from cron.scheduler import (
-    _deliver_result,
-    _resolve_delivery_targets,
-    _target_mirror_eligible,
-)
-
-
-@pytest.fixture(autouse=True)
-def _home_channel(monkeypatch):
-    monkeypatch.setenv("SLACK_HOME_CHANNEL", "D0HOME")
-    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
-    monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+from cron.scheduler import _deliver_result, _resolve_delivery_targets
+from cron.scheduler_delivery import _target_mirror_eligible
 
 
 class TestMirrorEligibilityResolution:
@@ -52,28 +35,19 @@ class TestMirrorEligibilityResolution:
         assert len(targets) == 1
         assert _target_mirror_eligible(job, targets[0], global_mirror=True)
 
-    def test_origin_fallback_target_is_eligible(self):
-        """deliver=origin with no captured origin: the home-channel fallback
-        is the user's conversation, not a broadcast — mirror it."""
+    def test_originless_origin_resolves_no_target(self):
+        """No captured origin and no default destination: nothing to mirror."""
         job = {"deliver": "origin", "origin": None}
-        targets = _resolve_delivery_targets(job)
-        assert len(targets) == 1
-        assert targets[0]["chat_id"] == "D0HOME"
-        assert _target_mirror_eligible(job, targets[0], global_mirror=True)
+        assert _resolve_delivery_targets(job) == []
 
-    def test_all_expansion_is_never_eligible(self):
-        """Broadcast targets stay unmirrored even with the global flag on."""
-        job = {"deliver": "all", "origin": None}
-        targets = _resolve_delivery_targets(job)
-        assert targets, "home channel should expand from 'all'"
-        for t in targets:
-            assert not _target_mirror_eligible(job, t, global_mirror=True)
-
-    def test_bare_platform_target_is_not_eligible(self):
+    def test_bare_platform_resolves_no_target(self):
         job = {"deliver": "slack", "origin": None}
-        targets = _resolve_delivery_targets(job)
-        assert len(targets) == 1
-        assert not _target_mirror_eligible(job, targets[0], global_mirror=True)
+        assert _resolve_delivery_targets(job) == []
+
+    def test_all_resolves_no_target(self):
+        """The old broadcast expansion depended on default destinations; it is gone."""
+        job = {"deliver": "all", "origin": None}
+        assert _resolve_delivery_targets(job) == []
 
     def test_explicit_target_not_eligible_under_global_flag(self):
         """Global mirror_delivery must not write sessions into arbitrary
@@ -95,22 +69,17 @@ class TestMirrorEligibilityResolution:
         assert len(targets) == 1
         assert _target_mirror_eligible(job, targets[0], global_mirror=False)
 
-    def test_origin_and_all_dedup_keeps_eligibility(self):
-        """'origin,all' resolving to the same home chat must not lose the
-        fallback's eligibility to dedup order."""
-        job = {"deliver": "origin,all", "origin": None}
+    @pytest.mark.parametrize("deliver", ["origin,slack:D0AAA", "slack:D0AAA,origin"])
+    def test_dedup_origin_and_explicit_keeps_eligibility(self, deliver):
+        """The same chat addressed both ways resolves to one target whose
+        origin provenance (and eligibility) survives regardless of order."""
+        job = {
+            "deliver": deliver,
+            "origin": {"platform": "slack", "chat_id": "D0AAA", "chat_type": "dm"},
+        }
         targets = _resolve_delivery_targets(job)
-        # Home channel deduped to one target.
-        slack_targets = [t for t in targets if t["platform"].lower() == "slack"]
-        assert len(slack_targets) == 1
-        assert _target_mirror_eligible(job, slack_targets[0], global_mirror=True)
-
-    def test_all_and_origin_reversed_order_keeps_eligibility(self):
-        job = {"deliver": "all,origin", "origin": None}
-        targets = _resolve_delivery_targets(job)
-        slack_targets = [t for t in targets if t["platform"].lower() == "slack"]
-        assert len(slack_targets) == 1
-        assert _target_mirror_eligible(job, slack_targets[0], global_mirror=True)
+        assert len(targets) == 1
+        assert _target_mirror_eligible(job, targets[0], global_mirror=False)
 
     def test_explicit_other_chat_with_origin_not_eligible(self):
         """An explicit target that is NOT the origin stays unmirrored under
@@ -170,29 +139,9 @@ class TestFallbackMirrorEndToEnd:
 
         import gateway.mirror as mirror_mod
 
+        real_mirror = mirror_mod.mirror_to_session
         monkeypatch.setattr(mirror_mod, "mirror_to_session", fake_mirror)
-        return {"send": send_calls, "mirror": mirror_calls}
-
-    def test_origin_fallback_job_mirrors_brief(self, slack_env):
-        """The field repro: managed cron, deliver=origin, no origin captured.
-        The brief must be mirrored into the home-channel session."""
-        job = {"id": "j1", "name": "brief", "deliver": "origin", "origin": None}
-        err = _deliver_result(job, "Risk-off close brief", adapters=None, loop=None)
-        assert err is None
-        assert len(slack_env["send"]) == 1
-        assert len(slack_env["mirror"]) == 1, (
-            "origin-fallback delivery must mirror the brief into the "
-            "home-channel session (the reply-continuity bug)"
-        )
-        assert slack_env["mirror"][0]["chat_id"] == "D0HOME"
-        assert slack_env["mirror"][0]["role"] == "user"
-
-    def test_all_broadcast_does_not_mirror(self, slack_env):
-        job = {"id": "j2", "name": "cast", "deliver": "all", "origin": None}
-        err = _deliver_result(job, "broadcast text", adapters=None, loop=None)
-        assert err is None
-        assert len(slack_env["send"]) == 1
-        assert len(slack_env["mirror"]) == 0
+        return {"send": send_calls, "mirror": mirror_calls, "real_mirror": real_mirror, "home": home}
 
     def test_explicit_target_with_attach_mirrors(self, slack_env):
         job = {
@@ -201,6 +150,7 @@ class TestFallbackMirrorEndToEnd:
         }
         err = _deliver_result(job, "managed brief", adapters=None, loop=None)
         assert err is None
+        assert len(slack_env["send"]) == 1
         assert len(slack_env["mirror"]) == 1
         assert slack_env["mirror"][0]["chat_id"] == "D0USER7"
 
@@ -230,7 +180,7 @@ class TestInChannelSeedUserIdGuard:
     an orphan session. DM targets are safe (key has no user_id)."""
 
     def test_seed_requires_dm_or_user_id(self):
-        from cron.scheduler import _inchannel_seed_allowed
+        from cron.scheduler_delivery import _inchannel_seed_allowed
 
         # DM-shaped chat, no user_id: allowed (DM keys don't embed user).
         assert _inchannel_seed_allowed(is_dm=True, user_id=None)

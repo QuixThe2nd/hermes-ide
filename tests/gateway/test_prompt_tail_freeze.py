@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.config import GatewayConfig, DeliveryTarget, Platform, PlatformConfig
 from gateway.session import (
     SessionContext,
     SessionSource,
@@ -67,7 +67,7 @@ def _make_context(
     message_id: str | None = "1357",
     shared_multi_user: bool = False,
     connected: list[Platform] | None = None,
-    home_channels: dict | None = None,
+    notification_channels: dict | None = None,
 ) -> SessionContext:
     source = SessionSource(
         platform=platform,
@@ -83,16 +83,16 @@ def _make_context(
         message_id=message_id,
     )
     connected = connected if connected is not None else [Platform.DISCORD, Platform.TELEGRAM]
-    if home_channels is None:
-        home_channels = {
-            Platform.DISCORD: HomeChannel(
+    if notification_channels is None:
+        notification_channels = {
+            Platform.DISCORD: DeliveryTarget(
                 platform=Platform.DISCORD, chat_id="111222333", name="general"
             ),
         }
     return SessionContext(
         source=source,
         connected_platforms=connected,
-        home_channels=home_channels,
+        notification_channels=notification_channels,
         shared_multi_user_session=shared_multi_user,
     )
 
@@ -136,38 +136,19 @@ class TestEphemeralChangeKeyParity:
         ("chat_id", dict(chat_id="999999999", parent_chat_id="999999999")),
         ("platform", dict(platform=Platform.TELEGRAM)),
         ("connected_platforms", dict(connected=[Platform.DISCORD])),
-        (
-            "home_channel_renamed",
-            dict(
-                home_channels={
-                    Platform.DISCORD: HomeChannel(
-                        platform=Platform.DISCORD, chat_id="111222333", name="ops-home"
-                    )
-                }
-            ),
-        ),
-        (
-            "home_channel_added",
-            dict(
-                home_channels={
-                    Platform.DISCORD: HomeChannel(
-                        platform=Platform.DISCORD, chat_id="111222333", name="general"
-                    ),
-                    Platform.TELEGRAM: HomeChannel(
-                        platform=Platform.TELEGRAM, chat_id="tg1", name="tg-home"
-                    ),
-                }
-            ),
-        ),
         ("message_id_cleared", dict(message_id=None)),
     ]
 
 
     def test_redact_pii_flip_changes_key(self):
         # PII redaction only rewrites bytes on pii-safe platforms; the key
-        # must react wherever the render does.
+        # must react wherever the render does. user_name=None so the User ID
+        # line renders (and gets hashed) — with notification channels gone
+        # from the prompt, IDs here are the redaction-sensitive bytes.
         runner = _make_runner()
-        ctx = _make_context(platform=Platform.TELEGRAM, thread_id=None, parent_chat_id=None)
+        ctx = _make_context(
+            platform=Platform.TELEGRAM, thread_id=None, parent_chat_id=None, user_name=None
+        )
         assert _render(ctx, False) != _render(ctx, True)
         assert _key(runner, ctx, False) != _key(runner, ctx, True)
 

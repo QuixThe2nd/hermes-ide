@@ -119,7 +119,6 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_SIDECAR_AUTOSTART`| true                       | Spawn the sidecar on connect         |
 | `PHOTON_DASHBOARD_HOST`   | https://app.photon.codes   | Dashboard API host                   |
 | `PHOTON_SPECTRUM_HOST`    | https://spectrum.photon.codes | Spectrum API host                 |
-| `PHOTON_HOME_CHANNEL`     | your number (set by setup) | Default space for cron delivery — a space id, or a bare E.164 number (resolved to a DM) |
 | `PHOTON_ALLOWED_USERS`    | your number (set by setup) | Comma-separated E.164 allowlist      |
 | `PHOTON_REQUIRE_MENTION`  | false                      | Gate group chats on a wake word      |
 | `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` | 20 MB           | Max inbound attachment size the sidecar reads & inlines |
@@ -162,7 +161,12 @@ All env vars are documented in `plugin.yaml`. The most important:
   as a synthetic `reaction:added:<emoji>` event. Removal after a sidecar
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
-  reachable across restarts via spectrum-ts' `space.get(id)`.
+  reachable across restarts via spectrum-ts' `space.get` rehydration.
+- **Read receipts are supported.** The sidecar marks an inbound iMessage read
+  after forwarding it to Hermes, so the sender sees `Read` without waiting for
+  a model/tool turn. Inbound receipts for Hermes-sent messages are consumed as
+  presence telemetry and never create an agent turn. Set
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
 - **Native polls are supported.** Hermes posts poll content through
   `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
 - **Message effects are supported.** Text can be sent with native iMessage

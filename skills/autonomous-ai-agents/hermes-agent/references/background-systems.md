@@ -4,16 +4,22 @@ Four systems run alongside the main conversation loop. Quick reference
 here; full developer notes live in `AGENTS.md`, user-facing docs under
 `website/docs/user-guide/features/`.
 
-### Delegation (`delegate_task`)
+### Delegation (`delegate_agent`)
 
-Spawn a subagent with an isolated context + terminal session.
+Spawn a subagent with an isolated context + terminal session. One lifecycle
+across all four delegate tools (`delegate_agent`, `delegate_claude_agent`,
+`delegate_cursor_agent`, `delegate_assistant`): the mode comes only from the
+explicit `background` argument.
 
-- **Single:** `delegate_task(goal, context)`.
-- **Batch:** `delegate_task(tasks=[{goal, ...}, ...])` runs children in
+- **Single:** `delegate_agent(goal, context)`.
+- **Batch:** `delegate_agent(tasks=[{goal, ...}, ...])` runs children in
   parallel, capped by `delegation.max_concurrent_children` (default 3).
-- **Background:** `delegate_task(background=true)` returns a handle
+- **Foreground (default):** omitted/false `background` blocks the calling
+  turn until the work is terminal and returns the final result inline.
+- **Background:** `delegate_agent(background=true)` returns a handle
   immediately and keeps the parent loop going; the child's result
-  re-enters the conversation as a new turn when it finishes.
+  re-enters the conversation as a new turn when it finishes. Fails up front
+  (nothing started) when the session cannot receive a late completion.
 - **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`
   (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
 - **Not durable.** A backgrounded child is still process-local — if the

@@ -48,8 +48,6 @@ QQ_CLIENT_SECRET=your-app-secret
 |---|---|---|
 | `QQ_APP_ID` | QQ Bot App ID（必填） | — |
 | `QQ_CLIENT_SECRET` | QQ Bot App Secret（必填） | — |
-| `QQBOT_HOME_CHANNEL` | 用于 cron/通知投递的 OpenID | — |
-| `QQBOT_HOME_CHANNEL_NAME` | 主频道显示名称 | `Home` |
 | `QQ_ALLOWED_USERS` | 允许私聊访问的用户 OpenID 列表（逗号分隔） | 开放（所有用户） |
 | `QQ_GROUP_ALLOWED_USERS` | 允许群组访问的群组 OpenID 列表（逗号分隔） | — |
 | `QQ_ALLOW_ALL_USERS` | 设为 `true` 以允许所有私聊 | `false` |
@@ -114,7 +112,6 @@ platforms:
 - 在 q.qq.com 验证机器人的 **intent** 是否已启用
 - 若私聊访问受限，检查 `QQ_ALLOWED_USERS`
 - 对于群组消息，确保机器人被 **@提及**（群组策略可能需要加入白名单）
-- 检查 `QQBOT_HOME_CHANNEL` 以确认 cron/通知投递配置
 
 ### 连接错误
 

@@ -31,11 +31,3 @@ optional_env:
     description: "Allow any Matrix user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"
     password: false
-  - name: MATRIX_HOME_CHANNEL
-    description: "Default room ID for cron / notification delivery"
-    prompt: "Home room ID"
-    password: false
-  - name: MATRIX_HOME_CHANNEL_NAME
-    description: "Display name for the Matrix home room"
-    prompt: "Home room display name"
-    password: false

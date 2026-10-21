@@ -43,10 +43,8 @@ CODING_VERIFY_GUIDANCE = (
 
 def max_verify_nudges(config: Optional[dict[str, Any]] = None) -> int:
     """Bound on consecutive ``pre_verify`` continue directives per turn (>= 0)."""
-    agent_cfg = _agent_cfg(config)
-    raw = agent_cfg.get("max_verify_nudges")
     try:
-        return max(0, int(raw))
+        return max(0, int(_agent_cfg(config).get("max_verify_nudges")))
     except (TypeError, ValueError):
         return DEFAULT_MAX_VERIFY_NUDGES
 
@@ -83,7 +81,7 @@ def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
             config = load_config()
         except Exception:
             config = {}
-    agent_cfg = (config or {}).get("agent") if isinstance(config, dict) else None
+    agent_cfg = config.get("agent") if isinstance(config, dict) else None
     return agent_cfg if isinstance(agent_cfg, dict) else {}
 
 

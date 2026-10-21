@@ -56,7 +56,6 @@ def _config_for(name: str):
     pconfig = SimpleNamespace(enabled=True, token=None, extra={})
     return platform, pconfig, SimpleNamespace(
         platforms={platform: pconfig},
-        get_home_channel=lambda _platform: None,
     )
 
 
@@ -153,7 +152,7 @@ def test_host_send_honors_sync_and_async_plugin_handlers(plugin_platform, async_
 
 
 def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeypatch, capsys):
-    from cron.scheduler import _resolve_single_delivery_target
+    from cron.scheduler_delivery import _resolve_single_delivery_target
     from hermes_cli.send_cmd import cmd_send
 
     name, _entry, _seen = plugin_platform
@@ -241,13 +240,13 @@ from tools.send_message_tool import send_message_tool
 discover_plugins()
 platform = Platform("fmsg")
 pconfig = SimpleNamespace(enabled=True, token=None, extra={})
-config = SimpleNamespace(platforms={platform: pconfig}, get_home_channel=lambda p: None)
+config = SimpleNamespace(platforms={platform: pconfig})
 with patch("gateway.config.load_gateway_config", return_value=config), \
      patch("tools.interrupt.is_interrupted", return_value=False), \
      patch("gateway.mirror.mirror_to_session", return_value=True):
     host_send = json.loads(send_message_tool({"target": "fmsg:@Alice@Example.COM",
                                               "message": "hello", "subject": "hi"}))
-from cron.scheduler import _resolve_single_delivery_target
+from cron.scheduler_delivery import _resolve_single_delivery_target
 cron = _resolve_single_delivery_target({}, "fmsg:@Alice@Example.COM")
 print(json.dumps({"host_send": host_send, "cron": cron,
                   "model_registered": registry.get_entry("send_message") is not None}))

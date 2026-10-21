@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 
@@ -273,7 +274,11 @@ def test_disable_survives_subsequent_reconcile(monkeypatch, user_scope):
     assert not any("enable" in c for c in calls)
 
 
-def test_oneshot_entrypoint_busy_defers_with_zero_mutations(home, monkeypatch):
+def test_oneshot_entrypoint_busy_tick_prepares_but_touches_nothing(home, monkeypatch):
+    """A busy tick still prepares (Phase A is not idle-gated) — but the tick
+    process itself mutates nothing: no systemd reconcile, no migration, no
+    writes outside the updater subprocesses' own scope, and the activation is
+    a dispatch (Phase B), never an in-process restart."""
     db = SessionDB(db_path=home / "state.db")
     now = time.time()
     db._conn.execute(
@@ -285,12 +290,27 @@ def test_oneshot_entrypoint_busy_defers_with_zero_mutations(home, monkeypatch):
         ("conv-live", "holder-1", now, now + 60.0),
     )
     db._conn.commit()
+    leases_before = db._conn.execute("SELECT * FROM session_turn_leases").fetchall()
     db.close()
 
     sentinel = home / "auto-update" / "sentinel.bin"
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_bytes(b"UNCHANGED")
-    side_effects = {"reconcile": 0, "migrate": 0, "updater": 0}
+    side_effects = {"reconcile": 0, "migrate": 0}
+    dispatched: list[str] = []
+
+    def fake_run_subprocess(argv):
+        joined = " ".join(str(tok) for tok in argv)
+        dispatched.append(joined)
+        if "--check" in joined:
+            stdout = "⚕ Update available: 3 new commits\n"
+        elif "--defer-restart" in joined:
+            stdout = "✓ Code updated!\n✓ Update prepared — fleet restart deferred.\n"
+        elif "activate" in joined:
+            stdout = "→ Hermes is busy (session_turn_lease) — prepared update stays pending.\n"
+        else:
+            raise AssertionError(f"unexpected updater dispatch: {joined!r}")
+        return subprocess.CompletedProcess(list(argv), 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(sys, "argv", ["hermes", "auto_update", "run"])
     monkeypatch.setattr(
@@ -316,11 +336,7 @@ def test_oneshot_entrypoint_busy_defers_with_zero_mutations(home, monkeypatch):
         or LegacyMigrationResult((), (), (), ()),
     )
     monkeypatch.setattr(
-        "plugins.auto_update.runner.run_subprocess",
-        lambda argv: side_effects.__setitem__(
-            "updater", side_effects["updater"] + 1
-        )
-        or pytest.fail("updater must not run"),
+        "plugins.auto_update.runner.run_subprocess", fake_run_subprocess
     )
     monkeypatch.setattr("plugins.auto_update.runner.read_live_update", lambda: None)
 
@@ -339,5 +355,16 @@ def test_oneshot_entrypoint_busy_defers_with_zero_mutations(home, monkeypatch):
     from plugins.auto_update.cli import cmd_run
 
     assert cmd_run() == 0
-    assert side_effects == {"reconcile": 0, "migrate": 0, "updater": 0}
+    # Busy is no reason to skip preparation — and activation is still
+    # attempted (in the dispatched subprocess, which found Hermes busy).
+    assert len(dispatched) == 3
+    assert "update --check" in dispatched[0]
+    assert "update --yes --defer-restart" in dispatched[1]
+    assert "auto_update activate" in dispatched[2]
+    # The tick itself stayed read-only toward the host and the profile state.
+    assert side_effects == {"reconcile": 0, "migrate": 0}
     assert sentinel.read_bytes() == b"UNCHANGED"
+    db = SessionDB(db_path=home / "state.db")
+    leases_after = db._conn.execute("SELECT * FROM session_turn_leases").fetchall()
+    db.close()
+    assert leases_after == leases_before

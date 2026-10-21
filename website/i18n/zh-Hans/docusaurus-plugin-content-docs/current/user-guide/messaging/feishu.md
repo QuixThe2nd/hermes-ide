@@ -117,7 +117,6 @@ FEISHU_CONNECTION_MODE=websocket
 
 # 可选但强烈推荐
 FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
-FEISHU_HOME_CHANNEL=oc_xxx
 ```
 
 `FEISHU_DOMAIN` 接受：
@@ -133,15 +132,11 @@ hermes gateway
 
 然后从飞书/Lark 向机器人发送消息，确认连接已建立。
 
-## Home Chat
+## 定时投递
 
-在飞书/Lark 聊天中使用 `/set-home` 将其标记为 cron job 结果和跨平台通知的 home channel。
+在飞书/Lark 聊天中使用 `/cron` 创建的 cron 任务会将结果投递回该聊天（任务捕获的 origin）。要投递到其他位置，设置显式目标 — 例如 `hermes cron edit <id> --deliver feishu:oc_xxx`（从聊天信息面板复制的聊天 ID）。
 
-也可以预先配置：
-
-```bash
-FEISHU_HOME_CHANNEL=oc_xxx
-```
+Gateway 生命周期通知（重启/关机）发送到平台的**通知频道**：在目标聊天中运行 `/setnotify` 指定它。
 
 ## 安全
 
@@ -257,19 +252,24 @@ Gateway 驱动的更新提示使用原生飞书 `Yes` / `No` 卡片，而非回�
 
 ### 飞书应用所需配置
 
-交互式卡片需要在飞书开发者控制台完成**三项**配置。缺少任何一项，用户点击卡片按钮时将出现错误 **200340**。
+交互式卡片需要在飞书开发者控制台完成以下配置。配置缺失时最常见的症状是用户点击卡片按钮出现错误 **200340**。
 
-1. **订阅卡片操作事件：**
-   在 **事件订阅** 中，将 `card.action.trigger` 添加到已订阅事件。
+1. **订阅卡片操作回调（不是事件）：**
+   在 **开发配置 > 事件与回调** 中，打开 **回调配置** 标签页——它与放置 `im.message.receive_v1` 的 **事件配置** 标签页是分开的——在「已订阅回调」下添加 `card.action.trigger`。把它当作事件添加不会投递按钮点击。
 
-2. **启用交互式卡片能力：**
-   在 **应用功能 > 机器人** 中，确保 **交互式卡片** 开关已启用。这告知飞书你的应用可以接收卡片操作回调。
+2. **设置回调的接收方式：**
+   在同一标签页中，Hermes 以 `websocket` 模式运行时选择 **长连接**（Lark SDK 通过现有连接接收回调）；webhook 模式则填写请求地址（与事件 webhook 相同的端点，例如 `https://your-server:8765/feishu/webhook`）。飞书必须能够访问并解析该地址，否则点击会返回 200342/200343。
 
-3. **配置卡片请求 URL（仅 webhook 模式）：**
-   在 **应用功能 > 机器人 > 消息卡片请求网址** 中，将 URL 设置为与事件 webhook 相同的端点（例如 `https://your-server:8765/feishu/webhook`）。WebSocket 模式下，SDK 会自动处理此项。
+3. **启用交互式卡片能力：**
+   在 **应用功能 > 机器人** 中，确保 **交互式卡片** 开关已启用。
+
+4. **发布新版本：**
+   回调配置只有在 **版本管理与发布 > 创建版本** 并发布（企业应用还需审核通过）后才会生效。飞书对 200340 的官方描述是「应用未配置卡片回调地址或配置的地址无效……请确认已创建并发布最新版本」。
 
 :::warning
-缺少以上任意一步，飞书将成功*发送*交互式卡片（发送仅需 `im:message:send` 权限），但点击任意按钮将返回错误 200340。卡片看起来正常——错误仅在用户与其交互时才会出现。
+没有已发布的卡片回调时，飞书仍会成功*发送*交互式卡片（发送仅需 `im:message:send` 权限），但点击任意按钮将返回错误 200340。卡片看起来正常——错误仅在用户与其交互时才会出现，并且点击不会到达 Hermes（`gateway.log` 中没有任何记录），因为飞书在投递回调之前就拒绝了它。
+
+错误码 200672 / 200673 表示回调*确实*到达了 Hermes 而飞书拒绝了响应；如果遇到，请附上对应的 `gateway.log` 日志提交 issue。
 :::
 
 ## 文档评论智能回复
@@ -490,7 +490,6 @@ platforms:
 | `FEISHU_ALLOWED_USERS` | — | _（空）_ | 用户白名单的逗号分隔 open_id 列表 |
 | `FEISHU_ALLOW_BOTS` | — | `none` | 接受其他机器人消息：`none`、`mentions` 或 `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | 群消息是否必须 @提及 机器人 |
-| `FEISHU_HOME_CHANNEL` | — | — | cron/通知输出的聊天 ID |
 | `FEISHU_ENCRYPT_KEY` | — | _（空）_ | webhook 签名验证的加密密钥 |
 | `FEISHU_VERIFICATION_TOKEN` | — | _（空）_ | webhook payload 认证的验证 token |
 | `FEISHU_GROUP_POLICY` | — | `allowlist` | 群消息策略：`open`、`allowlist`、`disabled` |

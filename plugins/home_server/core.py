@@ -5,7 +5,7 @@ and keeps in sync the whole structure:
 
 * ``Notifications``   — text channels ``model-fallback``, ``gateway-restarts``,
   ``other`` (first: pinned to the top of the guild)
-* ``Chat``            — text channels ``inbox``, ``outbox``
+* ``Lounges``         — text channels ``inbox``, ``outbox``
 * ``Honcho Memory``   — text channels ``explicit-facts``, ``deductions``,
   ``patterns``, ``contradictions``
 * ``Models``          — voice channels ``Codex``, ``Kimi``, ``z.ai``,
@@ -13,10 +13,10 @@ and keeps in sync the whole structure:
 * ``Speeds``          — voice channels ``qBittorrent``, ``SABnzbd``, ``slskd``
 
 Creation alone is worthless, so reconcile also *wires* what it provisions:
-``hermes_starts`` targets the shared inbox, the Discord home channel and
-lifecycle-notification channel point at Notifications/``other`` and
-Notifications/``gateway-restarts``, ``gateway.restart_channel_rename``
-points at that same channel so it shows ``agents-N`` while the gateway
+``hermes_starts`` targets the shared inbox, the lifecycle-notification
+channel points at Notifications/``gateway-restarts``,
+``gateway.restart_channel_rename`` points at that same channel so it shows
+``agents-N`` while the gateway
 is up and ``restarting-N-agents`` while it drains, each memory channel gets
 a Discord webhook exported as a ``HONCHO_DISCORD_WEBHOOK_*`` secret, and
 the ``quota_channels`` / ``speed_channels`` config sections are pointed at
@@ -124,6 +124,12 @@ class ModuleSpec:
     # empty for every module that never changed name, so matching for
     # unrelated categories is not weakened.
     legacy_categories: Tuple[str, ...] = ()
+    # The subset of those former names a poller relabels dynamically
+    # ("Quotas • 25/8 3:30pm"), so migration also tolerates a prefix match on
+    # them. Every other legacy name must match exactly: it never carried a
+    # suffix, so a prefix rule there would claim an unrelated user-made
+    # category ("Chat Archive") and rename it out from under the user.
+    legacy_dynamic_categories: Tuple[str, ...] = ()
 
 
 TEMPLATE: Dict[str, ModuleSpec] = {
@@ -146,18 +152,19 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             "agents-N while the gateway is up and restarting-N-agents "
             "while it drains; model-fallback shows when the "
             "primary model was abandoned for a fallback, and other catches "
-            "everything else worth flagging. Conversation belongs in Chat — "
+            "everything else worth flagging. Conversation belongs in Lounges — "
             "nothing here needs a reply."
         ),
     ),
     "chat": ModuleSpec(
         key="chat",
-        category="Chat",
+        category="Lounges",
         channels=(
             ChannelSpec("inbox", CHANNEL_TYPE_TEXT, "inbox"),
             ChannelSpec("outbox", CHANNEL_TYPE_TEXT, "outbox"),
         ),
-        embed_title="💬 Chat",
+        legacy_categories=("Chat",),
+        embed_title="💬 Lounges",
         embed_description=(
             "This inbox is where Hermes starts conversations when it has "
             "something to tell you. The outbox is for messages you hand off "
@@ -194,6 +201,7 @@ TEMPLATE: Dict[str, ModuleSpec] = {
             ChannelSpec("Grok", CHANNEL_TYPE_VOICE, "grok"),
         ),
         legacy_categories=("Quotas",),
+        legacy_dynamic_categories=("Quotas",),
         embed_title="📊 Models",
         embed_description=(
             "Each voice channel is named after how much of that subscription's "
@@ -229,9 +237,10 @@ def template_fingerprint() -> str:
     """Stable sha256 of the canonical TEMPLATE, order included.
 
     Covers exactly what reconcile provisions: module keys in order, category
-    name (and its legacy names), and each channel's name/kind/key/alias
-    prefixes. Embed copy and wiring are excluded — they are not guild
-    structure. Stored on state.json after a successful reconcile and compared
+    name (and its legacy names — and which of those tolerate a dynamic
+    suffix), and each channel's name/kind/key/alias prefixes. Embed copy and
+    wiring are excluded — they are not guild structure. Stored on state.json
+    after a successful reconcile and compared
     by ``should_sync`` so an in-code template change re-syncs provisioned
     guilds immediately instead of waiting out the hourly debounce.
     """
@@ -249,6 +258,7 @@ def template_fingerprint() -> str:
                 for channel in spec.channels
             ],
             "legacy_categories": list(spec.legacy_categories),
+            "legacy_dynamic_categories": list(spec.legacy_dynamic_categories),
         }
         for key, spec in TEMPLATE.items()
     ]
@@ -690,53 +700,6 @@ def _merge_config_section(section: str, updates: Mapping[str, Any]) -> bool:
     return changed
 
 
-# ---------------------------------------------------------------------------
-# Home channel link
-# ---------------------------------------------------------------------------
-
-
-def existing_discord_home_channel() -> Optional[Dict[str, Any]]:
-    """The raw ``platforms.discord.home_channel`` mapping, or None.
-
-    Read from the same document ``persist_home_channel`` writes to, so the
-    no-clobber rule and the write agree on one source of truth.
-    """
-    from hermes_cli.config import load_config_readonly
-
-    raw = load_config_readonly()
-    platforms = raw.get("platforms") if isinstance(raw, Mapping) else None
-    discord_cfg = platforms.get("discord") if isinstance(platforms, Mapping) else None
-    if not isinstance(discord_cfg, Mapping):
-        return None
-    home = discord_cfg.get("home_channel")
-    if isinstance(home, Mapping) and str(home.get("chat_id") or "").strip():
-        return dict(home)
-    return None
-
-
-def link_home_channel(guild_id: str, channel_id: str) -> str:
-    """Point ``platforms.discord.home_channel`` at Notifications/other.
-
-    No-clobber: an existing Discord home channel is never silently replaced.
-    Returns "set" or "kept".
-    """
-    if existing_discord_home_channel() is not None:
-        return "kept"
-
-    from gateway.config import HomeChannel, persist_home_channel
-    from gateway.platforms.base import Platform
-
-    persist_home_channel(
-        HomeChannel(
-            platform=Platform.DISCORD,
-            chat_id=str(channel_id),
-            name="other",
-        ),
-        enabled_if_new=False,
-    )
-    return "set"
-
-
 def existing_discord_notification_channel() -> Optional[Dict[str, Any]]:
     """The raw ``platforms.discord.notification_channel`` mapping, or None.
 
@@ -765,11 +728,11 @@ def link_notification_channel(guild_id: str, channel_id: str) -> str:
     if existing_discord_notification_channel() is not None:
         return "kept"
 
-    from gateway.config import HomeChannel, persist_notification_channel
+    from gateway.config import DeliveryTarget, persist_notification_channel
     from gateway.platforms.base import Platform
 
     persist_notification_channel(
-        HomeChannel(
+        DeliveryTarget(
             platform=Platform.DISCORD,
             chat_id=str(channel_id),
             name="gateway-restarts",
@@ -1006,8 +969,9 @@ def _reconcile_module(
     prefix matches against dynamically-labelled channels. Channels that exist
     elsewhere in the guild under the right name/type are ADOPTED (moved under
     the module's category) instead of duplicated. The one rename reconcile
-    performs is the declared legacy-category migration (Quotas -> Models),
-    which patches the category name in place. Nothing is ever deleted.
+    performs is the declared legacy-category migration (Quotas -> Models,
+    Chat -> Lounges), which patches the category name in place. Nothing is
+    ever deleted.
     """
     category_id = _find_channel(
         channels, name=spec.category, kind=CHANNEL_TYPE_CATEGORY, parent_id=None
@@ -1030,15 +994,17 @@ def _reconcile_module(
             adopted_category = True
     if category_id is None:
         # Migration: a guild provisioned before a category rename still
-        # carries the legacy name (exact, or dynamically labelled by the
-        # poller). Rename it IN PLACE so the children keep their IDs and
-        # only genuinely missing channels get created — never a second
-        # category. Checked only for modules that declared a legacy name.
+        # carries the legacy name. Rename it IN PLACE so the children keep
+        # their IDs and only genuinely missing channels get created — never a
+        # second category. Checked only for modules that declared a legacy
+        # name. Only a legacy name the poller relabels dynamically is matched
+        # by prefix too; the rest must match exactly, so a category that
+        # merely shares the prefix ("Chat Archive") stays the user's.
         for legacy in spec.legacy_categories:
             candidate = _find_channel(
                 channels, name=legacy, kind=CHANNEL_TYPE_CATEGORY, parent_id=None
             )
-            if candidate is None:
+            if candidate is None and legacy in spec.legacy_dynamic_categories:
                 candidate = _prefix_match_channel(
                     channels,
                     name=legacy,
@@ -1264,7 +1230,6 @@ def reconcile(
         "positioned": [],
         "embeds_posted": [],
         "wired": {},
-        "home_channel": "skipped",
         "notification_channel": "skipped",
         "restart_channel_rename": "skipped",
         "modules": {key: modules[key] for key in MODULE_KEYS},
@@ -1336,10 +1301,6 @@ def reconcile(
 
     if modules["notifications"]:
         notify_channels = state["channels"].get("notifications") or {}
-        if notify_channels.get("other"):
-            report["home_channel"] = link_home_channel(
-                guild_id, notify_channels["other"]
-            )
         if notify_channels.get("gateway-restarts"):
             report["notification_channel"] = link_notification_channel(
                 guild_id, notify_channels["gateway-restarts"]

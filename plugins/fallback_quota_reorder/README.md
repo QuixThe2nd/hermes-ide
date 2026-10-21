@@ -19,20 +19,16 @@ Chain entries are never renamed; the only membership change is the primary-rotat
 
 1. **Healthy scored entries** — entries with a readable quota and `pct >= 5` (or any percentage with at least one pending reset, see below) sort by **highest score first**:
 
-   `score = (quota_frac × 168/hours_remaining + resets × 168/hours_reset_expires) × rate_24h × rate_1h`
+   `score = (quota_frac × 168/hours_remaining + Σ_credits 168/hours_credit_expires) × rate_24h × rate_1h`
 
    - `hours_remaining` is `reset_seconds / 3600`, floored at one minute so a nearly-reset wallet is not divided by zero.
    - `quota_frac` is remaining percent / 100, clamped to `[0, 1]`.
    - Time enters **inversely**: a wallet resetting sooner is more urgent to spend now and scores higher; a wallet resetting in exactly 168 hours (one week, the reference horizon) scores its quota fraction 1:1, and anything later is diluted below it.
    - `rate_24h` / `rate_1h` are API success fractions from the last 24 hours and last hour. Fewer than 3 (24h) or 2 (1h) samples stays **1.0** so a quiet provider is not punished.
 
-   **Pending usage-limit resets are additive.** Codex and Grok channels end with `• N reset(s)[ in <t>]`; each pending manual reset stacks one more full wallet (`quota_frac` of 1.0) onto the score on **its own expiry clock** — Grok's soonest token validity-end when the name shows `in <t>`, otherwise the same usage-reset countdown as the remaining term (Codex exposes no reset-expiry clock). The invariant: **one pending reset at 0% remaining scores exactly like zero resets at 100% remaining when the two clocks are equal**, and each extra reset adds another full wallet with no cap. The uptime factors multiply both terms, and providers without a resets API (Kimi, z.ai, Cursor, the OpenRouter virtual row) keep the remaining term alone — no bonus, no penalty.
-2. **Low quota sink** — entries with parsed `pct` below 5 **and no pending resets** sink behind all healthy scored entries; among themselves they still sort by the same score, highest first. A 0% wallet with ≥1 pending reset is equivalent to a full one, so it stays in the healthy bucket.
-3. **Unreadable tail** — entries with no readable quota (unmapped provider slug, unreadable channel name, or an `openrouter` model other than Ox Alpha) keep their relative order and go after all scored entries.
-
-### Unlimited Ox Alpha route
-
-The free/unlimited route `openrouter/stealth/ox-alpha` has no quota channel of its own, so it is scored from a **synthetic full-wallet reading**: exactly 100% quota against exactly 168 hours. With no reliability samples that scores exactly **1.0** — the neutral point of the formula — and observed uptime derates it through the same `rate_24h`/`rate_1h` factors as every other provider. Only the exact `openrouter` + `stealth/ox-alpha` pair (case-insensitive) gets the treatment; any other `openrouter` model without a real reading is an ordinary unscored tail entry.
+   **Pending usage-limit resets are additive.** Codex, Grok, and z.ai channels end with `• N reset(s)[ in <t>]`; each pending manual reset stacks one more full wallet (`quota_frac` of 1.0) onto the score on **its own expiry clock**. When the precise `quota_channels` state carries the per-credit horizons (`reset_expiry_horizons`, Codex and z.ai), every credit scores exactly once on its own clock — two credits expiring in 3d and 9d score `168/72 + 168/216`, never `2 × 168/72`; the single `in <t>` countdown the channel name shows is the **earliest** expiry and is display-only. Without that richer list the legacy single-clock shape keeps its meaning: `reset_count` credits all on the one `reset_expiry_seconds` clock (Grok's soonest token validity-end, or a pre-horizons Codex/z.ai state row). The invariant: **one pending reset at 0% remaining scores exactly like zero resets at 100% remaining when the two clocks are equal**, and each extra reset adds another full wallet with no cap. A reset whose expiry is unknown adds nothing: urgency is not measurable, so the usage-reset countdown is never borrowed as a stand-in — the credit stays visible as a count (and still keeps an emptied wallet out of the sink), it just earns no score term. The uptime factors multiply both terms, and providers without a resets API (Kimi, Cursor) keep the remaining term alone — no bonus, no penalty.
+2. **Low quota sink** — entries with parsed `pct` below 5 **and no pending resets** sink behind all healthy scored entries; among themselves they still sort by the same score, highest first. A 0% wallet with ≥1 pending reset still holds spendable capacity, so it stays in the healthy bucket.
+3. **Unreadable tail** — entries with no readable quota (unmapped provider slug, unreadable channel name, or any `openrouter` model) keep their relative order and go after all scored entries.
 
 The live gateway records each provider API success (`post_api_request`) and failure (`api_request_error`) into `HERMES_HOME/fallback_quota_reorder_reliability.jsonl`. The reorder tick reads that ledger. Until a provider has enough samples, ranking is just quota over time-to-reset.
 
@@ -40,11 +36,24 @@ The live gateway records each provider API success (`post_api_request`) and fail
 
 The tick also rotates the **primary** model slot (`model.default` + `model.provider`), not just the chain order:
 
-1. Candidates are the tracked providers with a reading plus the unlimited `openrouter/stealth/ox-alpha` route (through its synthetic reading), all scored with the same `score_provider` math as the chain. The current primary counts too — an untracked primary (e.g. a plain `openrouter` route) scores 0.
-2. The highest score wins. Ties keep the current primary; ties between tracked providers go to the lowest channel index (`codex` → `kimi` → `zai` → `grok` → `cursor`), with the unlimited route competing after them so it only wins by beating the best tracked score outright. With no readings and no unlimited route the primary is left alone, and a winner with no `fallback_providers` entry to source its model string from is never promoted.
-3. On a swap the winner's fallback entry graduates to `model.default`/`model.provider`, and the displaced previous primary is inserted back into the chain by the same bucket rules (healthy → low-quota → unscored, score descending within group). A displaced Ox Alpha primary re-enters by its synthetic score; any other untracked displaced primary (score 0) lands at the **end** of the chain.
+1. Candidates are the tracked providers with a reading, all scored with the same `score_provider` math as the chain. The current primary counts too — an untracked primary (e.g. an `openrouter` route) scores 0.
+2. Buckets before raw scores, on both sides of the race: the current primary is bucketed exactly like a candidate — healthy, sunk (`pct` below 5 and no pending resets), or unscored (an untracked primary such as an `openrouter` route) — and that bucket is compared against the winner's first. A healthy candidate therefore displaces a sunk current primary at any raw score (a 4%/1m wallet scores 403.2 yet is still nearly empty), a sunk candidate never displaces a healthy primary, and every scored winner outranks an untracked one. Raw scores decide only within the same bucket — sunk candidates still rotate a sunk primary by raw score among themselves. Ties keep the current primary; ties between tracked providers go to the lowest channel index (`codex` → `kimi` → `zai` → `grok` → `cursor`). With no readings the primary is left alone, and a winner with no `fallback_providers` entry to source its model string from is never promoted.
+3. On a swap the winner's fallback entry graduates to `model.default`/`model.provider`, and the displaced previous primary is inserted back into the chain by the same bucket rules (healthy → low-quota → unscored, score descending within group). An untracked displaced primary (score 0) lands at the **end** of the chain.
 4. The primary swap and the chain reorder are written in ONE `save_config` call, with the same backup/restore rollback and post-write verification as the chain-only path (verification re-checks both the chain signature and the primary keys).
 5. The staleness freeze blocks primary writes too; `--force-quota` bypasses it.
+
+### Pinned primary (optional)
+
+Set `fallback_quota_reorder.pinned_primary` with `provider` and `model` keys to keep a chosen route as primary regardless of quota scores. When the exact route is already primary or appears in `fallback_providers`, every successful reorder promotes or retains it while the rest of the chain keeps normal quota rotation. Matching is exact on the model string (case-sensitive after strip); provider comparison is case-insensitive. A malformed mapping, a blank `provider`/`model`, or a configured target that is neither the current primary nor a fallback entry fails the run with an error. Unset or empty `{}` disables pinning and leaves score-based rotation unchanged.
+
+```yaml
+fallback_quota_reorder:
+  pinned_primary:
+    provider: openrouter
+    model: example/model
+```
+
+**Promotion limits (fail-closed).** A pin can only *promote* a chain entry when a usable current primary exists — `model.provider` and `model.default` both set. Without one there is no route to rotate back into the chain, so the run fails with an error instead of leaving the pinned route duplicated as both primary and fallback. Promotion also fails when either side of the swap carries routing/credential overrides — `base_url`, `inference_base_url`, `api_key`, `api`, `key_env`, `api_key_env`, or `api_mode` set on the current `model` mapping or on the selected fallback entry — because the swap writes only `model.provider`/`model.default`: the entry's endpoint/key fields would be silently dropped, and the current mapping's would be inherited by the wrong route. Errors name the offending fields, never their values. Routes that need those fields can still be pinned: configure the route directly as the primary, then pin it. A pin that already matches the current primary is simply retained, with its metadata untouched.
 
 `--dry-run` prints the pending swap:
 
@@ -142,7 +151,7 @@ Standard: `Grok: 75% • 8h left`
 
 With optional token enrichment from quota_channels: `Codex: 99% • 2.2B tok/7d • 7d left`
 
-With optional trailing pending-reset segment (Codex/Grok): `Grok: 46% • 3d left • 1 reset in 2d` or `Codex: 100% • 7d left • 2 resets`
+With optional trailing pending-reset segment (Codex/Grok/z.ai): `Grok: 46% • 3d left • 1 reset in 2d` or `Codex: 100% • 7d left • 2 resets`
 
 Cursor variant (pct = min of the two values): `Cursor: 76%/58% • 25d left`
 

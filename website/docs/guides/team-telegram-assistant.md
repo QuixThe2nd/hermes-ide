@@ -24,7 +24,7 @@ A Telegram bot that:
 
 Before starting, make sure you have:
 
-- **Hermes Agent installed** on a server or VPS (not your laptop — the bot needs to stay running). Follow the [installation guide](/getting-started/installation) if you haven't yet.
+- **Hermes Agent installed** on a server or VPS (not your laptop — the bot needs to stay running). Follow the [installation guide](../getting-started/installation.md) if you haven't yet.
 - **A Telegram account** for yourself (the bot owner)
 - **An LLM provider configured** — at minimum, an API key for OpenAI, Anthropic, or another supported provider in `~/.hermes/.env`
 
@@ -254,20 +254,11 @@ DM pairing is ideal for teams because you don't need to restart the gateway when
 
 ## Step 5: Configure the Bot
 
-### Set a Home Channel
+### Pick a Delivery Target for Scheduled Tasks
 
-A **home channel** is where the bot delivers cron job results and proactive messages. Without one, scheduled tasks have nowhere to send output.
+Cron job results go to an explicit `telegram:<chat_id>` target, so decide which group or chat should receive them (for example the team-updates group). Each cron job names its target when you create it — see [Automate with Cron](/guides/automate-with-cron).
 
-**Option 1:** Use the `/sethome` command in any Telegram group or chat where the bot is a member.
-
-**Option 2:** Set it manually in `~/.hermes/.env`:
-
-```bash
-TELEGRAM_HOME_CHANNEL=-1001234567890
-TELEGRAM_HOME_CHANNEL_NAME="Team Updates"
-```
-
-To find a channel ID, add [@userinfobot](https://t.me/userinfobot) to the group — it will report the group's chat ID.
+To find a chat ID, add [@userinfobot](https://t.me/userinfobot) to the group — it will report the group's chat ID.
 
 ### Configure Tool Progress Display
 
@@ -291,7 +282,7 @@ Users can also change this per-session with the `/verbose` command in chat.
 
 Customize how the bot communicates by editing `~/.hermes/SOUL.md`:
 
-For a full guide, see [Use SOUL.md with Hermes](/guides/use-soul-with-hermes).
+For a full guide, see [Use SOUL.md with Hermes](./use-soul-with-hermes.md).
 
 ```markdown
 # Soul
@@ -338,7 +329,7 @@ github.com/myorg/myproject for:
 Format as a brief standup-style summary.
 ```
 
-The agent creates a cron job automatically and delivers results to the chat where you asked (or the home channel).
+The agent creates a cron job automatically and delivers results to the chat where you asked.
 
 ### Server Health Check
 
@@ -428,13 +419,13 @@ hermes gateway stop && hermes gateway start
 
 You've got a working team Telegram assistant. Here are some next steps:
 
-- **[Security Guide](/user-guide/security)** — deep dive into authorization, container isolation, and command approval
-- **[Messaging Gateway](/user-guide/messaging)** — full reference for gateway architecture, session management, and chat commands
-- **[Telegram Setup](/user-guide/messaging/telegram)** — platform-specific details including voice messages and TTS
-- **[Scheduled Tasks](/user-guide/features/cron)** — advanced cron scheduling with delivery options and cron expressions
-- **[Context Files](/user-guide/features/context-files)** — AGENTS.md, SOUL.md, and .cursorrules for project knowledge
-- **[Personality](/user-guide/features/personality)** — built-in personality presets and custom persona definitions
-- **Add more platforms** — the same gateway can simultaneously run [Discord](/user-guide/messaging/discord), [Slack](/user-guide/messaging/slack), and [WhatsApp](/user-guide/messaging/whatsapp)
+- **[Security Guide](../user-guide/security.md)** — deep dive into authorization, container isolation, and command approval
+- **[Messaging Gateway](../user-guide/messaging/index.md)** — full reference for gateway architecture, session management, and chat commands
+- **[Telegram Setup](../user-guide/messaging/telegram.md)** — platform-specific details including voice messages and TTS
+- **[Scheduled Tasks](../user-guide/features/cron.md)** — advanced cron scheduling with delivery options and cron expressions
+- **[Context Files](../user-guide/features/context-files.md)** — AGENTS.md, SOUL.md, and .cursorrules for project knowledge
+- **[Personality](../user-guide/features/personality.md)** — built-in personality presets and custom persona definitions
+- **Add more platforms** — the same gateway can simultaneously run [Discord](../user-guide/messaging/discord.md), [Slack](../user-guide/messaging/slack.md), and [WhatsApp](../user-guide/messaging/whatsapp.md)
 
 ---
 

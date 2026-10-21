@@ -56,8 +56,8 @@ requires_env:
     prompt: "Channel"
     password: false
 optional_env:
-  - name: MY_PLATFORM_HOME_CHANNEL
-    description: "Default channel for cron delivery"
+  - name: MY_PLATFORM_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to talk to the bot"
     password: false
 ```
 
@@ -92,18 +92,18 @@ be granted its own outbound tools.
 ### adapter.py
 
 ```python
-import os
-from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, MessageEvent, MessageType,
-)
+from gateway.platforms._shared import extra_or_secret, get_scoped_secret, seed_extra_from_env
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 
 
 class MyPlatformAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("my_platform"))
-        extra = config.extra or {}
-        self.token = os.getenv("MY_PLATFORM_TOKEN") or extra.get("token", "")
+        # Explicit env (profile-scoped) → this profile's config.extra (YAML) → default. Under multiplexing a
+        # scoped miss falls to the profile's own YAML, never to another profile's process env.
+        self.token = extra_or_secret(config.extra, "token", "MY_PLATFORM_TOKEN")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Connect to the platform API, start listeners
@@ -122,24 +122,20 @@ class MyPlatformAdapter(BasePlatformAdapter):
 
 
 def check_requirements() -> bool:
-    return bool(os.getenv("MY_PLATFORM_TOKEN"))
+    return bool(get_scoped_secret("MY_PLATFORM_TOKEN"))
 
 
 def validate_config(config) -> bool:
-    extra = getattr(config, "extra", {}) or {}
-    return bool(os.getenv("MY_PLATFORM_TOKEN") or extra.get("token"))
+    return bool(extra_or_secret(getattr(config, "extra", None), "token", "MY_PLATFORM_TOKEN"))
 
 
 def _env_enablement() -> dict | None:
-    token = os.getenv("MY_PLATFORM_TOKEN", "").strip()
-    channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
-    if not (token and channel):
+    if not get_scoped_secret("MY_PLATFORM_TOKEN", "").strip():
         return None
-    seed = {"token": token, "channel": channel}
-    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": "Home"}
-    return seed
+    return seed_extra_from_env(
+        (("MY_PLATFORM_TOKEN", "token", None), ("MY_PLATFORM_CHANNEL", "channel", None)),
+        home_env="MY_PLATFORM_HOME_CHANNEL",
+    )
 
 
 def register(ctx):
@@ -147,14 +143,14 @@ def register(ctx):
     ctx.register_platform(
         name="my_platform",
         label="My Platform",
-        adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
+        adapter_factory=MyPlatformAdapter,
         # PASSIVE probe — "are deps/config present right now?".  Called from
         # status displays and config loading, so it must NEVER pip-install.
         check_fn=check_requirements,
         # ACTIVE installer (optional) — only for platforms with a
         # lazy-installable SDK.  create_adapter() calls it when check_fn
         # returns False, right before the gateway connects the platform.
-        # Typically wraps tools.lazy_deps.ensure_and_bind(...).  Omit it
+        # Typically wraps pm.extras.ensure_and_bind(...).  Omit it
         # and a False check_fn is a hard block.
         # ensure_deps_fn=ensure_requirements,
         validate_config=validate_config,
@@ -164,10 +160,10 @@ def register(ctx):
         # env vars before adapter construction. See "Env-Driven Auto-
         # Configuration" section below.
         env_enablement_fn=_env_enablement,
-        # Cron home-channel delivery support. Lets deliver=my_platform cron
-        # jobs route without editing cron/scheduler.py. See "Cron Delivery"
+        # Out-of-process cron delivery. Lets deliver=my_platform:chat_id
+        # jobs send without a co-resident gateway. See "Cron Delivery"
         # section below.
-        cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
         # Per-platform user authorization env vars
         allowed_users_env="MY_PLATFORM_ALLOWED_USERS",
         allow_all_env="MY_PLATFORM_ALLOW_ALL_USERS",
@@ -213,13 +209,13 @@ When you call `ctx.register_platform()`, the following integration points are ha
 
 | Integration point | How it works |
 |---|---|
-| Gateway adapter creation | Registry checked before built-in if/elif chain |
+| Gateway adapter creation | Registry checked before the built-in `_BUILTIN_ADAPTERS` table |
 | Config parsing | `Platform._missing_()` accepts any platform name |
 | Connected platform validation | Registry `validate_config()` called |
 | User authorization | `allowed_users_env` / `allow_all_env` checked |
-| Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` + `home_channel` |
+| Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` |
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
-| Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
+| Cron delivery | `standalone_sender_fn` sends explicit `deliver=<name>:<chat_id>` targets out-of-process |
 | `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
 | send engine (`tools/send_message_tool.py`) | Routes through live gateway adapter |
 | Webhook cross-platform delivery | Registry checked for known platforms |
@@ -296,37 +292,39 @@ the next profile.
 
 Most users set up a platform by dropping env vars into `~/.hermes/.env` rather than editing `config.yaml`. The `env_enablement_fn` hook lets your plugin pick those env vars up **before** the adapter is constructed, so `hermes gateway status`, `get_connected_platforms()`, and cron delivery see the correct state without instantiating the platform SDK.
 
+Read env through `gateway.platforms._shared.get_scoped_secret` — never `os.getenv`. Under `gateway.multiplex_profiles` the process env holds the DEFAULT profile's values; a secondary profile's `.env` exists only in its secret scope, and a raw read would enable your platform for the wrong profile with the wrong credentials. `seed_extra_from_env` builds the seed dict from a `(ENV_VAR, extra_key, conv)` table through that reader.
+
 ```python
+from gateway.platforms._shared import get_scoped_secret, seed_extra_from_env
+
+
 def _env_enablement() -> dict | None:
     """Seed PlatformConfig.extra from env vars.
 
     Called by the platform registry during load_gateway_config().
     Return None when the platform isn't minimally configured — the
-    caller then skips auto-enabling. Return a dict to seed extras.
-
-    The special 'home_channel' key is extracted and becomes a proper
-    HomeChannel dataclass on the PlatformConfig; every other key is
-    merged into PlatformConfig.extra.
+    caller then skips auto-enabling. Return a dict to seed extras;
+    every key is merged into PlatformConfig.extra.
     """
-    token = os.getenv("MY_PLATFORM_TOKEN", "").strip()
-    channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
+    token = get_scoped_secret("MY_PLATFORM_TOKEN", "").strip()
+    channel = get_scoped_secret("MY_PLATFORM_CHANNEL", "").strip()
     if not (token and channel):
         return None
-    seed = {"token": token, "channel": channel}
-    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {
-            "chat_id": home,
-            "name": os.getenv("MY_PLATFORM_HOME_CHANNEL_NAME", "Home"),
-        }
-    return seed
+    # (ENV_VAR, extra_key, conv): blank values are skipped, a conv raising
+    # ValueError drops the key. home_env seeds the special 'home_channel'
+    # dict ({chat_id, name} from MY_PLATFORM_HOME_CHANNEL[_NAME], name
+    # defaults to "Home"), which the core hook lifts into a HomeChannel.
+    return {"token": token, "channel": channel, **seed_extra_from_env(
+        (("MY_PLATFORM_PORT", "port", int), ("MY_PLATFORM_NICK", "nick", None)),
+        home_env="MY_PLATFORM_HOME_CHANNEL",
+    )}
 
 
 def register(ctx):
     ctx.register_platform(
         name="my_platform",
         label="My Platform",
-        adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
+        adapter_factory=MyPlatformAdapter,
         check_fn=check_requirements,
         validate_config=validate_config,
         env_enablement_fn=_env_enablement,
@@ -340,7 +338,16 @@ def register(ctx):
 Some users prefer setting `config.yaml` keys (`my_platform.require_mention`, `my_platform.allowed_channels`, etc.) over env vars. The `apply_yaml_config_fn` hook lets your plugin own this translation instead of forcing core `gateway/config.py` to know your platform's YAML schema.
 
 ```python
-import os
+from gateway.platforms._shared import apply_yaml_bridge
+
+# (yaml key, ENV_VAR, kind). "lower" bridges whenever the key is present
+# (booleans become "true"/"false"); "str" skips null/blank; "csv" comma-joins
+# lists; "json" dumps the value.
+_YAML_BRIDGE = (
+    ("require_mention", "MY_PLATFORM_REQUIRE_MENTION", "lower"),
+    ("allowed_channels", "MY_PLATFORM_ALLOWED_CHANNELS", "csv"),
+)
+
 
 def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict | None:
     """Translate config.yaml `my_platform:` keys into env vars / extras.
@@ -348,18 +355,13 @@ def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict | None:
     yaml_cfg     — the full top-level parsed config.yaml dict
     platform_cfg — the platform's own sub-dict (yaml_cfg.get("my_platform", {}))
 
-    May mutate os.environ directly (use `not os.getenv(...)` guards to
-    preserve env > YAML precedence) and/or return a dict to merge into
-    PlatformConfig.extra. Return None or {} for no extras.
+    apply_yaml_bridge writes each env var only when it is unset (env > YAML)
+    and NEVER while a multiplexed secondary profile's config is loading — a
+    write there would pin that profile's policy process-wide. It returns the
+    same values for PlatformConfig.extra, so read `extra` first in the adapter
+    and fall back to the env var (`_shared.extra_or_secret`).
     """
-    if "require_mention" in platform_cfg and not os.getenv("MY_PLATFORM_REQUIRE_MENTION"):
-        os.environ["MY_PLATFORM_REQUIRE_MENTION"] = str(platform_cfg["require_mention"]).lower()
-    allowed = platform_cfg.get("allowed_channels")
-    if allowed is not None and not os.getenv("MY_PLATFORM_ALLOWED_CHANNELS"):
-        if isinstance(allowed, list):
-            allowed = ",".join(str(v) for v in allowed)
-        os.environ["MY_PLATFORM_ALLOWED_CHANNELS"] = str(allowed)
-    return None  # nothing extra to merge into PlatformConfig.extra
+    return apply_yaml_bridge(platform_cfg, _YAML_BRIDGE)
 
 def register(ctx):
     ctx.register_platform(
@@ -376,21 +378,11 @@ Exceptions raised by the hook are swallowed and logged at debug level — a misb
 
 ## Cron Delivery
 
-To let `deliver=my_platform` cron jobs route to a configured home channel, set `cron_deliver_env_var` to the env var name that holds the default chat/room/channel ID:
+Cron jobs address your platform with an explicit `deliver=my_platform:<chat_id>` target (optionally `:<thread_id>`). Registering the platform in the plugin registry already makes `my_platform` a recognized `deliver=` platform. A bare `deliver=my_platform` resolves to no target — the job records a delivery error telling the operator to set an explicit `platform:chat_id[:thread_id]` target instead of silently dropping the output.
 
-```python
-ctx.register_platform(
-    name="my_platform",
-    ...
-    cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
-)
-```
+The legacy `PlatformEntry.cron_deliver_env_var` field is deprecated and ignored: passing it to `ctx.register_platform()` still registers the platform (with a once-per-process warning), but cron delivery no longer reads any per-platform default destination env var. Migrate by removing the kwarg and pointing jobs at explicit `platform:chat_id[:thread_id]` targets.
 
-The scheduler reads this env var when resolving the home target for `deliver=my_platform` jobs, and also treats the platform as a valid cron target in `_KNOWN_DELIVERY_PLATFORMS`-style checks. If your `env_enablement_fn` seeds a `home_channel` dict (see above), that takes precedence — `cron_deliver_env_var` is the fallback for cron jobs that run before env seeding.
-
-### Out-of-process cron delivery
-
-`cron_deliver_env_var` makes your platform a recognized `deliver=` target. To make the actual send succeed when the cron job runs in a separate process from the gateway (i.e., `hermes cron run` separate from `hermes gateway`), register a `standalone_sender_fn`:
+To make the send succeed when the cron job runs in a separate process from the gateway (i.e., `hermes cron run` separate from `hermes gateway`), register a `standalone_sender_fn`:
 
 ```python
 async def _standalone_send(
@@ -410,7 +402,6 @@ async def _standalone_send(
 ctx.register_platform(
     name="my_platform",
     ...
-    cron_deliver_env_var="MY_PLATFORM_HOME_CHANNEL",
     standalone_sender_fn=_standalone_send,
 )
 ```
@@ -443,10 +434,6 @@ requires_env:
     prompt: "Channel"
     password: false
 optional_env:
-  - name: MY_PLATFORM_HOME_CHANNEL
-    description: "Default channel for cron delivery (defaults to MY_PLATFORM_CHANNEL)"
-    prompt: "Home channel (or empty)"
-    password: false
   - name: MY_PLATFORM_ALLOWED_USERS
     description: "Comma-separated user IDs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
@@ -574,9 +561,9 @@ Create `plugins/platforms/newplat/adapter.py`:
 
 ```python
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-)
+from gateway.platforms._shared import extra_or_secret
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 
 def check_newplat_requirements() -> bool:
     """Return True if dependencies are available."""
@@ -587,7 +574,7 @@ class NewPlatAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.NEWPLAT)
         # Read config from config.extra dict
         extra = config.extra or {}
-        self._api_key = extra.get("api_key") or os.getenv("NEWPLAT_API_KEY", "")
+        self._api_key = extra_or_secret(extra, "api_key", "NEWPLAT_API_KEY")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Set up connection, start polling/webhook
@@ -633,21 +620,21 @@ Three touchpoints:
 2. **`load_gateway_config()`** — Add token env map entry: `Platform.NEWPLAT: "NEWPLAT_TOKEN"`
 3. **`_apply_env_overrides()`** — Map all `NEWPLAT_*` env vars to config
 
-### 4. Gateway Runner (`gateway/run.py`)
+### 4. Gateway Runner (`gateway/run.py` + `gateway/run_*.py` siblings)
 
 Six touchpoints:
 
-1. **`_create_adapter()`** — Add an `elif platform == Platform.NEWPLAT:` branch
+1. **`_BUILTIN_ADAPTERS` table** (`gateway/run.py`) — Add a `Platform.NEWPLAT: (module, class, check_fn, error_msg)` entry; `_instantiate_adapter()` (`gateway/run_adapters.py`) consults the plugin registry, then this table — there is no `elif` chain to extend. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
 2. **`_is_user_authorized()` allowed_users map** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all map** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
-4. **Early env check `_any_allowlist` tuple** — Add `"NEWPLAT_ALLOWED_USERS"`
-5. **Early env check `_allow_all` tuple** — Add `"NEWPLAT_ALLOW_ALL_USERS"`
+4. **Startup access-policy check** (`gateway/run_startup.py`) — Add `"NEWPLAT"` to `_ALLOWLIST_ENV_PLATFORMS` (derives both `NEWPLAT_ALLOWED_USERS` and `NEWPLAT_ALLOW_ALL_USERS`)
+5. **Startup `_BUILTIN_ALLOW_ALL_VARS`** (`gateway/run_startup.py`) — derived from the same `_ALLOWLIST_ENV_PLATFORMS` tuple; nothing extra to add
 6. **`_UPDATE_ALLOWED_PLATFORMS` frozenset** — Add `Platform.NEWPLAT`
 
 ### 5. Cross-Platform Delivery
 
 1. **`gateway/platforms/webhook.py`** — Add `"newplat"` to the delivery type tuple
-2. **`cron/scheduler.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
+2. **`cron/scheduler_delivery.py`** — Add to `_KNOWN_DELIVERY_PLATFORMS` frozenset and `_deliver_result()` platform map
 
 ### 6. CLI Integration
 
@@ -655,7 +642,7 @@ Six touchpoints:
 2. **`hermes_cli/gateway.py`** — Add entry to `_PLATFORMS` list with key, label, emoji, token_var, setup_instructions, and vars
 3. **`hermes_cli/platforms.py`** — Add `PlatformInfo` entry with label and default_toolset (used by `skills_config` and `tools_config` TUIs)
 4. **`hermes_cli/setup.py`** — Add `_setup_newplat()` function (can delegate to `gateway.py`) and add tuple to the messaging platforms list
-5. **`hermes_cli/status.py`** — Add platform detection entry: `"NewPlat": ("NEWPLAT_TOKEN", "NEWPLAT_HOME_CHANNEL")`
+5. **`hermes_cli/status.py`** — Add platform detection entry: `"NewPlat": "NEWPLAT_TOKEN"`
 6. **`hermes_cli/dump.py`** — Add `"newplat": "NEWPLAT_TOKEN"` to platform detection dict
 
 ### 7. Tools

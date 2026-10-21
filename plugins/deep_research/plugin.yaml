@@ -1,0 +1,11 @@
+name: deep_research
+default_enabled: true
+version: 0.1.0
+description: "Durable multi-lane deep research: the delegate_research tool runs the researcher profile in independent lanes and returns a citation-checked report."
+author: Hermes Agent
+kind: standalone
+provides_tools:
+  - delegate_research
+provides_hooks:
+  - post_tool_call
+  - on_gateway_start

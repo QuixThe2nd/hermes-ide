@@ -52,7 +52,7 @@ class TestEmitParentConsole:
     """Progress lines (e.g. ``✓ [N/M] …``) must route through the parent's
     configured ``_safe_print`` in headless stdio hosts (ACP, gateway) so
     they don't land on stdout and corrupt JSON-RPC frames. Regression for a
-    bug where delegate_task completion lines pushed to stdout caused
+    bug where delegate_agent completion lines pushed to stdout caused
     ``Failed to parse JSON message: ✓ [3/3] …`` errors in the ACP adapter."""
 
     def test_routes_through_parent_safe_print_when_available(self, capsys):

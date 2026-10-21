@@ -6,11 +6,11 @@ description: "Ready-to-use automation blueprints — scheduled tasks, GitHub eve
 
 # Automation Blueprints
 
-Copy-paste blueprints for common automation patterns. Each blueprint uses Hermes's built-in [cron scheduler](/user-guide/features/cron) for time-based triggers and [webhook platform](/user-guide/messaging/webhooks) for event-driven triggers.
+Copy-paste blueprints for common automation patterns. Each blueprint uses Hermes's built-in [cron scheduler](../user-guide/features/cron.md) for time-based triggers and [webhook platform](../user-guide/messaging/webhooks.md) for event-driven triggers.
 
 Every blueprint works with **any model** — not locked to a single provider.
 
-For parameterized blueprints with forms instead of cron syntax, see the [Automation Blueprints Catalog](/reference/automation-blueprints-catalog).
+For parameterized blueprints with forms instead of cron syntax, see the [Automation Blueprints Catalog](../reference/automation-blueprints-catalog.mdx).
 
 :::tip Three Trigger Types
 | Trigger | How | Tool |
@@ -567,9 +567,9 @@ Keep the outline to ~300 words. This is a starting point, not a finished post." 
 |--------|------|-------|
 | Same chat | `--deliver origin` | Default — delivers to where the job was created |
 | Local file | `--deliver local` | Saves output, no notification |
-| Telegram | `--deliver telegram` | Home channel, or `telegram:CHAT_ID` for specific |
-| Discord | `--deliver discord` | Home channel, or `discord:CHANNEL_ID` |
-| Slack | `--deliver slack` | Home channel |
+| Telegram | `--deliver telegram:CHAT_ID` | Specific chat |
+| Discord | `--deliver discord:CHANNEL_ID` | Specific channel |
+| Slack | `--deliver slack:CHANNEL_ID` | Specific channel |
 | SMS | `--deliver sms:+15551234567` | Direct to phone number |
 | Specific thread | `--deliver telegram:-100123:456` | Telegram forum topic |
 

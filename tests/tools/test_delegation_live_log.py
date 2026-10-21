@@ -6,7 +6,7 @@ Covers:
 - the tool_progress_callback observe() demux (assistant/tool events in order)
 - dispatch-time creation: paths pre-created with a header, manifest written
 - retention pruning of stale live dirs
-- delegate_task return-shape: live_transcripts in sync + background dispatch
+- delegate_agent return-shape: live_transcripts in sync + background dispatch
 """
 
 import json
@@ -141,7 +141,7 @@ def test_wrap_progress_callback_writer_failure_does_not_block_inner():
 
 
 # ---------------------------------------------------------------------------
-# delegate_task return-shape integration
+# delegate_agent return-shape integration
 # ---------------------------------------------------------------------------
 
 

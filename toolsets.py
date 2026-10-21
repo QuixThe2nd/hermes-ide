@@ -32,7 +32,7 @@ _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
     # Terminal + process management
-    "terminal", "process",
+    "terminal", "process_manage",
     # NOTE: the desktop GUI affordances (read_terminal, open_preview, …) are
     # deliberately NOT here, for the same reason as the `project` tools below:
     # they only work where a GUI renderer can answer them. They live in the
@@ -51,12 +51,13 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
     # replaces other tools when browser.backend is "browser-use"
     "browser_exec",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
-    "todo", "memory",
+    "todo_list", "memory",
     # NOTE: the desktop Project tools (project_list/create/switch) are
     # deliberately NOT here. They only make sense where a GUI can follow the
     # move, so they live in the `project` toolset and are enabled solely by the
@@ -67,7 +68,7 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution + delegation
-    "execute_code", "delegate_task",
+    "execute_code", "delegate_agent",
     # Cursor My Machines Cloud Agent (gated via check_fn on the agent binary)
     "delegate_cursor_agent",
     # Claude Code CLI delegation via the claude-glm wrapper (gated via
@@ -76,7 +77,7 @@ _HERMES_CORE_TOOLS = [
     # MoA consultation (gated via check_fn on the default MoA preset)
     "moa_ask", "moa_debate",
     # Cronjob management
-    "cronjob",
+    "cronjob_manage",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -92,6 +93,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Service-gated connector account status and authorization links.
+    "manage_connections",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -176,7 +179,7 @@ TOOLSETS = {
 
     "terminal": {
         "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
+        "tools": ["terminal", "process_manage"],
         "includes": []
     },
     
@@ -200,7 +203,7 @@ TOOLSETS = {
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
-        "tools": ["cronjob"],
+        "tools": ["cronjob_manage"],
         "includes": []
     },
     
@@ -210,7 +213,24 @@ TOOLSETS = {
         "tools": ["read_file", "write_file", "patch", "search_files"],
         "includes": []
     },
-    
+
+    # Read-only mirror of `file` for sandbox/researcher profiles: whitelisting
+    # reads must not also whitelist writes. Opt-in via `hermes tools` or
+    # `hermes profile create --read-only`; deliberately NOT part of
+    # _HERMES_CORE_TOOLS, so default sessions keep the full `file` toolset.
+    "file_readonly": {
+        "description": "Read-only file tools: read and search (no write or patch)",
+        "tools": ["read_file", "search_files"],
+        "includes": []
+    },
+
+    # NOTE: the deep_research no-file synthesis writer's deliberately empty,
+    # sealed ``research_writer`` toolset is NOT here. It is plugin-owned and
+    # registered by plugins/deep_research through the plugin context's
+    # register_toolset() API (registry-backed), so disabling or removing that
+    # plugin removes the toolset with it — the core catalog keeps no
+    # plugin-specific lanes.
+
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
         "tools": ["text_to_speech"],
@@ -219,7 +239,7 @@ TOOLSETS = {
     
     "todo": {
         "description": "Task planning and tracking for multi-step work",
-        "tools": ["todo"],
+        "tools": ["todo_list"],
         "includes": []
     },
     
@@ -241,10 +261,22 @@ TOOLSETS = {
         "includes": []
     },
 
+    "connections": {
+        "description": "Remote connector discovery, execution, and account authorization",
+        "tools": ["manage_connections"],
+        "includes": []
+    },
+
     "project": {
         "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
-        "tools": ["project_list", "project_create", "project_switch"],
+        "tools": ["desktop_project"],
         "includes": []
+    },
+
+    "bot_room": {
+        "description": "Verified text-only Group Chat turn capabilities",
+        "tools": [],
+        "includes": [],
     },
 
     # Affordances that only exist because a GUI renderer is on the other end of
@@ -260,10 +292,10 @@ TOOLSETS = {
         "description": "Desktop GUI affordances — in-app terminal/browser panes, pane focus, reactions (GUI sessions only)",
         "tools": [
             "read_terminal", "close_terminal",
-            "open_preview", "close_preview", "read_preview", "drive_preview", "annotate_preview",
+            "desktop_preview", "drive_preview", "annotate_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
-            "setup_mcp", "tour", "tip",
+            "gui_tour", "show_tip",
         ],
         "includes": []
     },
@@ -282,7 +314,7 @@ TOOLSETS = {
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task"],
+        "tools": ["delegate_agent"],
         "includes": []
     },
 
@@ -410,7 +442,7 @@ TOOLSETS = {
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
-        "tools": ["terminal", "process"],
+        "tools": ["terminal", "process_manage"],
         "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
     },
     
@@ -433,7 +465,7 @@ TOOLSETS = {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process",
+            "terminal", "process_manage",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -442,9 +474,9 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_exec",
-            "todo", "memory",
+            "todo_list", "memory",
             "session_search", "clarify",
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_agent",
         ],
         "includes": [],
         # Posture toolset: selected per-session by agent/coding_context.py,
@@ -466,7 +498,7 @@ TOOLSETS = {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
             "web_search", "web_extract",
-            "terminal", "process",
+            "terminal", "process_manage",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
@@ -475,9 +507,9 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_exec",
-            "todo", "memory",
+            "todo_list", "memory",
             "session_search",
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_agent",
         ],
         "includes": []
     },
@@ -488,7 +520,7 @@ TOOLSETS = {
             # Web
             "web_search", "web_extract",
             # Terminal + process management
-            "terminal", "process",
+            "terminal", "process_manage",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
@@ -502,13 +534,13 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_exec",
             # Planning & memory
-            "todo", "memory",
+            "todo_list", "memory",
             # Session history search
             "session_search",
             # Code execution + delegation
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_agent",
             # Cronjob management
-            "cronjob",
+            "cronjob_manage",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 
@@ -673,6 +705,28 @@ TOOLSETS = {
 
 
 
+def _registry():
+    """Live tool registry, or None when tools.registry can't be imported."""
+    try:
+        from tools.registry import registry
+        return registry
+    except Exception:
+        return None
+
+
+def _registry_call(method: str, default):
+    """registry.<method>() or *default* when the registry is unavailable or the call fails."""
+    try:
+        return getattr(_registry(), method)()
+    except Exception:  # registry None (AttributeError) or the call failed
+        return default
+
+
+def _registry_generation() -> Tuple[int, int]:
+    reg = _registry()
+    return (id(reg), getattr(reg, "_generation", 0)) if reg is not None else (0, 0)
+
+
 def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[str, Any]]:
     """
     Get a toolset definition by name.
@@ -686,6 +740,11 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
             ``_get_platform_tools`` uses False so that a tool registered into a
             toolset but absent from a platform's static composite does not drop
             the whole toolset from inference. See issue #49622.
+            Toolsets marked ``"sealed": True`` ignore this flag: their static
+            definition is authoritative and registry/plugin registrations
+            targeting them are never merged. This makes deliberately empty
+            toolsets (e.g. the deep_research no-file synthesis writer) a hard
+            boundary rather than a default an overlay can widen.
 
     Returns:
         Dict: Toolset definition with description, tools, and includes
@@ -696,10 +755,11 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
     """
     toolset = TOOLSETS.get(name)
 
-    if not include_registry:
+    if not include_registry or (toolset and toolset.get("sealed")):
         # Static view only: return the built-in definition (copying the nested
         # tools/includes lists so callers can't mutate TOOLSETS), or None for
-        # registry/MCP-only toolsets that have no static counterpart.
+        # registry/MCP-only toolsets that have no static counterpart. Sealed
+        # toolsets take this path even when registry tools were requested.
         if not toolset:
             return None
         return {
@@ -714,11 +774,33 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
         return toolset if toolset else None
 
     if toolset:
+        merged_tools = set(toolset.get("tools", [])) | set(
+            registry.get_tool_names_for_toolset(name)
+        )
+        # An MCP server named like a built-in toolset ("homeassistant", "browser") registers a bare
+        # alias to its `mcp-<name>` toolset; without this union the static entry shadows it and the
+        # server's tools never reach the model even though discovery registered them.
+        alias_target = registry.get_toolset_alias_target(name)
+        if alias_target and alias_target != name:
+            merged_tools |= set(registry.get_tool_names_for_toolset(alias_target))
+        return {**toolset, "tools": sorted(merged_tools)}
+
+    # Plugin-owned toolset definitions (registered through the plugin
+    # context's register_toolset() API) live in the registry, not the static
+    # TOOLSETS catalog — a disabled or absent plugin's toolset is therefore
+    # neither advertised nor valid. A sealed definition is a hard boundary:
+    # registry/plugin tool registrations targeting it are ignored, mirroring
+    # the static ``"sealed": True`` path above. An unsealed definition merges
+    # overlay tools exactly like a built-in toolset does.
+    definition = registry.get_toolset_definition(name)
+    if definition is not None:
+        if definition.get("sealed"):
+            return definition
         merged_tools = sorted(
-            set(toolset.get("tools", []))
+            set(definition.get("tools", []))
             | set(registry.get_tool_names_for_toolset(name))
         )
-        return {**toolset, "tools": merged_tools}
+        return {**definition, "tools": merged_tools}
 
     registry_toolset = name
     description = f"Plugin toolset: {name}"
@@ -774,17 +856,11 @@ def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     return to_remove
 
 
-# Resolution memo keyed on (toolset name, include_registry, registry
-# generation). resolve_toolset() recursively walks toolset includes and, with
-# include_registry=True, merges registry-registered tools on every call —
-# measured ~2us/toolset in isolation but called dozens of times per
-# _get_platform_tools() (per-keystroke /tools completion) and per picker
-# render. The registry exposes a monotonic _generation counter (bumped on
-# every register/deregister/alias/MCP refresh — see tools/registry.py), so a
-# cache entry is valid for as long as the generation is unchanged; external
-# callers never pass ``visited``, so the memo engages exactly at the public
-# entry and the internal cycle-detection recursion stays untouched.
-_resolve_toolset_memo: Dict[Tuple[str, bool, int, int], List[str]] = {}
+# Memo keyed on (name, include_registry, id(registry), registry generation, profile scope);
+# engages only at the public entry (visited is None). The scope is part of the key because a
+# multiplexed process resolves ``mcp-<server>`` per profile overlay: without it profile B got
+# profile A's tool names for a server B never connected (#106005).
+_resolve_toolset_memo: Dict[Tuple[str, bool, int, int, str], List[str]] = {}
 
 
 def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bool = True) -> List[str]:
@@ -809,15 +885,7 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     """
     external_call = visited is None
     if external_call:
-        try:
-            from tools.registry import registry
-
-            registry_id = id(registry)
-            generation = getattr(registry, "_generation", 0)
-        except Exception:
-            registry_id = 0
-            generation = 0
-        memo_key = (name, include_registry, registry_id, generation)
+        memo_key = (name, include_registry, *_registry_generation(), _registry_call("current_scope_key", ""))
         cached = _resolve_toolset_memo.get(memo_key)
         if cached is not None:
             return list(cached)

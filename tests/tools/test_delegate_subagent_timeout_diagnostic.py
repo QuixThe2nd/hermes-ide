@@ -1,6 +1,6 @@
 """Regression tests for subagent timeout diagnostic dump (issue #14726).
 
-When delegate_task's child subagent times out without having made any API
+When delegate_agent's child subagent times out without having made any API
 call, a structured diagnostic file is written under
 ``~/.hermes/logs/subagent-timeout-<sid>-<ts>.log``. This gives users a
 concrete artifact to inspect (worker thread stack, system prompt size,

@@ -2,6 +2,8 @@ export const TOOL_VERBS: Record<string, string> = {
   browser: 'browsing',
   clarify: 'asking',
   create_file: 'creating',
+  delegate_agent: 'delegating',
+  // Legacy spelling kept so older transcripts still render their verb.
   delegate_task: 'delegating',
   delete_file: 'deleting',
   execute_code: 'executing',

@@ -162,7 +162,7 @@ def test_reset_session_vars_closes_inheritance_leak():
 # server) inherits A's ``False``. In B's pre-bind window
 # ``async_delivery_supported()`` then wrongly reports B's channel as unable to
 # route a background completion — even though B is e.g. a real gateway turn that
-# CAN. Tools (terminal notify_on_complete / watch_patterns, delegate_task
+# CAN. Tools (terminal notify_on_complete / watch_patterns, delegate_agent
 # background=True) would refuse a promise the channel could actually keep.
 
 

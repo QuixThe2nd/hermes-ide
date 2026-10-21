@@ -881,24 +881,29 @@ def test_clean_run_has_empty_warnings(monkeypatch, repo, fake_binary):
 _RUN_STEM_RE = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9]+")
 
 
-def test_viewer_status_line_prefix_and_stem_roundtrip():
-    from tools.claude_agent_tool import (
-        CLAUDE_VIEWER_HOST,
-        CLAUDE_VIEWER_PORT,
-        _claude_viewer_status_line,
-    )
+def test_viewer_status_line_prefix_and_stem_roundtrip(monkeypatch):
+    from tools.claude_agent_tool import _claude_viewer_status_line
 
-    # The host/port are the fork-deployment constants the adapter allowlists.
-    assert CLAUDE_VIEWER_HOST == "192.168.30.20"
-    assert CLAUDE_VIEWER_PORT == 8787
+    # Host auto-detection is pinned so the assertion never depends on the
+    # network the test box happens to sit on.
+    monkeypatch.setattr(
+        "tools.claude_viewer_url._tailscale_ipv4", lambda: None
+    )
+    monkeypatch.setattr(
+        "tools.claude_viewer_url._default_route_ipv4", lambda: "10.20.30.40"
+    )
 
     stem = "20260829-115024-2006506"
     line = _claude_viewer_status_line(stem)
-    assert line == "Claude Code Agent: http://192.168.30.20:8787/#" + stem
-    assert line.startswith("Claude Code Agent: http://192.168.30.20:8787/#")
+    assert line.startswith("Claude Code Agent: http://")
     # The stem comes back out unchanged, in the adapter's run-stem format.
     assert line.rsplit("#", 1)[1] == stem
     assert _RUN_STEM_RE.fullmatch(line.rsplit("#", 1)[1])
+    # The emitted URL must itself pass the Discord adapter's gate, so the
+    # embed it becomes is the same URL the tool announced.
+    from tools.claude_viewer_url import is_allowed_watch_url
+
+    assert is_allowed_watch_url(line.rsplit(" ", 1)[1])
 
 
 @_REAL_SUBPROC
@@ -981,6 +986,115 @@ def test_delegate_run_unaffected_when_no_status_callback_bound(
 
 
 # ---------------------------------------------------------------------------
+# Stall watchdog contract: quiet runs are never killed
+# ---------------------------------------------------------------------------
+
+
+def test_schema_timeout_description_claims_no_stall_kill():
+    """The schema must not tell the model a stall watchdog exists."""
+    from tools.claude_agent_tool import DELEGATE_CLAUDE_AGENT_SCHEMA
+    from tools.cursor_agent_tool import CURSOR_AGENT_SCHEMA
+
+    for schema in (DELEGATE_CLAUDE_AGENT_SCHEMA, CURSOR_AGENT_SCHEMA):
+        description = schema["parameters"]["properties"]["timeout_seconds"][
+            "description"
+        ]
+        assert "stall" not in description.lower(), schema["name"]
+        # The old text claimed runs "with no output for 600s" get terminated.
+        assert "no output" not in description.lower(), schema["name"]
+        # The opt-in positive wall-clock limit is still advertised.
+        assert "wall-clock" in description.lower(), schema["name"]
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_runner_default_stall_watchdog_is_off(tmp_path, monkeypatch):
+    """The runner's own default must be stall-watchdog-off.
+
+    The delegate tools rely on this default: a silent child that outlives
+    any plausible stall window runs to its natural exit instead of being
+    killed for quietness.
+    """
+    import inspect
+
+    from tools.agent_cli_runner import run_agent_cli
+
+    monkeypatch.setattr("tools.agent_cli_runner._MONITOR_POLL_SECONDS", 0.01)
+    assert (
+        inspect.signature(run_agent_cli).parameters["stall_watchdog_seconds"].default
+        == 0
+    )
+
+    error_code, _log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "import time; time.sleep(1.5)"],
+        workdir=str(tmp_path),
+        timeout_seconds=0,
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260830-000000",
+    )
+
+    assert error_code is None
+    assert returncode == 0
+    assert log_text == ""
+    assert duration >= 1.2
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_zero_stall_watchdog_never_reports_stalled(tmp_path, monkeypatch):
+    """``stall_watchdog_seconds <= 0`` must disable the stall check entirely.
+
+    A regression that compares elapsed-quiet-time against the watchdog value
+    unguarded would kill this silent child on the first poll (elapsed >= 0
+    always holds), so this test pins the disable semantics, not just the kill.
+    """
+    from tools.agent_cli_runner import run_agent_cli
+
+    monkeypatch.setattr("tools.agent_cli_runner._MONITOR_POLL_SECONDS", 0.01)
+
+    error_code, _log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "import time; time.sleep(1.5)"],
+        workdir=str(tmp_path),
+        timeout_seconds=0,
+        stall_watchdog_seconds=0,
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260830-000000",
+    )
+
+    assert error_code is None
+    assert returncode == 0
+    assert log_text == ""
+    assert duration >= 1.2
+
+
+@_REAL_SUBPROC
+def test_run_agent_cli_positive_stall_watchdog_still_kills_silent_child(
+    tmp_path, monkeypatch
+):
+    """An explicit positive stall window stays a working opt-in kill switch.
+
+    The dev-pipeline executor passes ``stall_watchdog_seconds=600`` to bound
+    its own attempt runner; that contract must survive the default change.
+    """
+    from tools.agent_cli_runner import run_agent_cli
+
+    monkeypatch.setattr("tools.agent_cli_runner._MONITOR_POLL_SECONDS", 0.01)
+
+    error_code, _log_path, log_text, duration, returncode = run_agent_cli(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        workdir=str(tmp_path),
+        timeout_seconds=0,
+        stall_watchdog_seconds=0.5,
+        log_dir=tmp_path / "logs",
+        run_timestamp="20260830-000000",
+    )
+
+    assert error_code == "stalled"
+    assert returncode != 0
+    assert log_text == ""
+    # Killed at the stall window, not after the child's own 30s sleep.
+    assert duration < 30
+
+
+# ---------------------------------------------------------------------------
 # /goal condition 4000-char pre-flight spill
 # ---------------------------------------------------------------------------
 
@@ -992,7 +1106,8 @@ def _patch_spawn(monkeypatch, captured: dict) -> None:
     from tools import claude_agent_tool
 
     def _fake_run_and_stream(
-        cmd, *, workdir, timeout_seconds, log_dir, run_timestamp, on_spawn=None
+        cmd, *, workdir, timeout_seconds, log_dir, run_timestamp,
+        on_spawn=None, on_proc=None,
     ):
         captured["cmd"] = list(cmd)
         captured["workdir"] = workdir

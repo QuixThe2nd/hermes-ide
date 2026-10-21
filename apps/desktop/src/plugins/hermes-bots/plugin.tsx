@@ -15,8 +15,8 @@
  * bot-initiated sends use `hermes -p <bot> chat --in ~ -c "Bot Chat"`.
  */
 
-import { CHAT_EMPTY_AREA, COMPOSER_AREAS, host, PALETTE_AREA, translateNow } from '@hermes/plugin-sdk'
-import type { ChatEmptyProps, PluginContext } from '@hermes/plugin-sdk'
+import { CHAT_EMPTY_AREA, COMPOSER_AREAS, host, PALETTE_AREA, SIDEBAR_PROFILE_GROUP_HEADER_AREA, translateNow } from '@hermes/plugin-sdk'
+import type { ChatEmptyProps, PluginContext, ProfileGroupRoute } from '@hermes/plugin-sdk'
 
 import { startFaceClock, stopFaceClock } from './avatar'
 import {
@@ -37,6 +37,7 @@ import {
   $lastRoster,
   botHandle,
   botMentionTag,
+  botSelectionKey,
   cachedUnionRoster,
   isActiveRosterBot,
   migrateBotMeta,
@@ -68,9 +69,11 @@ import {
   sessionOwnsWorkspace
 } from './roster-pane'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { ProfileGroupScreenPortal } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
 import type { GroupChat, RosterRow } from './types'
+import { loadBotSections } from './user-sections'
 
 // ── plugin ───────────────────────────────────────────────────────────────────
 
@@ -95,6 +98,9 @@ export default {
     'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
     setPluginCtx(ctx)
+    // The user's own roster sections. Read once at register; every mutation
+    // writes through.
+    loadBotSections()
     const disposeLocales = ctx.i18n.register(BOTS_LOCALES)
     setGroupChatSyncDisposed(false)
     startFaceClock()
@@ -241,6 +247,9 @@ export default {
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
+                  rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
+                  pinned: Boolean(room.pinned),
+                  sectionId: room.sectionId ?? null,
                   syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,
                   running: false
@@ -356,6 +365,13 @@ export default {
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
+    // Sessions sidebar: each gateway/profile group gets the profile's Screen portal
+    // above its sessions, so the bot's computer is reachable from either mode.
+    ctx.register({
+      id: 'screen-portal',
+      area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
+      data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
+    })
     ctx.register({
       id: 'pane',
       area: 'panes',
@@ -408,8 +424,8 @@ export default {
     // keeps the pane's spot, so re-registering re-adopts it where it was.
     // host.paneVisibility is feature-detected: older desktops without the SDK
     // export keep the always-registered behavior.
-    const registerRoutinesPane = () =>
-      ctx.register({
+    const registerRoutinesPane = (restoreDismissed: boolean) => {
+      const dispose = ctx.register({
         id: 'routines',
         area: 'panes',
         // The app's noun for these, so the tab agrees with the pane header and
@@ -433,14 +449,34 @@ export default {
         render: () => <RoutinesPane />
       })
 
+      // The pane's ✕ remembers a Close across launches, and nothing else ever
+      // shows this pane again — it only comes back by being registered here.
+      // Entering Bot Mode is the user asking for their bot's chrome, so a
+      // remembered Close is dropped and the pane returns the way it first
+      // arrived: as the collapsed right-edge tab (#102224). Only on ENTRY:
+      // the pane also re-registers whenever a bot chat regains the workspace
+      // inside one Bots session (a group room and back), and a ✕ from that
+      // same session must survive those.
+      if (restoreDismissed && typeof host.undismissPane === 'function') {
+        host.undismissPane(`${ID}:routines`)
+      }
+
+      return dispose
+    }
+
     if (typeof host.paneVisibility === 'function') {
       // The contribution-scoped pane id (`register` prefixes `${ID}:`).
       const $sidebarVisible = host.paneVisibility(`${ID}:pane`)
       let unregisterRoutines: null | (() => void) = null
+      // Armed by each Bots-tab entry, spent by the first registration after it.
+      let restoreDismissedOnRegister = true
 
       const syncRoutinesPane = () => {
         if (botChatOwnsWorkspace()) {
-          unregisterRoutines ??= registerRoutinesPane()
+          if (!unregisterRoutines) {
+            unregisterRoutines = registerRoutinesPane(restoreDismissedOnRegister)
+            restoreDismissedOnRegister = false
+          }
         } else if (unregisterRoutines) {
           // Clicking the Cronjobs tile moves focus onto the tile itself, which
           // drops bot-chat workspace ownership for a beat. While Bot Mode is
@@ -462,6 +498,8 @@ export default {
         $botsPaneVisible.set(Boolean(visible))
 
         if (visible) {
+          restoreDismissedOnRegister = true
+
           const group = $groupChatWorkspace.get()
           const selected = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
 
@@ -551,10 +589,10 @@ export default {
                 return
               }
 
-              // A claim without a registry id is a fronted non-canonical tab
-              // (focusExistingBotTab / the draft fallback): re-resolving the
-              // canonical chat here would open the Bot Chat the user has
-              // closed. Its tile recovers on the next send like any tab.
+              // A claim without a registry id is the legacy newChat draft
+              // fallback: re-resolving the canonical chat here would replace
+              // a draft the user is typing into. Its tile recovers on the next
+              // send like any tab.
               if (!claim.openedRegistryId) {
                 return
               }
@@ -603,7 +641,7 @@ export default {
         })
       }
     } else {
-      registerRoutinesPane()
+      registerRoutinesPane(true)
     }
 
     // A bot's chat before it has spoken: core's splash is Hermes' wordmark and
@@ -661,7 +699,7 @@ export default {
             // server-side by name), matching either the durable row id or
             // the compression-lineage tip currently on screen.
             const roster = $lastRoster.get()
-            const row = Array.isArray(roster) ? roster.find(bot => bot?.name === activeBot) : null
+            const row = Array.isArray(roster) ? roster.find(bot => botSelectionKey(bot) === activeBot) : null
 
             // The STORED id, which is the id space canonical_session is keyed
             // in. `host.state.activeSessionId` is the runtime id and could
@@ -730,11 +768,23 @@ export default {
               botRosterMeta(bot, $botMeta.get())?.title || bot.ui_meta?.['hermes-bots']?.title || bot.title || ''
             ).trim()
 
-            const target = bot.remoteSource && bot.connectionId ? `${handle}@${bot.connectionId}` : handle
+            // message_agent only resolves canonical identities: the relay
+            // matches a roster row's handle/profile (± @connection-id), the
+            // local path a bare profile name or 'hermes'. botHandle() prefers
+            // the row's source-qualified UI alias ('default-vera'), which
+            // neither resolver accepts — annotate the canonical form instead.
+            const target =
+              bot.remoteSource && bot.connectionId ? `${bot.name}@${bot.connectionId}` : botHandle(bot.name)
 
+            // Local rows get the same annotation whenever their UI alias
+            // ('default-this-device') differs from the resolvable handle —
+            // otherwise the agent has only the alias to go on and the local
+            // path rejects it the same way (#97678).
             const where = bot.remoteSource
               ? ` — on ${bot.connectionLabel || bot.connectionId} (message_agent target: "${target}")`
-              : ''
+              : handle !== target
+                ? ` (message_agent target: "${target}")`
+                : ''
 
             return `@${handle} = agent profile "${bot.name}"${title ? ` ("${title}")` : ''}${where}`
           })

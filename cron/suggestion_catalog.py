@@ -1,18 +1,12 @@
 """Curated catalog of starter cron-job suggestions.
 
-These are the built-in automations Hermes can offer a new user out of the box —
-the ``catalog`` source of the unified suggestion surface. Each entry is a
-ready-to-run ``cron.jobs.create_job`` spec wrapped as a suggestion; the user
-accepts via ``/suggestions``. Nothing here auto-schedules.
+These are the built-in automations Hermes can offer a new user out of the box — the ``catalog``
+source of the unified suggestion surface. Each entry is a ready-to-run ``cron.jobs.create_job`` spec
+wrapped as a suggestion; the user accepts via ``/suggestions``. Nothing here auto-schedules.
 
-The "important-mail monitor" entry is where the old proactive-monitor engine
-lives now: its ``classify_items.py`` (poll a source -> LLM-score urgency ->
-surface only above-threshold) is ONE catalog automation, not a standalone
-feature.
-
-Adding a catalog entry: append a CatalogEntry. Keep prompts self-contained
-(cron jobs run with no chat context) and schedules sensible. The ``job_spec``
-is passed verbatim to ``create_job`` on accept.
+The "important-mail monitor" entry (``classify_items.py``: poll -> LLM-score urgency -> surface
+above-threshold) is ONE catalog automation, not a standalone feature. New entries: append a
+CatalogEntry with a self-contained prompt (cron jobs run with no chat context).
 """
 
 from __future__ import annotations
@@ -26,7 +20,7 @@ __all__ = ["CatalogEntry", "CATALOG", "seed_catalog_suggestions", "classify_item
 
 def classify_items_script_path() -> str:
     """Absolute path to the urgency classifier script shipped with cron/."""
-    return str((Path(__file__).resolve().parent / "scripts" / "classify_items.py"))
+    return str(Path(__file__).resolve().parent / "scripts" / "classify_items.py")
 
 
 @dataclass(frozen=True)
@@ -118,21 +112,66 @@ CATALOG: List[CatalogEntry] = [
             "deliver": "origin",
         },
     ),
+    CatalogEntry(
+        key="catalog:gateway-log-scout",
+        title="Gateway log scout",
+        description="Periodically checks Hermes logs for errors and crashes, "
+        "slowly widening which logs it watches, and only speaks up when "
+        "something actually needs attention.",
+        job_spec={
+            "prompt": (
+                "You are the Hermes log scout. You run unattended with no "
+                "chat context, so this prompt is your entire brief. Keep run "
+                "state in ~/.hermes/logs/.log-scout-state.json: a JSON object "
+                "with an integer \"depth\" and a \"suppressions\" list of at "
+                "most 10 {\"pattern\", \"reason\"} pairs (a line-pattern to "
+                "skip and a one-line reason it is benign). If the state file "
+                "is missing or unreadable, start at depth 1 with no "
+                "suppressions. Each run covers ladder levels 1 through "
+                "min(depth, 7), all under ~/.hermes/logs/ — level 1: "
+                "gateway.log and errors.log; level 2: plus their .1 "
+                "rotations; level 3: plus agent.log and agent.log.1; "
+                "level 4: plus the .2 and .3 rotations of the gateway and "
+                "errors logs; level 5: plus the tails of "
+                "tui_gateway_crash.log, gateway-exit-diag.log, and "
+                "gateway-shutdown-diag.log; level 6: plus "
+                "gateway-startup-watchdog.log; level 7: plus journalctl for "
+                "the Hermes gateway service over the last 24h (error and "
+                "traceback lines only). Tail at most ~400 lines per file and "
+                "skip files that do not exist. Hunt for: tracebacks and "
+                "exceptions (dedupe each to a pattern with a count and time "
+                "range — never dump per-line), message-send failures, "
+                "provider HTTP 401/403/429/5xx responses and quota "
+                "exhaustion, gateway crashes or restarts not caused by this "
+                "job itself, and high-frequency repeated errors (state the "
+                "rate). Ignore startup banners, log lines this job itself "
+                "produced or delivered, and any suppressed pattern. Redact "
+                "anything secret-shaped (tokens, keys, credentials) before "
+                "reporting. If you find real problems, your entire final "
+                "output is ONE concise alert naming the affected files, "
+                "counts, and time ranges — no raw log dumps — and you leave "
+                "depth unchanged. If the run is clean, write depth = "
+                "min(depth + 1, 7) back to the state file and respond with "
+                "exactly [SILENT] so the user is not pinged."
+            ),
+            "schedule": "every 6h",
+            "name": "Gateway log scout",
+            "deliver": "origin",
+        },
+    ),
 ]
 
 
 def seed_catalog_suggestions(
-    *,
-    add_fn: Optional[Callable[..., Optional[Dict[str, Any]]]] = None,
+    *, add_fn: Optional[Callable[..., Optional[Dict[str, Any]]]] = None,
     keys: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Register catalog entries as pending suggestions.
 
-    ``add_fn`` defaults to ``cron.suggestions.add_suggestion`` (injectable for
-    tests). ``keys`` restricts to specific catalog entries; omit to seed all.
-    Entries already dismissed/accepted (by dedup key) or beyond the pending cap
-    are skipped by the store, so re-seeding is safe and idempotent. Returns the
-    list of suggestion records actually created.
+    ``add_fn`` defaults to ``cron.suggestions.add_suggestion`` (injectable for tests). ``keys``
+    restricts to specific catalog entries; omit to seed all. Entries already dismissed/accepted (by
+    dedup key) or beyond the pending cap are skipped by the store, so re-seeding is safe and
+    idempotent. Returns the list of suggestion records actually created.
     """
     if add_fn is None:
         from cron.suggestions import add_suggestion as add_fn  # type: ignore[assignment]
@@ -143,11 +182,8 @@ def seed_catalog_suggestions(
         if wanted is not None and entry.key not in wanted:
             continue
         rec = add_fn(
-            title=entry.title,
-            description=entry.description,
-            source="catalog",
-            job_spec=dict(entry.job_spec),
-            dedup_key=entry.key,
+            title=entry.title, description=entry.description, source="catalog",
+            job_spec=dict(entry.job_spec), dedup_key=entry.key,
         )
         if rec is not None:
             created.append(rec)

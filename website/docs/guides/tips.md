@@ -9,7 +9,7 @@ description: "Practical advice to get the most out of Hermes Agent — prompt ti
 A quick-wins collection of practical tips that make you immediately more effective with Hermes Agent. Each section targets a different aspect — scan the headers and jump to what's relevant.
 
 :::tip Confused which model to pick?
-Run `hermes setup --portal` — you get 300+ models including Claude, GPT-5, and Gemini under one subscription. See [Nous Portal](/integrations/nous-portal).
+Run `hermes setup --portal` — you get 300+ models including Claude, GPT-5, and Gemini under one subscription. See [Nous Portal](../integrations/nous-portal.md).
 :::
 
 ---
@@ -84,7 +84,7 @@ Create an `AGENTS.md` in your project root with architecture decisions, coding c
 
 Want Hermes to have a stable default voice? Edit `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md` if you use a custom Hermes home). Hermes now seeds a starter SOUL automatically and uses that global file as the instance-wide personality source.
 
-For a full walkthrough, see [Use SOUL.md with Hermes](/guides/use-soul-with-hermes).
+For a full walkthrough, see [Use SOUL.md with Hermes](./use-soul-with-hermes.md).
 
 ```markdown
 # Soul
@@ -141,7 +141,7 @@ Long sessions accumulate tokens. When you notice responses slowing down or getti
 
 ### Delegate for Parallel Work
 
-Need to research three topics at once? Ask the agent to use `delegate_task` with parallel subtasks. Each subagent runs independently with its own context, and only the final summaries come back — massively reducing your main conversation's token usage.
+Need to research three topics at once? Ask the agent to use `delegate_agent` with parallel subtasks. Each subagent runs independently with its own context, and only the final summaries come back — massively reducing your main conversation's token usage.
 
 ### Use execute_code for Batch Operations
 
@@ -152,14 +152,14 @@ Instead of running terminal commands one at a time, ask the agent to write a scr
 Use `/model` to switch models mid-session. Use a frontier model (Claude Sonnet/Opus, GPT-4o) for complex reasoning and architecture decisions. Switch to a faster model for simple tasks like formatting, renaming, or boilerplate generation. Keep in mind each switch resets the prompt cache (see above), so on long sessions it's often cheaper to start a fresh session on the other model than to bounce back and forth.
 
 :::tip
-Run `/usage` periodically to see your token consumption. Run `/insights` for a broader view of usage patterns over the last 30 days. To see what your *fixed* per-message cost is before any conversation — system prompt, skills index, memory, tool schemas — run [`hermes prompt-size`](/reference/cli-commands#hermes-prompt-size) (works offline).
+Run `/usage` periodically to see your token consumption. Run `/insights` for a broader view of usage patterns over the last 30 days. To see what your *fixed* per-message cost is before any conversation — system prompt, skills index, memory, tool schemas — run [`hermes prompt-size`](../reference/cli-commands.md#hermes-prompt-size) (works offline).
 :::
 
 ## Messaging Tips
 
-### Set a Home Channel
+### Name Explicit Delivery Targets
 
-Use `/sethome` in your preferred Telegram or Discord chat to designate it as the home channel. Cron job results and scheduled task outputs are delivered here. Without it, the agent has nowhere to send proactive messages.
+Cron job results and scheduled task outputs go to an explicit `platform:chat_id` target you set when creating the job (`--deliver telegram:-1001234567890`). For gateway shutdown/startup broadcasts, set a notification channel with `/setnotify` in the chat that should receive them.
 
 ### Use /title to Organize Sessions
 
@@ -174,7 +174,7 @@ Instead of manually collecting user IDs for allowlists, enable DM pairing. When 
 Use `/verbose` to control how much tool activity you see. In messaging platforms, less is usually more — keep it on "new" to see just new tool calls. In the CLI, "all" gives you a satisfying live view of everything the agent does.
 
 :::tip
-By default, messaging sessions never auto-reset — context lives until you `/reset` or compression kicks in. If you want sessions to reset automatically (after idle time or daily at a fixed hour), opt in via the `session_reset` section in `~/.hermes/config.yaml`.
+Messaging sessions persist until an explicit `/new` or `/reset`. Context compression manages long conversations without an idle or daily reset.
 :::
 
 ## Security

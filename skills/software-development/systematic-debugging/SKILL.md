@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
-    related_skills: [test-driven-development, plan, subagent-driven-development]
+    related_skills: [test-driven-development, subagent-driven-development]
 ---
 
 # Systematic Debugging
@@ -370,12 +370,12 @@ Use these Hermes tools during Phase 1:
 - **`terminal`** — Run tests, check git history, reproduce bugs
 - **`web_search`/`web_extract`** — Research error messages, library docs
 
-### With delegate_task
+### With delegate_agent
 
 For complex multi-component debugging, dispatch investigation subagents:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Investigate why [specific test/behavior] fails",
     context="""
     Follow systematic-debugging skill:

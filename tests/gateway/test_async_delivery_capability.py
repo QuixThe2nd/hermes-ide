@@ -4,7 +4,7 @@ Stateless request/response adapters (the API server / WebUI path) cannot route
 a background completion back to the agent after a turn ends — there is no
 persistent channel and ``APIServerAdapter.send()`` is a no-op stub. So tools
 that promise async delivery (``terminal`` notify_on_complete / watch_patterns,
-``delegate_task`` background=True) must refuse the promise on that path instead
+``delegate_agent`` background=True) must refuse the promise on that path instead
 of silently registering a watcher that never fires.
 
 This is wired through:
@@ -67,7 +67,7 @@ class TestDeclareStatelessChannel:
     completion event carries ``session_key=""`` and the gateway watcher drops it
     for lack of routing metadata; either way the job's final response has already
     shipped. One-shot simply exits. Both must bind the capability, or
-    ``delegate_task`` is forced background and every subagent result is lost.
+    ``delegate_agent`` is forced background and every subagent result is lost.
     """
 
 
@@ -89,14 +89,17 @@ class TestDeclareStatelessChannel:
             reset_session_vars()
 
 
-class TestStatelessChannelForcesSyncDelegation:
-    """The behavioral contract: a stateless channel must run delegations INLINE.
+class TestStatelessChannelRejectsBackgroundDelegation:
+    """The behavioral contract: a stateless channel must refuse background work.
 
     This is the regression that #53027 / #63142 describe — a background dispatch
-    on a channel that can never deliver the completion.
+    on a channel that can never deliver the completion. The contract is NOT a
+    silent inline fallback (that would run a foreground fan-out the model never
+    asked for): the call fails clearly, starts no work, and points the caller
+    at the foreground mode.
     """
 
-    def test_background_delegation_runs_inline_when_channel_is_stateless(
+    def test_background_delegation_fails_clearly_when_channel_is_stateless(
         self, monkeypatch
     ):
         import tools.delegate_tool as dt
@@ -106,14 +109,20 @@ class TestStatelessChannelForcesSyncDelegation:
             _delegate_depth = 0
             _subagent_id = None
 
-        fake_child = type("C", (), {"_subagent_id": "s1"})()
+        built = []
+        ran = []
         dispatched = []
+
+        def _fake_build(**kw):
+            built.append(kw)
+            return type("C", (), {"_subagent_id": "s1"})()
 
         def _fake_dispatch(*a, **kw):
             dispatched.append(kw)
             return {"delegation_id": "deleg_x"}
 
         def _child(task_index, goal, child=None, parent_agent=None, **kw):
+            ran.append(goal)
             return {
                 "task_index": 0, "status": "completed", "summary": f"done: {goal}",
                 "api_calls": 1, "duration_seconds": 0.1, "model": "m",
@@ -124,7 +133,7 @@ class TestStatelessChannelForcesSyncDelegation:
             "model": "m", "provider": None, "base_url": None, "api_key": None,
             "api_mode": None, "command": None, "args": None,
         }
-        monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+        monkeypatch.setattr(dt, "_build_child_agent", _fake_build)
         monkeypatch.setattr(dt, "_run_single_child", _child)
         monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
         monkeypatch.setattr(
@@ -134,19 +143,27 @@ class TestStatelessChannelForcesSyncDelegation:
         reset_session_vars()
         try:
             declare_stateless_channel()
-            out = dt.delegate_task(
+            out = dt.delegate_agent(
                 goal="review the spec", background=True, parent_agent=_Parent()
             )
         finally:
             reset_session_vars()
 
         parsed = json.loads(out)
-        # The whole point: NOT dispatched to a channel that can't deliver.
-        assert not dispatched, "stateless channel must not dispatch a detached child"
+        # Fail clearly: an error result, never a dispatch receipt or work
+        # product smuggled in as an inline run.
+        assert parsed.get("error"), "stateless channel must reject background=true"
         assert parsed.get("status") != "dispatched"
-        # The caller gets the actual work product, in-turn.
-        assert "results" in parsed
-        assert "done: review the spec" in json.dumps(parsed)
+        assert "results" not in parsed
+        # Start no work: no child built, no child run, nothing dispatched.
+        assert not built, "no child agent may be constructed before the rejection"
+        assert not ran, "no child may run before the rejection"
+        assert not dispatched, "stateless channel must not dispatch a detached child"
+        # Point at the way out: run it in the foreground this turn.
+        error_text = parsed["error"].lower()
+        assert "no work was started" in error_text
+        assert "omit `background`" in error_text
+        assert "foreground" in error_text
 
 
 # ---------------------------------------------------------------------------

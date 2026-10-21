@@ -60,7 +60,6 @@ hermes gateway setup
 Select **WeCom** and follow the prompts. The wizard will guide you through:
 - Bot credentials (via QR scan or manual entry)
 - Access control settings (allowlist, pairing mode, or open access)
-- Home channel for notifications
 
 #### Option B: Manual Configuration
 
@@ -72,9 +71,6 @@ WECOM_SECRET=your-secret
 
 # Optional: restrict access
 WECOM_ALLOWED_USERS=user_id_1,user_id_2
-
-# Optional: home channel for cron/notifications
-WECOM_HOME_CHANNEL=chat_id
 ```
 
 ### Step 3: Start the gateway
@@ -281,7 +277,6 @@ Inbound messages are deduplicated using message IDs with a 5-minute window and a
 | `WECOM_BOT_ID` | ✅ | — | WeCom AI Bot ID |
 | `WECOM_SECRET` | ✅ | — | WeCom AI Bot Secret |
 | `WECOM_ALLOWED_USERS` | — | _(empty)_ | Comma-separated user IDs for the gateway-level allowlist |
-| `WECOM_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `WECOM_WEBSOCKET_URL` | — | `wss://openws.work.weixin.qq.com` | WebSocket gateway URL |
 | `WECOM_DM_POLICY` | — | `open` | DM access policy |
 | `WECOM_GROUP_POLICY` | — | `open` | Group access policy |

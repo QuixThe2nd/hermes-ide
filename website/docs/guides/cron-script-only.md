@@ -173,14 +173,13 @@ hermes cron create "0 9 * * *"       # standard cron: 9am daily
 hermes cron create "30m"             # one-shot: run once in 30 minutes
 ```
 
-See the [cron feature reference](/user-guide/features/cron) for the full syntax.
+See the [cron feature reference](../user-guide/features/cron.md) for the full syntax.
 
 ## Delivery Targets
 
 `--deliver` accepts everything the gateway knows about. Some common shapes:
 
 ```bash
---deliver telegram                       # platform home channel
 --deliver telegram:-1001234567890        # specific chat
 --deliver telegram:-1001234567890:17585  # specific Telegram forum topic
 --deliver discord:#ops
@@ -188,6 +187,8 @@ See the [cron feature reference](/user-guide/features/cron) for the full syntax.
 --deliver signal:+15551234567
 --deliver local                          # just save to ~/.hermes/cron/output/
 ```
+
+A bare platform name (`--deliver telegram`) resolves to nothing — every messaging target must name an explicit chat.
 
 No running gateway is required at script-run time for bot-token platforms (Telegram, Discord, Slack, Signal, SMS, WhatsApp) — the tool calls each platform's REST endpoint directly using the credentials already in `~/.hermes/.env` / `~/.hermes/config.yaml`.
 
@@ -235,13 +236,13 @@ Silent when both filesystems are under 90%; fires exactly one line per over-thre
 |----------|-----------|-------------|
 | `cronjob --no-agent` (this page) | Your script on Hermes' schedule | Recurring watchdogs / alerts / metrics that don't need reasoning |
 | `cronjob` (default, LLM) | Agent with optional pre-check script | When the message content requires reasoning over data |
-| OS cron + `curl` to a [webhook subscription](/user-guide/messaging/webhooks) | Your script on the OS schedule | When Hermes might be unhealthy (the thing you're monitoring) |
+| OS cron + `curl` to a [webhook subscription](../user-guide/messaging/webhooks.md) | Your script on the OS schedule | When Hermes might be unhealthy (the thing you're monitoring) |
 
 For critical system-health watchdogs that must fire *even when the gateway is down*, use OS-level cron with a plain `curl` to a Hermes webhook subscription (or any external alerting endpoint) — those run as independent OS processes and don't depend on Hermes being up. The in-gateway scheduler is the right choice when the thing being monitored is external.
 
 ## Related
 
-- [Automate Anything with Cron](/guides/automate-with-cron) — LLM-driven cron patterns.
-- [Scheduled Tasks (Cron) reference](/user-guide/features/cron) — full schedule syntax, lifecycle, delivery routing.
-- [Webhook Subscriptions](/user-guide/messaging/webhooks) — fire-and-forget HTTP entry points for external schedulers.
-- [Gateway Internals](/developer-guide/gateway-internals) — delivery-router internals.
+- [Automate Anything with Cron](./automate-with-cron.md) — LLM-driven cron patterns.
+- [Scheduled Tasks (Cron) reference](../user-guide/features/cron.md) — full schedule syntax, lifecycle, delivery routing.
+- [Webhook Subscriptions](../user-guide/messaging/webhooks.md) — fire-and-forget HTTP entry points for external schedulers.
+- [Gateway Internals](../developer-guide/gateway-internals.md) — delivery-router internals.

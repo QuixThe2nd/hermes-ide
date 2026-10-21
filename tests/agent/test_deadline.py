@@ -170,7 +170,6 @@ class TestRunBoundedSync:
         result = run_bounded_sync(lambda: "ok", 5.0, label="t")
         assert result.timed_out is False
         assert result.value == "ok"
-        assert result.raise_if_timed_out() == "ok"
 
     def test_unbounded_when_timeout_none(self):
         result = run_bounded_sync(lambda: 7, None, label="t")
@@ -196,9 +195,7 @@ class TestRunBoundedSync:
         assert result.timed_out is True
         assert result.value is None
         assert elapsed < 5.0  # returned near the deadline, not after 30s
-        with pytest.raises(DeadlineExpired) as exc_info:
-            result.raise_if_timed_out()
-        assert "wedged" in str(exc_info.value)
+        assert result.label == "wedged"
         release.set()
 
     def test_on_timeout_callback_runs(self):
@@ -224,10 +221,53 @@ class TestRunBoundedSync:
         assert result.timed_out is True
         release.set()
 
+    def test_keyboard_interrupt_lands_before_full_deadline(self):
+        """Sliced Event.wait must observe SetAsyncExc within one poll slice."""
+        release = threading.Event()
+        holder: dict = {}
+
+        def _run():
+            try:
+                holder["result"] = run_bounded_sync(
+                    lambda: release.wait(30),
+                    10.0,
+                    label="ki",
+                )
+            except KeyboardInterrupt:
+                holder["exc"] = "KeyboardInterrupt"
+
+        t = threading.Thread(target=_run)
+        t.start()
+        time.sleep(0.15)
+        import ctypes
+
+        assert t.ident is not None
+        ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(t.ident), ctypes.py_object(KeyboardInterrupt),
+        )
+        assert ret == 1
+        t.join(timeout=2.0)
+        release.set()
+        assert not t.is_alive()
+        assert holder.get("exc") == "KeyboardInterrupt"
+
     def test_deadline_expired_is_a_timeout_error(self):
         # Error-classification contract: our deadline must be catchable as
         # TimeoutError but distinguishable by type from transport timeouts.
         assert issubclass(DeadlineExpired, TimeoutError)
+
+    def test_worker_inherits_caller_contextvars(self):
+        """Profile secret scope / session id must survive the thread hop."""
+        import contextvars
+
+        var = contextvars.ContextVar("deadline_sync_ctx")
+        token = var.set("from-caller")
+        try:
+            result = run_bounded_sync(lambda: var.get(None), 5.0, label="ctx")
+        finally:
+            var.reset(token)
+        assert result.timed_out is False
+        assert result.value == "from-caller"
 
 
 # ---------------------------------------------------------------------------
@@ -582,7 +622,7 @@ class TestResolveNameList:
 
 
 class TestUnboundedToolsResolver:
-    """_resolve_unbounded_tools: fork default covers both delegate tools."""
+    """_resolve_unbounded_tools: fork default covers delegate, restart, and terminal tools."""
 
     def test_default_contains_delegate_tools(self, monkeypatch):
         from agent import tool_executor
@@ -591,6 +631,54 @@ class TestUnboundedToolsResolver:
         names = tool_executor._resolve_unbounded_tools()
         assert "delegate_cursor_agent" in names
         assert "delegate_claude_agent" in names
+        assert "restart" in names
+
+    def test_default_exempts_terminal_from_generic_deadline(self, monkeypatch):
+        """Foreground terminal supervises its own child (``effective_timeout`` kill).
+
+        The generic batch deadline (420s default) must never preempt a foreground
+        terminal call the schema advertises up to ``FOREGROUND_MAX_TIMEOUT`` (600s).
+        """
+        from agent import tool_executor
+
+        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        names = tool_executor._resolve_unbounded_tools()
+        assert "terminal" in names
+
+    def test_default_covers_all_four_public_names_and_legacy_aliases(
+        self, monkeypatch
+    ):
+        """Every delegation tool blocks by default, so every name is exempt.
+
+        The hidden registry aliases stay dispatchable forever, and a replayed
+        old-name call is exactly as long-running as a new-name one.
+        """
+        from agent import tool_executor
+
+        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        names = tool_executor._resolve_unbounded_tools()
+        assert {"delegate_agent", "delegate_claude_agent"} <= names
+        assert {"delegate_cursor_agent", "delegate_assistant"} <= names
+        assert {"delegate_task", "dispatch_assistant"} <= names
+
+    def test_user_override_normalizes_legacy_spellings(self, monkeypatch):
+        """A pre-rename override list must keep exempting the renamed tools."""
+        from agent import tool_executor
+
+        monkeypatch.setattr(
+            "agent.deadline._timeouts_section",
+            lambda: {
+                "tools": {"unbounded_tools": ["delegate_task", "dispatch_assistant"]}
+            },
+        )
+        assert tool_executor._resolve_unbounded_tools() == frozenset(
+            {
+                "delegate_task",
+                "dispatch_assistant",
+                "delegate_agent",
+                "delegate_assistant",
+            }
+        )
 
     def test_config_override_replaces_default(self, monkeypatch):
         from agent import tool_executor

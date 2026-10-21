@@ -15,13 +15,13 @@ TDD: enforce RED-GREEN-REFACTOR, tests before code.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development/test-driven-development` |
+| Path | `skills/software-development\test-driven-development` |
 | Version | `1.1.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `testing`, `tdd`, `development`, `quality`, `red-green-refactor` |
-| Related skills | [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging), [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan), [`subagent-driven-development`](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development) |
+| Related skills | [`systematic-debugging`](./software-development-systematic-debugging.md), [`subagent-driven-development`](../../optional/software-development/software-development-subagent-driven-development.md) |
 
 ## Reference: full SKILL.md
 
@@ -334,12 +334,12 @@ terminal("pytest tests/test_feature.py::test_name -v")
 terminal("pytest tests/ -q")
 ```
 
-### With delegate_task
+### With delegate_agent
 
 When dispatching subagents for implementation, enforce TDD in the goal:
 
 ```python
-delegate_task(
+delegate_agent(
     goal="Implement [feature] using strict TDD",
     context="""
     Follow test-driven-development skill:

@@ -163,7 +163,7 @@ class TestMissedSteerRetention:
         import json
         from unittest.mock import MagicMock, patch
 
-        from tools.delegate_tool import delegate_task
+        from tools.delegate_tool import delegate_agent
 
         parent = MagicMock()
         parent._delegate_depth = 0
@@ -187,7 +187,7 @@ class TestMissedSteerRetention:
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="race test", parent_agent=parent))
+            result = json.loads(delegate_agent(goal="race test", parent_agent=parent, background=False))
             entry = result["results"][0]
 
         assert entry["missed_steer"] == "focus on pricing instead"
@@ -200,7 +200,7 @@ class TestMissedSteerRetention:
         import json
         from unittest.mock import MagicMock, patch
 
-        from tools.delegate_tool import delegate_task
+        from tools.delegate_tool import delegate_agent
 
         parent = MagicMock()
         parent._delegate_depth = 0
@@ -221,7 +221,7 @@ class TestMissedSteerRetention:
             }
             MockAgent.return_value = mock_child
 
-            result = json.loads(delegate_task(goal="clean run", parent_agent=parent))
+            result = json.loads(delegate_agent(goal="clean run", parent_agent=parent, background=False))
             entry = result["results"][0]
 
         assert "missed_steer" not in entry
@@ -715,12 +715,17 @@ class TestSubagentSteerRPC:
                 transport=owner_transport,
                 session_record=owner_record,
             )
-            assert envelope["result"]["status"] == "queued"
-            assert agent.steered == ["ignore serialized capabilities"]
+            # The wire contract refuses unknown keys outright, so a forged runtime artifact never
+            # reaches the handler (before contracts: silently ignored, steer still queued).
+            assert envelope["error"]["code"] == 4000
+            assert "owner_transport" in envelope["error"]["message"]
+            assert agent.steered == []
         finally:
             _unregister_subagent("sid-rpc-param-spoof")
 
-    def test_session_transport_rebinding_does_not_transfer_ownership(self):
+    def test_session_transport_rebinding_moves_ownership_to_the_live_slot(self):
+        """Authority is the owning session's CURRENT transport slot (7befa11bf25 reversed the
+        original never-transfer rule): the reattached peer steers, the displaced one cannot."""
         original_transport = self._Transport()
         rebound_transport = self._Transport()
         owner_record = {
@@ -738,7 +743,7 @@ class TestSubagentSteerRPC:
         )
         owner_record["transport"] = rebound_transport
         try:
-            for transport in (original_transport, rebound_transport):
+            for transport, expected in ((original_transport, "rejected"), (rebound_transport, "queued")):
                 envelope = self._call(
                     {
                         "session_id": "owner-session",
@@ -748,8 +753,8 @@ class TestSubagentSteerRPC:
                     transport=transport,
                     session_record=owner_record,
                 )
-                assert envelope["result"]["status"] == "rejected"
-            assert agent.steered == []
+                assert envelope["result"]["status"] == expected
+            assert agent.steered == ["rebound authority"]
         finally:
             _unregister_subagent("sid-rpc-rebound")
 

@@ -17,28 +17,6 @@ from gateway.config import Platform, PlatformConfig
 
 # ── Config loading ──────────────────────────────────────────────────
 
-class TestSmsConfigLoading:
-    """Verify _apply_env_overrides wires SMS correctly."""
-
-
-    def test_env_overrides_set_home_channel(self):
-        from gateway.config import load_gateway_config
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest123",
-            "TWILIO_AUTH_TOKEN": "token_abc",
-            "TWILIO_PHONE_NUMBER": "+15551234567",
-            "SMS_HOME_CHANNEL": "+15559876543",
-            "SMS_HOME_CHANNEL_NAME": "My Phone",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            config = load_gateway_config()
-            hc = config.platforms[Platform.SMS].home_channel
-            assert hc is not None
-            assert hc.chat_id == "+15559876543"
-            assert hc.name == "My Phone"
-            assert hc.platform == Platform.SMS
-
 # ── Format / truncate ───────────────────────────────────────────────
 
 class TestSmsFormatAndTruncate:
@@ -321,3 +299,44 @@ class TestWebhookSignatureEnforcement:
         request = self._mock_request(oversized, content_length=None)
         resp = await adapter._handle_webhook(request)
         assert resp.status == 413
+
+
+
+class TestMultiplexProfileScope:
+    """TWILIO_PHONE_NUMBER must resolve through the same profile scope as the Twilio secrets: under
+    multiplex, os.environ holds the DEFAULT profile's number."""
+
+    @pytest.fixture(autouse=True)
+    def _default_profile_env(self, monkeypatch):
+        from agent.secret_scope import set_multiplex_active
+        for key, value in (("TWILIO_ACCOUNT_SID", "AC-default"), ("TWILIO_AUTH_TOKEN", "token-default"),
+                           ("TWILIO_PHONE_NUMBER", "+15550000000")):
+            monkeypatch.setenv(key, value)
+        set_multiplex_active(True)
+        yield
+        set_multiplex_active(False)
+
+    def test_init_pairs_secondary_secrets_with_secondary_from_number(self):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        token = set_secret_scope({"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile",
+                                  "TWILIO_PHONE_NUMBER": "+15551112222"})
+        try:
+            adapter = SmsAdapter(PlatformConfig(enabled=True))
+        finally:
+            reset_secret_scope(token)
+        assert (adapter._account_sid, adapter._from_number) == ("AC-profile", "+15551112222")
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_without_own_number_fails_closed(self):
+        """A secondary lacking its own from-number must NOT send from the default's +15550000000."""
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from plugins.platforms.sms.adapter import _standalone_send
+
+        token = set_secret_scope({"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile"})
+        try:
+            result = await _standalone_send(PlatformConfig(enabled=True), "+15559998888", "hi")
+        finally:
+            reset_secret_scope(token)
+        assert "TWILIO_PHONE_NUMBER required" in result["error"]

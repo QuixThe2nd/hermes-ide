@@ -19,7 +19,7 @@ def _make_agent(
     agent.tools = tools or [
         {"type": "function", "function": {"name": "terminal", "description": "run"}},
         {"type": "function", "function": {"name": "mcp_demo_tool", "description": "mcp"}},
-        {"type": "function", "function": {"name": "delegate_task", "description": "spawn"}},
+        {"type": "function", "function": {"name": "delegate_agent", "description": "spawn"}},
     ]
     agent._memory_store = None
     agent._memory_enabled = True

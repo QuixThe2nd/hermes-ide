@@ -18,6 +18,7 @@ Cron 任务可以：
 - 将结果回传到来源会话、本地文件或已配置的平台目标
 - 在全新的 agent 会话中运行，使用正常的静态工具列表
 - 以**无 agent 模式**运行——按计划执行脚本，其 stdout 原样投递，零 LLM 参与（参见下方[无 agent 模式](#no-agent-mode-script-only-jobs)章节）
+- 由**外部事件触发**——设置了 `cron_job` 的 webhook 路由会在事情发生的那一刻（PR 收到反馈、服务发出告警）立即触发任务，而不是等待下一次定时 tick。参见[事件触发的 Cron 任务](/user-guide/messaging/webhooks#event-triggered-cron-jobs)。
 
 所有这些功能均可通过 `cronjob` 工具由 Hermes 自身使用，因此你可以用自然语言创建、暂停、编辑和删除任务——无需 CLI。
 
@@ -113,12 +114,12 @@ cronjob(
 设置 `workdir` 后：
 
 - 该目录中的 `AGENTS.md`、`CLAUDE.md` 和 `.cursorrules` 会被注入系统 prompt（发现顺序与交互式 CLI 相同）
-- `terminal`、`read_file`、`write_file`、`patch`、`search_files` 和 `execute_code` 均以该目录为工作目录（通过 `TERMINAL_CWD`）
+- `terminal`、`read_file`、`write_file`、`patch`、`search_files` 和 `execute_code` 均以该目录为工作目录
 - 路径必须是已存在的绝对目录——相对路径和不存在的目录在创建/更新时会被拒绝
 - 编辑时传入 `--workdir ""`（或工具中的 `workdir=""`）可清除该设置并恢复原有行为
 
-:::note 串行化
-设置了 `workdir` 的任务在调度器 tick 时串行运行，而非在并行池中运行。这是有意为之——`TERMINAL_CWD` 是进程全局变量，两个 workdir 任务同时运行会互相破坏各自的 cwd。无 workdir 的任务仍像以前一样并行运行。
+:::note 隔离
+每次 agent 运行都会将其 `workdir` 绑定到该次运行的唯一任务标识。设置了 workdir 的任务因此可使用正常的并行池，不会修改进程全局终端状态，也不会在并发运行之间泄漏路径。如需限制 cron 的总并发量，请设置 `cron.max_parallel_jobs`。
 :::
 
 ## 在指定 profile 中运行 cron 任务
@@ -260,49 +261,17 @@ Hermes 会在执行器或调度提供程序分派之前，将每次已领取的 
 |--------|-------------|---------|
 | `"origin"` | 回传到任务创建的来源 | 消息平台上的默认值 |
 | `"local"` | 仅保存到本地文件（`~/.hermes/cron/output/`） | CLI 上的默认值 |
-| `"telegram"` | Telegram 主频道 | 使用 `TELEGRAM_HOME_CHANNEL` |
 | `"telegram:123456"` | 按 ID 指定的 Telegram 会话 | 直接投递 |
 | `"telegram:-100123:17585"` | 指定 Telegram 话题 | `chat_id:thread_id` 格式 |
-| `"discord"` | Discord 主频道 | 使用 `DISCORD_HOME_CHANNEL` |
 | `"discord:#engineering"` | 按频道名指定的 Discord 频道 | 按频道名 |
-| `"slack"` | Slack 主频道 | |
-| `"whatsapp"` | WhatsApp 主账号 | |
-| `"signal"` | Signal | |
-| `"matrix"` | Matrix 主房间 | |
-| `"mattermost"` | Mattermost 主频道 | |
-| `"email"` | 邮件 | |
-| `"sms"` | 通过 Twilio 发送 SMS | |
-| `"homeassistant"` | Home Assistant | |
-| `"dingtalk"` | 钉钉 | |
-| `"feishu"` | 飞书/Lark | |
-| `"wecom"` | 企业微信 | |
-| `"weixin"` | 微信（WeChat） | |
-| `"bluebubbles"` | BlueBubbles（iMessage） | |
-| `"qqbot"` | QQ Bot（腾讯 QQ） | |
-| `"all"` | 扇出到所有已连接的主频道 | 触发时解析 |
-| `"telegram,discord"` | 扇出到指定的一组频道 | 逗号分隔列表 |
-| `"origin,all"` | 投递到来源**加上**所有其他已连接频道 | 可组合任意 token |
+| `"slack:C0123456789"` | 按 ID 指定的 Slack 频道 | 直接投递 |
+| `"bot-chat"` | 当前 profile 的规范 Bot Chat——bot 读取输出并作出响应 | 机器本地 |
+| `"bot-chat:research"` | 其他本地 profile 的 Bot Chat | 创建时校验 |
+| `"telegram:-100123,discord:#engineering"` | 扇出到指定的一组目标 | 逗号分隔列表 |
+
+每个消息平台目标都必须指明显式聊天——裸平台名（`deliver: "telegram"`）不会解析出任何目标，任务会记录一条投递错误，提示你设置显式的 `platform:chat_id[:thread_id]` 目标（`hermes cron edit <id> --deliver ...`）。
 
 Agent 的最终响应会自动投递，无需在 cron prompt 中调用 `send_message`。
-
-### 路由意图（`all`）
-
-`all` 让你将一个 cron 任务发送到所有已配置的消息频道，无需逐一列举名称。它在**触发时解析**，因此在你配置 `TELEGRAM_HOME_CHANNEL` 之前创建的任务，会在下次 tick 时自动纳入 Telegram。
-
-语义：`all` 展开为所有已配置主频道的平台。零个也没问题；任务只是没有投递目标，并在上游记录为投递失败。
-
-`all` 可与显式目标组合。`origin,all` 投递到来源会话**加上**所有其他已连接的主频道，按 `(platform, chat_id, thread_id)` 去重。
-
-### Telegram cron 话题（`TELEGRAM_CRON_THREAD_ID`）
-
-启用 Telegram 话题模式后，根 DM 被保留为系统大厅——发送到那里的回复会被拒绝并附带大厅提示，`reply_to_message_id` 会被丢弃，因此你无法回复落在主聊天中的 cron 消息。
-
-将 cron 指向专用的论坛话题：
-
-1. 在 Telegram 中打开机器人 DM，创建一个名为 `Cron` 的话题。长按话题标题 → **复制链接**；末尾的整数即为该话题的 `message_thread_id`。
-2. 在 `.env` 中设置 `TELEGRAM_CRON_THREAD_ID=<该 id>`。
-
-这仅适用于 cron 投递。`TELEGRAM_HOME_CHANNEL_THREAD_ID`（用于其他地方，如重启通知）不受影响。显式的 `deliver="telegram:chat_id:thread_id"` 目标仍优先于环境变量。对 cron 消息的回复现在会进入已有的话题会话，你可以直接在其中操作。
 
 ### 响应包装
 
@@ -343,7 +312,7 @@ cron:
 
 行为为**优先使用话题**，范围限定在任务的来源聊天：
 
-- **支持话题的平台**（Telegram 话题、Discord/Slack 话题）：每次投递都会新建
+- **支持话题的平台**（Telegram 话题、Discord/Slack/Matrix 话题）：每次投递都会新建
   专用话题，并将简报植入该话题的会话中，因此在话题内回复即可带完整上下文继续。
 - **仅 DM 的平台**（WhatsApp、Signal、SMS）：不存在话题，因此简报会被镜像进
   来源 DM 会话——DM 本身就是继续的载体。

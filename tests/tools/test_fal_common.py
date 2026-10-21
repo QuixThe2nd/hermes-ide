@@ -34,35 +34,35 @@ class TestImportFalClient:
     def test_returns_fal_client_module(self, monkeypatch, fake_fal_client):
         """import_fal_client returns the fal_client module reference."""
         ensure = MagicMock()
-        monkeypatch.setattr("tools.lazy_deps.ensure", ensure)
+        monkeypatch.setattr("pm.ensure_import", ensure)
 
         result = import_fal_client()
         assert result is fake_fal_client
-        ensure.assert_called_once_with("image.fal", prompt=False)
+        ensure.assert_called_once_with("fal")
 
     def test_lazy_ensure_import_error_is_swallowed(self, monkeypatch, fake_fal_client):
-        """If lazy_deps.ensure raises ImportError, it's swallowed (fal_client still imported)."""
+        """If pm.ensure_import raises ImportError, it's swallowed (fal_client still imported)."""
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure",
-            MagicMock(side_effect=ImportError("no lazy_deps")),
+            "pm.ensure_import",
+            MagicMock(side_effect=ImportError("no pm")),
         )
 
         assert import_fal_client() is fake_fal_client
 
     def test_lazy_ensure_other_exception_raises_import_error(self):
-        """If lazy_deps.ensure raises a non-ImportError, it's re-raised as ImportError."""
-        with patch("tools.lazy_deps.ensure", side_effect=RuntimeError("install hint")):
+        """If pm.ensure_import raises a non-ImportError, it's re-raised as ImportError."""
+        with patch("pm.ensure_import", side_effect=RuntimeError("install hint")):
             with pytest.raises(ImportError, match="install hint"):
                 import_fal_client()
 
     def test_lazy_ensure_module_missing_is_swallowed(self, fake_fal_client):
-        """If tools.lazy_deps itself can't be imported, ImportError is swallowed."""
+        """If pm itself can't be imported, ImportError is swallowed."""
         import builtins
 
         original_import = builtins.__import__
 
         def failing_import(name, *args, **kwargs):
-            if name == "tools.lazy_deps":
+            if name == "pm":
                 raise ImportError("no module")
             return original_import(name, *args, **kwargs)
 
@@ -316,6 +316,45 @@ class TestManagedFalSyncClientSubmit:
         client._raise_for_status.assert_called_once_with(response)
         client._request_handle_class.assert_called_once()
         assert result is client._request_handle_class.return_value
+
+    def test_submit_with_idempotency_key_is_not_retried(self):
+        """The Nous gateway cannot replay an accepted submit reliably.
+
+        A retry can replace the original billing/entitlement response with a
+        misleading ``idempotency key ... without a reusable request handle``
+        conflict, so keyed submits must make exactly one POST attempt.
+        """
+        http_client = MagicMock()
+        response = MagicMock()
+        response.json.return_value = {
+            "request_id": "req-1",
+            "response_url": "https://q.example.com/resp",
+            "status_url": "https://q.example.com/status",
+            "cancel_url": "https://q.example.com/cancel",
+        }
+        http_client.request.return_value = response
+        client, _, _ = self._make_client(http_client=http_client)
+        client._maybe_retry_request = MagicMock()
+        client._raise_for_status = MagicMock()
+        client._request_handle_class = MagicMock()
+
+        client.submit(
+            "my-app", {"prompt": "hello"},
+            headers={"X-Idempotency-Key": "submission-1"},
+        )
+
+        http_client.request.assert_called_once_with(
+            "POST", "https://queue.example.com/my-app",
+            json={"prompt": "hello"}, timeout=120.0,
+            headers={"X-Idempotency-Key": "submission-1"},
+        )
+        client._maybe_retry_request.assert_not_called()
+
+        # Negative arm: an unkeyed submit keeps the SDK's retry ladder (transport errors, 429, ingress 5xx).
+        client._maybe_retry_request = MagicMock(return_value=response)
+        client.submit("my-app", {"prompt": "hello"})
+        client._maybe_retry_request.assert_called_once()
+        assert http_client.request.call_count == 1
 
     def test_submit_with_path(self):
         client, _, _ = self._make_client()

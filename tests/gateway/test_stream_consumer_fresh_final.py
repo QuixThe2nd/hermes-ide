@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, _Tick
 
 
 def _make_adapter(*, supports_delete: bool = True) -> MagicMock:
@@ -216,6 +216,131 @@ class TestCancelledBestEffortDeliveryFinalizes:
         # Flags were set by the cancel handler after successful delivery.
         assert consumer.final_response_sent is True
         assert consumer.final_content_delivered is True
+
+
+class TestFreshFinalCleanupFailureStillDelivers:
+    """Regression for the duplicate final send when preview cleanup dies mid-finalize.
+
+    A delete stuck in a rate-limited bucket surfaced as asyncio.CancelledError — a
+    BaseException — which escaped ``_delete_previews``' ``except Exception`` and
+    aborted ``_try_fresh_final`` AFTER ``adapter.send`` succeeded but BEFORE the
+    delivery flags were recorded.  The gateway's suppression gate then saw
+    ``final_content_delivered=False`` and re-sent the full display-formatted
+    final: the same class as the WeCom ack-timeout duplicate RCA.  Delivery must
+    be recorded between the send and the cleanup, and the best-effort cleanup
+    loop must survive a cancelled delete.
+    """
+
+    FINAL_TEXT = "The completed answer, delivered by the fresh final send."
+
+    def _consumer(self, adapter):
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(),
+        )
+        # Simulate the streamed preview the fresh final replaces: a live message
+        # id on screen with the full answer accumulated.
+        consumer._message_id = "old_preview"
+        consumer._preview_message_ids = {"old_preview"}
+        consumer._accumulated = self.FINAL_TEXT
+        return consumer
+
+    @pytest.mark.asyncio
+    async def test_cancelled_preview_delete_still_records_delivery(self):
+        """Send succeeds, then the preview delete dies CancelledError."""
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="fresh_final",
+        ))
+        adapter.delete_message = AsyncMock(side_effect=asyncio.CancelledError())
+        consumer = self._consumer(adapter)
+
+        # No exception escapes; a landed fresh send must not read as failure.
+        assert await consumer._try_fresh_final(self.FINAL_TEXT, is_turn_final=True) is True
+
+        adapter.delete_message.assert_awaited_once_with("chat", "old_preview")
+        # Delivery recorded: id adopted, every flag set, payload reconcilable.
+        assert consumer._message_id == "fresh_final"
+        assert consumer.already_sent is True
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
+        assert consumer.delivered_final_matches(self.FINAL_TEXT) is True
+
+        # Suppression-gate inputs: a later finalize pass must not re-send — the
+        # already-delivered branch of _finalize_edit_path only re-records payload.
+        sends, edits = adapter.send.call_count, adapter.edit_message.call_count
+        await consumer._finalize_edit_path(_Tick())
+        assert adapter.send.call_count == sends
+        assert adapter.edit_message.call_count == edits
+        assert consumer.final_content_delivered is True
+
+    @pytest.mark.asyncio
+    async def test_not_found_preview_delete_treated_as_cleaned(self):
+        """Discord's 10008 Unknown Message from cleanup: already gone = cleaned."""
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="fresh_final",
+        ))
+        adapter.delete_message = AsyncMock(side_effect=RuntimeError(
+            "404 Not Found (error code: 10008): Unknown Message"))
+        consumer = self._consumer(adapter)
+
+        assert await consumer._try_fresh_final(self.FINAL_TEXT, is_turn_final=True) is True
+        adapter.delete_message.assert_awaited_once_with("chat", "old_preview")
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
+        assert consumer.delivered_final_matches(self.FINAL_TEXT) is True
+
+
+class TestDiscordDeleteMessageAlreadyDeleted:
+    """Discord adapter contract for the fresh-final cleanup path: a delete that
+    fails because the message is already gone (discord.errors.NotFound / 10008)
+    satisfies best-effort cleanup and must report deleted, not failure."""
+
+    @staticmethod
+    def _adapter_with_delete_error(error):
+        mod = pytest.importorskip("plugins.platforms.discord.adapter")
+        from gateway.config import PlatformConfig
+        adapter = mod.DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        partial = SimpleNamespace(delete=AsyncMock(side_effect=error))
+        channel = SimpleNamespace(get_partial_message=MagicMock(return_value=partial))
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _chat_id: channel,
+            fetch_channel=AsyncMock(),
+        )
+        return adapter, partial
+
+    @pytest.mark.asyncio
+    async def test_unknown_message_error_code_counts_as_deleted(self):
+        adapter, partial = self._adapter_with_delete_error(RuntimeError(
+            "404 Not Found (error code: 10008): Unknown Message"))
+        assert await adapter.delete_message("555", "123") is True
+        partial.delete.assert_awaited_once()
+
+    def test_classifier_type_and_string_branches(self, monkeypatch):
+        """Both classification branches: a genuine discord.errors.NotFound type
+        (isinstance — its str may not carry the error code) and the 10008
+        error-code text (string fallback for aiohttp-shaped exceptions)."""
+        mod = pytest.importorskip("plugins.platforms.discord.adapter")
+
+        class _FakeNotFound(Exception):
+            pass
+
+        monkeypatch.setattr(mod.discord, "errors", SimpleNamespace(NotFound=_FakeNotFound))
+        classify = mod.DiscordAdapter._is_already_deleted_error
+        # isinstance branch — real type, no error code in the text
+        assert classify(_FakeNotFound("404 Not Found")) is True
+        # string branch — the right type is unavailable, text carries 10008
+        assert classify(RuntimeError(
+            "404 Not Found (error code: 10008): Unknown Message")) is True
+        # everything else stays a failure
+        assert classify(RuntimeError("403 Forbidden")) is False
+
+    @pytest.mark.asyncio
+    async def test_other_delete_failures_still_report_failure(self):
+        adapter, _partial = self._adapter_with_delete_error(RuntimeError("403 Forbidden"))
+        assert await adapter.delete_message("555", "123") is False
 
 
 class TestGotDoneOverflowSplitNotRefinalized:

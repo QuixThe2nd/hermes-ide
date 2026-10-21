@@ -44,7 +44,3 @@ optional_env:
     description: "Comma-separated user emails allowed to interact with the bot."
     prompt: "Allowed user emails (comma-separated)"
     password: false
-  - name: GOOGLE_CHAT_HOME_CHANNEL
-    description: "Default space for cron / notification delivery (e.g. spaces/AAAA...)."
-    prompt: "Home space ID (or empty)"
-    password: false

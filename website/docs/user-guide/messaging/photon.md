@@ -208,6 +208,11 @@ Common issues:
   media.
 - **Native polls are supported.** Hermes sends poll content through
   spectrum-ts' `poll()` builder via the sidecar's `/send-poll` endpoint.
+- **Read receipts are supported.** The sidecar marks an inbound iMessage
+  read after forwarding it to Hermes, so the sender sees `Read` without
+  waiting for a model/tool turn. Inbound receipts for Hermes-sent messages
+  are consumed as presence telemetry and never create an agent turn. Set
+  `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
 - **Message effects are supported.** Hermes sends text with native iMessage
   bubble/screen effects through spectrum-ts' iMessage `effect()` builder
   via the sidecar's `/send-effect` endpoint.
@@ -237,8 +242,6 @@ Common issues:
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
 | `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
-| `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
-| `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |
 | `PHOTON_ALLOW_ALL_USERS`  | `false`            | Dev only — accept any sender               |
 | `PHOTON_REQUIRE_MENTION`  | `false`            | Require a wake word before responding in groups |

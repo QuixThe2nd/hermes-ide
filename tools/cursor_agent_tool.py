@@ -84,20 +84,25 @@ from tools.cursor_run_receipts import (
 )
 from tools.environments.local import build_subprocess_env
 from tools.registry import registry
-from tools.tool_status import emit_tool_status
+from tools.tool_status import CURSOR_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
 from agent.tool_dispatch_helpers import make_tool_result_message
 
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no wall-clock limit; stall watchdog still applies
+DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no wall-clock limit
 MIN_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 1800
-STALL_WATCHDOG_SECONDS = 600
+# 0 = stall watchdog off — long quiet stretches are the normal case for
+# coding delegations; only an explicit positive timeout_seconds bounds a run.
+STALL_WATCHDOG_SECONDS = 0
 
 CURSOR_API_BASE = "https://api.cursor.com"
 CURSOR_CLOUD_ENV_PATH = Path.home() / ".hermes" / "secrets" / "cursor-cloud.env"
+# Stable My Machines worker name: must match the running systemd worker so
+# machine-routed runs land on this machine instead of Cursor-hosted VMs.
+CURSOR_MACHINE_NAME = "hermes-server"
 SUPPORTED_ORIGIN_HOSTS = frozenset({"github.com"})
 NO_PUSH_PROMPT_PREFIX = (
     "Do not git push, create a pull request, or request reviewers. "
@@ -851,16 +856,16 @@ def build_create_agent_payload(
 ) -> Dict[str, Any]:
     """POST /v1/agents body. ``force`` must not enable pushes or PRs.
 
-    Runs are Cursor-hosted (no ``env`` field): self-hosted ``machine``
-    routing silently queues forever on accounts without self-hosted
-    entitlements, while Cursor-hosted runs execute and expose a live
-    ``cursor.com/agents/<id>`` progress page.
+    Runs are machine-routed (``env.type == "machine"``) so they execute on
+    this machine's My Machines worker — the name must match the running
+    worker for the run to be picked up instead of queueing.
     """
     del force  # reserved; never maps to autoCreatePR / workOnCurrentBranch / pushes
     payload: Dict[str, Any] = {
         "prompt": {"text": f"{NO_PUSH_PROMPT_PREFIX}{DEFAULT_ORCHESTRATION_PROMPT}{task}"},
         "name": machine_name,
         "agentId": agent_id,
+        "env": {"type": "machine", "name": machine_name},
         "repos": [{"url": repo_url}],
         "autoCreatePR": False,
         "skipReviewerRequest": True,
@@ -1251,7 +1256,7 @@ def _clamp_timeout_seconds(timeout_seconds: int) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_TIMEOUT_SECONDS
     if value <= 0:
-        return 0  # unbounded; stall watchdog remains the dead-man switch
+        return 0  # unbounded: no wall-clock limit and no stall kill
     return max(MIN_TIMEOUT_SECONDS, min(MAX_TIMEOUT_SECONDS, value))
 
 
@@ -1446,12 +1451,49 @@ def _discover_cloud_ids_from_receipt(
     return resolved_agent_id, resolved_run_id, agent_obj
 
 
+def _background_envelope_in_history(
+    agent_history: List[Dict[str, Any]],
+    tool_call_id: str,
+) -> Optional[str]:
+    """The ``delegation_id`` of a background acceptance envelope answering ``tool_call_id``.
+
+    A background call DOES produce a tool result — the shared acceptance
+    envelope — but that is a handle, not an outcome: the cloud run's terminal
+    result is still owed through the completion rail. Recovery must not
+    mistake the envelope for a delivered result (R7).
+    """
+    for msg in agent_history:
+        if msg.get("role") != "tool":
+            continue
+        if str(msg.get("tool_call_id") or "") != tool_call_id:
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            return None
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("status") == "dispatched" and payload.get("mode") == "background":
+            did = str(payload.get("delegation_id") or "")
+            return did or None
+        return None
+    return None
+
+
 def _tool_result_already_present(
     agent_history: List[Dict[str, Any]],
     tool_call_id: str,
 ) -> bool:
     for msg in agent_history:
         if msg.get("role") == "tool" and str(msg.get("tool_call_id") or "") == tool_call_id:
+            # An acceptance envelope is not a terminal result — the run's
+            # outcome has not been delivered yet, so treat the call as
+            # unanswered and let recovery re-arm it.
+            if _background_envelope_in_history([msg], tool_call_id) is not None:
+                continue
             return True
     return False
 
@@ -1568,7 +1610,9 @@ def _execute_cloud_delegation(
     log_path = Path(str(receipt.get("log_path") or ""))
     log_dir = log_path.parent
     log_dir.mkdir(parents=True, exist_ok=True)
-    machine_name = new_machine_name()
+    # Route to the stable My Machines worker on this machine; a per-run name
+    # would never match the long-lived worker and the run would queue.
+    machine_name = CURSOR_MACHINE_NAME
     client_agent_id = str(
         receipt.get("client_agent_id")
         or deterministic_client_agent_id(hermes_session_id, tool_call_id)
@@ -1707,7 +1751,9 @@ def _execute_cloud_delegation(
 
         progress_url = extract_progress_url(agent_obj)
         if progress_url:
-            _emit_progress_notice(f"Cursor Cloud Agent: {progress_url}")
+            _emit_progress_notice(
+                f"{CURSOR_AGENT_VIEWER_STATUS_PREFIX}{progress_url}"
+            )
 
         cloud_agent_id = str(agent_obj.get("id") or client_agent_id)
         cloud_run_id = str(run_obj.get("id") or agent_obj.get("latestRunId") or "")
@@ -1806,6 +1852,170 @@ def _find_dangling_delegate_cursor_call(
     return None
 
 
+def _rearm_background_cursor(
+    *,
+    hermes_session_id: str,
+    tool_call_id: str,
+    receipt_path: Path,
+    receipt: Dict[str, Any],
+    args: Dict[str, Any],
+) -> Optional[str]:
+    """Re-arm an interrupted BACKGROUND cloud run under its original handle.
+
+    A background call's tool result is the acceptance envelope, never the
+    run's outcome — so restart recovery must not append a terminal tool
+    result (that would both double-answer the call and misreport the mode).
+    Instead the poll is re-registered on the async delegation registry under
+    the SAME ``delegation_id`` the receipt stamped at accept time, and the
+    terminal result flows through the completion rail exactly as it would
+    have without the restart.
+
+    Returns a system note on success, or None when the receipt is not a
+    background receipt / is already terminal / could not be re-armed.
+    """
+    if str(receipt.get("delivery_mode") or "") != "background":
+        return None
+    if is_terminal_receipt(receipt):
+        # The run finished and its completion is durable in
+        # async_delegations; restore_undelivered_completions replays it.
+        return None
+
+    delegation_id = str(receipt.get("delegation_id") or "")
+    if not delegation_id:
+        delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
+        try:
+            update_receipt(receipt_path, delegation_id=delegation_id)
+        except Exception:
+            logger.debug("failed to stamp delegation_id on receipt", exc_info=True)
+
+    try:
+        api_key = load_cursor_api_key()
+    except CursorApiKeyError as exc:
+        return f"[System note: delegate_cursor_agent background recovery refused: {exc}]"
+
+    try:
+        result_json = _dispatch_cursor_background(
+            task=str(args.get("task") or receipt.get("task") or ""),
+            workdir=str(receipt.get("workdir") or args.get("workdir") or ""),
+            model=args.get("model") or receipt.get("model"),
+            timeout_seconds=int(
+                args.get("timeout_seconds", receipt.get("timeout_seconds") or 0)
+            ),
+            force=is_truthy_value(
+                args.get("force", receipt.get("force", True)), default=True
+            ),
+            hermes_session_id=hermes_session_id,
+            tool_call_id=tool_call_id or None,
+            receipt_path=receipt_path,
+            receipt=receipt,
+            api_key=api_key,
+            delegation_id=delegation_id,
+            recovery_mode=True,
+        )
+    except Exception as exc:
+        logger.debug("background cursor re-arm failed", exc_info=True)
+        return (
+            "[System note: Re-arming an interrupted background "
+            f"delegate_cursor_agent run failed: {exc}]"
+        )
+
+    try:
+        payload = json.loads(result_json)
+    except json.JSONDecodeError:
+        payload = {}
+    if payload.get("status") != "dispatched":
+        return (
+            "[System note: Re-arming an interrupted background "
+            f"delegate_cursor_agent run was refused: {payload.get('error')}]"
+        )
+    cloud_agent_id = str(receipt.get("cloud_agent_id") or "")
+    progress_url = f"https://cursor.com/agents/{cloud_agent_id}" if cloud_agent_id else ""
+    if progress_url:
+        _emit_progress_notice(f"{CURSOR_AGENT_VIEWER_STATUS_PREFIX}{progress_url}")
+    return (
+        "[System note: Re-armed an interrupted background "
+        "delegate_cursor_agent cloud run under the same handle "
+        f"({payload.get('delegation_id')}); its result will re-enter the "
+        "conversation when the run finishes.]"
+    )
+
+
+def _rearm_answered_background_call(
+    agent_history: List[Dict[str, Any]],
+    *,
+    hermes_session_id: str,
+    tool_call_id: str,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Re-arm a background call whose only answer was the acceptance envelope.
+
+    The receipt lookup is by binding (session + tool call), which is the same
+    fail-closed identity check the dangling-call path performs; a missing or
+    non-background receipt falls through to the caller's default handling.
+    """
+    try:
+        match = find_receipt_for_binding(hermes_session_id, tool_call_id or None)
+    except ReceiptValidationError:
+        return agent_history, None
+    if match is None:
+        return agent_history, None
+    receipt_path, receipt = match
+    note = _rearm_background_cursor(
+        hermes_session_id=hermes_session_id,
+        tool_call_id=tool_call_id,
+        receipt_path=receipt_path,
+        receipt=receipt,
+        args={},
+    )
+    if note is None:
+        return agent_history, None
+    return agent_history, note
+
+
+def _envelope_answered_call(
+    agent_history: List[Dict[str, Any]],
+) -> Optional[str]:
+    """The tool_call_id of a background call answered ONLY by its envelope.
+
+    Scans backwards for the most recent acceptance-envelope tool result whose
+    call is a ``delegate_cursor_agent`` call. Returns None when the tail is
+    not a background envelope (the ordinary answered-or-absent case).
+    """
+    cursor_calls = set()
+    for msg in agent_history:
+        if msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            function = call.get("function") or {}
+            if str(function.get("name") or "") != "delegate_cursor_agent":
+                continue
+            cid = str(call.get("id") or call.get("call_id") or "")
+            if cid:
+                cursor_calls.add(cid)
+    if not cursor_calls:
+        return None
+    for msg in reversed(agent_history):
+        if msg.get("role") != "tool":
+            continue
+        cid = str(msg.get("tool_call_id") or "")
+        if not cid or cid not in cursor_calls:
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            return None
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        if (
+            isinstance(payload, dict)
+            and payload.get("status") == "dispatched"
+            and payload.get("mode") == "background"
+        ):
+            return cid
+        return None
+    return None
+
+
 def recover_delegate_cursor_agent_history(
     agent_history: List[Dict[str, Any]],
     *,
@@ -1829,6 +2039,18 @@ def recover_delegate_cursor_agent_history(
                     "[System note: delegate_cursor_agent tool result already present; "
                     "duplicate recovery append skipped.]"
                 )
+            return agent_history, None
+        # The tail is a tool result, not an assistant call: when it is a
+        # background acceptance envelope the cloud run's outcome is still
+        # owed, so re-arm it under the original handle instead of treating
+        # the call as settled (R7).
+        envelope_call = _envelope_answered_call(agent_history)
+        if envelope_call is not None:
+            return _rearm_answered_background_call(
+                agent_history,
+                hermes_session_id=hermes_session_id,
+                tool_call_id=envelope_call,
+            )
         return agent_history, None
     _assistant_msg, call = found
     tool_call_id = str(call.get("id") or call.get("call_id") or "")
@@ -1874,6 +2096,19 @@ def recover_delegate_cursor_agent_history(
             "[System note: delegate_cursor_agent receipt binding mismatch; "
             "automatic recovery refused.]"
         )
+
+    # A background receipt never appends a tool result on recovery — the
+    # envelope already answered the call and the outcome is owed on the
+    # completion rail, under the original handle.
+    bg_note = _rearm_background_cursor(
+        hermes_session_id=hermes_session_id,
+        tool_call_id=tool_call_id,
+        receipt_path=receipt_path,
+        receipt=receipt,
+        args=args,
+    )
+    if bg_note is not None:
+        return agent_history, bg_note
 
     recovery_attempts = int(receipt.get("recovery_attempts") or 0)
     if recovery_attempts >= MAX_RECOVERY_ATTEMPTS:
@@ -2061,6 +2296,230 @@ def _make_cloud_tool_result(
     return _make_result(**fields)
 
 
+def _cloud_event_from_result_json(result_json: str, *, model_name: Optional[str]) -> Dict[str, Any]:
+    """Translate a cursor tool-result payload into the delegation event dict.
+
+    Same vocabulary the subagent/claude runners produce, so the shared
+    completion block renders a cloud run like any other delegation.
+    """
+    try:
+        payload = json.loads(result_json)
+    except json.JSONDecodeError:
+        payload = {}
+    payload = payload if isinstance(payload, dict) else {}
+    success = payload.get("success") is True
+    local_error = payload.get("error")
+    status = "completed" if success else "error"
+    if local_error in ("interrupted", "timeout"):
+        status = local_error
+    elif payload.get("cloud_status") == "CANCELLED":
+        status = "cancelled"
+    return {
+        "status": status,
+        "summary": payload.get("final_report") or "",
+        "error": local_error,
+        "duration_seconds": payload.get("duration_seconds"),
+        "model": model_name or None,
+        "log_path": payload.get("log_path"),
+        "child_session_id": payload.get("agent_id"),
+        "warnings": [str(payload.get("run_id") or "")] if payload.get("run_id") else [],
+        "exit_reason": None if status == "completed" else status,
+    }
+
+
+def _dispatch_cursor_background(
+    *,
+    task: str,
+    workdir: str,
+    model: Optional[str],
+    timeout_seconds: int,
+    force: bool,
+    hermes_session_id: str,
+    tool_call_id: Optional[str],
+    receipt_path: Path,
+    receipt: Dict[str, Any],
+    api_key: str,
+    delegation_id: str,
+    recovery_mode: bool = False,
+    preset_result_json: Optional[str] = None,
+) -> str:
+    """Return the shared background acceptance envelope, or a clear rejection.
+
+    The cloud create/poll work runs on the async registry's daemon worker, so
+    a capacity rejection leaves no cloud run created and nothing to cancel.
+    The receipt's ``delegation_id`` is the durable spine: a restart re-arms
+    the poll under the SAME id (see ``recover_delegate_cursor_agent_history``).
+    """
+    from tools.async_delegation import (
+        RESULT_KIND_CLOUD_AGENT,
+        dispatch_background_delegation,
+    )
+
+    cloud_ids: Dict[str, str] = {}
+
+    def _runner() -> Dict[str, Any]:
+        # Runs on the async registry's daemon thread. `_signal_runner_interrupt`
+        # sets this thread's interrupt bit before `interrupt_fn` fires, so
+        # `poll_cloud_run`'s cooperative check cancels the cloud run itself.
+        if preset_result_json is not None:
+            # An already-verified terminal outcome (idempotent repeat of a
+            # background call): deliver it, do no cloud work.
+            return _cloud_event_from_result_json(
+                preset_result_json, model_name=model
+            )
+        try:
+            fresh = read_receipt(receipt_path) or receipt
+            cloud_ids["agent"] = str(fresh.get("cloud_agent_id") or "")
+            cloud_ids["run"] = str(fresh.get("cloud_run_id") or "")
+        except Exception:
+            pass
+        result_json = _execute_cloud_delegation(
+            task=task,
+            workdir=workdir,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            force=force,
+            hermes_session_id=hermes_session_id,
+            tool_call_id=tool_call_id,
+            receipt_path=receipt_path,
+            receipt=receipt,
+            api_key=api_key,
+            recovery_mode=recovery_mode,
+        )
+        try:
+            fresh = read_receipt(receipt_path) or {}
+            cloud_ids["agent"] = str(fresh.get("cloud_agent_id") or "")
+            cloud_ids["run"] = str(fresh.get("cloud_run_id") or "")
+        except Exception:
+            pass
+        return _cloud_event_from_result_json(result_json, model_name=model)
+
+    def _interrupt() -> None:
+        agent_id = cloud_ids.get("agent") or ""
+        run_id = cloud_ids.get("run") or ""
+        if not (agent_id and run_id):
+            # The cloud ids are persisted to the receipt the moment the run
+            # is created, so an interrupt arriving during the create window
+            # still finds them.
+            try:
+                fresh = read_receipt(receipt_path) or {}
+                agent_id = str(fresh.get("cloud_agent_id") or "")
+                run_id = str(fresh.get("cloud_run_id") or "")
+            except Exception:
+                pass
+        if agent_id and run_id:
+            cancel_cloud_run(agent_id, run_id, api_key)
+
+    session_key = ""
+    try:
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key(default="")
+    except Exception:
+        session_key = ""
+
+    try:
+        from tools.delegate_tool import _get_max_async_children
+    except Exception:  # pragma: no cover — delegate_tool always importable
+        _get_max_async_children = None
+    max_children = _get_max_async_children() if _get_max_async_children else 3
+
+    # Pre-mint the handle and stamp it on the receipt BEFORE dispatching: the
+    # runner (on the daemon worker) writes cloud ids to the same receipt, and
+    # stamping after the dispatch would race those writes. A restart reads
+    # this stamp to re-arm the poll under the SAME delegation_id.
+    if not delegation_id:
+        delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
+    stamp_applied = False
+    try:
+        update_receipt(
+            receipt_path,
+            delivery_mode="background",
+            delegation_id=delegation_id,
+        )
+        stamp_applied = True
+    except Exception:
+        logger.debug(
+            "failed to stamp background delivery mode on receipt %s",
+            receipt_path,
+            exc_info=True,
+        )
+
+    dispatch = dispatch_background_delegation(
+        tool="delegate_cursor_agent",
+        result_kind=RESULT_KIND_CLOUD_AGENT,
+        goal=task,
+        goals=[task],
+        runner=_runner,
+        interrupt_fn=_interrupt,
+        session_key=session_key,
+        parent_session_id=hermes_session_id or None,
+        max_async_children=max_children,
+        model=model,
+        delegation_id=delegation_id,
+        note=(
+            "The Cursor cloud run is underway in the background. You and the "
+            "user can keep working; its result re-enters the conversation as a "
+            "new message when the run finishes. Do not wait or poll — just "
+            "continue."
+        ),
+        control_hint=(
+            "The run's live progress page URL is delivered with the result; "
+            "the cloud run is cancelled by the conversation's normal stop "
+            "control."
+        ),
+    )
+
+    if dispatch.get("status") == "duplicate":
+        # Already armed under this handle (a concurrent re-arm, or recovery
+        # racing a live dispatch). The work IS running — return the same
+        # envelope rather than an error.
+        dispatch = dict(dispatch)
+        dispatch["status"] = "dispatched"
+        dispatch["note"] = (
+            "A background run is already armed under this handle; its result "
+            "re-enters the conversation when it finishes."
+        )
+
+    if dispatch.get("status") != "dispatched":
+        logger.info(
+            "delegate_cursor_agent: background dispatch rejected (%s); "
+            "no cloud run was created.",
+            dispatch.get("error", "rejected"),
+        )
+        if stamp_applied:
+            # Revert the stamp: nothing is running under this handle, and a
+            # leftover background marker would make restart recovery re-arm
+            # work the caller was told never started.
+            try:
+                update_receipt(
+                    receipt_path, delivery_mode=None, delegation_id=None
+                )
+            except Exception:
+                logger.debug("failed to revert background receipt stamp", exc_info=True)
+        return _make_result(
+            success=False,
+            error=(
+                "background=true was rejected and NO WORK WAS STARTED: "
+                + str(
+                    dispatch.get(
+                        "error", "the background delegation pool is at capacity"
+                    )
+                )
+                + " Omit `background` (or pass background=false) to run the "
+                "task in the foreground this turn instead."
+            ),
+        )
+
+    if dispatch.get("delegation_id") and dispatch["delegation_id"] != delegation_id:
+        delegation_id = str(dispatch["delegation_id"])
+        try:
+            update_receipt(receipt_path, delegation_id=delegation_id)
+        except Exception:
+            logger.debug("failed to restamp delegation_id", exc_info=True)
+    return json.dumps(dispatch, ensure_ascii=False)
+
+
 def delegate_cursor_agent(
     task: str,
     workdir: str,
@@ -2070,6 +2529,7 @@ def delegate_cursor_agent(
     session_id: str | None = None,
     tool_call_id: str | None = None,
     task_id: str | None = None,
+    background: bool = False,
 ) -> str:
     del task_id  # metadata only; Hermes session identity comes from session_id
 
@@ -2116,6 +2576,21 @@ def delegate_cursor_agent(
         api_key = load_cursor_api_key()
     except CursorApiKeyError as exc:
         return _make_result(success=False, error=str(exc))
+
+    # Uniform lifecycle gate — BEFORE the receipt, the binding lock, or any
+    # cloud create. An unsupported channel is a hard error, never a silent
+    # foreground run the model did not ask for.
+    if background:
+        from tools.async_delegation import background_delivery_supported
+
+        bg_ok, bg_reason = background_delivery_supported()
+        if not bg_ok:
+            logger.info(
+                "delegate_cursor_agent: background=true rejected before any "
+                "work: %s",
+                bg_reason,
+            )
+            return _make_result(success=False, error=bg_reason)
 
     try:
         resolve_workdir_origin(str(workdir_path))
@@ -2204,6 +2679,34 @@ def delegate_cursor_agent(
                     receipt_path,
                     api_key=api_key,
                 )
+                if background and not cloud_still_running:
+                    # Idempotent repeat of a background call whose run is
+                    # already terminal: hand the verified outcome (or the
+                    # fail-closed verification error) to the completion rail
+                    # under the ORIGINAL handle and return the envelope. A
+                    # background call never returns a terminal result inline
+                    # — not even a cached one.
+                    return _dispatch_cursor_background(
+                        task=task_text,
+                        workdir=str(workdir_path),
+                        model=model_name,
+                        timeout_seconds=clamped_timeout,
+                        force=force_enabled,
+                        hermes_session_id=hermes_session_id,
+                        tool_call_id=tool_call_id,
+                        receipt_path=receipt_path,
+                        receipt=fresh,
+                        api_key=api_key,
+                        delegation_id=str(fresh.get("delegation_id") or ""),
+                        preset_result_json=result_json or _make_result(
+                            success=False,
+                            error=(
+                                "delegate_cursor_agent terminal receipt could not "
+                                "be verified against Cursor Cloud; refusing to "
+                                "create replacement work."
+                            ),
+                        ),
+                    )
                 if result_json:
                     return result_json
                 if not cloud_still_running:
@@ -2216,6 +2719,21 @@ def delegate_cursor_agent(
                         ),
                     )
                 receipt = fresh
+
+            if background:
+                return _dispatch_cursor_background(
+                    task=task_text,
+                    workdir=str(workdir_path),
+                    model=model_name,
+                    timeout_seconds=clamped_timeout,
+                    force=force_enabled,
+                    hermes_session_id=hermes_session_id,
+                    tool_call_id=tool_call_id,
+                    receipt_path=receipt_path,
+                    receipt=receipt,
+                    api_key=api_key,
+                    delegation_id=str(receipt.get("delegation_id") or ""),
+                )
 
             return _execute_cloud_delegation(
                 task=task_text,
@@ -2274,9 +2792,8 @@ CURSOR_AGENT_SCHEMA = {
                 "type": "integer",
                 "description": (
                     f"Maximum wall-clock seconds before the run is terminated. "
-                    f"0 (default) means no wall-clock limit; the stall watchdog "
-                    f"still terminates runs with no output for "
-                    f"{STALL_WATCHDOG_SECONDS}s. Positive values clamp to "
+                    f"0 (default) means no limit at all — a quiet run is never "
+                    f"killed for silence. Positive values clamp to "
                     f"{MIN_TIMEOUT_SECONDS}–{MAX_TIMEOUT_SECONDS}."
                 ),
                 "default": DEFAULT_TIMEOUT_SECONDS,
@@ -2289,6 +2806,29 @@ CURSOR_AGENT_SCHEMA = {
                 ),
                 "default": True,
             },
+            "background": {
+                "type": "boolean",
+                # No static "default": the omitted-arg behavior is
+                # capability-conditional (see resolve_background_arg), so a
+                # plain schema default would lie on half the sessions.
+                "description": (
+                    "Delivery mode for this run. Omitted: runs in the "
+                    "background and the result is delivered later — the call "
+                    "returns a handle immediately and the terminal result "
+                    "re-enters the conversation as a new message when the "
+                    "run finishes; on sessions that cannot receive a late "
+                    "completion (one-shot runs, cron jobs, workers, "
+                    "stateless HTTP endpoints) an omitted argument instead "
+                    "blocks to completion and returns the final report "
+                    "inline this turn. Configuring "
+                    "delegation.default_background=false restores blocking "
+                    "for omitted arguments on every session. false: always "
+                    "block inline this "
+                    "turn. true: detach; rejected up front — with no work "
+                    "started — on sessions that cannot receive a late "
+                    "completion."
+                ),
+            },
         },
         "required": ["task", "workdir"],
     },
@@ -2296,6 +2836,8 @@ CURSOR_AGENT_SCHEMA = {
 
 
 def _handle_delegate_cursor_agent(args, **kw):
+    from tools.async_delegation import resolve_background_arg
+
     return delegate_cursor_agent(
         task=args.get("task", ""),
         workdir=args.get("workdir", ""),
@@ -2305,6 +2847,7 @@ def _handle_delegate_cursor_agent(args, **kw):
         session_id=kw.get("session_id"),
         tool_call_id=kw.get("tool_call_id"),
         task_id=kw.get("task_id"),
+        background=resolve_background_arg(args),
     )
 
 

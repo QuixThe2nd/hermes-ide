@@ -15,13 +15,13 @@ Parallel 4-agent cleanup of recent code changes.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development/simplify-code` |
+| Path | `skills/software-development\simplify-code` |
 | Version | `1.1.0` |
 | Author | Hermes Agent (inspired by Claude Code /simplify) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `code-review`, `cleanup`, `refactor`, `delegation`, `subagent`, `parallel`, `simplify` |
-| Related skills | [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan) |
+| Related skills | [`requesting-code-review`](./software-development-requesting-code-review.md), [`test-driven-development`](./software-development-test-driven-development.md) |
 
 ## Reference: full SKILL.md
 
@@ -99,12 +99,12 @@ before proceeding.
 
 ### Phase 2 — Launch four reviewers in parallel
 
-Use `delegate_task` **batch mode** — pass all four tasks in one `tasks`
+Use `delegate_agent` **batch mode** — pass all four tasks in one `tasks`
 array so they run concurrently. Four is the right fan-out for this pattern;
 it's within the `delegation.max_concurrent_children` budget on any default
 install.
 
-**No delegation available?** If you can't call `delegate_task` in this
+**No delegation available?** If you can't call `delegate_agent` in this
 context (you're a leaf subagent, delegation is disabled, or the budget is
 exhausted), do NOT skip the review or drop angles. Work through all four
 reviewer angles yourself, sequentially, in this context — same search

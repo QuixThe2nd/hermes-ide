@@ -1,102 +1,77 @@
-"""Fire-time guards: stale Slack creation-thread routing + relay-fronted preflight.
+"""Fire-time guards: origin thread routing + relay-fronted preflight.
 
-Two related defects on relay-fronted Slack deployments:
+Two related behaviors on relay-fronted Slack deployments:
 
-1. Jobs persisted before the synthetic-thread capture fix carry the creation
-   message's own id as ``origin.thread_id``. At fire time ``deliver=origin``
-   replayed it unconditionally, and the Slack origin-affinity re-attach put it
-   back even on explicit ``slack:<chat_id>`` targets. Guard: when the resolved
-   Slack chat IS the configured home chat, the origin thread is a stale
-   per-message artifact — deliver top-level (home thread config still wins).
+1. ``deliver=origin`` replays the captured origin thread verbatim (Slack
+   thread-per-message keys, Telegram forum topics alike), and an explicit
+   ``slack:<chat_id>`` target addressed to the origin chat re-attaches the
+   origin's thread so the reply lands in the same thread.
 
-2. ``_preflight_check_delivery`` validated the ``slack:`` prefix against
-   natively-configured platforms only; in relay-only topology that set is
-   ``{relay}`` and the job was refused with "no gateway credentials configured"
-   although fire-time routing (resolve_delivery_transport + fronts_platform)
-   would have delivered it. Preflight must consult the relay's fronted set.
+2. ``_preflight_check_delivery`` must validate the ``slack:`` prefix against
+   natively-configured platforms AND the relay's fronted set; in relay-only
+   topology the native set is ``{relay}`` and the job was refused with "no
+   gateway credentials configured" although fire-time routing
+   (resolve_delivery_transport + fronts_platform) would have delivered it.
 """
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cron import scheduler as sched
-from cron.scheduler import (
-    _preflight_check_delivery,
-    _resolve_single_delivery_target,
-    cron_delivery_targets,
-)
-
-
-def _slack_home(monkeypatch, chat_id="D0BJTDCSR7C", thread_id=None):
-    monkeypatch.setattr(sched, "_get_home_target_chat_id",
-                        lambda p: chat_id if p == "slack" else None)
-    monkeypatch.setattr(sched, "_get_home_target_thread_id",
-                        lambda p: thread_id if p == "slack" else None)
+from cron.scheduler_preflight import _preflight_check_delivery
+from cron.scheduler_delivery import _resolve_single_delivery_target
 
 
 SYNTH = "1755043010.123456"
 
 
-class TestOriginThreadStaleGuard:
-    def test_origin_thread_dropped_when_chat_is_home(self, monkeypatch):
-        """deliver=origin, slack origin chat == home chat: creation thread is stale."""
-        _slack_home(monkeypatch)
+@pytest.fixture()
+def passthrough_send_targets(monkeypatch):
+    """Resolve every explicit target as written (no directory rewriting)."""
+    monkeypatch.setattr(
+        "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
+    monkeypatch.setattr(
+        "tools.send_message_tool.resolve_send_target",
+        lambda platform, rest, **kw: (rest, None, None))
+
+
+class TestOriginThreadRouting:
+    def test_origin_thread_replayed_verbatim(self):
+        """deliver=origin replays the captured thread id as-is."""
         job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
                           "thread_id": SYNTH}}
         target = _resolve_single_delivery_target(job, "origin")
         assert target == {"platform": "slack", "chat_id": "D0BJTDCSR7C",
-                          "thread_id": None, "_resolved_from": "origin"}
+                          "thread_id": SYNTH, "_resolved_from": "origin"}
 
-    def test_origin_thread_kept_when_chat_not_home(self, monkeypatch):
-        """A non-home Slack origin thread may be a genuine working thread: keep it."""
-        _slack_home(monkeypatch, chat_id="D_OTHER_HOME")
-        job = {"origin": {"platform": "slack", "chat_id": "C0AGENERAL",
-                          "thread_id": "1755040000.000100"}}
+    def test_origin_without_thread_stays_top_level(self):
+        job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C"}}
         target = _resolve_single_delivery_target(job, "origin")
-        assert target["thread_id"] == "1755040000.000100"
+        assert target["thread_id"] is None
 
-    def test_home_thread_config_still_wins(self, monkeypatch):
-        """When the home target itself pins a thread, deliver there, not top-level."""
-        _slack_home(monkeypatch, thread_id="1755000000.000001")
-        job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
-                          "thread_id": SYNTH}}
-        target = _resolve_single_delivery_target(job, "origin")
-        assert target["thread_id"] == "1755000000.000001"
-
-    def test_non_slack_origin_thread_untouched(self, monkeypatch):
+    def test_non_slack_origin_thread_untouched(self):
         """Telegram forum-topic origins replay their thread verbatim."""
-        _slack_home(monkeypatch)
         job = {"origin": {"platform": "telegram", "chat_id": "-1003941067111",
                           "thread_id": "2203"}}
         target = _resolve_single_delivery_target(job, "origin")
         assert target["thread_id"] == "2203"
 
-    def test_explicit_target_no_reattach_when_chat_is_home(self, monkeypatch):
-        """slack:<home_chat> must not inherit the stale creation thread."""
-        _slack_home(monkeypatch)
-        monkeypatch.setattr(
-            "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
-        monkeypatch.setattr(
-            "tools.send_message_tool.resolve_send_target",
-            lambda platform, rest, **kw: (rest, None, None))
+    def test_explicit_target_reattaches_origin_thread_on_same_chat(
+        self, passthrough_send_targets
+    ):
+        """An explicit slack:<origin chat> inherits the origin's thread so the
+        delivery lands in the same thread a reply would."""
         job = {"origin": {"platform": "slack", "chat_id": "D0BJTDCSR7C",
                           "thread_id": SYNTH}}
         target = _resolve_single_delivery_target(job, "slack:D0BJTDCSR7C")
-        assert target["thread_id"] is None
+        assert target["thread_id"] == SYNTH
 
-    def test_explicit_target_reattach_kept_for_non_home_chat(self, monkeypatch):
-        """Origin-affinity re-attach is preserved for genuine non-home threads."""
-        _slack_home(monkeypatch, chat_id="D_OTHER_HOME")
-        monkeypatch.setattr(
-            "tools.send_message_tool.prepare_send_message_platforms", lambda: None)
-        monkeypatch.setattr(
-            "tools.send_message_tool.resolve_send_target",
-            lambda platform, rest, **kw: (rest, None, None))
+    def test_explicit_other_chat_gets_no_reattach(self, passthrough_send_targets):
+        """Origin-affinity re-attach only applies to the origin's own chat."""
         job = {"origin": {"platform": "slack", "chat_id": "C0AGENERAL",
                           "thread_id": "1755040000.000100"}}
-        target = _resolve_single_delivery_target(job, "slack:C0AGENERAL")
-        assert target["thread_id"] == "1755040000.000100"
+        target = _resolve_single_delivery_target(job, "slack:D0OTHER")
+        assert target["thread_id"] is None
 
 
 def _gateway_config(connected_values):
@@ -134,15 +109,3 @@ class TestPreflightRelayFronted:
                 {"deliver": "slack:D0BJTDCSR7C"})
             assert reason is not None
             assert "slack" in reason
-
-    def test_delivery_targets_include_relay_fronted(self, monkeypatch):
-        """The UI dropdown source offers relay-fronted platforms."""
-        monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "slack")
-        _slack_home(monkeypatch)
-        monkeypatch.setattr(sched, "_iter_home_target_platforms",
-                            lambda: ["slack", "telegram"])
-        with patch("gateway.config.load_gateway_config",
-                   return_value=_gateway_config({"relay"})):
-            ids = {t["id"] for t in cron_delivery_targets()}
-        assert "slack" in ids
-        assert "telegram" not in ids

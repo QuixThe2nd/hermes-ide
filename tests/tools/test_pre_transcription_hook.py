@@ -19,7 +19,7 @@ Covers:
    kwargs — no signature change.
 
 Mirrors the ``transform_tool_result`` hook test conventions from
-``tests/test_transform_tool_result_hook.py``.
+``tests/plugins/test_transform_tool_result_hook.py``.
 """
 
 from __future__ import annotations
@@ -163,7 +163,7 @@ class TestPromptThreading:
         audio = _make_audio(tmp_path)
         monkeypatch.setenv("MISTRAL_API_KEY", "mk-test")
         # Never attempt a lazy install in tests.
-        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **kw: None)
+        monkeypatch.setattr("pm.ensure_import", lambda *a, **kw: None)
 
         mistral_cls = MagicMock()
         mock_client = mistral_cls.return_value.__enter__.return_value
@@ -383,9 +383,10 @@ class TestSttPromptConfig:
 
         assert result["success"] is True  # truncation never errors
         _, kwargs = backend.call_args
+        from tools import transcription_command
         max_chars = (
-            transcription_tools._WHISPER_PROMPT_TOKEN_CAP
-            * transcription_tools._PROMPT_CHARS_PER_TOKEN
+            transcription_command._WHISPER_PROMPT_TOKEN_CAP
+            * transcription_command._PROMPT_CHARS_PER_TOKEN
         )
         assert len(kwargs["prompt"]) == max_chars
         # Tail survives — whisper conditions on the final context window.

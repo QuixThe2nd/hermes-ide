@@ -41,7 +41,7 @@ def _install_test_section(manager: PluginManager, content) -> None:
     )
 
 
-def test_real_aiagent_builds_section_once_and_keeps_it_out_of_static_prefix(monkeypatch):
+def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(monkeypatch):
     # Pin the workspace snapshot: build_coding_workspace_block shells out to
     # live `git status`/`git log` on every build, and a git call failing or
     # timing out under xdist contention makes the two builds differ in the
@@ -64,16 +64,72 @@ def test_real_aiagent_builds_section_once_and_keeps_it_out_of_static_prefix(monk
     agent = _real_agent()
 
     first = build_system_prompt(agent)
+    # Within a prompt's life the frozen section is reused: a second build
+    # WITHOUT invalidation must not re-run plugin code.
+    again = build_system_prompt(agent)
+    assert again == first
+    assert len(calls) == 1
+
+    # invalidate_system_prompt is the compaction/rebuild boundary (#98426):
+    # plugin sections re-render there like every other prompt block, so a
+    # long-lived session's plugin context converges instead of freezing at
+    # its birth bytes.
     invalidate_system_prompt(agent)
     rebuilt = build_system_prompt(agent)
 
-    assert first == rebuilt
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert "rules render 2" in rebuilt
+    assert "rules render 1" not in rebuilt
     assert calls[0]["session_id"] == agent.session_id
-    assert "## Plugin Context: example.rules" in first
-    assert "rules render 1" in first
-    assert first.index("## Plugin Context: example.rules") < first.index("Conversation started:")
+    assert calls[1]["session_id"] == agent.session_id
+    assert "## Plugin Context: example.rules" in rebuilt
+    assert rebuilt.index("## Plugin Context: example.rules") < rebuilt.index("Conversation started:")
     assert "example.rules" not in agent._cached_system_prompt_static
+
+
+def test_real_plugin_manager_includes_hermes_starts_section_only_when_loaded(
+    tmp_path, monkeypatch
+):
+    """The bundled hermes_starts guidance reaches the real system prompt via the
+    real plugin manager, and disappears from the same path once the plugin is
+    disabled — unloading removes the guidance exactly as it removes the tool."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Pin the workspace block (see the frozen-section test above for why) so
+    # the interesting difference between the two prompts below is the plugin
+    # section, not unrelated volatile bytes.
+    monkeypatch.setattr(
+        "agent.coding_context.build_coding_workspace_block",
+        lambda cwd=None: "Workspace (snapshot at session start):\n- Root: /pinned",
+    )
+
+    heading = "## Plugin Context: hermes_starts.structural_asks"
+
+    def _prompt_after_rediscovery():
+        for key in list(sys.modules):
+            if key.startswith("plugins.hermes_starts"):
+                del sys.modules[key]
+        manager = PluginManager()
+        manager.discover_and_load(force=True)
+        monkeypatch.setattr(plugins, "_plugin_manager", manager)
+        agent = _real_agent(session_id="hermes-starts-section-test")
+        return manager, build_system_prompt(agent)
+
+    manager, loaded_prompt = _prompt_after_rediscovery()
+    assert manager._plugins["hermes_starts"].enabled is True
+    assert heading in loaded_prompt
+    # after_memory placement: the section lands in the volatile tail, ahead of
+    # the conversation stamp — never inside the cacheable static prefix.
+    assert loaded_prompt.index(heading) < loaded_prompt.index("Conversation started:")
+
+    # Disabling the plugin removes the guidance from the very same path.
+    (home / "config.yaml").write_text(
+        json.dumps({"plugins": {"disabled": ["hermes_starts"]}}), encoding="utf-8"
+    )
+    manager_disabled, disabled_prompt = _prompt_after_rediscovery()
+    assert manager_disabled._plugins["hermes_starts"].enabled is False
+    assert heading not in disabled_prompt
 
 
 def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tmp_path):
@@ -129,18 +185,28 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         ]
         _restore_or_build_system_prompt(agent, None, history)
         restored = agent._cached_system_prompt
+        calls_after_restore = int(calls_path.read_text())
         rebuilt_equal = None
+        rebuilt_has_changed = None
+        calls_after_rebuild = None
         if os.environ["TEST_PHASE"] != "first":
+            # invalidate_system_prompt is the compaction boundary (#98426):
+            # plugin sections re-render there, so the rebuilt prompt picks
+            # up the plugin's CURRENT output — it is EXPECTED to differ
+            # from the restored bytes when the plugin's render changed.
             invalidate_system_prompt(agent)
             rebuilt = build_system_prompt(agent)
             rebuilt_equal = rebuilt == restored
-            agent._cached_system_prompt = rebuilt
+            rebuilt_has_changed = "CHANGED" in rebuilt
+            calls_after_rebuild = int(calls_path.read_text())
         print(json.dumps({
             "prompt_b64": base64.b64encode(
-                agent._cached_system_prompt.encode("utf-8")
+                restored.encode("utf-8")
             ).decode("ascii"),
-            "calls": int(calls_path.read_text()),
+            "calls": calls_after_restore,
             "rebuilt_equal": rebuilt_equal,
+            "rebuilt_has_changed": rebuilt_has_changed,
+            "calls_after_rebuild": calls_after_rebuild,
         }))
         db.close()
         """
@@ -179,6 +245,12 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             f"resumed={resumed_prompt[diff_at - 100:diff_at + 100]!r}"
         )
     assert b"original bytes" in first_prompt
+    # RESTORE stays frozen: the resumed prompt is byte-identical, plugin
+    # render never ran (calls unchanged). The REBUILD boundary re-renders:
+    # the rebuilt prompt carries the plugin's current output and the
+    # render ran exactly once more.
     assert b"CHANGED" not in resumed_prompt
     assert outputs[0]["calls"] == outputs[1]["calls"] == 1
-    assert outputs[1]["rebuilt_equal"] is True
+    assert outputs[1]["rebuilt_equal"] is False
+    assert outputs[1]["rebuilt_has_changed"] is True
+    assert outputs[1]["calls_after_rebuild"] == 2
