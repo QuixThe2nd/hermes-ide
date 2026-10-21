@@ -9,6 +9,7 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
+import ast
 import logging
 import os
 import re
@@ -769,19 +770,101 @@ def _is_inert_python_observation(payload: str) -> bool:
     )
 
 
-# Short options that never consume a separate argv token (clustered ``-iu`` included).
-_PYTHON_NO_ARG_SHORTS = frozenset("bdEhiqsuvx?")
-# Options whose value may be attached or occupy the next token.
-_PYTHON_VALUE_SHORTS = frozenset("WXI")
+_EXEC_NAMES = frozenset({"exec", "eval", "compile"})
+_OS_EXEC_ATTRS = frozenset({
+    "system", "popen", "spawn", "spawnl", "spawnle", "spawnlp", "spawnlpe",
+    "spawnv", "spawnve", "spawnvp", "spawnvpe", "execl", "execle", "execlp",
+    "execlpe", "execv", "execve", "execvp", "execvpe",
+})
+_SUBPROCESS_CALLS = frozenset({"run", "call", "check_call", "check_output", "Popen"})
 
 
-def _python_argv_reads_program_from_stdin(arguments: list[str]) -> bool:
-    """True when the interpreter would read its program from stdin, not argv.
+def _ast_is_stdin_access(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Attribute):
+        return False
+    if node.attr not in ("read", "readline", "readlines", "buffer"):
+        return False
+    inner = node.value
+    return (
+        isinstance(inner, ast.Attribute)
+        and isinstance(inner.value, ast.Name)
+        and inner.value.id == "sys"
+        and inner.attr == "stdin"
+    )
 
-    A visible ``-c``/``-m`` operand or script path returns False so masking may
-    still apply to that segment. Unrecognized option shapes fail closed (True):
-    piped producer output must not be masked away (comment4335516402).
+
+def _expr_uses_stdin(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if _ast_is_stdin_access(child):
+            return True
+        if isinstance(child, ast.Call) and _ast_is_stdin_access(child.func):
+            return True
+    return False
+
+
+def _call_is_execution_sink(func: ast.AST) -> bool:
+    if isinstance(func, ast.Name) and func.id in _EXEC_NAMES:
+        return True
+    if isinstance(func, ast.Attribute):
+        if isinstance(func.value, ast.Name) and func.value.id == "os" and func.attr in _OS_EXEC_ATTRS:
+            return True
+        if (
+            isinstance(func.value, ast.Name)
+            and func.value.id == "subprocess"
+            and func.attr in _SUBPROCESS_CALLS
+        ):
+            return True
+    return False
+
+
+def _python_c_code_only_reads_stdin_as_data(code: str) -> bool:
+    """True when ``-c`` code provably treats piped stdin as inert text (e.g. ``print``)."""
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return False
+    uses_stdin = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in _EXEC_NAMES:
+                return False
+            if _call_is_execution_sink(node.func):
+                if any(_expr_uses_stdin(arg) for arg in node.args):
+                    return False
+                if any(_expr_uses_stdin(kw.value) for kw in node.keywords):
+                    return False
+            if isinstance(node.func, ast.Name) and node.func.id == "compile":
+                if any(_expr_uses_stdin(arg) for arg in node.args):
+                    return False
+        if _ast_is_stdin_access(node) or (
+            isinstance(node, ast.Call) and _ast_is_stdin_access(node.func)
+        ):
+            uses_stdin = True
+    if not uses_stdin:
+        return False
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import) or isinstance(stmt, ast.ImportFrom):
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            call = stmt.value
+            if isinstance(call.func, ast.Name) and call.func.id == "print":
+                continue
+            return False
+        if isinstance(stmt, ast.Assign) and _expr_uses_stdin(stmt.value):
+            continue
+        return False
+    return True
+
+
+def _python_argv_is_piped_execution_consumer(arguments: list[str]) -> bool:
+    """True when a ``|``-fed Python/PyPy argv may execute piped stdin.
+
+    ``-c``/``-m`` and script paths take program text from argv, but that program
+    can still ``exec``/``eval`` stdin — only provably inert ``-c`` readers stay safe.
+    Unrecognized argv shapes fail closed.
     """
+    no_arg_shorts = frozenset("bdEhiqsuvx?")
+    value_shorts = frozenset("WXI")
     index = 0
     while index < len(arguments):
         token = arguments[index]
@@ -791,15 +874,19 @@ def _python_argv_reads_program_from_stdin(arguments: list[str]) -> bool:
                 if arguments[index] == "-":
                     return True
                 if not arguments[index].startswith("-"):
-                    return False
+                    return True
                 index += 1
             return True
-        if token in ("-c", "-m"):
-            return False
         if token == "-":
             return True
+        if token == "-c":
+            if index + 1 >= len(arguments):
+                return True
+            return not _python_c_code_only_reads_stdin_as_data(arguments[index + 1])
+        if token == "-m":
+            return True
         if not token.startswith("-"):
-            return False
+            return True
         if token.startswith("--"):
             if "=" in token:
                 index += 1
@@ -817,18 +904,28 @@ def _python_argv_reads_program_from_stdin(arguments: list[str]) -> bool:
         if body in ("h", "?", "V"):
             index += 1
             continue
-        if body[0] == "c" or body[0] == "m":
-            return False
+        if body[0] == "c":
+            if len(body) > 1:
+                code = body[1:]
+                index += 1
+            elif index + 1 < len(arguments):
+                code = arguments[index + 1]
+                index += 2
+            else:
+                return True
+            return not _python_c_code_only_reads_stdin_as_data(code)
+        if body[0] == "m":
+            return True
         if body[0] == "O":
             index += 1
             continue
-        if body[0] in _PYTHON_VALUE_SHORTS:
+        if body[0] in value_shorts:
             if len(body) > 1:
                 index += 1
                 continue
             index += 2
             continue
-        if all(char in _PYTHON_NO_ARG_SHORTS for char in body):
+        if all(char in no_arg_shorts for char in body):
             index += 1
             continue
         return True
@@ -836,7 +933,7 @@ def _python_argv_reads_program_from_stdin(arguments: list[str]) -> bool:
 
 
 def _line_pipes_to_stdin_python_consumer(tokens: list[str]) -> bool:
-    """True when a ``|``/``|&`` segment feeds a stdin-program Python/PyPy consumer.
+    """True when a ``|``/``|&`` segment feeds a Python/PyPy consumer that may execute piped stdin.
 
     ``||`` is not a pipe (it is its own control segment) and is ignored here.
     """
@@ -852,7 +949,7 @@ def _line_pipes_to_stdin_python_consumer(tokens: list[str]) -> bool:
             return True
         if not _is_python_interpreter(consumer[index]):
             continue
-        if _python_argv_reads_program_from_stdin(consumer[index + 1 :]):
+        if _python_argv_is_piped_execution_consumer(consumer[index + 1 :]):
             return True
     return False
 
