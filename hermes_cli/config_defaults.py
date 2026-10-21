@@ -953,6 +953,12 @@ DEFAULT_CONFIG = {
         # Engine warning/failure notifications stay visible unless an operator opts in.
         # Does not suppress task results, manual commands, or existing logs.
         "suppress_warning_notifications": False,
+        # Gateway: show the "🧠 gateway context injected" progress card for gateway-only
+        # envelope context (interruption system notes, voice prefixes added around the user
+        # message). Memory/plugin/mixed context cards and ordinary tool progress are
+        # unaffected, and the model still receives the full injected content either way.
+        # Per-platform: display.platforms.<platform>.gateway_context_notifications.
+        "gateway_context_notifications": True,
         # Codex Responses commentary channel: true delivers completed commentary as mid-turn interim
         # updates; false routes it to reasoning (visible only with show_reasoning).
         "show_commentary": True,
@@ -1620,6 +1626,9 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
+        # Quote-replies in eligible channels auto-thread too; False restores the legacy
+        # inline reply. Env: DISCORD_AUTO_THREAD_REPLIES.
+        "auto_thread_replies": True,
         # Free-response channels reply inline by default; true also gives each top-level
         # message in them its own thread (still mention-free). Env: DISCORD_FREE_RESPONSE_AUTO_THREAD.
         "free_response_auto_thread": False,
@@ -2607,6 +2616,14 @@ DEFAULT_CONFIG = {
         # Path (~ ok) to the reviewed manifest for permission_mode bounded; passed as
         # --capability-manifest. See cua.ai/docs/reference/cua-driver/permission-modes
         "capability_manifest": "",
+        # Pre-authorize existing-profile browser attachment in standard mode
+        # (cua-driver's trusted-launcher `--grant existing-profile`). When
+        # true, the agent can attach to your already-running, signed-in
+        # Chrome/Edge window — exposing that profile's live pages, cookies,
+        # and storage to the browser protocol — without a per-use prompt.
+        # Leave false to keep existing-profile attachment failing closed;
+        # isolated driver-owned profiles work either way.
+        "grant_existing_profile": False,
         # macOS only: allow an UNSIGNED CuaDriver.app for the private-session daemon. False fails
         # closed unless signed with the official com.trycua.driver identity. Only for local driver
         # development from source.

@@ -4,18 +4,28 @@ The response gate decides whether the bot *speaks*; this sibling decides whether
 *reacts*. For every eligible message in the opted-in channels the judge is asked one
 ``choice`` question over the whitelisted emojis plus the two fixed abstention options
 ``None`` and ``Other``, and the bot adds exactly one reaction — the highest-probability
-whitelisted emoji — when ``P(None) + P(Other) < 0.5`` (strict; at 0.5 or above, nothing).
+whitelisted emoji — when the configured ``decision_formula`` says so. The default
+formula is the rule this gate always shipped with: react when ``P(None) + P(Other)``
+is strictly below ``0.5`` **or** the top emoji's probability is strictly more than
+five times the runner-up emoji's (abstention mass ignored for that ratio; at ``0.5``
+or above with no runaway winner, nothing). An unchanged config keeps that rule
+exactly; editing the formula (thresholds, ``or`` → ``and``, …) applies live through
+the reload watcher like every other ``reaction_gate`` key.
 
 Design constraints (see the reaction-gate section of the Discord config reference):
 
 * **Independent.** The speaking gate keeps its own scope, verdicts and evidence. This
-  gate evaluates every eligible message — mentions, replies and other bots' messages
-  included — whether or not the speaking gate suppresses it, and a reaction success or
-  failure never creates a session, forces a text reply, or blocks one.
+  gate evaluates every eligible human message — mentions and replies included —
+  whether or not the speaking gate suppresses it. Bot-authored messages are never
+  candidates: they are excluded before any judge consult on live and recovered
+  delivery alike and never enter the evidence buffer, while this assistant's own
+  delivered replies remain conversation evidence. A reaction success or failure
+  never creates a session, forces a text reply, or blocks one.
 * **Fail closed.** A missing credential, timeout, cancellation, transport error, HTTP
   error, unparsable body, missing option, non-finite/boolean/out-of-range probability,
-  incoherent distribution or unknown option all mean "no reaction". No retries and no
-  fallback provider, so a broken judge can never spam reactions.
+  incoherent distribution, unknown option or an unexpected decision-formula failure
+  all mean "no reaction". No retries and no fallback provider, so a broken judge can
+  never spam reactions.
 * **Bounded.** One request per consulted message (the adapter consults each message id
   at most once), a hard client timeout, a bounded buffered window per conversation, and
   a bounded whitelist (validated at config load).
@@ -30,11 +40,17 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
+from gateway.reaction_formula import (
+    DEFAULT_DECISION_FORMULA,
+    PreparedFormula,
+    prepare_decision_formula,
+)
 from plugins.platforms.discord.response_gate import (
     ChannelContextBuffer,
     GateRuntime,
@@ -47,12 +63,10 @@ from plugins.platforms.discord.response_gate import (
 REACTION_KEY = "reaction"
 
 #: The two fixed abstention options. Their labels and criteria text are part of the
-#: decision rule (the threshold sums exactly these), so they are never configurable.
+#: decision contract (the default formula sums exactly these), so they are never
+#: configurable.
 NONE_OPTION = "None"
 OTHER_OPTION = "Other"
-
-#: React only when the combined abstention mass is STRICTLY below this boundary.
-ABSTAIN_MAX_SUM = 0.5
 
 #: Coherence slack for the offered distribution: enough for float error and rounded
 #: per-option masses, far below anything that could flip the strict 0.5 comparison.
@@ -62,20 +76,88 @@ _DISTRIBUTION_TOLERANCE = 0.02
 #: speaking gate's rows: ``^[A-Za-z0-9._:-]+$``).
 _USAGE_CALLER_LABEL = "discord-reaction-gate"
 
+#: Discord custom emoji whitelist entries use ``<:name:snowflake>``.
+_CUSTOM_EMOJI_RE = re.compile(r"^<:(\w+):\d+>$")
 
-def choose_reaction(probabilities: Dict[str, float], emojis: Iterable[str]) -> Optional[str]:
+
+def reaction_label_map(emojis: Iterable[str]) -> Dict[str, str]:
+    """Map judge-facing option label to the original whitelist entry.
+
+    Custom guild emojis are labeled by their short ``name``; native entries and
+    any label collision (same short name from different entries) keep the full
+    entry as the label.
+    """
+    entries = tuple(emojis)
+    initial_labels: List[str] = []
+    for entry in entries:
+        match = _CUSTOM_EMOJI_RE.match(entry)
+        initial_labels.append(match.group(1) if match else entry)
+    counts: Dict[str, int] = {}
+    for label in initial_labels:
+        counts[label] = counts.get(label, 0) + 1
+    result: Dict[str, str] = {}
+    for entry, init_label in zip(entries, initial_labels):
+        label = entry if counts[init_label] > 1 else init_label
+        result[label] = entry
+    return result
+
+
+def _whitelist_labels(emojis: Iterable[str], label_to_entry: Dict[str, str]) -> tuple:
+    entry_to_label = {entry: label for label, entry in label_to_entry.items()}
+    return tuple(entry_to_label[entry] for entry in emojis)
+
+
+#: The default decision rule, prepared once at import so the per-decision path never
+#: parses anything (formulas arriving from config are prepared once per runtime build).
+_DEFAULT_FORMULA = prepare_decision_formula(DEFAULT_DECISION_FORMULA)
+
+
+def _decision_variables(
+    probabilities: Dict[str, float], emojis: Iterable[str],
+) -> Dict[str, Any]:
+    """The six fixed formula inputs for one offered distribution.
+
+    ``top``/``second`` are the two highest whitelisted-EMOJI probabilities (the two
+    abstention options never count as the runner-up); ``second`` is ``0.0`` when the
+    whitelist has no runner-up, which is why the default formula's ``emoji_count >= 2``
+    guard — not any magnitude floor — decides whether the ratio branch can fire at all.
+    """
+    entries = tuple(emojis)
+    none_p = float(probabilities.get(NONE_OPTION, 0.0))
+    other_p = float(probabilities.get(OTHER_OPTION, 0.0))
+    scores = sorted((float(probabilities.get(emoji, 0.0)) for emoji in entries), reverse=True)
+    return {
+        "none": none_p,
+        "other": other_p,
+        "abstain": none_p + other_p,
+        "top": scores[0] if scores else 0.0,
+        "second": scores[1] if len(scores) > 1 else 0.0,
+        "emoji_count": len(entries),
+    }
+
+
+def choose_reaction(
+    probabilities: Dict[str, float], emojis: Iterable[str],
+    formula: Optional[PreparedFormula] = None,
+) -> Optional[str]:
     """The decision rule, as one pure function.
 
-    Returns the highest-probability whitelisted emoji when ``P(None) + P(Other)`` is
-    strictly below :data:`ABSTAIN_MAX_SUM`, else ``None`` (no reaction). An abstention
-    option may top the distribution individually — as long as their SUM stays under
-    the boundary, the best emoji still wins. Exact ties resolve to the emoji that comes
-    first in the configured whitelist order.
+    Returns the highest-probability whitelisted emoji when ``formula`` — an expression
+    already validated and prepared by :func:`prepare_decision_formula` (what the client
+    holds), never a raw string — evaluates true; otherwise ``None`` (no reaction).
+    ``None`` selects the default rule, which keeps the exact shipped behavior: react
+    when ``abstain < 0.5`` strictly, or — from two whitelisted entries up — the top
+    emoji strictly outscores the runner-up by more than 5x (exactly five times does
+    not fire). An abstention option may top the distribution individually; only the
+    combined ``abstain`` mass is compared. When the formula fires, the reaction is
+    still the argmax emoji, and exact ties resolve to the emoji that comes first in
+    the configured whitelist order.
     """
-    abstain = float(probabilities.get(NONE_OPTION, 0.0)) + float(probabilities.get(OTHER_OPTION, 0.0))
-    if abstain >= ABSTAIN_MAX_SUM:
-        return None
-    return max(emojis, key=lambda emoji: float(probabilities.get(emoji, 0.0)))
+    entries = tuple(emojis)
+    prepared = _DEFAULT_FORMULA if formula is None else formula
+    if prepared.evaluate(_decision_variables(probabilities, entries)):
+        return max(entries, key=lambda emoji: float(probabilities.get(emoji, 0.0)))
+    return None
 
 
 #: Code points that never begin a grapheme cluster because they only qualify what
@@ -111,6 +193,8 @@ def split_reaction_clusters(entry: str) -> List[str]:
     """
     if not entry:
         return []
+    if _CUSTOM_EMOJI_RE.match(entry):
+        return [entry]
     clusters: List[List[str]] = [[entry[0]]]
     for char in entry[1:]:
         code = ord(char)
@@ -188,6 +272,20 @@ def build_reaction_criteria(
     return criteria
 
 
+def _criteria_for_judge_labels(
+    emojis: Iterable[str],
+    label_to_entry: Dict[str, str],
+    overrides: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Criteria keyed by judge labels; config ``criteria`` overrides stay entry-keyed."""
+    full = build_reaction_criteria(emojis, overrides)
+    entry_to_label = {entry: label for label, entry in label_to_entry.items()}
+    labeled = {entry_to_label[entry]: full[entry] for entry in emojis}
+    labeled[NONE_OPTION] = full[NONE_OPTION]
+    labeled[OTHER_OPTION] = full[OTHER_OPTION]
+    return labeled
+
+
 @dataclass
 class ReactionDecision:
     """Outcome of one consultation, in the shape the adapter logs and acts on."""
@@ -225,6 +323,7 @@ class JevChoiceClient(JevDecisionClient):
         instructions: str,
         decisions_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
+        decision_formula: Optional[str] = None,
     ) -> None:
         question = {
             "type": "choice",
@@ -238,11 +337,17 @@ class JevChoiceClient(JevDecisionClient):
         )
         self._emojis = tuple(emojis)
         self._question = question
+        # Prepare ONCE per runtime (config already validated the text; a build with
+        # an unprepared string still refuses here, loudly, rather than at decision time).
+        self._formula = (
+            prepare_decision_formula(decision_formula)
+            if decision_formula is not None else _DEFAULT_FORMULA
+        )
 
     async def choose(self, state: Dict[str, Any], *, chat_id: Optional[str] = None) -> ReactionDecision:
         """Ask the judge one ``reaction`` choice question about ``state``.
 
-        Returns a :class:`ReactionDecision` whose ``emoji`` is the rule outcome.
+        Returns a :class:`ReactionDecision` whose ``emoji`` is the formula outcome.
         Every failure path raises :class:`ResponseGateError` (the runtime turns that
         into a fail-closed no-reaction).
         """
@@ -252,7 +357,14 @@ class JevChoiceClient(JevDecisionClient):
         )
         probabilities = self._validate_probabilities(answer)
         latency_ms = (time.monotonic() - started) * 1000.0
-        emoji = choose_reaction(probabilities, self._emojis)
+        try:
+            emoji = choose_reaction(probabilities, self._emojis, self._formula)
+        except Exception as exc:
+            # A validated formula cannot fail here; if it ever does, fail closed
+            # through the same sanitized reason path as every other judge failure.
+            raise ResponseGateError(
+                "decision_formula_failed", "decision formula evaluation failed",
+            ) from exc
         abstain = float(probabilities.get(NONE_OPTION, 0.0)) + float(probabilities.get(OTHER_OPTION, 0.0))
         return ReactionDecision(
             emoji=emoji,
@@ -315,11 +427,18 @@ class ReactionGateRuntime:
     """
 
     def __init__(
-        self, *, config: Any, client: Optional[JevChoiceClient], logger: logging.Logger,
+        self,
+        *,
+        config: Any,
+        client: Optional[JevChoiceClient],
+        logger: logging.Logger,
+        label_to_entry: Optional[Dict[str, str]] = None,
     ) -> None:
         self.config = config
         self.client = client
+        self.label_to_entry = dict(label_to_entry or {})
         self.channel_keys = frozenset(config.channels)
+        self.include_threads = bool(getattr(config, "include_threads", True))
         self.buffer = ChannelContextBuffer(
             max_messages=config.context_messages, max_chars=config.context_chars,
         )
@@ -329,27 +448,66 @@ class ReactionGateRuntime:
     def build(
         cls, config: Any, credential: Optional[str], *, logger: logging.Logger,
     ) -> "ReactionGateRuntime":
+        label_to_entry = reaction_label_map(config.emojis)
+        labels = _whitelist_labels(config.emojis, label_to_entry)
         client = None
         if credential:
             client = JevChoiceClient(
                 credential=credential, model=config.model,
-                timeout_seconds=config.timeout_seconds, emojis=config.emojis,
-                criteria=build_reaction_criteria(config.emojis, config.criteria),
+                timeout_seconds=config.timeout_seconds, emojis=labels,
+                criteria=_criteria_for_judge_labels(
+                    config.emojis, label_to_entry, config.criteria,
+                ),
                 instructions=build_reaction_instructions(),
                 decisions_url=getattr(config, "decisions_url", None), logger=logger,
+                decision_formula=getattr(config, "decision_formula", None),
             )
-        return cls(config=config, client=client, logger=logger)
+        return cls(
+            config=config, client=client, logger=logger, label_to_entry=label_to_entry,
+        )
 
     # --- scope ------------------------------------------------------------
 
-    def selects(self, channel_keys) -> bool:
+    def selects(self, channel_keys, *, is_thread: bool = False) -> bool:
         """True when one of the adapter's channel keys is opted in.
 
         Keys follow the adapter's established convention (exact id, bare name, ``#name``,
-        plus the parent for threads), so a parent channel id selects its threads — while
-        the evidence buffer below stays keyed to the exact conversation only.
+        plus the parent for threads when :attr:`include_threads` is true). With
+        ``include_threads`` false on a thread conversation, a listed parent channel id
+        no longer selects the thread; the thread's own id or an exact name match still
+        does. The evidence buffer below stays keyed to the exact conversation only.
         """
-        return bool(self.channel_keys.intersection(channel_keys or ()))
+        keys = set(channel_keys or ())
+        if not keys:
+            return False
+        if self.include_threads or not is_thread:
+            return bool(self.channel_keys.intersection(keys))
+        # Discord threads are created after their parent channel, so the smaller
+        # snowflake id in the combined key set is the parent's and the larger is the
+        # thread's. Bare/# name forms cannot be attributed to thread vs parent in that
+        # set — a configured name matches by exact name wherever it appears.
+        numeric = sorted((key for key in keys if key.isdigit()), key=int)
+        if len(numeric) < 2:
+            return bool(self.channel_keys.intersection(keys))
+        thread_id = str(numeric[-1])
+        parent_id = str(numeric[0])
+        if thread_id in self.channel_keys:
+            return True
+        for key in keys:
+            if key.isdigit():
+                continue
+            if key.startswith("#"):
+                if key in self.channel_keys:
+                    return True
+                continue
+            hash_name = f"#{key}"
+            if hash_name not in keys:
+                continue
+            if key in self.channel_keys or hash_name in self.channel_keys:
+                return True
+        if parent_id in self.channel_keys:
+            return False
+        return bool(self.channel_keys.intersection(keys))
 
     # --- evidence ---------------------------------------------------------
 

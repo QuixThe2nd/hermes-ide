@@ -1218,10 +1218,6 @@ def restore_primary_runtime(agent) -> bool:
     if blocked:
         return False
     agent._restore_wait_logged = False
-    fallback_route = getattr(agent, "_provider_fallback_route", None)
-    if not (isinstance(fallback_route, (list, tuple)) and len(fallback_route) == 2):
-        fallback_route = (getattr(agent, "model", ""), getattr(agent, "provider", ""))
-    previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
     try:
         _apply_primary_runtime_fields(agent, rt)
@@ -1268,10 +1264,7 @@ def restore_primary_runtime(agent) -> bool:
         if provider_fallback_active:
             # Notification surfaces are best-effort and must never undo a successful restore.
             with contextlib.suppress(Exception):
-                agent._emit_diagnostic_status(
-                    f"✅ Primary model restored: {agent.model} via {agent.provider}; "
-                    f"fallback {previous_model} via {previous_provider} is no longer active."
-                )
+                agent._emit_diagnostic_status(f"✅ Model switched to {agent.model}")
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)

@@ -59,6 +59,7 @@ import argparse
 from bisect import bisect_right
 import html
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -104,6 +105,18 @@ CAPTURE_STATE_LABELS = {
     "streamed": "streamed · not captured",
     "incomplete": "incomplete",
     "truncated": "truncated",
+}
+JEV_GATE_LABELS = {
+    "reaction": "reaction gate",
+    "response": "response gate",
+    "mixed": "mixed",
+    "other": "other",
+}
+JEV_GATE_TONES = {
+    "reaction": "good",
+    "response": "none",
+    "mixed": "none",
+    "other": "none",
 }
 HOURS = 24
 DAYS_7D = 7
@@ -577,11 +590,21 @@ def query_jev_captures(conn: sqlite3.Connection, limit: int) -> list[dict[str, A
     """Newest jev_bodies rows for the /captures list table."""
     rows = conn.execute(
         "SELECT id, ts, upstream, model, path, status_code, latency_ms,"
-        " capture_state FROM jev_bodies ORDER BY id DESC LIMIT ?",
+        " capture_state, request_body FROM jev_bodies ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()
     out = []
-    for cid, ts, upstream, model, path, status_code, latency_ms, state in rows:
+    for (
+        cid,
+        ts,
+        upstream,
+        model,
+        path,
+        status_code,
+        latency_ms,
+        state,
+        request_body,
+    ) in rows:
         capture: dict[str, Any] = {
             "id": cid,
             "ts": ts,
@@ -591,6 +614,7 @@ def query_jev_captures(conn: sqlite3.Connection, limit: int) -> list[dict[str, A
             "status_code": status_code,
             "latency_ms": latency_ms,
             "capture_state": state,
+            "request_body": request_body,
         }
         capture["ts_sydney"] = to_sydney(ts)
         out.append(capture)
@@ -1839,10 +1863,48 @@ def pretty_request_json(text: Any) -> str:
     return json.dumps(parsed, indent=2, ensure_ascii=False)
 
 
+def classify_jev_gate(request_body: Any) -> str:
+    if isinstance(request_body, str):
+        try:
+            parsed = json.loads(request_body)
+        except (TypeError, ValueError):
+            return "other"
+    elif isinstance(request_body, dict):
+        parsed = request_body
+    else:
+        return "other"
+    if not isinstance(parsed, dict):
+        return "other"
+    questions = parsed.get("questions")
+    if not isinstance(questions, dict):
+        return "other"
+    has_reaction = "reaction" in questions
+    has_response = any(
+        k in questions for k in ("addresses_bot", "continues_bot_thread", "noise")
+    )
+    if has_reaction and has_response:
+        return "mixed"
+    if has_reaction:
+        return "reaction"
+    if has_response:
+        return "response"
+    return "other"
+
+
 def capture_state_badge(state: Any) -> str:
     key = str(state) if state else ""
     tone = CAPTURE_STATE_TONES.get(key, "none")
     label = CAPTURE_STATE_LABELS.get(key, key or "unknown")
+    return (
+        f'<span class="badge"><span class="dot-s tone-{tone}"></span>'
+        f"<span>{esc(label)}</span></span>"
+    )
+
+
+def jev_gate_badge(request_body: Any) -> str:
+    key = classify_jev_gate(request_body)
+    tone = JEV_GATE_TONES.get(key, "none")
+    label = JEV_GATE_LABELS.get(key, key)
     return (
         f'<span class="badge"><span class="dot-s tone-{tone}"></span>'
         f"<span>{esc(label)}</span></span>"
@@ -1859,7 +1921,7 @@ def _capture_num(value: Any, suffix: str = "") -> str:
 def captures_table_body(captures: list[dict[str, Any]]) -> str:
     if not captures:
         return (
-            '<tr><td colspan="7" class="muted">No jev captures'
+            '<tr><td colspan="8" class="muted">No jev captures'
             " &mdash; capture is opt-in (--capture-jev-bodies) and stores only"
             " openrouter-alpha traffic whose model starts with"
             " typesafe/jev-</td></tr>"
@@ -1871,6 +1933,7 @@ def captures_table_body(captures: list[dict[str, Any]]) -> str:
             f"<tr{row_cls}>"
             f'<td class="num" title="{esc(c.get("ts"))}">{esc(c.get("ts_sydney"))}</td>'
             f"<td>{model_name_html(c.get('model'))}</td>"
+            f"<td>{jev_gate_badge(c.get('request_body'))}</td>"
             f"<td>{esc(c.get('path'))}</td>"
             f'<td class="num">{_capture_num(c.get("status_code"))}</td>'
             f'<td class="num">{_capture_num(c.get("latency_ms"), " ms")}</td>'
@@ -1965,6 +2028,7 @@ def render_captures_page(db_path: str, limit: int) -> tuple[int, bytes]:
             '<div class="scroll-x"><table class="events">'
             "<thead><tr>"
             "<th scope=\"col\">Time</th><th scope=\"col\">Model</th>"
+            "<th scope=\"col\">Gate</th>"
             "<th scope=\"col\">Path</th><th scope=\"col\" class=\"num\">Status</th>"
             "<th scope=\"col\" class=\"num\">Latency</th><th scope=\"col\">State</th>"
             "<th scope=\"col\"><span class=\"sr-only\">View</span></th>"
@@ -2035,6 +2099,7 @@ def render_capture_page(db_path: str, capture_id: int) -> tuple[int, bytes]:
             _capture_meta_row("Status", _capture_num(status)),
             _capture_meta_row("Latency", _capture_num(capture.get("latency_ms"), " ms")),
             _capture_meta_row("State", capture_state_badge(capture.get("capture_state"))),
+            _capture_meta_row("Gate", jev_gate_badge(capture.get("request_body"))),
             _capture_meta_row(
                 "Upstream request id",
                 f'<span class="mono">{esc(request_id)}</span>'
@@ -4768,6 +4833,9 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 
 class UsageProxyHandler(BaseHTTPRequestHandler):
     db_path: str = DEFAULT_DB
+    # Set by main() when the admin panel is configured (see admin.py). None
+    # disables /admin entirely: the dashboard stays exactly as it was.
+    admin_config: Any = None
     server_version = "usage-proxy-webui/2"
     sys_version = ""
     protocol_version = "HTTP/1.1"
@@ -4778,11 +4846,19 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
     def log_error(self, format: str, *args: Any) -> None:
         sys.stderr.write(f"[{self.log_date_time_string()}] {format % args}\n")
 
-    def _send(self, status: int, content_type: str, body: bytes) -> None:
+    def _send(
+        self,
+        status: int,
+        content_type: str,
+        body: bytes,
+        headers: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -4860,31 +4936,53 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         status, body = render_capture_page(self.db_path, int(raw))
         return status, "text/html; charset=utf-8", body
 
-    def _body_for(self, parsed) -> tuple[int, str, bytes]:
+    def _admin_module(self):
+        """The admin sibling, imported lazily so the dashboard runs standalone.
+
+        A missing/unimportable admin.py must never take the read-only
+        dashboards down with it — /admin then answers 503 and every other
+        route is untouched.
+        """
+        try:
+            import admin
+        except Exception as exc:
+            self.log_error("admin panel unavailable: %r", exc)
+            return None
+        return admin
+
+    def _admin_get(self, parsed) -> tuple[int, str, bytes, tuple]:
+        admin = self._admin_module()
+        if admin is None or self.admin_config is None:
+            return 503, "text/plain; charset=utf-8", b"admin panel unavailable\n", ()
+        return admin.handle_get(self, self.admin_config, parsed)
+
+    def _body_for(self, parsed) -> tuple[int, str, bytes, tuple]:
         route = parsed.path
         filters = parse_filters(parse_qs(parsed.query))
         if route == "/":
             # Always render the shell at HTTP 200 — even when the ledger is
             # unreachable — so the browser keeps a page that can keep polling.
             snapshot = fetch_snapshot(self.db_path, filters, DASHBOARD_EVENTS)
-            return 200, "text/html; charset=utf-8", render_page(snapshot)
+            return 200, "text/html; charset=utf-8", render_page(snapshot), ()
         if route == "/api/summary":
             snapshot = fetch_snapshot(self.db_path, filters, event_limit=0)
             payload = {k: v for k, v in snapshot.items() if k != "events"}
-            return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8")
+            return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8"), ()
         if route == "/api/timeseries":
-            return self._timeseries_body(parsed)
+            return (*self._timeseries_body(parsed), ())
         if route == "/api/events":
-            return self._events_body(parsed)
+            return (*self._events_body(parsed), ())
         if route == "/captures":
-            return self._captures_body(parsed)
+            return (*self._captures_body(parsed), ())
         if route.startswith("/captures/"):
-            return self._capture_detail_body(parsed)
-        return 404, "text/plain; charset=utf-8", b"not found\n"
+            return (*self._capture_detail_body(parsed), ())
+        if route == "/admin" or route.startswith("/admin/"):
+            return self._admin_get(parsed)
+        return 404, "text/plain; charset=utf-8", b"not found\n", ()
 
     def do_GET(self) -> None:
         try:
-            status, content_type, body = self._body_for(urlparse(self.path))
+            status, content_type, body, headers = self._body_for(urlparse(self.path))
         except Exception as exc:  # a handler must never kill the keep-alive connection
             self.log_error("request failed: %r", exc)
             try:
@@ -4893,13 +4991,44 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 pass
             return
         try:
-            self._send(status, content_type, body)
+            self._send(status, content_type, body, headers)
         except (BrokenPipeError, ConnectionResetError):
             pass  # client hung up mid-response; nothing to do
 
+    def do_POST(self) -> None:
+        """Writes exist only under /admin (session + CSRF + origin checked there)."""
+        try:
+            parsed = urlparse(self.path)
+            if parsed.path == "/admin" or parsed.path.startswith("/admin/"):
+                admin = self._admin_module()
+                if admin is not None and self.admin_config is not None:
+                    outcome = admin.handle_post(self, self.admin_config, parsed)
+                else:
+                    outcome = (503, "text/plain; charset=utf-8", b"admin panel unavailable\n", ())
+            else:
+                # Drain the body so the keep-alive connection stays parseable.
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = 0
+                if 0 < length <= 65536:
+                    self.rfile.read(length)
+                outcome = (404, "text/plain; charset=utf-8", b"not found\n", ())
+        except Exception as exc:
+            self.log_error("request failed: %r", exc)
+            try:
+                self._send(500, "application/json; charset=utf-8", b'{"error": "internal error"}\n')
+            except OSError:
+                pass
+            return
+        try:
+            self._send(*outcome)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_HEAD(self) -> None:
         try:
-            status, content_type, body = self._body_for(urlparse(self.path))
+            status, content_type, body, headers = self._body_for(urlparse(self.path))
         except Exception as exc:
             self.log_error("request failed: %r", exc)
             try:
@@ -4911,6 +5040,8 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
 
 
@@ -4919,9 +5050,69 @@ def main() -> None:
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"Bind host (default: {DEFAULT_HOST})")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Bind port (default: {DEFAULT_PORT})")
     parser.add_argument("--db", default=DEFAULT_DB, help=f"SQLite ledger path, opened read-only (default: {DEFAULT_DB})")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "config.yaml path for the admin panel's routing/quota sections"
+            " (default: $HERMES_HOME/config.yaml or ~/.hermes/config.yaml)"
+        ),
+    )
+    parser.add_argument(
+        "--route",
+        action="append",
+        default=[],
+        metavar="NAME=BASE",
+        help=(
+            "Route the proxy serves, declared to the admin panel (repeatable;"
+            " mirrors the proxy's --upstream flags for routes not resolvable"
+            " from config, e.g. direct-arg or loopback upstreams)"
+        ),
+    )
+    parser.add_argument(
+        "--admin-secret-file",
+        default=None,
+        help=(
+            "Admin panel secret file (default: webui-admin.secret next to the"
+            " ledger, auto-generated 0600 on first start). The secret is never"
+            " placed in config, URLs or logs; pass an empty string to disable"
+            " the admin panel."
+        ),
+    )
     args = parser.parse_args()
 
     UsageProxyHandler.db_path = args.db
+    if args.admin_secret_file == "":
+        UsageProxyHandler.admin_config = None
+    else:
+        import admin
+
+        hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        extra_routes = {}
+        for raw in args.route:
+            name, sep, base = raw.partition("=")
+            if sep and name.strip() and base.strip():
+                extra_routes[name.strip()] = base.strip()
+            else:
+                sys.stderr.write(f"ignoring malformed --route {raw!r} (want NAME=BASE)\n")
+        config = admin.AdminConfig(
+            db_path=args.db,
+            config_path=args.config or os.path.join(hermes_home, "config.yaml"),
+            secret_file=args.admin_secret_file,
+            extra_routes=extra_routes,
+        )
+        try:
+            admin.ensure_secret_file(config.secret_file)
+            sys.stderr.write(
+                f"admin panel at /admin — secret file: {config.secret_file}\n"
+            )
+        except OSError as exc:
+            sys.stderr.write(
+                f"admin panel disabled: cannot create secret file"
+                f" {config.secret_file}: {exc}\n"
+            )
+            config = None  # type: ignore[assignment]
+        UsageProxyHandler.admin_config = config
     server = ThreadingHTTPServer((args.host, args.port), UsageProxyHandler)
     server.daemon_threads = True
     sys.stderr.write(f"usage-proxy-webui serving on http://{args.host}:{args.port}  db={args.db}\n")

@@ -509,6 +509,141 @@ def test_webui_404s_and_empty_states(tmp_path, start_upstream, start_proxy, star
     assert status == 404
 
 
+def test_classify_jev_gate():
+    webui = _load_webui()
+
+    reaction_body = {"questions": {"reaction": {"type": "choice"}}}
+    assert webui.classify_jev_gate(reaction_body) == "reaction"
+    assert webui.classify_jev_gate(json.dumps(reaction_body)) == "reaction"
+
+    for key in ("addresses_bot", "continues_bot_thread", "noise"):
+        body = {"questions": {key: {"type": "choice"}}}
+        assert webui.classify_jev_gate(body) == "response"
+        assert webui.classify_jev_gate(json.dumps(body)) == "response"
+
+    all_response = {
+        "questions": {
+            "addresses_bot": {},
+            "continues_bot_thread": {},
+            "noise": {},
+        }
+    }
+    assert webui.classify_jev_gate(all_response) == "response"
+
+    mixed = {"questions": {"reaction": {}, "noise": {}}}
+    assert webui.classify_jev_gate(mixed) == "mixed"
+
+    assert webui.classify_jev_gate({"model": JEV_MODEL, "messages": []}) == "other"
+    assert webui.classify_jev_gate({}) == "other"
+    assert webui.classify_jev_gate({"questions": []}) == "other"
+    assert webui.classify_jev_gate("not json") == "other"
+    assert webui.classify_jev_gate("[1]") == "other"
+    assert webui.classify_jev_gate(None) == "other"
+
+
+def _insert_gate_capture(db: str, store: UsageStore, request_body: str | dict) -> int:
+    if isinstance(request_body, dict):
+        request_body = json.dumps(request_body)
+    store.insert_jev_body(
+        ts=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        upstream="openrouter-alpha",
+        model=JEV_MODEL,
+        path="/chat/completions",
+        request_id=None,
+        status_code=200,
+        latency_ms=5,
+        capture_state=CAPTURE_COMPLETE,
+        request_body=request_body,
+        response_body="{}",
+    )
+    conn = sqlite3.connect(db)
+    try:
+        row_id = conn.execute("SELECT id FROM jev_bodies ORDER BY id DESC LIMIT 1").fetchone()[
+            0
+        ]
+    finally:
+        conn.close()
+    return row_id
+
+
+def test_webui_gate_list_and_query(tmp_path):
+    webui = _load_webui()
+    db = str(tmp_path / "gates.sqlite")
+    store = UsageStore(db, capture_jev_bodies=True)
+    try:
+        _insert_gate_capture(db, store, {"questions": {"reaction": {}}})
+        _insert_gate_capture(db, store, {"questions": {"addresses_bot": {}}})
+        _insert_gate_capture(db, store, "{}")
+        _insert_gate_capture(db, store, "not json")
+    finally:
+        store.close()
+
+    status, body = webui.render_captures_page(db, 50)
+    assert status == 200
+    html = body.decode("utf-8")
+    assert "reaction gate" in html
+    assert "response gate" in html
+    assert ">other<" in html
+    assert ">Gate<" in html
+
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        captures = webui.query_jev_captures(conn, 50)
+        tbody = webui.captures_table_body(captures)
+    finally:
+        conn.close()
+    assert "reaction gate" in tbody
+    assert "response gate" in tbody
+    assert ">other<" in tbody
+    for capture in captures:
+        assert "request_body" in capture
+        assert "response_body" not in capture
+
+    empty_db = str(tmp_path / "empty_gates.sqlite")
+    empty_store = UsageStore(empty_db, capture_jev_bodies=True)
+    try:
+        pass
+    finally:
+        empty_store.close()
+    status, body = webui.render_captures_page(empty_db, 50)
+    assert status == 200
+    assert 'colspan="8"' in body.decode("utf-8")
+
+
+def test_webui_gate_detail_page(tmp_path):
+    webui = _load_webui()
+    db = str(tmp_path / "detail.sqlite")
+    store = UsageStore(db, capture_jev_bodies=True)
+    try:
+        row_id = _insert_gate_capture(db, store, {"questions": {"reaction": {}}})
+    finally:
+        store.close()
+
+    status, body = webui.render_capture_page(db, row_id)
+    assert status == 200
+    assert "reaction gate" in body.decode("utf-8")
+
+
+def test_webui_gate_list_escapes_request_body(tmp_path):
+    webui = _load_webui()
+    db = str(tmp_path / "escape.sqlite")
+    store = UsageStore(db, capture_jev_bodies=True)
+    try:
+        _insert_gate_capture(
+            db,
+            store,
+            {"questions": {"reaction": '<script>alert("x")</script>'}},
+        )
+    finally:
+        store.close()
+
+    status, body = webui.render_captures_page(db, 50)
+    assert status == 200
+    html = body.decode("utf-8")
+    assert "reaction gate" in html
+    assert "<script" not in html
+
+
 def test_build_exec_start_argv_carries_capture_flag_only_when_enabled(
     monkeypatch, tmp_path
 ):

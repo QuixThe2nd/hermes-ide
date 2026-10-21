@@ -64,6 +64,48 @@ def test_runtime_health_lines_include_fatal_platform_and_startup_reason(monkeypa
     assert "⚠ Last startup issue: telegram conflict" in lines
 
 
+def test_runtime_health_lines_render_gate_config_warnings(monkeypatch):
+    """A gate whose config failed validation stayed off; one health line per recorded
+    warning says so, next to the platform's other trouble lines."""
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda: {
+            "gateway_state": "running",
+            "updated_at": _iso_age(5),
+            "platforms": {},
+            "gate_config_warnings": [
+                "beta:discord reaction_gate: emojis must list at most 48 emojis",
+                "beta:discord response_gate: mode must be 'shadow' or 'enforce', got 'loud'",
+            ],
+        },
+    )
+
+    lines = _runtime_health_lines()
+
+    assert (
+        "⚠ beta:discord reaction_gate: emojis must list at most 48 emojis (gate stayed off)"
+        in lines
+    )
+    assert (
+        "⚠ beta:discord response_gate: mode must be 'shadow' or 'enforce', got 'loud' (gate stayed off)"
+        in lines
+    )
+    assert len([ln for ln in lines if ln.endswith("(gate stayed off)")]) == 2
+
+
+def test_runtime_health_lines_silent_without_gate_config_warnings(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda: {
+            "gateway_state": "running",
+            "updated_at": _iso_age(5),
+            "platforms": {},
+        },
+    )
+
+    assert not [ln for ln in _runtime_health_lines() if "gate stayed off" in ln]
+
+
 def test_runtime_health_lines_flag_stale_heartbeat_with_live_pid(monkeypatch):
     """'running' + updated_at past the TTL + PID ALIVE is the reporter's 'not a crash' case
     (#113372): housekeeping stopped stamping the heartbeat while the file still says running.

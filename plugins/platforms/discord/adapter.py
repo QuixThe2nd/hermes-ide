@@ -462,7 +462,7 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, ReactionGateConfig
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, compile_mention_patterns,
@@ -1477,6 +1477,7 @@ from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.response_gate import (
     ADDRESSES_BOT_KEY,
     CONTINUES_THREAD_KEY,
+    JOINS_BOT_THREAD_KEY,
     NOISE_KEY,
     ChannelContextBuffer,
     GateDecision,
@@ -1489,9 +1490,12 @@ from plugins.platforms.discord.reaction_gate import (
     ReactionGateRuntime,
     split_reaction_clusters,
 )
+from plugins.platforms.discord.reaction_gate_reload import (
+    start_reaction_gate_reload_watcher,
+)
 
 #: Component display order for gate echoes/logs (matches the judge's question order).
-_RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, NOISE_KEY)
+_RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, JOINS_BOT_THREAD_KEY, NOISE_KEY)
 
 
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
@@ -1568,6 +1572,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._reaction_gate_inflight: set = set()
         # In-flight consultation tasks; cancelled and awaited in disconnect().
         self._reaction_gate_tasks: set = set()
+        # Live reload of the reaction gate's config block (discord.reaction_gate): the
+        # watcher task, the config file it polls, the managed-scope directory whose
+        # overlay is part of the effective config, and the values of that overlay's
+        # ${VAR} refs. All are resolved ONCE inside connect()'s profile scope (the
+        # same capture discipline as the credential above); the watcher itself runs
+        # outside any scope and only ever uses the captured paths/values — never
+        # HERMES_HOME, HERMES_MANAGED_DIR or os.environ.
+        self._reaction_gate_reload_task: Optional[asyncio.Task] = None
+        self._reaction_gate_config_path: Optional[_Path] = None
+        self._reaction_gate_managed_dir: Optional[_Path] = None
+        self._reaction_gate_managed_env: Optional[Dict[str, str]] = None
+        self._reaction_gate_profile_name: str = "default"
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
@@ -1800,6 +1816,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # The reaction gate shares that captured judge credential (same profile scope,
             # same capture discipline); it never re-reads any secret at event time.
             self._reaction_gate_init()
+            # Its config block live-reloads: watch this profile's config.yaml (path
+            # captured here, inside the same scope) so a reaction_gate edit takes
+            # effect without a gateway restart or adapter reconnect.
+            self._reaction_gate_start_reload_watcher()
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
             self._allowed_role_ids = self._get_allowed_roles()
@@ -2027,13 +2047,32 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Channel keys for a message, or None when the gate is off/not selected."""
         return self._response_gate_channel_keys_in_scope(getattr(message, "channel", None))
 
+    def _gate_thread_membership_ok(self, channel: Any, *, require: bool) -> bool:
+        """Whether a conversation may be consulted under the thread-membership rule.
+
+        The single membership check both gates share. ``require`` false (the
+        ``threads_require_membership: false`` opt-out) keeps the legacy behavior where
+        a listed parent channel selects every thread. A non-thread conversation is
+        never membership-gated. A thread consults only when this bot already
+        participates in it — ``ThreadParticipationTracker``, the same persistent
+        store the inbound dispatch and the send seam mark, never the cache-only
+        ``channel.members``/``channel.me`` (those disagree with it). The gate is
+        scope-first, membership-second: a thread outside the gate's channels is
+        unaffected either way.
+        """
+        if not require or not isinstance(channel, discord.Thread):
+            return True
+        return str(getattr(channel, "id", "") or "") in self._threads
+
     def _response_gate_channel_keys_in_scope(self, channel: Any) -> Optional[set]:
         """Channel keys for one conversation, or None when the gate is off/not selected.
 
         Scope is the gate's own channel opt-in narrowed by the allowed/ignored-channel rule
         ``_handle_message`` already owns: a channel that rule ignores is never consulted, so
         the judge costs no API call outside the channels this bot answers in. Shared by the
-        inbound (observed message) and outbound (delivered reply) observe paths.
+        inbound (observed message) and outbound (delivered reply) observe paths — and by
+        every dispatch path, because live dispatch, recovered dispatch and the admission
+        prefilters all build their candidate through here.
         """
         gate = self._response_gate
         if gate is None:
@@ -2044,6 +2083,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         keys = self._discord_channel_keys_from_channel(channel, parent_id)
         if not gate.selects(keys) or not self._discord_channel_policy_admits(keys):
             return None
+        if not self._gate_thread_membership_ok(
+            channel,
+            require=bool(getattr(gate.config, "threads_require_membership", True)),
+        ):
+            return None  # unjoined thread: the judge never hears it (a ping still bypasses)
         return keys
 
     def _response_gate_bypass(self, message: Any) -> bool:
@@ -2301,6 +2345,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         gate = self._response_gate
         if gate is None:
             return
+        # A delivered final reply IS participation: record it before the scope/membership
+        # checks, so the gate's own rule keeps this conversation visible whatever ingress
+        # produced the reply (a native slash command dispatches through handle_message
+        # and never reaches the inbound path's participation mark).
+        thread_id = str(getattr(channel, "id", "") or "")
+        if isinstance(channel, discord.Thread) and thread_id:
+            self._threads.mark(thread_id)
         keys = self._response_gate_channel_keys_in_scope(channel)
         if keys is None or gate.echo_keys.intersection(keys):
             return  # echo channels carry judge-score lines, not this bot's conversation
@@ -2351,17 +2402,146 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self.name, len(reaction_cfg.channels),
             )
 
+    def _reaction_gate_start_reload_watcher(self) -> None:
+        """Watch this profile's config.yaml so a ``reaction_gate`` edit applies live.
+
+        The file path, the managed-scope directory AND the values of the managed
+        config's ``${VAR}`` refs are resolved HERE — this runs from ``connect()``
+        inside the owning profile's runtime scope (the same capture discipline as
+        the judge credential and the gate-env snapshot). The watcher never
+        re-resolves any of them: event callbacks and background tasks run outside
+        any profile scope, where ``HERMES_HOME``/``HERMES_MANAGED_DIR`` — and the
+        process env a managed ref would expand from — can name another profile, so
+        the captured paths and values are the only ones it may read.
+        """
+        if self._reaction_gate_reload_task is not None:
+            # A reconnect starts a fresh watcher; drop the stale one (its disconnect
+            # side never ran — see disconnect() for the awaited cancellation).
+            self._reaction_gate_reload_task.cancel()
+        from hermes_constants import get_hermes_home
+        from hermes_cli import managed_scope
+
+        self._reaction_gate_config_path = get_hermes_home() / "config.yaml"
+        self._reaction_gate_managed_dir = managed_scope.get_managed_dir()
+        self._reaction_gate_managed_env = (
+            managed_scope.managed_config_env_snapshot(self._reaction_gate_managed_dir)
+            if self._reaction_gate_managed_dir is not None
+            else None
+        )
+        # Profile identity for the boot-diagnostic repair in _reaction_gate_reload:
+        # captured here, inside the owning profile's scope, because the watcher
+        # callback runs outside any scope where HERMES_HOME can name another profile.
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            self._reaction_gate_profile_name = get_active_profile_name() or "default"
+        except Exception:
+            self._reaction_gate_profile_name = "default"
+        self._reaction_gate_reload_task = start_reaction_gate_reload_watcher(
+            config_path=self._reaction_gate_config_path,
+            apply=self._reaction_gate_reload,
+            logger=logger,
+            name=self.name,
+            managed_dir=self._reaction_gate_managed_dir,
+            managed_env=self._reaction_gate_managed_env,
+        )
+
+    def _reaction_gate_reload(self, block: Any) -> bool:
+        """Build and swap the reaction gate from one re-read ``reaction_gate`` block.
+
+        Called once at watcher start (boot reconcile against the current file) and
+        then whenever the extracted block changes. The block is validated exactly
+        like startup; a valid block (or a deliberate off) replaces
+        ``self._reaction_gate`` in a single assignment — the whole runtime contract for
+        a reload, since every consumer reads the attribute fresh. An invalid block
+        returns ``False`` and changes nothing: the previously active gate keeps running.
+        The judge credential is never re-read (the connect-time capture is reused).
+        """
+        if block is None:
+            if self._reaction_gate is not None:
+                logger.info("[%s] reaction_gate disabled by config reload (fail closed)", self.name)
+            self._reaction_gate = None
+            self._reaction_gate_repair_boot_warning()
+            return True
+        try:
+            reaction_cfg = ReactionGateConfig.from_dict(block)
+        except ValueError as exc:
+            # The invalid block is NOT installed: the previously active gate keeps
+            # running, so no status warning is added (the gate is not off) and any
+            # boot-time refusal stays as-is (it still describes the effective config).
+            logger.warning(
+                "[%s] reaction_gate reload kept the previous config (invalid block): %s",
+                self.name, exc,
+            )
+            return False
+        if not reaction_cfg.active:
+            if self._reaction_gate is not None:
+                logger.info("[%s] reaction_gate disabled by config reload (fail closed)", self.name)
+            self._reaction_gate = None
+            self._reaction_gate_repair_boot_warning()
+            return True
+        current = self._reaction_gate
+        if current is not None and current.config == reaction_cfg:
+            # The running gate already matches — the watcher's boot reconcile with
+            # an unchanged file lands here, as does a rewrite of the in-force
+            # block. One validation, no rebuild, no log line. The boot-diagnostic
+            # repair still runs: this is exactly the boot-reconcile path where a
+            # stale "gate stayed off" refusal would otherwise survive a now-valid
+            # config (it only touches the reaction_gate warning, not response_gate's).
+            self._reaction_gate_repair_boot_warning()
+            return True
+        self._reaction_gate = ReactionGateRuntime.build(
+            reaction_cfg, self._response_gate_credential, logger=logger,
+        )
+        if self._reaction_gate.client is None:
+            # Same rule as startup, for the same reason: enabled with no captured
+            # credential fails closed (no reactions) and must not look like a disable.
+            logger.error(
+                "[%s] reaction_gate reload has no OPENROUTER_API_KEY captured at connect: "
+                "no automatic reactions will be added",
+                self.name,
+            )
+        logger.info(
+            "[%s] reaction_gate reloaded: %d emoji entries, %d channel(s)",
+            self.name, len(reaction_cfg.emojis), len(reaction_cfg.channels),
+        )
+        self._reaction_gate_repair_boot_warning()
+        return True
+
+    def _reaction_gate_repair_boot_warning(self) -> None:
+        """Drop this adapter's stale boot-time reaction_gate refusal at its owner.
+
+        Only called after an ACCEPTED reload: the effective config is now valid (or a
+        deliberate off), so a boot-time "gate stayed off" refusal would be a lie. The
+        runner owns the warning accumulator that every boot/reconcile status write
+        re-stamps, so the repair goes through it; pruning only the disk record would
+        be resurrected by the next served-profiles write. The profile identity was
+        captured at connect, and a sibling response_gate refusal is kept.
+        """
+        clear = getattr(self.gateway_runner, "clear_gate_config_warning", None)
+        if clear is None:
+            return
+        try:
+            platform_value = getattr(getattr(self, "platform", None), "value", "discord")
+            clear(
+                profile=self._reaction_gate_profile_name,
+                platform=platform_value,
+                gate="reaction_gate",
+            )
+        except Exception:
+            logger.debug("[%s] reaction_gate boot-warning repair failed", self.name, exc_info=True)
+
     def _reaction_gate_candidate(self, message: Any) -> Optional[Dict[str, Any]]:
         """Build the payload for one reaction candidate, or None when never consultable.
 
         Single definition of "reaches the reaction judge", shared by both intake sites.
-        Deliberately WIDER than the speaking gate's candidate rule — mentions, replies
-        and other bots' messages are reaction candidates too — but still narrowed by the
-        rules that prevent loops and privacy leaks: never this bot's own messages, never
-        lifecycle/system events, never DMs, never a channel the allowed/ignored-channel
-        policy refuses, and never a human the user policy would not authorize. The
-        speaking rules keep their own meaning for text: a bot message that never
-        text-wakes this bot can still earn a reaction.
+        Deliberately WIDER than the speaking gate's candidate rule in one way —
+        mentions and replies are reaction candidates too — but still narrowed by the
+        rules that prevent loops and privacy leaks: never this bot's own messages,
+        never other bots' chatter, never lifecycle/system events, never DMs, never a
+        channel the allowed/ignored-channel policy refuses, and never a human the user
+        policy would not authorize. The speaking rules keep their own meaning for
+        text: a human message that never text-wakes this bot can still earn a
+        reaction.
         """
         gate = self._reaction_gate
         if gate is None:
@@ -2377,24 +2557,34 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             discord.MessageType.default, discord.MessageType.reply,
         }:
             return None  # lifecycle/system events (joins, pins, …) carry nothing to react to
-        if not getattr(author, "bot", False):
-            msg_guild = getattr(message, "guild", None)
-            if msg_guild is None:
-                return None  # guild-less human traffic is DM-shaped; keep it out
-            msg_channel_ids = {str(getattr(channel, "id", "") or "")}
-            parent_id = self._get_parent_channel_id(channel)
-            if parent_id:
-                msg_channel_ids.add(parent_id)
-            if not self._is_allowed_user(
-                str(getattr(author, "id", "") or ""), author,
-                guild=msg_guild, is_dm=False, channel_ids=msg_channel_ids,
-            ):
-                return None  # the user policy that governs speech governs reactions too
+        if getattr(author, "bot", False):
+            return None  # bot chatter is never a reaction candidate (same rule as the speaking gate)
+        msg_guild = getattr(message, "guild", None)
+        if msg_guild is None:
+            return None  # guild-less human traffic is DM-shaped; keep it out
+        msg_channel_ids = {str(getattr(channel, "id", "") or "")}
+        parent_id = self._get_parent_channel_id(channel)
+        if parent_id:
+            msg_channel_ids.add(parent_id)
+        if not self._is_allowed_user(
+            str(getattr(author, "id", "") or ""), author,
+            guild=msg_guild, is_dm=False, channel_ids=msg_channel_ids,
+        ):
+            return None  # the user policy that governs speech governs reactions too
         channel_keys = self._discord_channel_keys_from_channel(
             channel, self._get_parent_channel_id(channel),
         )
-        if not gate.selects(channel_keys) or not self._discord_channel_policy_admits(channel_keys):
+        is_thread = isinstance(channel, discord.Thread)
+        if (
+            not gate.selects(channel_keys, is_thread=is_thread)
+            or not self._discord_channel_policy_admits(channel_keys)
+        ):
             return None
+        if not self._gate_thread_membership_ok(
+            channel,
+            require=bool(getattr(gate.config, "threads_require_membership", True)),
+        ):
+            return None  # unjoined thread: no consultation, no reaction
         return {
             "message_id": str(getattr(message, "id", "") or ""),
             "conversation_id": GateRuntime.conversation_id(channel),
@@ -2483,6 +2673,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if emoji is None:
                 self._reaction_gate_log(decision, candidate)
                 return
+            emoji = gate.label_to_entry.get(emoji, emoji)
             # A multi-glyph whitelist entry is ONE judge option but is added as one
             # reaction per grapheme cluster, in string order (👉👈 → 👉 then 👈); a
             # compound emoji (🤦‍♂️, 1️⃣, 🇦🇺) is one cluster and stays one reaction.
@@ -2533,10 +2724,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Buffer one in-scope message as future reaction evidence (cheap, bounded).
 
         Unlike the speaking gate's evidence (human messages plus this bot's replies),
-        reaction evidence also carries other bots' messages: they are reaction
-        candidates too, and the judge should see the conversation they appear in.
-        The candidate's message id rides along so its own consult can drop this entry
-        (intake-time buffering would otherwise make it its own history).
+        reaction evidence carries exactly its candidates: bot chatter is never
+        buffered because it is never a candidate. The candidate's message id rides
+        along so its own consult can drop this entry (intake-time buffering would
+        otherwise make it its own history).
         """
         gate = self._reaction_gate
         if gate is None or candidate is None:
@@ -2569,8 +2760,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         channel_keys = self._discord_channel_keys_from_channel(
             channel, self._get_parent_channel_id(channel),
         )
-        if not gate.selects(channel_keys) or not self._discord_channel_policy_admits(channel_keys):
+        is_thread = isinstance(channel, discord.Thread)
+        if (
+            not gate.selects(channel_keys, is_thread=is_thread)
+            or not self._discord_channel_policy_admits(channel_keys)
+        ):
             return
+        if not self._gate_thread_membership_ok(
+            channel,
+            require=bool(getattr(gate.config, "threads_require_membership", True)),
+        ):
+            return  # unjoined thread: no evidence buffered either
         bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
         if not bot_name:
             return
@@ -3078,6 +3278,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     await task
                 except asyncio.CancelledError:
                     pass
+        # The config-edit watcher dies with the connection: a live swap must never
+        # land on a torn-down adapter (a reconnect starts a fresh watcher).
+        await cancel_task(self._reaction_gate_reload_task)
+        self._reaction_gate_reload_task = None
+        self._reaction_gate_config_path = None
+        self._reaction_gate_managed_dir = None
+        self._reaction_gate_managed_env = None
         # Reaction consultations are dispatch side effects: cancel any still in flight
         # (their message is gone from this connection's point of view) and drop the
         # once-only registry so a reconnect starts clean.
@@ -3764,19 +3971,59 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
         self._with_discord_recovery_db(_op)
 
-    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
-        if not self._missed_message_backfill_enabled():
+    @staticmethod
+    def _discord_inbound_message_id(event: MessageEvent) -> str:
+        from gateway.platforms.event import inbound_platform_message_id
+        return inbound_platform_message_id(event) or ""
+
+    def _seed_discord_inbound_row(self, message_id: str, source, *, status: str) -> None:
+        if not self._missed_message_backfill_enabled() or not message_id:
             return
-        message = event.raw_message
-        self._record_discord_message_seen(message, status="processing")
-        message_id = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
-        if not message_id:
-            return
+        channel_id = str(getattr(source, "chat_id", "") or "")
+        thread_id = str(getattr(source, "thread_id", "") or "") or None
+        parent_id = None
         now = self._utc_now_iso()
 
         def _op(conn):
             conn.execute(
-                "UPDATE discord_messages SET status='processing', emoji_ack=?, updated_at=? WHERE message_id=?",
+                """
+                INSERT INTO discord_messages (
+                    message_id, channel_id, thread_id, parent_channel_id,
+                    author_id, created_at, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    channel_id=excluded.channel_id,
+                    thread_id=excluded.thread_id,
+                    parent_channel_id=excluded.parent_channel_id,
+                    status=CASE WHEN discord_messages.status='responded' THEN discord_messages.status ELSE excluded.status END,
+                    updated_at=excluded.updated_at
+                """,
+                (message_id, channel_id, thread_id, parent_id, "", None, status, now),
+            )
+        self._with_discord_recovery_db(_op)
+
+    def claim_startup_resume_inbound(self, message_id: str, source) -> None:
+        """Mark the interrupted inbound as in-flight before backfill can re-dispatch it."""
+        self._seed_discord_inbound_row(str(message_id), source, status="processing")
+
+    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
+        message_id = self._discord_inbound_message_id(event)
+        if not message_id:
+            return
+        message = event.raw_message
+        if message is not None:
+            self._record_discord_message_seen(message, status="processing")
+        else:
+            self._seed_discord_inbound_row(message_id, event.source, status="processing")
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_messages SET "
+                "status=CASE WHEN status='responded' THEN status ELSE 'processing' END, "
+                "emoji_ack=?, updated_at=? WHERE message_id=?",
                 (1 if emoji_ack else 0, now, message_id),
             )
         self._with_discord_recovery_db(_op)
@@ -3784,7 +4031,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _record_discord_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         if not self._missed_message_backfill_enabled():
             return
-        message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
+        message_id = self._discord_inbound_message_id(event)
         if not message_id:
             return
         now = self._utc_now_iso()
@@ -7133,6 +7380,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return True
         return str(raw).strip().lower() in {"true", "1", "yes"}
 
+    def _discord_auto_thread_replies(self) -> bool:
+        """Per-profile ``discord.auto_thread_replies`` flag (default true).
+
+        When true, an admitted quote-reply in an eligible channel auto-threads
+        like any other trigger; ``false`` restores the historical inline
+        reply. Same env-then-config precedence as ``_discord_auto_thread_enabled``
+        (explicit ``DISCORD_AUTO_THREAD_REPLIES`` wins, then ``config.extra``
+        seeded from YAML ``discord.auto_thread_replies``, then default true).
+        """
+        raw = self._gate_raw("auto_thread_replies", "DISCORD_AUTO_THREAD_REPLIES")
+        if raw is None or str(raw).strip() == "":
+            return True
+        return str(raw).strip().lower() in {"true", "1", "yes"}
+
     def _gateway_allow_all_users(self) -> bool:
         """Per-profile GATEWAY_ALLOW_ALL_USERS flag."""
         return self._gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}
@@ -8678,6 +8939,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.auto_thread_replies: Quote-replies also auto-thread (default: true; false = inline)
         #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
         thread_id = None
         parent_channel_id = None
@@ -8750,7 +9012,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 is_free_channel and not self._discord_free_response_auto_thread()
             )
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            # Quote-replies auto-thread by default; discord.auto_thread_replies: false
+            # restores the historical inline reply.
+            reply_skips_thread = is_reply_message and not self._discord_auto_thread_replies()
+            if auto_thread and not skip_thread and not is_voice_linked_channel and not reply_skips_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
@@ -10028,12 +10293,13 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if clarify_mentions_cfg is not None:
         _env_default("DISCORD_CLARIFY_MENTIONS", str(clarify_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
-    # auto_thread & reactions: seeded into extra so the adapter's per-profile
+    # auto_thread flags & reactions: seeded into extra so the adapter's per-profile
     # precedence helper (_gate_raw: explicit env first, then config) honors
-    # ``discord.auto_thread`` even when the env bridge is skipped
-    # (multiplexed secondary profiles) or lost the first-writer race.
+    # ``discord.auto_thread`` / ``discord.auto_thread_replies`` even when the env
+    # bridge is skipped (multiplexed secondary profiles) or lost the first-writer race.
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),
+        ("auto_thread_replies", "DISCORD_AUTO_THREAD_REPLIES"),
         ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),
         ("reactions", "DISCORD_REACTIONS"),
     ):
@@ -10098,9 +10364,9 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env bridge: ``discord:`` config keys → ``DISCORD_*`` env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
-        # (require_mention, free_response_channels, auto_thread, free_response_auto_thread,
-        # reactions, ignored_channels, allowed_channels, no_thread_channels, allow_mentions.*,
-        # reply_to_mode, thread_require_mention)
+        # (require_mention, free_response_channels, auto_thread, auto_thread_replies,
+        # free_response_auto_thread, reactions, ignored_channels, allowed_channels,
+        # no_thread_channels, allow_mentions.*, reply_to_mode, thread_require_mention)
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
         # block that used to live in ``gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,

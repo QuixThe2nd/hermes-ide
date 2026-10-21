@@ -190,6 +190,29 @@ def _reactions(message) -> list:
     return [call.args for call in message.add_reaction.await_args_list]
 
 
+def _thread_channel(monkeypatch, parent_id=555, thread_id=9001):
+    """A thread-of-parent channel pair, with ``discord.Thread`` shimmed for isinstance.
+
+    The thread is NOT marked in the adapter's participation tracker: callers that
+    want a joined thread mark ``adapter._threads`` themselves.
+    """
+    parent = _Channel(parent_id, name="general")
+    parent.parent = None
+    parent.parent_id = None
+
+    class ThreadShim:
+        pass
+
+    monkeypatch.setattr(discord, "Thread", ThreadShim)
+    thread = ThreadShim()
+    thread.id = thread_id
+    thread.name = "dev-thread"
+    thread.parent = parent
+    thread.parent_id = parent_id
+    thread.guild = parent.guild
+    return thread, parent
+
+
 class TestDeniedBySpeakingGateStillReacted:
     """The reaction gate runs on messages the speaking gate drops — as a side effect only."""
 
@@ -482,6 +505,194 @@ class TestMultiGlyphEntryReactions:
         ]
         assert len(reaction_lines) == 1
         assert "outcome=react:🔥" in reaction_lines[0]
+
+
+class TestCustomEmojiJudgeLabels:
+    """Custom guild emojis are judged by short name but reacted with the full token."""
+
+    POG = "<:pog:1553218458882154506>"
+    KEKW = "<:kekw:987654321012345678>"
+
+    @pytest.mark.asyncio
+    async def test_judge_sees_short_names_reaction_uses_full_token(self, choice_judge, caplog):
+        choice_judge.answer = {
+            "pog": 0.80, "kekw": 0.00, "None": 0.10, "Other": 0.10,
+        }
+        adapter = _reaction_adapter(
+            reaction={
+                "enabled": True, "channels": ["555"],
+                "emojis": [self.POG, self.KEKW],
+            },
+        )
+        message = _message(content="that was pog", msg_id=270)
+
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.discord.adapter"):
+            await adapter._dispatch_discord_message(message)
+            await _drain(adapter)
+
+        reaction_question = choice_judge.questions["reaction"]
+        assert set(reaction_question["criteria"]) == {"pog", "kekw", "None", "Other"}
+        assert self.POG not in reaction_question["criteria"]
+        assert _reactions(message) == [(self.POG,)]
+        reaction_lines = [
+            record.message for record in caplog.records
+            if " reaction_gate channel=" in record.message
+        ]
+        assert f"outcome=react:{self.POG}" in reaction_lines[0]
+
+    @pytest.mark.asyncio
+    async def test_native_only_request_unchanged(self, choice_judge):
+        """Regression: without custom emojis the offered criteria keys match entries."""
+        adapter = _reaction_adapter(
+            reaction={"enabled": True, "channels": ["555"], "emojis": ["👉👈", "🔥"]},
+        )
+        message = _message(content="any pointers?")
+
+        await adapter._dispatch_discord_message(message)
+        await _drain(adapter)
+
+        reaction_question = choice_judge.questions["reaction"]
+        assert list(reaction_question["criteria"]) == ["👉👈", "🔥", "None", "Other"]
+
+    @pytest.mark.asyncio
+    async def test_collision_offers_full_tokens(self, choice_judge):
+        a1, a2 = "<:a:111>", "<:a:222>"
+        choice_judge.answer = {a1: 0.80, a2: 0.00, "None": 0.10, "Other": 0.10}
+        adapter = _reaction_adapter(
+            reaction={"enabled": True, "channels": ["555"], "emojis": [a1, a2]},
+        )
+        message = _message(content="pick one", msg_id=271)
+
+        await adapter._dispatch_discord_message(message)
+        await _drain(adapter)
+
+        reaction_question = choice_judge.questions["reaction"]
+        assert set(reaction_question["criteria"]) == {a1, a2, "None", "Other"}
+        assert "a" not in reaction_question["criteria"]
+        assert _reactions(message) == [(a1,)]
+
+
+class TestIncludeThreadsOptOut:
+    """Parent-channel whitelist without thread inheritance on the reaction gate."""
+
+    @pytest.mark.asyncio
+    async def test_thread_skipped_parent_channel_still_consults(self, monkeypatch, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        adapter = _reaction_adapter(
+            reaction={"enabled": True, "channels": ["555"], "include_threads": False},
+        )
+        thread, parent = _thread_channel(monkeypatch)
+        thread_msg = _message(
+            channel=thread, msg_id=401, content="thread-only secret phrase",
+        )
+        parent_msg = _message(
+            channel=parent, msg_id=402, content="parent channel hello",
+        )
+
+        await adapter._dispatch_discord_message(thread_msg)
+        await adapter._dispatch_discord_message(parent_msg)
+        await _drain(adapter)
+
+        assert choice_judge.calls == 1
+        assert not _reactions(thread_msg)
+        assert _reactions(parent_msg) == [("🔥",)]
+        assert choice_judge.states[0]["candidate"]["content"] == "parent channel hello"
+        assert all(
+            "thread-only secret phrase" not in entry.get("content", "")
+            for entry in choice_judge.states[0]["recent_messages"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_include_threads_still_consults_in_thread(self, monkeypatch, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        adapter = _reaction_adapter(reaction={"enabled": True, "channels": ["555"]})
+        thread, _parent = _thread_channel(monkeypatch)
+        # This test pins SCOPE (include_threads default keeps the parent selecting the
+        # thread), so the bot is marked as a participant first: threads_require_membership
+        # (also default-on) would otherwise silence the thread before scope mattered.
+        adapter._threads.mark(str(thread.id))
+        thread_msg = _message(channel=thread, msg_id=411, content="thread ambient line")
+
+        await adapter._dispatch_discord_message(thread_msg)
+        await _drain(adapter)
+
+        assert choice_judge.calls == 1
+        assert _reactions(thread_msg) == [("🔥",)]
+
+
+class TestThreadsRequireMembership:
+    """Default-on thread membership: an unjoined thread of an opted-in parent is silent.
+
+    Scope answers "is this conversation in the gate's channels at all"
+    (``include_threads``); membership answers "once a thread is in scope, has this
+    bot already participated in it". A thread the bot has not joined never reaches
+    the judge — no consultation, no reaction — until ``_threads.mark()`` runs (which
+    the live dispatch path does itself after answering there). ``false`` restores the
+    legacy judge-every-in-scope-thread behavior. The parent channel is never
+    membership-gated.
+    """
+
+    @pytest.mark.asyncio
+    async def test_default_flag_unmarked_thread_never_consults(self, monkeypatch, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        adapter = _reaction_adapter(reaction={"enabled": True, "channels": ["555"]})
+        thread, _parent = _thread_channel(monkeypatch)
+        assert str(thread.id) not in adapter._threads  # unjoined, as the default assumes
+        thread_msg = _message(
+            channel=thread, msg_id=421, content="unjoined thread chatter",
+        )
+
+        await adapter._dispatch_discord_message(thread_msg)
+        tasks = await _drain(adapter)
+
+        assert choice_judge.calls == 0
+        assert not _reactions(thread_msg)
+        assert not tasks
+
+    @pytest.mark.asyncio
+    async def test_marked_thread_consults_and_reacts(self, monkeypatch, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        adapter = _reaction_adapter(reaction={"enabled": True, "channels": ["555"]})
+        thread, _parent = _thread_channel(monkeypatch)
+        unjoined = _message(channel=thread, msg_id=431, content="still quiet in here")
+        joined = _message(channel=thread, msg_id=432, content="now we are talking")
+
+        await adapter._dispatch_discord_message(unjoined)
+        adapter._threads.mark(str(thread.id))  # what a live dispatch in the thread does
+        await adapter._dispatch_discord_message(joined)
+        await _drain(adapter)
+
+        assert choice_judge.calls == 1  # only the post-membership message consulted...
+        assert not _reactions(unjoined)
+        assert _reactions(joined) == [("🔥",)]  # ...and only it earned a reaction.
+
+    @pytest.mark.asyncio
+    async def test_flag_false_unmarked_thread_still_consults(self, monkeypatch, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        adapter = _reaction_adapter(
+            reaction={"enabled": True, "channels": ["555"], "threads_require_membership": False},
+        )
+        thread, _parent = _thread_channel(monkeypatch)
+        thread_msg = _message(channel=thread, msg_id=441, content="legacy listening")
+
+        await adapter._dispatch_discord_message(thread_msg)
+        await _drain(adapter)
+
+        assert choice_judge.calls == 1
+        assert _reactions(thread_msg) == [("🔥",)]
+
+    @pytest.mark.asyncio
+    async def test_parent_channel_needs_no_mark(self, monkeypatch, choice_judge):
+        choice_judge.answer = REACT_FIRE
+        adapter = _reaction_adapter(reaction={"enabled": True, "channels": ["555"]})
+        _thread, parent = _thread_channel(monkeypatch)
+        parent_msg = _message(channel=parent, msg_id=451, content="parent channel ambient")
+
+        await adapter._dispatch_discord_message(parent_msg)
+        await _drain(adapter)
+
+        assert choice_judge.calls == 1
+        assert _reactions(parent_msg) == [("🔥",)]
 
 
 class TestEvidenceAcrossRapidMessages:

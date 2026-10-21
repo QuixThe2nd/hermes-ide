@@ -1279,6 +1279,7 @@ export const zhHant = defineLocale({
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
       upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
+      updateToast: next => `本地引擎有新組建（${next}）。可在 設定 → 本地模型 中更新。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',

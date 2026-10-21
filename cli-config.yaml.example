@@ -1415,6 +1415,7 @@ platform_toolsets:
 #   require_mention: true            # Require @mention in server channels (default: true)
 #   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
 #   auto_thread: true                # Auto-create thread on @mention (default: true)
+#   auto_thread_replies: true        # Quote-replies also auto-thread (default: true; false = inline reply)
 #   free_response_auto_thread: false # Free-response channels also auto-thread (default: reply inline)
 #   free_response_channels: ""       # Channel IDs where no mention is needed
 #   reactions: true                  # Show processing reactions (default: true)
@@ -1826,6 +1827,16 @@ display:
   # hidden, and nothing is removed from the logs. Per-platform override under
   # display.platforms.<platform>.suppress_warning_notifications.
   suppress_warning_notifications: false
+
+  # Gateway-only context-injection progress card ("🧠 gateway context
+  # injected") shown when the gateway wraps your message with envelope context
+  # (interruption system notes, voice prefixes). Memory/plugin/mixed context
+  # cards and ordinary tool progress are unaffected, and the model still
+  # receives the full injected content either way.
+  #   true:  Show the gateway context card (default)
+  #   false: Hide only the gateway-only card
+  # Per-platform override: display.platforms.<platform>.gateway_context_notifications
+  gateway_context_notifications: true
 
   # Gateway-only long-running status heartbeats.
   # When false, the platform does not receive periodic "⏳ Working — N min"

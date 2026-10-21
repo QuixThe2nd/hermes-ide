@@ -8,6 +8,7 @@ both config.yaml spellings) are pinned here. Adapter-level wiring lives in
 ``test_discord_reaction_gate_wiring.py``; only the HTTP socket is stubbed.
 """
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -23,9 +24,12 @@ from plugins.platforms.discord.reaction_gate import (
     NONE_OPTION,
     OTHER_OPTION,
     JevChoiceClient,
+    ReactionGateRuntime,
+    _criteria_for_judge_labels,
     build_reaction_criteria,
     build_reaction_instructions,
     choose_reaction,
+    reaction_label_map,
     split_reaction_clusters,
 )
 from plugins.platforms.discord.response_gate import (
@@ -70,7 +74,7 @@ def _conversation_state(content: str = "thanks, that fixed it!") -> dict:
 
 
 class TestChooseReactionBoundary:
-    """One pure rule: react iff P(None)+P(Other) is STRICTLY below one half."""
+    """Two-branch rule: low abstention mass OR runaway top emoji vs runner-up emoji."""
 
     @pytest.mark.parametrize(
         "none_p, other_p, expected",
@@ -109,6 +113,74 @@ class TestChooseReactionBoundary:
         assert choose_reaction({"👍": 0.30, "❤️": 0.10, "😂": 0.05}, EMOJIS) == "👍"
 
 
+class TestChooseReactionRunawayWinner:
+    """Branch (b): a runaway top emoji reacts even when abstention mass >= 0.5."""
+
+    def test_runaway_winner_reacts_despite_high_abstention(self):
+        probabilities = {"👍": 0.20, "❤️": 0.03, "😂": 0.00, NONE_OPTION: 0.74, OTHER_OPTION: 0.03}
+        # abstain = 0.77 >= 0.5, but 0.20 > 5 * 0.03.
+        assert choose_reaction(probabilities, EMOJIS) == "👍"
+
+    def test_exactly_five_times_is_not_enough(self):
+        probabilities = {"👍": 0.15, "❤️": 0.03, "😂": 0.00, NONE_OPTION: 0.80, OTHER_OPTION: 0.02}
+        # 0.15 == 5 * 0.03 — the strict comparison does not fire.
+        assert choose_reaction(probabilities, EMOJIS) is None
+
+    def test_just_under_five_times_abstains(self):
+        probabilities = {"👍": 0.14, "❤️": 0.03, "😂": 0.00, NONE_OPTION: 0.80, OTHER_OPTION: 0.03}
+        assert choose_reaction(probabilities, EMOJIS) is None
+
+    def test_runner_up_is_an_emoji_never_an_abstention_option(self):
+        probabilities = {"👍": 0.40, "❤️": 0.05, "😂": 0.00, NONE_OPTION: 0.55, OTHER_OPTION: 0.00}
+        # None (0.55) outranks every emoji but is ignored for the ratio: 0.40 > 5 * 0.05.
+        assert choose_reaction(probabilities, EMOJIS) == "👍"
+
+    def test_single_emoji_whitelist_has_no_runner_up(self):
+        # Branch (b) needs a runner-up emoji; a one-emoji whitelist can only use branch (a).
+        assert choose_reaction({"👍": 0.40, NONE_OPTION: 0.55, OTHER_OPTION: 0.05}, ("👍",)) is None
+        assert choose_reaction({"👍": 0.40, NONE_OPTION: 0.10, OTHER_OPTION: 0.05}, ("👍",)) == "👍"
+
+
+class TestReactionLabelMap:
+    """Judge labels for custom guild emojis stay collision-safe."""
+
+    def test_native_emojis_map_to_themselves(self):
+        emojis = ("👍", "❤️", "😂")
+        assert reaction_label_map(emojis) == {"👍": "👍", "❤️": "❤️", "😂": "😂"}
+
+    def test_custom_emojis_use_short_names(self):
+        pog = "<:pog:1553218458882154506>"
+        kekw = "<:kekw:456789>"
+        assert reaction_label_map((pog, kekw)) == {"pog": pog, "kekw": kekw}
+
+    def test_name_collision_keeps_full_entries(self):
+        a1, a2 = "<:a:1>", "<:a:2>"
+        assert reaction_label_map((a1, a2)) == {a1: a1, a2: a2}
+
+    def test_mixed_native_and_custom(self):
+        pog = "<:pog:123>"
+        assert reaction_label_map(("👍", pog)) == {"👍": "👍", "pog": pog}
+
+    def test_criteria_translation_uses_label_keys(self):
+        pog = "<:pog:123>"
+        label_map = reaction_label_map((pog, "👍"))
+        labeled = _criteria_for_judge_labels(
+            (pog, "👍"), label_map, {"<:pog:123>": "Fits hype.", "👍": "Fits agree."},
+        )
+        assert labeled["pog"] == "Fits hype."
+        assert labeled["👍"] == "Fits agree."
+        assert labeled[NONE_OPTION] == FIXED_NONE_TEXT
+
+    def test_config_criteria_keys_remain_full_entries_at_load(self):
+        pog = "<:pog:123>"
+        config = ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"],
+            "emojis": [pog, "👍"],
+            "criteria": {pog: "Guild pog only."},
+        })
+        assert config.criteria == {pog: "Guild pog only."}
+
+
 class TestSplitReactionClusters:
     """One whitelist entry → one reaction per grapheme cluster (the reaction add-on).
 
@@ -129,10 +201,12 @@ class TestSplitReactionClusters:
             ("🇦🇺", ["🇦🇺"]),  # regional-indicator pair: one
             ("👍", ["👍"]),  # plain single glyph: one
             ("👍👎", ["👍", "👎"]),  # two plain glyphs: two
+            ("<:pog:1553218458882154506>", ["<:pog:1553218458882154506>"]),
         ],
         ids=[
             "pointing-pair-two", "zwj-man-one", "vs16-heart-one", "skin-tone-handshake-one",
             "keycap-one", "flag-pair-one", "single-glyph-one", "two-glyphs-two",
+            "custom-guild-one",
         ],
     )
     def test_matrix(self, entry, clusters):
@@ -276,6 +350,7 @@ class TestReactionGateConfigFromDict:
     def test_defaults_when_omitted(self):
         config = ReactionGateConfig.from_dict({"enabled": True, "channels": [1]})
         assert config.active is True
+        assert config.include_threads is True
         assert config.emojis == DEFAULT_REACTION_EMOJIS
         assert config.criteria == {}
         assert config.model == "typesafe/jev-1.13"
@@ -283,6 +358,59 @@ class TestReactionGateConfigFromDict:
         assert config.context_messages == 10
         assert config.context_chars == 8000
         assert config.decisions_url is None
+
+    def test_include_threads_explicit_true_and_false(self):
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "include_threads": True,
+        }).include_threads is True
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "include_threads": False,
+        }).include_threads is False
+
+    def test_include_threads_garbage_refuses_to_load(self):
+        with pytest.raises(ValueError, match="include_threads"):
+            ReactionGateConfig.from_dict({
+                "enabled": True, "channels": ["555"], "include_threads": "maybe",
+            })
+
+    def test_threads_require_membership_defaults_true_when_omitted(self):
+        config = ReactionGateConfig.from_dict({"enabled": True, "channels": ["555"]})
+        assert config.threads_require_membership is True
+        assert ReactionGateConfig.from_dict(None).threads_require_membership is True
+
+    def test_threads_require_membership_explicit_true_and_false(self):
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": True,
+        }).threads_require_membership is True
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": False,
+        }).threads_require_membership is False
+
+    def test_threads_require_membership_recognized_tokens_load(self):
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": "false",
+        }).threads_require_membership is False
+        assert ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": "true",
+        }).threads_require_membership is True
+
+    def test_threads_require_membership_garbage_refuses_to_load(self):
+        with pytest.raises(ValueError, match="threads_require_membership"):
+            ReactionGateConfig.from_dict({
+                "enabled": True, "channels": ["555"], "threads_require_membership": "maybe",
+            })
+        with pytest.raises(ValueError, match="threads_require_membership"):
+            ReactionGateConfig.from_dict({
+                "enabled": True, "channels": ["555"], "threads_require_membership": 3,
+            })
+
+    def test_to_dict_omits_threads_require_membership_true_includes_false(self):
+        on_by_default = ReactionGateConfig.from_dict({"enabled": True, "channels": ["555"]})
+        assert "threads_require_membership" not in on_by_default.to_dict()
+        opted_out = ReactionGateConfig.from_dict({
+            "enabled": True, "channels": ["555"], "threads_require_membership": False,
+        })
+        assert opted_out.to_dict()["threads_require_membership"] is False
 
     def test_omitted_block_is_off(self):
         config = ReactionGateConfig.from_dict(None)
@@ -327,6 +455,30 @@ class TestReactionGateConfigFromDict:
         platform = PlatformConfig.from_dict({"enabled": True, "reaction_gate": block})
         assert platform.reaction_gate is None
 
+    def test_invalid_block_records_its_error_on_the_platform(self, caplog):
+        """The contained refusal stays visible: the gate stays off, the platform loads, and
+        the ValueError text lands in ``gate_config_warnings`` for the status surfaces."""
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+        platform = PlatformConfig.from_dict({
+            "enabled": True,
+            "reaction_gate": {
+                "enabled": True, "channels": ["555"],
+                "emojis": [f"e{i:02d}" for i in range(ReactionGateConfig.MAX_EMOJIS + 1)],
+            },
+        })
+        assert platform.reaction_gate is None
+        assert len(platform.gate_config_warnings) == 1
+        assert "reaction_gate: emojis must list at most" in platform.gate_config_warnings[0]
+        # The log line operators already watch is unchanged.
+        assert "Ignoring invalid reaction_gate config (gate stays off)" in caplog.text
+
+    def test_valid_block_records_no_warnings(self):
+        platform = PlatformConfig.from_dict({
+            "enabled": True, "reaction_gate": {"enabled": True, "channels": ["555"]},
+        })
+        assert platform.reaction_gate is not None
+        assert platform.gate_config_warnings == ()
+
     def test_to_dict_round_trip(self):
         config = ReactionGateConfig.from_dict({
             "enabled": True, "channels": [321], "emojis": ["👍", "🔥"],
@@ -335,6 +487,45 @@ class TestReactionGateConfigFromDict:
             "decisions_url": "http://127.0.0.1:9000/decisions",
         })
         assert ReactionGateConfig.from_dict(config.to_dict()) == config
+
+
+class TestReactionGateRuntimeSelects:
+    """Thread opt-out keeps parent-channel inheritance off the reaction gate only."""
+
+    @staticmethod
+    def _runtime(*, include_threads: bool, channels: tuple) -> ReactionGateRuntime:
+        config = ReactionGateConfig.from_dict({
+            "enabled": True, "channels": list(channels), "include_threads": include_threads,
+        })
+        return ReactionGateRuntime.build(config, "test-credential", logger=logging.getLogger("test"))
+
+    @staticmethod
+    def _thread_keys() -> frozenset:
+        return frozenset({
+            "9001", "dev-thread", "#dev-thread", "555", "general", "#general",
+        })
+
+    def test_include_threads_false_parent_id_only_does_not_select_thread(self):
+        gate = self._runtime(include_threads=False, channels=("555",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is False
+
+    def test_include_threads_false_explicit_thread_id_selects(self):
+        gate = self._runtime(include_threads=False, channels=("9001",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is True
+
+    def test_include_threads_false_thread_name_form_still_selects(self):
+        gate = self._runtime(include_threads=False, channels=("#dev-thread",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is True
+
+    def test_include_threads_false_parent_name_form_still_selects_thread(self):
+        # Combined thread keys carry the parent's bare/# name forms; the set cannot
+        # attribute a name to thread vs parent, so an exact parent-name listing matches.
+        gate = self._runtime(include_threads=False, channels=("#general",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is True
+
+    def test_include_threads_true_parent_id_still_selects_thread(self):
+        gate = self._runtime(include_threads=True, channels=("555",))
+        assert gate.selects(self._thread_keys(), is_thread=True) is True
 
 
 class TestConfigLoaderBridge:

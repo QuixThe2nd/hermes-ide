@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
 import { getApiRequestConnection } from '@/api/client'
-import { getLocalModelsJobs, installLocalRuntime } from '@/hermes'
+import { getLocalModelsJobs, getLocalModelsStatus, installLocalRuntime } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { $activeGatewayRoute } from '@/store/gateway'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -304,4 +304,33 @@ export function runningModelDownloads(jobs: readonly LocalRuntimeJob[]): LocalRu
 
 export function runningRuntimeInstall(jobs: readonly LocalRuntimeJob[]): LocalRuntimeJob | null {
   return jobs.find(j => j.kind === 'runtime-install' && j.status === 'running') ?? null
+}
+
+// One engine-update toast per app session: checked at boot (after the
+// gateway is ready), only when the user runs the local engine. The
+// download itself is always a button click in Local Models — this is a
+// pointer, not an installer.
+let updateNotified = false
+
+export async function checkLocalRuntimeUpdate() {
+  if (updateNotified) {
+    return
+  }
+
+  try {
+    const status = await getLocalModelsStatus()
+
+    if (status.enabled && status.update_available) {
+      updateNotified = true
+      notify({
+        durationMs: 10_000,
+        kind: 'info',
+        title: translateNow('settings.localModels.title'),
+        message: translateNow('settings.localModels.updateToast', status.configured_tag)
+      })
+    }
+  } catch {
+    // Backend without the endpoint (older runtime) or transient failure —
+    // silently skip; the pane still shows the update row when opened.
+  }
 }
