@@ -769,6 +769,94 @@ def _is_inert_python_observation(payload: str) -> bool:
     )
 
 
+# Short options that never consume a separate argv token (clustered ``-iu`` included).
+_PYTHON_NO_ARG_SHORTS = frozenset("bdEhiqsuvx?")
+# Options whose value may be attached or occupy the next token.
+_PYTHON_VALUE_SHORTS = frozenset("WXI")
+
+
+def _python_argv_reads_program_from_stdin(arguments: list[str]) -> bool:
+    """True when the interpreter would read its program from stdin, not argv.
+
+    A visible ``-c``/``-m`` operand or script path returns False so masking may
+    still apply to that segment. Unrecognized option shapes fail closed (True):
+    piped producer output must not be masked away (comment4335516402).
+    """
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token == "--":
+            index += 1
+            while index < len(arguments):
+                if arguments[index] == "-":
+                    return True
+                if not arguments[index].startswith("-"):
+                    return False
+                index += 1
+            return True
+        if token in ("-c", "-m"):
+            return False
+        if token == "-":
+            return True
+        if not token.startswith("-"):
+            return False
+        if token.startswith("--"):
+            if "=" in token:
+                index += 1
+                continue
+            if token in ("--help", "--version"):
+                index += 1
+                continue
+            if index + 1 < len(arguments) and not arguments[index + 1].startswith("-"):
+                index += 2
+                continue
+            return True
+        body = token[1:]
+        if not body:
+            return True
+        if body in ("h", "?", "V"):
+            index += 1
+            continue
+        if body[0] == "c" or body[0] == "m":
+            return False
+        if body[0] == "O":
+            index += 1
+            continue
+        if body[0] in _PYTHON_VALUE_SHORTS:
+            if len(body) > 1:
+                index += 1
+                continue
+            index += 2
+            continue
+        if all(char in _PYTHON_NO_ARG_SHORTS for char in body):
+            index += 1
+            continue
+        return True
+    return True
+
+
+def _line_pipes_to_stdin_python_consumer(tokens: list[str]) -> bool:
+    """True when a ``|``/``|&`` segment feeds a stdin-program Python/PyPy consumer.
+
+    ``||`` is not a pipe (it is its own control segment) and is ignored here.
+    """
+    segments = list(_split_segments(tokens, keep_controls=True))
+    for position, segment in enumerate(segments):
+        if len(segment) != 1 or segment[0] not in ("|", "|&"):
+            continue
+        if position + 1 >= len(segments):
+            return True
+        consumer = segments[position + 1]
+        index = _executed_command_index(consumer)
+        if index is None:
+            return True
+        if not _is_python_interpreter(consumer[index]):
+            continue
+        if _python_argv_reads_program_from_stdin(consumer[index + 1 :]):
+            return True
+    return False
+
+
 def _mask_python_c_arguments(arguments: list[str]) -> Optional[list[str]]:
     """Mask only the leading standalone ``-c`` code operand when inert; else ``None``.
 
@@ -806,6 +894,9 @@ def _mask_data_sink_arguments(text: str) -> str:
         try:
             tokens = _shlex_tokens(line)
         except ValueError:
+            lines_out.append(line)
+            continue
+        if _line_pipes_to_stdin_python_consumer(tokens):
             lines_out.append(line)
             continue
 
