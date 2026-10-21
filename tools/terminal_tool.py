@@ -3041,6 +3041,26 @@ def _resolve_command_cwd(
     return recorded or default_cwd
 
 
+def _explicit_local_workdir_error(workdir: Optional[str], *, env_type: str, default_cwd: str) -> Optional[str]:
+    """Error if an explicit local ``workdir`` cannot be entered.
+
+    Session/default cwd recovery still uses ``_resolve_safe_cwd`` (deleted cwd
+    must not wedge later calls). An explicit per-command workdir is a caller
+    assertion: falling back silently runs the command against the wrong tree
+    (pc_83befb96bc54).
+    """
+    if not workdir or env_type != "local":
+        return None
+    from tools.environments.local import _cwd_usable
+
+    candidate = os.path.expanduser(str(workdir))
+    if not os.path.isabs(candidate):
+        candidate = str(Path(default_cwd) / candidate)
+    if _cwd_usable(candidate):
+        return None
+    return f"workdir does not exist or is not a usable directory: {workdir}"
+
+
 # Floor for the pre-exec guard's share of the command deadline: a short command timeout
 # (1s in tests, a few seconds in practice) must not turn the guard's own cold-start cost
 # (module imports, git probes under load) into a refusal; the wedge it bounds lasted an hour.
@@ -3586,6 +3606,17 @@ def terminal_tool(
                 session_key=session_key,
                 env_type=env_type,
             )
+            workdir_err = _explicit_local_workdir_error(
+                workdir, env_type=env_type, default_cwd=cwd,
+            )
+            if workdir_err:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": workdir_err,
+                    "status": "error",
+                    "cwd": effective_cwd,
+                }, ensure_ascii=False)
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -3613,6 +3644,7 @@ def terminal_tool(
                     "pid": proc_session.pid,
                     "exit_code": 0,
                     "error": None,
+                    "cwd": effective_cwd,
                 }
                 # Background spawns detached and returns exit_code 0 immediately;
                 # it never inline-polls is_interrupted(), so the stale-bit kill
