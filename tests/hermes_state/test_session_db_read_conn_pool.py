@@ -785,3 +785,22 @@ def test_failed_initialization_does_not_register_duplicate_writer_handle(db, mon
         SessionDB(db_path=db.db_path)
 
     assert registered == []
+
+
+def test_close_unregisters_from_the_runtime_path_read_budget(tmp_path):
+    """The consolidated hermes_state._PathReadBudget (what SessionDB actually uses
+    after the mixin refactor) must keep unregister parity with the readpool
+    variant: close() calls it unconditionally, and the method went missing in the
+    consolidation, so every SessionDB.close() raised AttributeError."""
+    import hermes_state
+
+    budget = hermes_state._read_budget_for(tmp_path / "state.db")
+    assert isinstance(budget, hermes_state._PathReadBudget)
+
+    handle = SessionDB(db_path=tmp_path / "state.db")
+    assert handle in budget._members
+    handle.close()  # must not raise AttributeError
+    assert handle not in budget._members
+
+    # Idempotent on a never-registered / already-unregistered handle.
+    budget.unregister(handle)

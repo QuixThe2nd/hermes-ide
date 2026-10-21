@@ -361,6 +361,7 @@ discord:
   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  auto_thread_replies: true       # Quote-replies also auto-thread (default: true; false = inline)
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
@@ -445,7 +446,7 @@ discord:
   free_response_auto_thread: true  # thread every top-level message there
 ```
 
-Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins, voice-linked text channels always reply inline, and reply-type messages are never auto-threaded.
+Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins, voice-linked text channels always reply inline, and reply-type messages follow [`discord.auto_thread_replies`](#discordauto_thread_replies) (auto-threaded by default).
 
 `DISCORD_FREE_RESPONSE_AUTO_THREAD` wins over the `config.yaml` key when both are set — the YAML value only seeds the env var when it isn't already set, like every other `discord.*` bridge.
 
@@ -527,13 +528,13 @@ discord:
 
 **Custom guild emojis.** Entries in Discord's `<:name:id>` form are offered to the judge by their short `name` (e.g. `pog`), while the bot still reacts with the full token Discord requires. Optional `criteria:` overrides remain keyed by the full entry as in config. If two whitelist entries would share the same short name (including the same name on different servers), both are offered under their full `<:name:id>` tokens instead.
 
-**Independent of [`response_gate`](#discordresponse_gate).** The two gates share only a transport. This one judges *every* eligible message in its channels — `@mentions`, replies, and other bots' conversational messages included, whether or not the speaking gate (or the mention prefilter) would have answered them — and its outcome never feeds back into speaking: a reaction success or failure creates no session, forces no text reply, and blocks none. The channels, verdicts and evidence of the two gates are configured separately and can overlap or not at all.
+**Independent of [`response_gate`](#discordresponse_gate).** The two gates share only a transport. This one judges *every* eligible human message in its channels — `@mentions` and replies included, whether or not the speaking gate (or the mention prefilter) would have answered them. Bot-authored messages are never candidates: they are excluded before any judge consult on live and backfill delivery alike, and never enter the evidence buffer, while this bot's own delivered replies still count as conversation evidence. The gate's outcome never feeds back into speaking: a reaction success or failure creates no session, forces no text reply, and blocks none. The channels, verdicts and evidence of the two gates are configured separately and can overlap or not at all.
 
 **Thread scope.** `include_threads` defaults to `true`, so listing a parent channel id also selects its threads. With `include_threads: false`, a listed parent channel **id** no longer selects its threads; opt a thread in directly by its own id or name. Name-based listings match by exact name (parent name forms appear in every thread's key set too), so list parent channels by id when using the opt-out.
 
 **Thread membership.** `threads_require_membership` defaults to `true` and composes with that scope rule: once a thread is in scope, it is still only evaluated after the bot has already participated in that thread — an unjoined thread gets no consultation, no reaction, and buffers no evidence. Set `false` to react in every in-scope thread. The listed parent channel itself is never membership-gated.
 
-**Eligibility.** The bot's own messages, system/lifecycle events (joins, pins, …), DMs, [`ignored_channels`](#discordignored_channels), channels outside `channels`, and messages from users who fail the authorization allowlist are never evaluated and never reacted to. Each message id is considered once no matter how it is delivered (live or backfill), so a duplicate or concurrent delivery cannot double-react.
+**Eligibility.** The bot's own messages, messages authored by other bots, system/lifecycle events (joins, pins, …), DMs, [`ignored_channels`](#discordignored_channels), channels outside `channels`, and messages from users who fail the authorization allowlist are never evaluated and never reacted to. Each message id is considered once no matter how it is delivered (live or backfill), so a duplicate or concurrent delivery cannot double-react.
 
 **Evidence.** The judge sees the candidate message plus a bounded window of recent messages from the same channel *or thread* — up to `context_messages` messages and `context_chars` characters. The window holds the messages that preceded the candidate when it arrived (never the candidate itself) plus this bot's own delivered final replies, so a user's "thanks" after one of them reads as connected. A thread's evidence never merges its parent channel's history, and nothing from other channels is included. Message text is evidence about the conversation, never instructions to the judge, and logs carry only channel/message ids and the outcome — never message content.
 
@@ -549,7 +550,21 @@ Values outside the documented ranges (`timeout_seconds` above `30`, more than `3
 
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
-Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead.
+Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead. Quote-replies (`discord.MessageType.reply`) are auto-threaded like any other admitted message unless [`discord.auto_thread_replies`](#discordauto_thread_replies) is `false`.
+
+#### `discord.auto_thread_replies`
+
+**Type:** boolean — **Default:** `true`
+
+When `true` (the default), an admitted quote-reply in an eligible guild text channel gets its own auto-created thread, exactly like an `@mention` — the referenced message's text and attachments still reach the agent as reply context. Set to `false` to restore the previous behavior where quote-replies are answered inline in the channel:
+
+```yaml
+discord:
+  auto_thread: true           # required — this flag refines it
+  auto_thread_replies: false  # answer quote-replies inline instead of threading them
+```
+
+Requires `discord.auto_thread: true`. All other exclusions still apply: DMs and existing threads are unaffected, and [`discord.no_thread_channels`](#discordno_thread_channels), voice-linked text channels, and free-response channels (unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`) keep their inline replies.
 
 #### `discord.reactions`
 

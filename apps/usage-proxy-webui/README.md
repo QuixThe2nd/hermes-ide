@@ -2,7 +2,7 @@
 
 A small, read-only web dashboard (the "AI Usage" page) for the Hermes usage-proxy SQLite ledger. One shared filter state — time range (24 h / 7 d / 30 d / all), harness, provider (the ledger's actual upstream route), model, chat type, chat, route and outcome — narrows every card, chart, breakdown and event list at once; the state lives in the page URL so a refresh keeps it and a copied link reproduces it. Per-chat rows come from the ledger's `chat_type`/`chat_id`/`chat_name` columns (actual recorded identity only — threads stay their own chats, cron jobs and CLI sessions fall back to their durable job/session ids, and anything written before those columns existed is an explicit `Unknown`; nothing is inferred from timestamps or models). Harness names are display-mapped: the gateway's `hermes` caller renders as **Hermes IDE** and per-profile `hermes:<profile>` callers as **Hermes IDE · \<profile\>**; raw caller strings remain the JSON keys, filter values and colour-hash inputs everywhere. In the per-harness table, profile callers render as indented subrows under a Hermes IDE parent row whose totals also fold in any pre-split plain `hermes` traffic — the subtotal is display-only (never added into any total) and not clickable, because the harness filter matches one exact caller; the profile subrows drill to their exact caller. Events with no recorded caller render as `unattributed`. Built with Python stdlib only (`http.server` + `sqlite3`) — no external dependencies, no CDN assets.
 
-**LAN-only, no authentication.** Bind to a private interface and do not port-forward this service to the public internet.
+**LAN-only.** The dashboards are unauthenticated (bind to a private interface and do not port-forward this service to the public internet). The `/admin` panel additionally requires an operator session; see [Admin panel](#admin-panel).
 
 ## Run
 
@@ -19,6 +19,9 @@ Defaults: binds `127.0.0.1:9136` and reads `~/.hermes/usage-proxy/usage.sqlite`.
 | `--host` | `127.0.0.1` | Bind address |
 | `--port` | `9136` | HTTP port |
 | `--db` | `~/.hermes/usage-proxy/usage.sqlite` | Path to the ledger SQLite file (opened read-only) |
+| `--config` | `$HERMES_HOME/config.yaml` | config.yaml the admin panel reads `llm_usage_proxy` / `quota_channels` sections from |
+| `--route NAME=BASE` | — | Route the proxy serves, declared to the admin panel (repeatable; mirrors the proxy's `--upstream` for routes not resolvable from config) |
+| `--admin-secret-file` | `webui-admin.secret` next to the ledger | Admin login secret file (auto-generated `0600` on first start); empty string disables `/admin` |
 
 Example:
 
@@ -36,6 +39,19 @@ All routes accept the shared filter query (`?range=24h|7d|30d|all&harness=…&pr
 - `GET /api/timeseries` — JSON buckets for the chart (granularity follows the range; per-harness/model and per-chat splits)
 
 Filters combine with AND; each facet's option list is computed over all *other* filters so it stays usable when narrowed, while totals, charts, the per-chat table and events apply all of them. Aggregates are computed over the full filtered ledger in SQL — never over the latest N events — and request values travel only as bound parameters.
+
+## Admin panel
+
+`GET /admin` is a protected operator panel for the routing backend served by the companion proxy (`plugins/llm_usage_proxy`) and the collection-only quota collector (`plugins/quota_channels`). It lets an operator:
+
+- list **policy callers** (names + token fingerprints only — tokens are minted once by `hermes llm_usage_proxy policy-callers create` and never rendered here);
+- view, save, **reorder**, enable/disable and remove the per-caller ordered `route:model` candidate lists for each API family (`chat_completions`, `anthropic_messages`, `responses`) — every write goes through the proxy's own `RoutingStore` mutation path (validated against configured routes and declared endpoint capabilities, cross-process locked), so the running proxy picks changes up without a restart;
+- see **live cooldowns** and the **recent routing decisions** journal (selection, skip and failover reasons — no prompt or credential data);
+- see **provider quota cards** from the Discord-independent collector snapshot: per-provider status (`fresh` / `stale` / `error` / `unknown` / `disabled`), remaining %, reset horizons and age — a failed refresh shows the retained last-good reading with its age, never a zero. The panel only reads collector state; collection runs on its own schedule (`plugins/quota_channels/run.py --collect-only`).
+
+**Security model.** The admin secret lives only in a root-only file (`--admin-secret-file`, auto-generated `0600` on first start; read it with `cat` on the host to sign in). It never appears in config, URLs or logs — only the file path is printed to stderr at startup. Login mints an in-memory session cookie (`HttpOnly`, `SameSite=Strict`, 12 h TTL; restarting the webui revokes all sessions). Every mutating POST additionally requires the per-session CSRF token and a matching `Origin` host. Anonymous requests to `/admin*` are redirected (GET) or refused (403 POST) without disclosing any state; the public dashboards are unchanged and stay GET-readable without authentication. Minting/revoking policy-caller tokens and provider keys stays with the CLI — the panel never displays a usable credential.
+
+Admin JSON readback (session required): `GET /admin/api/state` — policies with per-entry usability, cooldowns, decisions, quota snapshot, route capabilities and stored-key counts.
 
 ## Time chart
 
@@ -97,4 +113,4 @@ Copy to `/etc/systemd/system/`, adjust `--host` to a private interface if you wa
 
 ## Security note
 
-This UI has **no auth** and exposes usage metrics. Keep it on a private network (`192.168.x.x` or similar). **Do not** expose via reverse proxy or SSH port-forward to the public internet.
+The dashboard routes (`/`, `/api/*`, `/captures`) have **no auth** and expose usage metrics; the `/admin` panel requires the secret-file session described above. Keep the service on a private network (`192.168.x.x` or similar). **Do not** expose via reverse proxy or SSH port-forward to the public internet.

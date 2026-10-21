@@ -15,9 +15,12 @@ the reload watcher like every other ``reaction_gate`` key.
 Design constraints (see the reaction-gate section of the Discord config reference):
 
 * **Independent.** The speaking gate keeps its own scope, verdicts and evidence. This
-  gate evaluates every eligible message — mentions, replies and other bots' messages
-  included — whether or not the speaking gate suppresses it, and a reaction success or
-  failure never creates a session, forces a text reply, or blocks one.
+  gate evaluates every eligible human message — mentions and replies included —
+  whether or not the speaking gate suppresses it. Bot-authored messages are never
+  candidates: they are excluded before any judge consult on live and recovered
+  delivery alike and never enter the evidence buffer, while this assistant's own
+  delivered replies remain conversation evidence. A reaction success or failure
+  never creates a session, forces a text reply, or blocks one.
 * **Fail closed.** A missing credential, timeout, cancellation, transport error, HTTP
   error, unparsable body, missing option, non-finite/boolean/out-of-range probability,
   incoherent distribution, unknown option or an unexpected decision-formula failure

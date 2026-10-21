@@ -2068,7 +2068,20 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     """Fresh xAI OAuth (api_key, base_url) for aux clients, or None.
 
     Pool first (some xAI OAuth logins exist only as pool entries), then the singleton auth-store resolver.
+    Shared-owner mode preempts both: the caller token stands in and the central
+    proxy injects the real xAI OAuth credential it alone refreshes.
     """
+    try:
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL as _XAI_DEFAULT_BASE
+        from hermes_cli.auth import AuthError
+        override = (_scoped_key_env("HERMES_XAI_BASE_URL") or _scoped_key_env("XAI_BASE_URL")).rstrip("/")
+        owner_token = _shared_owner_caller_token_for(override or _XAI_DEFAULT_BASE)
+        if owner_token:
+            return owner_token, override or _XAI_DEFAULT_BASE
+    except AuthError:
+        raise
+    except Exception:
+        pass
     try:
         from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
         pool = load_pool("xai-oauth")
@@ -2099,8 +2112,80 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return _creds_pair(creds)
 
 
+def _shared_owner_caller_token_for(base_url: str) -> str:
+    """This profile's caller token when *base_url* is routed through a shared owner, else "".
+
+    Shared-owner mode (``llm_usage_proxy.owner_endpoint`` set): the profile holds
+    no upstream credential of its own — clients present the profile's caller
+    token to the provider's usual endpoint, the routing seam rewrites the
+    request to the central proxy, and the proxy swaps the token for the real
+    credential (a stored static key, or an OAuth token the proxy alone obtains
+    and refreshes). Returned only when the adopted route table actually covers
+    the URL, so providers the owner does not manage keep their normal
+    credential resolution (and fail-open behavior).
+
+    When ``llm_usage_proxy.enforce`` is on, unrouted destinations and a missing
+    caller token raise :class:`hermes_cli.auth.AuthError` instead of falling
+    through to local credentials.
+    """
+    enforce = False
+    try:
+        from plugins.llm_usage_proxy.owner import caller_token, owner_policy
+        from hermes_cli.auth import AuthError
+        from hermes_cli.llm_usage_routes import base_url_routable
+
+        policy = owner_policy()
+        if policy is None:
+            return ""
+        enforce = bool(policy.get("enforce"))
+        endpoint = str(policy.get("endpoint") or "")
+        base = str(base_url or "").strip().rstrip("/")
+        if not base:
+            return ""
+        if not base_url_routable(base):
+            if enforce:
+                raise AuthError(
+                    f"destination {base} is not routed by the shared owner at"
+                    f" {endpoint}; enforced routing refuses to resolve local"
+                    " credentials for it.",
+                    code="shared_owner_unrouted",
+                )
+            return ""
+        token = (caller_token() or "").strip()
+        if not token:
+            if enforce:
+                raise AuthError(
+                    f"shared owner {endpoint} is configured and enforced but this"
+                    " profile has no caller token: set"
+                    " HERMES_USAGE_PROXY_CALLER_TOKEN in this profile's .env to"
+                    " a token minted on the owner with"
+                    " `hermes llm_usage_proxy callers create <name>`.",
+                    code="shared_owner_no_caller_token",
+                )
+            return ""
+        return token
+    except AuthError:
+        raise
+    except Exception as exc:
+        if enforce:
+            from hermes_cli.auth import AuthError
+            raise AuthError(
+                "shared-owner caller token resolution failed under enforced"
+                f" routing ({type(exc).__name__})",
+                code="shared_owner_unrouted",
+            ) from exc
+        return ""
+
+
 def _read_codex_access_token() -> Optional[str]:
-    """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token."""
+    """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token.
+
+    Shared-owner mode: the profile holds no OAuth token at all — its caller
+    token stands in, and the central proxy injects the real Codex credential
+    (which it alone obtains and refreshes)."""
+    owner_token = _shared_owner_caller_token_for(_codex_base_url_override() or _CODEX_AUX_BASE_URL)
+    if owner_token:
+        return owner_token
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)
@@ -2285,6 +2370,12 @@ def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = 
         return None, None
     if not _is_free_model(or_model):
         _warn_paid_lane_once(or_model)
+    owner_or_key = _shared_owner_caller_token_for(OPENROUTER_BASE_URL)
+    if owner_or_key:
+        logger.debug("Auxiliary client: OpenRouter via shared-owner caller token")
+        return _create_openai_client(
+            api_key=owner_or_key, base_url=OPENROUTER_BASE_URL, default_headers=build_or_headers()
+        ), or_model
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
@@ -2894,16 +2985,22 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    codex_token = _pool_runtime_api_key(entry) if pool_present else None
     codex_override = _codex_base_url_override()
-    if codex_token:
-        base_url = codex_override or _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+    codex_base_key = codex_override or _CODEX_AUX_BASE_URL
+    owner_token = _shared_owner_caller_token_for(codex_base_key)
+    if owner_token:
+        codex_token = owner_token
+        base_url = codex_base_key
     else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = codex_override or _CODEX_AUX_BASE_URL
+        pool_present, entry = _select_pool_entry("openai-codex")
+        codex_token = _pool_runtime_api_key(entry) if pool_present else None
+        if codex_token:
+            base_url = codex_override or _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+        else:
+            codex_token = _read_codex_access_token()
+            if not codex_token:
+                return None, None
+            base_url = codex_override or _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token, base_url=base_url,
@@ -4659,6 +4756,9 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
     """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
     Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
     honoured at the same precedence or every aux call 401s."""
+    owner_key = _shared_owner_caller_token_for(custom_base)
+    if owner_key:
+        return owner_key
     custom_key: Any = (custom_entry.get("api_key") or "").strip()
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
     if not custom_key and custom_key_env:
@@ -5159,17 +5259,22 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
     if provider == "anthropic":
-        client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key)
+        owner_token = _shared_owner_caller_token_for("https://api.anthropic.com")
+        if owner_token:
+            client, default_model = _try_anthropic(explicit_api_key=owner_token)
+        else:
+            client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key)
         return _route_or_warn(req, client, default_model,
                               "resolve_provider_client: anthropic requested but no Anthropic credentials found")
     creds = resolve_creds(provider)
-    api_key = str(creds.get("api_key", "")).strip()
-    # Explicit api_key override (fallback_model / custom_providers entry) lets callers
-    # authenticate where no built-in credential is registered for this alias.
-    api_key = _normalize_api_key(req.explicit_api_key) or api_key
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
+    owner_api_key = _shared_owner_caller_token_for(raw_base_url)
+    api_key = str(creds.get("api_key", "")).strip()
+    # Explicit api_key override (fallback_model / custom_providers entry) lets callers
+    # authenticate where no built-in credential is registered for this alias.
+    api_key = owner_api_key or _normalize_api_key(req.explicit_api_key) or api_key
     if provider == "actual":
         with contextlib.suppress(Exception):
             from hermes_cli.auth import (
@@ -7191,6 +7296,10 @@ def _resolve_call_client(
             # Explicit provider with no credentials: honor the task fallback_chain before
             # raising (fallback entries may use OAuth / credential-pool auth).
             _explicit = (resolved_provider or "").strip().lower()
+            if task == "moa_reference":
+                nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
+                raise AuxiliaryClientUnavailable(
+                    nous_detail or missing_provider_credentials_message(_explicit))
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit)
@@ -7592,6 +7701,11 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     regardless of user intent. Auth errors from an explicit provider may only use the task's
     own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
+    if task == "moa_reference":
+        logger.debug(
+            "Auxiliary %s%s: skipping provider fallback — MoA reference is pinned to %s",
+            task or "call", tag, resolved_provider)
+        return None
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
     # and connection failures are capacity problems, not request constraints. See #26803: daily token quota

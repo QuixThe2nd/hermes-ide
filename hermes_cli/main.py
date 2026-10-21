@@ -844,6 +844,16 @@ from hermes_cli.main_tui_launch import (
     _sync_bundled_skills_quietly,
 )
 
+def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
+    """Import-safe Termux check for cold-start-sensitive CLI paths."""
+    check = env or os.environ
+    prefix = str(check.get("PREFIX", ""))
+    return bool(
+        check.get("TERMUX_VERSION")
+        or "com.termux/files/usr" in prefix
+        or prefix.startswith("/data/data/com.termux/")
+    )
+
 
 def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
     """Look up a ref in .git/packed-refs without spawning git.
