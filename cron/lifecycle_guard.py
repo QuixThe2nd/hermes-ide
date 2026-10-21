@@ -846,7 +846,7 @@ def _split_line_on_pipe_operators(line: str) -> list[str]:
             at_word_start = False
             position += 2 if position + 1 < len(line) and line[position + 1] == "&" else 1
             continue
-        if character.isspace():
+        if character in (" ", "\t"):
             at_word_start = True
             current.append(character)
             position += 1
