@@ -776,66 +776,82 @@ _KNOWN_TEXT_STDIN_CONSUMERS = frozenset({"cat", "grep", "egrep", "fgrep"})
 def _split_line_on_pipe_operators(line: str) -> list[str]:
     """Split *line* on real ``|``/``|&`` operators outside quotes and shell comments.
 
-    An unquoted ``#`` at word-start (line start or after whitespace) begins a comment through
-    end-of-line; characters in the comment are not pipe operators or command words.
+    An unquoted ``#`` at word-start (line start or after unquoted, unescaped whitespace) begins a
+    comment through end-of-line; characters in the comment are not pipe operators or command words.
     ``||`` is not a pipe.
     """
     segments: list[str] = []
     current: list[str] = []
     in_single = in_double = escape = False
+    at_word_start = True
     position = 0
     while position < len(line):
         character = line[position]
         if escape:
             escape = False
+            at_word_start = False
             current.append(character)
             position += 1
             continue
         if in_single:
             if character == "'":
                 in_single = False
+            at_word_start = False
             current.append(character)
             position += 1
             continue
         if in_double:
             if character == "\\":
                 escape = True
+                at_word_start = False
                 current.append(character)
                 position += 1
                 continue
             if character == '"':
                 in_double = False
+            at_word_start = False
             current.append(character)
             position += 1
             continue
         if character == "\\":
             escape = True
+            at_word_start = False
             current.append(character)
             position += 1
             continue
         if character == "'":
             in_single = True
+            at_word_start = False
             current.append(character)
             position += 1
             continue
         if character == '"':
             in_double = True
+            at_word_start = False
             current.append(character)
             position += 1
             continue
-        if character == "#" and (position == 0 or line[position - 1].isspace()):
+        if character == "#" and at_word_start:
             current.append(line[position:])
             break
         if character == "|":
             if position + 1 < len(line) and line[position + 1] == "|":
+                at_word_start = False
                 current.append("|")
                 current.append("|")
                 position += 2
                 continue
             segments.append("".join(current))
             current = []
+            at_word_start = False
             position += 2 if position + 1 < len(line) and line[position + 1] == "&" else 1
             continue
+        if character.isspace():
+            at_word_start = True
+            current.append(character)
+            position += 1
+            continue
+        at_word_start = False
         current.append(character)
         position += 1
     segments.append("".join(current))
