@@ -455,9 +455,9 @@ def _handle_list(args: Dict[str, Any]) -> str:
             -float(item.get("ts_epoch") or 0),
         )
     )
-    # Bounded pagination over the deterministic sort: total/has_more let a
-    # caller enumerate a backlog larger than the list cap exactly once
-    # (pc_900b045725f6).
+    # Bounded pagination over deterministic sort (pc_900b045725f6). Exact-once
+    # paging only if matching backlog+ordering unchanged; concurrent writes may
+    # repeat/skip rows. total/has_more are per-request; no cross-request snapshot.
     total = len(items)
     items = items[offset : offset + limit]
     return _json(
