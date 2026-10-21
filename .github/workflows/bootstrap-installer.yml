@@ -26,11 +26,14 @@ jobs:
     name: install.sh sandbox install + stamp verification
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      INSTALL_DIR: ${{ runner.temp }}/bootstrap-install
-      HERMES_HOME: ${{ runner.temp }}/hermes-home
-      HERMES_RUNTIME_DIR: ${{ runner.temp }}/hermes-tools
     steps:
+      - name: Initialize sandbox paths
+        shell: bash
+        run: |
+          echo "INSTALL_DIR=$RUNNER_TEMP/bootstrap-install" >> "$GITHUB_ENV"
+          echo "HERMES_HOME=$RUNNER_TEMP/hermes-home" >> "$GITHUB_ENV"
+          echo "HERMES_RUNTIME_DIR=$RUNNER_TEMP/hermes-tools" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Stage manifest is well-formed protocol v1
