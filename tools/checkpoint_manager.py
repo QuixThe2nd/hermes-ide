@@ -104,8 +104,13 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
     return None
 
 
+# Git quotes the path in single quotes without C-escaping, so it can itself
+# contain apostrophes ("vendor/Bob's-lib/") — hence non-greedy, and the
+# literal tail keeps a pathological path containing the same phrase from
+# matching past its own end.  ``_isolated_git_env`` pins LC_ALL=C, keeping
+# this (English) diagnostic parseable under any parent locale.
 _UNBORN_NESTED_REPO_RE = re.compile(
-    r"error: '([^']+)' does not have a commit checked out")
+    r"^error: '(.+?)' does not have a commit checked out$", re.MULTILINE)
 
 
 def _is_deterministic_staging_failure(stderr: str) -> bool:
@@ -259,10 +264,15 @@ def _isolated_git_env() -> dict:
     """Subprocess env with the user's global/system git config neutralised and inherited GIT_*
     redirects dropped: user settings (``commit.gpgsign``, hooks, credential helpers) would break
     background snapshots or spawn pinentry prompts.  GLOBAL/SYSTEM need git 2.32+; NOSYSTEM covers
-    older git.  HOME is kept — rewriting it would change which ~/.gitconfig is hidden."""
+    older git.  HOME is kept — rewriting it would change which ~/.gitconfig is hidden.  Locale is
+    pinned to C so git's diagnostics stay English (and byte-stable for non-ASCII paths) whatever
+    the parent process inherited — ``_UNBORN_NESTED_REPO_RE`` parses those diagnostics."""
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    for var in ("LANG", "LC_MESSAGES", "LANGUAGE"):
+        env.pop(var, None)
+    env["LC_ALL"] = "C"
     for key in _GIT_LEAK_VARS:
         env.pop(key, None)
     return env
