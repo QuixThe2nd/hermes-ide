@@ -770,32 +770,19 @@ def _is_inert_python_observation(payload: str) -> bool:
 
 
 def _mask_python_c_arguments(arguments: list[str]) -> Optional[list[str]]:
-    """Replace inert ``python -c`` payloads with ``arg``. ``None`` if nothing to mask.
+    """Mask only the leading standalone ``-c`` code operand when inert; else ``None``.
 
-    Only payloads matching :func:`_is_inert_python_observation` are masked; any argument
-    carrying an execution marker disables masking for the whole segment (fail closed, as
-    with data sinks).
+    After the interpreter accepts ``-c`` <program>, remaining tokens are program ``sys.argv``
+    (a later ``-c`` is data, not another code operand). Unsupported layouts stay literal by
+    returning ``None``. Execution markers in any argument disable masking (fail closed).
     """
     if any(marker in argument for argument in arguments for marker in _UNSAFE_DATA_ARG_MARKERS):
         return None
-    masked: list[str] = []
-    changed = False
-    index = 0
-    while index < len(arguments):
-        token = arguments[index]
-        if token == "-c" and index + 1 < len(arguments):
-            payload = arguments[index + 1]
-            masked.append(token)
-            if _is_inert_python_observation(payload):
-                masked.append("arg")
-                changed = True
-            else:
-                masked.append(payload)
-            index += 2
-            continue
-        masked.append(token)
-        index += 1
-    return masked if changed else None
+    if not arguments or arguments[0] != "-c" or len(arguments) < 2:
+        return None
+    if not _is_inert_python_observation(arguments[1]):
+        return None
+    return ["-c", "arg", *arguments[2:]]
 
 
 def _mask_data_sink_arguments(text: str) -> str:
