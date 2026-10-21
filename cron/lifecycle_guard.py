@@ -892,8 +892,105 @@ def _resolution_crossed_string_command_option(segment: list[str]) -> bool:
     return False
 
 
+def _line_has_output_redirection(line: str) -> bool:
+    """True when *line* carries an unquoted, unescaped output redirection or process substitution.
+
+    Covers ``>``/``>>``/``&>``/``>&``/``>|``, ``>(`` and ``<(`` — any shape that carries a segment's
+    output somewhere other than the pipeline the guard reasoned about: a file executed later
+    (``> run.sh; sh run.sh``) or an interpreter fed through process substitution (``> >(sh)``).
+    Quote/escape aware: a ``>`` inside quotes or after a backslash is data, and a backslash is
+    literal inside single quotes (``'foo\\'`` closes its word — the escape cannot eat the quote
+    and hide a later real redirection). Text after a word-start unquoted ``#`` is a true comment
+    and ignored; a mid-word ``#`` is part of its word and shields nothing. Input-only ``<`` and
+    heredoc ``<<`` do not redirect producer output and are deliberately not flagged.
+    """
+    in_single = in_double = escape = False
+    at_word_start = True
+    for position, character in enumerate(line):
+        if escape:
+            escape = False
+            at_word_start = False
+        elif in_single:
+            if character == "'":
+                in_single = False
+        elif in_double:
+            if character == "\\":
+                escape = True
+            elif character == '"':
+                in_double = False
+        elif character == "\\":
+            escape = True
+            at_word_start = False
+        elif character == "'":
+            in_single = True
+            at_word_start = False
+        elif character == '"':
+            in_double = True
+            at_word_start = False
+        elif character == "#":
+            if at_word_start:
+                return False
+        elif character in (" ", "\t"):
+            at_word_start = True
+        elif character == ">" or (
+            character == "<" and line[position + 1 : position + 2] == "("
+        ):
+            return True
+        else:
+            at_word_start = False
+    return False
+
+
+def _mid_word_hash_tail(line: str) -> Optional[str]:
+    """Tail of *line* from the first unquoted ``#`` when it is NOT at a POSIX word start.
+
+    shlex drops a comment from the first unquoted ``#`` ANYWHERE; a POSIX shell starts a comment
+    only where a word could begin (line start or after an unquoted blank). When the two disagree
+    (``foo#; hermes gateway restart``), the text shlex would drop is real shell text the rebuilt
+    line must keep. ``None`` when every unquoted ``#`` starts a true comment (or
+    there is none): the drop is then POSIX-correct and nothing needs preserving. Word-start
+    semantics match ``_split_line_on_pipe_operators`` (blanks only — escaped blanks and non-IFS
+    Unicode spaces do not begin a word).
+    """
+    in_single = in_double = escape = False
+    at_word_start = True
+    for position, character in enumerate(line):
+        if escape:
+            escape = False
+            at_word_start = False
+        elif in_single:
+            if character == "'":
+                in_single = False
+        elif in_double:
+            if character == "\\":
+                escape = True
+            elif character == '"':
+                in_double = False
+        elif character == "\\":
+            escape = True
+            at_word_start = False
+        elif character == "'":
+            in_single = True
+            at_word_start = False
+        elif character == '"':
+            in_double = True
+            at_word_start = False
+        elif character == "#":
+            return None if at_word_start else line[position:]
+        elif character in (" ", "\t"):
+            at_word_start = True
+        else:
+            at_word_start = False
+    return None
+
+
 def _is_known_text_stdin_consumer_segment(raw_segment: str) -> bool:
-    """True when *raw_segment* unambiguously runs ``cat``/``grep``/``egrep``/``fgrep`` on stdin."""
+    """True when *raw_segment* unambiguously runs ``cat``/``grep``/``egrep``/``fgrep`` on stdin.
+
+    Refused when the segment itself redirects or substitutes: a nominal text reader whose output
+    feeds a file or an interpreter (``grep . > >(sh)``) is not an inert consumer."""
+    if _line_has_output_redirection(raw_segment):
+        return False
     try:
         tokens = _shlex_tokens(raw_segment)
     except ValueError:
@@ -943,6 +1040,12 @@ def _mask_data_sink_arguments(text: str) -> str:
 
     ``python -c`` payloads are the same class when they fully match the inert observation
     grammar above: the quoted text is source, not a shell command.
+
+    Refused outright when the line redirects output or process-substitutes: the masked text can
+    land in an executed file or an interpreter, so the line stays literal for the plain regex.
+    When shlex's comment drop would swallow real shell text (an unquoted mid-word ``#``), the
+    dropped tail is preserved on the rebuilt
+    line instead — masking never loses characters a POSIX shell would still execute.
     """
     lines_out: list[str] = []
     changed = False
@@ -950,6 +1053,10 @@ def _mask_data_sink_arguments(text: str) -> str:
         if _PIPE_TO_INTERPRETER.search(line):
             lines_out.append(line)
             continue
+        if _line_has_output_redirection(line):
+            lines_out.append(line)
+            continue
+        preserved_tail = _mid_word_hash_tail(line)
         try:
             tokens = _shlex_tokens(line)
         except ValueError:
@@ -981,7 +1088,10 @@ def _mask_data_sink_arguments(text: str) -> str:
                     rebuilt.extend(masked_args)
                     continue
             rebuilt.extend(segment)
-        lines_out.append(" ".join(rebuilt))
+        rebuilt_line = " ".join(rebuilt)
+        if preserved_tail:
+            rebuilt_line = f"{rebuilt_line} {preserved_tail}"
+        lines_out.append(rebuilt_line)
     return "\n".join(lines_out) if changed else text
 
 
