@@ -894,11 +894,8 @@ def _resolution_crossed_string_command_option(segment: list[str]) -> bool:
 
 def _is_known_text_stdin_consumer_segment(raw_segment: str) -> bool:
     """True when *raw_segment* unambiguously runs ``cat``/``grep``/``egrep``/``fgrep`` on stdin."""
-    stripped = raw_segment.strip()
-    if not stripped:
-        return False
     try:
-        tokens = _shlex_tokens(stripped)
+        tokens = _shlex_tokens(raw_segment)
     except ValueError:
         return False
     if not tokens:
