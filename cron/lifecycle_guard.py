@@ -284,6 +284,28 @@ _CLOUD_PLACEHOLDER_MARKERS = frozenset({"Mobile Documents", "CloudStorage"})
 _DATA_SINK_EXECUTABLES = frozenset(
     {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
 )
+# ``python -c`` payloads are interpreter source, not a POSIX shell. A quoted
+# lifecycle phrase (``print('hermes gateway restart' in html)``) is data
+# (pc_ecfa8ae20555 / pc_0f42c0116df41). Only payloads that fully match a narrow
+# inert observation grammar — read a file into a local, then ``print`` over it —
+# are masked. Everything else (aliased/dynamic imports, ``exec``, ``getattr``,
+# f-string expressions, format specs, annotations) keeps its text for the plain
+# lifecycle regex: unknown Python shapes must not gain a blanket exemption.
+_PYTHON_INTERPRETER_RE = re.compile(
+    r"(?i)^(?:pythonw?|pypy3?)(?:\d+(?:\.\d+)*)?(?:\.exe)?$"
+)
+_PYTHON_STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+_PYTHON_INERT_IMPORT_RE = re.compile(r"^from pathlib import Path$")
+_PYTHON_INERT_READ_EXPR = r"(?:open|Path)\(''\)\.(?:read|read_text)\(\)"
+_PYTHON_INERT_READ_RE = re.compile(
+    rf"^[A-Za-z_]\w*\s*=\s*{_PYTHON_INERT_READ_EXPR}$"
+)
+_PYTHON_INERT_PRINT_RE = re.compile(
+    r"^print\((?:''\s+in\s+)?(?:[A-Za-z_]\w*(?:\.count\(''\))?|"
+    + _PYTHON_INERT_READ_EXPR
+    + r")"
+    r"(?:\s*,\s*(?:''\s+in\s+)?[A-Za-z_]\w*(?:\.count\(''\))?)*\)$"
+)
 # Argument shapes that smuggle execution back INTO a data sink (command/process substitution, psql
 # `\!`). Any hit disables masking for the whole segment — fail closed to the plain regex verdict.
 _UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
@@ -341,8 +363,31 @@ _STRING_COMMAND_OPTIONS = {
     "runuser": ("-c", "--command"),
 }
 
+# Attached short-option spellings of the command-string options above: `env -S'sh -s'` — and the
+# GNU combined form `env -iS'sh -s'` — tokenize with the value glued to the flag cluster (one
+# token), so `_iter_option_values` — exact flag or `=`-joined long form only — sees nothing while
+# the wrapper still executes the embedded command string. Any token whose short-option cluster
+# carries one of these letters with a value attached means the resolution crossed a command string.
+_ATTACHED_STRING_COMMAND_RES = {
+    name: tuple(
+        re.compile("-[A-Za-z]*" + option[1:] + ".+")
+        for option in options
+        if not option.startswith("--")
+    )
+    for name, options in _STRING_COMMAND_OPTIONS.items()
+}
+
 # Wrappers whose first non-option operand is a VALUE, not the command (`timeout 60 bash x.sh`).
 _TRANSPARENT_PREFIX_OPERANDS = {"timeout": 1}
+
+# Wrapper flags proven optionless (no operand) that may precede a trusted text consumer. The
+# consumer-trust peeler below refuses every OTHER `-` token: an unlisted option may take an
+# operand (`sudo -D cat sh -s` runs `sh -s`, with `cat` as its chdir argument), so an unknown
+# option layout makes the executed command ambiguous and the consumer unprovable. Deliberately
+# minimal — e.g. `sudo -i`/`-s` spawn a shell and are absent on purpose.
+_CONSUMER_SAFE_WRAPPER_FLAGS = {
+    "env": frozenset({"-i", "-0", "--ignore-environment", "--null"}),
+}
 
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -718,6 +763,553 @@ def contains_launchctl_submit_command(command: str) -> bool:
     return False
 
 
+def _is_python_interpreter(token: str) -> bool:
+    """True when *token* names a CPython/PyPy interpreter (``python3.12.exe`` included)."""
+    return bool(_PYTHON_INTERPRETER_RE.fullmatch(Path(token).name))
+
+
+def _is_inert_python_observation(payload: str) -> bool:
+    """True only when *payload* is a read-then-print observation one-liner.
+
+    String literals are blanked first (a quoted lifecycle phrase is data), then the
+    remaining code must be at most ``from pathlib import Path``, one ``x = open/Path(
+    ...)\\.read[_text]()`` assignment, and a single ``print`` over atoms — nothing else.
+    Aliased/dynamic imports, ``exec``/``eval``, ``getattr``, f-string or format-spec
+    expressions, and any unknown shape return False so the payload stays visible to the
+    plain lifecycle regex.
+    """
+    if "{" in payload or "__" in payload:
+        return False
+    code = _PYTHON_STRING_LITERAL_RE.sub("''", payload)
+    statements = [statement.strip() for statement in code.split(";") if statement.strip()]
+    position = 0
+    if position < len(statements) and _PYTHON_INERT_IMPORT_RE.match(statements[position]):
+        position += 1
+    if position < len(statements) and _PYTHON_INERT_READ_RE.match(statements[position]):
+        position += 1
+    return position == len(statements) - 1 and bool(
+        _PYTHON_INERT_PRINT_RE.match(statements[position])
+    )
+
+
+# Piped stdin may be masked only when every ``|``/``|&`` consumer is a known text reader.
+_KNOWN_TEXT_STDIN_CONSUMERS = frozenset({"cat", "grep", "egrep", "fgrep"})
+# A path-qualified consumer token is trusted only in system bin directories: elsewhere on the
+# filesystem a `cat`-named path is replaceable (a symlink to a shell), so its basename proves
+# nothing about what executes. Bare names resolve through PATH, same as every executed command.
+_TRUSTED_CONSUMER_DIRECTORIES = frozenset({"/bin", "/usr/bin"})
+
+
+def _split_line_on_pipe_operators(line: str) -> list[str]:
+    """Split *line* on real ``|``/``|&`` operators outside quotes and shell comments.
+
+    An unquoted ``#`` at word-start (line start or after unquoted, unescaped whitespace or a
+    control operator) begins a comment through end-of-line; characters in the comment are not pipe
+    operators or command words. ``||`` is not a pipe.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    in_single = in_double = escape = False
+    at_word_start = True
+    position = 0
+    while position < len(line):
+        character = line[position]
+        if escape:
+            escape = False
+            at_word_start = False
+            current.append(character)
+            position += 1
+            continue
+        if in_single:
+            if character == "'":
+                in_single = False
+            at_word_start = False
+            current.append(character)
+            position += 1
+            continue
+        if in_double:
+            if character == "\\":
+                escape = True
+                at_word_start = False
+                current.append(character)
+                position += 1
+                continue
+            if character == '"':
+                in_double = False
+            at_word_start = False
+            current.append(character)
+            position += 1
+            continue
+        if character == "\\":
+            escape = True
+            at_word_start = False
+            current.append(character)
+            position += 1
+            continue
+        if character == "'":
+            in_single = True
+            at_word_start = False
+            current.append(character)
+            position += 1
+            continue
+        if character == '"':
+            in_double = True
+            at_word_start = False
+            current.append(character)
+            position += 1
+            continue
+        if character == "#" and at_word_start:
+            current.append(line[position:])
+            break
+        if character == "|":
+            if position + 1 < len(line) and line[position + 1] == "|":
+                # A control operator ends the token: the next `#` can begin a comment.
+                at_word_start = True
+                current.append("|")
+                current.append("|")
+                position += 2
+                continue
+            segments.append("".join(current))
+            current = []
+            at_word_start = True
+            position += 2 if position + 1 < len(line) and line[position + 1] == "&" else 1
+            continue
+        if character in ";&()":
+            # POSIX control operators terminate a word like a blank does; `foo ;# bar` is a
+            # comment, not a literal `#` word — same word-start rule as the other raw scanners.
+            at_word_start = True
+            current.append(character)
+            position += 1
+            continue
+        if character in (" ", "\t"):
+            at_word_start = True
+            current.append(character)
+            position += 1
+            continue
+        at_word_start = False
+        current.append(character)
+        position += 1
+    segments.append("".join(current))
+    return segments
+
+
+def _resolution_crossed_string_command_option(segment: list[str]) -> bool:
+    """True when wrapper peeling would execute a command embedded in ``-S``/``-c``/``--command``."""
+    index = _command_token_index(segment)
+    if index is None:
+        return False
+    for _ in range(_MAX_PREFIX_PEELS):
+        if index >= len(segment):
+            return False
+        name = _executable_name(segment[index])
+        if name not in _TRANSPARENT_COMMAND_PREFIXES:
+            return False
+        for option in _STRING_COMMAND_OPTIONS.get(name, ()):
+            if list(_iter_option_values(segment, index, option)):
+                return True
+        # Glued short-option form (`env -S'sh -s' cat`): the value rides the same token.
+        if any(
+            pattern.match(token)
+            for pattern in _ATTACHED_STRING_COMMAND_RES.get(name, ())
+            for token in segment[index + 1 :]
+        ):
+            return True
+        value_options = _TRANSPARENT_PREFIX_VALUE_OPTIONS.get(name, frozenset())
+        index += 1
+        while index < len(segment):
+            token = segment[index]
+            if token == "--":
+                index += 1
+                break
+            if token in value_options:
+                index += 2
+                continue
+            if token.startswith("-") or _ENV_ASSIGNMENT.match(token):
+                index += 1
+                continue
+            break
+        for _ in range(_TRANSPARENT_PREFIX_OPERANDS.get(name, 0)):
+            if index < len(segment) and not segment[index].startswith("-"):
+                index += 1
+    return False
+
+
+def _line_has_output_redirection(line: str) -> bool:
+    """True when *line* carries an unquoted, unescaped output redirection or process substitution.
+
+    Covers ``>``/``>>``/``&>``/``>&``/``>|``, ``>(`` and ``<(`` — any shape that carries a segment's
+    output somewhere other than the pipeline the guard reasoned about: a file executed later
+    (``> run.sh; sh run.sh``) or an interpreter fed through process substitution (``> >(sh)``).
+    Quote/escape aware: a ``>`` inside quotes or after a backslash is data, and a backslash is
+    literal inside single quotes (``'foo\\'`` closes its word — the escape cannot eat the quote
+    and hide a later real redirection). Text after a word-start unquoted ``#`` is a true comment
+    and ignored; a mid-word ``#`` is part of its word and shields nothing. Input-only ``<`` and
+    heredoc ``<<`` do not redirect producer output and are deliberately not flagged.
+
+    Lines carrying a shell expansion are refused earlier, by ``_line_has_expandable_shell_dollar``
+    in ``_mask_data_sink_arguments`` — a ``${v:- #}`` hash is word data inside the expansion, not a
+    comment, so such a line never reaches a scan that would have to disambiguate it here.
+    """
+    in_single = in_double = escape = False
+    at_word_start = True
+    for position, character in enumerate(line):
+        if escape:
+            escape = False
+            at_word_start = False
+        elif in_single:
+            if character == "'":
+                in_single = False
+        elif in_double:
+            if character == "\\":
+                escape = True
+            elif character == '"':
+                in_double = False
+        elif character == "\\":
+            escape = True
+            at_word_start = False
+        elif character == "'":
+            in_single = True
+            at_word_start = False
+        elif character == '"':
+            in_double = True
+            at_word_start = False
+        elif character == "#":
+            if at_word_start:
+                return False
+        elif character in (" ", "\t", ";", "&", "|", "(", ")"):
+            # Blanks AND control operators can begin a new word; `;# note` is a comment.
+            at_word_start = True
+        elif character == ">" or (
+            character == "<" and line[position + 1 : position + 2] == "("
+        ):
+            return True
+        else:
+            at_word_start = False
+    return False
+
+
+def _mid_word_hash_tail(line: str) -> Optional[str]:
+    """Tail of *line* from the first unquoted ``#`` when it is NOT at a POSIX word start.
+
+    shlex drops a comment from the first unquoted ``#`` ANYWHERE; a POSIX shell starts a comment
+    only where a word could begin (line start or after an unquoted blank). When the two disagree
+    (``foo#; hermes gateway restart``), the text shlex would drop is real shell text the rebuilt
+    line must keep. ``None`` when every unquoted ``#`` starts a true comment (or
+    there is none): the drop is then POSIX-correct and nothing needs preserving. Word-start
+    semantics match ``_split_line_on_pipe_operators`` (blanks only — escaped blanks and non-IFS
+    Unicode spaces do not begin a word). Lines carrying a shell expansion are refused earlier by
+    ``_line_has_expandable_shell_dollar``, so a ``${v:- #}`` hash never reaches this scan either.
+    """
+    in_single = in_double = escape = False
+    at_word_start = True
+    for position, character in enumerate(line):
+        if escape:
+            escape = False
+            at_word_start = False
+        elif in_single:
+            if character == "'":
+                in_single = False
+        elif in_double:
+            if character == "\\":
+                escape = True
+            elif character == '"':
+                in_double = False
+        elif character == "\\":
+            escape = True
+            at_word_start = False
+        elif character == "'":
+            in_single = True
+            at_word_start = False
+        elif character == '"':
+            in_double = True
+            at_word_start = False
+        elif character == "#":
+            return None if at_word_start else line[position:]
+        elif character in (" ", "\t", ";", "&", "|", "(", ")"):
+            # Blanks AND control operators can begin a new word; `;# note` is a comment.
+            at_word_start = True
+        else:
+            at_word_start = False
+    return None
+
+
+def _strict_consumer_command_index(segment: list[str]) -> Optional[int]:
+    """Command index for consumer trust only: like ``_peel_transparent_prefixes`` but any
+    wrapper option NOT known here (value option, ``--``, optionless whitelist flag, glued short
+    value like ``-n5``/``-oL``) refuses the segment instead of being skipped.
+
+    ``_peel_transparent_prefixes`` serves generic execution detection and must tolerate unknown
+    flags; consumer trust cannot — ``sudo -D cat sh -s`` looks identical to ``sudo cat`` unless
+    ``-D``'s operand is accounted for, and an unlisted option's operand may be the real command.
+    """
+    index = _command_token_index(segment)
+    if index is None:
+        return None
+    for _ in range(_MAX_PREFIX_PEELS):
+        if index >= len(segment):
+            return None
+        name = _executable_name(segment[index])
+        if name not in _TRANSPARENT_COMMAND_PREFIXES:
+            return index
+        value_options = _TRANSPARENT_PREFIX_VALUE_OPTIONS.get(name, frozenset())
+        safe_flags = _CONSUMER_SAFE_WRAPPER_FLAGS.get(name, frozenset())
+        index += 1
+        while index < len(segment):
+            token = segment[index]
+            if token == "--":
+                index += 1
+                break
+            if token in value_options:
+                index += 2
+                continue
+            if token in safe_flags:
+                index += 1
+                continue
+            if (
+                token.startswith("--")
+                and token.partition("=")[0] in value_options
+            ):
+                index += 1
+                continue
+            if (
+                not token.startswith("--")
+                and len(token) > 2
+                and token.startswith("-")
+                and token[:2] in value_options
+            ):
+                # Glued short value option (`nice -n5 cat`, `stdbuf -oL cat`): value rides the token.
+                index += 1
+                continue
+            if _ENV_ASSIGNMENT.match(token):
+                index += 1
+                continue
+            if token.startswith("-"):
+                return None  # unknown/ambiguous wrapper option: executed command not provable
+            break
+        for _ in range(_TRANSPARENT_PREFIX_OPERANDS.get(name, 0)):
+            if index < len(segment) and not segment[index].startswith("-"):
+                index += 1
+    return index if index < len(segment) else None
+
+
+def _command_prefix_tokens_trusted(prefix: list[str]) -> bool:
+    """True when the tokens PRECEDING an executed command keep its identity provable.
+
+    Command identity must be trusted all the way back, not just at the command token: a
+    ``PATH=`` assignment (bare or inside ``env``) retargets every later bare-name lookup at a
+    scratch directory whose ``cat`` is a shell symlink, and a path-qualified wrapper token
+    (``<scratch>/env -i cat``) is as replaceable as a path-qualified consumer. Both precede
+    the command, so any prefix assignment or slash token outside the system bin dirs refuses.
+
+    ``_PERSISTENT_ENV_NAMES`` assignments are included so the same predicate also covers a
+    wrapper-carried ``PYTHONPATH=`` ahead of an interpreter-owned consumer segment."""
+    if any(
+        _ENV_ASSIGNMENT.match(token)
+        and token.split("=", 1)[0] in _PERSISTENT_ENV_NAMES
+        for token in prefix
+    ):
+        return False
+    return not any(
+        "/" in token and str(Path(token).parent) not in _TRUSTED_CONSUMER_DIRECTORIES
+        for token in prefix
+    )
+
+
+def _is_known_text_stdin_consumer_segment(raw_segment: str) -> bool:
+    """True when *raw_segment* unambiguously runs ``cat``/``grep``/``egrep``/``fgrep`` on stdin.
+
+    Refused when the segment itself redirects or substitutes: a nominal text reader whose output
+    feeds a file or an interpreter (``grep . > >(sh)``) is not an inert consumer. A path-qualified
+    consumer is trusted only under the system bin directories — anywhere else a ``cat``-basename
+    path is replaceable (symlinked to a shell) and its basename proves nothing."""
+    if _line_has_output_redirection(raw_segment):
+        return False
+    try:
+        tokens = _shlex_tokens(raw_segment)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    if _resolution_crossed_string_command_option(tokens):
+        return False
+    index = _strict_consumer_command_index(tokens)
+    if index is None:
+        return False
+    if not _command_prefix_tokens_trusted(tokens[:index]):
+        return False
+    consumer = tokens[index]
+    if "/" in consumer:
+        # Wrapper peeling and env assignments above already resolved the command identity; what
+        # remains is the literal executable token, and only the system bin dirs are non-replaceable.
+        path = Path(consumer)
+        if str(path.parent) not in _TRUSTED_CONSUMER_DIRECTORIES:
+            return False
+    return _executable_name(consumer) in _KNOWN_TEXT_STDIN_CONSUMERS
+
+
+def _line_has_untrusted_pipe_consumers(line: str) -> bool:
+    """True when a real pipeline includes a consumer outside the known text-reader set."""
+    segments = _split_line_on_pipe_operators(line)
+    if len(segments) <= 1:
+        return False
+    return any(not _is_known_text_stdin_consumer_segment(segment) for segment in segments[1:])
+
+
+def _mask_python_c_arguments(arguments: list[str]) -> Optional[list[str]]:
+    """Mask only the leading standalone ``-c`` code operand when inert; else ``None``.
+
+    After the interpreter accepts ``-c`` <program>, remaining tokens are program ``sys.argv``
+    (a later ``-c`` is data, not another code operand). Unsupported layouts stay literal by
+    returning ``None``. Execution markers in any argument disable masking (fail closed).
+    """
+    if any(marker in argument for argument in arguments for marker in _UNSAFE_DATA_ARG_MARKERS):
+        return None
+    if not arguments or arguments[0] != "-c" or len(arguments) < 2:
+        return None
+    if not _is_inert_python_observation(arguments[1]):
+        return None
+    return ["-c", "arg", *arguments[2:]]
+
+
+def _starts_shell_expansion(line: str, position: int) -> bool:
+    """True when the ``$`` at *position* names something a POSIX shell would expand:
+    ``${``/``$(``, a parameter name (letters, digits, ``_``), or a special/positional parameter
+    (``$@ $* $# $? $- $$ $! $0``–``$9``). A bare ``$`` before a blank or quote stays literal."""
+    nxt = line[position + 1 : position + 2]
+    if not nxt:
+        return False
+    return nxt in "{(" or nxt == "_" or nxt.isalnum() or nxt in "@*#?-$!0123456789"
+
+
+def _line_has_expandable_shell_dollar(line: str) -> bool:
+    """True when *line* carries a ``$``/backtick a shell would expand before execution.
+
+    One conservative gate, run on the raw line BEFORE any token reconstruction: shlex resolves
+    quotes during tokenization, so an expandable ``$var`` reaches every downstream classifier as
+    literal text and expands only at execution — after classification. Unquoted operand
+    substitution (``${v:- #}`` swallowing a later ``|``/``>`` behind what shlex reads as a
+    comment) and double-quoted ``python -c "…$var…"`` operands are then the same failure, so both
+    refuse here: the whole line stays literal and the plain regex sees the lifecycle text.
+
+    What the shell cannot expand is still supported: single-quoted and backslash-escaped text is
+    literal, and a word-start unquoted ``#`` begins a true comment (nothing after it can expand,
+    ending the scan). Inside double quotes only ``\\ $ " ` `` are escapable; a backslash before
+    anything else is data, but the following character is still consumed so a ``\\$`` never
+    misreads.
+    """
+    in_single = in_double = escape = False
+    at_word_start = True
+    for position, character in enumerate(line):
+        if escape:
+            escape = False
+        elif in_single:
+            if character == "'":
+                in_single = False
+        elif in_double:
+            if character == "\\":
+                escape = True
+            elif character == '"':
+                in_double = False
+            elif character == "`" or (
+                character == "$" and _starts_shell_expansion(line, position)
+            ):
+                return True
+        elif character == "\\":
+            escape = True
+            at_word_start = False
+        elif character == "'":
+            in_single = True
+            at_word_start = False
+        elif character == '"':
+            in_double = True
+            at_word_start = False
+        elif character == "#" and at_word_start:
+            return False  # a true comment: nothing after it can expand
+        elif character == "`" or (
+            character == "$" and _starts_shell_expansion(line, position)
+        ):
+            return True
+        elif character in (" ", "\t", ";", "&", "|", "(", ")"):
+            # Blanks AND control operators can begin a new word; `;# note $PATH` is a comment.
+            at_word_start = True
+        else:
+            at_word_start = False
+    return False
+
+
+# Environment names whose retargeting (persistent or command-local) makes later bare-name
+# lookups unprovable at this masking boundary.
+_PERSISTENT_ENV_NAMES = frozenset({"PATH", "PYTHONPATH"})
+
+# Shell builtins whose execution provably does nothing (`false || grep …`): no output, no
+# environment, no name-table change — only the exit status the shell keeps anyway.
+_STATELESS_BUILTIN_NAMES = frozenset({"true", "false", ":"})
+
+
+def _segment_provably_stateless(segment: list[str]) -> bool:
+    """True when one command segment is a shape this guard can prove leaves no persistent shell
+    state: a strict inert ``python -c`` observation, or one of its own lexical readers
+    (``cat``/``grep``/… stdin consumers and ``_DATA_SINK_EXECUTABLES``) with an unretargeted
+    command identity.
+
+    Provable, not enumerated: the question is never whether the segment matches a known
+    state-DECLARING shape (``alias cat=sh``, ``cat(){ sh; }``, ``builtin alias 'cat=sh'``, a
+    definition behind ``if true; then`` … cannot all be enumerated), but whether the segment is
+    one of the few supported stateless shapes. Anything else — an unknown command, a wrapper
+    option this guard cannot resolve, an assignment retargeting PATH/PYTHONPATH — may shadow a
+    consumer or interpreter name and therefore counts as persistent state. Quote-resolved
+    through ``_shlex_tokens`` upstream: ``alias 'cat=sh'`` arrives as the resolved tokens
+    ``alias cat=sh``, an unknown command, and refuses.
+    """
+    index = _command_token_index(segment)
+    if index is None:
+        # No command past the assignments: a bare `FOO=bar` line keeps value in the shell.
+        return False
+    prefix = segment[:index]
+    if any(
+        _ENV_ASSIGNMENT.match(token)
+        and token.split("=", 1)[0] in _PERSISTENT_ENV_NAMES
+        for token in prefix
+    ):
+        # `PATH=x cmd` / `env PYTHONPATH=/evil python3 …` retarget later name lookups whether
+        # the assignment is persistent or wrapper-carried.
+        return False
+    executable = segment[index]
+    name = _executable_name(executable)
+    if "/" in executable and str(Path(executable).parent) not in _TRUSTED_CONSUMER_DIRECTORIES:
+        # The interpreter token itself is an executed path: only the system bin dirs are
+        # non-replaceable, so `./python3 -c <accepted payload>` cannot prove statelessness
+        # on the strength of its basename alone.
+        return False
+    if _is_python_interpreter(name):
+        return _mask_python_c_arguments(segment[index + 1 :]) is not None
+    consumer_index = _strict_consumer_command_index(segment)
+    if consumer_index is None:
+        return False
+    # The same all-the-way-back trust the pipe-consumer check owns: only the peeled consumer
+    # token was validated before, so `./env cat` / `env PATH=/evil cat` passed on the strength of
+    # the final `cat` alone. The complete wrapper chain must stay provable.
+    if not _command_prefix_tokens_trusted(segment[:consumer_index]):
+        return False
+    consumer = segment[consumer_index]
+    if "/" in consumer and str(Path(consumer).parent) not in _TRUSTED_CONSUMER_DIRECTORIES:
+        return False
+    return _executable_name(consumer) in (
+        _KNOWN_TEXT_STDIN_CONSUMERS | _DATA_SINK_EXECUTABLES | _STATELESS_BUILTIN_NAMES
+    )
+
+
+def _command_has_output_redirection(text: str) -> bool:
+    """True when ANY line of the command redirects output. Refusal is deliberately command-wide:
+    a redirection can outlive its line or observe text written on another one — ``exec > run.sh``
+    on an earlier line keeps redirecting later lines' stdout, a parenthesized/braced group or a
+    ``while ...; done > run.sh`` loop redirects body lines from the CLOSING line — so per-line
+    masking cannot prove where masked text lands. Every explicit output sink stays visible."""
+    return any(
+        _line_has_output_redirection(line) for line in text.splitlines() or [text]
+    )
+
+
 def _mask_data_sink_arguments(text: str) -> str:
     """Replace data-sink executables' arguments with a neutral placeholder.
 
@@ -726,23 +1318,89 @@ def _mask_data_sink_arguments(text: str) -> str:
     and a match that survives is a real command. Strictly fail-closed: masking is skipped when the
     line pipes into a shell/interpreter, any argument carries an execution marker, or the line
     cannot be tokenized. Masking can only ALLOW what the plain regex would block, never block more.
+
+    ``python -c`` payloads are the same class when they fully match the inert observation
+    grammar above: the quoted text is source, not a shell command.
+
+    Refused outright when the line redirects output, process-substitutes, or carries a shell
+    expansion: the masked text can land in an executed file or interpreter, and an expansion
+    rewrites the line only at execution — either way the line stays literal for the plain regex.
+    When shlex's comment drop would swallow real shell text (an unquoted mid-word ``#``), the
+    dropped tail is preserved on the rebuilt
+    line instead — masking never loses characters a POSIX shell would still execute.
+
+    Masking is admitted only inside a provably stateless prefix: each earlier segment — on the
+    same line or an earlier one — must be one of the supported stateless shapes
+    (``_segment_provably_stateless``). A command or shell
+    definition, ``PATH``/``PYTHONPATH`` retargeting, ``cd``, an unknown command, a definition
+    behind ``if true; then``) keeps that segment and every later line literal: a shadowed
+    consumer or interpreter name makes per-line classification unprovable, and this boundary
+    refuses rather than enumerating declarations. Any explicit output redirection anywhere in
+    the command refuses masking entirely (``_command_has_output_redirection``). Ambient
+    interpreter/PATH state outside the command text is not visible to this boundary and is
+    documented rather than guessed about.
     """
+    if _command_has_output_redirection(text):
+        return text
     lines_out: list[str] = []
     changed = False
+    # Provability of the prefix seen so far. Once a line or segment cannot be proved stateless,
+    # every later segment stays literal.
+    prefix_stateless = True
     for line in text.splitlines() or [text]:
-        if _PIPE_TO_INTERPRETER.search(line):
+        if (
+            _PIPE_TO_INTERPRETER.search(line)
+            or _line_has_output_redirection(line)
+            or _line_has_expandable_shell_dollar(line)
+            or _line_has_untrusted_pipe_consumers(line)
+        ):
+            # Refused before token reconstruction — and unprovable, so the prefix is poisoned:
+            # a redirection can feed an executed file, and a shell expansion rewrites the line
+            # only AFTER shlex has classified it.
+            prefix_stateless = False
             lines_out.append(line)
             continue
+        preserved_tail = _mid_word_hash_tail(line)
         try:
             tokens = _shlex_tokens(line)
         except ValueError:
+            prefix_stateless = False
             lines_out.append(line)
             continue
 
         rebuilt: list[str] = []
         for segment in _split_segments(tokens, keep_controls=True):
+            if len(segment) == 1 and segment[0] and set(segment[0]) <= _CONTROL_CHARS:
+                if set(segment[0]) <= {"(", ")"}:
+                    # Parentheses after a name are a function definition (`cat ( ) { …; }`,
+                    # `c'a't(){ …; }`); after anything else they open a subshell/group — neither
+                    # shape's body can be proved stateless by name.
+                    prefix_stateless = False
+                rebuilt.extend(segment)
+                continue
+            if not prefix_stateless:
+                rebuilt.extend(segment)
+                continue
             index = _command_token_index(segment)
-            if index is not None and Path(segment[index]).name in _DATA_SINK_EXECUTABLES:
+            if index is not None and any(
+                _ENV_ASSIGNMENT.match(token)
+                and token.split("=", 1)[0] in _PERSISTENT_ENV_NAMES
+                for token in segment[:index]
+            ):
+                # `PYTHONPATH=/evil python3 -c …` / `PATH=x grep …`: the assignment retargets
+                # THIS segment's name resolution, so its own arguments stay literal too.
+                prefix_stateless = False
+                rebuilt.extend(segment)
+                continue
+            # Masking eligibility and prefix provability are the same question: a segment whose
+            # command identity cannot be proved stateless (`./grep …`, an unknown wrapper) must
+            # poison the prefix here, not only when it falls through unmasked below.
+            stateless = _segment_provably_stateless(segment)
+            if (
+                index is not None
+                and stateless
+                and Path(segment[index]).name in _DATA_SINK_EXECUTABLES
+            ):
                 arguments = segment[index + 1 :]
                 if not any(
                     _DOT_COMMAND_ARGUMENT.match(argument)
@@ -753,8 +1411,23 @@ def _mask_data_sink_arguments(text: str) -> str:
                     rebuilt.extend(segment[: index + 1])
                     rebuilt.extend("arg" for _ in arguments)
                     continue
+            if index is not None and stateless and _is_python_interpreter(segment[index]):
+                masked_args = _mask_python_c_arguments(segment[index + 1 :])
+                if masked_args is not None:
+                    changed = True
+                    rebuilt.extend(segment[: index + 1])
+                    rebuilt.extend(masked_args)
+                    continue
+            if not stateless:
+                # An unprovable segment (`alias cat=sh`, `shopt -s expand_aliases`, `cd /x`,
+                # `python3 script.py`, a definition behind `if true; then` …) shadows every
+                # later segment on this line and every later line the same way.
+                prefix_stateless = False
             rebuilt.extend(segment)
-        lines_out.append(" ".join(rebuilt))
+        rebuilt_line = " ".join(rebuilt)
+        if preserved_tail:
+            rebuilt_line = f"{rebuilt_line} {preserved_tail}"
+        lines_out.append(rebuilt_line)
     return "\n".join(lines_out) if changed else text
 
 

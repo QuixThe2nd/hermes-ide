@@ -136,7 +136,7 @@ Lifecycle messages can go to a dedicated channel per platform with `/setnotify` 
 
 `drift_watch` keeps a default-on eye on the live checkout. Twice an hour it inventories uncommitted drift, and when the drift set changes it captures a patch and copies untracked files, using auditd attribution where available. `hermes drift_watch reconcile` repairs its timer and setup. It watches and records; it is read-only toward git state.
 
-Cron jobs do not get to casually restart the gateway or rewrite the live checkout. A quote-aware lifecycle guard blocks cron-spawned commands that try either one.
+Cron jobs do not get to casually restart the gateway or rewrite the live checkout. A quote-aware lifecycle guard blocks cron-spawned commands that try either one. Narrowly recognized Python read-and-print observations can inspect lifecycle phrases as data. Command-visible redirection, shell state, expansions, and ambiguous pipeline consumers keep the original text visible to the guard. This lexical check does not validate ambient interpreter, import-path, or executable lookup state.
 
 A cron job can claim its own scrollback with a `thread:` deliver token: `deliver: thread:<chat id>` (or `thread:<platform>:<chat id>` when the platform must be explicit) opens a fresh thread named after the job on first delivery. The concrete `platform:chat:thread` target is written back onto the job, so later runs — and restart-safe worker replays, which cannot create threads — reuse it instead of minting duplicates. When no live thread-capable adapter is available, the run still delivers flat on the parent chat and the job is left untouched. Failure notices on the `failure_deliver` lane never create threads.
 
