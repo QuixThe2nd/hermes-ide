@@ -9,7 +9,6 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
-import ast
 import logging
 import os
 import re
@@ -770,188 +769,130 @@ def _is_inert_python_observation(payload: str) -> bool:
     )
 
 
-_EXEC_NAMES = frozenset({"exec", "eval", "compile"})
-_OS_EXEC_ATTRS = frozenset({
-    "system", "popen", "spawn", "spawnl", "spawnle", "spawnlp", "spawnlpe",
-    "spawnv", "spawnve", "spawnvp", "spawnvpe", "execl", "execle", "execlp",
-    "execlpe", "execv", "execve", "execvp", "execvpe",
-})
-_SUBPROCESS_CALLS = frozenset({"run", "call", "check_call", "check_output", "Popen"})
+# Piped stdin may be masked only when every ``|``/``|&`` consumer is a known text reader.
+_KNOWN_TEXT_STDIN_CONSUMERS = frozenset({"cat", "grep", "egrep", "fgrep"})
 
 
-def _ast_is_stdin_access(node: ast.AST) -> bool:
-    if not isinstance(node, ast.Attribute):
-        return False
-    if node.attr not in ("read", "readline", "readlines", "buffer"):
-        return False
-    inner = node.value
-    return (
-        isinstance(inner, ast.Attribute)
-        and isinstance(inner.value, ast.Name)
-        and inner.value.id == "sys"
-        and inner.attr == "stdin"
-    )
-
-
-def _expr_uses_stdin(node: ast.AST) -> bool:
-    for child in ast.walk(node):
-        if _ast_is_stdin_access(child):
-            return True
-        if isinstance(child, ast.Call) and _ast_is_stdin_access(child.func):
-            return True
-    return False
-
-
-def _call_is_execution_sink(func: ast.AST) -> bool:
-    if isinstance(func, ast.Name) and func.id in _EXEC_NAMES:
-        return True
-    if isinstance(func, ast.Attribute):
-        if isinstance(func.value, ast.Name) and func.value.id == "os" and func.attr in _OS_EXEC_ATTRS:
-            return True
-        if (
-            isinstance(func.value, ast.Name)
-            and func.value.id == "subprocess"
-            and func.attr in _SUBPROCESS_CALLS
-        ):
-            return True
-    return False
-
-
-def _python_c_code_only_reads_stdin_as_data(code: str) -> bool:
-    """True when ``-c`` code provably treats piped stdin as inert text (e.g. ``print``)."""
-    try:
-        tree = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return False
-    uses_stdin = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id in _EXEC_NAMES:
-                return False
-            if _call_is_execution_sink(node.func):
-                if any(_expr_uses_stdin(arg) for arg in node.args):
-                    return False
-                if any(_expr_uses_stdin(kw.value) for kw in node.keywords):
-                    return False
-            if isinstance(node.func, ast.Name) and node.func.id == "compile":
-                if any(_expr_uses_stdin(arg) for arg in node.args):
-                    return False
-        if _ast_is_stdin_access(node) or (
-            isinstance(node, ast.Call) and _ast_is_stdin_access(node.func)
-        ):
-            uses_stdin = True
-    if not uses_stdin:
-        return False
-    for stmt in tree.body:
-        if isinstance(stmt, ast.Import) or isinstance(stmt, ast.ImportFrom):
+def _split_line_on_pipe_operators(line: str) -> list[str]:
+    """Split *line* on real ``|``/``|&`` operators outside quotes (``||`` is not a pipe)."""
+    segments: list[str] = []
+    current: list[str] = []
+    in_single = in_double = escape = False
+    position = 0
+    while position < len(line):
+        character = line[position]
+        if escape:
+            escape = False
+            current.append(character)
+            position += 1
             continue
-        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-            call = stmt.value
-            if isinstance(call.func, ast.Name) and call.func.id == "print":
+        if in_single:
+            if character == "'":
+                in_single = False
+            current.append(character)
+            position += 1
+            continue
+        if in_double:
+            if character == "\\":
+                escape = True
+                current.append(character)
+                position += 1
                 continue
+            if character == '"':
+                in_double = False
+            current.append(character)
+            position += 1
+            continue
+        if character == "\\":
+            escape = True
+            current.append(character)
+            position += 1
+            continue
+        if character == "'":
+            in_single = True
+            current.append(character)
+            position += 1
+            continue
+        if character == '"':
+            in_double = True
+            current.append(character)
+            position += 1
+            continue
+        if character == "|":
+            if position + 1 < len(line) and line[position + 1] == "|":
+                current.append("|")
+                current.append("|")
+                position += 2
+                continue
+            segments.append("".join(current))
+            current = []
+            position += 2 if position + 1 < len(line) and line[position + 1] == "&" else 1
+            continue
+        current.append(character)
+        position += 1
+    segments.append("".join(current))
+    return segments
+
+
+def _resolution_crossed_string_command_option(segment: list[str]) -> bool:
+    """True when wrapper peeling would execute a command embedded in ``-S``/``-c``/``--command``."""
+    index = _command_token_index(segment)
+    if index is None:
+        return False
+    for _ in range(_MAX_PREFIX_PEELS):
+        if index >= len(segment):
             return False
-        if isinstance(stmt, ast.Assign) and _expr_uses_stdin(stmt.value):
-            continue
-        return False
-    return True
-
-
-def _python_argv_is_piped_execution_consumer(arguments: list[str]) -> bool:
-    """True when a ``|``-fed Python/PyPy argv may execute piped stdin.
-
-    ``-c``/``-m`` and script paths take program text from argv, but that program
-    can still ``exec``/``eval`` stdin — only provably inert ``-c`` readers stay safe.
-    Unrecognized argv shapes fail closed.
-    """
-    no_arg_shorts = frozenset("bdEhiqsuvx?")
-    value_shorts = frozenset("WXI")
-    index = 0
-    while index < len(arguments):
-        token = arguments[index]
-        if token == "--":
-            index += 1
-            while index < len(arguments):
-                if arguments[index] == "-":
-                    return True
-                if not arguments[index].startswith("-"):
-                    return True
-                index += 1
-            return True
-        if token == "-":
-            return True
-        if token == "-c":
-            if index + 1 >= len(arguments):
+        name = _executable_name(segment[index])
+        if name not in _TRANSPARENT_COMMAND_PREFIXES:
+            return False
+        for option in _STRING_COMMAND_OPTIONS.get(name, ()):
+            if list(_iter_option_values(segment, index, option)):
                 return True
-            return not _python_c_code_only_reads_stdin_as_data(arguments[index + 1])
-        if token == "-m":
-            return True
-        if not token.startswith("-"):
-            return True
-        if token.startswith("--"):
-            if "=" in token:
+        value_options = _TRANSPARENT_PREFIX_VALUE_OPTIONS.get(name, frozenset())
+        index += 1
+        while index < len(segment):
+            token = segment[index]
+            if token == "--":
                 index += 1
-                continue
-            if token in ("--help", "--version"):
-                index += 1
-                continue
-            if index + 1 < len(arguments) and not arguments[index + 1].startswith("-"):
+                break
+            if token in value_options:
                 index += 2
                 continue
-            return True
-        body = token[1:]
-        if not body:
-            return True
-        if body in ("h", "?", "V"):
-            index += 1
-            continue
-        if body[0] == "c":
-            if len(body) > 1:
-                code = body[1:]
-                index += 1
-            elif index + 1 < len(arguments):
-                code = arguments[index + 1]
-                index += 2
-            else:
-                return True
-            return not _python_c_code_only_reads_stdin_as_data(code)
-        if body[0] == "m":
-            return True
-        if body[0] == "O":
-            index += 1
-            continue
-        if body[0] in value_shorts:
-            if len(body) > 1:
+            if token.startswith("-") or _ENV_ASSIGNMENT.match(token):
                 index += 1
                 continue
-            index += 2
-            continue
-        if all(char in no_arg_shorts for char in body):
-            index += 1
-            continue
-        return True
-    return True
-
-
-def _line_pipes_to_stdin_python_consumer(tokens: list[str]) -> bool:
-    """True when a ``|``/``|&`` segment feeds a Python/PyPy consumer that may execute piped stdin.
-
-    ``||`` is not a pipe (it is its own control segment) and is ignored here.
-    """
-    segments = list(_split_segments(tokens, keep_controls=True))
-    for position, segment in enumerate(segments):
-        if len(segment) != 1 or segment[0] not in ("|", "|&"):
-            continue
-        if position + 1 >= len(segments):
-            return True
-        consumer = segments[position + 1]
-        index = _executed_command_index(consumer)
-        if index is None:
-            return True
-        if not _is_python_interpreter(consumer[index]):
-            continue
-        if _python_argv_is_piped_execution_consumer(consumer[index + 1 :]):
-            return True
+            break
+        for _ in range(_TRANSPARENT_PREFIX_OPERANDS.get(name, 0)):
+            if index < len(segment) and not segment[index].startswith("-"):
+                index += 1
     return False
+
+
+def _is_known_text_stdin_consumer_segment(raw_segment: str) -> bool:
+    """True when *raw_segment* unambiguously runs ``cat``/``grep``/``egrep``/``fgrep`` on stdin."""
+    stripped = raw_segment.strip()
+    if not stripped:
+        return False
+    try:
+        tokens = _shlex_tokens(stripped)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    if _resolution_crossed_string_command_option(tokens):
+        return False
+    index = _executed_command_index(tokens)
+    if index is None:
+        return False
+    return _executable_name(tokens[index]) in _KNOWN_TEXT_STDIN_CONSUMERS
+
+
+def _line_has_untrusted_pipe_consumers(line: str) -> bool:
+    """True when a real pipeline includes a consumer outside the known text-reader set."""
+    segments = _split_line_on_pipe_operators(line)
+    if len(segments) <= 1:
+        return False
+    return any(not _is_known_text_stdin_consumer_segment(segment) for segment in segments[1:])
 
 
 def _mask_python_c_arguments(arguments: list[str]) -> Optional[list[str]]:
@@ -993,7 +934,7 @@ def _mask_data_sink_arguments(text: str) -> str:
         except ValueError:
             lines_out.append(line)
             continue
-        if _line_pipes_to_stdin_python_consumer(tokens):
+        if _line_has_untrusted_pipe_consumers(line):
             lines_out.append(line)
             continue
 
