@@ -114,7 +114,11 @@ def _is_deterministic_staging_failure(stderr: str) -> bool:
 
 
 def _parse_unborn_nested_repo_paths(stderr: str) -> List[str]:
-    """Relative paths git reported as unborn nested repos in ``stderr``."""
+    """Relative paths git reported as unborn nested repos in ``stderr``.
+
+    Skips empty paths, absolute paths, any ``..`` component, and paths
+    containing CR or LF.
+    """
     paths: List[str] = []
     for raw in _UNBORN_NESTED_REPO_RE.findall(stderr or ""):
         rel = raw[:-1] if raw.endswith("/") else raw
@@ -143,8 +147,10 @@ def _unborn_nested_repo_retry_args(
         fatal: adding files failed
 
     Re-running with the offending paths excluded via ``:(exclude,literal)``
-    pathspecs stages the rest of the tree.  Returns ``None`` when stderr
-    shows a different failure.
+    pathspecs stages the rest of the tree.  ``excluded`` carries paths
+    already excluded in prior retry rounds of the same ``_stage_all`` call.
+    Returns ``None`` when stderr shows a different failure and no paths
+    are excludable.
     """
     paths = list(excluded or [])
     for rel in _parse_unborn_nested_repo_paths(stderr):
@@ -711,9 +717,9 @@ def _stage_all(p: _ProjectRefs) -> Tuple[bool, str, str]:
                 progressed = True
         if not progressed:
             break
-        retry_args = ["add", "-A", "--", "."] + [
-            f":(exclude,literal){path}" for path in excluded
-        ]
+        retry_args = _unborn_nested_repo_retry_args(err, excluded)
+        if retry_args is None:
+            break
         ok, stdout, err = _run_git(
             retry_args, p.store, p.abs_dir,
             timeout=_GIT_TIMEOUT * 2, index_file=p.index_file,
