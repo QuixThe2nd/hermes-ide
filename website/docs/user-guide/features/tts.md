@@ -85,6 +85,13 @@ tts:
     sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
     bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
     # base_url: "https://api.x.ai/v1"   # Override via XAI_BASE_URL env var
+    # proxy_provider: ""         # Optional name of a `providers:` entry (base_url + key_env)
+                                # that fronts xAI (e.g. a LiteLLM passthrough). The gateway's
+                                # own key is sent, never your xAI OAuth bearer/XAI_API_KEY;
+                                # a missing entry/secret disables xAI TTS (fail closed) rather
+                                # than falling back to direct. WebSocket streaming can't cross
+                                # an HTTP passthrough, so streaming fails closed to this
+                                # (proxied, same-voice) sync path.
   neutts:
     ref_audio: ''
     ref_text: ''

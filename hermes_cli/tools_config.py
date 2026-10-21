@@ -61,7 +61,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text/image/reference)"),
-    ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
+    ("x_search",        "🐦 X (Twitter) Search",        "x_search (xAI OAuth/XAI_API_KEY or x_search.proxy_provider)"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -106,9 +106,10 @@ def gui_toolset_label(label: str) -> str:
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
 #
-# X search is off by default for users without xAI credentials, but
-# auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
-# set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
+# X search is off by default without a configured credential path, but
+# auto-enables when native xAI creds exist (OAuth / XAI_API_KEY) or
+# ``x_search.proxy_provider`` resolves via the tool readiness boundary —
+# mirroring the HASS_TOKEN → homeassistant auto-enable below. The
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
@@ -265,7 +266,13 @@ TOOL_CATEGORIES = {
             _row("Nous Subscription", "subscription", "Managed OpenAI TTS billed to your subscription", tts_provider="openai",
                  **_NOUS, managed_nous_feature="tts", override_env_vars=["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"]),
             _row("OpenAI TTS", "paid", "High quality voices", [_OPENAI_VOICE_KEY], tts_provider="openai"),
-            _row("xAI TTS", tag="Grok voices — uses xAI Grok OAuth or XAI_API_KEY", tts_provider="xai", post_setup="xai_grok"),
+            _row("xAI TTS", tag="Grok voices — uses xAI Grok OAuth or XAI_API_KEY", tts_provider="xai", post_setup="xai_grok",
+                 # tts.xai.proxy_provider pins a named ``providers:`` proxy lane (tools/tts_tool.py);
+                 # a resolvable pin makes the row ready without native xAI credentials. Only THIS row
+                 # carries the lane — the shared xai_grok hook also serves STT/video/x_search rows,
+                 # which must keep requiring native credentials. Resolution is the generic
+                 # named-provider machinery (_get_named_custom_provider), same as the runtime lane.
+                 proxy_lane={"section": "tts", "key_path": ("xai", "proxy_provider")}),
             _row("ElevenLabs", "paid", "Most natural voices", [_ELEVENLABS_KEY], tts_provider="elevenlabs"),
             # Mistral Voxtral TTS — `mistralai` SDK lazy-installs on first use.
             _row("Mistral (Voxtral TTS)", "paid", "Multilingual, native Opus",
@@ -556,17 +563,37 @@ def _explicit_toolsets(
     return enabled
 
 
-def _composite_toolsets(toolset_names: List[str], platform: str, explicitly_configured: bool) -> Set[str]:
+def _composite_toolsets(
+    toolset_names: List[str], platform: str, explicitly_configured: bool, config: Optional[dict] = None,
+) -> Set[str]:
     """Enabled set inferred from composite names by reverse-mapping tool names (only while no explicit list is
-    saved). ``x_search`` is not in any composite, so inject it when xAI creds exist and exempt it from default-off."""
+    saved). ``x_search`` is not in any composite, so inject it when credentials are ready and exempt it from
+    default-off.
+
+    Native path: cheap offline ``_xai_credentials_present()`` when ``x_search.proxy_provider`` is absent,
+    null, or a blank string (hot paths like the ``/tools`` completer). A non-blank string pin runs the
+    shipped readiness boundary instead. Malformed explicit pins (any non-string value) fail closed with
+    no credential probe — they must not coerce into the native path or invoke readiness/auth boundaries.
+    """
     from toolsets import resolve_toolset
 
     all_tool_names = {t for ts_name in toolset_names for t in resolve_toolset(ts_name)}
     enabled = _configurable_subset_of(all_tool_names, platform)
     default_off = _default_off_toolsets(platform, explicitly_configured)
-    if _toolset_allowed_for_platform("x_search", platform) and _xai_credentials_present():
-        enabled.add("x_search")
-        default_off.discard("x_search")
+    if _toolset_allowed_for_platform("x_search", platform):
+        cfg = config if isinstance(config, dict) else {}
+        proxy_provider_raw = _cfg_section(cfg, "x_search").get("proxy_provider")
+        if proxy_provider_raw is None or isinstance(proxy_provider_raw, str) and not proxy_provider_raw.strip():
+            x_search_ready = _xai_credentials_present()
+        elif not isinstance(proxy_provider_raw, str):
+            x_search_ready = False
+        else:
+            from tools.x_search_tool import check_x_search_requirements
+
+            x_search_ready = check_x_search_requirements()
+        if x_search_ready:
+            enabled.add("x_search")
+            default_off.discard("x_search")
     return enabled - default_off
 
 
@@ -619,7 +646,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     if any(ts in explicit_known_keys for ts in toolset_names):
         enabled_toolsets = _explicit_toolsets(toolset_names, explicit_known_keys, config, platform, explicitly_configured)
     else:
-        enabled_toolsets = _composite_toolsets(toolset_names, platform, explicitly_configured)
+        enabled_toolsets = _composite_toolsets(toolset_names, platform, explicitly_configured, config)
 
     _recover_platform_native_toolsets(enabled_toolsets, platform, skip=configurable_keys | plugin_ts_keys | platform_default_keys)
     if plugin_ts_keys:

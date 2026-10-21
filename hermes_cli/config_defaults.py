@@ -1156,6 +1156,12 @@ DEFAULT_CONFIG = {
             "optimize_streaming_latency": 0,  # 0–2, trades quality for lower latency
             "sample_rate": 24000,  # 22050 / 24000 / 44100 / 48000
             "bit_rate": 128000,  # MP3 bitrate; only applies when codec=mp3
+            # Route POST {base}/tts through a named `providers:` entry (base_url + key_env)
+            # that fronts xAI — e.g. a LiteLLM passthrough — instead of direct api.x.ai. The
+            # proxy's own key is sent (never your xAI OAuth bearer). The WebSocket streaming
+            # lane cannot cross an HTTP passthrough, so a non-empty value makes streaming
+            # fail closed to this (proxied, same-voice) sync path. "" = direct.
+            "proxy_provider": "",
         },
         "mistral": {
             "model": "voxtral-mini-tts-2603",
@@ -2508,6 +2514,11 @@ DEFAULT_CONFIG = {
         "timeout_seconds": 180,
         # Retries on 5xx / ReadTimeout / ConnectionError (backoff 1.5x attempt s, cap 5s).
         "retries": 2,
+        # Route POST {base}/responses through a named `providers:` entry (base_url + key_env)
+        # that fronts xAI — e.g. a LiteLLM passthrough — instead of direct api.x.ai. The
+        # proxy's own key is sent (never your xAI OAuth bearer), and a configured-but-missing
+        # entry/secret disables the tool rather than falling back to direct. "" = direct.
+        "proxy_provider": "",
     },
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.

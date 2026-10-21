@@ -28,8 +28,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_b64_image, success_response
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
-    StaticImageGenProvider, collect_source_images, error_factory, prompt_required_error,
-    resolve_static_model, size_for)
+    StaticImageGenProvider, collect_source_images, error_factory, load_image_gen_config,
+    prompt_required_error, resolve_static_model, size_for)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,48 @@ def _summarize_error_body(body: str) -> str:
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return resolve_static_model(
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
+
+
+def _proxy_provider_pin() -> str:
+    """Pinned named-provider lane, or ``""`` when unset/blank (native Codex OAuth path).
+
+    Only ``None``/absent or a blank string mean "no lane". Any other non-string value
+    (``False``, ``0``, ``[]``, ``{}`` …) is a malformed EXPLICIT pin and raises — it must
+    never silently erase into "unpinned" and fall back to native OAuth (same contract as
+    ``hermes_cli.tools_config_providers._resolve_row_proxy_lane``).
+    """
+    value = load_image_gen_config("openai-codex").get("proxy_provider")
+    if value is None or isinstance(value, str) and not value.strip():
+        return ""
+    if not isinstance(value, str):
+        raise RuntimeError(
+            f"image_gen.openai-codex.proxy_provider must be a string, "
+            f"got {type(value).__name__}: {value!r}")
+    return value.strip()
+
+
+def _resolve_proxy_credentials(provider_name: str) -> Dict[str, str]:
+    """Resolve a named ``providers:`` entry for Codex-native image JSON through a broker.
+
+    Opt-in via ``image_gen.openai-codex.proxy_provider``. Fails closed — no native OAuth or
+    direct ``chatgpt.com`` fallback when a pin is configured.
+    """
+    name = str(provider_name or "").strip()
+    if not name:
+        raise RuntimeError("Codex image proxy provider name is empty")
+    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+    entry = _get_named_custom_provider(name)
+    if not entry:
+        raise RuntimeError(f"Codex image proxy provider {name!r} is not a configured providers: entry")
+    base_url = str(entry.get("base_url") or "").strip().rstrip("/")
+    api_key = str(entry.get("api_key") or "").strip()
+    if not base_url or not api_key:
+        raise RuntimeError(
+            f"Codex image proxy provider {name!r} resolved without a base URL/API key "
+            "(missing key_env secret?); refusing to fall back to native Codex OAuth"
+        )
+    return {"provider": f"codex-image-proxy:{name}", "api_key": api_key, "base_url": base_url}
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -186,23 +228,44 @@ def _build_image_request(
 
 
 def _post_image_request(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_images: Optional[List[Dict[str, str]]] = None,
+    token: Optional[str] = None,
+    proxy_credentials: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    """POST to the native Codex images endpoint; return the decoded JSON body plus
+    """POST to the Codex images endpoint (native or proxied); return the decoded JSON body plus
     ``imagegen_request_id`` (backend correlation id, for support tickets)."""
     import httpx
-    from agent.codex_headers import codex_cloudflare_headers
 
-    headers = codex_cloudflare_headers(token)
-    headers.update({
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "x-codex-image-turn-id": str(uuid.uuid4()),
-    })
     path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images)
+    if proxy_credentials:
+        base_url = str(proxy_credentials.get("base_url") or "").strip().rstrip("/")
+        api_key = str(proxy_credentials.get("api_key") or "").strip()
+        if not base_url or not api_key:
+            raise RuntimeError("Codex image proxy credentials are incomplete")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        post_url = f"{base_url}/{path}"
+    else:
+        if not token:
+            raise RuntimeError("Codex access token is required for native image requests")
+        from agent.codex_headers import codex_cloudflare_headers
+
+        headers = codex_cloudflare_headers(token)
+        headers.update({
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "x-codex-image-turn-id": str(uuid.uuid4()),
+        })
+        post_url = f"{_CODEX_BASE_URL}/{path}"
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=60.0, pool=30.0)
     with httpx.Client(timeout=timeout, headers=headers) as http:
-        response = http.post(f"{_CODEX_BASE_URL}/{path}", json=body)
+        response = http.post(post_url, json=body)
     if response.status_code >= 400:
         raise RuntimeError(
             f"Codex images API returned HTTP {response.status_code}: "
@@ -234,7 +297,19 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
     price = "varies"
 
     def is_available(self) -> bool:
-        return bool(_read_codex_access_token()) and _httpx_available()
+        if not _httpx_available():
+            return False
+        try:
+            pin = _proxy_provider_pin()
+        except RuntimeError:
+            return False
+        if pin:
+            try:
+                _resolve_proxy_credentials(pin)
+                return True
+            except Exception:
+                return False
+        return bool(_read_codex_access_token())
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
@@ -245,6 +320,11 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             # Empty env_vars means the picker writes the selection without a credential prompt; the shared
             # Codex OAuth bootstrap hook (hermes_cli/tools_config_post_setup.py) starts the sign-in (#102144).
             "post_setup": "openai_codex",
+            # image_gen.openai-codex.proxy_provider pins this plugin's proxy lane: a resolvable pin
+            # makes the picker row ready without native Codex OAuth (resolved via the shared generic
+            # named-provider machinery — the picker never imports this plugin's private module).
+            "proxy_lane": {
+                "section": "image_gen", "key_path": ("openai-codex", "proxy_provider")},
             "post_setup_hint": (
                 "Sign in with `hermes auth add openai-codex` (or `hermes setup` → Codex) "
                 "if you haven't already. No API key needed."),
@@ -262,9 +342,6 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
-        token = _read_codex_access_token()
-        if not token:
-            return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
         if not _httpx_available():
             return error_factory("openai-codex", aspect)(
                 "httpx Python package not installed (pip install httpx)", "missing_dependency")
@@ -277,9 +354,39 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         except Exception as exc:
             return fail(f"Invalid image input for Codex image editing: {exc}", "invalid_image_input")
 
+        proxy_credentials: Optional[Dict[str, str]] = None
+        token: Optional[str] = None
+        try:
+            pin = _proxy_provider_pin()
+        except RuntimeError as exc:
+            return fail(
+                f"OpenAI Codex image proxy is misconfigured ({exc}). "
+                "Fix image_gen.openai-codex.proxy_provider or the named providers: entry.",
+                "auth_required",
+            )
+        if pin:
+            try:
+                proxy_credentials = _resolve_proxy_credentials(pin)
+            except RuntimeError as exc:
+                return fail(
+                    f"OpenAI Codex image proxy is misconfigured ({exc}). "
+                    "Fix image_gen.openai-codex.proxy_provider or the named providers: entry.",
+                    "auth_required",
+                )
+        else:
+            token = _read_codex_access_token()
+            if not token:
+                return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
+
         try:
             payload = _post_image_request(
-                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None)
+                prompt=prompt,
+                size=size,
+                quality=meta["quality"],
+                input_images=input_images or None,
+                token=token,
+                proxy_credentials=proxy_credentials,
+            )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")

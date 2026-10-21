@@ -189,6 +189,19 @@ accepts any `model` value (including nonexistent ids) and generates with its
 own server-managed engine, so a "selected" Flare or Sunburst tier would be a
 label with no effect. Pick the direct OpenAI API provider or FAL for 2.5.
 
+Optional: route native Codex `images/generations` and `images/edits` JSON through
+a named `providers:` entry (e.g. a LiteLLM passthrough) instead of direct
+`chatgpt.com` — the gateway's own key is sent, never your Codex OAuth bearer.
+A configured name whose entry or `key_env` secret is missing disables the
+provider (fail closed) rather than falling back to native OAuth. Leave unset for
+direct Codex.
+
+```yaml
+image_gen:
+  openai-codex:
+    # proxy_provider: litellm-codex-images
+```
+
 ### Custom OpenAI-compatible image endpoint
 
 The **OpenAI** provider can point at any OpenAI-compatible `/v1/images/generations`
