@@ -745,7 +745,10 @@ class TestErrorResilience:
 
         def failing_run_git(args, *rest, **kwargs):
             if "add" in args:
-                return False, "", "fatal: synthetic staging failure"
+                return False, "", (
+                    "error: 'embedded/' does not have a commit checked out\n"
+                    "fatal: adding files failed"
+                )
             return real_run_git(args, *rest, **kwargs)
 
         monkeypatch.setattr("tools.checkpoint_manager._run_git", failing_run_git)

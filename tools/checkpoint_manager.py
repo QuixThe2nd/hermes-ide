@@ -108,7 +108,32 @@ _UNBORN_NESTED_REPO_RE = re.compile(
     r"error: '([^']+)' does not have a commit checked out")
 
 
-def _unborn_nested_repo_retry_args(stderr: str) -> Optional[List[str]]:
+def _is_deterministic_staging_failure(stderr: str) -> bool:
+    """True when staging failed for a known permanent condition (unborn nested repo)."""
+    return bool(_UNBORN_NESTED_REPO_RE.search(stderr or ""))
+
+
+def _parse_unborn_nested_repo_paths(stderr: str) -> List[str]:
+    """Relative paths git reported as unborn nested repos in ``stderr``."""
+    paths: List[str] = []
+    for raw in _UNBORN_NESTED_REPO_RE.findall(stderr or ""):
+        rel = raw[:-1] if raw.endswith("/") else raw
+        if (
+            not rel
+            or rel.startswith("/")
+            or ".." in rel.split("/")
+            or "\n" in rel
+            or "\r" in rel
+        ):
+            continue
+        if rel not in paths:
+            paths.append(rel)
+    return paths
+
+
+def _unborn_nested_repo_retry_args(
+    stderr: str, excluded: Optional[List[str]] = None,
+) -> Optional[List[str]]:
     """Retry ``git add`` args excluding embedded repos with no checked-out commit.
 
     ``git add -A`` is fatal when the work tree contains a nested git
@@ -117,22 +142,17 @@ def _unborn_nested_repo_retry_args(stderr: str) -> Optional[List[str]]:
         error: 'embedded/' does not have a commit checked out
         fatal: adding files failed
 
-    Re-running with the offending paths excluded via ``:(exclude)``
+    Re-running with the offending paths excluded via ``:(exclude,literal)``
     pathspecs stages the rest of the tree.  Returns ``None`` when stderr
     shows a different failure.
     """
-    raw_paths = _UNBORN_NESTED_REPO_RE.findall(stderr or "")
-    paths: List[str] = []
-    for raw in raw_paths:
-        rel = raw.rstrip("/").strip()
-        # Defensive: only plain relative in-tree paths are excludable.
-        if not rel or rel.startswith("/") or ".." in rel.split("/"):
-            continue
+    paths = list(excluded or [])
+    for rel in _parse_unborn_nested_repo_paths(stderr):
         if rel not in paths:
             paths.append(rel)
     if not paths:
         return None
-    return ["add", "-A", "--", "."] + [f":(exclude){p}" for p in paths]
+    return ["add", "-A", "--", "."] + [f":(exclude,literal){p}" for p in paths]
 
 
 def _normalize_path(path_value: str) -> Path:
@@ -682,13 +702,22 @@ def _stage_all(p: _ProjectRefs) -> Tuple[bool, str, str]:
     ok, stdout, err = _run_git(
         ["add", "-A"], p.store, p.abs_dir, timeout=_GIT_TIMEOUT * 2, index_file=p.index_file,
     )
-    if not ok:
-        retry_args = _unborn_nested_repo_retry_args(err)
-        if retry_args is not None:
-            ok, stdout, err = _run_git(
-                retry_args, p.store, p.abs_dir,
-                timeout=_GIT_TIMEOUT * 2, index_file=p.index_file,
-            )
+    excluded: List[str] = []
+    while not ok:
+        progressed = False
+        for rel in _parse_unborn_nested_repo_paths(err):
+            if rel not in excluded:
+                excluded.append(rel)
+                progressed = True
+        if not progressed:
+            break
+        retry_args = ["add", "-A", "--", "."] + [
+            f":(exclude,literal){path}" for path in excluded
+        ]
+        ok, stdout, err = _run_git(
+            retry_args, p.store, p.abs_dir,
+            timeout=_GIT_TIMEOUT * 2, index_file=p.index_file,
+        )
     return ok, stdout, err
 
 
@@ -1017,14 +1046,14 @@ class CheckpointManager:
         # Broad patterns come from the exclude file; oversize paths are dropped post-stage.
         ok, _, err = _stage_all(p)
         if not ok:
-            # Deterministic staging failure (unreadable paths, pathological
-            # trees): suppress this directory for the rest of the session so
-            # the failure is not retried on every turn.
-            self._failed_dirs.add(p.abs_dir)
-            logger.debug(
-                "Checkpoint staging failed in %s; skipping this directory "
-                "for the rest of the session: %s", working_dir, err,
-            )
+            if _is_deterministic_staging_failure(err):
+                # Unborn nested repo: suppress this directory for the rest of
+                # the session so the failure is not retried on every turn.
+                self._failed_dirs.add(p.abs_dir)
+                logger.debug(
+                    "Checkpoint staging failed in %s; skipping this directory "
+                    "for the rest of the session: %s", working_dir, err,
+                )
             return _step_failed("git-add", err)
         if self.max_file_size_mb > 0:
             self._drop_oversize_from_index(p.store, working_dir, p.index_file)
