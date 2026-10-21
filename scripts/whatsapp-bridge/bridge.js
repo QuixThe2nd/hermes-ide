@@ -47,6 +47,7 @@ import {
   inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
+  normaliseParticipantJid,
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
@@ -1116,6 +1117,62 @@ app.get('/chat/:id', async (req, res) => {
     isGroup,
     participants: [],
   });
+});
+
+// Add or remove participants in a group. Returns Baileys' per-participant
+// result array: [{ status: '200', jid, ... }, ...] — non-'200' statuses mean
+// WhatsApp rejected that participant (403 = privacy-blocked add, etc).
+app.post('/group-participants', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, action, participants } = req.body;
+  if (!chatId || !action || !Array.isArray(participants) || participants.length === 0) {
+    return res.status(400).json({ error: 'chatId, action, and participants[] are required' });
+  }
+  if (action !== 'add' && action !== 'remove') {
+    return res.status(400).json({ error: "action must be 'add' or 'remove'" });
+  }
+  if (!chatId.endsWith('@g.us')) {
+    return res.status(400).json({ error: 'chatId must be a group JID ending in @g.us' });
+  }
+
+  let jids;
+  try {
+    jids = participants.map(normaliseParticipantJid);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
+    const result = await sock.groupParticipantsUpdate(chatId, jids, action);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Invite link for a group
+app.get('/group-invite', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const chatId = String(req.query.chatId || '');
+  if (!chatId || !chatId.endsWith('@g.us')) {
+    return res.status(400).json({ error: 'chatId query param must be a group JID ending in @g.us' });
+  }
+
+  try {
+    const code = await sock.groupInviteCode(chatId);
+    if (!code) {
+      return res.status(500).json({ error: 'WhatsApp returned no invite code (not admin, or invite revoked)' });
+    }
+    res.json({ code, url: `https://chat.whatsapp.com/${code}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Health check
