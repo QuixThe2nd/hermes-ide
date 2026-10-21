@@ -6108,9 +6108,16 @@ class TurnRunner:
 
         _pl = ctx.tool_preview_max_len
         if ctx.progress_mode == "compact":
-            # One logical line per tool: full JSON args, no fence/heading/cap.
-            # Empty/None args render as {}. Falls through to the dedup tail.
-            _args_str = json.dumps(args, ensure_ascii=False, default=str) if args else "{}"
+            # One logical line per tool; single-key dicts show the sole value so
+            # read_file({"path": "..."}) reads as read_file("..."). Empty/None → {}.
+            if isinstance(args, dict) and len(args) == 1:
+                _args_str = json.dumps(
+                    next(iter(args.values())), ensure_ascii=False, default=str
+                )
+            else:
+                _args_str = (
+                    json.dumps(args, ensure_ascii=False, default=str) if args else "{}"
+                )
             msg = f"{emoji} {tool_name}({_args_str})"
             ctx.last_was_terminal_block[0] = False
         elif ctx.progress_mode == "verbose" or _pl <= 0:
