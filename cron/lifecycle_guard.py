@@ -285,20 +285,26 @@ _DATA_SINK_EXECUTABLES = frozenset(
     {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
 )
 # ``python -c`` payloads are interpreter source, not a POSIX shell. A quoted
-# lifecycle phrase (``print('hermes gateway restart' in html)``) is data.
-# Mask the ``-c`` argument unless the payload names a process-exec API — that
-# is how a Python one-liner actually launches a gateway restart
-# (pc_ecfa8ae20555 / pc_0f42c0116df41).
+# lifecycle phrase (``print('hermes gateway restart' in html)``) is data
+# (pc_ecfa8ae20555 / pc_0f42c0116df41). Only payloads that fully match a narrow
+# inert observation grammar — read a file into a local, then ``print`` over it —
+# are masked. Everything else (aliased/dynamic imports, ``exec``, ``getattr``,
+# f-string expressions, format specs, annotations) keeps its text for the plain
+# lifecycle regex: unknown Python shapes must not gain a blanket exemption.
 _PYTHON_INTERPRETER_RE = re.compile(
     r"(?i)^(?:pythonw?|pypy3?)(?:\d+(?:\.\d+)*)?(?:\.exe)?$"
 )
-_PYTHON_PROCESS_EXEC_RE = re.compile(
-    r"(?i)(?:"
-    r"\bos\s*\.\s*(?:system|popen|execv[e]?|execl[ep]?|spawn[vl]?p?)\b|"
-    r"\bsubprocess\s*\.|"
-    r"\basyncio\s*\.\s*create_subprocess|"
-    r"\bPopen\s*\("
-    r")"
+_PYTHON_STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+_PYTHON_INERT_IMPORT_RE = re.compile(r"^from pathlib import Path$")
+_PYTHON_INERT_READ_EXPR = r"(?:open|Path)\(''\)\.(?:read|read_text)\(\)"
+_PYTHON_INERT_READ_RE = re.compile(
+    rf"^[A-Za-z_]\w*\s*=\s*{_PYTHON_INERT_READ_EXPR}$"
+)
+_PYTHON_INERT_PRINT_RE = re.compile(
+    r"^print\((?:''\s+in\s+)?(?:[A-Za-z_]\w*(?:\.count\(''\))?|"
+    + _PYTHON_INERT_READ_EXPR
+    + r")"
+    r"(?:\s*,\s*(?:''\s+in\s+)?[A-Za-z_]\w*(?:\.count\(''\))?)*\)$"
 )
 # Argument shapes that smuggle execution back INTO a data sink (command/process substitution, psql
 # `\!`). Any hit disables masking for the whole segment — fail closed to the plain regex verdict.
@@ -739,12 +745,39 @@ def _is_python_interpreter(token: str) -> bool:
     return bool(_PYTHON_INTERPRETER_RE.fullmatch(Path(token).name))
 
 
+def _is_inert_python_observation(payload: str) -> bool:
+    """True only when *payload* is a read-then-print observation one-liner.
+
+    String literals are blanked first (a quoted lifecycle phrase is data), then the
+    remaining code must be at most ``from pathlib import Path``, one ``x = open/Path(
+    ...)\\.read[_text]()`` assignment, and a single ``print`` over atoms — nothing else.
+    Aliased/dynamic imports, ``exec``/``eval``, ``getattr``, f-string or format-spec
+    expressions, and any unknown shape return False so the payload stays visible to the
+    plain lifecycle regex.
+    """
+    if "{" in payload or "__" in payload:
+        return False
+    code = _PYTHON_STRING_LITERAL_RE.sub("''", payload)
+    statements = [statement.strip() for statement in code.split(";") if statement.strip()]
+    position = 0
+    if position < len(statements) and _PYTHON_INERT_IMPORT_RE.match(statements[position]):
+        position += 1
+    if position < len(statements) and _PYTHON_INERT_READ_RE.match(statements[position]):
+        position += 1
+    return position == len(statements) - 1 and bool(
+        _PYTHON_INERT_PRINT_RE.match(statements[position])
+    )
+
+
 def _mask_python_c_arguments(arguments: list[str]) -> Optional[list[str]]:
     """Replace inert ``python -c`` payloads with ``arg``. ``None`` if nothing to mask.
 
-    Payloads that mention ``os.system`` / ``subprocess`` / ``Popen`` stay intact so a
-    one-liner that actually launches a lifecycle command is still blocked.
+    Only payloads matching :func:`_is_inert_python_observation` are masked; any argument
+    carrying an execution marker disables masking for the whole segment (fail closed, as
+    with data sinks).
     """
+    if any(marker in argument for argument in arguments for marker in _UNSAFE_DATA_ARG_MARKERS):
+        return None
     masked: list[str] = []
     changed = False
     index = 0
@@ -753,11 +786,11 @@ def _mask_python_c_arguments(arguments: list[str]) -> Optional[list[str]]:
         if token == "-c" and index + 1 < len(arguments):
             payload = arguments[index + 1]
             masked.append(token)
-            if _PYTHON_PROCESS_EXEC_RE.search(payload):
-                masked.append(payload)
-            else:
+            if _is_inert_python_observation(payload):
                 masked.append("arg")
                 changed = True
+            else:
+                masked.append(payload)
             index += 2
             continue
         masked.append(token)
@@ -774,8 +807,8 @@ def _mask_data_sink_arguments(text: str) -> str:
     line pipes into a shell/interpreter, any argument carries an execution marker, or the line
     cannot be tokenized. Masking can only ALLOW what the plain regex would block, never block more.
 
-    ``python -c`` payloads are the same class when they do not call a process-exec API: the
-    quoted text is source, not a shell command.
+    ``python -c`` payloads are the same class when they fully match the inert observation
+    grammar above: the quoted text is source, not a shell command.
     """
     lines_out: list[str] = []
     changed = False
