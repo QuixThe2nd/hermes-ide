@@ -151,12 +151,21 @@ def spawn_background_process(
     """
     from tools.process_registry import process_registry
     from tools.terminal_tool import (
-        _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
+        _explicit_local_workdir_error, _redact_terminal_error_text, _resolve_command_cwd,
+        _resolve_notification_flag_conflict,
     )
 
     effective_cwd = _resolve_command_cwd(
         workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
     )
+    workdir_err = _explicit_local_workdir_error(
+        workdir, env_type=env_type, default_cwd=cwd,
+    )
+    if workdir_err:
+        return json.dumps({
+            "output": "", "exit_code": 1, "error": workdir_err, "status": "error",
+            "cwd": effective_cwd,
+        }, ensure_ascii=False)
     try:
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
@@ -164,7 +173,8 @@ def spawn_background_process(
             effective_pty=effective_pty,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
-                       "pid": proc_session.pid, "exit_code": 0, "error": None}
+                       "pid": proc_session.pid, "exit_code": 0, "error": None,
+                       "cwd": effective_cwd}
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:
