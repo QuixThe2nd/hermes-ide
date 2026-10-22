@@ -26,7 +26,13 @@ def build_routing_plan(handler, st: PolicyProxyState):
         body=st.body,
         configured_routes=set(handler.upstreams),
         route_key_counts=(
-            {name: len(st.key_store.route_keys(name)) for name in handler.upstreams}
+            {
+                name: (
+                    len(st.key_store.route_keys(name))
+                    or (1 if st.key_store.oauth_provider_for(name) else 0)
+                )
+                for name in handler.upstreams
+            }
             if st.key_store is not None
             else {}
         ),
@@ -155,6 +161,7 @@ def _reject_local_token_without_route_key(handler, st: PolicyProxyState) -> bool
         and not st.has_independent_auth
         and st.key_store is not None
         and not st.key_store.route_keys(st.upstream_name)
+        and not st.key_store.oauth_provider_for(st.upstream_name)
     ):
         return False
     handler._send_json(

@@ -20,7 +20,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from tools.registry import registry, tool_error
-from tools.xai_http import DEFAULT_XAI_BASE_URL, hermes_xai_user_agent, resolve_xai_http_credentials
+from tools.xai_http import (
+    DEFAULT_XAI_BASE_URL,
+    hermes_xai_user_agent,
+    resolve_xai_http_credentials,
+    resolve_xai_proxied_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,22 @@ def _get_x_search_int(key: str, default: int, floor: int) -> int:
         return default
 
 
+def _proxy_provider_pin() -> str:
+    """``x_search.proxy_provider`` lane name, or ``""`` when unset/blank (native credential path).
+
+    Any other non-string value (``False``, ``0``, ``[]``, ``{}`` …) is a malformed EXPLICIT
+    pin and raises — it must never erase into "unpinned" and fall back to native OAuth/
+    ``XAI_API_KEY`` (same contract as ``hermes_cli.tools_config_providers._resolve_row_proxy_lane``).
+    """
+    value = _load_x_search_config().get("proxy_provider")
+    if value is None or isinstance(value, str) and not value.strip():
+        return ""
+    if not isinstance(value, str):
+        raise RuntimeError(
+            f"x_search.proxy_provider must be a string, got {type(value).__name__}: {value!r}")
+    return value.strip()
+
+
 def _resolve_xai_bearer() -> Tuple[str, str, str]:
     """Return ``(api_key, base_url, source)``; ``source`` is ``"xai-oauth"`` or ``"xai"``. Raises RuntimeError
     when no credential is usable (expiry between registration and call -> clean tool error, not a 401).
@@ -64,8 +85,17 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
     mode with no citations, while the API key returns real posts (#88040). Pass ``prefer_api_key=True`` so
     the shared resolver checks the explicit API key first — same root cause as the TTS fix for #87045
     (#87081) — keeping OAuth as the fallback when no API key is configured.
+
+    ``x_search.proxy_provider: <name>`` routes the same POST ``{base}/responses`` through a named
+    ``providers:`` entry (e.g. a LiteLLM passthrough fronting xAI) via
+    :func:`tools.xai_http.resolve_xai_proxied_credentials` — fail-closed when the entry or its
+    ``key_env`` secret is missing; absent the key, behavior is unchanged.
     """
-    creds = resolve_xai_http_credentials(prefer_api_key=True)
+    proxy_provider = _proxy_provider_pin()  # raises on a malformed explicit pin — never fall back to native
+    if proxy_provider:
+        creds = resolve_xai_proxied_credentials(proxy_provider)
+    else:
+        creds = resolve_xai_http_credentials(prefer_api_key=True)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise RuntimeError(
@@ -77,8 +107,22 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
 
 
 def check_x_search_requirements() -> bool:
-    """True when xAI credentials resolve to a non-empty bearer (OAuth auto-refreshed)."""
-    return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
+    """True when credentials resolve to a non-empty bearer along the CONFIGURED path.
+
+    With ``x_search.proxy_provider`` set, only the named ``providers:`` entry counts: a
+    missing entry or empty ``key_env`` secret means unavailable — never a silent retry against
+    native OAuth/XAI_API_KEY (a proxy-only profile has none, and probing them would bypass the
+    proxy lane). Malformed config/resolver errors are unavailable, not exceptions.
+    """
+    try:
+        proxy_provider = _proxy_provider_pin()
+        if proxy_provider:
+            creds = resolve_xai_proxied_credentials(proxy_provider)
+        else:
+            creds = resolve_xai_http_credentials()
+        return bool(str(creds.get("api_key") or "").strip())
+    except Exception:
+        return False
 
 
 def _normalize_handles(handles: Optional[List[str]], field_name: str) -> List[str]:

@@ -86,6 +86,9 @@ def load_llm_usage_proxy_config(raw: Mapping[str, Any] | None = None) -> dict[st
         # troubleshooting decision, never a silent default.
         "capture_jev_bodies": _coerce_bool(raw.get("capture_jev_bodies"), False),
         "route_capabilities": route_capabilities,
+        "owner_endpoint": str(raw.get("owner_endpoint") or "").strip().rstrip("/"),
+        "owner_identity": str(raw.get("owner_identity") or "").strip(),
+        "enforce": _coerce_bool(raw.get("enforce"), False),
     }
 
 
@@ -101,6 +104,14 @@ def capture_jev_bodies_enabled(cfg: Mapping[str, Any]) -> bool:
     """Whether a config mapping asks for jev body capture (never raises)."""
     try:
         return _coerce_bool(cfg.get("capture_jev_bodies"), False)
+    except AttributeError:
+        return False
+
+
+def enforce_enabled(cfg: Mapping[str, Any]) -> bool:
+    """Whether a config mapping asks for fail-closed routing (never raises)."""
+    try:
+        return _coerce_bool(cfg.get("enforce"), False)
     except AttributeError:
         return False
 

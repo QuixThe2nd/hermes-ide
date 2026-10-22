@@ -2483,7 +2483,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if current is not None and current.config == reaction_cfg:
             # The running gate already matches — the watcher's boot reconcile with
             # an unchanged file lands here, as does a rewrite of the in-force
-            # block. One validation, no rebuild, no log line.
+            # block. One validation, no rebuild, no log line. The boot-diagnostic
+            # repair still runs: this is exactly the boot-reconcile path where a
+            # stale "gate stayed off" refusal would otherwise survive a now-valid
+            # config (it only touches the reaction_gate warning, not response_gate's).
+            self._reaction_gate_repair_boot_warning()
             return True
         self._reaction_gate = ReactionGateRuntime.build(
             reaction_cfg, self._response_gate_credential, logger=logger,
@@ -2530,13 +2534,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Build the payload for one reaction candidate, or None when never consultable.
 
         Single definition of "reaches the reaction judge", shared by both intake sites.
-        Deliberately WIDER than the speaking gate's candidate rule — mentions, replies
-        and other bots' messages are reaction candidates too — but still narrowed by the
-        rules that prevent loops and privacy leaks: never this bot's own messages, never
-        lifecycle/system events, never DMs, never a channel the allowed/ignored-channel
-        policy refuses, and never a human the user policy would not authorize. The
-        speaking rules keep their own meaning for text: a bot message that never
-        text-wakes this bot can still earn a reaction.
+        Deliberately WIDER than the speaking gate's candidate rule in one way —
+        mentions and replies are reaction candidates too — but still narrowed by the
+        rules that prevent loops and privacy leaks: never this bot's own messages,
+        never other bots' chatter, never lifecycle/system events, never DMs, never a
+        channel the allowed/ignored-channel policy refuses, and never a human the user
+        policy would not authorize. The speaking rules keep their own meaning for
+        text: a human message that never text-wakes this bot can still earn a
+        reaction.
         """
         gate = self._reaction_gate
         if gate is None:
@@ -2552,19 +2557,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             discord.MessageType.default, discord.MessageType.reply,
         }:
             return None  # lifecycle/system events (joins, pins, …) carry nothing to react to
-        if not getattr(author, "bot", False):
-            msg_guild = getattr(message, "guild", None)
-            if msg_guild is None:
-                return None  # guild-less human traffic is DM-shaped; keep it out
-            msg_channel_ids = {str(getattr(channel, "id", "") or "")}
-            parent_id = self._get_parent_channel_id(channel)
-            if parent_id:
-                msg_channel_ids.add(parent_id)
-            if not self._is_allowed_user(
-                str(getattr(author, "id", "") or ""), author,
-                guild=msg_guild, is_dm=False, channel_ids=msg_channel_ids,
-            ):
-                return None  # the user policy that governs speech governs reactions too
+        if getattr(author, "bot", False):
+            return None  # bot chatter is never a reaction candidate (same rule as the speaking gate)
+        msg_guild = getattr(message, "guild", None)
+        if msg_guild is None:
+            return None  # guild-less human traffic is DM-shaped; keep it out
+        msg_channel_ids = {str(getattr(channel, "id", "") or "")}
+        parent_id = self._get_parent_channel_id(channel)
+        if parent_id:
+            msg_channel_ids.add(parent_id)
+        if not self._is_allowed_user(
+            str(getattr(author, "id", "") or ""), author,
+            guild=msg_guild, is_dm=False, channel_ids=msg_channel_ids,
+        ):
+            return None  # the user policy that governs speech governs reactions too
         channel_keys = self._discord_channel_keys_from_channel(
             channel, self._get_parent_channel_id(channel),
         )
@@ -2718,10 +2724,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Buffer one in-scope message as future reaction evidence (cheap, bounded).
 
         Unlike the speaking gate's evidence (human messages plus this bot's replies),
-        reaction evidence also carries other bots' messages: they are reaction
-        candidates too, and the judge should see the conversation they appear in.
-        The candidate's message id rides along so its own consult can drop this entry
-        (intake-time buffering would otherwise make it its own history).
+        reaction evidence carries exactly its candidates: bot chatter is never
+        buffered because it is never a candidate. The candidate's message id rides
+        along so its own consult can drop this entry (intake-time buffering would
+        otherwise make it its own history).
         """
         gate = self._reaction_gate
         if gate is None or candidate is None:
@@ -3965,19 +3971,59 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
         self._with_discord_recovery_db(_op)
 
-    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
-        if not self._missed_message_backfill_enabled():
+    @staticmethod
+    def _discord_inbound_message_id(event: MessageEvent) -> str:
+        from gateway.platforms.event import inbound_platform_message_id
+        return inbound_platform_message_id(event) or ""
+
+    def _seed_discord_inbound_row(self, message_id: str, source, *, status: str) -> None:
+        if not self._missed_message_backfill_enabled() or not message_id:
             return
-        message = event.raw_message
-        self._record_discord_message_seen(message, status="processing")
-        message_id = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
-        if not message_id:
-            return
+        channel_id = str(getattr(source, "chat_id", "") or "")
+        thread_id = str(getattr(source, "thread_id", "") or "") or None
+        parent_id = None
         now = self._utc_now_iso()
 
         def _op(conn):
             conn.execute(
-                "UPDATE discord_messages SET status='processing', emoji_ack=?, updated_at=? WHERE message_id=?",
+                """
+                INSERT INTO discord_messages (
+                    message_id, channel_id, thread_id, parent_channel_id,
+                    author_id, created_at, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    channel_id=excluded.channel_id,
+                    thread_id=excluded.thread_id,
+                    parent_channel_id=excluded.parent_channel_id,
+                    status=CASE WHEN discord_messages.status='responded' THEN discord_messages.status ELSE excluded.status END,
+                    updated_at=excluded.updated_at
+                """,
+                (message_id, channel_id, thread_id, parent_id, "", None, status, now),
+            )
+        self._with_discord_recovery_db(_op)
+
+    def claim_startup_resume_inbound(self, message_id: str, source) -> None:
+        """Mark the interrupted inbound as in-flight before backfill can re-dispatch it."""
+        self._seed_discord_inbound_row(str(message_id), source, status="processing")
+
+    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
+        message_id = self._discord_inbound_message_id(event)
+        if not message_id:
+            return
+        message = event.raw_message
+        if message is not None:
+            self._record_discord_message_seen(message, status="processing")
+        else:
+            self._seed_discord_inbound_row(message_id, event.source, status="processing")
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_messages SET "
+                "status=CASE WHEN status='responded' THEN status ELSE 'processing' END, "
+                "emoji_ack=?, updated_at=? WHERE message_id=?",
                 (1 if emoji_ack else 0, now, message_id),
             )
         self._with_discord_recovery_db(_op)
@@ -3985,7 +4031,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _record_discord_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         if not self._missed_message_backfill_enabled():
             return
-        message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
+        message_id = self._discord_inbound_message_id(event)
         if not message_id:
             return
         now = self._utc_now_iso()

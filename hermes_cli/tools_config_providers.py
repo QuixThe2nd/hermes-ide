@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import urllib.parse
 from functools import partial
 from typing import Callable, Optional
 
@@ -77,6 +78,8 @@ def _plugin_provider_rows(
                 row["web_tier"] = entry["web_tier"]
             if entry.get("post_setup"):
                 row["post_setup"] = entry["post_setup"]
+            if isinstance(entry.get("proxy_lane"), dict):
+                row["proxy_lane"] = entry["proxy_lane"]
             rows.append(row)
     return rows
 
@@ -160,6 +163,53 @@ def _visible_providers(
     return visible
 
 
+def _resolve_row_proxy_lane(provider: dict, config: dict) -> tuple[str, Optional[str]]:
+    """``(pin, error)`` for a row's pinned named-provider proxy lane.
+
+    The pin is read from the SUPPLIED config (dashboard renders per passed config, not ambient), while
+    the named ``providers:`` entry + ``key_env`` secret resolve through ``_get_named_custom_provider``
+    — the SAME generic named-provider/secret-scope machinery every runtime proxy lane
+    (``tools.xai_http.resolve_xai_proxied_credentials``, the Codex image plugin's
+    ``_resolve_proxy_credentials``) resolves through, so readiness/bootstrap cannot drift from what
+    actually authenticates the request without reaching into any plugin's private module.
+    ``pin == ""`` when the row has no lane or the pin is unset (native credential path); ``error`` is
+    set when a pin exists but the lane fails to resolve — callers must treat that as fail-closed,
+    never falling back to native credentials.
+    """
+    lane = provider.get("proxy_lane")
+    if not isinstance(lane, dict):
+        return "", None
+    value: object = config.get(lane.get("section", "")) if isinstance(config, dict) else None
+    for part in lane.get("key_path") or ():
+        value = value.get(part) if isinstance(value, dict) else None
+    # Only a truly unset (None/absent) or blank-string pin means "no lane" (native credential path).
+    # Any other non-string value (False, 0, [], {} …) is a malformed EXPLICIT pin — it must not
+    # select the native setup path.
+    if value is None or isinstance(value, str) and not value.strip():
+        return "", None
+    if not isinstance(value, str):
+        return repr(value), f"proxy_provider pin must be a string, got {type(value).__name__}: {value!r}"
+    pin = value.strip()
+    try:
+        from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+        entry = _get_named_custom_provider(pin)
+        if not entry:
+            raise RuntimeError(f"proxy provider {pin!r} is not a configured providers: entry")
+        base_url = str(entry.get("base_url") or "").strip()
+        if not (str(entry.get("api_key") or "").strip() and base_url):
+            raise RuntimeError(f"proxy provider {pin!r} resolved without a base URL/API key")
+        # Syntactic endpoint check only (no network probe, private addresses allowed): the proxy
+        # must be an http(s) URL with a hostname. A non-URL or non-HTTP scheme (e.g. file:) is a
+        # misconfigured lane — report not-usable instead of "ready" while it can never serve.
+        parsed = urllib.parse.urlsplit(base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise RuntimeError(f"proxy provider {pin!r} base_url is not a valid http(s) endpoint: {base_url!r}")
+        return pin, None
+    except Exception as exc:
+        return pin, str(exc)
+
+
 def provider_readiness_status(provider: dict, config: dict, *, features=None, is_active: Optional[bool] = None) -> str:
     """Honest readiness state for a provider picker row.
     ``features`` avoids re-fetching portal state per row. ``is_active`` is the completed-setup fallback
@@ -188,6 +238,12 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
 
     post_setup = provider.get("post_setup")
     if post_setup:
+        pin, lane_error = _resolve_row_proxy_lane(provider, config)
+        if pin:
+            # A pinned proxy lane owns this row's credentials: ready only while it resolves. A broken
+            # pin stays fail-closed (needs_setup) even when native credentials exist — the runtime
+            # never falls back to direct/native auth under a pin.
+            return "ready" if lane_error is None else "needs_setup"
         auth_predicate = _POST_SETUP_AUTH_READY.get(post_setup)
         if auth_predicate is not None:
             return "ready" if auth_predicate() else "needs_auth"
@@ -912,7 +968,24 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
 
     if not env_vars:
         if provider.get("post_setup"):
-            _run_post_setup(provider["post_setup"])
+            pin, lane_error = _resolve_row_proxy_lane(provider, config)
+            if pin:
+                # A pinned proxy lane supplies the credentials: never drive the native sign-in
+                # bootstrap. Valid pin → ready as-is; broken pin → warn and stay fail-closed (the
+                # runtime refuses native fallback under a pin, so prompting for native creds would
+                # advertise a path that cannot work).
+                if lane_error is None:
+                    _print_success(f"  {provider['name']} will use proxy provider {pin!r} — no native sign-in needed")
+                else:
+                    _print_warning(f"  Proxy provider {pin!r} is not usable: {lane_error}")
+                    _print_info("  Fix the named providers: entry (or unset the proxy_provider pin) and re-run setup.")
+                    # Failed setup stays failed: no "no configuration needed!" success line and no
+                    # follow-on model pickers (_finish_provider_selection) for a row whose only
+                    # credential lane is broken. The provider write above already happened (same as
+                    # a native sign-in the user abandons mid-bootstrap); readiness stays needs_setup.
+                    return
+            else:
+                _run_post_setup(provider["post_setup"])
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")

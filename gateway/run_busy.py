@@ -797,6 +797,61 @@ class GatewayBusySessionMixin:
             logger.debug("Busy steer ack suppressed for session %s", session_key)
         return steer_ack_enabled
 
+    async def _maybe_react_discord_busy_steer(
+        self, event: MessageEvent, adapter: Any, session_key: str, *,
+        steered: bool, is_steer_mode: bool,
+    ) -> bool:
+        """Single Discord busy-steer ⏩ receipt; shared by facade and mixin busy handlers."""
+        # Mobile Discord clients treat reactions as lighter-weight steer receipts
+        # than a bot reply bubble; steer delivery is unchanged.
+        if not (steered and is_steer_mode and event.source.platform == Platform.DISCORD):
+            return False
+        if not self._busy_steer_ack_enabled(event, session_key):
+            return True
+        # ⏩ steer receipt is a reactions feature — honor the adapter's
+        # reactions opt-out; skip is silent (no bubble) per busy-steer contract.
+        reactions_gate = getattr(adapter, "_reactions_enabled", None)
+        if not callable(reactions_gate):
+            logger.debug(
+                "Discord busy-steer reaction skipped (missing _reactions_enabled) "
+                "for session %s",
+                session_key,
+            )
+            return True
+        try:
+            if not reactions_gate():
+                logger.debug(
+                    "Discord busy-steer reaction suppressed (reactions disabled) "
+                    "for session %s",
+                    session_key,
+                )
+                return True
+        except Exception:
+            logger.debug(
+                "Discord busy-steer reaction gate failed for session %s",
+                session_key,
+                exc_info=True,
+            )
+            return True
+        add_reaction = getattr(adapter, "_add_reaction", None)
+        raw = getattr(event, "raw_message", None)
+        if not callable(add_reaction) or raw is None:
+            logger.debug(
+                "Discord busy-steer reaction skipped (missing _add_reaction or raw_message) "
+                "for session %s",
+                session_key,
+            )
+            return True
+        try:
+            await add_reaction(raw, "⏩")
+        except Exception as exc:
+            logger.debug(
+                "Discord busy-steer reaction failed for session %s: %s",
+                session_key,
+                exc,
+            )
+        return True
+
     _BUSY_DEMOTED_TAIL = (
         " — your message is queued for when it finishes (use /stop to cancel everything)."
     )
@@ -958,6 +1013,11 @@ class GatewayBusySessionMixin:
         if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
+
+        if await self._maybe_react_discord_busy_steer(
+            event, adapter, session_key, steered=_steer.steered, is_steer_mode=is_steer_mode
+        ):
+            return True
 
         # Debounce (30s) before the config-heavy display lookup.
         now = time.time()

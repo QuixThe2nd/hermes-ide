@@ -251,7 +251,10 @@ _EXTRA_ENV_KEYS = frozenset({
     "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL",
     # ACP (Agent Client Protocol) keys — profile-isolable so profiles can use different backends.
     "HERMES_ACP_AUTH_METHOD", "HERMES_ACP_AUTO_APPROVE", "HERMES_COPILOT_ACP_COMMAND",
-    "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL"})
+    "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL",
+    # Shared-owner llm_usage_proxy mode: this profile's caller token for the central
+    # proxy (minted on the owner with `hermes llm_usage_proxy callers create`).
+    "HERMES_USAGE_PROXY_CALLER_TOKEN"})
 
 
 # ---- Managed mode (NixOS declarative config) ----

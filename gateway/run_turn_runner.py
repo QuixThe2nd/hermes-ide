@@ -264,6 +264,16 @@ class TurnRunner:
         ctx = self._ctx
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
+        if ctx.progress_mode == "compact":
+            if isinstance(args, dict) and len(args) == 1:
+                args_str = json.dumps(
+                    next(iter(args.values())), ensure_ascii=False, default=str
+                )
+            elif args:
+                args_str = json.dumps(args, ensure_ascii=False, default=str)
+            else:
+                args_str = "{}"
+            return f"{emoji} {tool_name}({args_str})"
         try:
             adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:

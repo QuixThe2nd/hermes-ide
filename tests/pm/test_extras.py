@@ -33,7 +33,7 @@ def test_available_missing_module():
 
 
 def test_available_counts_sys_modules_fakes(monkeypatch):
-    monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "hindsight_client", SimpleNamespace())
     assert extras.available("hindsight") is True
 
 
@@ -107,3 +107,17 @@ def test_every_anchor_extra_exists_in_pyproject():
     declared = set(py["project"]["optional-dependencies"])
     orphans = set(extras.ANCHORS) - declared
     assert not orphans, f"ANCHORS names extras pyproject does not declare: {sorted(orphans)}"
+
+
+def test_hindsight_anchor_matches_shipped_modules():
+    """The hindsight extra anchors on a module the wheel actually ships.
+
+    hindsight-client (0.6.1 and 0.9.2) installs hindsight_client /
+    hindsight_client_api — never a top-level ``hindsight`` module. Anchoring on
+    the extra name itself made available("hindsight") False with the package
+    installed (pc_1de37914422e)."""
+    for anchor in extras._anchors("hindsight"):
+        assert not anchor.startswith("hindsight."), (
+            f"anchor {anchor!r} names a module the hindsight-client wheel does not ship"
+        )
+        assert anchor == "hindsight_client"

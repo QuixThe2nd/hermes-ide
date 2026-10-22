@@ -19,6 +19,7 @@ import re
 import shutil
 import stat as stat_mod
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,6 +102,68 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
     if not (abs_workdir / file_path).resolve().is_relative_to(abs_workdir):
         return f"File path escapes the working directory via traversal: {file_path!r}"
     return None
+
+
+# Git quotes the path in single quotes without C-escaping, so it can itself
+# contain apostrophes ("vendor/Bob's-lib/") — hence non-greedy, and the
+# literal tail keeps a pathological path containing the same phrase from
+# matching past its own end.  ``_isolated_git_env`` pins LC_ALL=C, keeping
+# this (English) diagnostic parseable under any parent locale.
+_UNBORN_NESTED_REPO_RE = re.compile(
+    r"^error: '(.+?)' does not have a commit checked out$", re.MULTILINE)
+
+
+def _is_deterministic_staging_failure(stderr: str) -> bool:
+    """True when staging failed for a known permanent condition (unborn nested repo)."""
+    return bool(_UNBORN_NESTED_REPO_RE.search(stderr or ""))
+
+
+def _parse_unborn_nested_repo_paths(stderr: str) -> List[str]:
+    """Relative paths git reported as unborn nested repos in ``stderr``.
+
+    Skips empty paths, absolute paths, any ``..`` component, and paths
+    containing CR or LF.
+    """
+    paths: List[str] = []
+    for raw in _UNBORN_NESTED_REPO_RE.findall(stderr or ""):
+        rel = raw[:-1] if raw.endswith("/") else raw
+        if (
+            not rel
+            or rel.startswith("/")
+            or ".." in rel.split("/")
+            or "\n" in rel
+            or "\r" in rel
+        ):
+            continue
+        if rel not in paths:
+            paths.append(rel)
+    return paths
+
+
+def _unborn_nested_repo_retry_args(
+    stderr: str, excluded: Optional[List[str]] = None,
+) -> Optional[List[str]]:
+    """Retry ``git add`` args excluding embedded repos with no checked-out commit.
+
+    ``git add -A`` is fatal when the work tree contains a nested git
+    repository (or a worktree) whose HEAD is unborn::
+
+        error: 'embedded/' does not have a commit checked out
+        fatal: adding files failed
+
+    Re-running with the offending paths excluded via ``:(exclude,literal)``
+    pathspecs stages the rest of the tree.  ``excluded`` carries paths
+    already excluded in prior retry rounds of the same ``_stage_all`` call.
+    Returns ``None`` when stderr shows a different failure and no paths
+    are excludable.
+    """
+    paths = list(excluded or [])
+    for rel in _parse_unborn_nested_repo_paths(stderr):
+        if rel not in paths:
+            paths.append(rel)
+    if not paths:
+        return None
+    return ["add", "-A", "--", "."] + [f":(exclude,literal){p}" for p in paths]
 
 
 def _normalize_path(path_value: str) -> Path:
@@ -201,10 +264,15 @@ def _isolated_git_env() -> dict:
     """Subprocess env with the user's global/system git config neutralised and inherited GIT_*
     redirects dropped: user settings (``commit.gpgsign``, hooks, credential helpers) would break
     background snapshots or spawn pinentry prompts.  GLOBAL/SYSTEM need git 2.32+; NOSYSTEM covers
-    older git.  HOME is kept — rewriting it would change which ~/.gitconfig is hidden."""
+    older git.  HOME is kept — rewriting it would change which ~/.gitconfig is hidden.  Locale is
+    pinned to C so git's diagnostics stay English (and byte-stable for non-ASCII paths) whatever
+    the parent process inherited — ``_UNBORN_NESTED_REPO_RE`` parses those diagnostics."""
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    for var in ("LANG", "LC_MESSAGES", "LANGUAGE"):
+        env.pop(var, None)
+    env["LC_ALL"] = "C"
     for key in _GIT_LEAK_VARS:
         env.pop(key, None)
     return env
@@ -647,7 +715,26 @@ def _locate(working_dir: str, commit_hash: str,
 
 def _stage_all(p: _ProjectRefs) -> Tuple[bool, str, str]:
     """``git add -A`` into the per-project index."""
-    return _run_git(["add", "-A"], p.store, p.abs_dir, timeout=_GIT_TIMEOUT * 2, index_file=p.index_file)
+    ok, stdout, err = _run_git(
+        ["add", "-A"], p.store, p.abs_dir, timeout=_GIT_TIMEOUT * 2, index_file=p.index_file,
+    )
+    excluded: List[str] = []
+    while not ok:
+        progressed = False
+        for rel in _parse_unborn_nested_repo_paths(err):
+            if rel not in excluded:
+                excluded.append(rel)
+                progressed = True
+        if not progressed:
+            break
+        retry_args = _unborn_nested_repo_retry_args(err, excluded)
+        if retry_args is None:
+            break
+        ok, stdout, err = _run_git(
+            retry_args, p.store, p.abs_dir,
+            timeout=_GIT_TIMEOUT * 2, index_file=p.index_file,
+        )
+    return ok, stdout, err
 
 
 def _diff_staged_tree(p: _ProjectRefs, *diff_args: List[str]) -> List[Tuple[bool, str, str]]:
@@ -688,6 +775,9 @@ class CheckpointManager:
         self.max_snapshots, self.max_total_size_mb, self.max_file_size_mb = (
             max(1, int(max_snapshots)), max(0, int(max_total_size_mb)), max(0, int(max_file_size_mb)))
         self._checkpointed_dirs: Set[str] = set()
+        # Per-session suppression of directories whose staging
+        # deterministically failed (never retried within this session).
+        self._failed_dirs: Set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
 
     def new_turn(self) -> None:
@@ -762,9 +852,27 @@ class CheckpointManager:
         if not self._git_available:
             return False
         abs_dir = str(_normalize_path(working_dir))
-        if abs_dir in {"/", str(Path.home())}:  # never snapshot root/home
+
+        # Skip root, home, and volatile temp roots — staging them would walk
+        # systemd-private-*, other users' scratch, and nested-repo trees.
+        temp_root = tempfile.gettempdir()
+        too_broad = {
+            "/",
+            str(Path.home()),
+            temp_root,
+            str(Path(temp_root).resolve()),
+            "/tmp",
+            "/var/tmp",
+            "/dev/shm",
+            "/run",
+        }
+        if abs_dir in too_broad:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
+
+        if abs_dir in self._failed_dirs:
+            return False
+
         if abs_dir in self._checkpointed_dirs:
             return False
         self._checkpointed_dirs.add(abs_dir)
@@ -954,6 +1062,14 @@ class CheckpointManager:
         # Broad patterns come from the exclude file; oversize paths are dropped post-stage.
         ok, _, err = _stage_all(p)
         if not ok:
+            if _is_deterministic_staging_failure(err):
+                # Unborn nested repo: suppress this directory for the rest of
+                # the session so the failure is not retried on every turn.
+                self._failed_dirs.add(p.abs_dir)
+                logger.debug(
+                    "Checkpoint staging failed in %s; skipping this directory "
+                    "for the rest of the session: %s", working_dir, err,
+                )
             return _step_failed("git-add", err)
         if self.max_file_size_mb > 0:
             self._drop_oversize_from_index(p.store, working_dir, p.index_file)

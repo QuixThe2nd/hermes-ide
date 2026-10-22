@@ -6,7 +6,7 @@ import logging
 import sqlite3
 import ssl
 import time
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
 
 from http.client import HTTPConnection, HTTPSConnection
@@ -76,6 +76,7 @@ def run_candidate_loop(handler, st: PolicyProxyState):
     USAGE_MISSING = _srv.USAGE_MISSING
     UsageScanner = _srv.UsageScanner
     apply_upstream_auth = _srv.apply_upstream_auth
+    apply_oauth_headers = _srv.apply_oauth_headers
     _upstream_request_target = _srv._upstream_request_target
     key_fingerprint = _srv.key_fingerprint
     MAX_REQUEST_BODY_BYTES = _srv.MAX_REQUEST_BODY_BYTES
@@ -87,6 +88,7 @@ def run_candidate_loop(handler, st: PolicyProxyState):
         key: Optional[str],
         *,
         cross_route: bool,
+        extra_headers: Optional[Mapping[str, str]] = None,
     ) -> tuple[HTTPConnection, Any]:
         nonlocal conn
         if cand_split.scheme == "https":
@@ -109,7 +111,17 @@ def run_candidate_loop(handler, st: PolicyProxyState):
             drop_account_bound=cross_route,
         )
         if key is not None:
-            headers = apply_upstream_auth(headers, key)
+            if x_api_key_consumed and not bearer_consumed:
+                headers = [
+                    (name, value)
+                    for name, value in headers
+                    if name.lower() not in ("authorization", "x-api-key")
+                ]
+                headers.append(("x-api-key", key))
+            else:
+                headers = apply_upstream_auth(headers, key)
+        if extra_headers:
+            headers = apply_oauth_headers(headers, extra_headers)
         body_for_request = cand_body if cand_body is not None else (
             b"" if self.command in ("POST", "PUT", "PATCH") else None
         )
@@ -167,6 +179,7 @@ def run_candidate_loop(handler, st: PolicyProxyState):
         cand_key: Optional[str] = None
         cand_position = -1
         cand_key_count = 0
+        cand_oauth_cred: Optional[tuple[str, dict[str, str]]] = None
         if key_store is not None:
             route_keys = key_store.route_keys(cand_route)
             cand_key_count = len(route_keys)
@@ -184,6 +197,22 @@ def run_candidate_loop(handler, st: PolicyProxyState):
                 # account than the one that created it — the managed
                 # key stays out of this request entirely.
                 cand_key, cand_position = self.rotator.issue(cand_route)
+            elif (
+                not plan.state_auth_passthrough
+                and key_store.oauth_provider_for(cand_route)
+            ):
+                oauth = self.oauth_provider
+                if oauth is not None:
+                    cand_oauth_cred = oauth.credential_for(cand_route)
+                if cand_oauth_cred is None:
+                    attempts.append(
+                        {
+                            "route": cand_route,
+                            "model": cand_model,
+                            "reason": "oauth_unavailable",
+                        }
+                    )
+                    continue
         # The current attempt IS the effective request from here on:
         # if the send itself fails, the ledger row and the capture
         # must name this candidate, not the arriving route.
@@ -216,10 +245,23 @@ def run_candidate_loop(handler, st: PolicyProxyState):
             capture=capture,
             capture_ts=capture_ts,
         )
-        conn, resp = _open_and_send(
-            cand_split, cand_target, cand_body, cand_key,
-            cross_route=cand_route != upstream_name,
-        )
+        if cand_oauth_cred is not None:
+            conn, resp = _open_and_send(
+                cand_split,
+                cand_target,
+                cand_body,
+                cand_oauth_cred[0],
+                cross_route=cand_route != upstream_name,
+                extra_headers=cand_oauth_cred[1],
+            )
+        else:
+            conn, resp = _open_and_send(
+                cand_split,
+                cand_target,
+                cand_body,
+                cand_key,
+                cross_route=cand_route != upstream_name,
+            )
         st.conn = conn
         sends += 1
         if (
@@ -251,6 +293,35 @@ def run_candidate_loop(handler, st: PolicyProxyState):
                 conn, resp = _open_and_send(
                     cand_split, cand_target, cand_body, retry_key,
                     cross_route=cand_route != upstream_name,
+                )
+                sends += 1
+        elif (
+            cand_oauth_cred is not None
+            and resp.status == 401
+            and self.oauth_provider is not None
+            and sends < MAX_POLICY_SENDS
+            and plan.reason != "state_pinned"
+        ):
+            self.oauth_provider.invalidate(cand_route)
+            refreshed = self.oauth_provider.credential_for(cand_route)
+            if (
+                refreshed is not None
+                and refreshed[0] != cand_oauth_cred[0]
+            ):
+                logger.info(
+                    "upstream %s answered 401 with the cached OAuth token;"
+                    " retrying with a refreshed one",
+                    cand_route,
+                )
+                conn.close()
+                cand_oauth_cred = refreshed
+                conn, resp = _open_and_send(
+                    cand_split,
+                    cand_target,
+                    cand_body,
+                    refreshed[0],
+                    cross_route=cand_route != upstream_name,
+                    extra_headers=refreshed[1],
                 )
                 sends += 1
         # Failover: only a 429 received BEFORE anything was sent

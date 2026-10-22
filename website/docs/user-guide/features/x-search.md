@@ -77,6 +77,14 @@ x_search:
   # Number of automatic retries on 5xx / ReadTimeout / ConnectionError.
   # Each retry backs off (1.5x attempt seconds, capped at 5s).
   retries: 2
+
+  # Optional: route x_search through a named `providers:` entry
+  # (base_url + key_env) that fronts xAI — e.g. a LiteLLM passthrough —
+  # instead of direct api.x.ai. The gateway's own key is sent, never your
+  # xAI OAuth bearer or XAI_API_KEY. A configured name whose entry or
+  # secret is missing disables the tool (fail closed) rather than falling
+  # back to direct. Leave unset for direct api.x.ai.
+  # proxy_provider: litellm-xai
 ```
 
 `reasoning_effort` is sent to the xAI Responses API as

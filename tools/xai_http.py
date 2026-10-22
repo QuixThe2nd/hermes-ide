@@ -174,6 +174,37 @@ def _xai_base_url_override() -> str:
     return str(get_env_value("HERMES_XAI_BASE_URL") or get_env_value("XAI_BASE_URL") or "").strip().rstrip("/")
 
 
+def resolve_xai_proxied_credentials(provider_name: str) -> Dict[str, str]:
+    """Resolve a named ``providers:`` entry as an explicit proxy lane for xAI HTTP endpoints.
+
+    Opt-in via ``x_search.proxy_provider`` / ``tts.xai.proxy_provider``: route ``/responses`` and
+    ``/tts`` through a gateway that fronts xAI (e.g. a LiteLLM passthrough) instead of direct
+    ``api.x.ai``. The entry supplies base_url + ``key_env`` through the SAME named-provider /
+    secret-scope machinery as inference, so the credential sent is the proxy's own key — the xAI
+    OAuth bearer never travels to a non-x.ai origin (the origin-pinning guard stays intact for
+    every direct path).
+
+    Fails closed: a configured name that matches no ``providers:`` entry, or an entry whose
+    ``key_env`` resolves empty, raises ``RuntimeError`` rather than silently falling back to
+    direct ``api.x.ai``.
+    """
+    name = str(provider_name or "").strip()
+    if not name:
+        raise RuntimeError("xAI proxy provider name is empty")
+    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+    entry = _get_named_custom_provider(name)
+    if not entry:
+        raise RuntimeError(f"xAI proxy provider {name!r} is not a configured providers: entry")
+    base_url = str(entry.get("base_url") or "").strip().rstrip("/")
+    api_key = str(entry.get("api_key") or "").strip()
+    if not base_url or not api_key:
+        raise RuntimeError(
+            f"xAI proxy provider {name!r} resolved without a base URL/API key "
+            "(missing key_env secret?); refusing to fall back to direct api.x.ai"
+        )
+    return {"provider": f"xai-proxy:{name}", "api_key": api_key, "base_url": base_url}
+
+
 def resolve_xai_http_credentials(
     *, force_refresh: bool = False, api_key_hint: Optional[str] = None, prefer_api_key: bool = False,
 ) -> Dict[str, str]:

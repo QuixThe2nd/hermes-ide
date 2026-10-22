@@ -3041,6 +3041,26 @@ def _resolve_command_cwd(
     return recorded or default_cwd
 
 
+def _explicit_local_workdir_error(workdir: Optional[str], *, env_type: str, default_cwd: str) -> Optional[str]:
+    """Error if an explicit local ``workdir`` cannot be entered.
+
+    Session/default cwd recovery still uses ``_resolve_safe_cwd`` (deleted cwd
+    must not wedge later calls). An explicit per-command workdir is a caller
+    assertion: falling back silently runs the command against the wrong tree
+    (pc_83befb96bc54).
+    """
+    if not workdir or env_type != "local":
+        return None
+    from tools.environments.local import _cwd_usable
+
+    candidate = os.path.expanduser(str(workdir))
+    if not os.path.isabs(candidate):
+        candidate = str(Path(default_cwd) / candidate)
+    if _cwd_usable(candidate):
+        return None
+    return f"workdir does not exist or is not a usable directory: {workdir}"
+
+
 # Floor for the pre-exec guard's share of the command deadline: a short command timeout
 # (1s in tests, a few seconds in practice) must not turn the guard's own cold-start cost
 # (module imports, git probes under load) into a refusal; the wedge it bounds lasted an hour.
@@ -3586,6 +3606,17 @@ def terminal_tool(
                 session_key=session_key,
                 env_type=env_type,
             )
+            workdir_err = _explicit_local_workdir_error(
+                workdir, env_type=env_type, default_cwd=cwd,
+            )
+            if workdir_err:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": workdir_err,
+                    "status": "error",
+                    "cwd": effective_cwd,
+                }, ensure_ascii=False)
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -3613,6 +3644,7 @@ def terminal_tool(
                     "pid": proc_session.pid,
                     "exit_code": 0,
                     "error": None,
+                    "cwd": effective_cwd,
                 }
                 # Background spawns detached and returns exit_code 0 immediately;
                 # it never inline-polls is_interrupted(), so the stale-bit kill
@@ -3635,18 +3667,8 @@ def terminal_tool(
                 # server cases (false positive) and prevents silent
                 # blindness for bounded-task cases (false negative).
                 if background and not notify_on_complete and not watch_patterns:
-                    result_data["hint"] = (
-                        "background=true without notify_on_complete=true means "
-                        "this process runs SILENTLY — you will not be told when "
-                        "it exits. If this is a bounded task (test suite, build, "
-                        "CI poller, deploy, anything with a defined end), you "
-                        "almost certainly wanted notify_on_complete=true so the "
-                        "system pings you on exit. Re-launch with "
-                        "notify_on_complete=true, or call process(action='poll') "
-                        "/ process(action='wait') yourself to learn the outcome. "
-                        "Only ignore this hint for genuine long-lived processes "
-                        "that never exit (servers, watchers, daemons)."
-                    )
+                    from tools.terminal_tool_background import silent_background_hint
+                    result_data["hint"] = silent_background_hint()
 
                 # Nudge: homebrewed CI watcher built from `gh pr view`
                 # `--json statusCheckRollup` or `gh pr checks` piped through

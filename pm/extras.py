@@ -35,7 +35,10 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "wake-tflite": "ai_edge_litert",
     "fal": "fal_client",
     "honcho": "honcho",
-    "hindsight": "hindsight",
+    # The hindsight-client wheel (0.6.1 / 0.9.2) ships hindsight_client*, never a
+    # top-level ``hindsight`` module — anchoring on the package name made
+    # available("hindsight") a permanent false negative (pc_1de37914422e).
+    "hindsight": "hindsight_client",
     "supermemory": "supermemory",
     "mem0": "mem0",
     "messaging": "telegram",
