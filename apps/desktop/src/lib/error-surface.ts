@@ -35,6 +35,9 @@ export const ERROR_CODE_KEYS = [
   'timeout',
   'stream_drop',
   'ssl_cert_verification',
+  // A firewall/CDN in front of the endpoint refused the request (usually by
+  // User-Agent) before it reached the model: not a key problem, and not retryable.
+  'upstream_blocked',
   'context_overflow',
   'payload_too_large',
   'model_not_found',
@@ -183,7 +186,9 @@ export interface ErrorRecoveryPlan {
   signInAgain: boolean
   /** Open the free-tier sign-in dialog (free_tier_* codes): signing in is free and lifts the refusal. */
   signInFreeTier: boolean
-  /** Settings → Models deep link. */
+  /** Open the live session model menu (switches THIS session via
+   *  model.switch); Settings → Models deep link fallback when no chat surface
+   *  is on screen. */
   switchProvider: boolean
 }
 

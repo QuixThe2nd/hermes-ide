@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 
 def _process_hermes_home() -> Path:
     """HERMES_HOME for process-level identity files (ignore task overrides)."""
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, get_process_hermes_home
 
-    val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else get_hermes_home()
+    # get_process_hermes_home expands ``~``/``$VAR`` (python -m gateway.run skips the CLI normalizer).
+    return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
 
 
 def _home_path(home: Optional[Path], *relative: str) -> Path:
@@ -49,7 +49,7 @@ def _proc_fields(path: str, wanted: Dict[str, str]) -> Dict[str, int]:
     """``{dst: int}`` for each ``src: dst`` key found in a ``Key: value`` /proc file."""
     found: Dict[str, int] = {}
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             for line in fh:
                 key = line.split(":", 1)[0]
                 if key in wanted:
@@ -76,7 +76,7 @@ def sample_memory() -> Dict[str, Any]:
 
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -213,7 +213,8 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_unclean_exit", "pid": os.getpid(), **evidence}, home)
     logger.warning(
         "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
-        "VM death). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
+        "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "
+        "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
     )

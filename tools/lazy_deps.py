@@ -321,18 +321,29 @@ def activate_durable_lazy_target() -> None:
         logger.debug("Failed to activate durable lazy target %s: %s", target, e)
 
 
-def _allow_lazy_installs() -> bool:
-    """Whether lazy installs are permitted: (1) ``security.allow_lazy_installs: false`` blocks in BOTH
-    modes; (2) the sealed venv (``HERMES_DISABLE_LAZY_INSTALLS=1``) blocks only without a durable
-    target to redirect into. Unreadable config fails OPEN — blocking is an explicit opt-in."""
+def _config_allows_automatic_lazy_installs() -> bool:
+    """User-facing ``security.allow_lazy_installs`` gate (ordinary on-demand installs)."""
     cfg = None
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config
         cfg = load_config()
     if cfg is not None and not bool((cfg.get("security") or {}).get("allow_lazy_installs", True)):
         return False
-    if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1":
-        return _lazy_install_target() is not None
+    return True
+
+
+def _sealed_without_durable_lazy_target() -> bool:
+    """Sealed venv (``HERMES_DISABLE_LAZY_INSTALLS=1``) without a writable durable target."""
+    return os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1" and _lazy_install_target() is None
+
+
+def _allow_lazy_installs() -> bool:
+    """Whether lazy installs are permitted for callers without ``explicit_update``: both the config
+    kill switch and the sealed-venv rule apply. Unreadable config fails OPEN — blocking is explicit."""
+    if not _config_allows_automatic_lazy_installs():
+        return False
+    if _sealed_without_durable_lazy_target():
+        return False
     return True
 
 
@@ -483,35 +494,56 @@ def _uv_binary() -> Optional[str]:
     """Managed uv first ($HERMES_HOME/bin is never on PATH), then PATH. A lookup, not ensure_uv():
     downloading uv mid-turn is more than the caller asked for; pip covers no-uv."""
     try:
-        from hermes_cli.managed_uv import resolve_uv
+        from hermes_cli.runtime_repair import resolve_uv
 
         return resolve_uv() or shutil.which("uv")
     except Exception:
         return shutil.which("uv")
 
 
-def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
+def _write_constraints_file(lines: tuple[str, ...]) -> Path:
+    import tempfile
+    fd, path = tempfile.mkstemp(prefix="hermes-plugin-constraints-", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return Path(path)
+
+
+def _after_successful_install(specs: tuple[str, ...], target: Optional[Path], dry_run: bool) -> None:
+    """Post-install bookkeeping; a dry run installed nothing, so there is nothing to activate/warm."""
+    if dry_run:
+        return
+    if target is not None:
+        _activate_target_on_syspath(target)
+    _warm_installed_bytecode(specs, target)
+
+
+def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_lines: tuple[str, ...] = (),
+                      dry_run: bool = False) -> _InstallResult:
     """Install ``specs`` via the uv -> pip -> ensurepip ladder, venv-scoped or into the durable
     ``--target`` (constrained to core versions) when :data:`_LAZY_TARGET_ENV` is set. Independent of
-    ``hermes_cli.tools_config._pip_install`` (no CLI dependency)."""
+    ``hermes_cli.tools_config._pip_install`` (no CLI dependency).
+
+    *constraint_lines* pins the resolver (plugin installs pass Hermes' own declared ranges so a plugin
+    can never move a core package out of range); *dry_run* resolves without installing."""
     if not specs:
         return _InstallResult(True, "", "")
     target = _lazy_install_target()
     constraints: Optional[Path] = None
-    extra_args: list[str] = []
+    extra_args: list[str] = ["--dry-run"] if dry_run else []
     if target is not None:
         if err := _ensure_target_ready(target):
             return _InstallResult(False, "", err)
         constraints = _core_constraints_file()
         extra_args += ["--target", str(target)]
-        if constraints is not None:
-            extra_args += ["--constraint", str(constraints)]
+    elif constraint_lines:
+        constraints = _write_constraints_file(constraint_lines)
+    if constraints is not None:
+        extra_args += ["--constraint", str(constraints)]
 
     def _finish(r: subprocess.CompletedProcess) -> _InstallResult:
         if r.returncode == 0:
-            if target is not None:
-                _activate_target_on_syspath(target)
-            _warm_installed_bytecode(specs, target)
+            _after_successful_install(specs, target, dry_run)
         return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
 
     try:
@@ -575,10 +607,14 @@ def _prompt_toolkit_active() -> bool:
         return False
 
 
-def ensure(feature: str, *, prompt: bool = True) -> None:
+def ensure(feature: str, *, prompt: bool = True, explicit_update: bool = False) -> None:
     """Make every package for ``feature`` importable, installing if needed; raises
     :class:`FeatureUnavailable` when installs are disabled or fail. ``prompt``: confirm on a TTY first
-    (non-interactive callers pass False and rely on the config gate)."""
+    (non-interactive callers pass False and rely on the config gate).
+
+    ``explicit_update``: post-swap restoration of a captured feature set — may install missing
+    packages even when ``security.allow_lazy_installs`` is false (managed/sealed/unsafe rules still
+    apply). Ordinary on-demand callers must leave this false."""
     if feature not in LAZY_DEPS:
         raise FeatureUnavailable(feature, (), f"feature {feature!r} not in LAZY_DEPS allowlist")
     missing = feature_missing(feature)
@@ -603,7 +639,15 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     for spec in missing:  # belt and braces on top of the allowlist
         if not _spec_is_safe(spec):
             raise FeatureUnavailable(feature, missing, f"refusing to install unsafe spec {spec!r}")
-    if not _allow_lazy_installs():
+    if explicit_update:
+        if _sealed_without_durable_lazy_target():
+            raise FeatureUnavailable(
+                feature,
+                missing,
+                "runtime installs are disabled on this deployment: the agent environment is immutable "
+                "and no writable install target is configured (HERMES_LAZY_INSTALL_TARGET)",
+            )
+    elif not _allow_lazy_installs():
         raise FeatureUnavailable(feature, missing, "lazy installs disabled (security.allow_lazy_installs=false)")
     if prompt and not _prompt_toolkit_active() and sys.stdin.isatty() and sys.stdout.isatty():
         try:
@@ -650,10 +694,12 @@ class InstallSpecsResult:
     stderr: str = ""
 
 
-def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> InstallSpecsResult:
+def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
+                  constraints: list[str] | tuple[str, ...] = (), dry_run: bool = False) -> InstallSpecsResult:
     """Install data-driven pip specs (plugin manifest ``pip_dependencies``) with the same routing and
     gating as :func:`ensure`, but unknown packages are allowed — the caller owns manifest trust, this
-    owns spec hygiene. Never raises; inspect the :class:`InstallSpecsResult`."""
+    owns spec hygiene. *constraints* are requirement lines the resolver must honour; *dry_run* only
+    resolves. Never raises; inspect the :class:`InstallSpecsResult`."""
     cleaned = tuple(str(s).strip() for s in specs if str(s).strip())
     if not cleaned:
         return InstallSpecsResult(ok=True, command="")
@@ -668,9 +714,9 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> 
                   ) if sealed else "runtime installs disabled (security.allow_lazy_installs=false)"
         return InstallSpecsResult(ok=False, blocked=True, reason=reason)
     display = "uv pip install " + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
-    logger.info("Installing pip specs %s (target=%s)", " ".join(cleaned), target or "venv")
+    logger.info("%s pip specs %s (target=%s)", "Resolving" if dry_run else "Installing", " ".join(cleaned), target or "venv")
     try:
-        result = _venv_pip_install(cleaned, timeout=timeout)
+        result = _venv_pip_install(cleaned, timeout=timeout, constraint_lines=tuple(constraints), dry_run=dry_run)
     except Exception as exc:
         logger.warning("install_specs failed unexpectedly: %s", exc)
         return InstallSpecsResult(ok=False, command=display, stderr=f"install failed: {exc}")
@@ -709,10 +755,21 @@ def _refresh_features(features: list[str], *, prompt: bool, restoring: bool) -> 
             results[feature] = f"skipped: {unsupported}"
             continue
         try:
-            ensure(feature, prompt=False if restoring else prompt)
+            ensure(
+                feature,
+                prompt=False if restoring else prompt,
+                explicit_update=restoring,
+            )
             results[feature] = "restored" if restoring else "refreshed"
-        except FeatureUnavailable as e:  # opt-outs and platform-incompatible features are skips, not failures
-            skip = "lazy installs disabled" in str(e) or "declined" in str(e) or e.reason.startswith("unsupported ")
+        except FeatureUnavailable as e:
+            skip = (
+                not restoring
+                and (
+                    "lazy installs disabled" in str(e)
+                    or "declined" in str(e)
+                    or e.reason.startswith("unsupported ")
+                )
+            ) or e.reason.startswith("unsupported ")
             results[feature] = f"skipped: {e.reason}" if skip else f"failed: {e.reason}"
         except Exception as e:
             results[feature] = f"failed: {e}"

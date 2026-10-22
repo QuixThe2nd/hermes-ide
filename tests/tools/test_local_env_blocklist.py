@@ -854,18 +854,19 @@ class TestPythonpathSelectiveStrip:
         assert "VIRTUAL_ENV" not in result
 
     def test_unrelated_virtual_env_is_not_runtime_provenance(self, tmp_path, monkeypatch):
-        """An arbitrary inherited VIRTUAL_ENV cannot claim PYTHONPATH ownership."""
+        """An arbitrary inherited VIRTUAL_ENV cannot claim PYTHONPATH
+        ownership — provenance is pm's facts, and pm records no venv here."""
         import tools.environments.local as local
         from tools.environments import local_pythonpath
 
-        repo_root = tmp_path / "hermes-agent"
-        repo_root.mkdir()
         unrelated_venv = tmp_path / "user-venv"
         unrelated_sp = unrelated_venv / "Lib" / "site-packages"
         unrelated_sp.mkdir(parents=True)
         (unrelated_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (repo_root,))
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "no-such-store"))
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (tmp_path / "hermes-agent",))
         monkeypatch.setattr(local, "_in_venv", False)
         monkeypatch.setattr(local, "_hermes_site_packages", None)
 
@@ -1236,52 +1237,6 @@ class TestPythonpathSelectiveStrip:
         env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
         local_pythonpath._strip_hermes_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
-
-    def test_validated_runtime_venv_lexical_after_repo_recovery(self, tmp_path, monkeypatch):
-        """uv-base gateway: once the lexical repo alias is recovered, a lexical
-        VIRTUAL_ENV (<lexical repo>/venv) validates and its site-packages is
-        stripped together with the repo root, while user entries survive.
-        """
-        import tools.environments.local as local
-        from tools.environments import local_pythonpath
-
-        physical_root = _physical_repo_root(tmp_path)
-        venv_dir = physical_root / "venv"
-        venv_dir.mkdir(parents=True)
-        (venv_dir / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
-        configured_home = tmp_path / "configured-home"
-        configured_home.mkdir()
-        try:
-            _make_directory_link(configured_home / "hermes-agent", physical_root)
-        except OSError as exc:
-            pytest.skip(f"directory link unavailable on this host: {exc}")
-
-        lexical_root = configured_home / "hermes-agent"
-        aliases = local_pythonpath._build_hermes_repo_root_aliases(
-            physical_root.resolve(),
-            physical_root,
-            configured_home,
-        )
-        assert any(local_pythonpath._same_path(a, lexical_root) for a in aliases)
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
-
-        lexical_venv = lexical_root / "venv"
-        validated = local_pythonpath._validated_runtime_venv({"VIRTUAL_ENV": str(lexical_venv)})
-        assert validated is not None
-        assert local_pythonpath._same_path(validated, lexical_venv)
-
-        local._hermes_site_packages = None
-        env = {"PYTHONPATH": os.pathsep.join([
-            str(lexical_root),
-            str(lexical_venv / "Lib" / "site-packages"),
-            "/home/user/my-lib",
-        ]), "VIRTUAL_ENV": str(lexical_venv)}
-        local_pythonpath._strip_hermes_owned_pythonpath(env)
-        assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
-
-
-
-
 
 class TestPythonhomeSanitized:
     """PYTHONHOME must not leak from the Hermes runtime into subprocesses.

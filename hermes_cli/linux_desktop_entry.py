@@ -101,6 +101,19 @@ def _running_interpreter_fallback() -> str:
     return os.path.abspath(sys.executable)
 
 
+def _repo_pythonpath_entry() -> str | None:
+    """The repo root as a PYTHONPATH entry — under no-boot-through-venv the
+    boot interpreter is the pm STORE python whose imports arrive via
+    PYTHONPATH (no editable install), and a .desktop launch by the DE
+    inherits NO environment, so the Exec line must carry it explicitly."""
+    try:
+        import hermes_cli
+
+        return str(Path(hermes_cli.__file__).resolve().parent.parent)
+    except Exception:
+        return None
+
+
 def resolve_exec_command(project_root: Optional[Path] = None) -> str:
     """Build the absolute ``Exec=`` command line for ``hermes desktop``.
 
@@ -108,6 +121,8 @@ def resolve_exec_command(project_root: Optional[Path] = None) -> str:
     """
     from hermes_cli.relaunch import resolve_hermes_bin
 
+    repo = _repo_pythonpath_entry()
+    prefix = f"env PYTHONPATH={_quote_exec_arg(repo)} " if repo else ""
     bin_path = _resolve_hermes_bin_for_desktop_entry(resolve_hermes_bin, checkout_root=project_root)
     interpreter = _running_interpreter()
     if not _can_import_hermes_cli(Path(interpreter)):
@@ -126,10 +141,10 @@ def resolve_exec_command(project_root: Optional[Path] = None) -> str:
         # A Python launcher whose shebang points OUTSIDE the venv (e.g. the repo's `hermes` script
         # with `#!/usr/bin/env python3`) would die silently on the first third-party import under
         # Terminal=false — run it under the venv interpreter explicitly.
-        prefix = [interpreter] if _needs_interpreter(resolved) else []
+        prefix_argv = [interpreter] if _needs_interpreter(resolved) else []
         # See #90292.
-        argv = [*prefix, str(resolved), "desktop"]
-    return " ".join(_quote_exec_arg(a) for a in argv)
+        argv = [*prefix_argv, str(resolved), "desktop"]
+    return prefix + " ".join(_quote_exec_arg(a) for a in argv)
 
 
 def _is_interpreter(candidate: Path) -> bool:
@@ -623,7 +638,7 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     try:
         entry_path.parent.mkdir(parents=True, exist_ok=True)
         # Unchanged → skip the rewrite so a launch doesn't churn the menu caches.
-        if entry_path.is_file() and entry_path.read_text(encoding="utf-8") == contents:
+        if entry_path.is_file() and entry_path.read_text(encoding="utf-8-sig") == contents:
             return entry_path
         # Atomic replace: an interrupted plain write leaves a zero-byte entry, which permanently
         # breaks the taskbar pin (nothing later rewrites a file that exists at the right path).

@@ -71,7 +71,11 @@ def _tc_name(tool_call: Any) -> str:
 def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -> None:
     """Record the spillover file path so a later result-reference stub can't dangle (best-effort)."""
     try:
-        path = extract_persisted_path(function_result) if isinstance(function_result, str) else None
+        candidates = [function_result] if isinstance(function_result, str) else [
+            function_result.get("text_summary"),
+            *(p.get("text") for p in function_result.get("content") or [] if isinstance(p, dict)),
+        ] if _is_multimodal_tool_result(function_result) else []
+        path = next((p for p in map(extract_persisted_path, candidates) if p), None)
         if path:
             agent._tool_guardrails.record_persisted_result(tool_call_id, path)
     except Exception as exc:
@@ -85,7 +89,10 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
     if not file_path:
         return
     from agent.file_safety import is_nt_namespace_path
-    from tools.file_tools_paths import _resolve_path_for_task
+    from tools.file_tools_paths import _resolve_path_for_task, container_backend_for_task
+
+    if container_backend_for_task(effective_task_id or "default") is not None:
+        return  # container paths: nothing to checkpoint on the host
 
     # Resolving an NT-namespace path is itself the NTLM-leak trigger; leave the
     # tool's raw-string guard to refuse it without a checkpoint stat.
@@ -143,6 +150,12 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
         "delegate_task",
         "dispatch_assistant",
         "restart",
+        # A foreground ``terminal`` call supervises its own child with its own
+        # ``effective_timeout`` kill and structured timeout result, so the generic
+        # deadline must never preempt it. The schema advertises foreground waits up
+        # to ``FOREGROUND_MAX_TIMEOUT`` (default 600s); the 420s generic deadline
+        # killed those calls first, wasting the child's work.
+        "terminal",
     }
 )
 
@@ -871,14 +884,11 @@ def _resolve_sequential_tool_timeout() -> float | None:
     return resolve_timeout("tools.sequential_call", default=_resolve_concurrent_tool_timeout())
 
 
-# Tools whose call blocks on a long-running operation that supervises its own liveness: no generic
-# sequential deadline. ``delegate_task`` in a nested orchestrator blocks for the whole batch by design
-# (children carry heartbeats, the stale monitor, and ``delegation.child_timeout_seconds``); under the
-# 420 s deadline every real batch "timed out" while its children ran on as orphans, and the orchestrator
-# spent the following hours polling transcripts (measured: 332 timeouts, ~$4k of orchestrator turns in
-# one run).
 # ``manage_connections`` waits on the connection operation's own deadline; the generic deadline
 # would return tool_timeout while its approval card is still open.
+# Long blocking delegations are covered by ``tools.unbounded_tools``
+# (``_DEFAULT_UNBOUNDED_TOOLS``), which now also exempts ``terminal``: a foreground
+# terminal call supervises its own child and deadline.
 _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections"})
 
 
@@ -927,7 +937,9 @@ def _run_sequential_tool_execution_middleware(
 ) -> _ManagedToolResult:
     """Run one sequential call on a worker thread under the concurrent executor's deadline.
     Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
-    generic deadline would report ``tool_timeout`` while the prompt is still live."""
+    generic deadline would report ``tool_timeout`` while the prompt is still live. They
+    are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
+    they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
     timeout_s = _resolve_sequential_tool_timeout()
     if function_name in _resolve_unbounded_tools():
         # Long-running external agents have no stall watchdog of their own and
@@ -1055,9 +1067,11 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         elif function_name == "terminal":
             command = function_args.get("command", "")
             if _is_destructive_command(command):
-                from agent.runtime_cwd import scope_terminal_cwd
-                cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
-                agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
+                from tools.file_tools_paths import container_backend_for_task
+                if container_backend_for_task(effective_task_id or "default") is None:
+                    from agent.runtime_cwd import scope_terminal_cwd
+                    cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
+                    agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 
 def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool) -> None:
@@ -1134,7 +1148,11 @@ def _commit_tool_result(
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
     persisted_result = function_result
-    if not _is_multimodal_tool_result(persisted_result):
+    if _is_multimodal_tool_result(persisted_result):
+        persisted_result = _persist_multimodal_text_parts(
+            persisted_result, function_name, tool_call_id, get_active_env(effective_task_id), budget,
+        )
+    else:
         persisted_result = maybe_persist_tool_result(
             content=persisted_result,
             tool_name=function_name,
@@ -1168,6 +1186,34 @@ def _commit_tool_result(
             "tool.completed", function_name, None, None, duration=tool_duration, is_error=is_error, result=function_result,
         )
     return persisted_result, function_result, tool_message.get("_tool_output_risk")
+
+
+def _persist_multimodal_text_parts(result: dict, tool_name: str, tool_call_id: str, env, budget: BudgetConfig) -> dict:
+    """Spill oversized TEXT parts of a multimodal envelope through the same persistence policy as
+    string results (#95429). A ``browser_exec`` call that captured a screenshot bakes its full
+    stdout into the envelope's text part, which used to bypass ``maybe_persist_tool_result``
+    entirely and ride every later request inline. Image parts are left untouched (their size is
+    governed by the vision embed budget); a fresh dict is returned so history is never mutated."""
+    parts = result.get("content") or []
+    bounded_parts, first_replacement = [], None
+    for part in parts:
+        text = part.get("text") if isinstance(part, dict) and part.get("type") == "text" else None
+        if isinstance(text, str):
+            replaced = maybe_persist_tool_result(content=text, tool_name=tool_name, tool_use_id=tool_call_id,
+                                                 env=env, config=budget)
+            if replaced != text:
+                part = {**part, "text": replaced}
+                first_replacement = first_replacement or replaced
+        bounded_parts.append(part)
+    if first_replacement is None:
+        return result
+    bounded = {**result, "content": bounded_parts}
+    summary = bounded.get("text_summary")
+    # The summary is a subset of the (already spilled) part text: reuse that bounded reference instead
+    # of a second persist under the same id, which would overwrite the spill file with the summary.
+    if isinstance(summary, str) and len(summary) > budget.resolve_threshold(tool_name):
+        bounded["text_summary"] = first_replacement
+    return bounded
 
 
 def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tools: int, budget: BudgetConfig) -> None:

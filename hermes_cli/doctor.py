@@ -163,6 +163,34 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
     print()
 
 
+def _pm_venv_active() -> bool:
+    """Whether pm provisioned a runtime venv for this install.
+
+    Resolved from pm's own records (facts.json + store layout), never from
+    interpreter state: under no-boot-through-venv ``sys.prefix`` always
+    equals ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled
+    installs. A bundled install keeps its relocatable venv beside the
+    manifest; a dev install syncs the project venv (``venv``/``.venv``).
+    Falls back to the legacy ``sys.prefix`` probe when pm records nothing
+    here (pre-pm checkouts) or pm itself cannot be read.
+    """
+    try:
+        from pm import paths
+        from pm.lock import Facts
+
+        if Facts(paths.facts_path()).get("venv"):
+            store = paths.store_root()
+            bundled = store.parent / "venv"
+            if (store.parent / "manifest.json").is_file():
+                return bundled.is_dir()
+            from hermes_constants import project_venv_dir
+
+            return project_venv_dir(paths.repo_root()) is not None
+    except Exception:
+        pass
+    return sys.prefix != sys.base_prefix
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)

@@ -91,6 +91,8 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # Run-owned final presentation snapshot; never deserialized from ingress metadata.
+    _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
@@ -112,3 +114,20 @@ class MessageEvent:
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+
+
+def inbound_platform_message_id(event: MessageEvent) -> Optional[str]:
+    """Return the durable inbound platform id for dedupe/recovery, if any.
+
+    Synthetic startup-resume turns carry ``ledger_message_id`` (not ``message_id``)
+    so transcript dedupe does not treat the resume as a duplicate user row.
+    Internal events that only borrow ``message_id`` as a reply anchor (loop
+    wakeups, etc.) intentionally return None here.
+    """
+    if getattr(event, "internal", False):
+        ledger = getattr(event, "ledger_message_id", None)
+        return str(ledger) if ledger else None
+    if getattr(event, "message_id", None):
+        return str(event.message_id)
+    ledger = getattr(event, "ledger_message_id", None)
+    return str(ledger) if ledger else None

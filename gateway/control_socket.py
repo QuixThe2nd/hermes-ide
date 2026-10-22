@@ -54,7 +54,7 @@ def _fallback_socket_path(home: Path) -> Path:
     then ``/tmp`` (POSIX); if nothing fits the tempdir candidate is returned anyway — bind fails
     non-fatally and consumers use the scan layer."""
     name = f"hermes-gw-{_home_hash(home)}.sock"
-    candidates = [Path(tempfile.gettempdir()) / name] + ([] if _IS_WINDOWS else [Path("/tmp") / name])
+    candidates = [Path(tempfile.gettempdir()) / name] + ([] if _IS_WINDOWS else [Path("/tmp") / name])  # no-tmp: ok — AF_UNIX 104-byte path limit needs the short /tmp candidate
     return next((c for c in candidates if _fits_sun_path(c)), candidates[0])
 
 
@@ -71,7 +71,7 @@ def resolve_client_socket_path(home: Path) -> Optional[Path]:
         return direct
     with contextlib.suppress(OSError):
         pointer = Path(home) / _POINTER_FILENAME
-        target = pointer.read_text(encoding="utf-8").strip() if pointer.is_file() else ""
+        target = pointer.read_text(encoding="utf-8-sig").strip() if pointer.is_file() else ""
         if target and Path(target).exists():
             return Path(target)
     return None

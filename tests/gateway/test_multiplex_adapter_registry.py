@@ -427,6 +427,109 @@ class TestSecondaryProfileFatalRecovery:
         assert runner._profile_failed_platforms == {}
 
 
+class TestGateConfigWarningsAccumulation:
+    """An invalid gate block on a served profile is contained at parse time (gate off,
+    platform loads); the runner collects ``<profile>:<platform> <error>`` per warning and
+    the boot's ``served_profiles`` status write carries the list."""
+
+    def _install_invalid_gate_profile(self, monkeypatch, runner, adapter):
+        """A multiplexer serving default + reviewer, where reviewer's discord block has an
+        invalid ``reaction_gate`` (real PlatformConfig parse, so the recorded warning text
+        is the production ValueError)."""
+        _install_secondary_reconnect_context(monkeypatch, runner, adapter)
+        monkeypatch.setattr(
+            "hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: {}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        reviewer_cfg = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={
+                Platform.DISCORD: PlatformConfig.from_dict({
+                    "enabled": True, "token": "profile-token",
+                    "reaction_gate": {"enabled": True, "channels": ["555"], "emojis": []},
+                }),
+            },
+        )
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+
+        async def connect(adapter, platform, **_kwargs):
+            return True
+
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex, profile_allowlist=None: [
+                ("default", Path("/tmp/default")),
+                ("reviewer", Path("/profiles/reviewer")),
+            ],
+        )
+        monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+        runner.adapters = {}
+        runner.pairing_stores = {"default": MagicMock(), "reviewer": MagicMock()}
+        runner.pairing_store = runner.pairing_stores["default"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_gate_reaches_the_final_status_write(self, monkeypatch):
+        runner = _secondary_recovery_runner()
+        self._install_invalid_gate_profile(monkeypatch, runner, _SecondaryRecoveryAdapter())
+        status_writes = []
+        monkeypatch.setattr(
+            "gateway.status.write_runtime_status",
+            lambda **kwargs: status_writes.append(kwargs),
+        )
+
+        connected = await runner._start_secondary_profile_adapters()
+
+        assert connected == 1
+        assert status_writes[-1]["served_profiles"] == ["default", "reviewer"]
+        # The status-key convention (<profile>:<platform>) plus the config error text.
+        assert status_writes[-1]["gate_config_warnings"] == [
+            "reviewer:discord reaction_gate: emojis must list at least one emoji"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_boot_without_gate_warnings_records_an_empty_list(self, monkeypatch):
+        """The boot write always passes the field (even empty) so the previous boot's
+        warnings cannot outlive the gateway that produced them."""
+        runner = _secondary_recovery_runner()
+        self._install_invalid_gate_profile(monkeypatch, runner, _SecondaryRecoveryAdapter())
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="tok")},
+            ),
+        )
+        status_writes = []
+        monkeypatch.setattr(
+            "gateway.status.write_runtime_status",
+            lambda **kwargs: status_writes.append(kwargs),
+        )
+
+        assert await runner._start_secondary_profile_adapters() == 1
+        assert status_writes[-1]["gate_config_warnings"] == []
+
+    @pytest.mark.asyncio
+    async def test_rescan_does_not_accumulate_duplicates(self, monkeypatch):
+        """The reconcile watcher re-runs per-profile startup; the same profile config must
+        not append its warning a second time."""
+        runner = _secondary_recovery_runner()
+        self._install_invalid_gate_profile(monkeypatch, runner, _SecondaryRecoveryAdapter())
+        monkeypatch.setattr(
+            "gateway.status.write_runtime_status", lambda **kwargs: None
+        )
+
+        await runner._start_one_profile_adapters("reviewer", Path("/profiles/reviewer"), {})
+        await runner._start_one_profile_adapters("reviewer", Path("/profiles/reviewer"), {})
+
+        assert runner._gate_config_warnings == [
+            "reviewer:discord reaction_gate: emojis must list at least one emoji"
+        ]
+
+
 class TestSecondaryStartupFailureRecovery:
     """Cold-start connect failures must reach the same reconnect slot as
     mid-run fatals — one unlucky connect window must not kill the platform

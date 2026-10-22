@@ -164,8 +164,8 @@ THREAT_PATTERNS = [
     # `${SKILL_DIR}/x`") and on flag names such as llama.cpp `--host 127.0.0.1 --port $PORT`.
     (r'(?<![-/])\b(dig|nslookup|host)\s+(?:[-+@]\S*(?:\s+[^\s$"\'-][^\s$]*)?\s+)*["\']?[^\s"\'$]*\$',
      "dns_exfil", "critical", "exfiltration", "DNS lookup with variable interpolation (possible DNS exfiltration)"),
-    (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',
-     "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),
+    (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',  # no-tmp: ok — malicious-pattern regex
+     "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),  # no-tmp: ok — malicious-pattern label
     # ── Exfiltration: markdown/link based ──
     (r'!\[.*\]\(https?://[^\)]*\$\{?',
      "md_image_exfil", "high", "exfiltration", "markdown image URL with variable interpolation (image-based exfil)"),
@@ -558,7 +558,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
     try:
-        lines = file_path.read_text(encoding='utf-8').split('\n')
+        lines = file_path.read_text(encoding='utf-8-sig').split('\n')
     except (UnicodeDecodeError, OSError):
         return []
     findings = []
@@ -638,7 +638,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
                 "source_url": source_url}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
-        cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))
     if isinstance(cached, dict) and all(cached.get(k) == v for k, v in expected.items()):
         result = ScanResult(skill_path.name, source, cached["trust_level"], cached["verdict"],
                             [Finding(**item) for item in cached.get("findings", [])], cached["scanned_at"],
@@ -745,7 +745,7 @@ def _load_skill_ignore(skill_dir: Path):
     for ig in (skill_dir / name for name in _SKILL_IGNORE_FILENAMES):
         with suppress(UnicodeDecodeError, OSError):
             if ig.is_file():
-                patterns.extend(s for s in map(str.strip, ig.read_text(encoding="utf-8").splitlines())
+                patterns.extend(s for s in map(str.strip, ig.read_text(encoding="utf-8-sig").splitlines())
                                 if s and not s.startswith("#"))
 
     def ignore(rel: str) -> bool:

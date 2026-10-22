@@ -622,7 +622,7 @@ class TestResolveNameList:
 
 
 class TestUnboundedToolsResolver:
-    """_resolve_unbounded_tools: fork default covers delegate and restart tools."""
+    """_resolve_unbounded_tools: fork default covers delegate, restart, and terminal tools."""
 
     def test_default_contains_delegate_tools(self, monkeypatch):
         from agent import tool_executor
@@ -632,6 +632,18 @@ class TestUnboundedToolsResolver:
         assert "delegate_cursor_agent" in names
         assert "delegate_claude_agent" in names
         assert "restart" in names
+
+    def test_default_exempts_terminal_from_generic_deadline(self, monkeypatch):
+        """Foreground terminal supervises its own child (``effective_timeout`` kill).
+
+        The generic batch deadline (420s default) must never preempt a foreground
+        terminal call the schema advertises up to ``FOREGROUND_MAX_TIMEOUT`` (600s).
+        """
+        from agent import tool_executor
+
+        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
+        names = tool_executor._resolve_unbounded_tools()
+        assert "terminal" in names
 
     def test_default_covers_all_four_public_names_and_legacy_aliases(
         self, monkeypatch

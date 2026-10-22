@@ -3,45 +3,6 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const ja = defineLocale({
-  catalog: {
-    listView: 'リスト表示',
-    cardView: 'カード表示',
-    installTitle: (name: string) => `「${name}」をインストールしますか？`,
-    installDescription: 'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
-    installTo: 'インストール先',
-    thisComputer: 'このコンピューター',
-    installing: 'インストール中…',
-    installComplete: (name: string) => `「${name}」をインストールしました`,
-    destinationChanged: 'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
-    browse: '閲覧',
-    installed: 'インストール済み',
-    searchSkills: 'スキルを検索',
-    searchPlugins: 'プラグインを検索',
-    allSources: 'すべての提供元',
-    allCategories: 'すべてのカテゴリ',
-    about: '概要',
-    author: '作者',
-    source: '提供元',
-    category: 'カテゴリ',
-    version: 'バージョン',
-    platforms: '対応プラットフォーム',
-    requires: '必要なもの',
-    tools: 'ツール',
-    hooks: 'フック',
-    repository: 'リポジトリ',
-    documentation: 'ドキュメント',
-    noResults: '一致する項目がありません',
-    tryAnother: '別の検索を試すか、フィルターをクリアしてください。',
-    clearFilters: 'フィルターをクリア',
-    loadFailed: 'カタログを読み込めませんでした',
-    retry: '再試行',
-    more: 'さらに表示',
-    pinned: 'レビュー済みコミット',
-    snapshotHint: 'Hermesカタログの情報です。閲覧時に提供元のリポジトリへ接続することはありません。',
-    installHint: 'インストール前にソースを確認してください。変更は新しいセッションに適用されます。',
-    results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
-    back: '結果に戻る'
-  },
   sessionImport: {
     title: '別のアプリから続ける',
     subtitle: '会話をHermesに取り込み、続きを始めましょう。',
@@ -263,9 +224,11 @@ export const ja = defineLocale({
     },
     native: {
       approvalTitle: '承認が必要です',
+      approvalTitleNamed: session => `承認が必要です — ${session}`,
       approveAction: '承認',
       rejectAction: '拒否',
       inputTitle: '入力が必要です',
+      inputTitleNamed: session => `入力が必要です — ${session}`,
       inputBody: 'Hermes が応答を待っています。',
       turnDoneTitle: 'Hermes が完了しました',
       turnDoneBody: '',
@@ -669,7 +632,7 @@ export const ja = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
-      modelContextLength: 'コンテキストウィンドウ',
+      modelContextLength: 'メインのチャットモデルのみ、検出されたコンテキストウィンドウを上書きします（トークン数）。0 のままにすると、選択したモデルから検出された値を使用します。補助モデル/MoA モデルには影響しません。',
       fallbackProviders: 'フォールバックモデル',
       toolsets: '有効なツールセット',
       timezone: 'タイムゾーン',
@@ -818,6 +781,11 @@ export const ja = defineLocale({
         targetRatio: '圧縮目標',
         protectLastN: '保護する直近メッセージ'
       },
+      auxiliary: {
+        compression: {
+          timeout: '圧縮モデルのタイムアウト（秒）'
+        }
+      },
       delegation: {
         model: 'サブエージェントモデル',
         provider: 'サブエージェントプロバイダー',
@@ -878,6 +846,11 @@ export const ja = defineLocale({
       compression: {
         enabled: '会話が大きくなったとき、古いコンテキストを要約します。',
         codexGpt55Autoraise: '対応する ChatGPT Codex OAuth モデルの圧縮しきい値を 85% に引き上げます。'
+      },
+      auxiliary: {
+        compression: {
+          timeout: '補助圧縮モデルの呼び出しごとに待機する秒数（既定 120）。遅いローカルモデルでは値を上げてください。'
+        }
       },
       voice: {
         autoTts: 'アシスタントの応答を自動で読み上げます。'
@@ -1282,6 +1255,7 @@ export const ja = defineLocale({
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
       upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——設定されたビルドです。`,
+      updateToast: next => `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
@@ -1464,7 +1438,14 @@ export const ja = defineLocale({
         selectedTitle: 'バックエンドを選択しました',
         selectedMessage: backend => `ターミナルコマンドは ${backend} で実行されます。新しいセッションに適用されます。`,
         failedSelect: backend => `${backend} の選択に失敗しました`,
-        needsSetupHint: 'このバックエンドは今すぐ選択できますが、セットアップが完了するまでコマンドは失敗します。'
+        needsSetupHint:
+          'このバックエンドは選択されていますが、セットアップが完了するまでコマンドは失敗します。',
+        needsSetupConfirmTitle: backend => `それでも ${backend} を選択しますか？`,
+        needsSetupConfirmDescription: detail =>
+          `${detail} この変更後に開始されるセッションは、セットアップが完了するまでターミナルとファイルツールを使用できません。`,
+        needsSetupConfirmDescriptionGeneric:
+          'このバックエンドはまだセットアップされていません。この変更後に開始されるセッションは、セットアップが完了するまでターミナルとファイルツールを使用できません。',
+        needsSetupConfirmAction: 'それでも選択する'
       },
       browserRealProfile: {
         label: '実際のブラウザプロファイルを使用',
@@ -1545,7 +1526,13 @@ export const ja = defineLocale({
     skillArchivedTitle: 'スキルをアーカイブしました',
     skillArchivedMessage: 'hermes curator restore で復元できます。',
     officialCatalog: 'インストール可能',
-    officialPill: '公式'
+    officialPill: '公式',
+    hub: {
+      installBlockedTitle: name => `${name} をインストールできませんでした`,
+      installBlockedMessage: (findings, unverified) =>
+        `セキュリティスキャンで ${findings > 0 ? `${findings} 件` : '危険なパターン'} の確認が必要と判定されました${unverified ? '。このスキルは未確認のソースから提供されています' : ''}。著者を信頼するか決める前にスキャン結果を確認してください。`,
+      viewScan: 'スキャンを表示',
+    }
   },
 
   starmap: {
@@ -1688,7 +1675,7 @@ export const ja = defineLocale({
     nav: {
       newChat: { title: '新しいセッション', detail: '新しいセッションを開始' },
       settings: { title: '設定', detail: 'Hermes デスクトップを設定' },
-      skills: { title: 'スキルとツール', detail: 'スキル、ツールセット、プロバイダーを有効化' },
+      capabilities: { title: 'スキルとツール', detail: 'スキル、ツールセット、プロバイダーを有効化' },
       messaging: { title: 'メッセージング', detail: 'Telegram、Slack、Discord などを設定' },
       artifacts: { title: 'アーティファクト', detail: '生成された出力を閲覧' }
     },
@@ -2268,7 +2255,7 @@ export const ja = defineLocale({
     },
     nav: {
       'new-session': '新しいセッション',
-      skills: 'スキルとツール',
+      capabilities: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
       cron: 'スケジュール済みジョブ'
@@ -2299,6 +2286,7 @@ export const ja = defineLocale({
       sectionLabel: 'プロジェクト',
       home: 'ホーム',
       autoDiscovered: '自動検出',
+      showAllCount: count => `${count} 件のセッションをすべて表示`,
       newButton: '新規プロジェクト',
       createTitle: '新規プロジェクト',
       createDesc: 'ワークスペースに名前を付け、1つ以上のフォルダを追加します。',
@@ -2510,6 +2498,8 @@ export const ja = defineLocale({
     attachments: count => `${count} 件の添付`,
     editingInComposer: 'コンポーザーで編集中',
     editingQueuedInComposer: 'コンポーザーでキュー済みターンを編集中',
+    restoredDraftNotice: '未送信のメッセージを復元しました',
+    restoredDraftUndo: '元に戻す',
     queueEdit: '編集',
     queueSendNext: '次に送信',
     queueSteer: 'ステア — 現在のターンを今すぐ修正',
@@ -2736,6 +2726,7 @@ export const ja = defineLocale({
     notAvailableTitle: '更新は利用できません',
     unsupportedMessage: 'このバージョンの Hermes はアプリ内から自分を更新できません。',
     connectionRetry: '接続を確認してもう一度試してください。',
+    gitUnusable: 'このコンピューターで Git を実行できなかったため、更新を確認できませんでした。',
     latestBody: '最新バージョンを実行しています。',
     latestBodyBackend: 'バックエンドは最新バージョンを実行しています。',
     allSetTitle: '準備完了',
@@ -3134,6 +3125,8 @@ export const ja = defineLocale({
     openFolder: 'フォルダーを開く',
     refreshTree: 'ツリーを更新',
     collapseAll: 'すべてのフォルダーを折りたたむ',
+    showIgnored: 'gitignore されたファイルを表示',
+    hideIgnored: 'gitignore されたファイルを非表示',
     previewUnavailable: 'プレビューは利用できません',
     couldNotPreview: path => `${path} をプレビューできませんでした`,
     noProjectTitle: 'プロジェクトなし',
@@ -3554,6 +3547,7 @@ export const ja = defineLocale({
     sudoDesc:
       'sudo パスワードを入力する前にコマンドを確認してください。パスワードは実行するエージェントに送信され、このセッション中キャッシュされます。',
     sudoCommandUnavailable: 'エージェントからコマンドが提供されていません。会話で確認できない場合はキャンセルしてください。',
+    sudoInstallDesc: 'Bot Screen のパッケージ（TigerVNC + Xfce）をゲートウェイホストにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',

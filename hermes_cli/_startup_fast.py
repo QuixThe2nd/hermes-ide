@@ -12,7 +12,7 @@ import os
 import sys
 
 __all__ = [
-    "project_root_str", "ensure_project_root_on_path", "is_termux_env",
+    "project_root_str", "normalize_hermes_home_env", "ensure_project_root_on_path", "is_termux_env",
     "is_termux_fast_version_argv", "is_global_fast_version_argv",
     "is_container_startup_environment", "active_profile_may_override_home",
     "container_mode_may_be_active", "read_openai_version", "read_install_method",
@@ -23,7 +23,7 @@ __all__ = [
 def _read_text(path: str) -> str | None:
     """Read a small text file, or None when it is missing/unreadable."""
     try:
-        with open(path, encoding="utf-8") as handle:
+        with open(path, encoding="utf-8-sig") as handle:
             return handle.read()
     except (OSError, UnicodeDecodeError):
         return None
@@ -32,6 +32,25 @@ def _read_text(path: str) -> str | None:
 def project_root_str() -> str:
     """Repo root as a str — the single source for main.py's PROJECT_ROOT."""
     return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+
+
+def normalize_hermes_home_env() -> None:
+    """Expand ``~``/``$VAR`` in ``HERMES_HOME`` once, at process entry, and write it back.
+
+    fish does not expand ``~`` inside ``VAR=~/...`` and every shell passes a quoted value
+    through verbatim, so a literal tilde reaches the process. ``Path("~/.hermes")`` is
+    *relative*: the many raw ``os.environ["HERMES_HOME"]`` readers (this fast path, the
+    active_profile probe, profile re-home, the dotenv loader) would each resolve it against
+    cwd and scaffold a full home under ``<cwd>/~/.hermes``. One expansion here gives every
+    reader the same absolute spelling; ``hermes_constants`` expands as well for non-CLI
+    entry points. A relative value that is not tilde/variable-shaped is left alone.
+    """
+    raw = os.environ.get("HERMES_HOME", "")
+    if not raw.strip():
+        return
+    expanded = os.path.expanduser(os.path.expandvars(raw.strip()))
+    if expanded != raw:
+        os.environ["HERMES_HOME"] = expanded
 
 
 def ensure_project_root_on_path() -> None:
@@ -104,7 +123,7 @@ def read_openai_version() -> str | None:
     for base in sys.path:
         version_file = os.path.join(base or os.getcwd(), "openai", "_version.py")
         try:
-            with open(version_file, encoding="utf-8") as handle:
+            with open(version_file, encoding="utf-8-sig") as handle:
                 for line in handle:
                     stripped = line.strip()
                     if not stripped.startswith("__version__"):

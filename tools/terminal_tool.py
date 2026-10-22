@@ -1311,6 +1311,35 @@ def clear_session_cwd(session_key: str) -> None:
         _session_cwd.pop(session_key, None)
 
 
+def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
+    """Cwd to write into a LIVE cached env, or None to leave it untouched.
+
+    On container backends a raw host path (a desktop/TUI session registering its
+    workspace, e.g. ``C:\\Users\\me`` or ``/Users/me/workspace``) cannot be the
+    in-sandbox workdir: every file-tools ``_exec`` wrapper does
+    ``builtin cd -- <env.cwd> || exit 126``, so a host cwd poisons all later
+    file operations with an unrelated ``cd:`` error. The creation paths already
+    sanitize this (``_is_unusable_container_cwd`` guards); the live-env write
+    here is the one remaining unsanitized site. When the host path is the one
+    mounted at ``/workspace`` (docker cwd passthrough), the session's directory
+    is still reachable — remap instead of discarding, mirroring the env-creation
+    remap in ``terminal_tool()``. Non-container backends apply the override
+    verbatim (ACP project-root switching must keep working).
+    """
+    env_type = getattr(env, "env_type", None)
+    if not env_type or not _is_container_backend(env_type):
+        return new_cwd
+    if not _is_unusable_container_cwd(new_cwd):
+        return new_cwd
+    host_mount = getattr(env, "host_cwd", None)
+    if isinstance(host_mount, str) and host_mount:
+        candidate = os.path.abspath(os.path.expanduser(new_cwd))
+        mounted = os.path.abspath(os.path.expanduser(host_mount))
+        if candidate == mounted:
+            return "/workspace"
+    return None
+
+
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
     Register environment overrides for a specific task/rollout.
@@ -1332,6 +1361,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
     # mid-session via ``session/load`` / ``session/resume``) must take effect
+    # The session record keeps the RAW path (host workspaces are tracked
+    # there on purpose); only the live-env write is sanitized, since a
+    # host cwd can never be a container workdir.
     # immediately. The session record is what commands resolve against;
     # the live env's cwd is also updated so env-side seeding stays consistent.
     new_cwd = overrides.get("cwd")
@@ -1348,7 +1380,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         with _env_lock:
             env = _active_environments.get(task_id) or _active_environments.get(container_id)
         if env is not None and getattr(env, "cwd", None) is not None:
-            env.cwd = new_cwd
+            sanitized = _sanitize_cwd_for_live_env(env, new_cwd)
+            if sanitized is not None:
+                env.cwd = sanitized
 
 
 def clear_task_env_overrides(task_id: str):
@@ -2484,37 +2518,6 @@ class _ApprovalVerdict:
     approved_run: bool = False
 
 
-def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:
-    """The terminal error envelope: ``output``/``exit_code``/``error`` (+ ``status``, extras)."""
-    body: Dict[str, Any] = {"output": "", "exit_code": exit_code, "error": error}
-    if status is not None:
-        body["status"] = status
-    body.update(extra)
-    return json.dumps(body, ensure_ascii=False)
-
-
-class _Rejected(Exception):
-    """Carries a finished tool-result JSON out of the planning/guard helpers, so
-    each early-return site is one ``raise`` instead of an isinstance-checked
-    ``str | plan`` union at the caller."""
-
-    def __init__(self, result_json: str):
-        super().__init__(result_json)
-        self.result_json = result_json
-
-
-@dataclass
-class _ApprovalVerdict:
-    """Outcome of the pre-exec guard pass.
-
-    ``note`` is the audit note attached to the result. ``approved_run`` is True
-    when the user explicitly approved (or pre-confirmed via ``force``).
-    """
-
-    note: Optional[str] = None
-    approved_run: bool = False
-
-
 def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
     """Run tirith + dangerous-command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
@@ -3036,6 +3039,26 @@ def _resolve_command_cwd(
         )
         return default_cwd
     return recorded or default_cwd
+
+
+def _explicit_local_workdir_error(workdir: Optional[str], *, env_type: str, default_cwd: str) -> Optional[str]:
+    """Error if an explicit local ``workdir`` cannot be entered.
+
+    Session/default cwd recovery still uses ``_resolve_safe_cwd`` (deleted cwd
+    must not wedge later calls). An explicit per-command workdir is a caller
+    assertion: falling back silently runs the command against the wrong tree
+    (pc_83befb96bc54).
+    """
+    if not workdir or env_type != "local":
+        return None
+    from tools.environments.local import _cwd_usable
+
+    candidate = os.path.expanduser(str(workdir))
+    if not os.path.isabs(candidate):
+        candidate = str(Path(default_cwd) / candidate)
+    if _cwd_usable(candidate):
+        return None
+    return f"workdir does not exist or is not a usable directory: {workdir}"
 
 
 # Floor for the pre-exec guard's share of the command deadline: a short command timeout
@@ -3583,6 +3606,17 @@ def terminal_tool(
                 session_key=session_key,
                 env_type=env_type,
             )
+            workdir_err = _explicit_local_workdir_error(
+                workdir, env_type=env_type, default_cwd=cwd,
+            )
+            if workdir_err:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": workdir_err,
+                    "status": "error",
+                    "cwd": effective_cwd,
+                }, ensure_ascii=False)
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -3610,6 +3644,7 @@ def terminal_tool(
                     "pid": proc_session.pid,
                     "exit_code": 0,
                     "error": None,
+                    "cwd": effective_cwd,
                 }
                 # Background spawns detached and returns exit_code 0 immediately;
                 # it never inline-polls is_interrupted(), so the stale-bit kill
@@ -3632,18 +3667,8 @@ def terminal_tool(
                 # server cases (false positive) and prevents silent
                 # blindness for bounded-task cases (false negative).
                 if background and not notify_on_complete and not watch_patterns:
-                    result_data["hint"] = (
-                        "background=true without notify_on_complete=true means "
-                        "this process runs SILENTLY — you will not be told when "
-                        "it exits. If this is a bounded task (test suite, build, "
-                        "CI poller, deploy, anything with a defined end), you "
-                        "almost certainly wanted notify_on_complete=true so the "
-                        "system pings you on exit. Re-launch with "
-                        "notify_on_complete=true, or call process(action='poll') "
-                        "/ process(action='wait') yourself to learn the outcome. "
-                        "Only ignore this hint for genuine long-lived processes "
-                        "that never exit (servers, watchers, daemons)."
-                    )
+                    from tools.terminal_tool_background import silent_background_hint
+                    result_data["hint"] = silent_background_hint()
 
                 # Nudge: homebrewed CI watcher built from `gh pr view`
                 # `--json statusCheckRollup` or `gh pr checks` piped through

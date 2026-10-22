@@ -156,7 +156,7 @@ _DEFAULT_PAYLOADS = {
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",
         "tool_call_history": [{
             "tool_name": "write_file",
-            "tool_input": {"argument_keys": ["content", "path"], "targets": {"path": "/tmp/report.txt"}},
+            "tool_input": {"argument_keys": ["content", "path"], "targets": {"path": "notes/report.txt"}},
             "input_bytes": 128, "output_bytes": 32, "status": "ok",
         }],
         "duration_ms": 1234,
@@ -182,7 +182,7 @@ def _cmd_test(args) -> None:
         payload["tool_name"] = for_tool
     if getattr(args, "payload_file", None):
         try:
-            custom = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
+            custom = json.loads(Path(args.payload_file).read_text(encoding="utf-8-sig"))
             if isinstance(custom, dict):
                 payload.update(custom)
             else:

@@ -54,7 +54,7 @@ _FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
     "provider_policy_blocked", "model_not_found", "format_error", "ssl_cert_verification",
-    "context_overflow", "interpreter_shutdown",
+    "context_overflow", "interpreter_shutdown", "upstream_blocked",
 }
 
 # Providers whose base_url is user-supplied rather than a known vendor.
@@ -179,7 +179,9 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         return None
 
 
-def build_error_surface_from_exception(exc: BaseException, provider: str = "", model: str = "") -> Optional[dict]:
+def build_error_surface_from_exception(
+    exc: BaseException, provider: str = "", model: str = "", api_key: Any = None,
+) -> Optional[dict]:
     """Descriptor for an exception that escaped the turn dispatcher.
 
     API/transport exceptions go through ``classify_api_error`` (same taxonomy
@@ -195,7 +197,7 @@ def build_error_surface_from_exception(exc: BaseException, provider: str = "", m
 
         from agent.error_classifier import classify_api_error
 
-        classified = classify_api_error(exc, provider=provider, model=model)
+        classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key)
         synthetic = {"error": classified.message or message, "failure_reason": classified.reason.value}
         surface = build_error_surface_from_result(synthetic, provider=provider, model=model)
         if surface is not None:

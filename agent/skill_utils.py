@@ -43,7 +43,7 @@ def read_active_org_id(skills_dir: Path) -> Optional[str]:
     """The org id whose mirror may resolve, or None (no org skills load)."""
     marker = skills_dir / ORG_MIRROR_DIR_NAME / ORG_ACTIVE_MARKER
     try:
-        return (marker.read_text(encoding="utf-8").strip() or None) if marker.exists() else None
+        return (marker.read_text(encoding="utf-8-sig").strip() or None) if marker.exists() else None
     except OSError:
         return None
 
@@ -235,7 +235,7 @@ def _load_raw_config() -> Dict[str, Any]:
     if cached is not None:
         return cached
     try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+        parsed = yaml_load(config_path.read_text(encoding="utf-8-sig"))
     except Exception as e:
         logger.debug("Could not read skill config %s: %s", config_path, e)
         return {}
@@ -419,20 +419,20 @@ _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
-    Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
-    cron/API surfaces inherit an interactive trust decision by project identity.
-
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    Without *start*, the surface's effective working directory wins over the process cwd — the same
+    ladder every other cwd consumer reads (``resolve_agent_cwd``: session-bound cwd, then the scope's
+    ``TERMINAL_CWD``, then the process cwd). The session cwd comes first because a multi-session host
+    (TUI/desktop gateway) pins each session's workspace there while its terminal scope resolves a
+    placeholder ``terminal.cwd`` to ``$HOME``; reading only the scope made every project skill invisible
+    on those surfaces (#114359). ``TERMINAL_CWD`` is the per-surface workdir the terminal tool and cron
+    jobs use (a cron job sets it from its per-job ``workdir`` without chdir'ing the scheduler process),
+    which lets non-interactive surfaces inherit a prior interactive trust decision by project identity —
+    and a surface with no workdir in a trusted repo simply resolves no project and loads nothing (#48975).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import resolve_agent_cwd
+            start = resolve_agent_cwd()
         cur = Path(start).resolve()
     except OSError:
         return None
@@ -676,7 +676,7 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
             continue
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             try:
-                frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+                frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8-sig"))
             except Exception:
                 continue
             skill_name = str(frontmatter.get("name") or skill_file.parent.name)

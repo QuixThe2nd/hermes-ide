@@ -59,45 +59,6 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
-  catalog: {
-    listView: string
-    cardView: string
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    browse: string
-    installed: string
-    searchSkills: string
-    searchPlugins: string
-    allSources: string
-    allCategories: string
-    about: string
-    author: string
-    source: string
-    category: string
-    version: string
-    platforms: string
-    requires: string
-    tools: string
-    hooks: string
-    repository: string
-    documentation: string
-    noResults: string
-    tryAnother: string
-    clearFilters: string
-    loadFailed: string
-    retry: string
-    more: string
-    pinned: string
-    snapshotHint: string
-    installHint: string
-    results: (count: number) => string
-    back: string
-  }
   connectors: {
     title: string
     connect: string
@@ -310,6 +271,7 @@ export interface Translations {
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
     updateReadyMessageUnknown: string
+    updateReadyMessageAppInstaller: string
     seeWhatsNew: string
     mcp: {
       needsAuthTitle: string
@@ -330,8 +292,8 @@ export interface Translations {
       gatewayAuthFailed: string
       methodNotAllowed: string
       microphonePermission: string
-      openaiRejectedApiKeyWithStatus: (status: string) => string
       openaiRejectedApiKey: string
+      openaiRejectedApiKeyWithStatus: (status: string) => string
       openaiTtsNeedsKey: string
       codeSkewRestartRequired: string
       restartHermesFailed: string
@@ -372,9 +334,11 @@ export interface Translations {
     // bodies (the agent's reply, a command, an error) are passed through raw.
     native: {
       approvalTitle: string
+      approvalTitleNamed: (session: string) => string
       approveAction: string
       rejectAction: string
       inputTitle: string
+      inputTitleNamed: (session: string) => string
       inputBody: string
       turnDoneTitle: string
       turnDoneBody: string
@@ -1307,6 +1271,7 @@ export interface Translations {
       updating: string
       upToDateTitle: string
       upToDateDetail: (tag: string, backend: string) => string
+      updateToast: (next: string) => string
       activeDetail: string
       activeNotLoaded: string
       loadedPill: string
@@ -1497,6 +1462,10 @@ export interface Translations {
         selectedMessage: (backend: string) => string
         failedSelect: (backend: string) => string
         needsSetupHint: string
+        needsSetupConfirmTitle: (backend: string) => string
+        needsSetupConfirmDescription: (detail: string) => string
+        needsSetupConfirmDescriptionGeneric: string
+        needsSetupConfirmAction: string
         unavailableTitle: string
         unavailableMessage: (backend: string) => string
         openBackendSettings: string
@@ -1594,6 +1563,8 @@ export interface Translations {
       installAgentHereNoOrigin: string
       desktopHalfPending: string
       desktopHalfPendingTip: string
+      desktopHalfRemote: string
+      desktopHalfRemoteTip: string
       emptyAll: string
       empty: string
       emptyHint: string
@@ -1820,7 +1791,7 @@ export interface Translations {
     archivedChats: string
     sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
     sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    nav: Record<'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts', { title: string; detail: string }>
+    nav: Record<'newChat' | 'settings' | 'capabilities' | 'messaging' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string
@@ -2247,6 +2218,7 @@ export interface Translations {
     emptyTitleSearch: string
     last: string
     next: string
+    overdueSince: string
     noRuns: string
     manage: string
     showRuns: string
@@ -2478,6 +2450,7 @@ export interface Translations {
       enter: (label: string) => string
       reorder: (label: string) => string
       toggle: (label: string, open: boolean) => string
+      showAllCount: (count: number) => string
       back: string
     }
     newSessionIn: (label: string) => string
@@ -2608,6 +2581,8 @@ export interface Translations {
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
+    restoredDraftNotice: string
+    restoredDraftUndo: string
     queueEdit: string
     queueSendNext: string
     queueSend: string
@@ -2840,6 +2815,7 @@ export interface Translations {
     notAvailableTitle: string
     unsupportedMessage: string
     connectionRetry: string
+    gitUnusable: string
     connectionSettings: string
     openDownloadPage: string
     latestBody: string
@@ -2850,6 +2826,7 @@ export interface Translations {
     availableTitleBackend: string
     availableBodyBackend: string
     availableBodyNoChangelog: string
+    availableBodyAppInstaller: string
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
@@ -2866,6 +2843,10 @@ export interface Translations {
     applyingBody: string
     applyingBodyBackend: string
     applyingClose: string
+    applyingBodyAppInstaller: string
+    applyingCloseAppInstaller: string
+    checkUnknownTitleAppInstaller: string
+    checkUnknownBodyAppInstaller: string
     errorTitle: string
     errorBody: string
     blockerTitle: string
@@ -3309,6 +3290,8 @@ export interface Translations {
     openFolder: string
     refreshTree: string
     collapseAll: string
+    showIgnored: string
+    hideIgnored: string
     previewUnavailable: string
     couldNotPreview: (path: string) => string
     noProjectTitle: string
@@ -3742,6 +3725,7 @@ export interface Translations {
     sudoTitle: string
     sudoDesc: string
     sudoCommandUnavailable: string
+    sudoInstallDesc: string
     sudoPlaceholder: string
     secretTitle: string
     secretDesc: string

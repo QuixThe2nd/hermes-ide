@@ -14,6 +14,7 @@ import shlex
 import signal
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -123,11 +124,11 @@ def _worker_memory_max_bytes() -> int:
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     candidates: List[int] = []
     with suppress(OSError, ValueError):
-        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
+        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8-sig").splitlines()
         v2 = next((ln for ln in lines if ln.startswith("0::")), None)
         if v2 is not None:
             relative = v2.partition("::")[2].lstrip("/")
-            raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8").strip()
+            raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8-sig").strip()
             if raw_limit.isdigit() and int(raw_limit) >= _MIN_WORKER_MEMORY_MAX_BYTES:
                 candidates.append(int(raw_limit))
     with suppress(OSError, ValueError, TypeError):
@@ -135,47 +136,6 @@ def _worker_memory_max_bytes() -> int:
         candidates.append(min(_WORKER_MEMORY_MAX_CAP_BYTES, max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)))
     safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
     return min(override_bound, safe_bound) if override_bound else safe_bound
-
-
-def _user_bus_socket_exists(runtime_dir: str) -> bool:
-    """True when the standard per-user D-Bus socket exists under *runtime_dir*.
-
-    An unreadable path (a foreign runtime dir, ``EACCES``) counts as absent —
-    same posture as ``hermes_cli.gateway._path_exists_safe``.
-    """
-    try:
-        return (Path(runtime_dir) / "bus").exists()
-    except OSError:
-        return False
-
-
-def _ensure_user_bus_env() -> None:
-    """Provision the user-bus coordinates ``--user`` systemd tools need.
-
-    A gateway running as a systemd **system** unit starts with neither
-    ``XDG_RUNTIME_DIR`` nor ``DBUS_SESSION_BUS_ADDRESS`` in its environment,
-    even when the user manager is healthy (linger on, socket present).  Every
-    ``systemd-run --user`` probe/spawn then fails with "Failed to connect to
-    user scope bus via local transport" and restart-safe dispatch fails
-    closed.  Default the two standard coordinates the same way
-    ``hermes_cli.gateway._ensure_user_systemd_env`` does for its ``systemctl
-    --user`` calls — only ever filling in blanks, never clobbering: an
-    explicitly exported value always wins over our guess, and DBUS is only
-    derived when the socket actually exists.
-
-    Mutates ``os.environ`` so the probe/spawn/stop subprocesses (and caller
-    env snapshots taken afterwards) inherit the coordinates.  No-op off
-    Linux, matching the ``_IS_LINUX`` gate on every scope path.
-    """
-    if not _IS_LINUX:
-        return
-    if not os.environ.get("XDG_RUNTIME_DIR"):
-        os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
-    if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
-        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
-        if runtime_dir and _user_bus_socket_exists(runtime_dir):
-            bus_path = Path(runtime_dir) / "bus"
-            os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
 
 
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
@@ -304,14 +264,17 @@ def _is_supervised_gateway_process() -> bool:
     """Whether this process is the live, supervised Hermes gateway itself.
     Supervisor markers and ``_HERMES_GATEWAY`` are inherited by every descendant (and
     importing ``gateway.run`` sets the latter), so also require ownership of the live
-    gateway PID file — scopes are for the gateway, not terminal children or CLIs."""
+    gateway PID file — scopes are for the gateway, not terminal children or CLIs.
+    Reads the launch marker (``HERMES_SUPERVISED_CHILD`` included), not the restart-route
+    probe: a Windows Scheduled-Task gateway sets only that marker, and the self-kill guards
+    gated here must protect it too (#113667)."""
     if os.environ.get("_HERMES_GATEWAY") != "1":
         return False
     try:
-        from gateway.restart import is_gateway_supervisor_process
+        from gateway.restart import is_supervised_gateway_launch
         from gateway.status import get_running_pid
 
-        return is_gateway_supervisor_process() and get_running_pid(cleanup_stale=False) == os.getpid()
+        return is_supervised_gateway_launch() and get_running_pid(cleanup_stale=False) == os.getpid()
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
@@ -336,19 +299,36 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[s
 _scope_degraded_warned = False
 
 
-def _warn_scope_degraded_once(detail: str) -> None:
+class RestartSafeScopeUnavailable(RuntimeError):
+    """A ``require_restart_safe_scope=True`` child could not get its transient scope.
+
+    Host-level (no user D-Bus / no ``systemd-run``), never a property of the
+    child being launched: callers that keep per-job retry budgets must not
+    charge it (a kanban card parked ``blocked`` for an unreachable bus, #114720).
+    """
+
+
+def _warn_scope_degraded_once(detail: str, *, consequence: str) -> None:
     """Warn once per process: the condition is host-level and the probe verdict
     is cached, so this would otherwise fire on every cron dispatch."""
     global _scope_degraded_warned
     if _scope_degraded_warned:
         return
     _scope_degraded_warned = True
-    logger.warning(
-        "managed gateway: %s; cron children are dispatched as direct external subprocesses "
-        "without restart-safe cgroup isolation (killed if the gateway restarts mid-job). "
-        "Set cron.require_restart_safe_scope=true in config.yaml to fail closed instead.",
-        detail,
-    )
+    logger.warning("%s; %s", detail, consequence)
+
+
+_CRON_DEGRADED_CONSEQUENCE = (
+    "cron children are dispatched as direct external subprocesses without restart-safe "
+    "cgroup isolation (killed if the gateway restarts mid-job). Set "
+    "cron.require_restart_safe_scope=true in config.yaml to fail closed instead."
+)
+_UNIT_DEGRADED_CONSEQUENCE = (
+    "workers are spawned unmanaged inside this systemd unit's cgroup and will be KILLED when the "
+    "unit exits (Type=oneshot dispatch timers lose every worker within a second). Give the unit's "
+    "user a session bus (`loginctl enable-linger <user>`) so workers get their own scope, or set "
+    "KillMode=process on the unit."
+)
 
 
 class GatewayChildDispatch(NamedTuple):
@@ -389,6 +369,7 @@ def scoped_spawn_lost_user_bus(spawn_env: Dict[str, str]) -> bool:
 
 def restart_safe_gateway_child_argv(
     command: List[str], *, unit_suffix: str, require_restart_safe_scope: bool,
+    outlives_parent: bool = False,
 ) -> GatewayChildDispatch:
     """Place a managed-systemd gateway child outside the gateway cgroup.
 
@@ -396,20 +377,38 @@ def restart_safe_gateway_child_argv(
     cgroup, so children that must survive it run in a transient user scope.
     Hosts with no user systemd session (containers, LXCs without linger) cannot
     create one; hard-failing there is a silent cron outage, so callers state the
-    policy: ``require_restart_safe_scope=True`` raises (kanban's long-lived
-    workers), ``False`` degrades to a direct external subprocess with a
-    once-per-process warning (cron, behind ``cron.require_restart_safe_scope``).
+    policy: ``require_restart_safe_scope=True`` raises
+    :class:`RestartSafeScopeUnavailable` (kanban's long-lived workers), ``False``
+    degrades to a direct external subprocess with a once-per-process warning
+    (cron, behind ``cron.require_restart_safe_scope``).
+
+    ``outlives_parent=True`` (fire-and-forget kanban workers): any *other*
+    systemd unit — a ``Type=oneshot`` dispatch timer, an operator's sequencer
+    service — tears its cgroup down when it exits, so the child is scope-wrapped
+    there too (#113612). Whether that unit actually kills its children
+    (``KillMode``, lifetime) is not knowable here, so without a user bus it
+    degrades with a loud warning instead of refusing: a long-lived
+    ``Type=simple`` sequencer without linger keeps working. A cron job blocks its
+    caller until it finishes and never needs this.
     """
     if not _IS_LINUX:
         return GatewayChildDispatch("in_process", command)
-    if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
+    if not os.environ.get("INVOCATION_ID"):
+        return GatewayChildDispatch("in_process", command)
+    supervised_gateway = _is_supervised_gateway_process()
+    if not supervised_gateway and not outlives_parent:
         return GatewayChildDispatch("in_process", command)
 
     def _degrade(detail: str) -> GatewayChildDispatch:
-        if require_restart_safe_scope:
-            # Stored as the cron execution's error and shown on the job row: name the remedy.
-            raise RuntimeError(f"cannot create restart-safe systemd scope for gateway child: {detail}")
-        _warn_scope_degraded_once(detail)
+        if supervised_gateway:
+            if require_restart_safe_scope:
+                # Stored as the cron execution's error and shown on the job row: name the remedy.
+                raise RestartSafeScopeUnavailable(
+                    f"cannot create restart-safe systemd scope for gateway child: {detail}"
+                )
+            _warn_scope_degraded_once(f"managed gateway: {detail}", consequence=_CRON_DEGRADED_CONSEQUENCE)
+        else:
+            _warn_scope_degraded_once(f"systemd unit dispatch: {detail}", consequence=_UNIT_DEGRADED_CONSEQUENCE)
         return GatewayChildDispatch("degraded", command)
 
     if not _systemd_run_user_scope_available():
@@ -438,9 +437,6 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     binary = shutil.which("systemctl")
     if binary is None:
         return False
-    # ``systemctl --user`` resolves the same user bus as systemd-run — make
-    # sure the stop subprocess carries the coordinates too.
-    _ensure_user_bus_env()
     try:
         result = subprocess.run(
             [binary, "--user", "stop", unit_name],
@@ -862,9 +858,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Terminate a host-visible PID and its descendants.
         ``expected_start`` (kernel start time at spawn) is re-validated first: a mismatch
         or dead PID means the number was recycled onto a stranger and we refuse to touch
-        it — a leaked orphan beats tree-killing someone's browser. POSIX: psutil SIGTERMs
-        children before the parent (so trees aren't reparented to init and survive), then
-        SIGKILLs survivors after ``terminal.daemon_term_grace_seconds``. Windows:
+        it — a leaked orphan beats tree-killing someone's browser. POSIX: snapshot descendants,
+        SIGTERM the parent alone so it can perform an orderly shutdown, then clean up snapshot
+        descendants that survive its grace window. Survivors are SIGKILLed after a second
+        ``terminal.daemon_term_grace_seconds`` window. Windows:
         ``taskkill /T /F`` (psutil's stale PPID links miss orphans there); ``os.kill``
         is the fallback."""
         if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
@@ -894,26 +891,52 @@ class ProcessRegistry(ProcessCheckpointMixin):
         except (OSError, PermissionError):
             _sigterm_quietly()
             return
-        # Snapshot the whole tree (children before parent) and SIGTERM each.
+        # Snapshot before signalling: once the parent exits, psutil can no longer
+        # reliably find children that it failed to reap.
         try:
-            targets = parent.children(recursive=True)
+            descendants = parent.children(recursive=True)
         except gone:
-            targets = []
-        targets.append(parent)
-        for proc in targets:
+            descendants = []
+
+        # Let self-managing parents (notably Chromium/Electron) shut down their
+        # tree before touching children. Killing their zygotes first can turn a
+        # graceful browser shutdown into a crash dump.
+        with suppress(gone):
+            parent.terminate()
+
+        grace = cls._daemon_term_grace_seconds()
+
+        def _wait_for_exit(targets) -> None:
+            if grace <= 0:
+                return
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline and any(cls._proc_alive(p) for p in targets):
+                time.sleep(0.05)
+
+        # Preserve descendants during the parent's configured shutdown window.
+        _wait_for_exit([parent])
+
+        # The snapshot is an anti-orphan guarantee: only descendants still alive
+        # after the parent had its chance are asked to terminate themselves.
+        remaining = descendants if grace <= 0 else [
+            proc for proc in descendants if cls._proc_alive(proc)
+        ]
+        for proc in remaining:
             with suppress(gone):
                 proc.terminate()
+
+        # Preserve the existing SIGKILL escalation semantics for every owned
+        # process that remains after its SIGTERM grace window. The parent is
+        # included in case it ignored the first signal.
+        targets = [parent, *remaining]
         # Escalate to SIGKILL for anything that ignored SIGTERM within the grace window.
         # ``psutil.wait_procs``' gone/alive partition is deliberately NOT trusted: it
         # reaps via ``Process.wait()`` and mis-partitions across zombie transitions in a
         # parent/child tree, leaving survivors un-killed. Re-probing every target is
         # deterministic.
-        grace = cls._daemon_term_grace_seconds()
         if grace <= 0:
             return
-        deadline = time.monotonic() + grace
-        while time.monotonic() < deadline and any(cls._proc_alive(_p) for _p in targets):
-            time.sleep(0.05)
+        _wait_for_exit(targets)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):
@@ -943,7 +966,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     return temp_dir.rstrip("/") or "/"
             except Exception as exc:
                 logger.debug("Could not resolve environment temp dir: %s", exc)
-        return "/tmp"
+        return tempfile.gettempdir()
 
     def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> List[str]:
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
@@ -1871,11 +1894,19 @@ class ProcessRegistry(ProcessCheckpointMixin):
             f"Wait window of {effective_timeout}s elapsed — the process is still running. This is not an error.")
         if session.started_at:
             base_note += f" Uptime: {int(time.time() - session.started_at)}s."
-        base_note += (
-            " notify_on_complete is set: you will be notified on exit — do more work instead of waiting again."
-            if session.notify_on_complete else
-            " Poll again later or use terminal(background=true, "
-            "notify_on_complete=true) next time for automatic notification.")
+        if session.notify_on_complete:
+            base_note += (
+                " notify_on_complete is set: you will be notified on exit — do more work instead of waiting again.")
+        else:
+            from gateway.session_context import async_delivery_supported
+            if async_delivery_supported():
+                base_note += (
+                    " Poll again later or use terminal(background=true, "
+                    "notify_on_complete=true) next time for automatic notification.")
+            else:
+                base_note += (
+                    " Poll again later with process(action='poll') or process(action='wait'). "
+                    "notify_on_complete is not available in this session.")
         result["timeout_note"] = f"{timeout_note}. {base_note}" if timeout_note else base_note
         return result
 

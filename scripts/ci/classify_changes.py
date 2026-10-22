@@ -31,6 +31,8 @@ Lanes:
   shared runner; running them on every Python PR made their timing noise
   everyone's problem. They still run on push (fail-open) and whenever the
   script, its siblings, or their tests change.
+* ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
+  pin-fragment drift check, and shipped version-stamp verification.
 * ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
   lives under ``apps/``, so without this lane a Rust change matched ``frontend``
   and only the TypeScript matrix ran.
@@ -140,6 +142,13 @@ _DESKTOP_UPDATER_FILES = {
     "pyproject.toml",
 }
 
+# Bootstrap installer: the POSIX shell installer, the dev-checkout wrapper
+# that carries the same pin fragment, and the Tauri app's non-Rust sources
+# (the .rs/Cargo files are the ``rust`` lane's job). Changes here get the
+# bootstrap-installer.yml lane — a real sandboxed install + stamp check.
+_BOOTSTRAP_PATHS = ("apps/bootstrap-installer/",)
+_BOOTSTRAP_FILES = {"scripts/install.sh", "setup-hermes.sh"}
+
 # Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
 # These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
 # ``frontend`` and nothing more: the TypeScript matrix built, cargo never ran,
@@ -248,6 +257,9 @@ def classify(files: list[str]) -> dict[str, bool]:
         "npm_lock": npm_lock,
         "installer": any(_is_installer(f) for f in files),
         "desktop_updater": any(_is_desktop_updater(f) for f in files),
+        "bootstrap": any(
+            f.startswith(_BOOTSTRAP_PATHS) or f in _BOOTSTRAP_FILES for f in files
+        ),
         "rust": any(_is_rust(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
@@ -266,6 +278,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["npm_lock"] = True
         ret["installer"] = True
         ret["desktop_updater"] = True
+        ret["bootstrap"] = True
         ret["rust"] = True
         ret["nix"] = True
         ret["ci_review"] = True

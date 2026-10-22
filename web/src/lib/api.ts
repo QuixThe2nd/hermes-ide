@@ -1926,7 +1926,16 @@ export interface StatusResponse {
   config_version: number;
   env_path: string;
   gateway_exit_reason: string | null;
+  /** Gate-config refusals ("<profile>:<platform> <error>") recorded at gateway boot:
+   *  an invalid `response_gate`/`reaction_gate` block keeps the platform loading with
+   *  the gate OFF, and these say why. Empty (or absent on older backends) = nothing
+   *  was refused. */
+  gate_config_warnings?: string[];
   gateway_health_url: string | null;
+  /** Seconds since the gateway's housekeeping last stamped gateway_state.json, set only when the
+   * process is alive but the stamp is past the freshness TTL (loop/housekeeping wedged).
+   * null when healthy; absent on older backends. */
+  gateway_heartbeat_stale_s?: number | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
@@ -2323,6 +2332,8 @@ export interface CronJob {
   workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  /** Seconds since the job's profile ticker last iterated; null when it cannot be dated. */
+  scheduler_heartbeat_age_s?: number | null;
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;

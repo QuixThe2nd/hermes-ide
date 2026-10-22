@@ -9,10 +9,10 @@ Hermes uses two kinds of model slots:
 - **Main model** — what the agent thinks with. Every user message, every tool-call loop, every streamed response goes through this model.
 - **Auxiliary models** — smaller side-jobs the agent offloads. Context compression, vision (image analysis), web-page summarization, approval scoring, MCP tool routing, session-title generation, and skill search. Each has its own slot and can be overridden independently.
 
-This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](/user-guide/local-models).
+This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](./local-models.md).
 
 :::tip Fastest path: Nous Portal
-[Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal info`.
+[Nous Portal](./features/tool-gateway.md) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal info`.
 
 - Portal subscribers also get **10% off token-billed providers**.
 :::
@@ -192,7 +192,7 @@ providers:
       CF-Access-Client-Secret: "yyyy"
 ```
 
-Header values routinely carry credentials — Hermes never logs them. `extra_headers` applies to OpenAI-compatible routes; the `anthropic_messages` and `bedrock_converse` API modes do not use it.
+Header values routinely carry credentials — Hermes never logs them. `extra_headers` applies to OpenAI-compatible routes and to `anthropic_messages` routes (the main client, `/model` switches, rebuilds and auxiliary clients alike); `bedrock_converse` does not use it. A relay behind a WAF that rejects the SDK's default `User-Agent` (403 "Your request was blocked" or a browser-challenge page) is the typical reason to set one — Hermes reports such a 403 as a firewall/CDN block rather than an API-key rejection.
 
 **`discover_models`** — set to `false` (default `true`) to skip querying the endpoint's `/models` listing and use only the `models` you configured on the entry. Handy for gateways whose model listing is slow, unreliable, or noisy:
 
@@ -361,7 +361,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 
 Both paths feed the same loader (`hermes_cli/model_switch.py`). Entries declared in `model_aliases:` take precedence over `model.aliases:` entries with the same name.
 
-Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](/reference/slash-commands#custom-model-aliases) for the full reference.
+Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](../reference/slash-commands.md#custom-model-aliases) for the full reference.
 
 ### `hermes model` subcommand
 

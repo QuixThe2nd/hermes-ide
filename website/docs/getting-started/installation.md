@@ -77,7 +77,7 @@ hermes setup          # Or run the full setup wizard to configure everything at 
 ```
 
 :::tip Fastest path: Nous Portal
-One subscription covers 300+ models plus the [Tool Gateway](/user-guide/features/tool-gateway) (web search, image generation, TTS, cloud browser). Skip the per-tool key juggling:
+One subscription covers 300+ models plus the [Tool Gateway](../user-guide/features/tool-gateway.md) (web search, image generation, TTS, cloud browser). Skip the per-tool key juggling:
 
 ```bash
 hermes setup --portal
@@ -87,7 +87,7 @@ That logs you in, sets Nous as your provider, and turns on the Tool Gateway in o
 :::
 
 :::tip Already running Hermes on another machine?
-You don't need to rebuild your setup from scratch. Restore a full backup with `hermes import` (see [Exporting Hermes to another machine](/reference/faq#exporting-hermes-to-another-machine)), or bring over a single agent with `hermes profile import` (see [Moving a single profile to another machine](/reference/faq#moving-a-single-profile-to-another-machine)). Note that a profile export excludes credentials by design, so an export alone is not a full backup — [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export) explains which to use.
+You don't need to rebuild your setup from scratch. Restore a full backup with `hermes import` (see [Exporting Hermes to another machine](../reference/faq.md#exporting-hermes-to-another-machine)), or bring over a single agent with `hermes profile import` (see [Moving a single profile to another machine](../reference/faq.md#moving-a-single-profile-to-another-machine)). Note that a profile export excludes credentials by design, so an export alone is not a full backup — [`hermes backup` vs `hermes profile export`](../reference/faq.md#hermes-backup-vs-hermes-profile-export) explains which to use.
 :::
 
 ---
@@ -135,12 +135,9 @@ Running Hermes as a dedicated unprivileged user (e.g. a `hermes` systemd service
    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
    ```
 
-   If you want to skip the Playwright step entirely — for example because you're running headless and don't need browser automation — pass `--skip-browser`:
-   ```bash
-   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
-   ```
-
-   The installer also pre-installs [`cua-driver`](../user-guide/features/computer-use.md) so the Computer Use toolset works the moment you enable it; pass `--skip-computer-use` to opt out (it will then install on demand when you enable the tool).
+   Browsers, node, and other tool binaries are not part of the bootstrap:
+   pm installs them on demand the first time a feature needs them, or all at
+   once with `hermes pm install`.
 
 3. **Make `hermes` available to the service user's shells.** The installer writes the launcher to `~/.local/bin/hermes`. System service accounts often have a minimal PATH that doesn't include `~/.local/bin`. Either add it to the user's environment, or symlink the launcher into a system location:
    ```bash
@@ -159,7 +156,7 @@ Running Hermes as a dedicated unprivileged user (e.g. a `hermes` systemd service
    sudo loginctl enable-linger <service-user>
    ```
 
-   See [Messaging Gateway](/user-guide/messaging/) for the service setup itself.
+   See [Messaging Gateway](../user-guide/messaging/index.md) for the service setup itself.
 
 The same pattern works on Arch (the installer uses pacman with the same sudo-detection logic), Fedora/RHEL, and openSUSE — those distros don't support `--with-deps` at all, so an administrator always installs the system libraries separately. The relevant `dnf`/`zypper` commands are printed by the installer.
 

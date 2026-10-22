@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import sys
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,18 @@ class UpdatePlan:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)  # recursive: RuntimeRecord entries become dicts
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "UpdatePlan":
+        """Inverse of :meth:`to_dict` (the plan crosses the post-swap hand-off as JSON)."""
+        fields_ = {f.name for f in dataclass_fields(cls)}
+        plan = cls(**{k: v for k, v in data.items() if k in fields_ and k != "runtimes"})
+        record_fields = {f.name for f in dataclass_fields(RuntimeRecord)}
+        plan.runtimes = [
+            RuntimeRecord(**{k: v for k, v in r.items() if k in record_fields})
+            for r in data.get("runtimes") or [] if isinstance(r, dict)
+        ]
+        return plan
 
 
 def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids: set | None = None) -> str:
@@ -316,9 +328,17 @@ def collect_runtime_inventory() -> UpdatePlan:
     plan = UpdatePlan()
     _collect_install_shape(plan)
     with _probe("Code-identity probe"):
+        # Fork path first: live git (source installs) then the Dockerfile-baked .hermes_build_sha.
+        # Upstream's version_info install stamp answers where that finds nothing (sealed/MSIX installs).
         from hermes_cli.build_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
+        if not identity.get("sha"):
+            from hermes_cli.version_info import get_code_identity as _stamp_identity
+
+            stamped = _stamp_identity(refresh=True)
+            if stamped.get("sha"):
+                identity = stamped
         plan.expected_sha = identity.get("sha")
         plan.expected_version = identity.get("version")
     profile_homes: list = []
@@ -466,7 +486,13 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     STALE/DOWN fleet row (exit 1) — a promised restart silently missed is the class this phase
     exists to kill.
     """
-    deferred = [o for o in outcomes if o.get("outcome") == "deferred"]
+    manual = [o for o in outcomes if o.get("outcome") == "deferred" and o.get("mechanism") == "respawn-argv"]
+    if manual:
+        print()
+        print("  ⚠ Manual serve restarts deferred to their owner (reminders retained until the old processes exit):")
+        for o in manual:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']}: relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend")
+    deferred = [o for o in outcomes if o.get("outcome") == "deferred" and o.get("mechanism") != "respawn-argv"]
     if deferred:
         # Surfaced but not escalated: the updater has no authority over these, so holding
         # ``fleet_restart_pending`` for them would never be discharged. See #111494.

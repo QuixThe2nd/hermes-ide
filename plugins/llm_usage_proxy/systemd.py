@@ -34,6 +34,7 @@ from plugins.auto_update.systemd import (
     format_environment,
 )
 from plugins.llm_usage_proxy.config import (
+    capture_jev_bodies_enabled,
     load_llm_usage_proxy_config,
     manage_keys_enabled,
 )
@@ -183,11 +184,29 @@ def build_exec_start_argv(
         # No secret travels in argv: the server reads the key store from disk.
         argv.append("--manage-keys")
         argv.extend(("--keys-path", str(keys_path(home))))
+    if capture_jev_bodies_enabled(cfg):
+        argv.append("--capture-jev-bodies")
     resolved = dict(targets) if targets is not None else build_route_table(
         cfg, environ=environ
     )
     for name in sorted(resolved):
         argv.extend(("--upstream", f"{name}={resolved[name]}"))
+    # Operator-declared endpoint API capabilities ride argv too (the unit's
+    # server.py is stdlib-only and never reads config.yaml itself). Names and
+    # family identifiers only — no secret ever travels here.
+    capabilities = cfg.get("route_capabilities")
+    if isinstance(capabilities, Mapping):
+        for name in sorted(capabilities):
+            families = capabilities[name]
+            if isinstance(families, str):
+                rendered = families
+            else:
+                try:
+                    rendered = ",".join(str(family) for family in families)
+                except TypeError:
+                    continue
+            if rendered.strip():
+                argv.extend(("--route-capability", f"{name}={rendered}"))
     return argv
 
 
@@ -699,6 +718,7 @@ def format_status(
         f"  Bind: {BIND_HOST}:{port}",
         f"  SQLite: {db_path()}",
         f"  Key manager: {'on (--manage-keys; keys in ' + str(keys_path()) + ')' if manage_keys_enabled(cfg) else 'off (credential passthrough)'}",
+        f"  Jev body capture: {'on (--capture-jev-bodies)' if capture_jev_bodies_enabled(cfg) else 'off'}",
         f"  Unit installed: {'yes' if result.unit_installed else 'no'}",
         f"  Enabled: {_format_yes_no(result.enabled, known=result.enabled_known)}",
         f"  Service active: {_format_yes_no(result.service_active, known=result.service_active_known)}",

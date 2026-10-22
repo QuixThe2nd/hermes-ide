@@ -59,6 +59,7 @@ import argparse
 from bisect import bisect_right
 import html
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -88,6 +89,35 @@ FETCH_TIMEOUT_MS = 4500
 DASHBOARD_EVENTS = 50       # rows shown in the recent-events table
 API_EVENTS_DEFAULT = 200
 API_EVENTS_MAX = 1000
+
+# Jev body-capture viewer (/captures): rows in the list table, and the badge
+# tone/label per capture_state the proxy writes into jev_bodies.
+CAPTURES_LIMIT_DEFAULT = 200
+CAPTURES_LIMIT_MAX = 500
+CAPTURE_STATE_TONES = {
+    "complete": "good",
+    "streamed": "none",
+    "incomplete": "crit",
+    "truncated": "none",
+}
+CAPTURE_STATE_LABELS = {
+    "complete": "complete",
+    "streamed": "streamed · not captured",
+    "incomplete": "incomplete",
+    "truncated": "truncated",
+}
+JEV_GATE_LABELS = {
+    "reaction": "reaction gate",
+    "response": "response gate",
+    "mixed": "mixed",
+    "other": "other",
+}
+JEV_GATE_TONES = {
+    "reaction": "good",
+    "response": "none",
+    "mixed": "none",
+    "other": "none",
+}
 HOURS = 24
 DAYS_7D = 7
 
@@ -241,13 +271,13 @@ def _path_logo(d: str) -> str:
     )
 
 
-def _badge_logo(letter: str, tile: str) -> str:
+def _badge_logo(letter: str, tile: str, text: str = "#e8edf4") -> str:
     """Initial badge for brands without a dependable logo path."""
     return (
         '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
         f'<rect width="24" height="24" rx="6" fill="{tile}"/>'
         '<text x="12" y="17.2" text-anchor="middle" font-family="inherit" '
-        f'font-size="14.5" font-weight="700" fill="#e8edf4">{letter}</text></svg>'
+        f'font-size="14.5" font-weight="700" fill="{text}">{letter}</text></svg>'
     )
 
 
@@ -259,6 +289,7 @@ def _badge_logo(letter: str, tile: str) -> str:
 # and the canonical unhyphenated catalog spellings ("xai/…", "moonshotai/…").
 PROVIDER_PREFIXES = (
     ("openrouter/", "openrouter"),
+    ("typesafe/", "jev"),
     ("claude-", "claude"),
     ("anthropic/", "claude"),
     ("codex", "openai"),
@@ -290,6 +321,7 @@ PROVIDER_BRANDS = {
     # Grok/xAI is monochrome: white X glyph, restrained light-grey slices.
     "grok": {"name": "Grok (xAI)", "color": "#BFC7D3", "glyph": "#E8EDF4", "logo": _path_logo(_LOGO_X)},
     "openrouter": {"name": "OpenRouter", "color": "#6467F2", "logo": _path_logo(_LOGO_OPENROUTER)},
+    "jev": {"name": "Jev (Typesafe)", "color": "#2DD4BF", "logo": _badge_logo("J", "#2DD4BF", "#0B1220")},
 }
 
 # Outcome badge: green when usage is final, red for auth/rate-limit
@@ -539,6 +571,87 @@ def ledger_columns(conn: sqlite3.Connection) -> set[str]:
         return set()
 
 
+def jev_bodies_present(conn: sqlite3.Connection) -> bool:
+    """Whether this DB has a jev_bodies table at all.
+
+    The proxy creates the table only when --capture-jev-bodies is on, so a
+    default-off deployment must render an empty viewer, not an error.
+    """
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jev_bodies'"
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
+
+
+def query_jev_captures(conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+    """Newest jev_bodies rows for the /captures list table."""
+    rows = conn.execute(
+        "SELECT id, ts, upstream, model, path, status_code, latency_ms,"
+        " capture_state, request_body FROM jev_bodies ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    out = []
+    for (
+        cid,
+        ts,
+        upstream,
+        model,
+        path,
+        status_code,
+        latency_ms,
+        state,
+        request_body,
+    ) in rows:
+        capture: dict[str, Any] = {
+            "id": cid,
+            "ts": ts,
+            "upstream": upstream,
+            "model": model,
+            "path": path,
+            "status_code": status_code,
+            "latency_ms": latency_ms,
+            "capture_state": state,
+            "request_body": request_body,
+        }
+        capture["ts_sydney"] = to_sydney(ts)
+        out.append(capture)
+    return out
+
+
+def query_jev_capture(
+    conn: sqlite3.Connection, capture_id: int
+) -> Optional[dict[str, Any]]:
+    """One full jev_bodies row (bodies included) for the detail page."""
+    row = conn.execute(
+        "SELECT id, ts, upstream, model, path, request_id, status_code,"
+        " latency_ms, capture_state, request_body, response_body, created_at"
+        " FROM jev_bodies WHERE id = ?",
+        (capture_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    capture: dict[str, Any] = {
+        "id": row[0],
+        "ts": row[1],
+        "upstream": row[2],
+        "model": row[3],
+        "path": row[4],
+        "request_id": row[5],
+        "status_code": row[6],
+        "latency_ms": row[7],
+        "capture_state": row[8],
+        "request_body": row[9],
+        "response_body": row[10],
+        "created_at": row[11],
+    }
+    capture["ts_sydney"] = to_sydney(capture["ts"])
+    capture["created_sydney"] = to_sydney(capture["created_at"])
+    return capture
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -667,6 +780,29 @@ def provider_key(model: Any) -> str | None:
         if name.startswith(prefix):
             return key
     return None
+
+
+def model_display(model: Any) -> Any:
+    """Display label for a raw model id — presentation only.
+
+    Exactly one leading ``typesafe/`` namespace is dropped for display, and
+    when that namespace matched, a trailing ``-YYYYMMDD`` date suffix is
+    dropped too (``typesafe/jev-1.13-20260917`` renders as ``jev-1.13``);
+    everything else — JSON payloads, option values, filter/URL state, sort
+    and aggregation keys, ``provider_key`` inputs — keeps the raw string, and
+    no other provider namespace is ever stripped (so ``openai/gpt-5-20260101``
+    or a bare ``foo-20260101`` keep their tails).  Falsy input passes through
+    so the existing None/empty rendering is unchanged.  Mirrored exactly in
+    the browser JS (modelDisplay).
+    """
+    if not model:
+        return model
+    name = str(model)
+    if not name.startswith("typesafe/"):
+        return name
+    short = name[len("typesafe/"):]
+    match = re.search(r"-\d{8}$", short)
+    return short[: match.start()] if match else short
 
 
 BRAND_SHADE_STEPS = (
@@ -1423,14 +1559,21 @@ def render_filter_bar(snapshot: dict[str, Any]) -> str:
                     value, opt.get("requests"), opt.get("tokens"),
                     value == selected_value,
                     # harness options label the Hermes family "Hermes IDE";
-                    # the option VALUE stays the raw caller (the filter key)
-                    caller_display(value) if key == "harness" else "",
+                    # the option VALUE stays the raw caller (the filter key).
+                    # model options drop the typesafe/ namespace for display
+                    # only — the value stays the raw model id.
+                    caller_display(value) if key == "harness"
+                    else model_display(value) if key == "model" else "",
                 )
             )
         if selected_value and selected_value not in seen:
             # the active filter narrowed itself out of the cross-filtered
             # list — keep it selectable anyway (never silently dropped)
-            sel_label = caller_display(selected_value) if key == "harness" else selected_value
+            sel_label = (
+                caller_display(selected_value) if key == "harness"
+                else model_display(selected_value) if key == "model"
+                else selected_value
+            )
             options.append(
                 f'<option value="{esc(selected_value)}" selected>{esc(sel_label)}</option>'
             )
@@ -1489,7 +1632,8 @@ def render_filter_bar(snapshot: dict[str, Any]) -> str:
         chips.append(
             f'<button type="button" class="fchip" data-key="{esc(key)}"'
             f' title="Clear the {esc(key)} filter">'
-            f'<span class="fk">{esc(key)}</span> {esc(value)}'
+            f'<span class="fk">{esc(key)}</span>'
+            f' {esc(model_display(value) if key == "model" else value)}'
             '<span class="fx" aria-hidden="true">✕</span></button>'
         )
     active = len(chips)
@@ -1665,13 +1809,13 @@ def model_name_html(model: Any) -> str:
     events table).  Unknown providers and missing models stay plain text."""
     key = provider_key(model)
     if not key:
-        return esc(model)
+        return esc(model_display(model))
     brand = PROVIDER_BRANDS[key]
     glyph = brand.get("glyph", brand["color"])
     return (
         f'<span class="mbrand" title="{esc(brand["name"])}">'
         f'<span class="plogo" style="color:{glyph}">{brand["logo"]}</span>'
-        f"{esc(model)}</span>"
+        f"{esc(model_display(model))}</span>"
     )
 
 
@@ -1699,6 +1843,307 @@ def events_table_body(events: list[dict[str, Any]]) -> str:
             "</tr>"
         )
     return "".join(out)
+
+
+def pretty_request_json(text: Any) -> str:
+    """Best-effort pretty-print of a captured request body.
+
+    Captured requests are JSON by construction; a body that is not valid
+    JSON (truncated at the cap, or rewritten past recognition) is shown
+    exactly as stored rather than mangled into something it never was.
+    """
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return str(text)
+    if not isinstance(parsed, (dict, list)):
+        return str(text)
+    return json.dumps(parsed, indent=2, ensure_ascii=False)
+
+
+def classify_jev_gate(request_body: Any) -> str:
+    if isinstance(request_body, str):
+        try:
+            parsed = json.loads(request_body)
+        except (TypeError, ValueError):
+            return "other"
+    elif isinstance(request_body, dict):
+        parsed = request_body
+    else:
+        return "other"
+    if not isinstance(parsed, dict):
+        return "other"
+    questions = parsed.get("questions")
+    if not isinstance(questions, dict):
+        return "other"
+    has_reaction = "reaction" in questions
+    has_response = any(
+        k in questions for k in ("addresses_bot", "continues_bot_thread", "noise")
+    )
+    if has_reaction and has_response:
+        return "mixed"
+    if has_reaction:
+        return "reaction"
+    if has_response:
+        return "response"
+    return "other"
+
+
+def capture_state_badge(state: Any) -> str:
+    key = str(state) if state else ""
+    tone = CAPTURE_STATE_TONES.get(key, "none")
+    label = CAPTURE_STATE_LABELS.get(key, key or "unknown")
+    return (
+        f'<span class="badge"><span class="dot-s tone-{tone}"></span>'
+        f"<span>{esc(label)}</span></span>"
+    )
+
+
+def jev_gate_badge(request_body: Any) -> str:
+    key = classify_jev_gate(request_body)
+    tone = JEV_GATE_TONES.get(key, "none")
+    label = JEV_GATE_LABELS.get(key, key)
+    return (
+        f'<span class="badge"><span class="dot-s tone-{tone}"></span>'
+        f"<span>{esc(label)}</span></span>"
+    )
+
+
+def _capture_num(value: Any, suffix: str = "") -> str:
+    """Numeric cell, or an explicit dash when the proxy recorded NULL."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return '<span class="muted">&mdash;</span>'
+    return esc(f"{value}{suffix}")
+
+
+def captures_table_body(captures: list[dict[str, Any]]) -> str:
+    if not captures:
+        return (
+            '<tr><td colspan="8" class="muted">No jev captures'
+            " &mdash; capture is opt-in (--capture-jev-bodies) and stores only"
+            " openrouter-alpha traffic whose model starts with"
+            " typesafe/jev-</td></tr>"
+        )
+    out = []
+    for c in captures:
+        row_cls = ' class="row-crit"' if c.get("capture_state") == "incomplete" else ""
+        out.append(
+            f"<tr{row_cls}>"
+            f'<td class="num" title="{esc(c.get("ts"))}">{esc(c.get("ts_sydney"))}</td>'
+            f"<td>{model_name_html(c.get('model'))}</td>"
+            f"<td>{jev_gate_badge(c.get('request_body'))}</td>"
+            f"<td>{esc(c.get('path'))}</td>"
+            f'<td class="num">{_capture_num(c.get("status_code"))}</td>'
+            f'<td class="num">{_capture_num(c.get("latency_ms"), " ms")}</td>'
+            f"<td>{capture_state_badge(c.get('capture_state'))}</td>"
+            f'<td><a class="navlink" href="/captures/{c["id"]}">view</a></td>'
+            "</tr>"
+        )
+    return "".join(out)
+
+
+def _captures_shell(title: str, subtitle: str, body: str) -> bytes:
+    """Static page shell for the capture viewer — same CSS, same dark card
+    style, no polling JS: these pages are read at human speed, on demand."""
+    page = (
+        """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>"""
+        + esc(title)
+        + """</title>
+<style>"""
+        + CSS
+        + """</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="topbar">
+  <div>
+    <h1>Jev <span class="accent">captures</span></h1>
+    <p class="subtitle">"""
+        + subtitle
+        + """</p>
+  </div>
+  <div class="live"><span class="dot" aria-hidden="true"></span><span>read-only</span></div>
+</header>
+
+"""
+        + body
+        + """
+
+<footer>
+  Opt-in request/response body capture for jev traffic &middot; SQLite opened read-only (mode=ro) &middot; same LAN-only posture as the dashboard &middot; no auto-refresh: reload to see new captures.
+</footer>
+</div>
+</body>
+</html>"""
+    )
+    return page.encode("utf-8")
+
+
+def _captures_error_card(message: str) -> str:
+    return (
+        '<div class="card error-card show"><h2>Captures unavailable</h2>'
+        f"<p>{esc(message)}</p></div>"
+    )
+
+
+def render_captures_page(db_path: str, limit: int) -> tuple[int, bytes]:
+    """The /captures list page. Soft-fails at HTTP 200 (dashboard convention)
+    so a transient DB lock still leaves a page worth reloading."""
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = open_db_readonly(db_path)
+        table_absent = not jev_bodies_present(conn)
+        captures = [] if table_absent else query_jev_captures(conn, limit)
+    except (sqlite3.Error, OSError) as exc:
+        return 200, _captures_shell(
+            "Jev captures — AI Usage",
+            "captured request/response bodies",
+            _captures_error_card(f"capture store unavailable: {exc}"),
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+    if table_absent:
+        body = (
+            '<section class="card"><div class="card-head"><h2>Captured bodies</h2>'
+            '<span class="win">nothing captured on this ledger</span></div>'
+            '<p class="muted">This ledger has no jev_bodies table: the proxy'
+            " creates it only when started with --capture-jev-bodies.</p></section>"
+        )
+    else:
+        body = (
+            '<section class="card" aria-label="Captured jev bodies">'
+            '<div class="card-head"><h2>Captured bodies</h2>'
+            f'<span class="win">newest {len(captures)} &middot; times in Australia/Sydney'
+            " &middot; retention is bounded by the proxy</span></div>"
+            '<div class="scroll-x"><table class="events">'
+            "<thead><tr>"
+            "<th scope=\"col\">Time</th><th scope=\"col\">Model</th>"
+            "<th scope=\"col\">Gate</th>"
+            "<th scope=\"col\">Path</th><th scope=\"col\" class=\"num\">Status</th>"
+            "<th scope=\"col\" class=\"num\">Latency</th><th scope=\"col\">State</th>"
+            "<th scope=\"col\"><span class=\"sr-only\">View</span></th>"
+            "</tr></thead><tbody>"
+            + captures_table_body(captures)
+            + "</tbody></table></div></section>"
+        )
+    return 200, _captures_shell(
+        "Jev captures — AI Usage",
+        "captured request/response bodies &middot; "
+        '<a class="navlink" href="/">back to the dashboard</a>',
+        body,
+    )
+
+
+def _capture_meta_row(label: str, value_html: str) -> str:
+    return f'<tr><th scope="row">{esc(label)}</th><td>{value_html}</td></tr>'
+
+
+def render_capture_page(db_path: str, capture_id: int) -> tuple[int, bytes]:
+    """The /captures/&lt;id&gt; detail page: meta plus both bodies, escaped."""
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = open_db_readonly(db_path)
+        capture = (
+            query_jev_capture(conn, capture_id)
+            if jev_bodies_present(conn)
+            else None
+        )
+    except (sqlite3.Error, OSError) as exc:
+        return 200, _captures_shell(
+            f"Capture #{capture_id} — AI Usage",
+            "captured request/response bodies",
+            _captures_error_card(f"capture store unavailable: {exc}"),
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+    if capture is None:
+        body = (
+            '<section class="card"><div class="card-head">'
+            f"<h2>Capture #{capture_id} not found</h2></div>"
+            '<p class="muted">It may have been pruned by the retention window or'
+            ' the row cap. <a class="navlink" href="/captures">Back to the list'
+            "</a>.</p></section>"
+        )
+        return 404, _captures_shell(
+            f"Capture #{capture_id} — AI Usage",
+            "captured request/response bodies",
+            body,
+        )
+
+    status = capture.get("status_code")
+    request_id = capture.get("request_id")
+    meta_rows = "".join(
+        (
+            _capture_meta_row(
+                "Started",
+                f'<span title="{esc(capture.get("ts"))}">'
+                f"{esc(capture.get('ts_sydney'))} (Sydney)</span>",
+            ),
+            _capture_meta_row("Stored", esc(capture.get("created_sydney")) + " (Sydney)"),
+            _capture_meta_row(
+                "Route",
+                esc(capture.get("upstream")) + " &middot; " + esc(capture.get("path")),
+            ),
+            _capture_meta_row("Model", model_name_html(capture.get("model"))),
+            _capture_meta_row("Status", _capture_num(status)),
+            _capture_meta_row("Latency", _capture_num(capture.get("latency_ms"), " ms")),
+            _capture_meta_row("State", capture_state_badge(capture.get("capture_state"))),
+            _capture_meta_row("Gate", jev_gate_badge(capture.get("request_body"))),
+            _capture_meta_row(
+                "Upstream request id",
+                f'<span class="mono">{esc(request_id)}</span>'
+                if request_id
+                else '<span class="muted">&mdash;</span>',
+            ),
+        )
+    )
+    request_body = capture.get("request_body")
+    response_body = capture.get("response_body")
+    body = (
+        '<p><a class="navlink" href="/captures">&larr; all captures</a></p>'
+        '<section class="card" aria-label="Capture metadata">'
+        f'<div class="card-head"><h2>Capture #{capture["id"]}</h2>'
+        '<span class="win">exactly what the proxy stored &mdash; nothing is'
+        " re-fetched or edited</span></div>"
+        f'<div class="scroll-x"><table><tbody>{meta_rows}</tbody></table></div>'
+        "</section>"
+        '<section class="card" aria-label="Request body">'
+        "<h2>Request body</h2>"
+        '<p class="win">pretty-printed from the stored JSON</p>'
+    )
+    if request_body:
+        body += (
+            '<pre class="body-block">'
+            + esc(pretty_request_json(request_body))
+            + "</pre>"
+        )
+    else:
+        body += '<p class="muted">No request body was stored.</p>'
+    body += '</section><section class="card" aria-label="Response body">'
+    body += "<h2>Response body</h2>"
+    body += '<p class="win">raw stored text &mdash; not interpreted</p>'
+    if response_body:
+        body += '<pre class="body-block">' + esc(response_body) + "</pre>"
+    else:
+        body += '<p class="muted">No response body was stored.</p>'
+    body += "</section>"
+    return 200, _captures_shell(
+        f"Capture #{capture['id']} — AI Usage",
+        "captured request/response bodies &middot; "
+        '<a class="navlink" href="/">back to the dashboard</a>',
+        body,
+    )
 
 
 def bucket_series_groups(bucket: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1819,7 +2264,7 @@ def model_legend_html(slices: list[dict[str, Any]]) -> str:
     steps = brand_step_map([s["model"] for s in slices if s["model"] != "other"])
     items = "".join(
         f'<li class="lrow" data-model="{esc(s["model"])}" tabindex="0"'
-        f' title="Filter to {esc(s["model"])}">'
+        f' title="Filter to {esc(model_display(s["model"]))}">'
         f'<span class="swatch" style="background:{slice_fill(slices, i, steps)}"></span>'
         f'<span class="name">{model_name_html(s["model"])}</span>'
         f'<span class="num">{esc(fmt_stat(s["tokens"]))}</span>'
@@ -1832,7 +2277,7 @@ def model_legend_html(slices: list[dict[str, Any]]) -> str:
 
 def donut_aria(slices: list[dict[str, Any]], range_label: str) -> str:
     total = sum(s["tokens"] for s in slices)
-    breakdown = ", ".join(f"{s['model']} {fmt_pct(s['tokens'], total)}" for s in slices)
+    breakdown = ", ".join(f"{model_display(s['model'])} {fmt_pct(s['tokens'], total)}" for s in slices)
     return f"Donut chart of token share by model over {range_label}. {breakdown}"
 
 
@@ -2236,6 +2681,19 @@ th.sortable.sorted-desc::after { content: " ▼"; font-size: 0.6rem; }
 footer { margin-top: 20px; color: var(--muted); font-size: 0.75rem; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
+/* capture viewer (/captures): plain in-page navigation and the two stored
+   bodies — monospace, wrapped, scroll-bounded; content is html-escaped */
+.navlink, a.navlink { color: var(--accent-bright); text-decoration: none; }
+a.navlink:hover, a.navlink:focus-visible { text-decoration: underline; }
+.mono { font-family: var(--mono); font-size: 0.82rem; }
+.body-block {
+  margin: 0; padding: 12px 14px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 8px;
+  font-family: var(--mono); font-size: 0.78rem; line-height: 1.5;
+  color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 70vh; overflow: auto;
+}
+
 @media (max-width: 600px) {
   body { font-size: 14px; }
   .wrap { padding: 18px 12px 44px; }
@@ -2440,7 +2898,7 @@ JS = r"""
         chip.dataset.key = k;   /* same shape the server-rendered chips carry */
         chip.title = 'Clear the ' + k + ' filter';
         chip.appendChild(el('span', 'fk', k));
-        chip.appendChild(document.createTextNode(' ' + state[k] + ' '));
+        chip.appendChild(document.createTextNode(' ' + (k === 'model' ? modelDisplay(state[k]) : state[k]) + ' '));
         chip.appendChild(el('span', 'fx', '✕'));
         chip.addEventListener('click', function () { setFilter(k, ''); });
         box.appendChild(chip);
@@ -2478,7 +2936,9 @@ JS = r"""
         label = callerDisplay(value) + ' · ' + fmtCompact(o.tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
       } else {
         value = String(o.value || '');
-        label = value + ' · ' + fmtCompact(o.tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
+        /* model labels drop the typesafe/ namespace for display; the option
+           VALUE stays the raw model id — it is the filter key */
+        label = (key === 'model' ? modelDisplay(value) : value) + ' · ' + fmtCompact(o.tokens) + ' tok · ' + fmtInt(o.requests) + ' req';
       }
       if (!value || hasOwn(seen, value)) return;
       seen[value] = true;
@@ -2490,7 +2950,7 @@ JS = r"""
       }
       sel.appendChild(opt);
     });
-    if (current && !hasOwn(seen, current)) sel.appendChild(new Option(current, current));
+    if (current && !hasOwn(seen, current)) sel.appendChild(new Option(key === 'model' ? modelDisplay(current) : current, current));
     sel.value = current;
     if (key === 'chat') applyChatSearch();
   }
@@ -2856,6 +3316,21 @@ JS = r"""
     return c;
   }
 
+  /* display label for a raw model id — presentation only, the exact twin of
+     the server's model_display: one leading 'typesafe/' is dropped for
+     display, and only then a trailing -YYYYMMDD date suffix
+     (typesafe/jev-1.13-20260917 renders as jev-1.13); option values,
+     filter/URL state, data keys and providerKey() inputs all keep the raw
+     id, and no other namespace is stripped */
+  function modelDisplay(model) {
+    if (!model) return model;
+    var s = String(model);
+    if (s.indexOf('typesafe/') !== 0) return s;
+    var short = s.slice('typesafe/'.length);
+    var m = /-\d{8}$/.exec(short);
+    return m ? short.slice(0, m.index) : short;
+  }
+
   /* hex mirror of the .h0…h5/.h-unattr/.hb-* CSS palette — a canvas cannot
      read CSS custom properties, so the chart resolves harnessClass() to hex
      here; the hb-* entries are the server's HARNESS_BRANDS twin */
@@ -2881,7 +3356,7 @@ JS = r"""
      paint got from Python.  Logos are Simple Icons (CC0) path data; Z.ai and
      Kimi are clean initial badges (brand-coloured rounded square + letter) */
   var PROVIDER_PREFIXES = [
-    ['openrouter/', 'openrouter'], ['claude-', 'claude'], ['anthropic/', 'claude'],
+    ['openrouter/', 'openrouter'], ['typesafe/', 'jev'], ['claude-', 'claude'], ['anthropic/', 'claude'],
     ['codex', 'openai'], ['openai/', 'openai'], ['gpt-', 'openai'],
     ['grok-', 'grok'], ['x-ai/', 'grok'], ['xai/', 'grok'],
     ['kimi-', 'kimi'], ['kimi/', 'kimi'], ['moonshot/', 'kimi'],
@@ -2891,11 +3366,13 @@ JS = r"""
   var PROVIDER_EXACT = { k3: 'kimi', k2: 'kimi' };  /* native bare IDs */
   var PROVIDER_NAMES = {
     openai: 'ChatGPT/OpenAI', zai: 'Z.ai', kimi: 'Kimi (Moonshot AI)',
-    claude: 'Claude (Anthropic)', grok: 'Grok (xAI)', openrouter: 'OpenRouter'
+    claude: 'Claude (Anthropic)', grok: 'Grok (xAI)', openrouter: 'OpenRouter',
+    jev: 'Jev (Typesafe)'
   };
   var PROVIDER_HEXES = {
     openai: '#10A37F', zai: '#8A8AF0', kimi: '#5A5AF5',
-    claude: '#D97757', grok: '#BFC7D3', openrouter: '#6467F2'
+    claude: '#D97757', grok: '#BFC7D3', openrouter: '#6467F2',
+    jev: '#2DD4BF'
   };
   var PROVIDER_GLYPHS = { grok: '#E8EDF4' };  /* monochrome white-on-dark X */
   var PROVIDER_LOGOS = {
@@ -2904,7 +3381,8 @@ JS = r"""
     kimi: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="24" height="24" rx="6" fill="#5A5AF5"/><text x="12" y="17.2" text-anchor="middle" font-family="inherit" font-size="14.5" font-weight="700" fill="#e8edf4">K</text></svg>',
     claude: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>',
     grok: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg>',
-    openrouter: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>'
+    openrouter: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>',
+    jev: '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="24" height="24" rx="6" fill="#2DD4BF"/><text x="12" y="17.2" text-anchor="middle" font-family="inherit" font-size="14.5" font-weight="700" fill="#0B1220">J</text></svg>'
   };
 
   /* same longest-prefix, case-insensitive match as the server's provider_key;
@@ -2995,7 +3473,7 @@ JS = r"""
       wrap.title = PROVIDER_NAMES[key];
       wrap.appendChild(brandLogoEl(key));
     }
-    wrap.appendChild(document.createTextNode(model || '—'));
+    wrap.appendChild(document.createTextNode(modelDisplay(model) || '—'));
     return wrap;
   }
 
@@ -3335,7 +3813,7 @@ JS = r"""
 
     donutGeom = { slices: slices, total: total, cx: cx, cy: cy, rIn: rIn, rOut: rOut, start: -Math.PI / 2 };
     canvas.setAttribute('aria-label', 'Token share by model, ' + lastRangeLabel + ': ' +
-      slices.map(function (s) { return s.model + ' ' + pctLabel(s.tokens, total); }).join(', '));
+      slices.map(function (s) { return modelDisplay(s.model) + ' ' + pctLabel(s.tokens, total); }).join(', '));
 
     var legend = $('model-legend');
     if (legend) {
@@ -3343,13 +3821,13 @@ JS = r"""
       slices.forEach(function (s, i) {
         var li = el('li', 'lrow');
         li.setAttribute('data-model', s.model);
-        li.title = 'Filter to ' + s.model;
+        li.title = 'Filter to ' + modelDisplay(s.model);
         var sw = el('span', 'swatch');
         sw.style.background = sliceFill(slices, i, shadeSteps);
         li.appendChild(sw);
         var logo = brandLogoEl(providerKey(s.model));
         if (logo) li.appendChild(logo);
-        li.appendChild(el('span', 'name', s.model));
+        li.appendChild(el('span', 'name', modelDisplay(s.model)));
         li.appendChild(el('span', 'num', fmtStat(s.tokens)));
         li.appendChild(el('span', 'pct', pctLabel(s.tokens, total)));
         legend.appendChild(li);
@@ -3381,7 +3859,7 @@ JS = r"""
     tip.textContent = '';
     tip.appendChild(el('div', 'tv', fmtCompact(s.tokens) + ' tokens'));
     tip.appendChild(el('div', 'tl',
-      s.model + ' · ' + pctLabel(s.tokens, g.total) + ' · ' + fmtInt(s.requests) + ' req'));
+      modelDisplay(s.model) + ' · ' + pctLabel(s.tokens, g.total) + ' · ' + fmtInt(s.requests) + ' req'));
     tip.hidden = false;
     tip.style.left = Math.max(tip.offsetWidth / 2 + 2,
       Math.min(wrap.clientWidth - tip.offsetWidth / 2 - 2, px)) + 'px';
@@ -3798,7 +4276,7 @@ JS = r"""
               if (mi) div.appendChild(document.createTextNode(' · '));
               var logo = brandLogoEl(providerKey(m.name));
               if (logo) div.appendChild(logo);
-              div.appendChild(document.createTextNode(m.name + ' ' + fmtCompact(m.tokens)));
+              div.appendChild(document.createTextNode(modelDisplay(m.name) + ' ' + fmtCompact(m.tokens)));
             });
             div.appendChild(document.createTextNode(')'));
           }
@@ -3836,7 +4314,8 @@ JS = r"""
       line.appendChild(dot);
       var logo = chartMode === 'model' ? brandLogoEl(providerKey(seg.name)) : null;
       if (logo) line.appendChild(logo);
-      var segName = chartMode === 'harness' ? callerDisplay(seg.name) : seg.name;
+      var segName = chartMode === 'harness' ? callerDisplay(seg.name)
+        : (chartMode === 'model' ? modelDisplay(seg.name) : seg.name);
       line.appendChild(document.createTextNode(segName + ' · ' + fmtCompact(seg.tokens)));
       tip.appendChild(line);
     });
@@ -4204,7 +4683,7 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 <header class="topbar">
   <div>
     <h1>AI <span class="accent">Usage</span></h1>
-    <p class="subtitle">Live LLM token usage &middot; read-only view of the SQLite ledger &middot; times in Australia/Sydney</p>
+    <p class="subtitle">Live LLM token usage &middot; read-only view of the SQLite ledger &middot; times in Australia/Sydney &middot; <a class="navlink" href="/captures">jev body captures</a></p>
   </div>
   <div class="live" id="live" role="status">
     <span class="dot" aria-hidden="true"></span>
@@ -4354,6 +4833,9 @@ def render_page(snapshot: dict[str, Any]) -> bytes:
 
 class UsageProxyHandler(BaseHTTPRequestHandler):
     db_path: str = DEFAULT_DB
+    # Set by main() when the admin panel is configured (see admin.py). None
+    # disables /admin entirely: the dashboard stays exactly as it was.
+    admin_config: Any = None
     server_version = "usage-proxy-webui/2"
     sys_version = ""
     protocol_version = "HTTP/1.1"
@@ -4364,11 +4846,19 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
     def log_error(self, format: str, *args: Any) -> None:
         sys.stderr.write(f"[{self.log_date_time_string()}] {format % args}\n")
 
-    def _send(self, status: int, content_type: str, body: bytes) -> None:
+    def _send(
+        self,
+        status: int,
+        content_type: str,
+        body: bytes,
+        headers: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -4428,27 +4918,71 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 conn.close()
         return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8")
 
-    def _body_for(self, parsed) -> tuple[int, str, bytes]:
+    def _captures_body(self, parsed) -> tuple[int, str, bytes]:
+        qs = parse_qs(parsed.query)
+        limit = CAPTURES_LIMIT_DEFAULT
+        if "limit" in qs:
+            try:
+                limit = min(max(1, int(qs["limit"][0])), CAPTURES_LIMIT_MAX)
+            except (ValueError, IndexError):
+                return 400, "text/plain; charset=utf-8", b"invalid limit\n"
+        status, body = render_captures_page(self.db_path, limit)
+        return status, "text/html; charset=utf-8", body
+
+    def _capture_detail_body(self, parsed) -> tuple[int, str, bytes]:
+        raw = parsed.path.rsplit("/", 1)[-1]
+        if not raw.isdigit():
+            return 404, "text/plain; charset=utf-8", b"not found\n"
+        status, body = render_capture_page(self.db_path, int(raw))
+        return status, "text/html; charset=utf-8", body
+
+    def _admin_module(self):
+        """The admin sibling, imported lazily so the dashboard runs standalone.
+
+        A missing/unimportable admin.py must never take the read-only
+        dashboards down with it — /admin then answers 503 and every other
+        route is untouched.
+        """
+        try:
+            import admin
+        except Exception as exc:
+            self.log_error("admin panel unavailable: %r", exc)
+            return None
+        return admin
+
+    def _admin_get(self, parsed) -> tuple[int, str, bytes, tuple]:
+        admin = self._admin_module()
+        if admin is None or self.admin_config is None:
+            return 503, "text/plain; charset=utf-8", b"admin panel unavailable\n", ()
+        return admin.handle_get(self, self.admin_config, parsed)
+
+    def _body_for(self, parsed) -> tuple[int, str, bytes, tuple]:
         route = parsed.path
         filters = parse_filters(parse_qs(parsed.query))
         if route == "/":
             # Always render the shell at HTTP 200 — even when the ledger is
             # unreachable — so the browser keeps a page that can keep polling.
             snapshot = fetch_snapshot(self.db_path, filters, DASHBOARD_EVENTS)
-            return 200, "text/html; charset=utf-8", render_page(snapshot)
+            return 200, "text/html; charset=utf-8", render_page(snapshot), ()
         if route == "/api/summary":
             snapshot = fetch_snapshot(self.db_path, filters, event_limit=0)
             payload = {k: v for k, v in snapshot.items() if k != "events"}
-            return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8")
+            return 200, "application/json; charset=utf-8", json.dumps(payload, indent=2).encode("utf-8"), ()
         if route == "/api/timeseries":
-            return self._timeseries_body(parsed)
+            return (*self._timeseries_body(parsed), ())
         if route == "/api/events":
-            return self._events_body(parsed)
-        return 404, "text/plain; charset=utf-8", b"not found\n"
+            return (*self._events_body(parsed), ())
+        if route == "/captures":
+            return (*self._captures_body(parsed), ())
+        if route.startswith("/captures/"):
+            return (*self._capture_detail_body(parsed), ())
+        if route == "/admin" or route.startswith("/admin/"):
+            return self._admin_get(parsed)
+        return 404, "text/plain; charset=utf-8", b"not found\n", ()
 
     def do_GET(self) -> None:
         try:
-            status, content_type, body = self._body_for(urlparse(self.path))
+            status, content_type, body, headers = self._body_for(urlparse(self.path))
         except Exception as exc:  # a handler must never kill the keep-alive connection
             self.log_error("request failed: %r", exc)
             try:
@@ -4457,13 +4991,44 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
                 pass
             return
         try:
-            self._send(status, content_type, body)
+            self._send(status, content_type, body, headers)
         except (BrokenPipeError, ConnectionResetError):
             pass  # client hung up mid-response; nothing to do
 
+    def do_POST(self) -> None:
+        """Writes exist only under /admin (session + CSRF + origin checked there)."""
+        try:
+            parsed = urlparse(self.path)
+            if parsed.path == "/admin" or parsed.path.startswith("/admin/"):
+                admin = self._admin_module()
+                if admin is not None and self.admin_config is not None:
+                    outcome = admin.handle_post(self, self.admin_config, parsed)
+                else:
+                    outcome = (503, "text/plain; charset=utf-8", b"admin panel unavailable\n", ())
+            else:
+                # Drain the body so the keep-alive connection stays parseable.
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = 0
+                if 0 < length <= 65536:
+                    self.rfile.read(length)
+                outcome = (404, "text/plain; charset=utf-8", b"not found\n", ())
+        except Exception as exc:
+            self.log_error("request failed: %r", exc)
+            try:
+                self._send(500, "application/json; charset=utf-8", b'{"error": "internal error"}\n')
+            except OSError:
+                pass
+            return
+        try:
+            self._send(*outcome)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_HEAD(self) -> None:
         try:
-            status, content_type, body = self._body_for(urlparse(self.path))
+            status, content_type, body, headers = self._body_for(urlparse(self.path))
         except Exception as exc:
             self.log_error("request failed: %r", exc)
             try:
@@ -4475,6 +5040,8 @@ class UsageProxyHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
 
 
@@ -4483,9 +5050,69 @@ def main() -> None:
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"Bind host (default: {DEFAULT_HOST})")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Bind port (default: {DEFAULT_PORT})")
     parser.add_argument("--db", default=DEFAULT_DB, help=f"SQLite ledger path, opened read-only (default: {DEFAULT_DB})")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "config.yaml path for the admin panel's routing/quota sections"
+            " (default: $HERMES_HOME/config.yaml or ~/.hermes/config.yaml)"
+        ),
+    )
+    parser.add_argument(
+        "--route",
+        action="append",
+        default=[],
+        metavar="NAME=BASE",
+        help=(
+            "Route the proxy serves, declared to the admin panel (repeatable;"
+            " mirrors the proxy's --upstream flags for routes not resolvable"
+            " from config, e.g. direct-arg or loopback upstreams)"
+        ),
+    )
+    parser.add_argument(
+        "--admin-secret-file",
+        default=None,
+        help=(
+            "Admin panel secret file (default: webui-admin.secret next to the"
+            " ledger, auto-generated 0600 on first start). The secret is never"
+            " placed in config, URLs or logs; pass an empty string to disable"
+            " the admin panel."
+        ),
+    )
     args = parser.parse_args()
 
     UsageProxyHandler.db_path = args.db
+    if args.admin_secret_file == "":
+        UsageProxyHandler.admin_config = None
+    else:
+        import admin
+
+        hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        extra_routes = {}
+        for raw in args.route:
+            name, sep, base = raw.partition("=")
+            if sep and name.strip() and base.strip():
+                extra_routes[name.strip()] = base.strip()
+            else:
+                sys.stderr.write(f"ignoring malformed --route {raw!r} (want NAME=BASE)\n")
+        config = admin.AdminConfig(
+            db_path=args.db,
+            config_path=args.config or os.path.join(hermes_home, "config.yaml"),
+            secret_file=args.admin_secret_file,
+            extra_routes=extra_routes,
+        )
+        try:
+            admin.ensure_secret_file(config.secret_file)
+            sys.stderr.write(
+                f"admin panel at /admin — secret file: {config.secret_file}\n"
+            )
+        except OSError as exc:
+            sys.stderr.write(
+                f"admin panel disabled: cannot create secret file"
+                f" {config.secret_file}: {exc}\n"
+            )
+            config = None  # type: ignore[assignment]
+        UsageProxyHandler.admin_config = config
     server = ThreadingHTTPServer((args.host, args.port), UsageProxyHandler)
     server.daemon_threads = True
     sys.stderr.write(f"usage-proxy-webui serving on http://{args.host}:{args.port}  db={args.db}\n")

@@ -446,7 +446,7 @@ def probe_gateway_loop_liveness(
         from gateway.shutdown_watchdog import get_loop_heartbeat_path
         path = get_loop_heartbeat_path(home)
         mtime = path.stat().st_mtime
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
         heartbeat_pid = int(payload.get("pid", 0))
     except Exception:
         return GATEWAY_LOOP_UNKNOWN
@@ -789,13 +789,20 @@ def find_profile_gateway_processes(exclude_pids: set | None = None, *, strict: b
     return processes
 
 
+def _scm_service_field(service, field: str):
+    """psutil ``WindowsService`` exposes getters as methods; ``as_dict()`` covers objects without them."""
+    getter = getattr(service, field, None)
+    return getter() if callable(getter) else service.as_dict().get(field)
+
+
 def find_windows_gateway_services(
     *, psutil_module=None, profile_processes: list[ProfileGatewayProcess] | None = None
 ) -> list[WindowsGatewayService]:
-    """Profile gateways supervised by real Windows services. Service-logon processes may hide their
-    command lines, so identity = Hermes's own PID file + a parent chain ending at a running SCM service
-    PID. The whole service subtree is returned so the Desktop preflight exempts exactly what the
-    updater stops through the SCM."""
+    """Profile gateways supervised by real, Hermes-owned Windows services. Service-logon processes may
+    hide their command lines, so identity = Hermes's own PID file + a parent chain ending at a running
+    SCM service PID whose name or binary path is Hermes's (``gateway_windows.hermes_owns_windows_service``).
+    The whole service subtree is returned so the Desktop preflight exempts exactly what the updater stops
+    through the SCM; a gateway under any other service (a Scheduled Task's svchost) is a plain process."""
     if sys.platform != "win32":
         return []
     try:
@@ -803,26 +810,38 @@ def find_windows_gateway_services(
             import psutil as psutil_module  # type: ignore[no-redef]  # noqa: PLC0415
         if profile_processes is None:
             profile_processes = find_profile_gateway_processes(strict=True)
+        from hermes_cli.gateway_windows import hermes_owns_windows_service, hermes_service_roots
+
+        hermes_roots = hermes_service_roots()
         service_names_by_pid: dict[int, set[str]] = {}
         indeterminate_services_by_pid: dict[int, list[tuple[str, object]]] = {}
         for service in psutil_module.win_service_iter():
             try:
-                if all(callable(getattr(service, field, None)) for field in ("name", "status", "pid")):
-                    service_name = str(service.name() or "")
-                    service_status = service.status()
-                    service_pid = int(service.pid() or 0)
-                else:
-                    data = service.as_dict()
-                    service_name = str(data.get("name") or "")
-                    service_status = data.get("status")
-                    service_pid = int(data.get("pid") or 0)
+                service_name = str(_scm_service_field(service, "name") or "")
+                if not service_name:
+                    raise RuntimeError("SCM service has an empty name")
+                # Ownership before state: an OS service above the gateway (Task Scheduler's svchost for a
+                # task-launched gateway, BITS mid-transition) is never its supervisor, so neither its
+                # PID nor its status may steer the pause. Only Hermes-owned services reach the guards below.
+                # The name alone settles Hermes-named services; binpath (QueryServiceConfig) is asked only
+                # for the rest, and a service that refuses even that to this user is one this user could
+                # not `sc stop` either — never Hermes's, never a reason to abort the enumeration.
+                owned = hermes_owns_windows_service(service_name, "", hermes_roots)
+                if not owned:
+                    try:
+                        service_binpath = str(_scm_service_field(service, "binpath") or "")
+                    except psutil_module.AccessDenied:
+                        continue
+                    owned = hermes_owns_windows_service(service_name, service_binpath, hermes_roots)
+                if not owned:
+                    continue
+                service_status = _scm_service_field(service, "status")
+                service_pid = int(_scm_service_field(service, "pid") or 0)
             except FileNotFoundError:
                 # Deleted between enumeration and inspection.
                 continue
             except Exception as exc:
                 raise RuntimeError("SCM service inspection failed") from exc
-            if not service_name:
-                raise RuntimeError("SCM service has an empty name")
             if service_status == "stopped":
                 continue
             if service_status != "running":
@@ -1106,7 +1125,7 @@ def _systemctl_show(properties: tuple[str, ...], *, system: bool) -> dict[str, s
 def _hermes_home_pinned_by_unit(unit_path: Path) -> str | None:
     """``HERMES_HOME`` pinned by the unit file at *unit_path*, or None when absent/unreadable."""
     try:
-        text = unit_path.read_text(encoding="utf-8")
+        text = unit_path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
     for line in text.splitlines():
@@ -1224,8 +1243,12 @@ def _wait_for_systemd_service_restart(
                 if runtime_state and _runtime_state_pid(runtime_state) != new_pid:
                     runtime_state = None
             gateway_state = (runtime_state or {}).get("gateway_state")
-            if gateway_state == "running":
+            if gateway_state in ("running", "degraded"):
                 print(f"✓ {scope_label} service restarted (PID {new_pid})")
+                if gateway_state == "degraded":
+                    # Serving, but a configured platform is parked or retrying: a real restart, not a
+                    # failure — say so instead of waiting out the timeout and reporting one.
+                    print(f"⚠ {scope_label} gateway is DEGRADED — see `hermes gateway status`")
                 return True
             if gateway_state == "startup_failed":
                 reason = (runtime_state or {}).get("exit_reason") or "startup failed"
@@ -1934,17 +1957,34 @@ _WINDOWS_TASK_SUPERVISOR_STATES = frozenset({"Running", "Ready", "Queued"})
 
 
 def _windows_scheduled_task_state(task_name: str) -> str | None:
-    """English ``Get-ScheduledTask`` State, or None on failure. PowerShell, not ``schtasks``: schtasks
-    localizes its output in the local codepage (utf-8 decoding mangles it); the State enum is stable."""
+    """Locale-independent Task Scheduler state, or None on failure.
+
+    Query the COM API directly: Get-ScheduledTask auto-loads the CIM module,
+    which can stall desktop backend startup for the entire ten-second timeout.
+    Keep the existing supervisor semantics (Ready and Queued count as owned).
+    """
     if not is_windows():
         return None
-    ps_cmd = f"$t = Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue; if ($t) {{ $t.State }} else {{ 'MISSING' }}"
+    quoted_name = task_name.replace("'", "''")
+    ps_cmd = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$s = [Activator]::CreateInstance([type]::GetTypeFromProgID('Schedule.Service')); "
+        "$s.Connect(); "
+        "try { "
+        f"$t = $s.GetFolder('\\').GetTask('{quoted_name}'); "
+        # TASK_STATE values are stable, unlike localized schtasks.exe output.
+        "@('Unknown', 'Disabled', 'Queued', 'Ready', 'Running')[[int]$t.State] "
+        "} catch { "
+        "$e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; "
+        "if ($e.HResult -in @(-2147024894, -2147024893)) { 'MISSING' } else { throw } "
+        "}"
+    )
     try:
         powershell = shutil.which("powershell") or shutil.which("pwsh")
         if powershell is None:
             return None
         result = subprocess.run(
-            [powershell, "-NoProfile", "-Command", ps_cmd],
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10,
         )
         if result.returncode != 0:
@@ -2384,7 +2424,7 @@ def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
             try:
                 if not unit_path.exists():
                     continue
-                text = unit_path.read_text(encoding="utf-8", errors="ignore")
+                text = unit_path.read_text(encoding="utf-8-sig", errors="ignore")
             except (OSError, PermissionError):
                 continue
             if any(marker in text for marker in _LEGACY_UNIT_EXECSTART_MARKERS):
@@ -2546,7 +2586,7 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
 def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
     if not unit_path.exists():
         return None
-    for line in unit_path.read_text(encoding="utf-8").splitlines():
+    for line in unit_path.read_text(encoding="utf-8-sig").splitlines():
         if line.startswith("User="):
             return line.split("=", 1)[1].strip() or None
     return None
@@ -2736,9 +2776,48 @@ def launchd_gateway_labels_for_install() -> list[str]:
     return root_label + sorted(profile_labels)
 
 
+def _pm_runtime_venv_dir() -> Path | None:
+    """The venv pm provisioned for this install, resolved from pm's own
+    records (facts.json + store layout) — never from interpreter state.
+
+    Under no-boot-through-venv the gateway runs the store python with the
+    venv's site-packages on PYTHONPATH, so ``sys.prefix`` always equals
+    ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled installs;
+    prefix/env probing silently degrades. pm is the authority instead: a
+    bundled install keeps its relocatable venv beside the manifest (a
+    sibling of the store), a dev install syncs the project venv
+    (``venv``/``.venv``, per ``hermes_constants.project_venv_dir`` — the
+    same layout ``pm.packages.Venv.venv_dir`` materializes). The venv fact
+    must exist: pm only vouches for what it provisioned.
+    """
+    try:
+        from pm import paths
+        from pm.lock import Facts
+    except Exception:
+        return None
+    try:
+        if not Facts(paths.facts_path()).get("venv"):
+            return None
+    except Exception:
+        return None
+    store = paths.store_root()
+    bundled = store.parent / "venv"
+    if (store.parent / "manifest.json").is_file():
+        return bundled if bundled.is_dir() else None
+    try:
+        from hermes_constants import project_venv_dir
+    except ImportError:
+        return None
+    return project_venv_dir(paths.repo_root())
+
+
 def _detect_venv_dir() -> Path | None:
-    """Active virtualenv dir: ``sys.prefix``, then ``VIRTUAL_ENV`` (uv sets it without changing
-    sys.prefix), then .venv/venv under PROJECT_ROOT; None if none found."""
+    """Active virtualenv dir: pm's provisioned runtime venv first (facts + store layout — the
+    authority under no-boot-through-venv), then ``sys.prefix``, then ``VIRTUAL_ENV`` (uv sets it
+    without changing sys.prefix), then .venv/venv under PROJECT_ROOT; None if none found."""
+    pm_venv = _pm_runtime_venv_dir()
+    if pm_venv is not None and pm_venv.is_dir():
+        return pm_venv
     candidates: list[Path] = []
     if sys.prefix != sys.base_prefix:
         candidates.append(Path(sys.prefix))
@@ -2754,10 +2833,14 @@ def get_python_path() -> str:
         try:
             from hermes_constants import venv_python_path
         except ImportError:
-            # Update-boundary: a gateway restarted mid-update can hold a stale hermes_constants
-            # without this symbol; see _reload_hermes_constants() in hermes_cli/managed_uv.py.
-            from hermes_cli.managed_uv import _reload_hermes_constants
-            venv_python_path = _reload_hermes_constants().venv_python_path
+            # Update-boundary: a gateway restarted mid-update can hold a
+            # hermes_constants cached from before this symbol existed.
+            # Reload picks up the definitions actually on disk.
+            import importlib
+
+            import hermes_constants
+
+            venv_python_path = importlib.reload(hermes_constants).venv_python_path
 
         venv_python = venv_python_path(venv, windows=is_windows())
         if venv_python.exists():
@@ -2852,11 +2935,20 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
             return False
 
     candidates = []
+
+    # The interpreter's own bin dir. Under no-boot-through-venv the
+    # gateway runs the store python (sys.prefix == sys.base_prefix), so
+    # the venv bin dir comes from pm's facts/store resolution, not from
+    # prefix sniffing.
     venv_bin = project_root / "venv" / "bin"
     if _is_dir(venv_bin):
         candidates.append(str(venv_bin))
-    elif sys.prefix != sys.base_prefix:
-        candidates.append(str(Path(sys.prefix) / "bin"))
+    else:
+        pm_venv = _pm_runtime_venv_dir()
+        if pm_venv is not None:
+            pm_venv_bin = pm_venv / "bin"
+            if _is_dir(pm_venv_bin):
+                candidates.append(str(pm_venv_bin))
 
     hermes_home = get_hermes_home()
     extras = (project_root / "node_modules" / ".bin", hermes_home / "node" / "bin", hermes_home / "node_modules" / ".bin")
@@ -2898,21 +2990,61 @@ def _systemd_watchdog_seconds(hermes_home: str | Path | None = None) -> int:
 
 
 def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | None = None) -> None:
-    """Append the Node dir a service unit should use: managed ``<hermes_root>/node`` (profile-scoped)
-    first — a unit survives reboots, so baking a shell-PATH Node is permanent breakage — else PATH lookup."""
-    from hermes_constants import (hermes_managed_node_tree_present, iter_hermes_node_dirs)
-    managed_node_present = hermes_managed_node_tree_present(hermes_root)
-    for directory in iter_hermes_node_dirs(hermes_root) if managed_node_present else ():
-        entry = str(directory)
+    """Add the Node directory a generated service unit should use to *path_entries*.
+
+    The pm store's Node/npm dirs go first when installed. A bare
+    ``shutil.which("node")`` cannot be trusted on its own here: a service unit
+    is written once and then survives reboots, so resolving a system Node that
+    happens to be ahead on the installing shell's PATH bakes the wrong
+    interpreter in permanently — the exact failure the desktop backend spawn
+    was fixed for. The store is profile-scoped, so each profile's unit still
+    names its own Node.
+
+    *hermes_root* is the Hermes home the unit will run against. System units
+    installed via sudo MUST pass the **target user's** home: probing the
+    default (the calling user's — root's —) tree would bake root's Node into
+    the target user's unit; the target user's installed-state file
+    (``<hermes_root>/tools/facts.json``) is read directly for that case.
+    The probe swallows OSError: an unreadable candidate dir (hardened home)
+    means "skip the rung", not "crash the generator".
+
+    PATH lookup remains the fallback rung for installs with no pm-managed Node.
+    """
+    managed_dirs: list[str] = []
+    try:
+        if hermes_root is None:
+            import pm
+
+            env = pm.env_for("npm", base_env={"PATH": ""})
+            managed_dirs = [d for d in env.get("PATH", "").split(os.pathsep) if d]
+        else:
+            from pm.lock import Facts
+
+            store_root = Path(hermes_root) / "tools"
+            facts = Facts(store_root / "facts.json")
+            for name in ("npm", "node"):
+                value = facts.env_for(name, store_root).get("PATH") or []
+                for directory in value if isinstance(value, list) else [value]:
+                    if directory and directory not in managed_dirs:
+                        managed_dirs.append(str(directory))
+    except Exception:
+        managed_dirs = []
+
+    managed_appended = False
+    for entry in managed_dirs:
         try:
-            present = directory.is_dir()
+            present = Path(entry).is_dir()
         except OSError:
             present = False
-        if present and entry not in path_entries:
-            path_entries.append(entry)
+        if present:
+            managed_appended = True
+            if entry not in path_entries:
+                path_entries.append(entry)
 
-    # With managed Node present, consulting the invoker's PATH would make a system unit depend on who ran sudo.
-    if managed_node_present:
+    # Ambient PATH lookup is a fallback, not an additional rung. Once the
+    # target Hermes home provides managed Node, consulting the invoker's PATH
+    # makes a system unit differ between sudo/root and its service user.
+    if managed_appended:
         return
 
     resolved_node = shutil.which("node")
@@ -3061,7 +3193,7 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
-    installed = unit_path.read_text(encoding="utf-8")
+    installed = unit_path.read_text(encoding="utf-8-sig")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.
@@ -3078,7 +3210,7 @@ def _temp_home_in_service_definition(definition: str) -> str | None:
     candidates += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.S)
     temp_roots = {
         Path(tempfile.gettempdir()).resolve(),
-        Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),
+        Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),  # no-tmp: ok — detects a temp HERMES_HOME in service definitions
     }
     for raw in candidates:
         try:
@@ -3896,8 +4028,24 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
 
 
 def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> None:
-    """Shared launchctl failure policy: domain unmanageable (5/125) → detached fallback; else re-raise."""
+    """Shared launchctl failure policy: domain unmanageable (5/125) → detached fallback; else re-raise.
+
+    A 5/125 exit is evidence about the *domain* only when launchd is not already supervising this job.
+    EIO (5) is ``launchctl bootstrap``'s answer for a label that is already loaded, so the ordinary
+    "reinstall/restart over the live gateway" case lands here with the service up and supervised.
+    Degrading there is not a graceful fallback: it writes the permanent launchd-unsupported marker and
+    starts a detached gateway *beside* the supervised one, and the marker makes
+    :func:`wait_for_launchd_gateway_supervision` answer True unconditionally — so no later
+    install/update can tell that nothing ties the gateway to launchd any more. A live supervised PID is
+    direct evidence this macOS does manage the job, so surface the failure instead of branding the host.
+    """
     if not _launchctl_domain_unsupported(exc.returncode):
+        raise exc
+    label = get_launchd_label()
+    if _launchctl_label_supervising_process(label):
+        print(f"⚠ {what} failed (exit {exc.returncode}), but launchd still supervises {label}")
+        print("  Not switching to the detached fallback — this host manages the job.")
+        print("  Apply the definition with: hermes gateway stop && hermes gateway install --force")
         raise exc
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
@@ -4010,7 +4158,7 @@ def launchd_plist_is_current() -> bool:
     plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         return False
-    installed = plist_path.read_text(encoding="utf-8")
+    installed = plist_path.read_text(encoding="utf-8-sig")
     norm = _normalize_launchd_plist_for_comparison
     return norm(installed) == norm(generate_launchd_plist())
 
@@ -4304,6 +4452,48 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> bool:
+    """Wait until nothing accepts TCP connections on host:port.
+
+    PID exit is not enough on macOS: api_server disables SO_REUSEADDR, so a restart that wins
+    the race logs EADDRINUSE and keeps running with no API. Connection-refused means the
+    listener is gone; a timed-out connect is a live listener with a slow accept queue.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.2):
+                pass
+        except ConnectionRefusedError:
+            return True
+        except TimeoutError:
+            pass  # a slow accept queue is still a live listener
+        except OSError:
+            return True  # unresolvable/unreachable address: nothing to wait for; the bind retry covers it
+        time.sleep(0.1)
+    return False
+
+
+def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
+    """Wait for the configured api_server listen address to stop accepting.
+
+    Only when api_server is enabled: with the platform off, a foreign listener on the default
+    port is nobody's race and must not delay the restart."""
+    from gateway.config import Platform
+    from gateway.platforms.api_server import listen_address
+    pconfig = load_gateway_config().platforms.get(Platform.API_SERVER)
+    if pconfig is None or not pconfig.enabled:
+        return True
+    host, port = listen_address(pconfig.extra or {})
+    freed = _wait_for_tcp_port_free(host, port, timeout=timeout)
+    if not freed:
+        print(
+            f"⚠ {host}:{port} still accepting connections — "
+            "new api_server may fail to bind"
+        )
+    return freed
+
+
 def _launchd_kickstart(label: str, domain: str) -> None:
     """``launchctl kickstart -k domain/label``; raises so callers own per-label failure accounting."""
     subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=True, timeout=90, **_CAPTURE_TEXT)
@@ -4358,6 +4548,7 @@ def launchd_restart():
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
         # Captured: an unloaded job (3/113/125) is the expected case below, which
         # prints its own ↻ line — and e.stderr feeds the update_cmd failure diagnostic.
+        _wait_for_api_server_port_free()
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90, **_CAPTURE_TEXT)
         _launchd_ok("✓ Service restarted")
     except subprocess.CalledProcessError as e:
@@ -5100,10 +5291,21 @@ def _platform_status(platform: dict) -> str:
     return "partially configured" if any(present) else "not configured"
 
 
+# Operator wording for the out-of-loop watchdog exit reasons stamped by gateway/shutdown_watchdog.py.
+_WATCHDOG_EXIT_REASONS = {
+    "loop_liveness_watchdog": (
+        "event loop stopped dispatching (housekeeping, cron and the kanban dispatcher froze); "
+        f"the liveness watchdog exited with code {GATEWAY_SERVICE_RESTART_EXIT_CODE} for the supervisor to restart it"
+    ),
+    "shutdown_watchdog": "shutdown drain wedged; the shutdown watchdog forced the exit (see logs/gateway-shutdown-watchdog.log)",
+}
+
+
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
-        from gateway.status import read_runtime_status, runtime_status_is_stale, runtime_status_pid_is_live
+        from gateway.status import (
+            read_runtime_status, runtime_status_heartbeat_age_s, runtime_status_is_stale, runtime_status_pid_is_live)
     except Exception:
         return []
 
@@ -5118,22 +5320,38 @@ def _runtime_health_lines() -> list[str]:
         for platform, pdata in (state.get("platforms", {}) or {}).items()
         if pdata.get("state") == "fatal"
     ]
+    # Gate config errors fail safe to "gate off" at load (gateway/config.py); without
+    # these lines an invalid gate block would look identical to no gate config at all.
+    lines.extend(
+        f"⚠ {warning} (gate stayed off)"
+        for warning in (state.get("gate_config_warnings") or [])
+        if isinstance(warning, str)
+    )
 
     # A live-claiming snapshot can outlive an ungracefully killed gateway (taskkill /F, OOM). Past
     # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state.
-    if (
-        gateway_state in ("running", "starting", "draining")
-        and runtime_status_is_stale(state)
-        and not runtime_status_pid_is_live(state)
-    ):
-        lines.append(
-            f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
-            "recorded process is gone (likely an ungraceful shutdown)"
-        )
-        return lines
+    if gateway_state in ("running", "degraded", "starting", "draining") and runtime_status_is_stale(state):
+        if not runtime_status_pid_is_live(state):
+            lines.append(
+                f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
+                "recorded process is gone (likely an ungraceful shutdown)"
+            )
+            return lines
+        # PID alive but housekeeping stopped re-stamping the file: the reporter's "not a crash" case
+        # (#113372) — the process looks 'running' while housekeeping/cron/kanban dispatch are frozen.
+        age = runtime_status_heartbeat_age_s(state)
+        if gateway_state != "draining" and age is not None:
+            lines.append(
+                f"⚠ Gateway heartbeat stale: housekeeping has not refreshed gateway_state.json for {age} s "
+                f"(event loop or housekeeping wedged; pid {state.get('pid')} alive) — restart the gateway"
+            )
 
     if gateway_state == "startup_failed" and exit_reason:
         lines.append(f"⚠ Last startup issue: {exit_reason}")
+    elif gateway_state == "degraded" and exit_reason:
+        # An out-of-loop watchdog hard-exited the process (#113372): the loop stopped dispatching, so
+        # housekeeping/cron/kanban froze together. Without this arm the file would read 'running'.
+        lines.append(f"⚠ Gateway exited degraded: {_WATCHDOG_EXIT_REASONS.get(exit_reason, exit_reason)}")
     elif gateway_state == "draining":
         action = "restart" if state.get("restart_requested") else "shutdown"
         from gateway.status import parse_active_agents
@@ -6014,6 +6232,12 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
         return False
     if not _dispatch_via_service_manager_if_s6("start"):
         return False
+    # This process never reaches a GatewayRunner, so the watchdog armed by hermes_cli.main's argv
+    # fast-path has no other disarm site: the in-process heartbeat below parks with zero CPU and no
+    # progress lease, which the watchdog reads as a startup deadlock and os._exit(75)s the CMD process.
+    from hermes_startup_watchdog import disarm_startup_watchdog
+
+    disarm_startup_watchdog()
     # Breadcrumb on stderr (keep stdout clean for scripts); gateway logs follow via s6-log.
     print(
         "→ gateway is now running under s6 supervision (auto-restart on crash,\n"
@@ -6306,6 +6530,7 @@ def _cmd_start(args):
         if killed:
             print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _wait_for_api_server_port_free()
 
     if is_termux():
         _no_backend_exit("start", "termux")
@@ -6361,6 +6586,7 @@ def _restart_all(system: bool) -> None:
     if total:
         print(f"✓ Stopped {total} gateway process(es) across all profiles")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+    _wait_for_api_server_port_free()
 
     print("Starting gateway...")
     # Even without a registered task, gateway_windows.start() uses the detached launcher.
@@ -6434,6 +6660,7 @@ def _cmd_restart(args):
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+    _wait_for_api_server_port_free()
     print("Starting gateway...")
     run_gateway(verbose=0, force=force)
 

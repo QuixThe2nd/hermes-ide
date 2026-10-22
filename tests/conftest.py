@@ -77,8 +77,14 @@ def _hermes_home_points_at_production(value: str) -> bool:
     if not value:
         return True
     try:
+        # The platform-default root, not a hardcoded ``~/.hermes``: Windows installs live under
+        # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
+        # "custom", pinning import-time paths (``tui_gateway.server._hermes_home``) to the live
+        # install so the state.db guard tripped on every store-touching test (#112692).
+        from hermes_state_guard import _real_platform_state_root
+
         resolved = Path(value).expanduser().resolve()
-        real_root = (Path.home() / ".hermes").resolve()
+        real_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
     except Exception:
         return True
     if resolved == real_root:
@@ -493,14 +499,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # should never perform that implicit network/bootstrap path; Tirith-specific
     # tests opt back in by patching the security config directly.
     monkeypatch.setenv("TIRITH_ENABLED", "false")
-    # Lazy feature deps (tools/lazy_deps.py) pip-install on demand by design —
+    # On-demand extras (pm.sync_venv) install mid-test-run by design —
     # _allow_lazy_installs() fails open for users. Unit tests must never reach
     # pip/the network: with the SDK absent, any agent init whose tool checks
     # touch a lazy feature (e.g. check_tts_requirements →
     # ensure("tts.elevenlabs")) spawns a real pip install — which hangs to the
     # suite timeout under tests that set fake proxy env vars. The kill-switch
     # makes ensure() raise FeatureUnavailable immediately instead.
-    # tests/tools/test_lazy_deps.py overrides this var in both directions.
+    # extras tests override this var in both directions.
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
 
     # 5. Reset plugin singleton so tests don't leak plugins from
@@ -664,6 +670,14 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
     monkeypatch.setattr(
         _mod,
         "_read_claude_code_credentials_from_keychain",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    # The #98334 refresh write also mirrors into the Keychain; keep that out of
+    # the real store in any test that hasn't explicitly opted in.
+    monkeypatch.setattr(
+        _mod,
+        "_mirror_claude_code_credentials_to_keychain",
         lambda *_args, **_kwargs: None,
         raising=False,
     )
@@ -1202,6 +1216,40 @@ def _relocate_basetemp_outside_operator_home(config) -> None:
     )
     factory._given_basetemp = safe
     config.option.basetemp = str(safe)
+
+
+def _pinned_mcp_sdk_version() -> str:
+    """The ``mcp==X`` pin carried by the ``[mcp]`` extra in pyproject.toml."""
+    import tomllib
+
+    with open(Path(__file__).resolve().parent.parent / "pyproject.toml", "rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    for req in extras["mcp"]:
+        if req.startswith("mcp=="):
+            return req.split("==", 1)[1].strip()
+    raise RuntimeError("pyproject.toml [mcp] extra no longer pins mcp==X")
+
+
+@pytest.fixture
+def require_mcp_2_sdk():
+    """Skip tests that pin mcp 2.0-only behaviour when an older SDK is installed.
+
+    The runtime deliberately supports both SDK generations (the dual streamable-client probe in
+    mcp_tool), so a stale ``mcp`` distribution imports fine and presence-only guards let these
+    tests through — where they fail later with opaque SDK errors. Compare the installed
+    distribution against the pin so the outcome is an explicit skip with an actionable reason.
+    """
+    from importlib.metadata import PackageNotFoundError, version as dist_version
+
+    from packaging.version import Version
+
+    pinned = _pinned_mcp_sdk_version()
+    try:
+        found = dist_version("mcp")
+    except PackageNotFoundError:
+        pytest.skip(f"requires mcp=={pinned} (not installed); install the [mcp] extra")
+    if Version(found) < Version(pinned):
+        pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
 
 
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory

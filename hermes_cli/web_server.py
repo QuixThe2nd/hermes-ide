@@ -944,6 +944,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     status as _status_routes,
     actions as _actions_routes,
     audio as _audio_routes,
+    display as _display_routes,
     sessions as _sessions_routes,
     profiles as _profiles_routes,
     memory_providers as _memory_providers_routes,
@@ -967,6 +968,7 @@ app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
 app.include_router(_actions_routes.router)
 app.include_router(_audio_routes.router)
+app.include_router(_display_routes.router)
 app.include_router(_actions_routes.status_router)
 app.include_router(_sessions_routes.list_router)
 app.include_router(_profiles_routes.sessions_router)
@@ -1419,6 +1421,9 @@ def start_server(
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
+    # launcher's preselected profile instead of silently running in the launch scope (#73085).
+    app.state.initial_profile = str(initial_profile or "")
 
     config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
 

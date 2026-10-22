@@ -216,8 +216,15 @@ export function pollUpdateForAggregation({
   return null;
 }
 
-export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
-  const content = { text };
+export function addMentions(payload, mentions) {
+  if (payload && Array.isArray(mentions) && mentions.length > 0) {
+    payload.mentions = mentions;
+  }
+  return payload;
+}
+
+export function buildTextSendPayload(text, { replyTo, messageStore, mentions } = {}) {
+  const content = addMentions({ text }, mentions);
   const options = {};
   const quoted = messageStore?.get(replyTo);
   if (quoted?.key && quoted?.message) {
@@ -246,6 +253,44 @@ export function buildLocationPayload({ latitude, longitude, name, address } = {}
   if (name) location.name = String(name);
   if (address) location.address = String(address);
   return { location };
+}
+
+// Normalise raw numbers or JIDs for group participant updates.
+// Bare/formatted numbers become <digits>@s.whatsapp.net (Australian 10-digit
+// numbers with a leading 0 become 61…). Explicit @s.whatsapp.net or @lid JIDs
+// keep their user part and domain; device qualifiers are stripped via
+// normalizeWhatsAppId, never folded into the user digits. Other @-shaped inputs
+// are rejected instead of coerced into a phone JID. Throws on input with no digits.
+export function normaliseParticipantJid(participant) {
+  const raw = String(participant ?? '').trim();
+  if (!raw) {
+    throw new Error(`participant has no digits: ${participant}`);
+  }
+
+  const explicitJid = normalizeWhatsAppId(raw);
+  const explicitMatch = /^([^:@]+)@(lid|s\.whatsapp\.net)$/i.exec(explicitJid);
+  if (explicitMatch) {
+    const user = explicitMatch[1];
+    const domainToken = explicitMatch[2].toLowerCase();
+    const domain = domainToken === 'lid' ? 'lid' : 's.whatsapp.net';
+    if (!/^\d+$/.test(user)) {
+      throw new Error(`participant has no digits: ${participant}`);
+    }
+    return `${user}@${domain}`;
+  }
+
+  if (raw.includes('@')) {
+    throw new Error(`unsupported participant jid: ${participant}`);
+  }
+
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) {
+    throw new Error(`participant has no digits: ${participant}`);
+  }
+  const number = digits.length === 10 && digits.startsWith('0')
+    ? `61${digits.slice(1)}`
+    : digits;
+  return `${number}@s.whatsapp.net`;
 }
 
 function textFromQuotedMessage(quotedMessage) {

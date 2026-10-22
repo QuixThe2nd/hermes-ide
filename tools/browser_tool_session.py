@@ -4,6 +4,7 @@
 Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt`` (``tools.browser_tool``, resolved per call) — no import cycle.
 """
 
+import base64
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ import shutil
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.browser_tool_origin import origin as _bt
@@ -30,12 +31,15 @@ _CHROMIUM_MISSING_DOCKER_HINT = ("Chromium browser is missing. You're running in
 _CHROMIUM_MISSING_HINT = f"Chromium browser is missing. Install it with: {_CHROMIUM_INSTALL}"
 
 
-def _needs_chromium_sandbox_bypass() -> bool:
-    """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return True
-    if _install._running_in_docker():
-        return True
+# THE Chromium startup flags for a host where its sandbox cannot work; agent-browser gets them through
+# AGENT_BROWSER_ARGS and the Bot Desktop dock's Browser icon (same binary, same profile) through
+# ``tools.bot_desktop.browser.dock_argv`` — one list, or the human's click dies while the agent's works.
+CHROMIUM_SANDBOX_BYPASS_ARGS = ("--no-sandbox", "--disable-dev-shm-usage")
+
+
+def apparmor_restricts_unprivileged_userns() -> bool:
+    """Ubuntu 23.10+ default: unprivileged user namespaces are denied, so a Chromium whose
+    ``chrome_sandbox`` helper is not setuid (Playwright's bundle) dies with 'No usable sandbox'."""
     try:
         with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
             return f.read().strip() == "1"
@@ -43,12 +47,21 @@ def _needs_chromium_sandbox_bypass() -> bool:
         return False
 
 
+def _needs_chromium_sandbox_bypass() -> bool:
+    """True when Chromium needs --no-sandbox to start reliably (root, Docker, AppArmor userns)."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    if _install._running_in_docker():
+        return True
+    return apparmor_restricts_unprivileged_userns()
+
+
 def _apply_chromium_sandbox_args(browser_env: Dict[str, str]) -> None:
     """Add required Chromium sandbox flags without overriding user settings."""
     if ("AGENT_BROWSER_ARGS" not in browser_env and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
             and _needs_chromium_sandbox_bypass()):
         _bt.logger.debug("browser: sandbox bypass needed (root/docker/AppArmor userns) — injecting --no-sandbox")
-        browser_env["AGENT_BROWSER_ARGS"] = "--no-sandbox,--disable-dev-shm-usage"
+        browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
 
 
 def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
@@ -108,6 +121,37 @@ def _agent_browser_argv(browser_cmd: str) -> list:
     return [browser_cmd]
 
 
+def _shim_safe_args(argv0: str, command: str, args: List[str]) -> "tuple[str, List[str], Optional[bytes]]":
+    """``(spawn_command, spawn_args, stdin_payload)`` for one CLI command. Arguments that reach a
+    ``.cmd``/``.bat`` shim (``npx.cmd``, npm's ``agent-browser.cmd`` on Windows) go through cmd.exe,
+    which re-parses the child command line: a newline ends the argument and ``%VAR%`` expands even
+    inside quotes, so a multi-line ``eval`` script arrives as its first line only (``SyntaxError:
+    Unexpected end of input``) and multi-line ``fill`` text is truncated the same way. ``eval``
+    scripts are sent base64-encoded (``agent-browser eval -b``); any other command whose argv carries
+    a newline or ``%`` is wrapped as ``batch`` with the command as a JSON array on stdin — cmd.exe
+    never sees the text (both forms present since the 0.26 floor). Every other spawn gets the raw
+    argv and no stdin."""
+    if not args or not argv0.lower().endswith((".cmd", ".bat")):
+        return command, args, None
+    if command == "eval":
+        script, *rest = args
+        return command, ["--base64", base64.b64encode(script.encode("utf-8")).decode("ascii"), *rest], None
+    if command == "batch" or not any(ch in arg for arg in args for ch in "\r\n%"):
+        return command, args, None
+    return "batch", [], json.dumps([[command, *args]]).encode("utf-8")
+
+
+def _unwrap_batch_result(result: Any, command: str) -> Dict[str, Any]:
+    """``batch --json`` prints ``[{command, success, result, error}]``; reshape the single entry
+    into the ``{success, data, error}`` dict every other command returns. Error dicts pass through."""
+    if not isinstance(result, list):
+        return result
+    if len(result) != 1 or not isinstance(result[0], dict):
+        return {"success": False, "error": f"Unexpected batch output for '{command}': {json.dumps(result)[:300]}"}
+    entry = result[0]
+    return {"success": bool(entry.get("success")), "data": entry.get("result"), "error": entry.get("error")}
+
+
 def _prepare_session_socket_dir(session_name: str) -> str:
     """Create the per-session socket dir (parallel workers must not share one) and claim it
     with our PID BEFORE first use — another hermes process's orphan reaper rmtree's any
@@ -130,8 +174,10 @@ def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     return env
 
 
-def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, tag: str) -> "subprocess.Popen":
-    """Spawn agent-browser with stdout/stderr redirected to ``socket_dir/_std{out,err}_<tag>``.
+def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, tag: str,
+                         stdin_payload: Optional[bytes] = None) -> "subprocess.Popen":
+    """Spawn agent-browser with stdout/stderr redirected to ``socket_dir/_std{out,err}_<tag>``;
+    ``stdin_payload`` (a ``batch`` JSON body) is served from ``_stdin_<tag>`` the same way.
 
     Temp files, not pipes: the CLI forks a daemon that inherits its fds, so pipes never
     see EOF until the timeout. Windows: CREATE_NO_WINDOW only (CREATE_NEW_PROCESS_GROUP
@@ -140,13 +186,20 @@ def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, 
     """
     fds = [os.open(os.path.join(socket_dir, f"_{slot}_{tag}"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
            for slot in ("stdout", "stderr")]
+    stdin: Any = subprocess.DEVNULL
+    if stdin_payload is not None:
+        stdin_path = os.path.join(socket_dir, f"_stdin_{tag}")
+        with open(stdin_path, "wb") as f:
+            f.write(stdin_payload)
+        fds.append(os.open(stdin_path, os.O_RDONLY))
+        stdin = fds[-1]
     try:
         _popen_extra: dict = {}
         if os.name == "nt":
             _si = subprocess.STARTUPINFO()
             _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
             _popen_extra = {"creationflags": windows_hide_flags(), "close_fds": True, "startupinfo": _si}
-        return subprocess.Popen(argv, stdout=fds[0], stderr=fds[1], stdin=subprocess.DEVNULL, env=env, **_popen_extra)
+        return subprocess.Popen(argv, stdout=fds[0], stderr=fds[1], stdin=stdin, env=env, **_popen_extra)
     finally:
         for fd in fds:
             os.close(fd)
@@ -506,7 +559,7 @@ def _browser_command_preflight() -> Dict[str, Any]:
 
 def _spawn_and_collect(
     task_id: str, session_info: Dict[str, Any], cmd_parts: List[str],
-    command: str, engine: str, timeout: int,
+    command: str, engine: str, timeout: int, stdin_payload: Optional[bytes] = None,
 ) -> Dict[str, Any]:
     """Run the prepared agent-browser argv once and interpret its output (handles timeout)."""
     task_socket_dir = _prepare_session_socket_dir(session_info["session_name"])
@@ -527,7 +580,7 @@ def _spawn_and_collect(
 
     stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
     stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
-    proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command)
+    proc = _popen_agent_browser(cmd_parts, browser_env, task_socket_dir, command, stdin_payload)
 
     try:
         proc.wait(timeout=timeout)
@@ -574,6 +627,56 @@ def _run_browser_command(
     except Exception as e:
         _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+    return run_fenced(session_info, lambda: _run_browser_command_unfenced(
+        task_id, command, args, timeout, _engine_override, browser_cmd, session_info))
+
+
+def run_fenced(session_info: Dict[str, Any], fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
+    """Run ``fn`` under the Bot Desktop lease fence when ``session_info`` is the bot's LOCAL browser.
+
+    That browser lives on the Bot Desktop screen, in the same profile a human who took over is typing
+    into. While the human holds the lease every action AND read against it is refused (the page may show
+    their credential); the fence brackets the whole run so a takeover mid-command also voids the result.
+    Cloud / user-supplied CDP sessions are a different browser and run unfenced. This is THE fence: every
+    path that reaches the page (agent-browser subprocess, CDP supervisor fast path) goes through here.
+    """
+    if not _shares_bot_desktop_browser(session_info):
+        return fn()
+    from tools.bot_desktop import lease as _bd_lease
+    try:
+        admitted = _bd_lease.assert_agent_may_act()
+    except _bd_lease.HumanHasControl as e:
+        return {"success": False, "error": str(e), "code": "human_has_control"}
+    result = fn()
+    if _bd_lease.get().epoch != admitted.epoch:
+        return {"success": False, "code": "human_has_control",
+                "error": "A human took over the bot's screen while this browser command ran; its result was "
+                         "discarded. Tell the user what you need; retry once they hand back."}
+    return result
+
+
+def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
+    """Decided by provenance, not transport: every LOCAL session (plain ``--session``, real-profile CDP
+    attach, Lightpanda) is a browser Hermes launched with this profile's Bot Desktop DISPLAY, so it is the
+    screen a human who took over is typing into. Cloud / user-supplied CDP sessions are another browser.
+    A human lease with the screen already gone (dead Xvnc) still fences — computer_use does the same."""
+    if not (session_info.get("features") or {}).get("local"):
+        return False
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
+
+
+def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
+    """DevTools port of a human-started Chromium on the Bot Desktop's shared profile, else ``None``."""
+    if not _shares_bot_desktop_browser(session_info):
+        return None
+    from tools.bot_desktop import browser as _bd_browser
+    return _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()),
+                                                 exclude_session=session_info["session_name"])
+
+
+def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], timeout: int,
+                                  _engine_override: Optional[str], browser_cmd, session_info: Dict[str, Any]) -> Dict[str, Any]:
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)
@@ -587,15 +690,24 @@ def _run_browser_command(
         backend_args = ["--cdp", session_info["cdp_url"]]
     else:
         backend_args = ["--session", session_info["session_name"]]
+        if (bd_port := _bot_desktop_attach_port(session_info)) is not None:
+            # A Chromium already runs on the Bot Desktop's shared profile (the human clicked the dock's
+            # Browser first): a launch would be forwarded into it by Chromium's singleton and die without
+            # a DevTools endpoint, so the session's daemon attaches to the port it advertises instead.
+            # Same daemon (keyed by --session) either way, so snapshot refs stay valid across commands.
+            backend_args += ["--cdp", str(bd_port)]
         if _cloud._is_headed_mode():
             backend_args.append("--headed")
         if engine != "auto" and not _bt._is_camofox_mode():
             backend_args += ["--engine", engine]
 
-    cmd_parts = _agent_browser_argv(browser_cmd) + backend_args + ["--json", command] + args
+    argv = _agent_browser_argv(browser_cmd)
+    spawn_command, spawn_args, stdin_payload = _shim_safe_args(argv[0], command, args)
+    cmd_parts = argv + backend_args + ["--json", spawn_command] + spawn_args
 
     try:
-        result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
+        result = _unwrap_batch_result(
+            _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout, stdin_payload), command)
     except Exception as e:
         _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}

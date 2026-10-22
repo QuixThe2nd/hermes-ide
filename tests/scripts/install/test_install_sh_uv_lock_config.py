@@ -13,8 +13,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SCRIPTS = (
     REPO_ROOT / "scripts" / "install.sh",
-    REPO_ROOT / "setup-hermes.sh",
 )
+# setup-hermes.sh no longer runs uv sync itself: it delegates to
+# `python -m pm.cli install` (hash-verified via pm + uv.lock), so the
+# locked-sync helper contract below applies to scripts/install.sh only.
 _HELPER_START = "run_locked_uv_sync() {\n"
 
 
@@ -37,13 +39,8 @@ def _bash_path(path: Path) -> str:
 
 def test_installers_keep_bootstrap_isolation_but_restore_project_config_for_lock() -> None:
     install_text = INSTALL_SCRIPTS[0].read_text(encoding="utf-8")
-    setup_text = INSTALL_SCRIPTS[1].read_text(encoding="utf-8")
 
     assert "export UV_NO_CONFIG=1" in install_text
-    assert "export UV_NO_CONFIG=1" in setup_text
-    assert _locked_sync_helper(INSTALL_SCRIPTS[0]) == _locked_sync_helper(
-        INSTALL_SCRIPTS[1]
-    )
 
     helper = _locked_sync_helper(INSTALL_SCRIPTS[0])
     assert "unset UV_NO_CONFIG UV_CONFIG_FILE" in helper
@@ -51,7 +48,6 @@ def test_installers_keep_bootstrap_isolation_but_restore_project_config_for_lock
     assert 'export XDG_CONFIG_DIRS="$isolated_uv_config"' in helper
     assert "$UV_CMD sync --extra all --locked" in helper
     assert 'run_locked_uv_sync "$INSTALL_DIR/venv"' in install_text
-    assert 'run_locked_uv_sync "$SCRIPT_DIR/venv"' in setup_text
 
 
 def test_locked_sync_helper_sanitizes_only_its_subprocess(tmp_path: Path) -> None:

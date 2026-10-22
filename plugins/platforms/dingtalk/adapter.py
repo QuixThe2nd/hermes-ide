@@ -103,8 +103,8 @@ def ensure_dingtalk_deps() -> bool:
     if DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.dingtalk", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("dingtalk")
         import dingtalk_stream as _ds, httpx as _httpx  # noqa: E401
         from dingtalk_stream import ChatbotMessage as _CM
         from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
@@ -480,6 +480,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Stream updated content to an AI Card; ``message_id`` is the creating ``send()``'s out_track_id (callers track their own ids so parallel flows on one chat don't interfere)."""
+        if not self.SUPPORTS_MESSAGE_EDITING:
+            return SendResult(success=False, error="AI Cards are not configured for message editing")
         token = await self._get_access_token() if message_id else None
         if not token:
             return SendResult(success=False, error="message_id required" if not message_id else "No access token")

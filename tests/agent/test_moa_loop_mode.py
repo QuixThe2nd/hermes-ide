@@ -603,10 +603,17 @@ def test_references_parallel_progress_reaches_total_with_skipped_slot(monkeypatc
         {"provider": "p3", "model": "m3"},
     ]
     seen: list[tuple[int, int]] = []
+    statuses: dict[int, str] = {}
 
-    def progress(done: int, total: int, label: str) -> None:
+    def progress(
+        done: int, total: int, label: str, index: int = -1, status: str = ""
+    ) -> None:
         seen.append((done, total))
         assert isinstance(label, str) and label
+        # The completing slot is identified by stable index + classified
+        # status — never by parsing the label.
+        assert 0 <= index < len(refs)
+        statuses[index] = status
 
     out = moa_loop._run_references_parallel(
         refs, [{"role": "user", "content": "hi"}], progress_callback=progress
@@ -616,6 +623,13 @@ def test_references_parallel_progress_reaches_total_with_skipped_slot(monkeypatc
     # One event per slot, each incrementing by exactly one, reaching the total.
     assert [done for done, _total in seen] == [1, 2, 3, 4]
     assert {total for _done, total in seen} == {len(refs)}
+    # Every slot reported exactly once, with its truthful per-slot status.
+    assert statuses == {
+        0: "responded",
+        1: "skipped",  # recursion-guarded preset reference
+        2: "responded",
+        3: "responded",
+    }
 
 
 def test_references_parallel_progress_callback_failure_is_fail_soft(monkeypatch):

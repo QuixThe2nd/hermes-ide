@@ -243,6 +243,60 @@ class TestCreateProfile:
         (default_home / "config.yaml").write_text("model: changed")
         assert yaml.safe_load((synced / "config.yaml").read_text())["model"] == "test"
 
+    @staticmethod
+    def _home_with_linked_skill(profile_env):
+        """Source home: ``skills/foo`` links into an ``external_dirs`` root, ``skills/local`` is physical."""
+        default_home = profile_env / ".hermes"
+        external = profile_env / "agents-skills"
+        (external / "foo").mkdir(parents=True)
+        (external / "foo" / "SKILL.md").write_text("# external foo\n", encoding="utf-8")
+        (default_home / "skills" / "local").mkdir(parents=True)
+        (default_home / "skills" / "local" / "SKILL.md").write_text("# local\n", encoding="utf-8")
+        (default_home / "config.yaml").write_text(f"model: test\nskills:\n  external_dirs:\n    - {external}\n")
+        return default_home, external
+
+    @pytest.mark.parametrize("clone_kwargs", [{"clone_config": True}, {"clone_all": True}])
+    def test_clone_recreates_skill_junctions_and_skips_dangling_ones(self, profile_env, monkeypatch, clone_kwargs):
+        """A junctioned skill stays a link (one candidate with its external original), a dangling
+        junction is skipped without failing the clone. The reparse-point predicate and CreateJunction
+        are Windows-only; simulate both so the copy/re-create contract runs on every host."""
+        default_home, external = self._home_with_linked_skill(profile_env)
+        # copytree sees plain directories (what a junction looks like to os.stat on Windows).
+        (default_home / "skills" / "foo").mkdir()
+        (default_home / "skills" / "foo" / "SKILL.md").write_text("# a physical copy would come from here\n")
+        (default_home / "skills" / "gone").mkdir()
+        targets = {str(default_home / "skills" / "foo"): str(external / "foo"),
+                   str(default_home / "skills" / "gone"): str(profile_env / "nowhere")}
+        monkeypatch.setattr(profiles, "_junction_target", lambda path: targets.get(path), raising=False)
+
+        def _create_junction(target, dst):
+            if not os.path.isdir(target):
+                raise OSError("target missing")  # what _winapi.CreateJunction does for a dangling junction
+            os.symlink(target, dst, target_is_directory=True)
+        monkeypatch.setitem(sys.modules, "_winapi", types.SimpleNamespace(CreateJunction=_create_junction))
+
+        clone = create_profile("clone", no_alias=True, **clone_kwargs)
+        foo = clone / "skills" / "foo"
+        assert foo.is_symlink() and foo.resolve() == (external / "foo").resolve()
+        assert (foo / "SKILL.md").read_text(encoding="utf-8") == "# external foo\n"
+        assert (clone / "skills" / "local" / "SKILL.md").is_file()
+        assert not (clone / "skills" / "gone").exists()
+        from tools.skills_tool import _collect_skill_candidates
+        assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
+
+    @pytest.mark.windows_only
+    def test_clone_keeps_real_ntfs_junction(self, profile_env):
+        import _winapi
+        default_home, external = self._home_with_linked_skill(profile_env)
+        _winapi.CreateJunction(str(external / "foo"), str(default_home / "skills" / "foo"))
+
+        clone = create_profile("clone", clone_config=True, no_alias=True)
+        foo = clone / "skills" / "foo"
+        assert os.lstat(foo).st_reparse_tag == profiles.stat.IO_REPARSE_TAG_MOUNT_POINT
+        assert foo.resolve() == (external / "foo").resolve()
+        from tools.skills_tool import _collect_skill_candidates
+        assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
+
     def test_sync_imports_requires_a_clone_source(self, profile_env):
         with pytest.raises(ValueError, match="--sync-imports requires"):
             create_profile("lonely", sync_imports=True, no_alias=True)
@@ -261,6 +315,25 @@ class TestCreateProfile:
         assert (profile_dir / "cron").is_dir()
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
+
+    def test_clone_all_does_not_inherit_the_source_screens_identity(self, profile_env):
+        """launcher.pid / env / lease name the SOURCE's live X server; a clone that inherits them believes it
+        owns that screen and `screen stop` on the clone kills the source's desktop. The browser profile
+        beside them is user data (logins) and must come along."""
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        bd = default_home / "bot-desktop"
+        (bd / "browser-profile" / "Default").mkdir(parents=True)
+        (bd / "browser-profile" / "Default" / "Cookies").write_text("jar")
+        (bd / "launcher.pid").write_text("4242 1.5")
+        (bd / "env").write_text("DISPLAY=:21\nXAUTHORITY=/x\n")
+        (bd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 3}))
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        for runtime_file in ("launcher.pid", "env", "lease.json"):
+            assert not (profile_dir / "bot-desktop" / runtime_file).exists(), runtime_file
+        assert (profile_dir / "bot-desktop" / "browser-profile" / "Default" / "Cookies").read_text() == "jar"
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
     def test_clone_all_skips_special_files(self, profile_env):
@@ -859,6 +932,108 @@ class TestListProfiles:
         names = [p.name for p in profiles]
         assert "alpha" in names
         assert "beta" in names
+
+    def test_lazy_skill_count_never_walks_in_the_polled_request(self, profile_env, monkeypatch):
+        """Polled surfaces (``profiles.list`` RPC, ``GET /api/profiles``) must render
+        ``skill_count`` without any skill-tree walk on the request thread; the count arrives
+        from one background refresh per profile per recheck window (#114041). Control: the
+        synchronous ``list_profiles()`` still walks and reports the fresh number."""
+        import threading
+        import tui_gateway.server as srv
+
+        skills = profile_env / ".hermes" / "skills" / "cat"
+        for i in range(3):
+            (skills / f"s{i}").mkdir(parents=True)
+            (skills / f"s{i}" / "SKILL.md").write_text("# s\n", encoding="utf-8")
+        profiles._SKILL_COUNT_CACHE.clear()
+        profiles._SKILL_COUNT_NEXT_CHECK.clear()
+
+        walks: list[str] = []
+        real_walk = profiles._walk_skill_count
+
+        def spy(skills_dir):
+            walks.append(threading.current_thread().name)
+            return real_walk(skills_dir)
+
+        monkeypatch.setattr(profiles, "_walk_skill_count", spy)
+
+        def _rpc():
+            return srv._methods["profiles.list"](1, {"include_sessions": False})["result"]["profiles"]
+
+        first = _rpc()
+        assert walks == [] or set(walks) == {"hermes-skill-count"}
+        assert first[0]["skill_count"] in (0, 3)  # 0 until the refresh lands, never a stall
+        for t in threading.enumerate():
+            if t.name == "hermes-skill-count":
+                t.join(timeout=10)
+        assert walks == ["hermes-skill-count"]
+        assert _rpc()[0]["skill_count"] == 3
+        assert list_profiles(lazy_skill_count=True)[0].skill_count == 3
+        assert walks == ["hermes-skill-count"]  # a second poll inside the window schedules nothing
+
+        # GET /api/profiles (the router's own ``lazy_skill_count=True`` call) and the per-keystroke
+        # ``@<profile>`` completion must be just as walk-free: same spy, still one background walk.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_routers import profiles as profiles_router
+        from tui_gateway import methods_complete
+        app = FastAPI()
+        app.include_router(profiles_router.router)
+        # Cold cache: a synchronous list_profiles() in either caller would walk on the request thread.
+        profiles._SKILL_COUNT_CACHE.clear()
+        resp = TestClient(app).get("/api/profiles")
+        assert resp.status_code == 200
+        assert resp.json()["profiles"][0]["name"] == "default"
+        assert walks == ["hermes-skill-count"]
+        assert any(i["text"] == "@default" for i in methods_complete._profile_mention_items("def"))
+        assert walks == ["hermes-skill-count"]
+
+        # Control: the detail/CLI path counts synchronously on the caller's thread.
+        profiles._SKILL_COUNT_CACHE.clear()
+        assert list_profiles()[0].skill_count == 3
+        assert walks[-1] == threading.current_thread().name
+
+    def test_skill_count_survives_subtree_vanishing_mid_walk(self, profile_env, monkeypatch):
+        """A skill removed while the tree is being counted (concurrent install/update) must
+        degrade the count, not abort profile enumeration with ``FileNotFoundError``."""
+        skills = profile_env / ".hermes" / "skills" / "cat"
+        for i in range(4):
+            (skills / f"s{i}" / "references").mkdir(parents=True)
+            (skills / f"s{i}" / "SKILL.md").write_text("# s\n", encoding="utf-8")
+        profiles._SKILL_COUNT_CACHE.clear()
+        real_scandir = os.scandir
+
+        class _Listing:
+            """A pre-read scandir result (context manager + iterator, like the real one)."""
+            def __init__(self, entries):
+                self._it = iter(entries)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self._it)
+
+            def close(self):
+                pass
+
+        def vanishing_scandir(path=".", *args, **kwargs):
+            with real_scandir(path, *args, **kwargs) as listing:
+                entries = list(listing)
+            if not isinstance(path, int) and os.fspath(path) == str(skills):
+                # Listed, then gone before the walk descends into it.
+                shutil.rmtree(skills / "s3", ignore_errors=True)
+            return _Listing(entries)
+
+        monkeypatch.setattr(os, "scandir", vanishing_scandir)
+        assert profiles._count_skills(profile_env / ".hermes") == 3
+        assert [p.name for p in list_profiles()] == ["default"]
 
 
 # ===================================================================
@@ -1717,3 +1892,64 @@ class TestCloneAllExcludesRuntimeTrees:
             assert not (clone / name).exists(), name
         assert (clone / "skills" / "greet" / "SKILL.md").is_file()
         assert (clone / "config.yaml").is_file()
+
+
+
+def _live_bot_desktop_launcher(profile_dir: Path):
+    """A synthetic Bot Desktop launcher for ``profile_dir``: its own session (like launcher.sh) with the
+    identity file + env runtime.status() reads, so the profile op sees a running screen."""
+    import subprocess
+    from tools.bot_desktop import runtime
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    sd = profile_dir / "bot-desktop"
+    sd.mkdir()
+    (sd / "launcher.pid").write_text(f"{proc.pid} {runtime._create_time(proc.pid)}", encoding="utf-8")
+    (sd / "env").write_text("DISPLAY=:42\n", encoding="utf-8")
+    return proc
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("op", ["delete", "rename"])
+def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op):
+    """Deleting or renaming a profile stops its gateway, and must stop its Bot Desktop launcher too: the
+    Xvnc/Xfce session otherwise keeps running against a directory that no longer exists (or now belongs to
+    another name), holding its display number and an rfb.sock nobody can reach through status()."""
+    import time
+    from tools.bot_desktop import runtime
+
+    profile_dir = create_profile("coder", no_alias=True)
+    proc = _live_bot_desktop_launcher(profile_dir)
+    try:
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            if op == "delete":
+                delete_profile("coder", yes=True)
+            else:
+                rename_profile("coder", "hacker")
+        # The runtime reaps what it kills (a later gateway holds no Popen for the launcher), so our own
+        # Popen may see the status already collected; liveness, not the exit code, is the contract.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and runtime._pid_alive(proc.pid):
+            time.sleep(0.05)
+        assert not runtime._pid_alive(proc.pid), "the launcher was not stopped by the profile op"
+    finally:
+        proc.kill()
+
+
+@pytest.mark.parametrize("name", ["coder", "default"])
+def test_export_leaves_the_bot_desktop_browser_profile_out(profile_env, tmp_path, name):
+    """bot-desktop/ holds the screen's persistent Chromium profile (Cookies, Login Data: the bot's live web
+    sessions) plus sockets and X state. None of it belongs in an export archive meant to move a persona."""
+    profile_dir = create_profile(name, no_alias=True) if name != "default" else get_profile_dir("default")
+    (profile_dir / "config.yaml").write_text("model: test")
+    cookies = profile_dir / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+    cookies.parent.mkdir(parents=True)
+    cookies.write_bytes(b"SQLite format 3\x00")
+    output = tmp_path / "export" / f"{name}.tar.gz"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    export_profile(name, str(output))
+    with tarfile.open(str(output), "r:gz") as tf:
+        names = tf.getnames()
+    assert f"{name}/config.yaml" in names
+    assert not [n for n in names if "bot-desktop" in n], names

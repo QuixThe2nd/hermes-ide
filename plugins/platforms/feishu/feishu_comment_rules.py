@@ -83,7 +83,7 @@ class _MtimeCache:
         if cached is not None and cached[0] == mtime:
             return cached[1]
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError):
             logger.warning("[Feishu-Rules] Failed to read %s, using empty config", path)

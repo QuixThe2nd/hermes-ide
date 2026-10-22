@@ -56,6 +56,17 @@ def load_llm_usage_proxy_config(raw: Mapping[str, Any] | None = None) -> dict[st
             if isinstance(base, str) and base.strip():
                 upstreams[str(name)] = base.strip()
 
+    # Operator-declared endpoint API capabilities (route name → family list or
+    # comma-separated string). Surfaced RAW here — validation happens at the
+    # boundaries that consume it (plugins.llm_usage_proxy.routing
+    # .parse_capability_overrides / route_family_map), where an unknown family
+    # name fails loudly instead of silently shrinking a route's abilities.
+    capabilities_raw = raw.get("route_capabilities")
+    route_capabilities: dict[str, Any] = {}
+    if isinstance(capabilities_raw, Mapping):
+        for name, families in capabilities_raw.items():
+            route_capabilities[str(name)] = families
+
     return {
         # On by default, per profile: this config section lives in the
         # profile's own HERMES_HOME, so each named profile decides for itself.
@@ -69,6 +80,15 @@ def load_llm_usage_proxy_config(raw: Mapping[str, Any] | None = None) -> dict[st
         # local caller tokens. Off by default — it changes who may call the
         # proxy at all, so flipping it on has to be a decision, not a default.
         "manage_keys": _coerce_bool(raw.get("manage_keys"), False),
+        # Opt-in jev body capture (--capture-jev-bodies on the unit): full
+        # request/response bodies for jev traffic only, in their own table
+        # with bounded retention. Off by default — storing bodies is a
+        # troubleshooting decision, never a silent default.
+        "capture_jev_bodies": _coerce_bool(raw.get("capture_jev_bodies"), False),
+        "route_capabilities": route_capabilities,
+        "owner_endpoint": str(raw.get("owner_endpoint") or "").strip().rstrip("/"),
+        "owner_identity": str(raw.get("owner_identity") or "").strip(),
+        "enforce": _coerce_bool(raw.get("enforce"), False),
     }
 
 
@@ -76,6 +96,22 @@ def manage_keys_enabled(cfg: Mapping[str, Any]) -> bool:
     """Whether a config mapping asks for key-manager mode (never raises)."""
     try:
         return _coerce_bool(cfg.get("manage_keys"), False)
+    except AttributeError:
+        return False
+
+
+def capture_jev_bodies_enabled(cfg: Mapping[str, Any]) -> bool:
+    """Whether a config mapping asks for jev body capture (never raises)."""
+    try:
+        return _coerce_bool(cfg.get("capture_jev_bodies"), False)
+    except AttributeError:
+        return False
+
+
+def enforce_enabled(cfg: Mapping[str, Any]) -> bool:
+    """Whether a config mapping asks for fail-closed routing (never raises)."""
+    try:
+        return _coerce_bool(cfg.get("enforce"), False)
     except AttributeError:
         return False
 

@@ -19,6 +19,7 @@ import re
 import shutil
 import stat as stat_mod
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,6 +104,68 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
     return None
 
 
+# Git quotes the path in single quotes without C-escaping, so it can itself
+# contain apostrophes ("vendor/Bob's-lib/") — hence non-greedy, and the
+# literal tail keeps a pathological path containing the same phrase from
+# matching past its own end.  ``_isolated_git_env`` pins LC_ALL=C, keeping
+# this (English) diagnostic parseable under any parent locale.
+_UNBORN_NESTED_REPO_RE = re.compile(
+    r"^error: '(.+?)' does not have a commit checked out$", re.MULTILINE)
+
+
+def _is_deterministic_staging_failure(stderr: str) -> bool:
+    """True when staging failed for a known permanent condition (unborn nested repo)."""
+    return bool(_UNBORN_NESTED_REPO_RE.search(stderr or ""))
+
+
+def _parse_unborn_nested_repo_paths(stderr: str) -> List[str]:
+    """Relative paths git reported as unborn nested repos in ``stderr``.
+
+    Skips empty paths, absolute paths, any ``..`` component, and paths
+    containing CR or LF.
+    """
+    paths: List[str] = []
+    for raw in _UNBORN_NESTED_REPO_RE.findall(stderr or ""):
+        rel = raw[:-1] if raw.endswith("/") else raw
+        if (
+            not rel
+            or rel.startswith("/")
+            or ".." in rel.split("/")
+            or "\n" in rel
+            or "\r" in rel
+        ):
+            continue
+        if rel not in paths:
+            paths.append(rel)
+    return paths
+
+
+def _unborn_nested_repo_retry_args(
+    stderr: str, excluded: Optional[List[str]] = None,
+) -> Optional[List[str]]:
+    """Retry ``git add`` args excluding embedded repos with no checked-out commit.
+
+    ``git add -A`` is fatal when the work tree contains a nested git
+    repository (or a worktree) whose HEAD is unborn::
+
+        error: 'embedded/' does not have a commit checked out
+        fatal: adding files failed
+
+    Re-running with the offending paths excluded via ``:(exclude,literal)``
+    pathspecs stages the rest of the tree.  ``excluded`` carries paths
+    already excluded in prior retry rounds of the same ``_stage_all`` call.
+    Returns ``None`` when stderr shows a different failure and no paths
+    are excludable.
+    """
+    paths = list(excluded or [])
+    for rel in _parse_unborn_nested_repo_paths(stderr):
+        if rel not in paths:
+            paths.append(rel)
+    if not paths:
+        return None
+    return ["add", "-A", "--", "."] + [f":(exclude,literal){p}" for p in paths]
+
+
 def _normalize_path(path_value: str) -> Path:
     return Path(path_value).expanduser().resolve()
 
@@ -169,9 +232,18 @@ def _hash_file(path: Path) -> Optional[str]:
 
 
 def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
-    """Agent-write ledger ``{abs_path: {"sha256", "ts"}}``: hash of every file the last
-    ``write_file``/``patch`` produced, so restores can tell Hermes' writes from later user edits."""
-    return _read_json_dict(_ledger_path(store, dir_hash)) or {}
+    """Load the agent-write ledger: {relpath: {"sha256": ..., "ts": ...}}.
+
+    The ledger records the content hash of every file the last successful
+    ``write_file`` / ``patch`` produced, so restores can tell "Hermes wrote
+    this" apart from "the user hand-edited this afterwards".
+    """
+    try:
+        raw = _ledger_path(store, dir_hash).read_text(encoding="utf-8-sig")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
@@ -192,10 +264,15 @@ def _isolated_git_env() -> dict:
     """Subprocess env with the user's global/system git config neutralised and inherited GIT_*
     redirects dropped: user settings (``commit.gpgsign``, hooks, credential helpers) would break
     background snapshots or spawn pinentry prompts.  GLOBAL/SYSTEM need git 2.32+; NOSYSTEM covers
-    older git.  HOME is kept — rewriting it would change which ~/.gitconfig is hidden."""
+    older git.  HOME is kept — rewriting it would change which ~/.gitconfig is hidden.  Locale is
+    pinned to C so git's diagnostics stay English (and byte-stable for non-ASCII paths) whatever
+    the parent process inherited — ``_UNBORN_NESTED_REPO_RE`` parses those diagnostics."""
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    for var in ("LANG", "LC_MESSAGES", "LANGUAGE"):
+        env.pop(var, None)
+    env["LC_ALL"] = "C"
     for key in _GIT_LEAK_VARS:
         env.pop(key, None)
     return env
@@ -470,14 +547,30 @@ def _volume_evidence(workdir: Path) -> Dict:
 
 
 def _register_project(store: Path, working_dir: str) -> None:
-    """Upsert ``projects/<hash>.json`` (workdir, last_touch, created_at; ``created_at`` survives).
-    Parent identity is refreshed while the project is observably live (a remount can change it);
-    on a failed probe the recorded identity is kept — stale evidence only makes pruning MORE
-    conservative.  Never raises."""
-    meta_path = _project_meta_path(store, _project_hash(working_dir))
-    meta, now, workdir = _read_json_dict(meta_path) or {}, time.time(), _normalize_path(working_dir)
-    meta.update({"workdir": str(workdir), "last_touch": now, **_volume_evidence(workdir)})
-    meta.setdefault("created_at", now)
+    """Create or update ``projects/<hash>.json`` with workdir + timestamps."""
+    dir_hash = _project_hash(working_dir)
+    meta_path = _project_meta_path(store, dir_hash)
+    now = time.time()
+    meta: Dict = {"workdir": str(_normalize_path(working_dir)),
+                  "created_at": now, "last_touch": now}
+    evidence = _volume_evidence(_normalize_path(working_dir))
+    if evidence:
+        meta.update(evidence)
+    if meta_path.exists():
+        try:
+            existing = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+            if isinstance(existing, dict):
+                meta["created_at"] = existing.get("created_at", now)
+                if not evidence:
+                    # Fresh probe failed — keep the previously recorded
+                    # parent identity rather than dropping it. Stale evidence
+                    # only makes pruning MORE conservative (mismatch => not
+                    # an orphan).
+                    for key in ("workdir_parent_dev", "workdir_parent_ino"):
+                        if key in existing:
+                            meta[key] = existing[key]
+        except (OSError, ValueError):
+            pass
     try:
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         meta_path.write_text(json.dumps(meta), encoding="utf-8")
@@ -485,7 +578,33 @@ def _register_project(store: Path, working_dir: str) -> None:
         logger.debug("Could not write project metadata %s: %s", meta_path, exc)
 
 
-_touch_project = _register_project  # per-turn touch == re-register (same upsert)
+def _touch_project(store: Path, working_dir: str) -> None:
+    """Update last_touch for a project, preserving created_at."""
+    dir_hash = _project_hash(working_dir)
+    meta_path = _project_meta_path(store, dir_hash)
+    if not meta_path.exists():
+        _register_project(store, working_dir)
+        return
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["workdir"] = str(_normalize_path(working_dir))
+    meta["last_touch"] = time.time()
+    meta.setdefault("created_at", meta["last_touch"])
+    # Refresh the parent-directory identity while the project is observably
+    # live — a remount can legitimately change it (new device, new inode).
+    # On probe failure the previous evidence is kept: stale evidence can only
+    # make pruning MORE conservative (mismatch => not an orphan).
+    evidence = _volume_evidence(_normalize_path(working_dir))
+    if evidence:
+        meta.update(evidence)
+    try:
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not update project metadata %s: %s", meta_path, exc)
 
 
 def _list_projects(store: Path) -> List[Dict]:
@@ -493,8 +612,18 @@ def _list_projects(store: Path) -> List[Dict]:
     projects_dir = store / _PROJECTS_DIRNAME
     if not projects_dir.exists():
         return []
-    metas = ((meta_path.stem, _read_json_dict(meta_path)) for meta_path in projects_dir.glob("*.json"))
-    return [{**meta, "_hash": stem} for stem, meta in metas if meta is not None]
+    out: List[Dict] = []
+    for meta_path in projects_dir.glob("*.json"):
+        dir_hash = meta_path.stem
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        meta["_hash"] = dir_hash
+        out.append(meta)
+    return out
 
 
 def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
@@ -507,13 +636,21 @@ def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
             continue
         workdir: Optional[str] = None
         marker_unreadable = False
-        try:
-            if (child / "HERMES_WORKDIR").exists():
-                workdir = (child / "HERMES_WORKDIR").read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            marker_unreadable = True  # present but unreadable: no evidence the project is gone
-        out.append({"path": child, "workdir": workdir, "marker_unreadable": marker_unreadable,
-                    "exists": bool(workdir) and Path(workdir).exists()})
+        wd_marker = child / "HERMES_WORKDIR"
+        if wd_marker.exists():
+            try:
+                workdir = wd_marker.read_text(encoding="utf-8-sig").strip()
+            except (OSError, UnicodeDecodeError):
+                # The marker is there, we just could not read it. That is
+                # not evidence the project is gone — never delete on it.
+                workdir = None
+                marker_unreadable = True
+        out.append({
+            "path": child,
+            "workdir": workdir,
+            "exists": bool(workdir) and Path(workdir).exists(),
+            "marker_unreadable": marker_unreadable,
+        })
     return out
 
 
@@ -578,7 +715,26 @@ def _locate(working_dir: str, commit_hash: str,
 
 def _stage_all(p: _ProjectRefs) -> Tuple[bool, str, str]:
     """``git add -A`` into the per-project index."""
-    return _run_git(["add", "-A"], p.store, p.abs_dir, timeout=_GIT_TIMEOUT * 2, index_file=p.index_file)
+    ok, stdout, err = _run_git(
+        ["add", "-A"], p.store, p.abs_dir, timeout=_GIT_TIMEOUT * 2, index_file=p.index_file,
+    )
+    excluded: List[str] = []
+    while not ok:
+        progressed = False
+        for rel in _parse_unborn_nested_repo_paths(err):
+            if rel not in excluded:
+                excluded.append(rel)
+                progressed = True
+        if not progressed:
+            break
+        retry_args = _unborn_nested_repo_retry_args(err, excluded)
+        if retry_args is None:
+            break
+        ok, stdout, err = _run_git(
+            retry_args, p.store, p.abs_dir,
+            timeout=_GIT_TIMEOUT * 2, index_file=p.index_file,
+        )
+    return ok, stdout, err
 
 
 def _diff_staged_tree(p: _ProjectRefs, *diff_args: List[str]) -> List[Tuple[bool, str, str]]:
@@ -619,11 +775,28 @@ class CheckpointManager:
         self.max_snapshots, self.max_total_size_mb, self.max_file_size_mb = (
             max(1, int(max_snapshots)), max(0, int(max_total_size_mb)), max(0, int(max_file_size_mb)))
         self._checkpointed_dirs: Set[str] = set()
+        # Per-session suppression of directories whose staging
+        # deterministically failed (never retried within this session).
+        self._failed_dirs: Set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
 
     def new_turn(self) -> None:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
+
+    def unsupported_backend_reason(self, task_id: str = "default") -> Optional[str]:
+        """Explain why host checkpoints are off limits for a container-backed session.
+
+        Classifies the task's backend at call time (nothing is remembered), so /rollback is
+        refused before the first mutation and follows a backend change within the session."""
+        from tools.file_tools_paths import container_backend_for_task
+        backend = container_backend_for_task(task_id)
+        if backend is None:
+            return None
+        return (
+            f"Checkpoints are not taken for terminal.backend={backend}: "
+            "file paths belong to the container, not this host."
+        )
 
     # --- public API ---
 
@@ -679,9 +852,27 @@ class CheckpointManager:
         if not self._git_available:
             return False
         abs_dir = str(_normalize_path(working_dir))
-        if abs_dir in {"/", str(Path.home())}:  # never snapshot root/home
+
+        # Skip root, home, and volatile temp roots — staging them would walk
+        # systemd-private-*, other users' scratch, and nested-repo trees.
+        temp_root = tempfile.gettempdir()
+        too_broad = {
+            "/",
+            str(Path.home()),
+            temp_root,
+            str(Path(temp_root).resolve()),
+            "/tmp",
+            "/var/tmp",
+            "/dev/shm",
+            "/run",
+        }
+        if abs_dir in too_broad:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
+
+        if abs_dir in self._failed_dirs:
+            return False
+
         if abs_dir in self._checkpointed_dirs:
             return False
         self._checkpointed_dirs.add(abs_dir)
@@ -871,6 +1062,14 @@ class CheckpointManager:
         # Broad patterns come from the exclude file; oversize paths are dropped post-stage.
         ok, _, err = _stage_all(p)
         if not ok:
+            if _is_deterministic_staging_failure(err):
+                # Unborn nested repo: suppress this directory for the rest of
+                # the session so the failure is not retried on every turn.
+                self._failed_dirs.add(p.abs_dir)
+                logger.debug(
+                    "Checkpoint staging failed in %s; skipping this directory "
+                    "for the rest of the session: %s", working_dir, err,
+                )
             return _step_failed("git-add", err)
         if self.max_file_size_mb > 0:
             self._drop_oversize_from_index(p.store, working_dir, p.index_file)
@@ -1155,14 +1354,23 @@ def maybe_auto_prune_checkpoints(retention_days: int = 7, min_interval_hours: in
             return out
         marker = base / _PRUNE_MARKER_NAME
         now = time.time()
-        try:
-            if marker.exists() and now - float(marker.read_text(encoding="utf-8").strip()) < min_interval_hours * 3600:
-                out["skipped"] = True
-                return out
-        except (OSError, ValueError):
-            pass  # corrupt marker — treat as no prior run
-        # Claim the interval before pruning: callers run on a periodic tick, and a prune that
-        # dies mid-way must cost one skipped day, not a git gc every tick.
+        if marker.exists():
+            try:
+                last_ts = float(marker.read_text(encoding="utf-8-sig").strip())
+                if now - last_ts < min_interval_hours * 3600:
+                    out["skipped"] = True
+                    return out
+            except (OSError, ValueError):
+                pass  # corrupt marker — treat as no prior run
+
+        result = prune_checkpoints(
+            retention_days=retention_days,
+            delete_orphans=delete_orphans,
+            checkpoint_base=base,
+            max_total_size_mb=max_total_size_mb,
+        )
+        out["result"] = result
+
         try:
             marker.write_text(str(now), encoding="utf-8")
         except OSError as exc:

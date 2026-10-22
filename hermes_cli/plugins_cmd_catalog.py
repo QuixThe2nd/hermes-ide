@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.plugin_catalog import (
-    PluginCatalogEntry, entry_capability_summary, filter_entries, find_removed, get_live_catalog_entry,
-    load_catalog_live, load_removed_list, _NAME_RE,
+    PluginCatalogEntry, RemovedEntry, entry_capability_summary, filter_entries, find_removed,
+    get_live_catalog_entry, load_catalog_live, load_removed_list, match_removed, resolved_removed_entries,
+    _NAME_RE,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,11 +94,16 @@ def catalog_annotation(dir_path) -> Optional[str]:
     return f"catalog:{sidecar.get('tier') or 'community'}@{str(sidecar.get('sha') or '')[:8]}"
 
 
-def removed_annotation(name: str, dir_path) -> Optional[str]:
-    """Kill-list reason when an INSTALLED plugin matches by name, catalog name or repo, else ``None``."""
+def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry]) -> Optional[str]:
+    """Kill-list reason when an INSTALLED plugin matches by name, catalog name or repo, else ``None``.
+
+    ``removed_entries`` is required: callers annotating many rows (``plugins list``, the dashboard hub)
+    resolve the kill list once with :func:`plugin_catalog.resolved_removed_entries` and pass it in.
+    Resolving per row cost one live-catalog fetch — one network timeout, offline — per plugin.
+    """
     sidecar = read_catalog_sidecar(dir_path) or {}
     for candidate in (name, sidecar.get("catalog_name"), sidecar.get("repo")):
-        removed = find_removed(str(candidate)) if candidate else None
+        removed = match_removed(str(candidate), removed_entries) if candidate else None
         if removed is not None:
             return removed.reason or "no reason recorded"
     return None
@@ -106,7 +112,7 @@ def removed_annotation(name: str, dir_path) -> Optional[str]:
 # ── Catalog-aware install / update ───────────────────────────────────────────
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
-                          allow_removed: bool = False, scan_decision_cb=None) -> tuple:
+                          allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance sidecar.
     Returns the core's ``(target, manifest, installed_name)``."""
     from hermes_cli.plugins_cmd import _install_plugin_core
@@ -114,7 +120,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
         raise_if_removed(entry.name, entry.repo)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
-        reviewed_pin=entry.sha)
+        reviewed_pin=entry.sha, python_deps=python_deps)
     write_catalog_sidecar(target, entry)
     return target, manifest, installed_name
 
@@ -147,6 +153,9 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console) -> None:
         raise SystemExit(1)
     verb = "updated to" if changed else "is already at catalog pin"
     console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] {verb} {sha[:8]}.")
+    if changed:
+        from hermes_cli.plugins_cmd import _install_python_dependencies
+        _install_python_dependencies(target, console)
 
 
 # ── search / browse / info / validate ────────────────────────────────────────
@@ -230,10 +239,16 @@ def cmd_info(name: str) -> None:
     console.print()
 
 
-def cmd_validate(path: str, as_json: bool = False) -> None:
-    """Catalog-admission validation of a plugin directory (the CI gate); exits 0/1."""
+def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -> None:
+    """Catalog-admission validation of a plugin directory (the CI gate); exits 0/1. *install_deps*
+    installs the declared Python deps first so the capability probe imports what an install would."""
     from hermes_cli.plugin_validate import validate_plugin_dir
     from hermes_cli.plugins_cmd import _console
+    if install_deps:
+        from hermes_cli.plugin_python_deps import install_for_plugin_dir
+        outcome = install_for_plugin_dir(Path(path))
+        if outcome.status in ("failed", "invalid"):
+            print(outcome.message, file=sys.stderr)
     report = validate_plugin_dir(Path(path))
     if as_json:
         print(json.dumps(report.to_dict(), indent=2))

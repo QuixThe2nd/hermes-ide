@@ -1408,6 +1408,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._hook_running_callbacks: Dict[tuple, object] = {}
         self._hook_abandoned: Dict[tuple, set] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
+        self._hook_abandoned: Dict[tuple, Set[tuple]] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
         # (hook_name, id(cb), repr(exc)) already reported at WARNING; identical repeats go to DEBUG.
@@ -1547,7 +1548,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         manifests: List[PluginManifest] = self._collect_directory_manifests()
         # Entry points are separate from the directory scan: the startup MCP probe must not import
         # or register them.
-        ep_manifests = self._scan_entry_points()
+        # An installed directory plugin keeps its identity when its own pip dependency also ships an
+        # entry point under the same name (the pyproject wrapper shape): the directory is what the
+        # user installed, carries catalog provenance and is what update/remove act on.
+        directory_keys = {manifest_key(m) for m in manifests}
+        ep_manifests = [m for m in self._scan_entry_points() if manifest_key(m) not in directory_keys]
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
         disabled = _get_disabled_plugins()
@@ -1890,7 +1895,7 @@ def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], "set[st
         return live(manager)
     if in_flight:
         with suppress(Exception):
-            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8"))
+            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8-sig"))
             values = blob.get(cache_field) if isinstance(blob, dict) else None
             if isinstance(values, list) and all(isinstance(v, str) for v in values):
                 return set(values)

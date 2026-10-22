@@ -316,11 +316,12 @@ class CLISessionMixin:
             return []
         try:
             from hermes_cli.session_listing import query_session_listing
+            from hermes_state_sessions import INTERNAL_LISTING_SOURCES
 
             return query_session_listing(
                 self._session_db, source="cli", current_session_id=self.session_id,
                 include_all_sources=False, include_unnamed=True, limit=limit,
-                exclude_sources=["kanban", "tool"])
+                exclude_sources=list(INTERNAL_LISTING_SOURCES))
         except Exception:
             return []
 
@@ -968,7 +969,8 @@ class CLISessionMixin:
                     print(f"🗜️  Compressing {original_count} messages, focus: \"{request.focus_topic}\"...")
                 else:
                     print(f"🗜️  Compressing {original_count} messages...")
-                result = compress_now(self.agent, self.conversation_history, request)
+                result = compress_now(self.agent, self.conversation_history, request,
+                                      task_id=self.session_id or "default")
                 if result.status != "compressed":
                     for line in render_compress_result(result):
                         print(f"  {line}")

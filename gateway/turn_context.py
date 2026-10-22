@@ -15,12 +15,20 @@ from typing import Any, Callable, List, Optional
 class TurnContext:
     # read-only turn identity / wiring
     source: Any = None
+    # Scheduled heartbeats are proactive work, not replies to the source message that
+    # registered the watch.  Their routine delivery surfaces stay quiet.
+    scheduled_heartbeat: bool = False
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
     _live_status_adapter: Any = None
     _live_status_mode: str = "off"
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
+    # This turn's resolved tool_preview_length (0 = unlimited), snapshotted at turn
+    # start. Rendering reads this turn-owned value, never the process-global
+    # agent.display budget: interleaved turns (Discord unlimited vs a capped
+    # platform) must not change each other's previews mid-turn.
+    tool_preview_max_len: int = 0
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
@@ -65,6 +73,7 @@ class TurnContext:
     persist_user_display_kind: Optional[str] = None
     persist_user_display_metadata: Optional[dict] = None
     user_config: Any = None
+    mute_notification_reply: bool = False
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False

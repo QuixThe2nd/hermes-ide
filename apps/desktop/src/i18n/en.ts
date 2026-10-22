@@ -3,45 +3,6 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
-  catalog: {
-    listView: 'List view',
-    cardView: 'Card view',
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    browse: 'Browse',
-    installed: 'Installed',
-    searchSkills: 'Search skills',
-    searchPlugins: 'Search plugins',
-    allSources: 'All sources',
-    allCategories: 'All categories',
-    about: 'About',
-    author: 'Author',
-    source: 'Source',
-    category: 'Category',
-    version: 'Version',
-    platforms: 'Platforms',
-    requires: 'Requires',
-    tools: 'Tools',
-    hooks: 'Hooks',
-    repository: 'Repository',
-    documentation: 'Documentation',
-    noResults: 'No matches',
-    tryAnother: 'Try another search or clear your filters.',
-    clearFilters: 'Clear filters',
-    loadFailed: 'Could not load the catalog',
-    retry: 'Try again',
-    more: 'Show more',
-    pinned: 'Reviewed commit',
-    snapshotHint: 'From the Hermes catalog. Browsing never contacts source repositories.',
-    installHint: 'Review the source before installing. Changes apply to new sessions.',
-    results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
-    back: 'Back to results'
-  },
   connectors: {
     title: 'Connect your apps',
     connect: 'Connect',
@@ -265,6 +226,8 @@ export const en: Translations = {
     updateReadyTitle: 'Update ready',
     updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
     updateReadyMessageUnknown: 'A new update is available.',
+    updateReadyMessageAppInstaller:
+      'A new version of Hermes is ready. Update now and Windows will finish it for you.',
     seeWhatsNew: "See what's new",
     mcp: {
       needsAuthTitle: 'MCP server needs re-authentication',
@@ -326,9 +289,11 @@ export const en: Translations = {
     },
     native: {
       approvalTitle: 'Approval needed',
+      approvalTitleNamed: session => `Approval needed — ${session}`,
       approveAction: 'Approve',
       rejectAction: 'Reject',
       inputTitle: 'Input needed',
+      inputTitleNamed: session => `Input needed — ${session}`,
       inputBody: 'Hermes is waiting for your response.',
       turnDoneTitle: 'Hermes finished',
       turnDoneBody: '',
@@ -420,7 +385,7 @@ export const en: Translations = {
       'nav.commandCenter': 'Open command center',
       'nav.settings': 'Open settings',
       'nav.profiles': 'Open profiles',
-      'nav.skills': 'Open skills',
+      'nav.capabilities': 'Open skills',
       'nav.messaging': 'Open messaging',
       'nav.artifacts': 'Open artifacts',
       'nav.cron': 'Open scheduled jobs',
@@ -448,6 +413,7 @@ export const en: Translations = {
       'composer.modelPicker': 'Open model picker',
       'composer.voice': 'Start / stop voice conversation',
       'view.toggleSidebar': 'Toggle sessions sidebar',
+      'view.cycleSidebarGrouping': 'Cycle session grouping',
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',
       'view.toggleStatusbar': 'Toggle status bar',
@@ -1490,6 +1456,7 @@ export const en: Translations = {
       updating: 'Updating engine…',
       upToDateTitle: 'Engine up to date',
       upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the configured build.`,
+      updateToast: next => `A newer local engine build (${next}) is available. Update from Settings → Local Models.`,
       activeDetail: 'New chats use this model — it loads when you send your first message',
       activeNotLoaded: 'Loads on your first message',
       loadedPill: 'In memory',
@@ -1688,7 +1655,14 @@ export const en: Translations = {
         selectedTitle: 'Backend selected',
         selectedMessage: backend => `Terminal commands now run via ${backend}. Applies to new sessions.`,
         failedSelect: backend => `Failed to select ${backend}`,
-        needsSetupHint: 'You can select this option now — commands will fail until setup is complete.',
+        needsSetupHint:
+          'This backend is currently selected without full setup — commands will fail until setup is complete.',
+        needsSetupConfirmTitle: backend => `Select ${backend} anyway?`,
+        needsSetupConfirmDescription: detail =>
+          `${detail} Sessions that start after this change will have no terminal or file tools until setup is finished.`,
+        needsSetupConfirmDescriptionGeneric:
+          "This backend isn't set up yet. Sessions that start after this change will have no terminal or file tools until setup is finished.",
+        needsSetupConfirmAction: 'Select anyway',
         unavailableTitle: 'Terminal commands are unavailable',
         unavailableMessage: backend =>
           `Hermes can't run shell commands right now: ${backend} isn't ready. Switch to Local, or finish setting up ${backend} and try again.`,
@@ -1797,6 +1771,9 @@ export const en: Translations = {
       desktopHalfPending: 'copying…',
       desktopHalfPendingTip:
         'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
+      desktopHalfRemote: 'unavailable (remote backend)',
+      desktopHalfRemoteTip:
+        "This package's desktop half is on the remote backend's disk, which this app cannot read. To use it here, run Install from Git with the package's repo URL and the Desktop target checked — that clones the desktop half onto this machine.",
       emptyAll: 'No plugins yet.',
       empty: 'No agent plugins installed for this profile.',
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
@@ -2042,7 +2019,7 @@ export const en: Translations = {
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
-      skills: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
+      capabilities: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
@@ -2620,6 +2597,8 @@ export const en: Translations = {
     emptyTitleSearch: 'No matches',
     last: 'Last:',
     next: 'Next:',
+    // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
+    overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
     manage: 'Manage',
     showRuns: 'Show runs',
@@ -2760,7 +2739,7 @@ export const en: Translations = {
     profileRail: 'Profile rail',
     nav: {
       'new-session': 'New session',
-      skills: 'Capabilities',
+      capabilities: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
       cron: 'Scheduled jobs'
@@ -2861,6 +2840,7 @@ export const en: Translations = {
       enter: label => `Open ${label}`,
       reorder: label => `Reorder ${label}`,
       toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
+      showAllCount: count => `Show all ${count} sessions`,
       back: 'All projects'
     },
     newSessionIn: label => `New session in ${label}`,
@@ -3023,6 +3003,8 @@ export const en: Translations = {
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
+    restoredDraftNotice: 'Restored your unsent message',
+    restoredDraftUndo: 'Undo',
     queueEdit: 'Edit',
     queueSendNext: 'Next',
     queueSteer: 'Steer — redirect the live turn now',
@@ -3286,6 +3268,7 @@ export const en: Translations = {
     unsupportedMessage: 'This version of Hermes can’t update itself from inside the app.',
     connectionRetry:
       "Hermes couldn't reach the update server. Check your internet connection and try again. If you use a remote Hermes, make sure it is online.",
+    gitUnusable: 'Hermes could not run Git on this computer, so it could not check for updates.',
     connectionSettings: 'Connection settings',
     openDownloadPage: 'Open download page',
     latestBody: 'You’re running the latest version.',
@@ -3296,6 +3279,8 @@ export const en: Translations = {
     availableTitleBackend: 'Backend update available',
     availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
     availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
+    availableBodyAppInstaller:
+      'A new version of Hermes is ready. Hermes will close, Windows will finish the update, and Hermes will reopen on its own.',
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
@@ -3313,6 +3298,12 @@ export const en: Translations = {
     applyingBodyBackend:
       'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'This window will close while the update runs, then Hermes reopens on its own.',
+    applyingBodyAppInstaller:
+      'Hermes will close and Windows will finish the update. Hermes will reopen when it’s done — you don’t need to do anything.',
+    applyingCloseAppInstaller: 'This window will close, Windows finishes the update, and Hermes reopens on its own.',
+    checkUnknownTitleAppInstaller: 'Couldn’t check for updates',
+    checkUnknownBodyAppInstaller:
+      'Windows couldn’t check for updates right now. Updates also install automatically when you restart Hermes.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
     blockerTitle: 'Close local previews to update Hermes?',
@@ -3785,6 +3776,8 @@ export const en: Translations = {
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',
     collapseAll: 'Collapse all folders',
+    showIgnored: 'Show gitignored files',
+    hideIgnored: 'Hide gitignored files',
     previewUnavailable: 'Preview unavailable',
     couldNotPreview: path => `Could not preview ${path}`,
     noProjectTitle: 'No project',
@@ -4075,6 +4068,11 @@ export const en: Translations = {
         stream_drop: {
           title: 'The reply was cut off',
           body: 'The connection dropped before the reply finished. Retry to send it again.'
+        },
+        upstream_blocked: {
+          title: 'A firewall blocked the request',
+          body: provider =>
+            `A firewall or CDN in front of ${provider} blocked the request before it reached the model — your key is probably fine. Set a User-Agent header via the provider's extra_headers in Settings, or switch provider, then send your message again.`
         },
         ssl_cert_verification: {
           title: 'Secure connection failed',
@@ -4379,6 +4377,7 @@ export const en: Translations = {
     sudoTitle: 'Administrator password',
     sudoDesc: 'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
     sudoCommandUnavailable: 'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
+    sudoInstallDesc: 'Hermes needs your sudo password to install the Bot Screen packages (TigerVNC + Xfce) on the gateway host. It is sent only to that host.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',

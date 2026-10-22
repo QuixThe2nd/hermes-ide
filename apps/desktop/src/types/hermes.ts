@@ -263,6 +263,8 @@ export interface CustomEndpointValidationResponse {
   models: string[]
   ok: boolean
   reachable: boolean
+  // Base URL that actually served /models (the entered URL or its /v1 variant); persist this one.
+  resolved_base_url?: string
 }
 
 export interface MessagingEnvVarInfo {
@@ -422,6 +424,7 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
+    show_reasoning?: boolean | string
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
@@ -664,6 +667,12 @@ export interface SessionResumeResult {
      *  and before the output it redirected (#73793). Omitted by older
      *  gateways. */
     correction_offsets?: number[]
+    /** Display classification of a synthetic starting prompt (`process_complete`,
+     *  `async_delegation_complete`, `hidden`, …) — the same typing the persisted
+     *  row gets, so a reconnect renders the live prompt like history will
+     *  (#112144). Omitted for genuine user input and by older gateways. */
+    display_kind?: SessionMessage['display_kind']
+    display_metadata?: SessionMessage['display_metadata']
     /** Retained failed turn: the error the terminal frame carried (the frame
      *  itself may have been lost to a disconnect). */
     error?: string
@@ -688,6 +697,15 @@ export interface SessionResumeResult {
     description?: string
     request_id?: string
     smart_denied?: boolean
+  }
+  // The clarify question still blocking this session, if any. Same replay
+  // class as pending_approval: emitted-while-detached prompts are restored
+  // from the resume snapshot instead of being lost until server-side timeout.
+  pending_clarify?: {
+    choices?: null | string[]
+    multi_select?: boolean
+    question?: string
+    request_id?: string
   }
   // Server→client requests still unanswered for this session (clarify, sudo,
   // vault prompts, …). The shared channel re-delivers them to the request
@@ -1270,6 +1288,9 @@ export interface StatusResponse {
   env_path: string
   gateway_exit_reason: string | null
   gateway_health_url: string | null
+  /** Seconds since housekeeping last stamped gateway_state.json; set only when the process is alive
+   *  but the stamp is past the freshness TTL (loop/housekeeping wedged). null when healthy. */
+  gateway_heartbeat_stale_s?: number | null
   gateway_pid: number | null
   gateway_platforms: Record<string, PlatformStatus>
   gateway_running: boolean

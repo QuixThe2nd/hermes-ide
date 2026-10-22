@@ -35,6 +35,10 @@ if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 from hermes_cli import _startup_fast  # noqa: E402
 
+# A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute
+# before the first reader — otherwise it resolves against cwd and scaffolds <cwd>/~/.hermes.
+_startup_fast.normalize_hermes_home_env()
+
 # Early venv self-heal — MUST run before any third-party import below. A prior
 # ``hermes update`` may have left a recovery marker with a core package wiped;
 # the hermes_cli.config/env_loader imports further down would then crash before
@@ -257,7 +261,7 @@ def _config_default_interface_early() -> str:
         if os.path.exists(cfg_path):
             import yaml as _yaml_iface
 
-            with open(cfg_path, encoding="utf-8") as _f:
+            with open(cfg_path, encoding="utf-8-sig") as _f:
                 raw = _yaml_iface.load(
                     _f, Loader=getattr(_yaml_iface, "CSafeLoader", None) or _yaml_iface.SafeLoader
                 ) or {}
@@ -376,6 +380,7 @@ from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.usage import build_usage_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
@@ -388,6 +393,7 @@ from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
 from hermes_cli.subcommands.browser import build_browser_parser
 from hermes_cli.subcommands.secrets import build_secrets_parser
+from hermes_cli.subcommands.codex_runtime import build_codex_runtime_parser
 from hermes_cli.subcommands.egress import build_egress_parser
 from hermes_cli.subcommands.migrate import build_migrate_parser
 from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
@@ -576,6 +582,11 @@ def _apply_profile_override() -> None:
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
         return
+    # The post-swap updater child inherits the home its parent already resolved (possibly the
+    # root for `-p default`); re-reading the sticky active_profile here would finish the update
+    # — receipt, config migration, exit code — in another profile's home.
+    if profile_name is None and hermes_home_env and os.environ.get("HERMES_UPDATE_POST_SWAP") == "1":
+        return
 
     if profile_name is None and not _under_gateway_supervisor(argv) and not _desktop_ssh_backend(argv):
         try:
@@ -583,7 +594,7 @@ def _apply_profile_override() -> None:
 
             active_path = get_default_hermes_root() / "active_profile"
             if active_path.exists():
-                name = active_path.read_text(encoding="utf-8").strip()
+                name = active_path.read_text(encoding="utf-8-sig").strip()
                 if name and name != "default":
                     profile_name = name  # consume stays 0: nothing to strip
         except (UnicodeDecodeError, OSError):
@@ -615,6 +626,14 @@ def _apply_profile_override() -> None:
 
 
 _apply_profile_override()
+# ``-p``/active_profile re-homed the process after hermes_bootstrap ran: re-point the temp vars
+# at THIS home's scratch dir (a user-set TMPDIR is still left alone).
+try:
+    from hermes_constants import export_scratch_tmp_env as _export_scratch_tmp_env
+
+    _export_scratch_tmp_env()
+except Exception:
+    pass  # an unwritable home leaves the system temp dir in place; never block startup
 
 # Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
 # console script staged into the managed bin dir (outside the checkout, since
@@ -806,6 +825,8 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
     _desktop_dist_exists,
     _desktop_macos_relaunchable_fixup,
     _desktop_packaged_executable,
+    _desktop_stamp_path,
+    _install_rebuilt_desktop_app,
 )
 from hermes_cli.main_web_build import (
     _sweep_stale_bytecode_if_checkout_changed,
@@ -822,7 +843,6 @@ from hermes_cli.main_tui_launch import (
     _resolve_use_tui,
     _sync_bundled_skills_quietly,
 )
-
 
 def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
     """Import-safe Termux check for cold-start-sensitive CLI paths."""
@@ -842,7 +862,7 @@ def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
     peel lines and ``#``-prefixed comments / ``# pack-refs with:`` header.
     """
     try:
-        text = (common_dir / "packed-refs").read_text(encoding="utf-8", errors="replace")
+        text = (common_dir / "packed-refs").read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return None
     for line in text.splitlines():
@@ -859,7 +879,7 @@ def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
     git_dir = repo_root / ".git"
     try:
         if git_dir.is_file():
-            for line in git_dir.read_text(encoding="utf-8", errors="replace").splitlines():
+            for line in git_dir.read_text(encoding="utf-8-sig", errors="replace").splitlines():
                 key, _, value = line.partition(":")
                 if key.strip() == "gitdir" and value.strip():
                     git_dir = (repo_root / value.strip()).resolve()
@@ -871,12 +891,12 @@ def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
         commondir_file = git_dir / "commondir"
         if commondir_file.exists():
             try:
-                rel = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+                rel = commondir_file.read_text(encoding="utf-8-sig", errors="replace").strip()
                 if rel:
                     common_dir = (git_dir / rel).resolve()
             except OSError:
                 pass
-        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+        head = (git_dir / "HEAD").read_text(encoding="utf-8-sig", errors="replace").strip()
         if head.startswith("ref:"):
             ref = head.split(":", 1)[1].strip()
             # Loose refs may live in the worktree gitdir OR the common dir
@@ -885,7 +905,7 @@ def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
             for candidate in (git_dir, common_dir):
                 ref_file = candidate / ref
                 if ref_file.exists():
-                    return f"git:{ref}:{ref_file.read_text(encoding='utf-8', errors='replace').strip()}"
+                    return f"git:{ref}:{ref_file.read_text(encoding='utf-8-sig', errors='replace').strip()}"
             packed_sha = _read_packed_ref(common_dir, ref)
             if packed_sha:
                 return f"git:{ref}:{packed_sha}"
@@ -898,60 +918,11 @@ def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
         return None
 
 
-def _termux_bundled_skills_fingerprint() -> str:
-    """Cheap invalidation key for Termux bundled-skill startup sync."""
-    git_fp = _read_git_revision_fingerprint(PROJECT_ROOT)
-    if git_fp:
-        return git_fp
-    skills_dir = PROJECT_ROOT / "skills"
-    try:
-        stat = skills_dir.stat()
-        return f"skills:{__version__}:{__release_date__}:{stat.st_mtime_ns}:{stat.st_size}"
-    except OSError:
-        return f"skills:{__version__}:{__release_date__}:missing"
-
-
-def _termux_bundled_skills_stamp_path() -> Path:
-    return get_hermes_home() / "skills" / ".termux_bundled_sync_stamp"
-
-
-def _termux_bundled_skills_sync_needed() -> bool:
-    if not _is_termux_startup_environment():
-        return True
-    if os.environ.get("HERMES_TERMUX_FORCE_SKILLS_SYNC") == "1":
-        return True
-    try:
-        stamp = _termux_bundled_skills_stamp_path()
-        return stamp.read_text(encoding="utf-8").strip() != _termux_bundled_skills_fingerprint()
-    except OSError:
-        return True
-
-
-def _mark_termux_bundled_skills_synced() -> None:
-    if not _is_termux_startup_environment():
-        return
-    try:
-        stamp = _termux_bundled_skills_stamp_path()
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(_termux_bundled_skills_fingerprint() + "\n", encoding="utf-8")
-    except OSError:
-        pass
-
-
 def _sync_bundled_skills_for_startup() -> bool:
-    """Sync bundled skills, but skip unchanged Termux checkouts cheaply.
-
-    Hashing every bundled skill is safe but expensive on older Android
-    storage. The git/ref stamp keeps post-update correctness: a changed
-    checkout revision forces one real sync, then later starts skip it.
-    """
-    if _is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
-        return False
-
+    """Sync the bundled skills into the user skills directory."""
     from tools.skills_sync import sync_skills
 
     sync_skills(quiet=True)
-    _mark_termux_bundled_skills_synced()
     return True
 
 
@@ -966,7 +937,7 @@ def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
     if not env_file.exists():
         return False
     try:
-        for line in env_file.read_text(encoding="utf-8").splitlines():
+        for line in env_file.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line.startswith("#") or "=" not in line:
                 continue
@@ -1248,6 +1219,10 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     global MRU. Falls back to the unscoped MRU when no session matches the
     current workspace, preserving the old behaviour for fresh directories.
     """
+    # A finite `hermes -z`/`chat -q` run is CLI history too: `hermes -z … --resume latest` chains on it.
+    if source == "cli":
+        from run_agent import CLI_FAMILY_SOURCES
+        source = sorted(CLI_FAMILY_SOURCES)
     with _session_db() as db:
         ws_key = _resolve_workspace_key()
         if ws_key:
@@ -1716,7 +1691,7 @@ def _read_query_file(args) -> None:
         if _qfile == "-":
             args.query = sys.stdin.read()
         else:
-            with open(_qfile, "r", encoding="utf-8", errors="replace") as _fh:
+            with open(_qfile, "r", encoding="utf-8-sig", errors="replace") as _fh:
                 args.query = _fh.read()
     except OSError as _e:
         print(f"Error: cannot read --query-file {_qfile}: {_e}", file=sys.stderr)
@@ -1770,6 +1745,9 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
+        # Explicit flag, not a label inherited from a parent TUI/Desktop session — one-shot
+        # runs must keep it (see run_agent._session_source_for_agent).
+        os.environ["HERMES_SESSION_SOURCE_EXPLICIT"] = "1"
 
     _pin_kanban_board_env()
     _confirm_startup_expensive_model_override(args)
@@ -1845,7 +1823,7 @@ def _forward_command(name: str, module: str, attr: str, *, forward_return: bool 
 
     Imports at CALL time so fast paths never pay for it and
     ``patch("<module>.<attr>")`` keeps intercepting. ``forward_return``
-    surfaces the return code to ``main()`` (only kanban/project propagate).
+    surfaces the return code to ``main()`` (kanban/project/mcp propagate).
     """
 
     def _cmd(args):
@@ -1879,7 +1857,7 @@ cmd_gateway_enroll = _forward_command("cmd_gateway_enroll", "hermes_cli.gateway_
 cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", "cmd_prompt_size", doc='Show a byte/char breakdown of the system prompt + tool schemas.')
 cmd_pairing = _forward_command("cmd_pairing", "hermes_cli.pairing", "pairing_command")
 cmd_plugins = _forward_command("cmd_plugins", "hermes_cli.plugins_cmd", "plugins_command")
-cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command")
+cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command", forward_return=True)
 cmd_claw = _forward_command("cmd_claw", "hermes_cli.claw", "claw_command")
 cmd_import_agent = _forward_command("cmd_import_agent", "hermes_cli.agent_import", "import_agent_command")
 
@@ -2127,10 +2105,10 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_is_fork",
         "_orphaned_desktop_backend_pids", "_park_stashed_changes",
         "_pause_windows_gateways_for_update", "_print_parked_branch_kept_notice",
-        "_print_parked_branch_skip_warning", "_purge_stale_hermes_modules",
+        "_print_parked_branch_skip_warning", "_reapply_plugin_python_dependencies",
         "_refresh_active_lazy_features", "_refresh_active_memory_provider_dependencies",
         "_refresh_bootstrap_cache_scripts", "_refresh_windows_gateway_launchers",
-        "_relaunch_stopped_serves", "_reload_updated_runtime_modules",
+        "_relaunch_stopped_serves",
         "_restore_active_tool_dependencies", "_restore_stashed_changes",
         "_resume_windows_gateways_after_update", "_run_logged_subprocess", "_run_pre_update_backup",
         "_stash_local_changes_if_needed", "_stop_process_trees", "_sync_with_upstream_if_needed",
@@ -2206,7 +2184,10 @@ def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     from hermes_cli import backup
 
-    (backup.run_quick_backup if getattr(args, "quick", False) else backup.run_backup)(args)
+    if getattr(args, "quick", False):
+        backup.run_quick_backup(args)
+    elif not backup.run_backup(args):
+        raise SystemExit(1)  # archive written but incomplete: never shell-success for a timer
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
@@ -2354,6 +2335,15 @@ def cmd_update(args):
         describe_holder,
     )
 
+    # A child spawned off hermes.exe: the parent still holds the shim (and the venv python)
+    # until it exits — nothing below may scan holders, pause gateways or rename shims before.
+    # Waiting BEFORE the lock matters: the parent's exit releases ITS marker, so a child that
+    # merely ran under the parent's claim would finish the install with no lock at all
+    # (#101600); once the parent is gone the child claims a marker of its own.
+    from hermes_cli.update_handoff import wait_for_shim_parent_exit
+
+    wait_for_shim_parent_exit()
+
     _update_lock = UpdateLock()
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
@@ -2417,7 +2407,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve",
         "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
-        "memory", "dump", "debug", "backup", "import", "completion", "logs",
+        "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -2456,8 +2446,13 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
         _report_dashboard_status()
         sys.exit(0)  # status is informational, always 0
     if getattr(args, "stop", False):
-        if not _find_stale_dashboard_pids():
-            print("No hermes dashboard processes running.")
+        # Scoped to the invoking home (`-p` applied by _apply_profile_override): another
+        # install's or profile's backend on this machine is never a target (#113978).
+        from hermes_constants import get_hermes_home
+
+        own_home = str(get_hermes_home())
+        if not _find_stale_dashboard_pids(scope_home=own_home):
+            print("No hermes dashboard processes running for this profile.")
             sys.exit(0)
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`;
         # it prints outcomes itself. Exit 1 only if a pid was unkillable — judged
@@ -2465,7 +2460,7 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
         # its backend on a fresh PID, which is not a failed stop.
         from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 
-        result = _kill_stale_dashboard_processes(reason="requested via --stop")
+        result = _kill_stale_dashboard_processes(reason="requested via --stop", scope_home=own_home)
         sys.exit(1 if result["failed"] else 0)
 
 
@@ -2694,19 +2689,19 @@ def cmd_console(args):
 # entry would let a plugin command silently fail to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
+        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "pm", "portal", "profile",
         "project", "proxy",
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
-        "vault",
+        "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
@@ -3278,6 +3273,7 @@ def _build_cli_parser():
     # OUTBOUND egress firewall; ``hermes proxy`` (gateway group) is the INBOUND one.
     build_egress_parser(subparsers)
     build_migrate_parser(subparsers)
+    build_codex_runtime_parser(subparsers)
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
@@ -3348,6 +3344,7 @@ def _build_cli_parser():
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
     build_sessions_parser(subparsers, cmd_sessions=_cmd_sessions_lazy)
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
+    build_usage_parser(subparsers)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
     build_vault_parser(subparsers)
@@ -3466,6 +3463,33 @@ def main():
         return
     if _try_fast_chat_launch():
         return
+
+    # pm owns its own tiny argparse tree; dispatch before the heavy parser.
+    if sys.argv[1:2] == ["pm"]:
+        from pm.cli import main as pm_main
+
+        sys.exit(pm_main(sys.argv[2:]))
+
+    # The startup check: O(1) stamp comparisons, no network, no installs.
+    # One loud line when the install is damaged; never blocks the command.
+    # Then provision: prepend the store's tool dirs to PATH so reactive
+    # which('git'|'bash'|'ffmpeg'|...) resolves the bundled binaries.
+    try:
+        import pm
+
+        pm.adopt()
+        problems = pm.check()
+        if problems:
+            print(
+                f"⚠ install out of sync ({'; '.join(problems)}) — run `hermes pm install`",
+                file=sys.stderr,
+            )
+        else:
+            pm.activate()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug("pm startup check failed", exc_info=True)
 
     parser, subparsers = _build_cli_parser()
 

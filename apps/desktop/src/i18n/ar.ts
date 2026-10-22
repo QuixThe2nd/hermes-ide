@@ -1,45 +1,7 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
-  catalog: {
-    listView: 'عرض القائمة',
-    cardView: 'عرض البطاقات',
-    installTitle: (name: string) => `تثبيت «${name}»؟`,
-    installDescription: 'ستتوفر هذه المهارة في الجلسات الجديدة. ثبّت من المصادر التي تثق بها فقط.',
-    installTo: 'التثبيت في',
-    thisComputer: 'هذا الكمبيوتر',
-    installing: 'جارٍ التثبيت…',
-    installComplete: (name: string) => `تم تثبيت «${name}»`,
-    destinationChanged: 'تغيرت وجهة التثبيت. أغلق هذا الحوار وافتح رابط التثبيت مجددًا.',
-    browse: 'تصفح',
-    installed: 'المثبتة',
-    searchSkills: 'البحث في المهارات',
-    searchPlugins: 'البحث في الإضافات',
-    allSources: 'كل المصادر',
-    allCategories: 'كل الفئات',
-    about: 'نبذة',
-    author: 'المؤلف',
-    source: 'المصدر',
-    category: 'الفئة',
-    version: 'الإصدار',
-    platforms: 'المنصات',
-    requires: 'المتطلبات',
-    tools: 'الأدوات',
-    hooks: 'الخطافات',
-    repository: 'المستودع',
-    documentation: 'التوثيق',
-    noResults: 'لا توجد نتائج مطابقة',
-    tryAnother: 'جرّب بحثًا آخر أو امسح عوامل التصفية.',
-    clearFilters: 'مسح عوامل التصفية',
-    loadFailed: 'تعذر تحميل الكتالوج',
-    retry: 'حاول مرة أخرى',
-    more: 'عرض المزيد',
-    pinned: 'التزام تمت مراجعته',
-    snapshotHint: 'من كتالوج Hermes. لا يتصل التصفح بمستودعات المصدر مطلقًا.',
-    installHint: 'راجع المصدر قبل التثبيت. تسري التغييرات على الجلسات الجديدة.',
-    results: (count: number) => `النتائج: ${count.toLocaleString('ar')}`,
-    back: 'العودة إلى النتائج'
-  },
+
   sessionImport: {
     title: 'المتابعة من تطبيق آخر',
     subtitle: 'انقل محادثة إلى Hermes وتابع من حيث توقفت.',
@@ -220,6 +182,8 @@ export const ar = defineLocale({
     updateReadyTitle: 'التحديث جاهز',
     updateReadyMessage: count => `${count} تغيير جديد متاح.`,
     updateReadyMessageUnknown: 'يتوفر تحديث جديد.',
+    updateReadyMessageAppInstaller:
+      'إصدار جديد من Hermes جاهز. حدّث الآن وسيتولى Windows إكمال التحديث.',
     seeWhatsNew: 'عرض الجديد',
     mcp: {
       needsAuthTitle: 'خادم MCP يحتاج إلى إعادة المصادقة',
@@ -265,9 +229,11 @@ export const ar = defineLocale({
     },
     native: {
       approvalTitle: 'مطلوب موافقة',
+      approvalTitleNamed: session => `مطلوب موافقة — ${session}`,
       approveAction: 'موافقة',
       rejectAction: 'رفض',
       inputTitle: 'مطلوب إدخال',
+      inputTitleNamed: session => `مطلوب إدخال — ${session}`,
       inputBody: 'ينتظر Hermes ردّك.',
       turnDoneTitle: 'أنهى Hermes',
       turnDoneBody: '',
@@ -321,7 +287,7 @@ export const ar = defineLocale({
       'nav.commandCenter': 'فتح مركز الأوامر',
       'nav.settings': 'فتح الإعدادات',
       'nav.profiles': 'فتح الملفات الشخصية',
-      'nav.skills': 'فتح المهارات',
+      'nav.capabilities': 'فتح المهارات',
       'nav.messaging': 'فتح المراسلة',
       'nav.artifacts': 'فتح العناصر',
       'nav.cron': 'فتح المهام المجدولة',
@@ -697,7 +663,7 @@ export const ar = defineLocale({
     },
     fieldLabels: {
       model: 'النموذج الافتراضي',
-      modelContextLength: 'نافذة السياق',
+      modelContextLength: 'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بالرموز). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
       fallbackProviders: 'النماذج الاحتياطية',
       toolsets: 'مجموعات الأدوات المفعلة',
       timezone: 'المنطقة الزمنية',
@@ -776,6 +742,7 @@ export const ar = defineLocale({
       'compression.codexGpt55Autoraise': 'الرفع التلقائي لضغط Codex',
       'compression.targetRatio': 'هدف الضغط',
       'compression.protectLastN': 'الرسائل الأخيرة المحمية',
+      'auxiliary.compression.timeout': 'مهلة نموذج الضغط (ثانية)',
       'delegation.model': 'نموذج الوكيل الفرعي',
       'delegation.provider': 'مزود الوكيل الفرعي',
       'delegation.maxIterations': 'حد دورات الوكيل الفرعي',
@@ -811,6 +778,7 @@ export const ar = defineLocale({
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
       'compression.codexGpt55Autoraise': 'يرفع عتبة الضغط إلى 85٪ لنماذج ChatGPT Codex OAuth المدعومة.',
+      'auxiliary.compression.timeout': 'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
       'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',
       'tts.xai.voiceId': 'معرف صوت xAI مثل eve أو معرف صوت مخصص.',
       'tts.xai.language': 'رمز لغة النطق، مثل en.',
@@ -1221,7 +1189,13 @@ export const ar = defineLocale({
     toolsetEnabled: 'تم تفعيل مجموعة الأدوات',
     toolsetDisabled: 'تم تعطيل مجموعة الأدوات',
     appliesToNewSessions: name => `ينطبق على الجلسات الجديدة في ${name}`,
-    failedToUpdate: name => `فشل تحديث ${name}`
+    failedToUpdate: name => `فشل تحديث ${name}`,
+    hub: {
+      installBlockedTitle: name => `تعذّر تثبيت ${name}`,
+      installBlockedMessage: (findings, unverified) =>
+        `أبلغت عملية الفحص الأمني عن ${findings > 0 ? `${findings} ${findings === 1 ? 'عنصر' : 'عناصر'}` : 'أنماط خطرة'} للمراجعة${unverified ? '، والمهارة من مصدر غير موثّق' : ''}. اقرأ نتائج الفحص قبل أن تقرر ما إذا كنت تثق بالمؤلف.`,
+      viewScan: 'عرض الفحص',
+    }
   },
   agents: {
     extendedTranscript: 'سجل موسّع',
@@ -1356,7 +1330,7 @@ export const ar = defineLocale({
         title: 'الإعدادات',
         detail: 'تكوين Hermes desktop'
       },
-      skills: {
+      capabilities: {
         title: 'المهارات والأدوات',
         detail: 'تفعيل المهارات ومجموعات الأدوات والمزوّدين'
       },
@@ -1949,7 +1923,7 @@ export const ar = defineLocale({
     },
     nav: {
       'new-session': 'جلسة جديدة',
-      skills: 'المهارات',
+      capabilities: 'المهارات',
       messaging: 'المراسلة',
       artifacts: 'العناصر',
       chat: 'المحادثة',
@@ -2043,6 +2017,7 @@ export const ar = defineLocale({
       enter: label => `فتح ${label}`,
       reorder: label => `إعادة ترتيب ${label}`,
       toggle: (label, open) => `${open ? 'إظهار' : 'إخفاء'} جلسات ${label}`,
+      showAllCount: count => `إظهار كل الجلسات (${count})`,
       back: 'كل المشاريع'
     },
     newSessionIn: label => `جلسة جديدة في ${label}`,
@@ -2158,6 +2133,8 @@ export const ar = defineLocale({
     attachments: count => `${count} مرفق`,
     editingInComposer: 'جار التحرير في صندوق الكتابة',
     editingQueuedInComposer: 'جار تحرير رسالة في الطابور',
+    restoredDraftNotice: 'تمت استعادة رسالتك غير المُرسلة',
+    restoredDraftUndo: 'تراجع',
     queueEdit: 'تحرير الرسالة المجدولة',
     queueSendNext: 'إرسالها تاليا',
     queueSteer: 'توجيه — تصحيح الدور الجاري فورا',
@@ -2377,6 +2354,7 @@ export const ar = defineLocale({
     notAvailableTitle: 'التحديث غير متاح',
     unsupportedMessage: 'لا يمكن لهذا الإصدار من Hermes تحديث نفسه من داخل التطبيق.',
     connectionRetry: 'تحقق من اتصالك وأعد المحاولة.',
+    gitUnusable: 'لم يتمكن Hermes من تشغيل Git على هذا الجهاز، لذا لم يتمكن من التحقق من التحديثات.',
     latestBody: 'أنت تستخدم أحدث إصدار.',
     latestBodyBackend: 'الواجهة الخلفية تعمل بأحدث إصدار.',
     allSetTitle: 'كل شيء جاهز',
@@ -2385,6 +2363,8 @@ export const ar = defineLocale({
     availableTitleBackend: 'يتوفر تحديث للواجهة الخلفية',
     availableBodyBackend: 'إصدار أحدث من واجهة Hermes الخلفية المتصلة جاهز للتثبيت.',
     availableBodyNoChangelog: 'إصدار أحدث جاهز. ملاحظات الإصدار غير متاحة لنوع التثبيت هذا.',
+    availableBodyAppInstaller:
+      'إصدار جديد من Hermes جاهز. سيُغلق Hermes ويتولى Windows إكمال التحديث ثم يعيد فتح Hermes تلقائيًا.',
     updateNow: 'التحديث الآن',
     maybeLater: 'ربما لاحقا',
     moreChanges: count => `+ ${count} تغيير${count === 1 ? '' : 'ات'} إضافي مُضمَّن.`,
@@ -2402,6 +2382,13 @@ export const ar = defineLocale({
     applyingBodyBackend:
       'تطبّق الواجهة الخلفية البعيدة التحديث وستعيد التشغيل. يعيد Hermes الاتصال تلقائيا عند عودتها.',
     applyingClose: 'ستُغلق هذه النافذة أثناء تشغيل التحديث، ثم يعيد Hermes فتح نفسه تلقائيا.',
+    applyingBodyAppInstaller:
+      'سيُغلق Hermes ويتولى Windows إكمال التحديث. سيعود Hermes للفتح عند الانتهاء — لا تحتاج إلى فعل أي شيء.',
+    applyingCloseAppInstaller:
+      'ستُغلق هذه النافذة، ويتولى Windows إكمال التحديث، ثم يعيد Hermes فتح نفسه تلقائيًا.',
+    checkUnknownTitleAppInstaller: 'تعذّر التحقق من التحديثات',
+    checkUnknownBodyAppInstaller:
+      'لم يتمكن Windows من التحقق من التحديثات الآن. كما تُثبَّت التحديثات تلقائيًا عند إعادة تشغيل Hermes.',
     errorTitle: 'لم يكتمل التحديث',
     errorBody: 'لا داعي للقلق — لم يُفقد شيء. يمكنك إعادة المحاولة الآن.',
     blockerTitle: 'إغلاق المعاينات المحلية لتحديث Hermes؟',
@@ -2684,6 +2671,8 @@ export const ar = defineLocale({
     openFolder: 'فتح مجلد',
     refreshTree: 'تحديث الشجرة',
     collapseAll: 'طي الكل',
+    showIgnored: 'إظهار الملفات المتجاهلة في git',
+    hideIgnored: 'إخفاء الملفات المتجاهلة في git',
     previewUnavailable: 'المعاينة غير متاحة',
     couldNotPreview: path => `تعذرت معاينة ${path}`,
     noProjectTitle: 'لا يوجد مشروع',
@@ -3147,6 +3136,7 @@ export const ar = defineLocale({
     sudoTitle: 'مطلوب sudo',
     sudoDesc: 'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
     sudoCommandUnavailable: 'لم يقدّم هذا الوكيل الأمر. ألغِ الطلب إذا لم تتمكن من التحقق منه في المحادثة.',
+    sudoInstallDesc: 'يحتاج Hermes إلى كلمة مرور sudo لتثبيت حزم Bot Screen (TigerVNC + Xfce) على مضيف البوابة. تُرسل إلى ذلك المضيف فقط.',
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',
     secretDesc: 'أدخل القيمة المطلوبة لمتابعة المهمة.',

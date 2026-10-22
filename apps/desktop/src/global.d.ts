@@ -52,8 +52,10 @@ declare global {
       // remote cache was dropped.
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       // Keepalive: mark a pool profile backend as recently used so the idle
-      // reaper spares it while its chat is active.
-      touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      // reaper spares it while its chat is active. `activeTurn` reports whether
+      // a prompt turn leases the backend (early skip for cooperative
+      // retirement; the backend probe is the proof).
+      touchBackend: (profile?: string | null, options?: { activeTurn?: boolean }) => Promise<{ ok: boolean }>
       // Pool sizing (Settings → Advanced): device-local, live-applied by the
       // main process. get resolves the limits currently in force; set applies
       // (and persists) new ones, evicting/reaping to converge immediately.
@@ -91,6 +93,14 @@ declare global {
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
       claimAmbientCue: (key: string) => Promise<boolean>
+      // Renderer-drawn min/max/close for WSLg (`custom` true there only), sent
+      // over hermes:window-control; Electron/OS chrome owns them elsewhere.
+      windowControls: {
+        custom: boolean
+        minimize: () => void
+        toggleMaximize: () => void
+        close: () => void
+      }
       wakeIndicator?: {
         getState: () => Promise<WakeIndicatorState>
         setState: (state: WakeIndicatorState) => void
@@ -383,6 +393,7 @@ declare global {
         ) => Promise<{ code: null | string; error: null | string; iss: null | string; state: null | string }>
         cancel: (id: string) => Promise<boolean>
       }
+      onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       /** A site's icon as a data URL, or '' when it has none we can read.
@@ -410,6 +421,8 @@ declare global {
         message: string
         componentStack: string
       }) => void
+      /** Append one raw line to desktop.log (fire-and-forget, notifyError path). */
+      logLine?: (line: string) => void
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
@@ -481,10 +494,6 @@ declare global {
           // number — for badging a list of sessions in one request instead of
           // one `pr view` per checkout.
           prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<HermesRepoPullRequests>
-          // A pasted PR review/issue comment URL resolved to its structured
-          // context (author, body, file + line anchor, diff hunk). Null when
-          // gh can't answer — the paste stays a plain URL.
-          fetchPrComment: (repoPath: string, url: string) => Promise<HermesPrComment | null>
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
@@ -546,6 +555,9 @@ declare global {
       ) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
+      // Cooperative pool retirement: main is stopping the pooled backend under
+      // `poolKey` for a foreground open. The renderer parks that scope.
+      onPoolBackendRetiring?: (callback: (payload: { poolKey: string }) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
       onConnectionApplied?: (callback: () => void) => () => void
@@ -649,6 +661,22 @@ export interface DesktopVersionInfo {
   /** True when the bundle on disk is newer than the running process — a plain
    *  app restart (no rebuild, no installer) is enough to load it. */
   bundleSwapPending?: boolean
+  /** Build provenance from the install stamp (empty for packaged builds with
+   *  no stamp / a bare `app.getVersion()` fallback). */
+  baseVersion?: string
+  branch?: string | null
+  commit?: string | null
+  distance?: number
+  dirty?: boolean
+  source?: 'build' | 'ci' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown'
+  distribution?: 'desktop-app' | 'docker' | 'nix'
+  /** sha16 of the canonical install-root path — the per-install channel key and
+   *  the shape `hermes update --install-id` prints. */
+  installId?: string
+  /** What this build carries (embedded / light / external) and where an
+   *  external backend resolved from. Bundled artifacts run their payload; light
+   *  artifacts have no runtime and only reach remote backends. */
+  hermesRuntime?: { type: 'embedded' } | { type: 'light' } | { type: 'external'; source?: RuntimeSource }
 }
 
 export interface DesktopMachineProfile {
@@ -670,6 +698,26 @@ export interface DesktopMachineProfile {
    *  not a name before offering it. */
   username: string
 }
+
+/** Where an external build's backend came from. Mirrors the resolution ladder
+ *  in `resolveHermesBackend()`: `git` / `source` / sealed stewards are the
+ *  Python install methods from `installation.tree.install_method()`; the
+ *  Electron-only rungs (`hermes-root`, `path`, `system-python`, `bootstrap`)
+ *  are resolution facts the backend cannot see. Each variant carries the
+ *  location it resolved from, when there is one. */
+export type RuntimeSource =
+  | { type: 'hermes-root'; root: string } // HERMES_DESKTOP_HERMES_ROOT — explicit developer override
+  | { type: 'git'; root: string } // checkout at a managed install root, $HERMES_HOME/hermes-agent
+  | { type: 'source'; root: string } // a git checkout anywhere else
+  | { type: 'docker'; root: string | null } // sealed tree stewarded by Docker
+  | { type: 'nix'; root: string | null } // sealed tree stewarded by Nix
+  | { type: 'desktop-app'; root: string | null } // sealed tree stewarded by the desktop bundle
+  | { type: 'desktop-bootstrap'; root: string } // canonical install created by the desktop first-launch bootstrap
+  | { type: 'unknown' } // no stamp, no .git — provenance cannot be told
+  | { type: 'path'; command: string } // an existing `hermes` CLI found on PATH
+  | { type: 'system-python'; command: string } // pip-installed hermes_cli on system Python
+  | { type: 'bootstrap' } // nothing usable yet; the first-launch installer runs
+
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
 
@@ -702,8 +750,17 @@ export interface DesktopUpdateCommit {
   at: number
 }
 
+export type UpdaterMechanismClient =
+  | 'app-installer'
+  | 'external'
+  | 'windows-handoff'
+  | 'posix-handoff'
+  | 'manual'
+
 export interface DesktopUpdateStatus {
   supported: boolean
+  /** Which mechanism owns updates for this install (see electron/updater). */
+  mechanism?: UpdaterMechanismClient
   updateAvailable?: boolean
   branch?: string
   currentBranch?: string
@@ -717,6 +774,11 @@ export interface DesktopUpdateStatus {
   currentSha?: string
   /** Backend only: the version string the backend reports for itself. */
   currentVersion?: string
+  /** Release feed the check read from ('stable'/'nightly'); when set, the
+   *  update is a release and `latestTag` names it instead of a commit count. */
+  channel?: 'stable' | 'nightly'
+  /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
+  latestTag?: string | null
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean
@@ -812,8 +874,10 @@ export interface DesktopPluginProfileRoute {
 
 export interface HermesConnection {
   baseUrl: string
+  customWindowControls?: boolean
   darwinMajor?: number
   isFullscreen: boolean
+  isMaximized?: boolean
   // The live, RESOLVED connection mode. Only ever 'local' or 'remote' — a
   // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
   // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
@@ -861,8 +925,10 @@ export interface HermesActiveWork {
 }
 
 export interface HermesWindowState {
+  customWindowControls?: boolean
   darwinMajor?: number
   isFullscreen: boolean
+  isMaximized?: boolean
   isMinimized?: boolean
   isVisible?: boolean
   nativeOverlayWidth: number
@@ -1132,10 +1198,16 @@ export interface DesktopConnectionProbeResult {
   error: string | null
 }
 
+export interface ExternalOpenFailedPayload {
+  url: string
+  message?: string
+}
+
 export interface DesktopOauthLoginResult {
   ok: boolean
   baseUrl: string
   connected: boolean
+  error?: string
 }
 
 export interface DesktopOauthLogoutResult {
@@ -1148,9 +1220,8 @@ export interface DesktopOauthLogoutResult {
 export interface DesktopCloudStatus {
   // The portal base URL the desktop talks to (default or env-overridden).
   portalBaseUrl: string
-  // Whether the OAuth partition holds a live Nous portal (Privy) session — the
-  // portal authenticates via Privy, so this reflects the privy-token cookie, NOT
-  // the hermes gateway session cookies. See cookiesHavePrivySession.
+  // Whether the OAuth partition holds portal access or renewal credentials
+  // (Privy or NAS). Discovery validates them with the portal.
   signedIn: boolean
 }
 
@@ -1244,6 +1315,10 @@ export interface DesktopBootstrapUnsupportedPlatform {
 export interface DesktopBootstrapSetupChoice {
   platform: string
   activeRoot: string
+  /** What the local card represents: 'none' = installer offer; the rest = use existing. */
+  local: 'none' | 'installed' | 'bundled' | 'bundled-damaged'
+  /** This artifact is a bundled install (payload ships in-app). */
+  bundled: boolean
 }
 
 export interface DesktopBootstrapState {
@@ -1256,6 +1331,8 @@ export interface DesktopBootstrapState {
   completedAt: number | null
   setupChoice: DesktopBootstrapSetupChoice | null
   unsupportedPlatform: DesktopBootstrapUnsupportedPlatform | null
+  /** This artifact is a bundled install (payload ships in-app). */
+  bundled: boolean
 }
 
 export type DesktopBootstrapEvent =
@@ -1265,6 +1342,8 @@ export type DesktopBootstrapEvent =
       active: boolean
       platform?: string
       activeRoot?: string
+      local?: DesktopBootstrapSetupChoice['local']
+      bundled?: boolean
     }
   | { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null }
   | {
@@ -1460,21 +1539,6 @@ export interface HermesRepoPullRequests {
   prs: HermesBranchPullRequest[]
 }
 
-// A PR review/issue comment resolved from a pasted GitHub URL — the composer's
-// review-comment attachment context. `path`/`line`/`diffHunk` are empty for
-// conversation-tab (issue) comments; `line` is null when the comment is
-// outdated and only `original_line` remained.
-export interface HermesPrComment {
-  author: string
-  body: string
-  diffHunk: string
-  kind: 'issue' | 'review'
-  line: null | number
-  path: string
-  prNumber: number
-  startLine: null | number
-  url: string
-}
 // gh availability/auth + the current branch's PR — drives the review pane's PR
 // button (disabled when gh isn't ready, "Open PR" vs "Create PR" otherwise).
 export interface HermesReviewShipInfo {

@@ -191,3 +191,34 @@ class TestParseVllmTokenBasedOutputCap:
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
 
+
+
+class TestParseOpenAiCompletionSplit:
+    """OpenAI's original overflow wording, copied by vLLM / llama-cpp-python, splits the request
+    as "(A in the messages, B in the completion)" and never names max_tokens (#90607)."""
+
+    @pytest.mark.parametrize("msg, budget", [
+        ("This model's maximum context length is 102400 tokens. However, you requested 102401 tokens "
+         "(36865 in the messages, 65536 in the completion). Please reduce the length of the messages or completion.",
+         102400 - 36865),
+        ("This model's maximum context length is 4097 tokens, however you requested 4771 tokens "
+         "(771 in your prompt; 4000 for the completion). Please reduce your prompt; or completion length.",
+         4097 - 771),
+    ])
+    def test_split_is_output_cap_with_window_minus_measured_prompt(self, msg, budget):
+        assert parse_available_output_tokens_from_error(msg) == budget
+        assert is_output_cap_error(msg)
+
+    def test_split_with_prompt_filling_window_stays_on_compression(self):
+        msg = ("This model's maximum context length is 4097 tokens. However, you requested 6000 tokens "
+               "(5000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert not is_output_cap_error(msg)
+
+
+def test_limited_to_phrasing_is_an_output_cap():
+    """#67453: Scaleway rejects an oversized budget with "max_completion_tokens is limited to N for
+    <model>" — an output cap (step the budget down), not a context overflow (do not compress)."""
+    assert is_output_cap_error("max_completion_tokens is limited to 16384 for glm-5.2")
+    assert parse_available_output_tokens_from_error("max_completion_tokens is limited to 16384 for glm-5.2") == 16384
+    assert not is_output_cap_error("prompt is too long: max_tokens limited to 100 given the input")

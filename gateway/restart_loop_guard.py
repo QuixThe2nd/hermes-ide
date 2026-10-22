@@ -40,7 +40,7 @@ def _state_path():
 
 def _load_boots() -> List[float]:
     try:
-        data = json.loads(_state_path().read_text(encoding="utf-8"))
+        data = json.loads(_state_path().read_text(encoding="utf-8-sig"))
         return [float(t) for t in data.get("boots", []) if isinstance(t, (int, float))]
     except (OSError, ValueError, TypeError):
         return []

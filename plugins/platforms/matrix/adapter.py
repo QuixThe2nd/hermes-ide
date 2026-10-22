@@ -695,8 +695,8 @@ def matrix_deps_present() -> bool:
     and runs from ``create_adapter()`` when this returns False (#79812).
     """
     try:
-        from tools.lazy_deps import is_available
-        return is_available("platform.matrix")
+        from pm import available as is_available
+        return is_available("matrix")
     except Exception:  # pragma: no cover — defensive
         return False
 
@@ -717,19 +717,19 @@ def check_matrix_requirements() -> bool:
 
 def ensure_matrix_deps() -> bool:
     """ACTIVE deps-only installer (registry ``ensure_deps_fn``); rebinds the type globals. Installs the
-    whole ``platform.matrix`` group when ANY declared package is missing — short-circuiting on
+    whole ``matrix`` extra when ANY declared package is missing — short-circuiting on
     ``import mautrix`` left asyncpg/aiosqlite uninstalled forever.
 
-    Lazy-installs the full ``platform.matrix`` feature group via ``tools.lazy_deps.ensure_and_bind``
+    Lazy-installs the full ``matrix`` feature group via ``pm.extras.ensure_and_bind``
     whenever any of the declared packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is missing
     — not just mautrix itself. Previously this short-circuited on ``import mautrix``, which left the other
     four packages uninstalled forever and broke E2EE connect with ``No module named 'asyncpg'`` (#31116).
     """
     try:
-        from tools.lazy_deps import feature_missing, ensure_and_bind
-        missing = feature_missing("platform.matrix")
+        from pm.extras import missing as _extra_missing, ensure_and_bind
+        missing = _extra_missing("matrix")
     except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("Matrix: lazy_deps lookup failed: %s", exc)
+        logger.debug("Matrix: extras lookup failed: %s", exc)
         missing = ()
         ensure_and_bind = None  # type: ignore[assignment]
     if ensure_and_bind is None:
@@ -741,11 +741,11 @@ def ensure_matrix_deps() -> bool:
             return {
                 "ContentURI": ContentURI, "EventID": EventID, "EventType": EventType, "PresenceState": PresenceState,
                 "RoomCreatePreset": RoomCreatePreset, "RoomID": RoomID, "TrustState": TrustState, "UserID": UserID}
-        if not ensure_and_bind("platform.matrix", _import, globals(), prompt=False):
+        if not ensure_and_bind("matrix", _import, globals()):
             logger.warning(
                 "Matrix: required packages not installed (%s). Run: pip install "
                 "'mautrix[encryption]' asyncpg aiosqlite Markdown aiohttp-socks",
-                ", ".join(missing) if missing else "platform.matrix")
+                ", ".join(missing) if missing else "matrix")
             return False
     e2ee_mode = _resolve_e2ee_mode()
     if e2ee_mode == "required" and not _check_e2ee_deps():
@@ -1496,7 +1496,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: failed to download image %s: %s", _redact_url_for_log(image_url), exc)
             fallback = ("I couldn't download and upload the image to Matrix. "
                         "The source URL was not shown because it may contain private tokens.")
-            return await self.send(chat_id, f"{caption}\n{fallback}" if caption else fallback, reply_to)
+            return await self.emit_media_warning(chat_id, fallback, caption=caption, reply_to=reply_to, metadata=metadata)
         return await self._upload_and_send(chat_id, data, fname, ct, "m.image", caption, reply_to, metadata)
 
     async def _download_external_media_with_cap(self, url: str) -> tuple[bytes, str, str]:
@@ -1809,7 +1809,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
             text = "⚠️ Couldn't deliver the attachment."
-            return await self.send(room_id, f"{caption}\n{text}" if caption else text, reply_to)
+            return await self.emit_media_warning(room_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
         try:
             file_size = p.stat().st_size
         except OSError:
@@ -2087,10 +2087,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
-        still change (reply-fallback strip); ``extra`` carries media fields / message_type."""
-        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        still change (reply-fallback strip); ``extra`` carries media fields / message_type.
+        ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
+        downloading); resolving it twice would double the read receipt / thread mark."""
+        if ctx is None:
+            ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
@@ -2154,6 +2157,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 return
         is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
+        # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
+        # non-allowlisted room must not pull media onto the host only to drop it.
+        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        if ctx is None:
+            return
         # Cache locally so downstream tools get a real file path.
         cached_path = None
         if url:
@@ -2167,7 +2175,7 @@ class MatrixAdapter(BasePlatformAdapter):
         http_url = self._mxc_to_http(url) if url and not is_encrypted_media else ""
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, body, source_content, relates_to, message_type=msg_type,
+            room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
             await self.handle_message(msg_event)
@@ -3002,12 +3010,13 @@ def interactive_setup() -> None:
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
         matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
-        from tools.lazy_deps import ensure as _lazy_ensure, feature_missing
-        _missing_before = feature_missing("platform.matrix")
+        from pm import ensure_import as _lazy_ensure
+        from pm.extras import missing as _extra_missing
+        _missing_before = _extra_missing("matrix")
         if _missing_before:
             print_info(f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)...")
             try:
-                _lazy_ensure("platform.matrix", prompt=False)
+                _lazy_ensure("matrix")
                 print_success(f"{matrix_pkg} installed")
             except Exception as exc:
                 print_warning(

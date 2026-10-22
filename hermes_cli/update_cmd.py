@@ -68,7 +68,7 @@ from hermes_cli.update_cmd_fleet import (  # noqa: F401
     _write_gateway_update_exit_code)
 from hermes_cli.update_cmd_zip import (  # noqa: F401
     _ZIP_PRESERVED_TOP_LEVEL, _ZIP_STAGING_ARTIFACT_SUFFIXES, _abort_zip_update_if_dirty_tree,
-    _atomic_replace_dir, _commit_staged_replacements, _discard_staged,
+    _atomic_replace_dir, _commit_staged_replacements, _discard_staged, _finish_zip_update,
     _is_zip_preserved_entry_status_line, _is_zip_staging_artifact_status_line, _stage_replacement,
     _update_via_zip, _zip_overlay_block_reason)
 from hermes_cli.update_cmd_stash import (  # noqa: F401
@@ -79,7 +79,7 @@ from hermes_cli.update_cmd_stash import (  # noqa: F401
     _stash_local_changes_if_needed, _warn_orphaned_update_autostashes)
 from hermes_cli.update_cmd_config import (  # noqa: F401
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
-    _print_items, _reload_config_modules, _run_config_check_fresh, _run_migrate_config_fresh)
+    _print_items, _run_config_check_fresh, _run_migrate_config_fresh)
 from hermes_cli.update_cmd_deps import (  # noqa: F401
     _INSTALL_DEFINING_FILES, _SELF_LOCKING_NATIVE_MODULES, _UPDATE_CRITICAL_MODULES,
     _abort_dependency_sync_if_self_locked, _capture_active_lazy_features,
@@ -89,12 +89,13 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _ensure_venv_pip, _install_psutil_android_compat, _is_android_python, _npm_bin_exists,
     _npm_lockfile_changed, _npm_manifest_paths, _npm_manifests_digest, _path_uid,
     _rebuild_desktop_after_update, _record_npm_lockfile_hash, _refresh_active_lazy_features,
+    _reapply_plugin_python_dependencies,
     _refresh_active_memory_provider_dependencies, _refuse_update_if_venv_foreign_owned,
     _repair_node_deps_on_current_checkout, _restore_active_tool_dependencies,
     _sync_python_dependencies_after_pull, _update_node_dependencies,
     _upgrade_pip_before_lazy_refresh, _validate_critical_modules_import,
-    _venv_core_imports_healthy, _venv_foreign_owned_paths, _web_build_toolchain_ready,
-    _web_toolchain_roots)
+    _venv_core_imports_healthy, _venv_dependency_set_stale, _venv_foreign_owned_paths,
+    _web_build_toolchain_ready, _web_toolchain_roots)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
@@ -107,16 +108,14 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _sync_with_upstream_if_needed)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
     _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
-    _STALE_PURGE_PROTECTED,
-    _UPDATE_RUNTIME_RELOAD_MODULES, _clear_stale_sqlite_sidecars,
+    _clear_stale_sqlite_sidecars,
     _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
     _print_fts_optimize_available_notice, _print_update_completion, _print_update_summary,
-    _print_verified_update_completion, _purge_stale_hermes_modules, _read_project_version,
-    _reload_process_scan_modules, _reload_updated_runtime_modules,
+    _print_verified_update_completion, _read_project_version,
     _resolve_pre_update_backup_mode, _restore_state_db_from_snapshot,
-    _run_post_update_maintenance, _run_pre_update_backup, _stale_purge_prefixes,
+    _run_post_update_maintenance, _run_pre_update_backup,
     _sweep_bytecode_after_update,
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
@@ -162,6 +161,35 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 # otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
 # minutes is generous for a scoped single-branch fetch and still ends in a real error.
 NETWORK_GIT_TIMEOUT_SECONDS = 300
+
+
+def _record_update_skip(step: str, reason: str) -> None:
+    """Best-effort ``update_receipt.record_skip``; the receipt must never break an update."""
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_skip
+        record_skip(step, reason)
+
+
+def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
+    """Record the pre-update backup as a skip when it was disabled, else as a step.
+
+    ``snapshot_id`` is None both when the backup was deliberately turned off (config
+    ``updates.pre_update_backup: off``/``false``, or ``--no-backup``) and when a requested backup
+    produced nothing. Recording both as ``ok=false, "disabled or failed"`` made an opt-out
+    indistinguishable from a real failure in the receipt, so a disabled safety net read as a
+    broken one (#94944 is the shipped-opt-out case). A deliberate opt-out is a SKIP WITH its
+    reason; only a requested-but-empty backup is a failed step.
+    """
+    if snapshot_id:
+        _record_update_step("pre_update_backup", True, f"snapshot={snapshot_id}")
+        return
+    if _resolve_pre_update_backup_mode(args) == "off":
+        reason = ("disabled by --no-backup" if getattr(args, "no_backup", False)
+                  else "disabled by updates.pre_update_backup (mode: off)")
+        _record_update_skip("pre_update_backup", reason)
+        return
+    _record_update_step("pre_update_backup", False, "no snapshot captured")
+
 
 
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
@@ -238,7 +266,8 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     while _time.monotonic() < deadline:
         if response_path.exists():
             with suppress(OSError, ValueError):
-                answer = response_path.read_text(encoding="utf-8").strip()
+                # utf-8-sig: the desktop/gateway responder may write with a BOM.
+                answer = response_path.read_text(encoding="utf-8-sig").strip()
                 response_path.unlink(missing_ok=True)
                 prompt_path.unlink(missing_ok=True)
                 return answer if answer else default
@@ -489,6 +518,159 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
         proc.stdout.close()
 
 
+# Release tags have the form v1.2.3. A tag can have a pre-release suffix.
+# The stable channel ignores tags with a suffix. Stable means final releases only.
+# The major component is capped at three digits. The historical CalVer tags
+# (for example v2026.7.20) use a four-digit year, and a numeric sort would
+# rank them above every SemVer release. This matches _SEMVER_TAG_RE in
+# scripts/write_install_stamp.py.
+_RELEASE_TAG_RE = re.compile(r"^v(0|[1-9]\d{0,2})\.(\d+)\.(\d+)$")
+
+
+def _parse_release_tag(tag: str):
+    """Parse ``vX.Y.Z`` into a sortable (X, Y, Z) tuple, or return None.
+
+    Tags with a pre-release or build suffix (``v1.2.3-rc1``) return None.
+    Tags that do not have the shape of a final release also return None.
+    The stable channel only moves between final releases.
+    """
+    m = _RELEASE_TAG_RE.match(tag.strip())
+    if not m:
+        return None
+    return tuple(int(g) for g in m.groups())
+
+
+def _latest_release_tag_from_ls_remote(output: str):
+    """Select the newest final-release tag from ``git ls-remote --tags`` output.
+
+    Returns ``(tag, sha)`` or ``(None, None)``. Peeled entries (``^{}``) have
+    priority over the tag-object SHA. Thus annotated tags and lightweight tags
+    both give the commit SHA.
+    """
+    best = None          # (version_tuple, tag)
+    shas = {}            # tag -> commit sha (peeled wins)
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        sha, ref = parts
+        if not ref.startswith("refs/tags/"):
+            continue
+        name = ref[len("refs/tags/"):]
+        peeled = name.endswith("^{}")
+        if peeled:
+            name = name[:-3]
+        version = _parse_release_tag(name)
+        if version is None:
+            continue
+        if peeled or name not in shas:
+            shas[name] = sha.strip()
+        if best is None or version > best[0]:
+            best = (version, name)
+    if best is None:
+        return None, None
+    tag = best[1]
+    return tag, shas.get(tag)
+
+
+def _resolve_latest_release_tag(git_cmd, cwd):
+    """Ask origin for the newest final release tag. Returns (tag, sha) or (None, None)."""
+    try:
+        result = subprocess.run(
+            git_cmd + ["ls-remote", "--tags", "origin", "v*"],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("Could not list release tags from origin: %s", exc)
+        return None, None
+    if result.returncode != 0:
+        logger.warning(
+            "git ls-remote --tags failed: %s",
+            (result.stderr or "").strip().splitlines()[:1],
+        )
+        return None, None
+    return _latest_release_tag_from_ls_remote(result.stdout)
+
+
+def _stable_channel_active(args) -> bool:
+    """Return True when this update must track tagged releases, not a branch.
+
+    ``args`` is the update argparse namespace, or None when the caller has no
+    flags to honor. An explicit ``--branch`` always wins (the user names the
+    exact update target; a tag silently overriding it would resurrect the bug
+    class --branch prevents). An explicit ``--channel`` is the transient
+    per-invocation override (``--set-channel`` is the persistent one). In all
+    other cases the effective channel comes from the per-install record
+    (see hermes_cli.update_channel.resolve_update_channel).
+    """
+    if getattr(args, "branch", None):
+        return False
+    transient = getattr(args, "channel", None)
+    if transient:
+        from hermes_cli.update_channel import CHANNEL_STABLE
+
+        # nightly on a source tree normalizes to main (not stable).
+        return transient == CHANNEL_STABLE
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.update_channel import CHANNEL_STABLE, resolve_update_channel
+
+        config = None
+        try:
+            config = load_config()
+        except Exception as exc:
+            logger.debug("Could not load config for channel resolution: %s", exc)
+        return resolve_update_channel(config, _m().PROJECT_ROOT) == CHANNEL_STABLE
+    except Exception as exc:
+        logger.warning("Channel resolution failed; defaulting to main: %s", exc)
+        return False
+
+
+def _github_latest_release_tag():
+    """Resolve the newest final-release tag with the GitHub API (no git necessary).
+
+    The ZIP-fallback path uses this function. That path exists because git
+    file I/O is broken. The function tries /releases/latest first, because that
+    endpoint obeys the draft and prerelease curation. If that fails, it lists
+    the tags and selects the maximum final release.
+    Returns the tag name or None.
+    """
+    import urllib.error
+    import urllib.request
+
+    def _get_json(url):
+        req = urllib.request.Request(
+            url, headers={"Accept": "application/vnd.github+json",
+                          "User-Agent": "hermes-update"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    base = "https://api.github.com/repos/NousResearch/hermes-agent"
+    try:
+        data = _get_json(f"{base}/releases/latest")
+        tag = data.get("tag_name")
+        if isinstance(tag, str) and _parse_release_tag(tag) is not None:
+            return tag
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        logger.debug("GitHub /releases/latest unavailable: %s", exc)
+    try:
+        tags = _get_json(f"{base}/tags?per_page=100")
+        best = None
+        for entry in tags if isinstance(tags, list) else []:
+            name = entry.get("name") if isinstance(entry, dict) else None
+            version = _parse_release_tag(name) if isinstance(name, str) else None
+            if version is not None and (best is None or version > best[0]):
+                best = (version, name)
+        return best[1] if best else None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        logger.debug("GitHub /tags unavailable: %s", exc)
+        return None
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """``hermes update --check``: fetch and report without installing. ``branch_explicit`` is
     True iff --branch was passed (Docker installs print a notice instead of dropping the flag)."""
@@ -518,6 +700,40 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+
+    # Stable channel: if the caller did not ask for a branch, the question is
+    # "is there a newer tagged release?". The question is not "are there new
+    # commits on main?". Compare against the newest release tag and return.
+    if not branch_explicit:
+        if _stable_channel_active(None):
+            print("→ Update channel: stable (tagged releases)")
+            tag, tag_sha = _resolve_latest_release_tag(git_cmd, _m().PROJECT_ROOT)
+            if tag is None:
+                print("✗ No release tags found on origin. A check of the stable channel is not possible.")
+                print("  Switch channels with: hermes update --set-channel main")
+                sys.exit(1)
+            head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            # Newer releases possibly do not exist locally yet. "At the tag"
+            # is a SHA comparison. The merge-base check tells us whether HEAD
+            # contains the tag (HEAD is ahead of the release or at the release).
+            at_or_past_tag = False
+            if head_sha and tag_sha:
+                if head_sha == tag_sha:
+                    at_or_past_tag = True
+                else:
+                    contained = subprocess.run(
+                        git_cmd + ["merge-base", "--is-ancestor", tag_sha, "HEAD"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    at_or_past_tag = contained.returncode == 0
+            if at_or_past_tag:
+                print(f"✓ Up to date with the latest release ({tag}).")
+            else:
+                print(f"→ New release available: {tag}")
+                print("  Run `hermes update` to install it.")
+            return
 
     # Fetch only <branch> (a bare fetch pulls thousands of auto-generated branches). Prefer
     # upstream only for main (a fork's other branches have no upstream counterpart). Installer
@@ -619,18 +835,31 @@ def _repair_venv_on_current_checkout(
     # fresh launch completes it via the marker.
     _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
     _write_update_incomplete_marker()
-    from hermes_cli.managed_uv import ensure_uv
-    repair_uv = ensure_uv()
-    # Venv gone entirely (repair interrupted after the old one was moved aside): recreate.
+    import pm
+
     venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    repair_uv, repair_env = pm.uv(venv=venv_dir)
+    # Venv gone entirely (repair interrupted after the old one was moved aside): recreate.
     venv_python_missing = not venv_python_path(venv_dir, windows=_m()._is_windows()).exists()
     if venv_python_missing and repair_uv:
         print("→ Recreating virtual environment...")
         subprocess.run([repair_uv, "venv", venv_dir.name], cwd=_m().PROJECT_ROOT, check=False)
-    repair_prefix, repair_env = _pip_install_prefix(repair_uv)
-    _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
-    _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
-    _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
+    # pm owns the venv contents now: one sync covers the ``[all]`` group AND the lazily
+    # installed backends (the old two-step pip install + lazy refresh).
+    try:
+        pm.sync_venv(["all"] + list(active_lazy_features or []), explicit=True)
+    except pm.InstallError as _sync_err:
+        print(f"  ✗ {_sync_err}")
+    if repair_uv:
+        _m()._restore_active_tool_dependencies(
+            active_tool_dependencies, [repair_uv, "pip"], env=repair_env)
+    else:
+        _m()._restore_active_tool_dependencies(
+            active_tool_dependencies, [sys.executable, "-m", "pip"])
+    # Same order as the pull and ZIP paths: the ``[all]`` reinstall above may have stripped the
+    # active memory provider's bridge packages (hindsight-embed, torch, ...).
+    _m()._refresh_active_memory_provider_dependencies()
+    _m()._reapply_plugin_python_dependencies()
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —
     # that phase uses its own marker so a later lazy failure cannot be "healed" by clearing the core marker
     # based on a narrow 7-package import probe (#58004 review).
@@ -654,36 +883,23 @@ def _repair_venv_on_current_checkout(
     )
 
 
-def _pip_install_prefix(uv_bin) -> tuple[list[str], dict | None]:
-    """``(install prefix, env)``: ``uv pip`` isolated from third-party UV env vars (so a foreign
-    UV_PYTHON_INSTALL_DIR can't hijack it), else ``sys.executable -m pip`` (avoids PEP 668 errors)."""
-    if uv_bin:
-        # Same third-party UV-env isolation as the main update path (#83914): a user-level
-        # UV_PYTHON_INSTALL_DIR / UV_PYTHON from unrelated software must not steer which interpreter uv
-        # resolves here.
-        # See #83914.
-        from hermes_cli.managed_uv import managed_python_env
-        env = managed_python_env()
-        env["VIRTUAL_ENV"] = str(project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv")
-        return [uv_bin, "pip"], env
-    return [sys.executable, "-m", "pip"], None
-
-
 def _repair_current_checkout(
     *, assume_yes, gateway_mode, pre_update_snapshot_id,
     had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
     upstream_checked, _windows_gateway_resume) -> tuple[bool, bool]:
-    """Already-up-to-date path: keep the managed runtime current, repair a broken venv.
+    """Already-up-to-date path: ensure the pm-managed uv, repair a broken venv.
     Returns ``(complete, repaired_runtime)`` — repaired_runtime is True when this run actually
-    rewrote the loaded runtime (handed-off sync or unhealthy-venv repair), which a deferred run
+    rewrote the venv (handed-off sync or unhealthy-venv repair), which a deferred run
     publishes as a SHA-bound prepared generation."""
-    # "No new commits" != safe interpreter: uv can keep the same CPython patch while
-    # python-build-standalone refreshes the embedded SQLite; keep the boundary hook here too.
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-    runtime_repairs = []
-    update_managed_uv(repair_observer=runtime_repairs.append)
-    ensure_uv(repair_observer=runtime_repairs.append)
-    runtime_repaired = next((result for result in runtime_repairs if result.repaired), None)
+    # "No new commits" does not mean the venv is safe: pm owns the uv pin now — a pin bump
+    # realizes a NEW entry on the next ensure. The update command is the one caller that must
+    # SEE realization failures, so use the raising API, not the None-swallowing uv().
+    import pm
+
+    try:
+        pm.ensure("uv")
+    except pm.InstallError as e:
+        print(f"⚠ Managed uv unavailable: {e}")
 
     # A current checkout does NOT imply a healthy install (a prior sync may have died
     # partway, e.g. Windows locked .pyd); probe or "Already up to date!" hides a bricked venv.
@@ -691,13 +907,21 @@ def _repair_current_checkout(
     # The Windows shim hand-off child is current BY DESIGN; its one job is the pending sync,
     # not venv health — without this it would print "Already up to date!" and skip it.
     handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
+    # Importable is not synced: a venv installed from an older release imports fine while its
+    # pins lag the checkout (the sync after the pull was refused or died, #97208).
+    stale, stale_detail = (
+        _venv_dependency_set_stale() if healthy and not handed_off_sync else (False, ""))
     if handed_off_sync:
         print("→ Finishing the dependency install handed off by hermes.exe...")
     elif not healthy:
         print("⚠ Checkout is current, but the venv is unhealthy:")
         print(f"  {detail}")
         print("→ Repairing Python dependencies...")
-    if handed_off_sync or not healthy:
+    elif stale:
+        print("⚠ Checkout is current, but its dependencies were never synced after the last pull:")
+        print(f"  {stale_detail}")
+        print("→ Syncing Python dependencies...")
+    if handed_off_sync or not healthy or stale:
         current_checkout_complete = _repair_venv_on_current_checkout(
             assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,
@@ -706,6 +930,9 @@ def _repair_current_checkout(
             active_tool_dependencies=active_tool_dependencies,
             _windows_gateway_resume=_windows_gateway_resume)
     else:
+        # (The managed-runtime repair-observer branch that used to live here is gone with
+        #  ``managed_uv``: pm.ensure("uv") above owns the uv pin, and the venv-repair path
+        #  restores lazy backends via pm.sync_venv itself.)
         current_checkout_complete = _repair_node_deps_on_current_checkout(
             _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,
@@ -713,13 +940,6 @@ def _repair_current_checkout(
                 "✓ Already up to date!" if upstream_checked
                 else "✓ Up to date with your fork (official repo not checked)."),
             had_desktop_app_before_update=had_desktop_app_before_update)
-    if runtime_repaired is not None and not _m()._is_windows():
-        print()
-        print("⚠ Restart required to finish the managed Python runtime repair.")
-        print(
-            "  Any running Hermes gateways, Desktop backends, or other "
-            "long-lived processes still use the previous runtime.")
-        print("  Restart each of them to pick up the repaired runtime.")
     return current_checkout_complete, bool(handed_off_sync or not healthy)
 
 
@@ -806,11 +1026,14 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha) -> None:
 
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
-    keep_stash):
-    """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
+    keep_stash, target_ref=None):
+    """Fast-forward onto ``origin/<branch>`` (or the stable-channel release tag) and settle the
+    autostash. Divergence by shape:
     custom branch -> merge, same branch -> reset, orphan history -> rescue ref first; a
     post-pull syntax error in a critical file rolls back. Exits on failure; returns pre-pull SHA."""
     update_succeeded = False
+    if target_ref is None:
+        target_ref = f"origin/{branch}"
     # Pre-pull SHA for auto-rollback (stray conflict markers once bricked every updater).
     # Capture the pre-pull SHA so we can auto-roll-back if the new code has a syntax error in a
     # critical-path file (PR #28452 incident: orphan merge-conflict markers in hermes_cli/config.py bricked
@@ -819,7 +1042,7 @@ def _pull_updates(
     try:
         # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
         # SECOND network fetch; identical in effect given the fresh tracking ref.
-        if _git_run(git_cmd, ["merge", "--ff-only", f"origin/{branch}"]).returncode != 0:
+        if _git_run(git_cmd, ["merge", "--ff-only", target_ref]).returncode != 0:
             _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha)
         _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha)
         update_succeeded = True
@@ -856,7 +1079,7 @@ class _CheckoutPlan:
 
 
 def _apply_parked_branch_guard(
-    git_cmd, branch, current_branch, *, switch_branch, _windows_gateway_resume
+    git_cmd, branch, current_branch, *, switch_branch, _windows_gateway_resume, stable_tag=None
 ) -> tuple[bool, bool, "str | None"]:
     """Decide how a checkout parked on another branch is brought to *branch* (stash-switch-pull-
     switch-back used to "update" main while the running code stayed behind).
@@ -868,6 +1091,11 @@ def _apply_parked_branch_guard(
     missing). Returns ``(parked_branch_switched, in_place_update, switch_block_reason)``.
     """
     if current_branch == branch or current_branch == "HEAD":
+        return False, False, None
+    # Stable channel: the checkout does NOT switch branches. The current branch
+    # pointer fast-forwards (or merges) to the release tag's commit, so the
+    # parked-branch machinery is main-channel only.
+    if stable_tag is not None:
         return False, False, None
     switch_safe, switch_block_reason = _m()._assess_parked_branch_switch(
         git_cmd, _m().PROJECT_ROOT, current_branch, branch)
@@ -901,19 +1129,22 @@ def _apply_parked_branch_guard(
 
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
-    switch_branch, _windows_gateway_resume):
+    switch_branch, _windows_gateway_resume, stable_tag=None, target_ref=None):
     """Parked-branch guard, land on the target, stash, count new commits. Exits when the
     checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up to
     date, -1 when tips differ but the shallow count is unrecoverable."""
     parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
         git_cmd, branch, current_branch, switch_branch=switch_branch,
-        _windows_gateway_resume=_windows_gateway_resume)
+        _windows_gateway_resume=_windows_gateway_resume, stable_tag=stable_tag)
 
-    if not in_place_update and current_branch == "HEAD" != branch:
+    # Stable channel: the checkout does NOT switch branches (the current branch pointer
+    # fast-forwards to the release tag's commit), so every branch-move below is main-channel only.
+    if stable_tag is None and not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
     auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
     if (
-        not in_place_update and current_branch != branch
+        stable_tag is None
+        and not in_place_update and current_branch != branch
         and _git_run(git_cmd, ["checkout", branch]).returncode != 0):
         track_result = _git_run(git_cmd, ["checkout", "-B", branch, f"origin/{branch}"])
         if track_result.returncode != 0:
@@ -934,13 +1165,15 @@ def _prepare_checkout_for_update(
     # On shallow checkouts `rev-list --count` can report the entire remote ancestry. The
     # zero/nonzero gate is still sound; treat the shallow NUMBER as unknown and recover it
     # via the GitHub compare API when possible.
-    result = _git_run(git_cmd, ["rev-list", f"HEAD..origin/{branch}", "--count"], check=True)
+    if target_ref is None:
+        target_ref = f"origin/{branch}"
+    result = _git_run(git_cmd, ["rev-list", f"HEAD..{target_ref}", "--count"], check=True)
     commit_count = int(result.stdout.strip())
 
     apply_is_shallow = _is_shallow_checkout(git_cmd)
     if commit_count > 0 and apply_is_shallow:
         from hermes_cli.banner import _github_compare_behind
-        counted = _github_compare_behind(*_tip_shas(git_cmd, f"origin/{branch}"))
+        counted = _github_compare_behind(*_tip_shas(git_cmd, target_ref))
         # counted == 0 means local-ahead: falls through to the up-to-date path.
         commit_count = counted if counted is not None else -1
 
@@ -1176,7 +1409,8 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 
 
 def _handle_update_called_process_error(
-    e, args, gateway_mode: bool, had_desktop_app_before_update: bool) -> None:
+    e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
+    _windows_gateway_resume=None) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
     stage = _format_update_failure_stage(e)
     zip_fallback_ok = _should_zip_fallback_on_update_error(e)
@@ -1185,7 +1419,8 @@ def _handle_update_called_process_error(
         print("→ Falling back to ZIP download...")
         print()
         desktop_build_ok = _update_via_zip(
-            args, had_desktop_app_before_update=had_desktop_app_before_update)
+            args, had_desktop_app_before_update=had_desktop_app_before_update,
+            _windows_gateway_resume=_windows_gateway_resume)
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
     else:
@@ -1284,8 +1519,9 @@ def _finish_already_up_to_date(
 def _apply_pulled_update(
     git_cmd, branch, pre_pull_sha, _plan, opts, *, gateway_mode, is_fork, desktop_dir,
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume) -> None:
-    """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
+    _windows_gateway_resume, args) -> None:
+    """Post-pull phase, pre-swap half: verify HEAD, arm the fleet marker, sweep bytecode, then
+    hand the rest of the run to an interpreter born on the pulled code (never returns)."""
     # Fork --defer-restart state may be absent on stock _UpdateOptions namespaces
     # (upstream tests build minimal opts); degrade to "not deferred" then.
     defer_restart = getattr(opts, "defer_restart", False)
@@ -1301,7 +1537,10 @@ def _apply_pulled_update(
     # completed restart leaves this marker so the next update catches up even when git is
     # current. Distinct from ``.update-incomplete`` (venv/install repair).
     # See #95294.
-    if not _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "") and defer_restart:
+    if not _write_fleet_restart_pending_marker(
+        expected_sha=post_pull_sha or "",
+        runtimes=_pre_update_plan.to_dict().get("runtimes") if _pre_update_plan is not None else None,
+    ) and defer_restart:
         # The write is normally best-effort — the stock updater can still restart the fleet
         # in-process without it. A DEFERRED run cannot: its whole contract is that the obligation
         # outlives the process, so an undurable breadcrumb means the preparation can never be
@@ -1314,6 +1553,171 @@ def _apply_pulled_update(
     # Stale .pyc would ImportError on gateway restart when new source references new names.
     _sweep_bytecode_after_update(branch)
 
+    _hand_off_post_swap(
+        args, swap="git", branch=branch, pre_pull_sha=pre_pull_sha, is_fork=is_fork, opts=opts,
+        gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update,
+        pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
+        _windows_gateway_resume=_windows_gateway_resume)
+
+
+# ``store_true`` update flags the post-swap child must see exactly as the user passed them.
+_POST_SWAP_FORWARDED_FLAGS = (
+    ("gateway", "--gateway"), ("no_backup", "--no-backup"), ("backup", "--backup"),
+    ("yes", "--yes"), ("keep_stash", "--keep-stash"), ("switch_branch", "--switch-branch"),
+    ("force", "--force"), ("force_venv", "--force-venv"),
+    ("no_gateway_restart", "--no-gateway-restart"),
+    # Fork --defer-restart: the post-swap child owns the preparation tail, so the deferred
+    # contract only survives the hand-off when the flag crosses as argv.
+    ("defer_restart", "--defer-restart"),
+)
+
+
+def _post_swap_argv_tail(args) -> list[str]:
+    tail = [flag for attr, flag in _POST_SWAP_FORWARDED_FLAGS if getattr(args, attr, False)]
+    branch = getattr(args, "branch", None)
+    if branch:
+        tail += ["--branch", str(branch)]
+    return tail
+
+
+def _post_swap_payload(
+    *, swap: str, branch: str, opts, gateway_mode: bool, had_desktop_app_before_update: bool,
+    pre_pull_sha=None, is_fork: bool = False, pre_update_snapshot_id=None, _pre_update_plan=None,
+    _windows_gateway_resume=None) -> dict:
+    """Everything the post-swap tail needs that only the pre-swap process could observe: the
+    open receipt (detached here — the child resumes it), the pre-update fleet plan, the
+    pre-update version and active features, the Windows pause token. Flags cross as argv."""
+    from hermes_cli.update_receipt import detach_update_receipt
+
+    return {
+        "swap": swap, "branch": branch, "pre_pull_sha": pre_pull_sha, "is_fork": bool(is_fork),
+        "gateway_mode": bool(gateway_mode),
+        "had_desktop_app_before_update": bool(had_desktop_app_before_update),
+        "pre_update_snapshot_id": pre_update_snapshot_id,
+        "pre_update_version": opts.pre_update_version,
+        "active_lazy_features": opts.active_lazy_features,
+        "active_tool_dependencies": opts.active_tool_dependencies,
+        "plan": _pre_update_plan.to_dict() if _pre_update_plan is not None else None,
+        "windows_gateway_resume": _windows_gateway_resume,
+        # {profile: snapshot_id} from the pre-update backup; the post-migration safety nets for
+        # sibling profiles read it (update_cmd_config._LAST_SIBLING_SNAPSHOTS).
+        "sibling_snapshots": dict(_sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS),
+        "receipt": detach_update_receipt(),
+    }
+
+
+def _sibling_snapshots_module():
+    # The backup phase REBINDS ``update_cmd_config._LAST_SIBLING_SNAPSHOTS``; read the module
+    # attribute at call time, never this module's import-time copy of the empty dict.
+    import hermes_cli.update_cmd_config as _cfg
+    return _cfg
+
+
+def _hand_off_post_swap(args, **payload_kwargs) -> None:
+    """Re-execute ``hermes update --post-swap`` on the pulled tree and exit with its code.
+
+    The parent detaches from the receipt and its Windows resume hook — the child owns both —
+    and only relays the exit code (``hermes_cli/update_handoff.py``).
+    """
+    from hermes_cli.update_handoff import continue_update_in_fresh_interpreter
+    from hermes_cli.update_receipt import resume_update_receipt
+
+    payload = _post_swap_payload(**payload_kwargs)
+    code = continue_update_in_fresh_interpreter(payload, argv_tail=_post_swap_argv_tail(args))
+    token = payload_kwargs.get("_windows_gateway_resume")
+    if token and code is not None:
+        # The child got its own copy (serialized before this flip) and owns the resume; every
+        # parent-side hook (atexit, the ZIP path's ``finally``) reads this flag and stays out
+        # of the way. When no child ran, the parent still resumes what it paused.
+        token["resume_needed"] = False
+    if code is None:
+        # No child ran: take the receipt back so this failure is recorded, and leave the
+        # install breadcrumb so the next launch finishes the dependency sync (new code, old deps).
+        if payload["receipt"]:
+            resume_update_receipt(payload["receipt"])
+        _record_update_step("post_swap_handoff", False, "child interpreter could not start")
+        _m()._write_update_incomplete_marker()
+        if payload_kwargs.get("gateway_mode"):
+            _write_gateway_update_exit_code(False)
+        code = 1
+    sys.exit(code)
+
+
+def _run_post_swap_phase(args, gateway_mode: bool) -> None:
+    """Child half of the update (``--post-swap``): resume the receipt and finish the run on the
+    pulled code."""
+    from hermes_cli.update_handoff import read_handoff
+    from hermes_cli.update_receipt import resume_update_receipt
+
+    payload = read_handoff(args.post_swap)
+    with suppress(OSError):
+        Path(args.post_swap).unlink()
+    if payload.get("receipt"):
+        resume_update_receipt(payload["receipt"])
+    _execute_post_swap(payload, args, gateway_mode)
+
+
+def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
+    """The tail ``_apply_pulled_update`` / ``_update_via_zip`` used to run in the pre-pull
+    interpreter, driven from a hand-off payload."""
+    from dataclasses import replace as _replace
+    import hermes_cli.update_cmd_config as _cfg
+    from hermes_cli.update_inventory import UpdatePlan
+
+    _cfg._LAST_SIBLING_SNAPSHOTS = dict(payload.get("sibling_snapshots") or {})
+    _pre_update_plan = UpdatePlan.from_dict(payload["plan"]) if payload.get("plan") else None
+    _windows_gateway_resume = payload.get("windows_gateway_resume")
+    if _windows_gateway_resume:
+        import atexit as _atexit
+        _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
+    # Flags and config resolve here exactly as they did pre-swap; the three pre-update
+    # snapshots come from the payload (the new tree would report the NEW version).
+    opts = _replace(
+        _resolve_update_options(args, gateway_mode),
+        pre_update_version=payload.get("pre_update_version"),
+        active_lazy_features=payload.get("active_lazy_features"),
+        active_tool_dependencies=payload.get("active_tool_dependencies"))
+    had_desktop_app_before_update = bool(payload.get("had_desktop_app_before_update"))
+    desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
+
+    try:
+        if payload.get("swap") == "zip":
+            desktop_build_ok = _finish_zip_update(
+                active_tool_dependencies=opts.active_tool_dependencies,
+                pre_update_version=opts.pre_update_version,
+                had_desktop_app_before_update=had_desktop_app_before_update,
+                _windows_gateway_resume=_windows_gateway_resume)
+            if gateway_mode:
+                _write_gateway_update_exit_code(desktop_build_ok)
+            return
+        # The parent already ran the checkout preflight (fork banner, lockfile churn, EOL); the
+        # child only needs a working git.
+        git_cmd = _ensure_non_trampoline_git(_base_git_cmd())
+        _finish_pulled_update(
+            git_cmd, payload["branch"], payload.get("pre_pull_sha"), opts, gateway_mode=gateway_mode,
+            is_fork=bool(payload.get("is_fork")), desktop_dir=desktop_dir,
+            had_desktop_app_before_update=had_desktop_app_before_update,
+            pre_update_snapshot_id=payload.get("pre_update_snapshot_id"),
+            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume)
+    except _shim_quarantine_error_type() as e:
+        _refuse_update_for_contended_shims(e)
+    except subprocess.CalledProcessError as e:
+        _handle_update_called_process_error(
+            e, args, gateway_mode, had_desktop_app_before_update,
+            _windows_gateway_resume=_windows_gateway_resume)
+
+
+def _finish_pulled_update(
+    git_cmd, branch, pre_pull_sha, opts, *, gateway_mode, is_fork, desktop_dir,
+    had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
+    _windows_gateway_resume) -> None:
+    """Post-swap tail (git path): sync Python/Node/web/Desktop, maintenance, fleet restart."""
+    # Fork --defer-restart state may be absent on stock _UpdateOptions namespaces
+    # (upstream tests build minimal opts); degrade to "not deferred" then.
+    defer_restart = getattr(opts, "defer_restart", False)
+    deferred_defects = getattr(opts, "deferred_defects", None)
+    if deferred_defects is None:
+        deferred_defects = []
     if is_fork and branch == "main":
         _m()._sync_with_upstream_if_needed(
             git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
@@ -1411,23 +1815,36 @@ def _cmd_update_impl(args, gateway_mode: bool):
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
     defer_restart, deferred_defects = getattr(opts, "defer_restart", False), getattr(opts, "deferred_defects", [])
 
+    # A child spawned off hermes.exe already outwaited its parent in ``cmd_update`` (before the
+    # update lock, so the lock it now holds is its own — the parent's marker left with it).
+    from hermes_cli.update_handoff import adopt_handed_off_gateway_resume
+
+    if getattr(args, "post_swap", None):
+        # Second half of a run whose pre-pull interpreter stopped at the code swap.
+        _run_post_swap_phase(args, gateway_mode)
+        return
+
     print("☤ Updating Hermes Agent...")
     print()
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
 
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
-    # the post-update cron-jobs safety net.
+    # the post-update cron-jobs safety net. A deliberate opt-out is recorded as a skip with its
+    # reason, not as a failed step (see _record_pre_update_backup_outcome).
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
-    _record_update_step(
-        "pre_update_backup", pre_update_snapshot_id is not None,
-        f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or failed")
+    _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
 
     # --defer-restart must not stop gateways either: the pause exists so the venv can be mutated
     # safely, and a deferred run has no restart phase to bring them back on the new code. Skipping it
     # means the venv-holder guard refuses (nonzero) while a gateway holds the interpreter — the correct
     # outcome for a prepare-only pass on Windows.
-    _windows_gateway_resume = None if defer_restart else _m()._pause_windows_gateways_for_update()
+    # A legacy re-exec child resumes exactly the fleet its parent stopped; re-running discovery
+    # here found the parent's just-relaunched gateway and force-killed it (#101600). The fork's
+    # defer_restart still skips a fresh pause, but adopts a handed-off token (restoring the
+    # parent's fleet is not a restart).
+    _windows_gateway_resume = adopt_handed_off_gateway_resume() or (
+        None if defer_restart else _m()._pause_windows_gateways_for_update())
     if _windows_gateway_resume:
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
@@ -1464,8 +1881,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(2)
         try:
             desktop_build_ok = _update_via_zip(
-                args, had_desktop_app_before_update=had_desktop_app_before_update)
+                args, had_desktop_app_before_update=had_desktop_app_before_update,
+                _windows_gateway_resume=_windows_gateway_resume)
         finally:
+            # No-op once the post-swap child owns the token (``resume_needed`` flipped);
+            # still resumes after a pre-swap refusal (dirty tree, --branch).
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
@@ -1498,8 +1918,30 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
+        # target_ref is the reference that we count against, fast-forward to,
+        # and reset to. On the main channel it is origin/<branch>. That is the
+        # historical behavior. On the stable channel it is the commit of the
+        # newest release tag. The current branch pointer fast-forwards to the
+        # release. Thus the checkout keeps its branch shape (no detached HEAD).
+        # The next stable update then fast-forward merges to the next tag.
+        target_ref = f"origin/{branch}"
+        stable_tag = None
+        if _stable_channel_active(args):
+            print("→ Update channel: stable (tagged releases)")
+            stable_tag, _stable_tag_sha = _resolve_latest_release_tag(
+                git_cmd, _m().PROJECT_ROOT
+            )
+            if stable_tag is None:
+                print("✗ No release tags found on origin. An update on the stable channel is not possible.")
+                print("  Switch channels with: hermes update --set-channel main")
+                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+                sys.exit(1)
+            print(f"→ Latest release: {stable_tag}")
+            target_ref = stable_tag
+
         print("→ Fetching updates...")
-        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        fetch_target = ["tag", stable_tag] if stable_tag else [branch]
+        fetch_result = _git_run(git_cmd, ["fetch", "origin", *fetch_target], network=True)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)
@@ -1508,6 +1950,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
+            stable_tag=stable_tag, target_ref=target_ref,
             _windows_gateway_resume=_windows_gateway_resume)
         commit_count = _plan.commit_count
 
@@ -1534,19 +1977,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _pull_updates(
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash)
+            keep_stash=opts.keep_stash, target_ref=target_ref)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
             is_fork=is_fork, desktop_dir=desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
-            _windows_gateway_resume=_windows_gateway_resume)
+            _windows_gateway_resume=_windows_gateway_resume, args=args)
     except _shim_quarantine_error_type() as e:
         # Strict quarantine refused BEFORE any installer ran — defer via marker, exit 2, no ZIP.
         # See #87331.
         _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
-        _handle_update_called_process_error(e, args, gateway_mode, had_desktop_app_before_update)
+        _handle_update_called_process_error(
+            e, args, gateway_mode, had_desktop_app_before_update,
+            _windows_gateway_resume=_windows_gateway_resume)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

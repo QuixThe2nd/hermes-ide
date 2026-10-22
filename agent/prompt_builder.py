@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import (
-    get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
+    get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
 from agent.model_metadata import CHARS_PER_TOKEN
@@ -63,7 +63,7 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
 
     def _reader() -> None:
         try:
-            result.put((True, path.read_text(encoding="utf-8")))
+            result.put((True, path.read_text(encoding="utf-8-sig")))
         except Exception as exc:  # re-raised on the caller thread
             result.put((False, exc))
 
@@ -914,9 +914,11 @@ _WINDOWS_BASH_SHELL_HINT = (
     "MSYS-style paths like `/c/Users/<user>/...` work alongside native `C:\\Users\\<user>\\...` paths. PowerShell "
     "builtins (`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their POSIX equivalents (`ls`, "
     "`$FOO`, `grep`). Path arguments for NATIVE Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "
+    # no-tmp: ok — illustrates the MSYS path that FAILS for native Windows tools
     "path conversion is disabled here, so `git -C /c/Users/x` or `node /tmp/a.js` fails with 'cannot change to'/'not "
     "found' even though `cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style forward-slash native paths to "
-    "native tools, and prefer `$LOCALAPPDATA/Temp` over `/tmp` for scratch files a native tool must read. When "
+    # no-tmp: ok — tells the model what NOT to use
+    "native tools, and prefer `$LOCALAPPDATA/Temp` (or `$TMPDIR`, which Hermes points at its own scratch dir) for scratch files a native tool must read — never a bare `/tmp`. When "
     "answering prompts in a pty background process, use process(submit) — never process(write) with a bare trailing "
     "newline: Enter on a Windows PTY is a carriage return, and a lone `\\n"
     "` is not delivered as a line terminator, so the child's prompt silently never returns. When a CLI offers a "
@@ -1030,6 +1032,13 @@ def _local_host_hints() -> list[str]:
     host_lines = [f"Host: {host}", f"User home directory: {os.path.expanduser('~')}"]
     try:
         host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
+    except OSError:
+        pass
+    # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
+    # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
+    try:
+        host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
+                          "and probes there, never under the system temp dir; entries are pruned after 72h)")
     except OSError:
         pass
     if not (sys.platform == "win32" and not is_wsl()):
@@ -1196,7 +1205,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     """The disk snapshot if it exists, is current-version, and its manifest still matches."""
     try:
-        snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8"))
+        snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8-sig"))
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
     if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
@@ -1224,7 +1233,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     if org_id:
         entry["org_id"] = org_id
         try:  # author from the pull-time provenance sidecar; best-effort
-            prov = json.loads((skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE).read_text(encoding="utf-8"))
+            prov = json.loads((skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE).read_text(encoding="utf-8-sig"))
             entry["org_author"] = str(prov.get("author_device") or "") or str(prov.get("author_user_id") or "")
         except Exception:
             entry["org_author"] = ""
@@ -1234,7 +1243,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once -> (is_compatible, frontmatter, description); errors yield (True, {}, "")."""
     try:
-        frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+        frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8-sig"))
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
         if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
             return False, frontmatter, ""
@@ -1317,7 +1326,7 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for desc_file in iter_skill_index_files(root, "DESCRIPTION.md"):
         try:
-            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8"))[0].get("description")
+            cat_desc = parse_frontmatter(desc_file.read_text(encoding="utf-8-sig"))[0].get("description")
             if cat_desc:
                 rel = desc_file.relative_to(root)
                 found["/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"] = str(cat_desc).strip().strip("'\"")
@@ -1391,6 +1400,13 @@ def _render_skills_index(
             if name not in seen:
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+    from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
+    if is_single_query_session():
+        return (
+            ONESHOT_SKILLS_LOAD_GUIDANCE
+            + "\n<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
+            + hidden_note
+        )
     return (
         "## Skills\n"
         "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
@@ -1414,6 +1430,11 @@ def _render_skills_index(
     )
 
 
+def _oneshot_prompt_variant() -> bool:
+    from agent.oneshot_footprint import is_single_query_session
+    return is_single_query_session()
+
+
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
@@ -1428,6 +1449,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _oneshot_prompt_variant(),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)

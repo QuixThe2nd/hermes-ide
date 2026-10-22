@@ -69,6 +69,9 @@ full peer window without switching the source window. The desktop default
 applies at startup and to generic new chats; explicit profile/project actions
 and profile-specific windows keep their own destinations. Changing the default
 does not move existing sessions or replace the active conversation.
+Ordinary **New Window** (`⌘⇧N` / `Ctrl+Shift+N`) inherits its opener's device and
+profile only at startup, not as a window-specific default. Later device/profile
+selections remain authoritative for new chats unless a desktop default is set.
 
 Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
@@ -109,7 +112,11 @@ represented execution rows appear only when explicitly expanded. Empty text
 continuations must not introduce paragraph gaps. Keep inline approvals beside
 the conversation and let genuine content scroll normally; do not inject padding
 or write scroll offsets to pin the decision. Preview this order with delayed
-start and completion events, not pre-created tool rows.
+start and completion events, not pre-created tool rows. Final approval removal
+retires both the painted card and its measured layout footprint; restoring tool
+rows must not insert their full height before the outgoing stack can settle.
+No completion callback may clear the measurement of a newly arrived card.
+Reduced motion settles immediately without retaining empty clearance.
 
 ## Window glass
 
@@ -224,8 +231,7 @@ blurred backdrop.
   Empty lists hide their search field.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
-  pill rows. `iconOnly` renders compact icon buttons with label tooltips and
-  accessible names; use `codiconIcon()` for Codicon options.
+  pill rows.
 - **`Switch`** (`size="xs"`) — bare, with `aria-label`. No bordered text wrapper.
 - **`FanMenu`** (`src/components/ui/fan-menu.tsx`) — one hub control that
   fans sibling toggles out on hover: `direction` `vertical` | `horizontal`
@@ -338,6 +344,9 @@ so glass and message-bubble transparency do not reveal scrolling text.
   focus callbacks cannot replace that choice, and a live transcript selection
   is never cleared by focus-follow. Movement within the same pane
   must not flush React; deliberate Tab navigation and clicked controls still work.
+  An inline message edit is a typing target of its own: opening one keeps focus
+  in the edit editor, and neither its mount-time focus nor mouse movement while
+  it is open hands the caret back to the pane composer.
   Active dictation or voice conversation pins the recipient until capture ends,
   keeping the microphone's stop controls and shortcut attached to its owner.
 - Status-stack rows use `StatusRow` with a leading `dismiss` action, a state

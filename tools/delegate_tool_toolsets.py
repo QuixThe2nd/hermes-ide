@@ -13,7 +13,8 @@ logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
-        "delegate_task",  # no recursive delegation
+        "delegate_agent",  # no recursive delegation (primary name)
+        "delegate_task",  # ... and its hidden legacy alias: both dispatchable, both blocked
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
@@ -69,6 +70,7 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     blocked names inside mixed bundles are subtracted AFTER composite expansion."""
     blocked_names = set(DELEGATE_BLOCKED_TOOLS)
     if role == "orchestrator":
+        blocked_names.discard("delegate_agent")
         blocked_names.discard("delegate_task")
     return sorted(
         name for name, defn in TOOLSETS.items() if defn.get("tools") and set(defn.get("tools", ())).issubset(blocked_names)

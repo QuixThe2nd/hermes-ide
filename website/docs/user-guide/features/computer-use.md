@@ -365,9 +365,13 @@ want every action confirmed.
 
 Screenshots are expensive. Hermes applies four layers of optimisation:
 
-- **Screenshot eviction** — the Anthropic adapter keeps only the 3 most
-  recent screenshots in context; older ones become `[screenshot removed
-  to save context]` placeholders.
+- **Screenshot eviction** — on every provider, screenshots ride each
+  request until it would cross Anthropic's documented per-request image
+  limit (20 image blocks, or 24 MB of image data); then the oldest batch becomes
+  `[screenshot removed to save context]` placeholders. Below the limit
+  nothing is rewritten, so the prompt-cache prefix survives; at it, one
+  slower turn per batch instead of one per screenshot. Images you attach
+  yourself count against the limit but are never removed.
 - **Client-side compression pruning** — the context compressor detects
   multimodal tool results and strips image parts from old ones.
 - **Image-aware token estimation** — each image is counted as ~1500
@@ -426,10 +430,14 @@ of screenshot context, not ~600K.
     [windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh)
     has the recipe.
   - **Linux** requires a reachable display server. Headless servers
-    need Xvfb (`Xvfb :99 -screen 0 1920x1080x24`) before
-    `computer_use` can capture or inject events. Pure Wayland sessions
-    need an XWayland bridge for screen capture (cua-driver's Wayland
-    inject path handles input independently).
+    get one from [Bot Screen](./bot-screen.md): a per-profile Xfce
+    desktop over TigerVNC, streamed into Hermes Desktop, where you can
+    take over for logins and 2FA. You start it from the Desktop's
+    Screen pane or `hermes computer-use screen start`; it starts on
+    first use only when `bot_desktop.auto_start: true` is set (off by
+    default).
+    Pure Wayland sessions need an XWayland bridge for screen capture
+    (cua-driver's Wayland inject path handles input independently).
 
 For cross-platform GUI automation without the desktop overhead (and
 without TCC / Session 0 / X11 setup), the `browser` toolset uses a

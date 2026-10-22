@@ -449,7 +449,7 @@ Press **F7** in the Classic CLI or TUI composer to toggle the dock between its m
 
 The live transcript tail is a bounded recent excerpt, not an unlimited conversation browser. A child leaving the live registry leaves the dock; completion messages and the TUI/Desktop history views remain the place to review finished work. Latest activity is an observation, not a percentage-complete estimate.
 
-The classic CLI's `/agents` and `/tasks` commands still print a text summary; **Ctrl+T** (or **F6**) is the immediate interactive monitor, including while the parent is busy. See [TUI — Slash commands](/user-guide/tui#slash-commands).
+The classic CLI's `/agents` and `/tasks` commands still print a text summary; **Ctrl+T** (or **F6**) is the immediate interactive monitor, including while the parent is busy. See [TUI — Slash commands](../tui.md#slash-commands).
 
 On the classic CLI and every gateway platform (Telegram, Discord, Slack, ...),
 `/agents` also lists **background delegations with live per-child activity**,
@@ -489,7 +489,7 @@ Control actions run synchronously in-turn (never backgrounded), are scoped to th
 
 ### From the TUI / gateway (session-facing)
 
-`steer_subagent(subagent_id, text)` in `tools/delegate_tool_registry.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
+`steer_subagent(subagent_id, text)` in `tools/delegate_tool_registry.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](../../reference/slash-commands.md) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
 
 ```json
 {"method": "subagent.steer", "params": {"session_id": "owning-ui-session", "subagent_id": "sa-0-1a2b3c4d", "text": "focus on pricing instead"}}
@@ -541,6 +541,8 @@ delegate_agent(
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
 
+**One-shot runs are capped separately.** `hermes chat -q` / `--oneshot` sessions may spawn at most `delegation.oneshot_max_children` subagents in total (default `2`, `0` = unlimited). A one-shot run has no later turn to receive results, and in benchmark trajectories most of its spawns were "independently review my own work" rather than parallel work — each such child re-pays a cold system prompt and re-reads the repo. Interactive and gateway sessions are unaffected.
+
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
@@ -564,7 +566,7 @@ For **durable execution** that must survive session closure or process restart, 
 - Subagents inherit the parent's enabled toolsets; the model cannot select or widen them per call
 - **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
 - Leaf subagents **cannot** call: `delegate_agent`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_agent` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
-- **Cancellation follows ownership** — `/stop` or closing/resetting the owning session cancels its background children; synchronous descendants under orchestrators follow their parent's interrupt state
+- **Cancellation follows ownership** — `/stop` or closing/resetting the owning session ends its background children and the synchronous descendants beneath them; each returns an interrupted completion carrying its partial output
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
 
@@ -677,7 +679,7 @@ delegation:
 
 When `base_url` points at an Anthropic-compatible endpoint — for example a path ending in `/anthropic`, an Azure Foundry Claude route, or a MiniMax `/anthropic` proxy — `api_mode` is auto-detected as `anthropic_messages` so the subagent uses the right wire format without you setting anything. Set `api_mode` explicitly when the auto-detection guess is wrong (rare).
 
-Subagents compact at the same ratio trigger as their parent (`compression.threshold`, 0.50 × window by default). `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
+Subagents compact where their parent does — the lower of `compression.threshold` × window and the global `compression.threshold_tokens` cap (256K on a 1M model by default). `delegation.compression_threshold_tokens` (default `0`, off) adds an optional absolute cap on a child's compaction *trigger*, applied as the lower of it and the ratio threshold; it never touches the request payload or the parent. A token count of at least 16000 enables it; `true` or `"200k"` are config errors that are warned and ignored. It stays off by default because a replay of a 1,393-agent run put 200K–400K caps within 5% of each other in cost once cache prefixes are intact, and every compaction is a chance to lose detail.
 
 `delegation.request_overrides` works on **all three** resolution branches — direct `base_url`, named `provider`, and pure inherit — so it always takes effect. Top-level keys are API kwargs (e.g. `service_tier`); an `extra_body` sub-dict is merged into the request's `extra_body`. Explicit values merge **over** runtime- or parent-derived overrides: explicit top-level keys win, and `extra_body` is deep-merged one level, so a provider's own request personality (e.g. `thinking: {type: disabled}`) survives unless your key redefines it. See [Configuration → Delegation](../configuration.md#delegation) for details.
 

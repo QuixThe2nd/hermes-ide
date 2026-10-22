@@ -1757,7 +1757,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
-    { name = "pywinpty", marker = "sys_platform == 'win32'" },
+    { name = "pywinpty", marker = "platform_machine != 'ARM64' and sys_platform == 'win32'" },
     { name = "pyyaml" },
     { name = "requests" },
     { name = "rich" },
@@ -1794,6 +1794,10 @@ all = [
 anthropic = [
     { name = "anthropic" },
 ]
+audio-io = [
+    { name = "numpy" },
+    { name = "sounddevice" },
+]
 azure-identity = [
     { name = "azure-identity" },
 ]
@@ -1823,6 +1827,12 @@ dingtalk = [
     { name = "alibabacloud-dingtalk" },
     { name = "dingtalk-stream" },
     { name = "qrcode" },
+]
+discord = [
+    { name = "discord-py", extra = ["voice"] },
+]
+doc-extract = [
+    { name = "firecrawl-anydoc" },
 ]
 edge-tts = [
     { name = "edge-tts" },
@@ -1903,6 +1913,9 @@ otlp = [
 parallel-web = [
     { name = "parallel-web" },
 ]
+silk = [
+    { name = "pilk" },
+]
 slack = [
     { name = "aiohttp" },
     { name = "slack-bolt" },
@@ -1911,12 +1924,18 @@ slack = [
 sms = [
     { name = "aiohttp" },
 ]
+stt-whisper = [
+    { name = "faster-whisper" },
+]
 supermemory = [
     { name = "supermemory" },
 ]
 teams = [
     { name = "aiohttp" },
     { name = "microsoft-teams-apps" },
+]
+telegram = [
+    { name = "python-telegram-bot", extra = ["webhooks"] },
 ]
 termux = [
     { name = "agent-client-protocol" },
@@ -1944,6 +1963,9 @@ termux-all = [
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+trace-upload = [
+    { name = "huggingface-hub" },
+]
 tts-premium = [
     { name = "elevenlabs" },
 ]
@@ -1965,8 +1987,21 @@ wake = [
     { name = "openwakeword" },
     { name = "pvporcupine" },
     { name = "sentencepiece" },
-    { name = "sherpa-onnx" },
+    { name = "sherpa-onnx", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
     { name = "sounddevice" },
+]
+wake-openwakeword = [
+    { name = "onnxruntime" },
+    { name = "openwakeword" },
+]
+wake-porcupine = [
+    { name = "pvporcupine" },
+]
+wake-sherpa = [
+    { name = "sherpa-onnx", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+]
+wake-tflite = [
+    { name = "ai-edge-litert", marker = "sys_platform == 'darwin'" },
 ]
 web = [
     { name = "fastapi" },
@@ -1985,6 +2020,7 @@ youtube = [
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
     { name = "ai-edge-litert", marker = "sys_platform == 'darwin' and extra == 'wake'", specifier = "==2.1.6" },
+    { name = "ai-edge-litert", marker = "sys_platform == 'darwin' and extra == 'wake-tflite'", specifier = "==2.1.6" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'matrix'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.14.3" },
@@ -2007,6 +2043,7 @@ requires-dist = [
     { name = "debugpy", marker = "extra == 'dev'", specifier = "==1.8.20" },
     { name = "defusedxml", marker = "extra == 'wecom'", specifier = "==0.7.1" },
     { name = "dingtalk-stream", marker = "extra == 'dingtalk'", specifier = "==0.24.3" },
+    { name = "discord-py", extras = ["voice"], marker = "extra == 'discord'", specifier = "==2.7.1" },
     { name = "discord-py", extras = ["voice"], marker = "extra == 'messaging'", specifier = "==2.7.1" },
     { name = "edge-tts", marker = "extra == 'edge-tts'", specifier = "==7.2.7" },
     { name = "elevenlabs", marker = "extra == 'tts-premium'", specifier = "==1.59.0" },
@@ -2014,9 +2051,11 @@ requires-dist = [
     { name = "fal-client", marker = "extra == 'fal'", specifier = "==0.13.1" },
     { name = "fastapi", specifier = ">=0.104.0,<1" },
     { name = "fastapi", marker = "extra == 'web'", specifier = "==0.133.1" },
+    { name = "faster-whisper", marker = "extra == 'stt-whisper'", specifier = "==1.2.1" },
     { name = "faster-whisper", marker = "extra == 'voice'", specifier = "==1.2.1" },
     { name = "fire", specifier = "==0.7.1" },
     { name = "firecrawl-anydoc", specifier = "==0.2.4" },
+    { name = "firecrawl-anydoc", marker = "extra == 'doc-extract'", specifier = "==0.2.4" },
     { name = "firecrawl-py", marker = "extra == 'firecrawl'", specifier = "==4.17.0" },
     { name = "google-api-python-client", marker = "extra == 'google'", specifier = "==2.194.0" },
     { name = "google-api-python-client", marker = "extra == 'google-chat'", specifier = "==2.194.0" },
@@ -2055,6 +2094,7 @@ requires-dist = [
     { name = "httpx2", marker = "extra == 'computer-use'", specifier = "==2.7.0" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = "==2.7.0" },
     { name = "httpx2", marker = "extra == 'mcp'", specifier = "==2.7.0" },
+    { name = "huggingface-hub", marker = "extra == 'trace-upload'", specifier = "==1.24.0" },
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.6.8" },
     { name = "markdown", specifier = "==3.10.2" },
@@ -2067,22 +2107,27 @@ requires-dist = [
     { name = "mistralai", marker = "extra == 'mistral'", specifier = "==2.4.8" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
     { name = "nemo-relay", marker = "(platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.8.3,<0.9" },
+    { name = "numpy", marker = "extra == 'audio-io'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'wake'", specifier = "==2.4.3" },
     { name = "onnxruntime", marker = "extra == 'wake'", specifier = "==1.27.0" },
+    { name = "onnxruntime", marker = "extra == 'wake-openwakeword'", specifier = "==1.27.0" },
     { name = "openai", specifier = "==2.24.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otlp'", specifier = "==1.39.1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otlp'", specifier = "==1.39.1" },
     { name = "openwakeword", marker = "extra == 'wake'", specifier = "==0.6.0" },
+    { name = "openwakeword", marker = "extra == 'wake-openwakeword'", specifier = "==0.6.0" },
     { name = "packaging", specifier = "==26.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "pathspec", specifier = "==1.1.1" },
+    { name = "pilk", marker = "extra == 'silk'", specifier = "==0.2.4" },
     { name = "pillow", specifier = "==12.3.0" },
     { name = "pillow-heif", specifier = ">=1.4.0,<2" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
     { name = "psutil", specifier = "==7.2.2" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },
     { name = "pvporcupine", marker = "extra == 'wake'", specifier = "==4.0.3" },
+    { name = "pvporcupine", marker = "extra == 'wake-porcupine'", specifier = "==4.0.3" },
     { name = "pyasn1", marker = "extra == 'google'", specifier = "==0.6.4" },
     { name = "pyasn1", marker = "extra == 'google-chat'", specifier = "==0.6.4" },
     { name = "pydantic", specifier = "==2.13.4" },
@@ -2093,9 +2138,10 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9,<1" },
     { name = "python-multipart", marker = "extra == 'web'", specifier = "==0.0.32" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'messaging'", specifier = "==22.8" },
+    { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'telegram'", specifier = "==22.8" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'termux'", specifier = "==22.8" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306,<312" },
-    { name = "pywinpty", marker = "sys_platform == 'win32'", specifier = ">=2.0.0,<3" },
+    { name = "pywinpty", marker = "platform_machine != 'ARM64' and sys_platform == 'win32'", specifier = ">=2.0.0,<3" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "qrcode", marker = "extra == 'dingtalk'", specifier = "==7.4.2" },
     { name = "qrcode", marker = "extra == 'feishu'", specifier = "==7.4.2" },
@@ -2106,12 +2152,14 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.10" },
     { name = "sentencepiece", marker = "extra == 'wake'", specifier = "==0.2.2" },
     { name = "setuptools", marker = "extra == 'dev'", specifier = "==83.0.0" },
-    { name = "sherpa-onnx", marker = "extra == 'wake'", specifier = "==1.13.4" },
+    { name = "sherpa-onnx", marker = "(platform_machine != 'ARM64' and extra == 'wake') or (sys_platform != 'win32' and extra == 'wake')", specifier = "==1.13.4" },
+    { name = "sherpa-onnx", marker = "(platform_machine != 'ARM64' and extra == 'wake-sherpa') or (sys_platform != 'win32' and extra == 'wake-sherpa')", specifier = "==1.13.4" },
     { name = "slack-bolt", marker = "extra == 'messaging'", specifier = "==1.30.0" },
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = "==1.30.0" },
     { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.44.1" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.44.1" },
     { name = "snowballstemmer", specifier = "==3.1.1" },
+    { name = "sounddevice", marker = "extra == 'audio-io'", specifier = "==0.5.5" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = "==0.5.5" },
     { name = "sounddevice", marker = "extra == 'wake'", specifier = "==0.5.5" },
     { name = "starlette", marker = "extra == 'computer-use'", specifier = "==1.3.1" },
@@ -2129,7 +2177,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "wake-tflite", "doc-extract", "trace-upload", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "google-chat", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -3293,6 +3341,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/5a/82/42f767fc1c1143d6fd36efb827202a2d997a375e160a71eb2888a925aac1/pathspec-1.1.1.tar.gz", hash = "sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a", size = 135180, upload-time = "2026-04-27T01:46:08.907Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/d9/7fb5aa316bc299258e68c73ba3bddbc499654a07f151cba08f6153988714/pathspec-1.1.1-py3-none-any.whl", hash = "sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189", size = 57328, upload-time = "2026-04-27T01:46:07.06Z" },
+]
+
+[[package]]
+name = "pilk"
+version = "0.2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/bb/938dd697b6bc2d851ffec4ffe82ed20078e58bd0ef049e84f4d038d6f991/pilk-0.2.4.tar.gz", hash = "sha256:d4a1bcf93dc6ef5e95e0cfd728ed4ef4d49f9c0476d70816fecbe456cc762e7f", size = 226451, upload-time = "2023-05-26T03:32:34.133Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ff/06/80cac61bc7f791bcaae552ba90fb868f7af7503ef1c74e423cc20fca1a53/pilk-0.2.4-cp311-cp311-win_amd64.whl", hash = "sha256:a6692096607e8d77d348aeec00df633788c85b527aa83cbd803ddf508936db7f", size = 127024, upload-time = "2023-05-26T03:32:24.524Z" },
 ]
 
 [[package]]

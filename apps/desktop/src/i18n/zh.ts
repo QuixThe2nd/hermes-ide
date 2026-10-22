@@ -3,45 +3,6 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zh = defineLocale({
-  catalog: {
-    listView: '列表视图',
-    cardView: '卡片视图',
-    installTitle: (name: string) => `安装“${name}”？`,
-    installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
-    installTo: '安装到',
-    thisComputer: '此电脑',
-    installing: '正在安装…',
-    installComplete: (name: string) => `已安装“${name}”`,
-    destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
-    browse: '浏览',
-    installed: '已安装',
-    searchSkills: '搜索技能',
-    searchPlugins: '搜索插件',
-    allSources: '所有来源',
-    allCategories: '所有分类',
-    about: '简介',
-    author: '作者',
-    source: '来源',
-    category: '分类',
-    version: '版本',
-    platforms: '支持的平台',
-    requires: '依赖项',
-    tools: '工具',
-    hooks: '钩子',
-    repository: '代码仓库',
-    documentation: '文档',
-    noResults: '没有匹配项',
-    tryAnother: '请尝试其他搜索或清除筛选条件。',
-    clearFilters: '清除筛选条件',
-    loadFailed: '无法加载目录',
-    retry: '重试',
-    more: '显示更多',
-    pinned: '已审核的提交',
-    snapshotHint: '内容来自 Hermes 目录。浏览时不会连接来源代码仓库。',
-    installHint: '安装前请检查源代码。更改将在新会话中生效。',
-    results: (count: number) => `${count.toLocaleString('zh')} 个结果`,
-    back: '返回结果'
-  },
   connectors: {
     title: '连接你的应用',
     connect: '连接',
@@ -238,6 +199,7 @@ export const zh = defineLocale({
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 项新更改可用。`,
     updateReadyMessageUnknown: '有新更新可用。',
+    updateReadyMessageAppInstaller: 'Hermes 新版本已就绪。现在更新，Windows 会自动完成。',
     seeWhatsNew: '查看更新内容',
     mcp: {
       needsAuthTitle: 'MCP 服务器需要重新认证',
@@ -290,9 +252,11 @@ export const zh = defineLocale({
     },
     native: {
       approvalTitle: '需要批准',
+      approvalTitleNamed: session => `需要批准 — ${session}`,
       approveAction: '批准',
       rejectAction: '拒绝',
       inputTitle: '需要输入',
+      inputTitleNamed: session => `需要输入 — ${session}`,
       inputBody: 'Hermes 正在等待你的回应。',
       turnDoneTitle: 'Hermes 已完成',
       turnDoneBody: '',
@@ -382,7 +346,7 @@ export const zh = defineLocale({
       'nav.commandCenter': '打开命令中心',
       'nav.settings': '打开设置',
       'nav.profiles': '打开配置',
-      'nav.skills': '打开技能',
+      'nav.capabilities': '打开技能',
       'nav.messaging': '打开消息',
       'nav.artifacts': '打开制品',
       'nav.cron': '打开定时任务',
@@ -852,7 +816,7 @@ export const zh = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
-      modelContextLength: '上下文窗口',
+      modelContextLength: '仅覆盖主聊天模型检测到的上下文窗口（以 token 计）。保持为 0 则使用所选模型检测到的值。不影响辅助模型/MoA 模型。',
       fallbackProviders: '备用模型',
       toolsets: '启用的工具集',
       timezone: '时区',
@@ -1012,6 +976,11 @@ export const zh = defineLocale({
         targetRatio: '压缩目标',
         protectLastN: '保护最近消息'
       },
+      auxiliary: {
+        compression: {
+          timeout: '压缩模型超时（秒）'
+        }
+      },
       delegation: {
         model: '子智能体模型',
         provider: '子智能体提供方',
@@ -1075,6 +1044,11 @@ export const zh = defineLocale({
       compression: {
         enabled: '当对话变大时对较早的上下文进行摘要。',
         codexGpt55Autoraise: '为受支持的 ChatGPT Codex OAuth 模型将压缩阈值提高到 85%。'
+      },
+      auxiliary: {
+        compression: {
+          timeout: '每次调用辅助压缩模型的等待秒数（默认 120）。本地模型较慢时请调高。'
+        }
       },
       browser: {
         useRealProfile:
@@ -1676,6 +1650,7 @@ export const zh = defineLocale({
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
       upToDateDetail: (tag, backend) => `正在运行 llama.cpp ${tag}（${backend}）——已配置的构建。`,
+      updateToast: next => `本地引擎有新构建（${next}）。可在 设置 → 本地模型 中更新。`,
       activeDetail: '新对话使用此模型——发送首条消息时加载',
       activeNotLoaded: '首条消息时加载',
       loadedPill: '已加载',
@@ -1863,7 +1838,11 @@ export const zh = defineLocale({
         selectedTitle: '已选择后端',
         selectedMessage: backend => `终端命令现在通过 ${backend} 运行。将应用于新会话。`,
         failedSelect: backend => `选择 ${backend} 失败`,
-        needsSetupHint: '现在即可选择此后端——但在完成设置前命令将会失败。'
+        needsSetupHint: '此后端已选中但尚未完成设置——在设置完成前命令将会失败。',
+        needsSetupConfirmTitle: backend => `仍要选择 ${backend} 吗？`,
+        needsSetupConfirmDescription: detail => `${detail} 此更改生效后启动的会话在设置完成前将没有终端或文件工具。`,
+        needsSetupConfirmDescriptionGeneric: '此后端尚未完成设置。此更改生效后启动的会话在设置完成前将没有终端或文件工具。',
+        needsSetupConfirmAction: '仍然选择'
       },
       browserRealProfile: {
         label: '使用我的真实浏览器配置文件',
@@ -1963,6 +1942,8 @@ export const zh = defineLocale({
         '此配置未安装 agent 部分，且该包是手动复制的（无目录条目或 git 远程），无法从此处安装。请将其文件夹复制到该配置或从 Git 重新安装。',
       desktopHalfPending: '复制中…',
       desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
+      desktopHalfRemote: '不可用（远程后端）',
+      desktopHalfRemoteTip: '此包的桌面部分位于远程后端的磁盘上，本应用无法读取。要在此使用，请通过“从 Git 安装”输入该包的仓库地址并勾选桌面目标，即可将桌面部分克隆到本机。',
       emptyAll: '还没有插件。',
       empty: '此配置尚未安装任何 agent 插件。',
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
@@ -2028,6 +2009,10 @@ export const zh = defineLocale({
       uninstallStarted: name => `正在卸载 ${name}…`,
       updateStarted: '正在更新已安装技能…',
       actionFailed: '技能操作失败',
+      installBlockedTitle: name => `无法安装 ${name}`,
+      installBlockedMessage: (findings, unverified) =>
+        `安全扫描标记了 ${findings > 0 ? `${findings} 项` : '风险模式'} 需要审查${unverified ? '，且该技能来自未验证的来源' : ''}。请先阅读扫描结果，再决定是否信任作者。`,
+      viewScan: '查看扫描',
       actionLog: '操作日志',
       alreadyInstalled: name => `“${name}”已安装`,
       pickerTitle: '技能中心',
@@ -2199,7 +2184,7 @@ export const zh = defineLocale({
     nav: {
       newChat: { title: '新建会话', detail: '开始一个新会话' },
       settings: { title: '设置', detail: '配置 Hermes 桌面端' },
-      skills: { title: '技能与工具', detail: '启用技能、工具集与提供方' },
+      capabilities: { title: '技能与工具', detail: '启用技能、工具集与提供方' },
       messaging: { title: '消息平台', detail: '配置 Telegram、Slack、Discord 等' },
       artifacts: { title: '产物', detail: '浏览生成的输出' }
     },
@@ -2904,7 +2889,7 @@ export const zh = defineLocale({
     },
     nav: {
       'new-session': '新建会话',
-      skills: '技能与工具',
+      capabilities: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
       cron: '定时任务'
@@ -3002,6 +2987,7 @@ export const zh = defineLocale({
       enter: label => `打开 ${label}`,
       reorder: label => `重新排序 ${label}`,
       toggle: (label, open) => `${open ? '展开' : '收起'} ${label} 会话`,
+      showAllCount: count => `显示全部 ${count} 个会话`,
       back: '全部项目'
     },
     newSessionIn: label => `在 ${label} 中新建会话`,
@@ -3164,6 +3150,8 @@ export const zh = defineLocale({
     attachments: count => `${count} 个附件`,
     editingInComposer: '正在输入框中编辑',
     editingQueuedInComposer: '正在输入框中编辑排队回合',
+    restoredDraftNotice: '已恢复你未发送的消息',
+    restoredDraftUndo: '撤销',
     queueEdit: '编辑',
     queueSendNext: '下一个',
     queueSteer: '引导 — 立即修正当前回合',
@@ -3425,6 +3413,7 @@ export const zh = defineLocale({
     notAvailableTitle: '更新不可用',
     unsupportedMessage: '此版本的 Hermes 无法在应用内自行更新。',
     connectionRetry: '请检查网络连接后重试。',
+    gitUnusable: 'Hermes 无法在这台电脑上运行 Git，因此无法检查更新。',
     latestBody: '你正在运行最新版本。',
     latestBodyBackend: '后端正在运行最新版本。',
     allSetTitle: '已是最新',
@@ -3433,6 +3422,7 @@ export const zh = defineLocale({
     availableTitleBackend: '后端有可用更新',
     availableBodyBackend: '已连接的 Hermes 后端有新版本可安装。',
     availableBodyNoChangelog: '已有新版本可用。此安装方式无法显示更新日志。',
+    availableBodyAppInstaller: 'Hermes 新版本已就绪。Hermes 会关闭，Windows 完成更新后自动重新打开。',
     updateNow: '立即更新',
     maybeLater: '稍后再说',
     moreChanges: count => `另有 ${count} 项更改。`,
@@ -3449,6 +3439,10 @@ export const zh = defineLocale({
       'Hermes 更新器会在自己的窗口中接管，并在完成后自动重新打开 Hermes。更新期间请不要自行重新打开 Hermes。',
     applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
     applyingClose: '此窗口会在更新期间关闭，随后 Hermes 会自动重新打开。',
+    applyingBodyAppInstaller: 'Hermes 会关闭，Windows 会完成更新，然后 Hermes 自动重新打开——无需任何操作。',
+    applyingCloseAppInstaller: '此窗口会关闭，Windows 完成更新后 Hermes 自动重新打开。',
+    checkUnknownTitleAppInstaller: '无法检查更新',
+    checkUnknownBodyAppInstaller: 'Windows 目前无法检查更新。重启 Hermes 时也会自动安装更新。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
     blockerTitle: '关闭本地预览以更新 Hermes？',
@@ -3868,6 +3862,8 @@ export const zh = defineLocale({
     openFolder: '打开文件夹',
     refreshTree: '刷新文件树',
     collapseAll: '折叠所有文件夹',
+    showIgnored: '显示 gitignore 的文件',
+    hideIgnored: '隐藏 gitignore 的文件',
     previewUnavailable: '预览不可用',
     couldNotPreview: path => `无法预览 ${path}`,
     noProjectTitle: '没有项目',
@@ -4283,6 +4279,7 @@ export const zh = defineLocale({
     sudoTitle: '管理员密码',
     sudoDesc: '输入 sudo 密码前，请先检查命令。密码会发送给执行命令的 agent，并在本次会话中缓存。',
     sudoCommandUnavailable: '此 agent 未提供命令。如果无法在对话中确认，请取消。',
+    sudoInstallDesc: 'Hermes 需要你的 sudo 密码，以在网关主机上安装 Bot Screen 软件包（TigerVNC + Xfce）。它只会发送到该主机。',
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',

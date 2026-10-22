@@ -97,7 +97,13 @@ class SentenceChunker:
 
 
 class StreamingTTSProvider(ABC):
-    """Yields raw int16, little-endian, mono PCM chunks at ``sample_rate`` (built-ins: 24 kHz)."""
+    """Yields raw int16, little-endian, mono PCM chunks at ``sample_rate`` (built-ins: 24 kHz).
+
+    ``sample_rate`` is provisional until ``stream()`` has yielded its first chunk: a provider may
+    update the instance attribute once the endpoint's real format is known (OpenAI-compatible
+    servers advertise it in the response headers), so consumers open their output device or WAV
+    header after pulling the first chunk, never at construction.
+    """
 
     sample_rate: int = 24000
     channels: int = 1
@@ -201,9 +207,39 @@ def _openai_config_api_key() -> str:
         return ""
 
 
+def _sample_rate_from_headers(headers) -> Optional[int]:
+    """Rate an OpenAI-compatible TTS endpoint advertises: ``X-Audio-Sample-Rate`` (the convention
+    local servers use) or ``rate=`` in ``Content-Type`` (``audio/pcm; rate=44100``); None if absent."""
+    if not headers:
+        return None
+    raw = headers.get("x-audio-sample-rate")
+    if raw is None:
+        m = re.search(r"(?:^|[;\s])rate\s*=\s*(\d+)", str(headers.get("content-type") or ""), re.IGNORECASE)
+        raw = m.group(1) if m else None
+    try:
+        rate = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return rate if rate > 0 else None
+
+
 @register("openai")
 class OpenAIStreamer(StreamingTTSProvider):
-    """OpenAI speech with ``response_format=pcm`` (24 kHz mono int16)."""
+    """OpenAI speech with ``response_format=pcm`` (OpenAI itself: 24 kHz mono int16).
+
+    Compatible servers may emit another rate: ``tts.openai.pcm_sample_rate`` sets the expected
+    rate up front and a rate reported by the response (``X-Audio-Sample-Rate`` / Content-Type
+    ``rate=``) overrides it before the first chunk is yielded (#76466).
+    """
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        configured = section.get("pcm_sample_rate", self.sample_rate)
+        if isinstance(configured, bool) or not isinstance(configured, (int, float, str)) \
+                or not str(configured).strip().isdigit() or int(str(configured).strip()) <= 0:
+            logger.warning("Invalid tts.openai.pcm_sample_rate %r; using %d Hz", configured, self.sample_rate)
+        else:
+            self.sample_rate = int(str(configured).strip())
 
     @staticmethod
     def available() -> bool:
@@ -219,6 +255,12 @@ class OpenAIStreamer(StreamingTTSProvider):
             model=self.section.get("model", "gpt-4o-mini-tts"), voice=self.section.get("voice", "alloy"),
             input=text, response_format="pcm",
         ) as response:
+            # Runs on the first next(), before any audio is yielded, so consumers reading
+            # ``sample_rate`` after the first chunk open their device at the endpoint's rate.
+            rate = _sample_rate_from_headers(getattr(response, "headers", None))
+            if rate is not None and rate != self.sample_rate:
+                logger.info("TTS endpoint reports %d Hz PCM (expected %d Hz); honoring it", rate, self.sample_rate)
+                self.sample_rate = rate
             yield from _capped(response.iter_bytes(), "OpenAI streaming TTS")
 
 
@@ -244,9 +286,10 @@ class GeminiStreamer(StreamingTTSProvider):
         api_key = _gemini_key()
         model = str(self.section.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
         voice = str(self.section.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
-        base_url = str(
-            self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL
-        ).strip().rstrip("/")
+        from agent.gemini_native_adapter import normalize_gemini_base_url
+        base_url = normalize_gemini_base_url(
+            self.section.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL, api_key,
+        )
         payload = {
             "contents": [{"parts": [{"text": text}]}],
             "generationConfig": {
@@ -278,6 +321,31 @@ class GeminiStreamer(StreamingTTSProvider):
         yield from _capped(_sse_chunks(), "Gemini streaming TTS")
 
 
+def _xai_proxy_pinned(section: Optional[Dict] = None) -> bool:
+    """True when ``tts.xai.proxy_provider`` pins a proxy lane. The chunked API is WebSocket-only
+    and cannot cross an HTTP passthrough, and the WS lane would authenticate with a NATIVE
+    xAI bearer — so a pinned proxy always fails closed to the (proxied, same-voice) sync path,
+    even when ``tts.xai.streaming_url`` is explicitly set (that URL is a direct-origin WS
+    endpoint; honoring it under a proxy pin would send a native credential to a proxy-scoped
+    lane). There is no proxy-scoped WS routing to substitute.
+
+    Only an unset/absent/blank-string pin means "not pinned". Any other non-string value
+    (``False``, ``0``, ``[]``, ``{}`` …) is a malformed EXPLICIT pin and still counts as
+    pinned — it must fail this WS lane closed rather than erase into "unpinned" and send a
+    native credential (same contract as the sync path in ``tts_tool_providers._generate_xai_tts``)."""
+    cfg = section
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config
+            cfg = (load_config().get("tts") or {}).get("xai") or {}
+        except Exception:
+            cfg = {}
+    value = (cfg or {}).get("proxy_provider")
+    if value is None or isinstance(value, str) and not value.strip():
+        return False
+    return True
+
+
 @register("xai")
 class XAIStreamer(StreamingTTSProvider):
     """xAI WebSocket TTS (``wss://api.x.ai/v1/tts``) → binary PCM frames (24 kHz mono int16).
@@ -286,13 +354,30 @@ class XAIStreamer(StreamingTTSProvider):
     seam).
 
     Salvaged from PR #47588 (@Cdddo): xAI's chunked TTS API is WebSocket-only (``wss://api.x.ai/v1/tts``).
+
+    ``tts.xai.proxy_provider`` cannot proxy this lane: the chunked API is WebSocket-only and an
+    HTTP passthrough (e.g. LiteLLM ``pass_through_endpoints``) cannot carry it. When a proxy is
+    configured the streamer reports itself UNAVAILABLE regardless of ``tts.xai.streaming_url`` —
+    that URL names a direct-origin WebSocket whose auth is a NATIVE xAI bearer, which a proxy
+    pin must never use (fail closed — never silently fall back to direct api.x.ai); the
+    dispatcher then speaks per-sentence via the sync TTS path, which DOES honor the proxy with
+    the same voice/model.
     """
 
     @staticmethod
     def available() -> bool:
         try:
             from tools.xai_http import resolve_xai_http_credentials
-            return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
+            if _xai_proxy_pinned():
+                logger.warning(
+                    "xai streaming TTS disabled: tts.xai.proxy_provider is configured and the "
+                    "WebSocket chunked API cannot cross an HTTP passthrough (an explicit "
+                    "streaming_url would still use a native direct-origin credential); "
+                    "sync TTS (proxied) still serves speech")
+                return False
+            # Same ordering as the sync path: the subscription OAuth bearer
+            # authorizes but 403s on metered TTS, so an explicit key wins (#87045).
+            return bool(str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip())
         except Exception:
             return False
 
@@ -311,7 +396,11 @@ class XAIStreamer(StreamingTTSProvider):
         import websockets
         from tools.tts_tool_providers import DEFAULT_XAI_VOICE_ID
         from tools.xai_http import resolve_xai_http_credentials
-        api_key = str(resolve_xai_http_credentials().get("api_key") or "").strip()
+        if _xai_proxy_pinned(self.section):
+            raise RuntimeError(
+                "tts.xai.proxy_provider is configured, so the chunked WebSocket API (direct-origin, "
+                "native-credential) must not be used; use the (proxied) sync TTS path")
+        api_key = str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip()
         if not api_key:
             raise RuntimeError("No xAI credentials for streaming TTS")
         voice = str(self.section.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID

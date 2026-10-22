@@ -69,6 +69,35 @@ DRAIN_QUEUE_CLAIMED_FILENAME = "drain_message_queue.replaying.json"
 
 _SNAPSHOT_VERSION = 1
 
+# Attribute stamped on every event the durable snapshot owns (set by
+# ``record_drain_event`` on durable acceptance — a fresh append, or an
+# idempotently-dropped re-delivery whose twin is already recorded). The
+# adapter's background pending-turn drain (``platforms/base.py``) reads it to
+# leave the parked in-memory mirror UNCONSUMED: the snapshot is the one owner,
+# and re-running the mirror re-enters the drain gate, which re-records and
+# re-acks the SAME event — the restart-drain completion-amplification loop.
+# Never serialized; replay rebuilds events from the snapshot, so replayed
+# copies arrive clean and drain normally.
+DRAIN_SNAPSHOT_OWNED_ATTR = "_drain_snapshot_owned"
+
+
+def _mark_drain_snapshot_owned(event: MessageEvent) -> None:
+    """Record durable acceptance on the event itself.
+
+    Two receipts, one truth: the ownership stamp above, and the
+    ``_gateway_accepted`` receipt ``wake.admit_internal_event`` requires —
+    without it a successfully queued internal completion reported
+    WakeNotAccepted and the notifier rewound and re-delivered it, growing the
+    snapshot again. Call ONLY on the durably-accepted paths; a refused
+    admission (cap/serialize/IO) must keep both flags unset so the caller
+    stays retryable.
+    """
+    try:
+        setattr(event, DRAIN_SNAPSHOT_OWNED_ATTR, True)
+        event._gateway_accepted = True
+    except Exception:
+        pass
+
 # Routing-relevant SessionSource fields. Session-key derivation
 # (``build_session_key``) and reply anchoring must see the same values the
 # live event carried, or a replayed message would land on a different
@@ -364,6 +393,12 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
     not twice. Without this, a platform re-delivery inside the drain window
     wrote N records and the boot replay injected N turns for one message.
     Internal synthetic events are exempt from this dedupe.
+
+    Every True return stamps the event (:func:`_mark_drain_snapshot_owned`):
+    the ownership marker the adapter's background pending-turn drain honors,
+    and the ``_gateway_accepted`` receipt ``wake.admit_internal_event``
+    requires. A False return (cap / serialize / IO) leaves both unset, so a
+    failed admission stays retryable.
     """
     path = drain_queue_path()
     events = _load_snapshot_events(path)
@@ -385,6 +420,9 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
                     message_id,
                     session,
                 )
+                # The twin is durably on disk, so this copy is owned too:
+                # the receipt stays honest and the mirror must not run.
+                _mark_drain_snapshot_owned(event)
                 return True
     durable_depth = sum(1 for item in events if item.get("session_key") == session)
     in_memory_depth = 0
@@ -427,6 +465,7 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
             exc_info=True,
         )
         return False
+    _mark_drain_snapshot_owned(event)
     return True
 
 

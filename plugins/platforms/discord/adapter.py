@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import traceback
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from contextlib import suppress
 from typing import Callable, Dict, List, NamedTuple, Optional, Any, Tuple
 from urllib.parse import quote, unquote, urljoin, urlparse
@@ -462,10 +462,11 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, ReactionGateConfig
 
 from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
+    MessageDeduplicator, ThreadParticipationTracker, compile_mention_patterns,
+    convert_table_to_bullets, is_discord_channel_obfuscated,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -667,7 +668,7 @@ class _DiscordNonConversationalMessageTracker:
         if not path.exists():
             return []
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
             if isinstance(data, list):
                 return [str(message_id) for message_id in data if str(message_id).strip()]
         except Exception:
@@ -709,6 +710,11 @@ class _DiscordNonConversationalMessageTracker:
 
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids
+
+
+def _discord_snowflake_time(snowflake: int) -> dt.datetime:
+    """UTC creation time encoded in a Discord snowflake (ms since 2015-01-01 in the top 42 bits)."""
+    return dt.datetime.fromtimestamp(((snowflake >> 22) + 1420070400000) / 1000, tz=dt.timezone.utc)
 
 
 def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> bool:
@@ -790,14 +796,18 @@ def discord_deps_present() -> bool:
 
 
 def check_discord_requirements() -> bool:
-    """Check Discord deps; lazy-installs discord.py on first call and re-binds
-    module globals so ``DISCORD_AVAILABLE`` becomes True."""
+    """Check if Discord dependencies are available.
+
+    Lazy-installs discord.py via ``pm.ensure_import("discord")``
+    on first call if not present. After successful install, re-binds module
+    globals so ``DISCORD_AVAILABLE`` becomes True.
+    """
     global DISCORD_AVAILABLE, discord, DiscordMessage, Intents, commands
     if DISCORD_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.discord", prompt=False)
+        from pm import ensure_import as _lazy_ensure
+        _lazy_ensure("discord")
     except Exception:
         return False
     try:
@@ -1248,6 +1258,103 @@ _TOOL_STAGE_STATUS_MARKS: Dict[str, str] = {
 # them as plain allowlisted counts, never as advisor progress.
 _TOOL_STAGE_ADVISOR_PROGRESS: tuple[str, str] = ("moa_ask", "advisors")
 
+# Per-slot roster marks for the MoA stage events. The bus only ever publishes
+# this small status enum; an unknown status still renders (❔) rather than
+# being guessed into "responded".
+_TOOL_STAGE_SLOT_MARKS: Dict[str, str] = {
+    "waiting": "⏳",
+    "responded": "✅",
+    "failed": "❌",
+    "skipped": "⏭️",
+    "empty": "◌",
+    "unparsed": "⚠️",
+}
+_TOOL_STAGE_ROSTER_ROW_CAP = 24  # rows rendered before an explicit omission note
+_TOOL_STAGE_ROSTER_FIELD_CAP = 64  # per identity field, matching the bus cap
+# Total description budget when a roster renders — comfortably under Discord's
+# 4096-character embed description limit.
+_TOOL_STAGE_ROSTER_DESC_CAP = 3600
+# Identity fields render through this charset regardless of what an event
+# carries: mention markup (<@id>, @everyone), markdown, and control characters
+# all vanish, so a malformed or hostile roster cannot ping anyone or break the
+# embed's formatting.
+_TOOL_STAGE_SLOT_IDENTITY_RE = re.compile(r"[^A-Za-z0-9._/:+-]+")
+
+
+def _tool_stage_slot_identity(value: Any) -> str:
+    return _TOOL_STAGE_SLOT_IDENTITY_RE.sub("", str(value or ""))[
+        :_TOOL_STAGE_ROSTER_FIELD_CAP
+    ]
+
+
+def _tool_stage_slot_roster(slots: Any, budget: int) -> Optional[str]:
+    """Render an event's per-slot roster as bounded description lines.
+
+    Returns ``None`` when the event carries no roster at all (legacy
+    count-only events render exactly as before). Rows render
+    ``mark provider:model`` grouped under their round header; duplicate
+    provider/model pairs within a round keep separate ``#N`` rows so two
+    configured copies of one model never collapse. Rows past the cap or the
+    character budget are dropped but counted in an explicit ``+N more
+    omitted`` note — omission is stated, never silent.
+    """
+    if not isinstance(slots, (list, tuple)) or not slots:
+        return None
+
+    rows: List[Tuple[str, str]] = []  # (round header, rendered row)
+    omitted = 0
+    duplicates: Dict[Tuple[str, str], int] = {}
+    for entry in slots:
+        if not isinstance(entry, dict):
+            omitted += 1
+            continue
+        provider = _tool_stage_slot_identity(entry.get("provider"))
+        model = _tool_stage_slot_identity(entry.get("model"))
+        round_name = _tool_stage_slot_identity(entry.get("round"))
+        mark = _TOOL_STAGE_SLOT_MARKS.get(str(entry.get("status") or ""), "❔")
+        label = f"{provider}:{model}" if provider and model else (model or provider)
+        if not label:
+            # Nothing survived sanitizing; the stable slot index is the only
+            # remaining truthful identity for the row.
+            index = entry.get("index")
+            if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+                label = f"slot{index}"
+            else:
+                label = "slot?"
+        key = (round_name, label)
+        seen = duplicates.get(key, 0) + 1
+        duplicates[key] = seen
+        if seen > 1:
+            label = f"{label}#{seen}"
+        rows.append((round_name, f"{mark} {label}"))
+
+    if len(rows) > _TOOL_STAGE_ROSTER_ROW_CAP:
+        omitted += len(rows) - _TOOL_STAGE_ROSTER_ROW_CAP
+        rows = rows[:_TOOL_STAGE_ROSTER_ROW_CAP]
+
+    def _compose() -> str:
+        lines: List[str] = []
+        last_round: Optional[str] = None
+        for round_name, row in rows:
+            if round_name != last_round:
+                if round_name:
+                    lines.append(f"{round_name}:")
+                last_round = round_name
+            lines.append(row)
+        return "\n".join(lines)
+
+    while True:
+        text = _compose()
+        if omitted:
+            text = f"{text}\n… +{omitted} more omitted" if text else (
+                f"… +{omitted} more omitted"
+            )
+        if len(text) <= budget or not rows:
+            return text or None
+        # Over budget: drop the oldest-unrendered (last) row and say so.
+        rows = rows[:-1]
+        omitted += 1
+
 
 def _tool_stage_count_summary(
     tool: str, stage: str, terminal: bool, counts: Dict[str, Any]
@@ -1291,13 +1398,21 @@ def _tool_stage_count_summary(
 
 
 def _tool_stage_appearance(
-    tool: str, stage: str, status: Optional[str], counts: Dict[str, Any]
+    tool: str,
+    stage: str,
+    status: Optional[str],
+    counts: Dict[str, Any],
+    slots: Optional[Any] = None,
 ) -> Tuple[str, str, str]:
     """Map one allowlisted stage event to ``(title, description, color_key)``.
 
     Unknown tools / stages / statuses fall back to a neutral rendering of
     the raw ids (bounded by the title/description caps), so a future tool
-    publishing new stages still renders something sane.
+    publishing new stages still renders something sane. ``slots`` optionally
+    carries the event's per-advisor roster; when present it renders below the
+    summary line, so one embed identifies every configured advisor and its
+    current status while staying identity-only (never prompt, advice, or
+    error text).
     """
     tool = str(tool or "tool")
     stage = str(stage or "stage")
@@ -1327,6 +1442,17 @@ def _tool_stage_appearance(
 
     title = title[:_TOOL_STAGE_TITLE_CAP]
     description = description[:_TOOL_STAGE_DESC_CAP]
+    roster = None
+    if slots is not None:
+        roster = _tool_stage_slot_roster(
+            slots, _TOOL_STAGE_ROSTER_DESC_CAP - len(description) - 1
+        )
+    if roster is not None:
+        description = f"{description}\n{roster}"
+        # Belt-and-braces: the roster already respects the budget, and this
+        # slice guarantees the composed description stays under Discord's cap
+        # even if that ever regresses.
+        description = description[:_TOOL_STAGE_ROSTER_DESC_CAP]
     return title, description, color_key
 
 
@@ -1349,6 +1475,28 @@ class RestartPendingThreadTitle(NamedTuple):
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.response_gate import (
+    ADDRESSES_BOT_KEY,
+    CONTINUES_THREAD_KEY,
+    JOINS_BOT_THREAD_KEY,
+    NOISE_KEY,
+    ChannelContextBuffer,
+    GateDecision,
+    GateRuntime,
+    JevDecisionClient,
+    ResponseGateError,
+)
+from plugins.platforms.discord.reaction_gate import (
+    ReactionDecision,
+    ReactionGateRuntime,
+    split_reaction_clusters,
+)
+from plugins.platforms.discord.reaction_gate_reload import (
+    start_reaction_gate_reload_watcher,
+)
+
+#: Component display order for gate echoes/logs (matches the judge's question order).
+_RESPONSE_GATE_SCORE_KEYS = (ADDRESSES_BOT_KEY, CONTINUES_THREAD_KEY, JOINS_BOT_THREAD_KEY, NOISE_KEY)
 
 
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
@@ -1399,12 +1547,54 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Gate env snapshot captured in connect() inside the owning profile's scope; None until then.
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
         self._gate_env_snapshot: Optional[Dict[str, str]] = None
+        # Opt-in ambient response gate. The judge credential is captured HERE at startup from
+        # this profile's own secret scope and held on the adapter, so late event callbacks use
+        # the captured value instead of reading a secret from an unscoped (possibly
+        # other-profile) callback context. None ⇒ the gate is off and never consulted.
+        self._response_gate: Optional[Dict[str, Any]] = None
+        self._response_gate_credential: Optional[str] = None
+        self._response_gate_buffer: Optional[ChannelContextBuffer] = None
+        # Message ids this adapter's gate enforce-approved, waiting for _handle_message's own
+        # mention check. One-shot entries, bounded: approval never outlives the dispatch.
+        self._response_gate_admitted_ids: "OrderedDict[str, None]" = OrderedDict()
+        self._response_gate_echoed_ids: "OrderedDict[str, None]" = OrderedDict()
+        self._response_gate_warned: set = set()
+        # Opt-in emoji reaction gate (discord.reaction_gate). Independent of the speaking
+        # gate above: its own scope, judge, evidence and once-only registry. The runtime
+        # reuses the SAME credential captured at connect() (this profile's own key), so
+        # late event callbacks can never read another profile's. None ⇒ off, never consulted.
+        self._reaction_gate: Optional[ReactionGateRuntime] = None
+        # Message ids this adapter's reaction gate has consulted (or is consulting):
+        # the once-only guard across live + recovered duplicate deliveries. Bounded.
+        self._reaction_gate_seen: "OrderedDict[str, None]" = OrderedDict()
+        # Message ids whose consultation task is claimed but not yet finished. Eviction
+        # above skips these (an evicted in-flight id could re-consult and double-react);
+        # each task removes its own id in a finally. Bounded independently, defensively.
+        self._reaction_gate_inflight: set = set()
+        # In-flight consultation tasks; cancelled and awaited in disconnect().
+        self._reaction_gate_tasks: set = set()
+        # Live reload of the reaction gate's config block (discord.reaction_gate): the
+        # watcher task, the config file it polls, the managed-scope directory whose
+        # overlay is part of the effective config, and the values of that overlay's
+        # ${VAR} refs. All are resolved ONCE inside connect()'s profile scope (the
+        # same capture discipline as the credential above); the watcher itself runs
+        # outside any scope and only ever uses the captured paths/values — never
+        # HERMES_HOME, HERMES_MANAGED_DIR or os.environ.
+        self._reaction_gate_reload_task: Optional[asyncio.Task] = None
+        self._reaction_gate_config_path: Optional[_Path] = None
+        self._reaction_gate_managed_dir: Optional[_Path] = None
+        self._reaction_gate_managed_env: Optional[Dict[str, str]] = None
+        self._reaction_gate_profile_name: str = "default"
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
+        # A tagged bot may emit one logical response as several Discord
+        # messages. Keep its unmentioned continuation chunks eligible for the
+        # existing text batcher during this short, sender-scoped window.
+        self._bot_tag_debounce_until: Dict[str, float] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
@@ -1618,6 +1808,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # profile's runtime scope under multiplex, so the snapshot holds THIS adapter's values, immune
             # to the first-writer-wins process-global env bridge.
             self._snapshot_gate_env()
+            # Capture this profile's judge credential now, inside the owning profile's runtime
+            # scope (same discipline as the gate-env snapshot): event callbacks later run outside
+            # any scope we can trust, so they use the captured value and can never fall back to
+            # another profile's (first-writer-wins) key.
+            self._response_gate_credential = _scoped_gate_env("OPENROUTER_API_KEY") or None
+            self._response_gate_init()
+            # The reaction gate shares that captured judge credential (same profile scope,
+            # same capture discipline); it never re-reads any secret at event time.
+            self._reaction_gate_init()
+            # Its config block live-reloads: watch this profile's config.yaml (path
+            # captured here, inside the same scope) so a reaction_gate edit takes
+            # effect without a gateway restart or adapter reconnect.
+            self._reaction_gate_start_reload_watcher()
             self._allowed_user_ids = self._get_allowed_users()
             # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
             self._allowed_role_ids = self._get_allowed_roles()
@@ -1814,8 +2017,775 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return ("discord_intents_required", guidance, False)
         return ("discord_connect_error", f"Discord startup failed: {error}", True)
 
-    def _discord_message_admission(self, message: Any, *, claim: bool) -> tuple[bool, bool]:
-        """Return ``(admitted, role_authorized)`` for one Discord event."""
+    # --- opt-in ambient response gate (discord.response_gate) -----------------
+    #
+    # The gate only ever narrows or leaves alone what the existing admission gates decide:
+    # it is consulted exclusively for *ambient* (unpinged) human messages in explicitly
+    # opted-in channels. Mentions, replies to this bot, configured mention patterns,
+    # commands, DMs, the bot policy and the ignored/allowed-channel and allowed-user gates
+    # all keep their prior behavior and never reach the judge.
+
+    def _response_gate_init(self) -> None:
+        """Build the gate from validated config plus the credential captured at startup."""
+        gate_cfg = getattr(self.config, "response_gate", None)
+        if gate_cfg is None or not gate_cfg.enabled:
+            self._response_gate = None
+            return
+        bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
+        self._response_gate = GateRuntime.build(
+            gate_cfg, self._response_gate_credential, bot_name=bot_name, logger=logger,
+        )
+        if self._response_gate.client is None:
+            # Enforce mode with no credential denies every ambient message; say so once,
+            # loudly, instead of looking like a quiet disable.
+            logger.error(
+                "[%s] response_gate is enabled for %d channel(s) in %s mode but no OPENROUTER_API_KEY "
+                "was found in this profile's secrets: ambient messages in those channels will be denied",
+                self.name, len(gate_cfg.channels), gate_cfg.mode,
+            )
+
+    def _response_gate_scope_keys(self, message: Any) -> Optional[set]:
+        """Channel keys for a message, or None when the gate is off/not selected."""
+        return self._response_gate_channel_keys_in_scope(getattr(message, "channel", None))
+
+    def _gate_thread_membership_ok(self, channel: Any, *, require: bool) -> bool:
+        """Whether a conversation may be consulted under the thread-membership rule.
+
+        The single membership check both gates share. ``require`` false (the
+        ``threads_require_membership: false`` opt-out) keeps the legacy behavior where
+        a listed parent channel selects every thread. A non-thread conversation is
+        never membership-gated. A thread consults only when this bot already
+        participates in it — ``ThreadParticipationTracker``, the same persistent
+        store the inbound dispatch and the send seam mark, never the cache-only
+        ``channel.members``/``channel.me`` (those disagree with it). The gate is
+        scope-first, membership-second: a thread outside the gate's channels is
+        unaffected either way.
+        """
+        if not require or not isinstance(channel, discord.Thread):
+            return True
+        return str(getattr(channel, "id", "") or "") in self._threads
+
+    def _response_gate_channel_keys_in_scope(self, channel: Any) -> Optional[set]:
+        """Channel keys for one conversation, or None when the gate is off/not selected.
+
+        Scope is the gate's own channel opt-in narrowed by the allowed/ignored-channel rule
+        ``_handle_message`` already owns: a channel that rule ignores is never consulted, so
+        the judge costs no API call outside the channels this bot answers in. Shared by the
+        inbound (observed message) and outbound (delivered reply) observe paths — and by
+        every dispatch path, because live dispatch, recovered dispatch and the admission
+        prefilters all build their candidate through here.
+        """
+        gate = self._response_gate
+        if gate is None:
+            return None
+        if isinstance(channel, discord.DMChannel):
+            return None  # DMs are always explicit; the gate never sees them
+        parent_id = self._get_parent_channel_id(channel)
+        keys = self._discord_channel_keys_from_channel(channel, parent_id)
+        if not gate.selects(keys) or not self._discord_channel_policy_admits(keys):
+            return None
+        if not self._gate_thread_membership_ok(
+            channel,
+            require=bool(getattr(gate.config, "threads_require_membership", True)),
+        ):
+            return None  # unjoined thread: the judge never hears it (a ping still bypasses)
+        return keys
+
+    def _response_gate_bypass(self, message: Any) -> bool:
+        """Explicit triggers never consult the gate (identical behavior either way)."""
+        content = str(getattr(message, "content", "") or "").lstrip()
+        if content.startswith("/"):
+            return True  # commands are explicit
+        if self._self_is_explicitly_mentioned(message):
+            return True  # direct @mention (includes reply-pings of this bot)
+        if self._is_reply_to_self(message):
+            return True  # reply to one of this bot's own messages
+        if self._is_bot_tag_debounce_continuation(message):
+            return True  # continuation chunk of a bot the gate already admitted
+        if self._message_matches_mention_patterns(content):
+            return True  # configured wake patterns are explicit; keep their legacy handling
+        return False
+
+    def _discord_mention_patterns(self) -> List["re.Pattern"]:
+        """Compiled ``discord.mention_patterns`` wake words ([] when unset — no legacy behavior)."""
+        raw = self.config.extra.get("mention_patterns")
+        if raw is None:
+            return []
+        return compile_mention_patterns(
+            raw, log_prefix=self.name, platform_label="discord", display_label="Discord", logger_=logger,
+        )
+
+    def _message_matches_mention_patterns(self, text: str) -> bool:
+        """True when ``text`` hits a configured mention pattern (same rule as the wake path)."""
+        patterns = self._discord_mention_patterns()
+        return bool(text) and any(pattern.search(text) for pattern in patterns)
+
+    def _is_reply_to_self(self, message: Any) -> bool:
+        """True when the message replies to one of this bot's own messages."""
+        try:
+            reference = getattr(message, "reference", None)
+            resolved = getattr(reference, "resolved", None)
+            author = getattr(resolved, "author", None)
+            if author is not None and self._client and author == self._client.user:
+                return True
+        except Exception:  # pragma: no cover - defensive: unresolved references stay ambient
+            return False
+        return False
+
+    def _response_gate_probe(self) -> Optional[Dict[str, Any]]:
+        """Fresh out-param for ``_discord_message_admission``; None when the gate is off."""
+        return {} if self._response_gate is not None else None
+
+    async def _response_gate_apply(self, message: Any, probe: Optional[Dict[str, Any]]) -> Optional[bool]:
+        """Consult the gate for one dispatched message.
+
+        Returns ``True`` (admit), ``False`` (refuse) or ``None`` (legacy decision stands).
+        The message is buffered as future evidence *after* the evaluation, so the current
+        candidate is never also presented as its own history.
+        """
+        gate = self._response_gate
+        if gate is None or not probe:
+            return None
+        candidate = probe if probe.get("message_id") else None
+        verdict: Optional[bool] = None
+        if candidate is not None:
+            verdict = await self._response_gate_decide(message, candidate)
+        self._response_gate_observe(message)
+        return verdict
+
+    def _response_gate_candidate(self, message: Any, *, admitted: bool) -> Optional[Dict[str, Any]]:
+        """Build the probe payload for one ambient candidate, or None when never consultable.
+
+        Single definition of "reaches the judge": gate on, channel opted in, the existing
+        channel policy admits it, an explicit trigger (mention/reply/command/wake pattern)
+        did not author it and it is not bot chatter. Every caller — live dispatch, recovered
+        dispatch and the admission prefilters — goes through here, so they cannot disagree.
+        """
+        gate = self._response_gate
+        if gate is None:
+            return None
+        channel_keys = self._response_gate_scope_keys(message)
+        if channel_keys is None:
+            return None
+        if self._response_gate_bypass(message):
+            return None
+        if getattr(message.author, "bot", False):
+            return None  # bot chatter is never gated and never wakes us through it
+        return {
+            "message_id": str(getattr(message, "id", "")),
+            "channel_keys": set(channel_keys),
+            "conversation_id": GateRuntime.conversation_id(message.channel),
+            "admitted": bool(admitted),
+        }
+
+    def _response_gate_consults(self, message: Any) -> bool:
+        """True when the judge, not a legacy prefilter, decides this message."""
+        return self._response_gate_candidate(message, admitted=False) is not None
+
+    def _response_gate_is_echo_channel(self, candidate: Dict[str, Any]) -> bool:
+        gate = self._response_gate
+        if gate is None:
+            return False
+        keys = candidate.get("channel_keys") or ()
+        return bool(gate.echo_keys.intersection(keys))
+
+    def _response_gate_echo_text(self, decision: GateDecision) -> str:
+        if decision.error:
+            return f"gate error ({decision.error})"
+        if decision.scores:
+            verdict = "allow" if decision.allowed else "deny"
+            parts = " ".join(
+                f"{key}={decision.scores.get(key, 0.0):.2f}" for key in _RESPONSE_GATE_SCORE_KEYS
+            )
+            return f"{verdict} ({parts})"
+        # Legacy single-score decision (no component nouls): keep the threshold readout.
+        gate = self._response_gate
+        threshold = float(gate.config.threshold) if gate is not None else 0.8
+        score = decision.score if decision.score is not None else 0.0
+        if score >= threshold:
+            return f"{score:.2f}"
+        return f"{score:.2f} (below {threshold:g})"
+
+    async def _response_gate_echo(
+        self, message: Any, candidate: Dict[str, Any], decision: GateDecision,
+    ) -> bool:
+        """Post one judge echo line and drop normal dispatch (echo channels only)."""
+        self._response_gate_log(decision, candidate, outcome="echo")
+        chat_id = candidate.get("conversation_id") or GateRuntime.conversation_id(message.channel)
+        message_id = candidate.get("message_id") or ""
+        text = self._response_gate_echo_text(decision)
+        try:
+            result = await self.send(chat_id, text, reply_to=message_id or None)
+            if not result.success:
+                logger.warning(
+                    "[%s] response_gate echo send failed channel=%s message=%s error=%s",
+                    self.name, chat_id, message_id, result.error,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[%s] response_gate echo send failed channel=%s message=%s error=%s",
+                self.name, chat_id, message_id, type(exc).__name__, exc_info=True,
+            )
+        return False
+
+    async def _response_gate_decide(self, message: Any, candidate: Dict[str, Any]) -> Optional[bool]:
+        """Run the gate for one candidate.
+
+        Returns ``True`` to admit an ambient message the legacy policy dropped, ``False``
+        to refuse one, and ``None`` when the legacy decision stands (shadow mode).
+        """
+        gate = self._response_gate
+        if gate is None:
+            return None
+        is_echo = self._response_gate_is_echo_channel(candidate)
+        message_id = candidate.get("message_id") or ""
+        if is_echo:
+            if message_id in self._response_gate_echoed_ids:
+                return False
+            if message_id:
+                while len(self._response_gate_echoed_ids) >= 256:
+                    self._response_gate_echoed_ids.popitem(last=False)
+                self._response_gate_echoed_ids[message_id] = None
+        decision = await gate.evaluate(
+            message, channel=message.channel,
+            bot_name=str(getattr(getattr(self._client, "user", None), "display_name", "") or ""),
+            bot_id=getattr(getattr(self._client, "user", None), "id", None),
+        )
+        if is_echo:
+            return await self._response_gate_echo(message, candidate, decision)
+        self._response_gate_log(decision, candidate)
+        if gate.mode != "enforce":
+            return None  # shadow: the legacy decision always stands
+        if not decision.allowed:
+            self._response_gate_forget(candidate)
+            return False
+        # Enforce approval is the decision that wakes us, so _handle_message's own mention
+        # check must let this one message through — whether admission had already admitted it
+        # or dropped it on the ambient (mention) policy the judge just overrode.
+        self._response_gate_remember(candidate)
+        return True
+
+    def _response_gate_remember(self, candidate: Dict[str, Any]) -> None:
+        """Mark one enforce-approved message id for _handle_message's ambient check."""
+        message_id = candidate.get("message_id") or ""
+        if not message_id:
+            return
+        while len(self._response_gate_admitted_ids) >= 256:
+            self._response_gate_admitted_ids.popitem(last=False)
+        self._response_gate_admitted_ids[message_id] = None
+
+    def _response_gate_forget(self, candidate: Dict[str, Any]) -> None:
+        self._response_gate_admitted_ids.pop(candidate.get("message_id") or "", None)
+
+    def _response_gate_admitted(self, message: Any) -> bool:
+        """One-shot check used by _handle_message: did the gate approve this message?"""
+        message_id = str(getattr(message, "id", "") or "")
+        if message_id not in self._response_gate_admitted_ids:
+            return False
+        self._response_gate_admitted_ids.pop(message_id, None)
+        return True
+
+    def _response_gate_log(
+        self, decision: GateDecision, candidate: Dict[str, Any], *, outcome: Optional[str] = None,
+    ) -> None:
+        """One line per consultation: ids, mode, outcome, scores, sanitized reason, latency.
+
+        Never message content, credentials, headers or the remote response body.
+        """
+        resolved_outcome = outcome if outcome is not None else ("allow" if decision.allowed else "deny")
+        if decision.scores:
+            score_text = " ".join(
+                f"{key}={decision.scores.get(key, -1.0):.4f}" for key in _RESPONSE_GATE_SCORE_KEYS
+            )
+        else:
+            # Legacy single-score decision (no component nouls present).
+            score_text = "should_reply=%.4f" % (decision.score if decision.score is not None else -1.0)
+        logger.log(
+            logging.WARNING if decision.error else logging.INFO,
+            "[%s] response_gate mode=%s channel=%s message=%s outcome=%s %s reason=%s error=%s latency_ms=%s",
+            self.name, decision.mode, candidate.get("conversation_id"), candidate.get("message_id"),
+            resolved_outcome, score_text,
+            decision.reason, decision.error or "none",
+            f"{decision.latency_ms:.0f}" if decision.latency_ms is not None else "n/a",
+        )
+
+    def _response_gate_observe(self, message: Any) -> None:
+        """Buffer one selected-channel message as future evidence (cheap, bounded)."""
+        gate = self._response_gate
+        if gate is None:
+            return
+        if self._response_gate_scope_keys(message) is None:
+            return
+        author = getattr(message, "author", None)
+        own_user = getattr(getattr(self, "_client", None), "user", None)
+        if getattr(author, "bot", False) and author != own_user:
+            return  # other bots' chatter stays out of the evidence
+        gate.observe(
+            message.channel,
+            getattr(author, "display_name", None) or getattr(author, "name", ""),
+            getattr(message, "content", ""),
+        )
+
+    def _response_gate_observe_sent(self, channel: Any, text: Any) -> None:
+        """Buffer this bot's own delivered final reply as future judge evidence.
+
+        The inbound path can never supply these: own messages return before any gate
+        code in ``_discord_message_admission``, so the send seam is the only source of
+        the assistant's half of the conversation that the judge's rule (3) matches
+        against. Final replies only — previews, interims, acks and notices never carry
+        the notify marker / finalize flag the call sites gate on. The author is the
+        same display name ``state.bot.name`` carries, so author matching sees it. A
+        retried or duplicated send appends a duplicate evidence line; the buffer is
+        bounded and the judge tolerates the repeat, so no dedup machinery here.
+        """
+        # The reaction gate needs the same assistant half (its judge reads a "thanks"
+        # after this bot's reply as connected only when the reply is in evidence), so
+        # the exact same seam feeds its buffer too — its own scope, its own bounds,
+        # and a no-op whenever that gate is off.
+        self._reaction_gate_observe_sent(channel, text)
+        gate = self._response_gate
+        if gate is None:
+            return
+        # A delivered final reply IS participation: record it before the scope/membership
+        # checks, so the gate's own rule keeps this conversation visible whatever ingress
+        # produced the reply (a native slash command dispatches through handle_message
+        # and never reaches the inbound path's participation mark).
+        thread_id = str(getattr(channel, "id", "") or "")
+        if isinstance(channel, discord.Thread) and thread_id:
+            self._threads.mark(thread_id)
+        keys = self._response_gate_channel_keys_in_scope(channel)
+        if keys is None or gate.echo_keys.intersection(keys):
+            return  # echo channels carry judge-score lines, not this bot's conversation
+        bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
+        if not bot_name:
+            return
+        gate.observe(channel, bot_name, text)
+
+    # --- opt-in choice reaction gate (discord.reaction_gate) -----------------
+    #
+    # A side effect, not a speech decision: for every message the ingress prefilters
+    # even consider (own bot messages, lifecycle/system events, DMs, auth-denied humans
+    # and out-of-policy channels excluded), consult the judge once and add the winning
+    # whitelisted entry — one reaction per grapheme cluster, so a multi-glyph entry
+    # (👉👈) reacts with each glyph while a compound emoji (🤦‍♂️) stays one reaction. It
+    # runs independently of the speaking gate's verdict — a
+    # message the speaking gate drops can still be reacted to — and its own success or
+    # failure never creates a session, forces a reply, or blocks one. Each candidate is
+    # buffered as evidence synchronously at intake (before its task is spawned) so a
+    # rapid successor's consult sees it, with the candidate's own entry excluded from
+    # its own consult by message id; this bot's delivered final replies join the same
+    # evidence through the speaking gate's send seam.
+
+    #: Consulted message ids held at once; a busy server cannot grow this without bound.
+    _REACTION_GATE_MAX_SEEN = 1024
+
+    #: Consultations that may be unfinished at once. Purely defensive: reaching it
+    #: needs every registry slot simultaneously stuck on a wedged judge, and the
+    #: reaction side effect fails closed (that message is never consulted) rather
+    #: than track an unbounded in-flight set.
+    _REACTION_GATE_MAX_INFLIGHT = 1024
+
+    def _reaction_gate_init(self) -> None:
+        """Build the reaction gate from validated config plus the credential captured at startup."""
+        reaction_cfg = getattr(self.config, "reaction_gate", None)
+        if reaction_cfg is None or not reaction_cfg.active:
+            self._reaction_gate = None
+            return
+        self._reaction_gate = ReactionGateRuntime.build(
+            reaction_cfg, self._response_gate_credential, logger=logger,
+        )
+        if self._reaction_gate.client is None:
+            # Enabled with no credential fails closed (no reactions); say so once,
+            # loudly, instead of looking like a quiet disable.
+            logger.error(
+                "[%s] reaction_gate is enabled for %d channel(s) but no OPENROUTER_API_KEY "
+                "was found in this profile's secrets: no automatic reactions will be added",
+                self.name, len(reaction_cfg.channels),
+            )
+
+    def _reaction_gate_start_reload_watcher(self) -> None:
+        """Watch this profile's config.yaml so a ``reaction_gate`` edit applies live.
+
+        The file path, the managed-scope directory AND the values of the managed
+        config's ``${VAR}`` refs are resolved HERE — this runs from ``connect()``
+        inside the owning profile's runtime scope (the same capture discipline as
+        the judge credential and the gate-env snapshot). The watcher never
+        re-resolves any of them: event callbacks and background tasks run outside
+        any profile scope, where ``HERMES_HOME``/``HERMES_MANAGED_DIR`` — and the
+        process env a managed ref would expand from — can name another profile, so
+        the captured paths and values are the only ones it may read.
+        """
+        if self._reaction_gate_reload_task is not None:
+            # A reconnect starts a fresh watcher; drop the stale one (its disconnect
+            # side never ran — see disconnect() for the awaited cancellation).
+            self._reaction_gate_reload_task.cancel()
+        from hermes_constants import get_hermes_home
+        from hermes_cli import managed_scope
+
+        self._reaction_gate_config_path = get_hermes_home() / "config.yaml"
+        self._reaction_gate_managed_dir = managed_scope.get_managed_dir()
+        self._reaction_gate_managed_env = (
+            managed_scope.managed_config_env_snapshot(self._reaction_gate_managed_dir)
+            if self._reaction_gate_managed_dir is not None
+            else None
+        )
+        # Profile identity for the boot-diagnostic repair in _reaction_gate_reload:
+        # captured here, inside the owning profile's scope, because the watcher
+        # callback runs outside any scope where HERMES_HOME can name another profile.
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            self._reaction_gate_profile_name = get_active_profile_name() or "default"
+        except Exception:
+            self._reaction_gate_profile_name = "default"
+        self._reaction_gate_reload_task = start_reaction_gate_reload_watcher(
+            config_path=self._reaction_gate_config_path,
+            apply=self._reaction_gate_reload,
+            logger=logger,
+            name=self.name,
+            managed_dir=self._reaction_gate_managed_dir,
+            managed_env=self._reaction_gate_managed_env,
+        )
+
+    def _reaction_gate_reload(self, block: Any) -> bool:
+        """Build and swap the reaction gate from one re-read ``reaction_gate`` block.
+
+        Called once at watcher start (boot reconcile against the current file) and
+        then whenever the extracted block changes. The block is validated exactly
+        like startup; a valid block (or a deliberate off) replaces
+        ``self._reaction_gate`` in a single assignment — the whole runtime contract for
+        a reload, since every consumer reads the attribute fresh. An invalid block
+        returns ``False`` and changes nothing: the previously active gate keeps running.
+        The judge credential is never re-read (the connect-time capture is reused).
+        """
+        if block is None:
+            if self._reaction_gate is not None:
+                logger.info("[%s] reaction_gate disabled by config reload (fail closed)", self.name)
+            self._reaction_gate = None
+            self._reaction_gate_repair_boot_warning()
+            return True
+        try:
+            reaction_cfg = ReactionGateConfig.from_dict(block)
+        except ValueError as exc:
+            # The invalid block is NOT installed: the previously active gate keeps
+            # running, so no status warning is added (the gate is not off) and any
+            # boot-time refusal stays as-is (it still describes the effective config).
+            logger.warning(
+                "[%s] reaction_gate reload kept the previous config (invalid block): %s",
+                self.name, exc,
+            )
+            return False
+        if not reaction_cfg.active:
+            if self._reaction_gate is not None:
+                logger.info("[%s] reaction_gate disabled by config reload (fail closed)", self.name)
+            self._reaction_gate = None
+            self._reaction_gate_repair_boot_warning()
+            return True
+        current = self._reaction_gate
+        if current is not None and current.config == reaction_cfg:
+            # The running gate already matches — the watcher's boot reconcile with
+            # an unchanged file lands here, as does a rewrite of the in-force
+            # block. One validation, no rebuild, no log line. The boot-diagnostic
+            # repair still runs: this is exactly the boot-reconcile path where a
+            # stale "gate stayed off" refusal would otherwise survive a now-valid
+            # config (it only touches the reaction_gate warning, not response_gate's).
+            self._reaction_gate_repair_boot_warning()
+            return True
+        self._reaction_gate = ReactionGateRuntime.build(
+            reaction_cfg, self._response_gate_credential, logger=logger,
+        )
+        if self._reaction_gate.client is None:
+            # Same rule as startup, for the same reason: enabled with no captured
+            # credential fails closed (no reactions) and must not look like a disable.
+            logger.error(
+                "[%s] reaction_gate reload has no OPENROUTER_API_KEY captured at connect: "
+                "no automatic reactions will be added",
+                self.name,
+            )
+        logger.info(
+            "[%s] reaction_gate reloaded: %d emoji entries, %d channel(s)",
+            self.name, len(reaction_cfg.emojis), len(reaction_cfg.channels),
+        )
+        self._reaction_gate_repair_boot_warning()
+        return True
+
+    def _reaction_gate_repair_boot_warning(self) -> None:
+        """Drop this adapter's stale boot-time reaction_gate refusal at its owner.
+
+        Only called after an ACCEPTED reload: the effective config is now valid (or a
+        deliberate off), so a boot-time "gate stayed off" refusal would be a lie. The
+        runner owns the warning accumulator that every boot/reconcile status write
+        re-stamps, so the repair goes through it; pruning only the disk record would
+        be resurrected by the next served-profiles write. The profile identity was
+        captured at connect, and a sibling response_gate refusal is kept.
+        """
+        clear = getattr(self.gateway_runner, "clear_gate_config_warning", None)
+        if clear is None:
+            return
+        try:
+            platform_value = getattr(getattr(self, "platform", None), "value", "discord")
+            clear(
+                profile=self._reaction_gate_profile_name,
+                platform=platform_value,
+                gate="reaction_gate",
+            )
+        except Exception:
+            logger.debug("[%s] reaction_gate boot-warning repair failed", self.name, exc_info=True)
+
+    def _reaction_gate_candidate(self, message: Any) -> Optional[Dict[str, Any]]:
+        """Build the payload for one reaction candidate, or None when never consultable.
+
+        Single definition of "reaches the reaction judge", shared by both intake sites.
+        Deliberately WIDER than the speaking gate's candidate rule in one way —
+        mentions and replies are reaction candidates too — but still narrowed by the
+        rules that prevent loops and privacy leaks: never this bot's own messages,
+        never other bots' chatter, never lifecycle/system events, never DMs, never a
+        channel the allowed/ignored-channel policy refuses, and never a human the user
+        policy would not authorize. The speaking rules keep their own meaning for
+        text: a human message that never text-wakes this bot can still earn a
+        reaction.
+        """
+        gate = self._reaction_gate
+        if gate is None:
+            return None
+        channel = getattr(message, "channel", None)
+        if channel is None or isinstance(channel, discord.DMChannel):
+            return None  # reactions are a server-surface feature; DMs stay private
+        author = getattr(message, "author", None)
+        own_user = getattr(getattr(self, "_client", None), "user", None)
+        if author is None or (own_user is not None and author == own_user):
+            return None  # never react to this bot's own output (loop guard)
+        if getattr(message, "type", discord.MessageType.default) not in {
+            discord.MessageType.default, discord.MessageType.reply,
+        }:
+            return None  # lifecycle/system events (joins, pins, …) carry nothing to react to
+        if getattr(author, "bot", False):
+            return None  # bot chatter is never a reaction candidate (same rule as the speaking gate)
+        msg_guild = getattr(message, "guild", None)
+        if msg_guild is None:
+            return None  # guild-less human traffic is DM-shaped; keep it out
+        msg_channel_ids = {str(getattr(channel, "id", "") or "")}
+        parent_id = self._get_parent_channel_id(channel)
+        if parent_id:
+            msg_channel_ids.add(parent_id)
+        if not self._is_allowed_user(
+            str(getattr(author, "id", "") or ""), author,
+            guild=msg_guild, is_dm=False, channel_ids=msg_channel_ids,
+        ):
+            return None  # the user policy that governs speech governs reactions too
+        channel_keys = self._discord_channel_keys_from_channel(
+            channel, self._get_parent_channel_id(channel),
+        )
+        is_thread = isinstance(channel, discord.Thread)
+        if (
+            not gate.selects(channel_keys, is_thread=is_thread)
+            or not self._discord_channel_policy_admits(channel_keys)
+        ):
+            return None
+        if not self._gate_thread_membership_ok(
+            channel,
+            require=bool(getattr(gate.config, "threads_require_membership", True)),
+        ):
+            return None  # unjoined thread: no consultation, no reaction
+        return {
+            "message_id": str(getattr(message, "id", "") or ""),
+            "conversation_id": GateRuntime.conversation_id(channel),
+            "channel_keys": set(channel_keys),
+        }
+
+    def _reaction_gate_consider(self, message: Any) -> None:
+        """Consult the reaction judge for one dispatched message (bounded side effect).
+
+        The once-only registry is claimed synchronously BEFORE the task is spawned, so
+        a live/recovered duplicate — or two concurrent deliveries of the same id —
+        consults at most once and reacts at most once. The candidate is buffered as
+        evidence at this same synchronous point (not after the judge answers), so a
+        later message in the same conversation sees it in its own consult's evidence
+        even while this one's judge call is still open; and the consult's evidence
+        snapshot is frozen right here, with the candidate's own entry excluded by
+        message id — so no candidate ever judges itself, no predecessor can go
+        missing, and no successor can leak in as "preceding" evidence, whatever the
+        task scheduling does. The spawned task can never block or fail the dispatch
+        that called this; it is cancelled on disconnect.
+        """
+        candidate = self._reaction_gate_candidate(message)
+        if candidate is None:
+            return
+        message_id = candidate.get("message_id") or ""
+        if not message_id:
+            return
+        if message_id in self._reaction_gate_seen:
+            return
+        self._reaction_gate_remember(message_id)
+        self._reaction_gate_observe(message, candidate)
+        if len(self._reaction_gate_inflight) >= self._REACTION_GATE_MAX_INFLIGHT:
+            return  # defensive bound: fail closed (no consult), once-only still holds
+        self._reaction_gate_inflight.add(message_id)
+        # The evidence is frozen at this synchronous point — everything buffered
+        # before this message arrived, this message's own entry excluded — so the
+        # consult never depends on when the task is later scheduled: no predecessor
+        # can be missing and no successor can leak into "preceding" evidence.
+        recent = self._reaction_gate.snapshot_context(
+            getattr(message, "channel", None), exclude_id=message_id,
+        )
+        task = asyncio.create_task(self._reaction_gate_run(message, candidate, recent))
+        self._reaction_gate_tasks.add(task)
+        task.add_done_callback(self._reaction_gate_tasks.discard)
+
+    def _reaction_gate_remember(self, message_id: str) -> None:
+        """Claim one message id as consulted, evicting the oldest NON-in-flight id.
+
+        Eviction may not drop an id whose consultation task is still running: a
+        concurrent duplicate delivery of that id would then re-consult and
+        double-react, which is exactly what the registry exists to prevent. So the
+        oldest evictable (claimed and finished) id goes first, and when everything
+        tracked is still in flight the registry runs over capacity rather than lose
+        the once-only guarantee — bounded by the in-flight cap, and trimmed again by
+        the next claim once tasks finish.
+        """
+        while len(self._reaction_gate_seen) >= self._REACTION_GATE_MAX_SEEN:
+            evictable = next(
+                (
+                    pending for pending in self._reaction_gate_seen
+                    if pending not in self._reaction_gate_inflight
+                ),
+                None,
+            )
+            if evictable is None:
+                break
+            del self._reaction_gate_seen[evictable]
+        self._reaction_gate_seen[message_id] = None
+
+    async def _reaction_gate_run(
+        self, message: Any, candidate: Dict[str, Any], recent: List[Dict[str, str]],
+    ) -> None:
+        """One bounded consultation → one reaction per grapheme cluster. Never raises into dispatch."""
+        try:
+            gate = self._reaction_gate
+            if gate is None:
+                return
+            user = getattr(getattr(self, "_client", None), "user", None)
+            decision = await gate.evaluate(
+                message, channel=getattr(message, "channel", None),
+                bot_name=str(getattr(user, "display_name", "") or getattr(user, "name", "") or ""),
+                bot_id=getattr(user, "id", None),
+                recent=recent,
+            )
+            emoji = decision.emoji
+            if emoji is None:
+                self._reaction_gate_log(decision, candidate)
+                return
+            emoji = gate.label_to_entry.get(emoji, emoji)
+            # A multi-glyph whitelist entry is ONE judge option but is added as one
+            # reaction per grapheme cluster, in string order (👉👈 → 👉 then 👈); a
+            # compound emoji (🤦‍♂️, 1️⃣, 🇦🇺) is one cluster and stays one reaction.
+            # Each cluster is its own API call with no transaction: one failing is
+            # logged and never skips the remaining clusters.
+            clusters = split_reaction_clusters(emoji)
+            added = [await self._add_reaction(message, cluster) for cluster in clusters]
+            if all(added):
+                outcome = f"react:{emoji}"
+            else:
+                detail = ",".join(
+                    f"{cluster}:{'added' if ok else 'failed'}"
+                    for cluster, ok in zip(clusters, added)
+                )
+                outcome = (
+                    f"react_partial:{emoji}[{detail}]" if any(added)
+                    else f"react_failed:{emoji}[{detail}]"
+                )
+            self._reaction_gate_log(decision, candidate, outcome=outcome)
+        finally:
+            # Finished for every outcome the registry cares about — answered, failed,
+            # or cancelled — so the id may be evicted and a duplicate can no longer
+            # re-consult it. Runs even when the body above raises.
+            self._reaction_gate_inflight.discard(str(candidate.get("message_id") or ""))
+
+    def _reaction_gate_log(
+        self, decision: ReactionDecision, candidate: Dict[str, Any], *,
+        outcome: Optional[str] = None,
+    ) -> None:
+        """One line per consultation: ids, outcome, abstention mass, sanitized reason, latency.
+
+        Never message content, credentials, headers or the remote response body.
+        """
+        resolved = outcome if outcome is not None else (
+            "react" if decision.emoji is not None else "no_reaction"
+        )
+        logger.log(
+            logging.WARNING if decision.error else logging.INFO,
+            "[%s] reaction_gate channel=%s message=%s outcome=%s abstain=%.4f reason=%s error=%s latency_ms=%s",
+            self.name, candidate.get("conversation_id"), candidate.get("message_id"),
+            resolved,
+            decision.abstain_sum if decision.abstain_sum is not None else -1.0,
+            decision.reason, decision.error or "none",
+            f"{decision.latency_ms:.0f}" if decision.latency_ms is not None else "n/a",
+        )
+
+    def _reaction_gate_observe(self, message: Any, candidate: Dict[str, Any]) -> None:
+        """Buffer one in-scope message as future reaction evidence (cheap, bounded).
+
+        Unlike the speaking gate's evidence (human messages plus this bot's replies),
+        reaction evidence carries exactly its candidates: bot chatter is never
+        buffered because it is never a candidate. The candidate's message id rides
+        along so its own consult can drop this entry (intake-time buffering would
+        otherwise make it its own history).
+        """
+        gate = self._reaction_gate
+        if gate is None or candidate is None:
+            return
+        author = getattr(message, "author", None)
+        gate.observe(
+            message.channel,
+            getattr(author, "display_name", None) or getattr(author, "name", ""),
+            getattr(message, "content", ""),
+            message_id=str(candidate.get("message_id") or ""),
+        )
+
+    def _reaction_gate_observe_sent(self, channel: Any, text: Any) -> None:
+        """Buffer this bot's own delivered final reply as future reaction evidence.
+
+        The reaction counterpart of the send seam above, on the reaction gate's own
+        scope and independent of the speaking gate: a user's "thanks" after this bot's
+        reply only reads as connected to the reaction judge when the reply itself is
+        in evidence. Same content rules (the bot's display name as author, the sent
+        text; empty text is dropped by the buffer) and the same per-conversation
+        bounds. The reply is never a reaction candidate (the candidate rule excludes
+        this bot's own output), so it carries no message id to exclude. Never logs
+        content.
+        """
+        gate = self._reaction_gate
+        if gate is None:
+            return
+        if channel is None or isinstance(channel, discord.DMChannel):
+            return  # reactions are a server-surface feature; DMs stay private
+        channel_keys = self._discord_channel_keys_from_channel(
+            channel, self._get_parent_channel_id(channel),
+        )
+        is_thread = isinstance(channel, discord.Thread)
+        if (
+            not gate.selects(channel_keys, is_thread=is_thread)
+            or not self._discord_channel_policy_admits(channel_keys)
+        ):
+            return
+        if not self._gate_thread_membership_ok(
+            channel,
+            require=bool(getattr(gate.config, "threads_require_membership", True)),
+        ):
+            return  # unjoined thread: no evidence buffered either
+        bot_name = str(getattr(getattr(self._client, "user", None), "display_name", "") or "")
+        if not bot_name:
+            return
+        gate.observe(channel, bot_name, text)
+
+    def _discord_message_admission(
+        self, message: Any, *, claim: bool, gate_probe: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, bool]:
+        """Return ``(admitted, role_authorized)`` for one Discord event.
+
+        ``gate_probe`` is an out-param the caller passes when the opt-in response gate is
+        active: admission fills it for messages the gate may consult and never changes its
+        own verdict — the async caller applies the gate's decision afterwards.
+        """
         message_id = str(getattr(message, "id", ""))
         if claim:
             if self._dedup.is_duplicate(message_id):
@@ -1829,13 +2799,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         role_authorized = False
         if getattr(message.author, "bot", False):
             allow_bots = self._get_allow_bots()
+            bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
             if allow_bots == "none":
                 return False, False
-            if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
+            if (
+                allow_bots == "mentions"
+                and not self._self_is_explicitly_mentioned(message)
+                and not bot_tag_continuation
+            ):
                 return False, False
             if (
                 self._discord_bots_require_inline_mention()
                 and not self._self_is_raw_mentioned(message)
+                and not bot_tag_continuation
             ):
                 return False, False
         else:
@@ -1872,7 +2848,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 free_channels = self._discord_free_response_channels()
                 channel_keys = self._discord_channel_keys(message, parent_id)
                 if "*" not in free_channels and not (channel_keys & free_channels):
+                    # Ambient text that pings a human (not us) would be dropped here by the
+                    # legacy prefilter. In a gate-selected channel the probe still records it
+                    # so the judge — not this prefilter — decides; the verdict is unchanged.
+                    candidate = self._response_gate_candidate(message, admitted=False)
+                    if candidate is not None:
+                        gate_probe.update(candidate)
                     return False, False
+        candidate = (
+            None if raw_self_mention else self._response_gate_candidate(message, admitted=True)
+        )
+        if gate_probe is not None and candidate is not None:
+            gate_probe.update(candidate)
         return True, role_authorized
 
     async def _dispatch_discord_message(self, message: Any) -> bool:
@@ -1882,9 +2869,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
             except asyncio.TimeoutError:
                 pass
-        admitted, role_authorized = self._discord_message_admission(message, claim=True)
-        if not admitted:
+        gate_probe = self._response_gate_probe()
+        admitted, role_authorized = self._discord_message_admission(
+            message, claim=True, gate_probe=gate_probe,
+        )
+        # The gate runs before any side effect and after admission recorded its verdict, so an
+        # enforce approval can also rescue an ambient message admission dropped on the mention
+        # policy (verdict True) while a deny still sends nothing anywhere.
+        verdict = await self._response_gate_apply(message, gate_probe)
+        # Reaction consideration is independent of the speaking verdict: a message this
+        # gate (or the mention prefilter above) drops can still be reacted to, and the
+        # spawned task never blocks this dispatch.
+        self._reaction_gate_consider(message)
+        if verdict is False:
+            return False  # enforce deny: no typing, thread, session or tool side effects
+        if not admitted and verdict is not True:
             return False
+        self._record_bot_tag_debounce(message)
         return await self._handle_message(message, role_authorized=role_authorized)
 
     # --- gateway_platform_event fire-sites ---
@@ -2278,6 +3279,29 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     await task
                 except asyncio.CancelledError:
                     pass
+        # The config-edit watcher dies with the connection: a live swap must never
+        # land on a torn-down adapter (a reconnect starts a fresh watcher).
+        await cancel_task(self._reaction_gate_reload_task)
+        self._reaction_gate_reload_task = None
+        self._reaction_gate_config_path = None
+        self._reaction_gate_managed_dir = None
+        self._reaction_gate_managed_env = None
+        # Reaction consultations are dispatch side effects: cancel any still in flight
+        # (their message is gone from this connection's point of view) and drop the
+        # once-only registry so a reconnect starts clean.
+        for task in list(self._reaction_gate_tasks):
+            task.cancel()
+        for task in list(self._reaction_gate_tasks):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pragma: no cover - defensive logging
+                logger.debug("[%s] reaction_gate task error during disconnect", self.name, exc_info=True)
+        self._reaction_gate_tasks.clear()
+        self._reaction_gate_seen.clear()
+        self._reaction_gate_inflight.clear()
+        self._reaction_gate = None
         self._running = False
         self._client = None
         self._ready_event.clear()
@@ -2301,7 +3325,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             path = self._command_sync_state_path()
             if not path.exists():
                 return {}
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
@@ -2558,6 +3582,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return self._missed_message_backfill_number(
             "max_dispatches", "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES", 10, int, 1, 100)
 
+    def _missed_message_backfill_max_attempts(self) -> int:
+        """Lifetime re-dispatch ceiling for ONE message, independent of completion state:
+        ``max_dispatches`` caps a scan, not a row, so without this any message whose completion
+        can never be recorded is re-run on every reconnect (#113631)."""
+        return self._missed_message_backfill_number(
+            "max_attempts", "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_ATTEMPTS", 3, int, 1, 100)
+
     def _ensure_missed_message_backfill_task(self) -> asyncio.Task:
         """Return the active recovery task, or start one when none is running."""
         task = self._missed_message_backfill_task
@@ -2653,6 +3684,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
         """Run one recovered message through the live Discord ingress gates."""
+        # Considered before the mention prefilter below: that prefilter's early return
+        # would otherwise hide recovered ambient messages from the reaction gate, which
+        # must see exactly what the live path sees (independent of the speaking rules).
+        self._reaction_gate_consider(message)
         if not isinstance(message.channel, discord.DMChannel):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)
@@ -2663,10 +3698,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 and not (channel_keys & free_channels)
                 and not self._in_bot_thread(message)
                 and not self._self_is_explicitly_mentioned(message)
+                # Same rule as live dispatch: in a gate-selected channel the judge decides
+                # for an ambient message, so this mention prefilter does not pre-empt it.
+                and not self._response_gate_consults(message)
             ):
                 return False
-        admitted, role_authorized = self._discord_message_admission(message, claim=False)
-        if not admitted:
+        gate_probe = self._response_gate_probe()
+        admitted, role_authorized = self._discord_message_admission(
+            message, claim=False, gate_probe=gate_probe,
+        )
+        verdict = await self._response_gate_apply(message, gate_probe)
+        if verdict is False:
+            return False
+        if not admitted and verdict is not True:
             return False
         return await self._handle_message(message, role_authorized=role_authorized, recovered=True)
 
@@ -2696,6 +3740,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         logger.debug("[%s] Cannot fetch backfill channel %s: %s", self.name, channel_id, exc)
                         continue
                 candidate_channels.append(channel)
+        # Obfuscated placeholders (bot lost VIEW_CHANNEL) fail every history read — drop them
+        # from both the wildcard and the explicit-id branch (#90154).
+        candidate_channels = [ch for ch in candidate_channels if not is_discord_channel_obfuscated(ch)]
+
         iterators = [
             self._iter_channel_and_thread_messages(
                 channel, limit=limit, after=after, seen_channels=seen,
@@ -2718,20 +3766,25 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             iterators = next_round
 
     async def _iter_channel_and_thread_messages(self, channel: Any, *, limit: int, after: Any, seen_channels: set[str]):
-        """Yield history from a channel plus active/recent archived child threads."""
+        """Yield history from a channel plus active/recent archived child threads. ``after`` is the
+        scan-window floor; a stored cursor may only narrow it, never widen it, and it is never
+        inherited by child threads (each thread has its own cursor)."""
         channel_key = str(getattr(channel, "id", ""))
         if not channel_key or channel_key in seen_channels:
             return
         seen_channels.add(channel_key)
+        channel_after = after
         cursor = self._discord_recovery_cursor(channel_key)
         if cursor:
             with suppress(ValueError, TypeError):
-                after = discord.Object(id=int(cursor))
+                cursor_id = int(cursor)
+                if not isinstance(after, dt.datetime) or _discord_snowflake_time(cursor_id) > after:
+                    channel_after = discord.Object(id=cursor_id)
         history = getattr(channel, "history", None)
         if callable(history):
             try:
                 # Fetch the latest N then restore order; oldest_first=True could starve newer work forever.
-                history_iter = history(limit=limit, after=after, oldest_first=False)
+                history_iter = history(limit=limit, after=channel_after, oldest_first=False)
                 messages = []
                 async for message in history_iter:  # type: ignore[attr-defined]
                     messages.append(message)
@@ -2793,6 +3846,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if self._discord_message_is_persistently_complete(str(getattr(message, "id", ""))):
             return False
         if self._discord_message_has_active_claim(str(getattr(message, "id", ""))):
+            return False
+        if self._discord_message_attempts_exhausted(str(getattr(message, "id", ""))):
             return False
         # A success reaction is only an ack, not evidence the substantive response completed.
         return not await self._message_has_non_down_bot_response(message)
@@ -2868,8 +3923,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         now = self._utc_now_iso()
 
         def _op(conn):
-            existing = conn.execute("SELECT status FROM discord_messages WHERE message_id=?", (message_id,)).fetchone()
-            final_status = existing[0] if existing and existing[0] == "responded" else status
+            existing = conn.execute(
+                "SELECT status, updated_at FROM discord_messages WHERE message_id=?", (message_id,),
+            ).fetchone()
+            # "discovered" only says the scan saw the row: it never overwrites a completed row or an
+            # in-flight claim (queued/processing) — the active-claim guard reads that status and its
+            # original updated_at, so a died dispatch still expires after the 10-minute window.
+            keep = bool(existing) and (existing[0] == "responded" or status == "discovered")
+            final_status = existing[0] if keep else status
+            updated_at = (existing[1] or now) if keep else now
             conn.execute(
                 """
                 INSERT INTO discord_messages (message_id, channel_id, thread_id, parent_channel_id, author_id, created_at, status, updated_at)
@@ -2883,7 +3945,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     status=?,
                     updated_at=excluded.updated_at
                 """,
-                (message_id, channel_id, thread_id, parent_id, author_id, created_text, final_status, now, final_status),
+                (message_id, channel_id, thread_id, parent_id, author_id, created_text, final_status, updated_at, final_status),
             )
         self._with_discord_recovery_db(_op)
 
@@ -2895,31 +3957,74 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not message_id:
             return
         now = self._utc_now_iso()
+        # ``attempts`` counts dispatches (the "queued" transition) so max_attempts is a ceiling on
+        # how many times one message is re-run, not on how many state transitions it saw.
+        dispatched = 1 if status == "queued" else 0
 
         def _op(conn):
             conn.execute(
                 """
                 UPDATE discord_messages
-                   SET status=?, attempts=attempts+1, last_attempt_at=?, last_error=?, updated_at=?
+                   SET status=?, attempts=attempts+?, last_attempt_at=?, last_error=?, updated_at=?
                  WHERE message_id=?
                 """,
-                (status, now, error, now, message_id),
+                (status, dispatched, now, error, now, message_id),
             )
         self._with_discord_recovery_db(_op)
 
-    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
-        if not self._missed_message_backfill_enabled():
+    @staticmethod
+    def _discord_inbound_message_id(event: MessageEvent) -> str:
+        from gateway.platforms.event import inbound_platform_message_id
+        return inbound_platform_message_id(event) or ""
+
+    def _seed_discord_inbound_row(self, message_id: str, source, *, status: str) -> None:
+        if not self._missed_message_backfill_enabled() or not message_id:
             return
-        message = event.raw_message
-        self._record_discord_message_seen(message, status="processing")
-        message_id = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
-        if not message_id:
-            return
+        channel_id = str(getattr(source, "chat_id", "") or "")
+        thread_id = str(getattr(source, "thread_id", "") or "") or None
+        parent_id = None
         now = self._utc_now_iso()
 
         def _op(conn):
             conn.execute(
-                "UPDATE discord_messages SET status='processing', emoji_ack=?, updated_at=? WHERE message_id=?",
+                """
+                INSERT INTO discord_messages (
+                    message_id, channel_id, thread_id, parent_channel_id,
+                    author_id, created_at, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    channel_id=excluded.channel_id,
+                    thread_id=excluded.thread_id,
+                    parent_channel_id=excluded.parent_channel_id,
+                    status=CASE WHEN discord_messages.status='responded' THEN discord_messages.status ELSE excluded.status END,
+                    updated_at=excluded.updated_at
+                """,
+                (message_id, channel_id, thread_id, parent_id, "", None, status, now),
+            )
+        self._with_discord_recovery_db(_op)
+
+    def claim_startup_resume_inbound(self, message_id: str, source) -> None:
+        """Mark the interrupted inbound as in-flight before backfill can re-dispatch it."""
+        self._seed_discord_inbound_row(str(message_id), source, status="processing")
+
+    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
+        if not self._missed_message_backfill_enabled():
+            return
+        message_id = self._discord_inbound_message_id(event)
+        if not message_id:
+            return
+        message = event.raw_message
+        if message is not None:
+            self._record_discord_message_seen(message, status="processing")
+        else:
+            self._seed_discord_inbound_row(message_id, event.source, status="processing")
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_messages SET "
+                "status=CASE WHEN status='responded' THEN status ELSE 'processing' END, "
+                "emoji_ack=?, updated_at=? WHERE message_id=?",
                 (1 if emoji_ack else 0, now, message_id),
             )
         self._with_discord_recovery_db(_op)
@@ -2927,11 +4032,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _record_discord_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         if not self._missed_message_backfill_enabled():
             return
-        message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
+        message_id = self._discord_inbound_message_id(event)
         if not message_id:
             return
-        status = "processed" if outcome == ProcessingOutcome.SUCCESS else ("cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed")
         now = self._utc_now_iso()
+        if outcome == ProcessingOutcome.SUCCESS:
+            # SUCCESS means the base delivered the final (or the stream already had). Attribute it
+            # to the inbound id here: streamed/edited finals, fresh-final sends and media-only replies
+            # carry no reply anchor (reply_to_mode "off" never does), so the send-path ledger writer
+            # cannot mark the row and backfill would re-dispatch it on every reconnect (#113631).
+            def _complete(conn):
+                conn.execute(
+                    "UPDATE discord_messages SET status='responded', replied=1, updated_at=? WHERE message_id=?",
+                    (now, message_id),
+                )
+            self._with_discord_recovery_db(_complete)
+            return
+        status = "cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed"
 
         def _op(conn):
             conn.execute(
@@ -2942,10 +4059,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
         self._with_discord_recovery_db(_op)
 
-    async def _record_response_async(self, reply_to, result: SendResult, content: str, final: bool) -> SendResult:
-        """Record a send outcome in the recovery ledger off-loop and hand back ``result``."""
+    async def _record_response_async(
+        self, reply_to, result: SendResult, content: str, final: bool, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Record a send outcome using its visual or internal reply anchor."""
+        ledger_reply_to = reply_to or (metadata or {}).get("reply_to_message_id")
         await asyncio.to_thread(
-            self._record_discord_response, reply_to=reply_to, result=result, content=content, final=final,
+            self._record_discord_response, reply_to=ledger_reply_to, result=result, content=content, final=final,
         )
         return result
 
@@ -3012,6 +4132,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             ).fetchone()
             return bool(row and row[0] in {"queued", "processing"} and row[1] >= cutoff)
         return bool(self._with_discord_recovery_db(_op, default=True))
+
+    def _discord_message_attempts_exhausted(self, message_id: str) -> bool:
+        """True once a row has been dispatched ``max_attempts`` times (any outcome)."""
+        if not message_id:
+            return False
+        cap = self._missed_message_backfill_max_attempts()
+
+        def _op(conn):
+            row = conn.execute("SELECT attempts FROM discord_messages WHERE message_id=?", (message_id,)).fetchone()
+            return bool(row and int(row[0] or 0) >= cap)
+        exhausted = bool(self._with_discord_recovery_db(_op, default=False))
+        if exhausted:
+            logger.debug(
+                "[%s] Not re-dispatching Discord message %s: missed_message_backfill.max_attempts (%d) reached",
+                self.name, message_id, cap,
+            )
+        return exhausted
 
     def _record_recovery_scan_start(self, channels: set[str]) -> str:
         scan_id = f"{int(time.time() * 1000)}-{os.getpid()}"
@@ -3531,7 +4668,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             f"{dropped_chars} characters were not delivered; the full "
             f"response is in the session logs."
         )
-        kept.append(notice)
+        if self.warning_text(notice):
+            kept.append(notice)
         return kept
 
     async def send(
@@ -3554,7 +4692,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             result = SendResult(success=False, error="Refusing to send empty message")
             # Backfill replays from this table: record the dropped final reply as failed or it is lost.
-            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")))
+            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
         try:
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -3635,7 +4773,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 result = await self._send_to_forum(channel, content)
                 await asyncio.to_thread(
                     self._record_discord_response,
-                    reply_to=reply_to,
+                    reply_to=reply_to or (metadata or {}).get("reply_to_message_id"),
                     result=result,
                     content=content,
                     final=final_delivery,
@@ -3735,7 +4873,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
-            return await self._record_response_async(reply_to, result, content, final_delivery)
+            if final_delivery and message_ids and not metadata.get("_interim_send") and not nonconversational:
+                # The delivered final is this bot's own half of the conversation: judge
+                # evidence for the next follow-up in it (see _response_gate_observe_sent).
+                self._response_gate_observe_sent(channel, content)
+            return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             if _is_discord_transport_error(e):
@@ -3743,7 +4885,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 result = SendResult(success=False, error="send_path_degraded", retryable=True)
             else:
                 result = SendResult(success=False, error=str(e))
-            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")))
+            return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
 
     @staticmethod
     def _forum_thread_parts(thread: Any) -> tuple:
@@ -3863,7 +5005,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Pre-flight oversize: final edits split-and-deliver; streaming edits truncate in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
-                    return await self._edit_overflow_split(channel, msg, message_id, content)
+                    return await self._edit_overflow_split_final(channel, msg, message_id, content)
                 formatted = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap every edit is the same text; skip until finalize.
@@ -3882,7 +5024,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # Reactive split: format_message inflation can exceed 2,000 (50035) even after pre-flight.
                 if self._is_length_overflow_error(edit_err):
                     if finalize:
-                        return await self._edit_overflow_split(channel, msg, message_id, content)
+                        return await self._edit_overflow_split_final(channel, msg, message_id, content)
                     truncated = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                     if self._last_overflow_preview.get(_preview_key) == truncated:
                         # Saturated-preview dedup (see pre-flight path above).
@@ -3893,6 +5035,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     raise
             result = SendResult(success=True, message_id=message_id)
             if finalize:
+                # A finalized edit is a delivered turn-final reply: gate evidence like a send.
+                self._response_gate_observe_sent(channel, content)
                 await self._record_response_async((metadata or {}).get("reply_to_message_id"), result, content, True)
             return result
         except Exception as e:  # pragma: no cover - defensive logging
@@ -3960,6 +5104,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return "error code: 50035" in text and (
             "2000 or fewer" in text or "fewer in length" in text
         )
+
+    async def _edit_overflow_split_final(
+        self, channel: Any, msg: Any, message_id: str, content: str,
+    ) -> SendResult:
+        """``_edit_overflow_split`` for a finalize edit, observing the delivered final as gate evidence.
+
+        Finalize-only by construction: both callers gate on ``finalize=True``, so a
+        successfully split-delivered final is this bot's turn-final reply for the channel.
+        """
+        result = await self._edit_overflow_split(channel, msg, message_id, content)
+        if result.success:
+            self._response_gate_observe_sent(channel, content)
+        return result
 
     async def _edit_overflow_split(
         self, channel: Any, msg: Any, message_id: str, content: str,
@@ -5029,7 +6186,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     f"Command: {command_text}\n"
                     f"Reason: {reason}"
                 )
-                result = await adapter.send(str(home.chat_id), msg)
+                # Policy is the DISCORD owner's (self) evaluated for the foreign target lane; a veto
+                # is not transport failure or permission to reroute to the next target.
+                from gateway.warning_notifications import present_notification
+                result = None
+                async def send_alert():
+                    nonlocal result
+                    result = await adapter.send(str(home.chat_id), msg)
+                if not await present_notification(send_alert, platform=target,
+                                                  diagnostic=True):
+                    return
                 # Only return on confirmed delivery.
                 if getattr(result, "success", None) is False:
                     logger.debug(
@@ -5054,7 +6220,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         Pure rendering over ``_tool_stage_appearance``; the footer carries the
         tool name plus a short slice of the invocation id so two concurrent
-        MoA calls are visually distinguishable in the same channel.
+        MoA calls are visually distinguishable in the same channel. A roster
+        in the event renders as per-advisor identity/status lines.
         """
         tool = str(stage.get("tool") or "tool")
         title, description, color_key = _tool_stage_appearance(
@@ -5062,6 +6229,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             stage.get("stage"),
             stage.get("status"),
             stage.get("counts") or {},
+            stage.get("slots"),
         )
         color_factory = {
             "success": discord.Color.green,
@@ -6051,6 +7219,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Return whether Discord channel messages require a bot mention."""
         return self._extra_or_env_flag("require_mention", "DISCORD_REQUIRE_MENTION", "true", truthy=False)
 
+    def _discord_free_response_auto_thread(self) -> bool:
+        """Free-response channels also auto-thread when opted in; default replies inline."""
+        return self._extra_or_env_flag(
+            "free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD", "false", truthy=True,
+        )
+
     def _discord_max_attachment_bytes(self) -> int:
         """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""
         configured = self.config.extra.get("max_attachment_bytes")
@@ -6138,6 +7312,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile)."""
         return self._gate_csv_set(self._gate_raw("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS"))
 
+    def _discord_channel_policy_admits(self, channel_keys) -> bool:
+        """The allowed/ignored-channel rule ``_handle_message`` applies to every server message.
+
+        Shared rather than re-derived: ``_handle_message`` keeps ownership of the decision and
+        the response gate asks this same rule whether a channel is even worth consulting, so
+        the judge can never cost an API call in a channel the bot would ignore anyway.
+        """
+        allowed_channels = self._get_allowed_channels()
+        if allowed_channels and "*" not in allowed_channels and not (channel_keys & allowed_channels):
+            return False
+        ignored_channels = self._get_ignored_channels()
+        if "*" in ignored_channels or (channel_keys & ignored_channels):
+            return False
+        return True
+
     def _get_allowed_users(self) -> set:
         """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned)."""
         raw = self._gate_raw("allow_from", "DISCORD_ALLOWED_USERS")
@@ -6192,6 +7381,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return True
         return str(raw).strip().lower() in {"true", "1", "yes"}
 
+    def _discord_auto_thread_replies(self) -> bool:
+        """Per-profile ``discord.auto_thread_replies`` flag (default true).
+
+        When true, an admitted quote-reply in an eligible channel auto-threads
+        like any other trigger; ``false`` restores the historical inline
+        reply. Same env-then-config precedence as ``_discord_auto_thread_enabled``
+        (explicit ``DISCORD_AUTO_THREAD_REPLIES`` wins, then ``config.extra``
+        seeded from YAML ``discord.auto_thread_replies``, then default true).
+        """
+        raw = self._gate_raw("auto_thread_replies", "DISCORD_AUTO_THREAD_REPLIES")
+        if raw is None or str(raw).strip() == "":
+            return True
+        return str(raw).strip().lower() in {"true", "1", "yes"}
+
     def _gateway_allow_all_users(self) -> bool:
         """Per-profile GATEWAY_ALLOW_ALL_USERS flag."""
         return self._gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}
@@ -6200,6 +7403,46 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""
         raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
         return str(raw or "none").lower().strip() or "none"
+
+    @staticmethod
+    def _bot_tag_debounce_key(message: Any) -> str:
+        return (
+            f"{getattr(getattr(message, 'channel', None), 'id', '')}:"
+            f"{getattr(getattr(message, 'author', None), 'id', '')}"
+        )
+
+    def _record_bot_tag_debounce(self, message: Any) -> None:
+        """Open a short continuation window after a bot-authored tag."""
+        if (
+            self._text_batch_delay_seconds <= 0
+            or not getattr(getattr(message, "author", None), "bot", False)
+            or not self._self_is_explicitly_mentioned(message)
+        ):
+            return
+        window = max(
+            self._text_batch_delay_seconds,
+            self._text_batch_split_delay_seconds,
+        )
+        self._bot_tag_debounce_until[self._bot_tag_debounce_key(message)] = (
+            time.monotonic() + window
+        )
+
+    def _is_bot_tag_debounce_continuation(self, message: Any) -> bool:
+        """Return whether an unmentioned chunk belongs to a recent bot tag."""
+        if (
+            getattr(self, "_text_batch_delay_seconds", 0) <= 0
+            or not getattr(getattr(message, "author", None), "bot", False)
+        ):
+            return False
+        key = self._bot_tag_debounce_key(message)
+        debounce_until = getattr(self, "_bot_tag_debounce_until", None)
+        if not debounce_until:
+            return False
+        deadline = debounce_until.get(key, 0.0)
+        if deadline <= time.monotonic():
+            debounce_until.pop(key, None)
+            return False
+        return True
 
     def _discord_free_response_channels(self) -> set:
         """Channel IDs/names needing no mention; a lone "*" is preserved for wildcard short-circuit."""
@@ -6247,14 +7490,24 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
 
     def _discord_bots_require_inline_mention(self) -> bool:
-        """Whether a bot author must type a literal ``<@thisbot>`` to wake us (off by default).
-        A reply-ping adds us to ``message.mentions`` silently, letting two bots ping-pong forever.
-        Config: ``discord.bots_require_inline_mention`` / ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``."""
-        configured = self.config.extra.get("bots_require_inline_mention")
-        if isinstance(configured, str):
-            return configured.lower() in {"true", "1", "yes", "on"}
+        """Whether another bot must type an inline @mention to trigger us.
+
+        On by default. A bot-authored message only wakes this bot if its
+        content contains a literal ``<@thisbot>`` token. A Discord reply/quote
+        to one of our messages is NOT enough on its own, because Discord's
+        reply-ping silently adds us to ``message.mentions`` even though the
+        author never typed our handle — which otherwise lets two bots ping-pong
+        replies at each other indefinitely. Humans are never affected by this
+        gate; it only applies to bot authors. Set the option to false only for
+        trusted relay integrations that intentionally depend on reply pings or
+        unmentioned bot messages.
+
+        Config: ``discord.bots_require_inline_mention`` (or env
+        ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
+        """
         return self._extra_or_env_flag(
-            "bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false", truthy=True)
+            "bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true", truthy=True
+        )
 
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Channel keys (ID, bare name, ``#name``, plus parent for threads) accepted by channel gates."""
@@ -6889,11 +8142,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.warning("[%s] %s failed: %s", self.name, fail_log, e)
             return SendResult(success=False, error=str(e))
 
-    @staticmethod
-    def _embed_body(text: str, limit: int = 4088) -> str:
-        """Trim to Discord's 4096-char embed description limit (conservatively)."""
-        return text if len(text) <= limit else text[: limit - 3] + "..."
-
     # Payload lives in plain content: embeds can be invisible/detached on web/mobile.
     _EA_HEADER = (f"⚠️ **{EA_HEADER_TEXT}**\n\n"
                   "Do you want Hermes to run this command?\n\n"
@@ -6902,6 +8150,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     _EA_CODE_CLOSE = "\n```\n"
     _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+    # The reason shares the 2000-char content cap with the command; unbounded it would starve
+    # the command preview to zero and push the content past the cap.
     _EA_REASON_BUDGET = 300
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
@@ -6913,7 +8163,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Button view + embed mirror; buttons call ``resolve_gateway_approval()`` (not /approve)."""
+        """Send an approval with content as its canonical payload and an embed for state."""
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -6921,10 +8171,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 content = f"{mention_content}\n{content}"
             embed = discord.Embed(
                 title=f"⚠️ {EA_HEADER_TEXT}",
-                description=f"```\n{self._embed_body(prompt.command)}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name=EA_REASON_LABEL_TEXT, value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
             view = ExecApprovalView(
@@ -6949,9 +8197,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Send a three-button slash-command confirmation prompt."""
         def _build(_channel):
-            embed = discord.Embed(
-                title=title or "Confirm", description=self._embed_body(message), color=discord.Color.orange(),
-            )
+            # Header-only card (same rule as the exec approval prompt): the message lives in
+            # content only, so embed-rendering clients don't see it twice (#114693).
+            embed = discord.Embed(title=title or "Confirm", color=discord.Color.orange())
             content = self._self_contained_prompt_content(f"**{title or 'Confirm'}**", message)
             view = SlashConfirmView(
                 session_key=session_key, confirm_id=confirm_id,
@@ -7004,17 +8252,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; trim conservatively.
-            max_desc = 4088
-            body = str(question or "").strip()
-            if len(body) > max_desc:
-                body = body[: max_desc - 3] + "..."
-
-            embed = discord.Embed(
-                title="❓ Hermes needs your input",
-                description=body,
-                color=discord.Color.orange(),
-            )
+            # Header-only card (same rule as the exec approval prompt): the question and choices
+            # live in content only, so embed-rendering clients don't see them twice (#114693).
+            embed = discord.Embed(title="❓ Hermes needs your input", color=discord.Color.orange())
 
             # Normalise choices: LLMs sometimes emit `[{"description": "..."}]`
             # instead of bare strings, which would render as raw Python repr in
@@ -7087,37 +8327,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 f"{i}. {c}" for i, c in enumerate(clean_choices, start=1)
             ]
 
-            def _pack_choice_field(lines: List[str], hint: str) -> str:
-                """Pack the numbered list + hint into one embed field value.
-
-                Embed field values cap at 1024 chars and Discord rejects the
-                whole message when they overrun, so drop whole trailing lines
-                rather than cutting an option in half — a "+N more" note beats
-                a half-rendered choice, and the full list always lives in the
-                plain ``content`` alongside.
-                """
-                suffix = f"\n\n{hint}"
-                budget = _DISCORD_EMBED_FIELD_LIMIT - utf16_len(suffix)
-                kept: List[str] = []
-                for line in lines:
-                    candidate = "\n".join(kept + [line])
-                    if utf16_len(candidate) > budget:
-                        break
-                    kept.append(line)
-                dropped = len(lines) - len(kept)
-                if dropped:
-                    kept.append(f"… +{dropped} more in the message above")
-                return "\n".join(kept) + suffix
-
-            embed.add_field(
-                name="Choices" if choice_lines else "Reply",
-                value=(
-                    _pack_choice_field(choice_lines, reply_hint)
-                    if choice_lines
-                    else reply_hint
-                ),
-                inline=False,
-            )
 
             # Mirror the question and the numbered choices in plain content —
             # embeds are invisible on some clients (see send_exec_approval).
@@ -7630,9 +8839,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return att.url
 
     async def _collect_attachment_media(self, all_attachments: list) -> tuple:
-        """Cache every attachment and return ``(media_urls, media_types, pending_text_injection)``."""
+        """Cache every attachment and return ``(media_urls, media_types, media_text_inlined,
+        pending_text_injection)``; ``media_text_inlined[i]`` is True only when attachment ``i``'s
+        text was injected."""
         media_urls = []
         media_types = []
+        media_text_inlined: list = []
         pending_text_injection: Optional[str] = None
         for att in all_attachments:
             content_type = att.content_type or "unknown"
@@ -7640,10 +8852,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 media_urls.append(await self._cache_simple_media(
                     att, content_type, "image", {".jpg", ".jpeg", ".png", ".gif", ".webp"}, ".jpg"))
                 media_types.append(content_type)
+                media_text_inlined.append(False)
             elif content_type.startswith("audio/"):
                 media_urls.append(await self._cache_simple_media(
                     att, content_type, "audio", {".ogg", ".mp3", ".wav", ".webm", ".m4a"}, ".ogg"))
                 media_types.append(content_type)
+                media_text_inlined.append(False)
             else:
                 ext = ""
                 if att.filename:
@@ -7673,6 +8887,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         )
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
+                    media_text_inlined.append(False)
                     logger.info(
                         "[Discord] Cached user %s: %s", "document" if in_allowlist else "attachment", cached_path,
                     )
@@ -7691,11 +8906,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                                 pending_text_injection = f"{pending_text_injection}\n\n{injection}"
                             else:
                                 pending_text_injection = injection
+                            media_text_inlined[-1] = True
                         except UnicodeDecodeError:
                             pass
                 except Exception as e:
                     logger.warning("[Discord] Failed to cache document %s: %s", att.filename, e, exc_info=True)
-        return media_urls, media_types, pending_text_injection
+        return media_urls, media_types, media_text_inlined, pending_text_injection
 
     def _attachment_message_type(self, att: Any) -> MessageType:
         """MessageType from the first attachment's MIME. Any non-media (or untyped) attachment
@@ -7736,6 +8952,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.thread_free_response_channels: free_response channels that still auto-thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.auto_thread_replies: Quote-replies also auto-thread (default: true; false = inline)
+        #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
         thread_id = None
         parent_channel_id = None
         is_thread = isinstance(message.channel, discord.Thread)
@@ -7768,14 +8986,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
-            allowed_channels = self._get_allowed_channels()
-            if allowed_channels:
-                if "*" not in allowed_channels and not (channel_keys & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
-                    return False
-            ignored_channels = self._get_ignored_channels()
-            if "*" in ignored_channels or (channel_keys & ignored_channels):
-                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
+            if not self._discord_channel_policy_admits(channel_keys):
+                logger.debug("[%s] Ignoring message outside allowed/ignored channel policy: %s", self.name, channel_keys)
                 return False
             free_channels = self._discord_free_response_channels()
             require_mention = self._discord_require_mention()
@@ -7789,8 +9001,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 or is_voice_linked_channel
             )
             in_bot_thread = self._in_bot_thread(message)
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+            # An enforce-approved ambient message was already admitted by the gate in
+            # _dispatch_discord_message; this is the same decision, not a new exemption.
+            gate_admitted = self._response_gate_admitted(message)
+            if require_mention and not is_free_channel and not in_bot_thread and not gate_admitted:
+                if (
+                    not self._self_is_explicitly_mentioned(message)
+                    and not mention_prefix
+                    and not self._is_bot_tag_debounce_continuation(message)
+                ):
                     logger.debug(
                         "[%s] Ignoring message without mention in thread/channel the bot has not participated in: %s",
                         self.name, channel_keys,
@@ -7807,14 +9026,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # stays mention-free.
             thread_free = self._discord_thread_free_response_channels()
             effective_free = free_channels - thread_free
-            skip_thread = bool(channel_keys & no_thread_channels) or (
-                "*" in effective_free
-                or bool(channel_keys & effective_free)
-                or is_voice_linked_channel
-            )
             auto_thread = self._discord_auto_thread_enabled()
+            # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
+            skip_thread = bool(channel_keys & no_thread_channels) or (
+                (
+                    "*" in effective_free
+                    or bool(channel_keys & effective_free)
+                    or is_voice_linked_channel
+                )
+                and not self._discord_free_response_auto_thread()
+            )
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            # Quote-replies auto-thread by default; discord.auto_thread_replies: false
+            # restores the historical inline reply.
+            reply_skips_thread = is_reply_message and not self._discord_auto_thread_replies()
+            if auto_thread and not skip_thread and not is_voice_linked_channel and not reply_skips_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
@@ -7888,7 +9114,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
-        media_urls, media_types, pending_text_injection = await self._collect_attachment_media(all_attachments)
+        media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
+            all_attachments)
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
@@ -7935,10 +9162,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,
+            media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
+        if (
+            getattr(getattr(message, "author", None), "bot", False)
+            and self._is_bot_tag_debounce_continuation(message)
+        ):
+            event._bot_tag_debounce = True  # type: ignore[attr-defined]
+
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             self._threads.mark(thread_id)
@@ -7948,6 +9182,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         else:
             await self.handle_message(event)
         return True
+
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+        """A bot handoff's continuation chunks arrive at Discord's send rate (~1/s), so a
+        batch opened by a bot tag waits the split delay regardless of chunk length."""
+        if getattr(pending, "_bot_tag_debounce", False):
+            return self._text_batch_split_delay_seconds
+        return super()._text_batch_delay_for(pending)
 
 
 # ---------------------------------------------------------------------------
@@ -9077,11 +10318,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if clarify_mentions_cfg is not None:
         _env_default("DISCORD_CLARIFY_MENTIONS", str(clarify_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
-    # auto_thread & reactions: seeded into extra so the adapter's per-profile
+    # auto_thread flags & reactions: seeded into extra so the adapter's per-profile
     # precedence helper (_gate_raw: explicit env first, then config) honors
-    # ``discord.auto_thread`` even when the env bridge is skipped
-    # (multiplexed secondary profiles) or lost the first-writer race.
-    for key, env_key in (("auto_thread", "DISCORD_AUTO_THREAD"), ("reactions", "DISCORD_REACTIONS")):
+    # ``discord.auto_thread`` / ``discord.auto_thread_replies`` even when the env
+    # bridge is skipped (multiplexed secondary profiles) or lost the first-writer race.
+    for key, env_key in (
+        ("auto_thread", "DISCORD_AUTO_THREAD"),
+        ("auto_thread_replies", "DISCORD_AUTO_THREAD_REPLIES"),
+        ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),
+        ("reactions", "DISCORD_REACTIONS"),
+    ):
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]
             _env_default(env_key, str(discord_cfg[key]).lower())
@@ -9144,8 +10390,9 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env bridge: ``discord:`` config keys → ``DISCORD_*`` env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
-        # (require_mention, free_response_channels, auto_thread, reactions, ignored_channels,
-        # allowed_channels, no_thread_channels, thread_free_response_channels, allow_mentions.*,
+        # (require_mention, free_response_channels, auto_thread, auto_thread_replies,
+        # free_response_auto_thread, reactions, ignored_channels, allowed_channels,
+        # no_thread_channels, thread_free_response_channels, allow_mentions.*,
         # reply_to_mode, thread_require_mention)
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
         # block that used to live in ``gateway/config.py``. Hook contract: #24836.

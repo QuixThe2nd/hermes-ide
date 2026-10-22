@@ -503,19 +503,40 @@ def _build_result_entry(
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
+    interrupt_note = ""
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"
+        # The loop's final_response is a placeholder here ("Operation interrupted…", also appended as the closing
+        # assistant row); the completion must carry what the child actually had so far — its last real assistant
+        # text — and keep the placeholder as the error.
+        from agent.message_content import flatten_message_text
+        placeholders = {"", summary.strip(), "Operation interrupted."}
+        partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
+                        and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
+        if partial:
+            interrupt_note, summary = summary.strip(), partial
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
         status, exit_reason = "failed", "error"
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
-        # failure = budget exhaustion. A declared schema still violated after the bounded retry makes the summary
-        # unusable under the contract, so status must not say completed (orchestrators reading only status/icon would
-        # accept an empty verdict).
+        # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the
+        # run: the child's raw final text is the deliverable (audits of up to 68 min were written off as "failed"
+        # over a stray code fence or one missing field); ``schema_valid: false`` + ``schema_errors`` carry the
+        # contract verdict, and the summary is prefixed with a notice so a status-only reader cannot mistake it
+        # for validated output.
         exit_reason = "completed" if result.get("completed", False) else "max_iterations"
-        status = "completed" if schema.valid is not False and usable_summary else "failed"
+        if schema.valid is False:
+            # Fork contract: a declared schema still violated after the bounded
+            # retry is unusable under the caller's contract. Upstream keeps
+            # status="completed" and a schema_note; we fail the entry so batch
+            # lines print ✗ and orchestrators that read only status/icon cannot
+            # accept an empty verdict. schema_valid/schema_errors still carry
+            # the detail. Schema-less runs never take this branch (valid is None).
+            status = "failed"
+        else:
+            status = "completed" if usable_summary else "failed"
 
     _cost = getattr(child, "session_estimated_cost_usd", 0.0)
     _cost_status = getattr(child, "session_cost_status", None)
@@ -547,9 +568,9 @@ def _build_result_entry(
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
     if status == "failed":
         if schema.valid is False and usable_summary:
-            # The child DID respond; name the contract violation instead of the generic "no response" error.
             entry["error"] = (
-                "Final answer does not satisfy the declared output_schema" + (" (after 1 retry)." if schema.retries else ".")
+                "Final answer does not satisfy the declared output_schema"
+                + (" (after 1 retry)." if schema.retries else ".")
             )
         else:
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -558,6 +579,8 @@ def _build_result_entry(
         _failure_reason = result.get("failure_reason")
         if isinstance(_failure_reason, str) and _failure_reason:
             entry["failure_reason"] = _failure_reason
+    elif interrupt_note:
+        entry["error"] = interrupt_note
 
     # Schema-validation outcome — emitted ONLY when a schema was requested, so
     # legacy (schema-less) payloads keep their exact shape.
@@ -567,6 +590,13 @@ def _build_result_entry(
             entry["schema_retries"] = schema.retries
         if not schema.valid and schema.errors:
             entry["schema_errors"] = schema.errors
+        if schema.valid is False and usable_summary:
+            entry["schema_note"] = (
+                "Final answer does not satisfy the declared output_schema"
+                + (" (after 1 retry)" if schema.retries else "")
+                + "; `summary` is the child's raw, UNVALIDATED final text — extract what you need from it "
+                "yourself (see schema_errors) rather than re-running the task."
+            )
 
     # A steer queued after the final assistant turn had no tool batch to land
     # in; name it so the parent sees it was MISSED rather than silently absorbed.

@@ -25,6 +25,25 @@ _SILENT_BACKGROUND_HINT = (
     'daemons).'
 )
 
+# Headless one-shot runners (Kanban workers, cron, hermes -z, stateless HTTP)
+# cannot receive an async completion, so recommending notify_on_complete=true
+# is a false recovery path (pc_9eaef6f2ffd8 / pc_7ddf045def95).
+_HEADLESS_SILENT_BACKGROUND_HINT = (
+    'background=true is silent in this session. notify_on_complete is not available here '
+    '(a one-shot runner such as `hermes -z`, a cron job, a Kanban worker, or a stateless '
+    'HTTP endpoint). Track the session_id and use process(action=\'poll\') or '
+    "process(action='wait') to learn the outcome."
+)
+
+
+def silent_background_hint() -> str:
+    """Hint for background=true without notify/watch. Headless sessions must not
+    be told to re-launch with notify_on_complete=true."""
+    from gateway.session_context import async_delivery_supported
+    if async_delivery_supported():
+        return _SILENT_BACKGROUND_HINT
+    return _HEADLESS_SILENT_BACKGROUND_HINT
+
 # Homebrewed CI pollers built on `gh pr view --json statusCheckRollup` or
 # `gh pr checks | jq` fail silently in known ways (block-buffered stdout never
 # reaches capture, jq null-key edge cases exit the loop, conclusion-vs-status
@@ -42,7 +61,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     '"$2==\\"pending\\""`) for sharded matrices. Load '
     "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
-    "each tick to a known file (`tee -a /tmp/ci.log`) and rely on `process(action='log')` to "
+    "each tick to a known file (`tee -a $TMPDIR/ci.log`) and rely on `process(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '
     'loops.'
 )
@@ -151,12 +170,21 @@ def spawn_background_process(
     """
     from tools.process_registry import process_registry
     from tools.terminal_tool import (
-        _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
+        _explicit_local_workdir_error, _redact_terminal_error_text, _resolve_command_cwd,
+        _resolve_notification_flag_conflict,
     )
 
     effective_cwd = _resolve_command_cwd(
         workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
     )
+    workdir_err = _explicit_local_workdir_error(
+        workdir, env_type=env_type, default_cwd=cwd,
+    )
+    if workdir_err:
+        return json.dumps({
+            "output": "", "exit_code": 1, "error": workdir_err, "status": "error",
+            "cwd": effective_cwd,
+        }, ensure_ascii=False)
     try:
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
@@ -164,13 +192,14 @@ def spawn_background_process(
             effective_pty=effective_pty,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
-                       "pid": proc_session.pid, "exit_code": 0, "error": None}
+                       "pid": proc_session.pid, "exit_code": 0, "error": None,
+                       "cwd": effective_cwd}
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:
             result_data["pty_note"] = pty_disabled_reason
         if not notify_on_complete and not watch_patterns:
-            result_data["hint"] = _SILENT_BACKGROUND_HINT
+            result_data["hint"] = silent_background_hint()
         if command and _looks_like_homebrew_ci_poller(command):
             existing = result_data.get("hint", "")
             result_data["hint"] = (existing + "\n\n" + _HOMEBREW_CI_POLLER_HINT if existing

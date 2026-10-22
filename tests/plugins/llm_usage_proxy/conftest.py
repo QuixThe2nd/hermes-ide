@@ -121,6 +121,7 @@ class _Proxy(UsageProxyServer):
         port=0,
         manage_keys=False,
         keys_path=None,
+        capture_jev_bodies=False,
     ):
         super().__init__(
             port=port,
@@ -129,6 +130,7 @@ class _Proxy(UsageProxyServer):
             identity=identity,
             manage_keys=manage_keys,
             keys_path=keys_path,
+            capture_jev_bodies=capture_jev_bodies,
         )
 
 
@@ -163,6 +165,7 @@ def start_proxy(tmp_path):
         port=0,
         manage_keys=False,
         keys_path=None,
+        capture_jev_bodies=False,
     ) -> _Proxy:
         server = _Proxy(
             db_path=str(tmp_path / db_name),
@@ -171,6 +174,7 @@ def start_proxy(tmp_path):
             port=port,
             manage_keys=manage_keys,
             keys_path=keys_path,
+            capture_jev_bodies=capture_jev_bodies,
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

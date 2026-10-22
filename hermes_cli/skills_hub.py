@@ -783,6 +783,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
     from agent.skill_utils import get_disabled_skill_names
+    from agent.skill_commands import skill_command_collision_note
     c = console or _console
     ensure_hub_dirs()
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
@@ -809,9 +810,12 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         counts[source_type] += 1
         enabled_count += is_enabled
         disabled_count += not is_enabled
+        status = "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]"
+        # Name taken by a built-in: the skill loads but has no /<name> (see agent.skill_commands).
+        if note := skill_command_collision_note(name):
+            status += f"\n[yellow]{note}[/]"
         table.add_row(name, skill.get("category", ""), source_display,
-                      _trust_cell(trust, source_display),
-                      "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]")
+                      _trust_cell(trust, source_display), status)
 
     c.print(table)
     tail = (f"{enabled_count} enabled shown" if enabled_only
@@ -1153,7 +1157,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     if not (path / "SKILL.md").exists():
         _print_error(c, f"No SKILL.md found at {path}")
         return
-    skill_md = (path / "SKILL.md").read_text(encoding="utf-8").lstrip("\ufeff")  # tolerate BOM
+    skill_md = (path / "SKILL.md").read_text(encoding="utf-8-sig").lstrip("\ufeff")  # tolerate BOM
     fm = _read_frontmatter(skill_md)
     name = fm.get("name", path.name)
     if not fm.get("description", ""):
@@ -1284,7 +1288,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
         _print_error(c, f"File not found: {inp}")
         return
     try:
-        snapshot = json.loads(inp.read_text(encoding="utf-8"))
+        snapshot = json.loads(inp.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         _print_error(c, f"Invalid JSON in {inp}")
         return

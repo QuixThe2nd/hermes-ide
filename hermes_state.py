@@ -129,6 +129,7 @@ from hermes_state_messages import SessionMessagesMixin
 from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
+from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_gateway import SessionGatewayMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
@@ -789,6 +790,19 @@ class _PathReadBudget:
                 db.db_path,
                 _READ_POOL_MAX,
             )
+
+    def unregister(self, db: "SessionDB") -> None:
+        """Remove a closed writer from duplicate-handle diagnostics immediately.
+
+        Parity with ``hermes_state_readpool._PathReadBudget.unregister`` (upstream
+        a7ed109847): the mixin consolidation into hermes_state.py kept the
+        ``close()`` call site but dropped this method, so every ``SessionDB.close()``
+        raised AttributeError and 12 WAL-generation-guard tests failed on a clean
+        checkout. Discard-only: a never-registered (failed-init) handle is a no-op,
+        and the WeakSet already drops garbage-collected members anyway.
+        """
+        with self._lock:
+            self._members.discard(db)
 
     def acquire(self, requester: "SessionDB") -> bool:
         """Take a permit for a new read connection, or refuse.
@@ -1987,6 +2001,8 @@ def _wal_reset_repair_hint() -> str:
         cmd = recommended_update_command_for_method(method)
         if method in {"git", "unknown"}:
             return f"Hermes-managed installs can repair the embedded runtime with `{cmd}`"
+        if method == "source":
+            return "source checkouts can repair the runtime by re-running their venv setup"
         if method == "docker":
             return f"update the container image with `{cmd}`"
         # nix/nixos
@@ -5466,6 +5482,7 @@ class SessionDB(
     SessionTitlesMixin,
     SessionMessagesMixin,
     SessionRewindMixin,
+    SessionProfileRepairMixin,
 ):
     """
     SQLite-backed session storage with FTS5 search.
@@ -5477,6 +5494,8 @@ class SessionDB(
     # Only these state-owned producers participate in automatic stale-open
     # reconciliation. Messaging-platform and UI/desktop sources have separate
     # lifecycle owners; unknown/future sources fail closed (#60609).
+    # `recovered` = placeholders `hermes sessions recover` synthesizes for
+    # orphaned messages (no live owner, never stamped ended_at); without it they are immortal.
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
         "cli",
         "cron",
@@ -5485,6 +5504,7 @@ class SessionDB(
         "api_server",
         "subagent",
         "tool",
+        "recovered",
     )
 
     # ── Write-contention tuning ──
@@ -5628,6 +5648,18 @@ class SessionDB(
         # live-DB test-isolation guard block near _default_db_path().
         _ensure_test_isolation(self.db_path)
         self.read_only = read_only
+        # Keep only the opening call site, never a frame (which pins caller locals).
+        self._creation_site = "unknown"
+        caller = None
+        try:
+            caller = sys._getframe(1)
+            self._creation_site = (
+                f"{caller.f_globals.get('__name__', '?')}.{caller.f_code.co_name}:{caller.f_lineno}"
+            )
+        except Exception:
+            pass  # Diagnostic metadata must not prevent opening the database.
+        finally:
+            del caller
         self._tuning_pragmas = tuning_pragmas
 
         self._lock = threading.Lock()
@@ -5662,7 +5694,6 @@ class SessionDB(
         # several SessionDB objects on the same state.db (#98573). See
         # _PathReadBudget.
         self._read_budget = _read_budget_for(self.db_path)
-        self._read_budget.register(self)
         # Bound to the semaphore itself so every release site
         # (_close_read_conn and the _get_read_conn failure paths) is unchanged.
         self._read_permits = self._read_budget.permits
@@ -5776,6 +5807,9 @@ class SessionDB(
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
             else:
+                # Only a successfully opened handle owns a writer connection. Failed
+                # construction must not leave a diagnostic member behind.
+                self._read_budget.register(self)
                 # Test-isolation runs only (gated inside the helper): register
                 # for the suite-level leak sweep in tests/conftest.py.
                 _register_test_instance(self)
@@ -7477,6 +7511,8 @@ class SessionDB(
                     # identity when retiring an unsafe handle.
                     self._db_sidecar_identity = {}
 
+        self._read_budget.unregister(self)  # idempotent: a never-registered (failed-init) handle is a no-op
+
     def __del__(self) -> None:
         """Safety net: close the connection if the caller forgot.
 
@@ -7617,6 +7653,7 @@ class SessionDB(
         git_repo_root: str = None,
         origin_json: str = None,
         display_name: str = None,
+        transport_profile: Optional[str] = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -7675,10 +7712,10 @@ class SessionDB(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, system_prompt_hash,
-                   parent_session_id, cwd, profile_name, git_repo_root,
+                   parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
                    origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = CASE
@@ -7717,6 +7754,7 @@ class SessionDB(
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
                        cwd = COALESCE(sessions.cwd, excluded.cwd),
                        profile_name = COALESCE(sessions.profile_name, excluded.profile_name),
+                       transport_profile = COALESCE(sessions.transport_profile, excluded.transport_profile),
                        git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root),
                        origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
                        display_name = COALESCE(sessions.display_name, excluded.display_name)""",
@@ -7734,6 +7772,7 @@ class SessionDB(
                     parent_session_id,
                     cwd,
                     profile_name,
+                    transport_profile,
                     git_repo_root,
                     origin_json,
                     display_name,
@@ -7794,7 +7833,10 @@ class SessionDB(
                                             WHERE p.id = sessions.parent_session_id)),
                            origin_json = COALESCE(sessions.origin_json,
                                          (SELECT p.origin_json FROM sessions p
-                                           WHERE p.id = sessions.parent_session_id))
+                                           WHERE p.id = sessions.parent_session_id)),
+                           transport_profile = COALESCE(sessions.transport_profile,
+                                          (SELECT p.transport_profile FROM sessions p
+                                            WHERE p.id = sessions.parent_session_id))
                      WHERE id = ? AND parent_session_id IS NOT NULL
                        AND EXISTS (
                            SELECT 1 FROM sessions p

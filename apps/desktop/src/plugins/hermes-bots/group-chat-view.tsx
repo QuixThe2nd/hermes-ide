@@ -80,6 +80,7 @@ import {
   groupWorkspaceOwnerKey,
   liveGroupChatNames
 } from './group-membership'
+import { groupMentionComponents, groupMentionText } from './group-mention-text'
 import {
   clearGroupComposerDraft,
   closeGroupChatMainTab,
@@ -93,11 +94,11 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
-import { sendToGroupChat, stopGroupThread } from './group-rounds'
+import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
-import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
@@ -744,7 +745,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
     return (seated.length ? seated : members).map(b => ({
       ...b,
-      title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
+      title: botRosterMeta(b, allMeta)?.title || b.title || ''
     }))
   }
 
@@ -797,7 +798,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
           {summaryActivity ? (
-            <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}>{`${groupActivityLabel(summaryActivity)} · ${relativeTime(summaryActivity.at)}`}</span>
+            <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}>{`${groupActivityLabel(summaryActivity, group)} · ${relativeTime(summaryActivity.at)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (
@@ -824,7 +825,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   name={GROUP_ACTIVITY_GLYPHS[event.kind] || 'circle-outline'}
                 />
                 <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(event.kind))}>
-                  {groupActivityLabel(event)}
+                  {groupActivityLabel(event, group)}
                 </span>
                 <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
                 {event.kind === 'working' ? (
@@ -961,22 +962,57 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
 
   const attachButton = (thread: null | string) => (
-    <Button
-      className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
-      onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
-      size="sm"
-      title={b.group.attachHint}
-      type="button"
-      variant="ghost"
-    >
-      <Codicon name="attach" />
-    </Button>
+    <Tip label={b.group.attachHint}>
+      <Button
+        aria-label={b.group.attachHint}
+        className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+        onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
+        size="sm"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="attach" />
+      </Button>
+    </Tip>
   )
+
+  // #91359: recognized @mentions render as inline references; recomputed
+  // only when the roster changes since the classifier consults the members.
+  const mentionComponents = useMemo(() => groupMentionComponents(members), [members])
+  const mentionText = useMemo(() => groupMentionText(members), [members])
+
+  // #89883: answer ONE bot from its message. Seeds `@tag ` into the composer
+  // that owns this entry's thread — the open reply box when it is this
+  // thread's, else the main composer — so parseGroupChatMentions routes the
+  // next turn to that member only. Insert-only: the user still sends. The tag
+  // is owner-qualified when a same-named twin shares the friendly form.
+  const replyMentionTag = (entry: GroupMessage, member: GroupMember | null) =>
+    groupReplyMentionTag(member || { name: entry.from.name }, members)
+
+  const replyToMember = (entry: GroupMessage, member: GroupMember | null) => {
+    const tag = replyMentionTag(entry, member)
+
+    if (!tag) {
+      return
+    }
+
+    const seed = (current: string) => (current.includes(`@${tag}`) ? current : `@${tag} ${current}`.replace(/\s+$/, ' '))
+    const thread = groupThreadOf(entry)
+
+    if (replyThread === thread) {
+      setReplyDrafts(prev => ({
+        ...prev,
+        [thread]: seed(prev[thread] || '')
+      }))
+    } else {
+      setDraft(seed)
+    }
+  }
 
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
+    const meta = groupTranscriptSpeakerMeta(entry, members, allMeta)
 
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
@@ -1012,8 +1048,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
     // Speaker avatar: same appearance pipeline as the roster
     // (custom image/pet, else deterministic shape+color face).
-    // Remote speakers have no local meta and get the
-    // deterministic face for their name — stable per bot.
+    // Source-qualified speakers use owner-aware botRosterMeta (#96432).
     // Non-null exactly when !isUser — the user's own lines carry no avatar.
     const appearance = isUser ? null : botAppearance(entry.from.name, meta)
     const image = appearance?.image ?? null
@@ -1043,20 +1078,34 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             {isUser ? (
               <span className="text-[0.7rem] font-semibold text-foreground">{label}</span>
             ) : (
-              <Button
-                className="text-left text-[0.7rem] font-semibold text-(--ui-accent)"
-                onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
-                size="inline"
-                title={revealed ? 'Hide full handle' : 'Show full handle'}
-                variant="text"
-              >
-                {label}
-              </Button>
+              <Tip label={revealed ? 'Hide full handle' : 'Show full handle'}>
+                <Button
+                  className="text-left text-[0.7rem] font-semibold text-(--ui-accent)"
+                  onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
+                  size="inline"
+                  variant="text"
+                >
+                  {label}
+                </Button>
+              </Tip>
             )}
             <span className="text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(entry.at)}</span>
-            {entry.text.trim() ? (
-              <div className="ml-auto shrink-0 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
-                <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} />
+            {entry.text.trim() || !isUser ? (
+              <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+                {isUser ? null : (
+                  <Tip label={`Reply to @${replyMentionTag(entry, member)}`}>
+                    <Button
+                      aria-label={`Reply to ${display}`}
+                      className="text-(--ui-text-tertiary) hover:text-foreground"
+                      onClick={() => replyToMember(entry, member)}
+                      size="icon"
+                      variant="ghost"
+                    >
+                      <Codicon name="reply" />
+                    </Button>
+                  </Tip>
+                )}
+                {entry.text.trim() ? <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} /> : null}
               </div>
             ) : null}
           </div>
@@ -1064,11 +1113,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
+            data-slot="group-chat-message-content"
           >
             {MessageTextContent ? (
-              <MessageTextContent media={!member?.remoteSource} text={entry.text} />
+              <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />
             ) : Streamdown ? (
-              <Streamdown>{entry.text}</Streamdown>
+              <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
             ) : (
               entry.text
             )}

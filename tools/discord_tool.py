@@ -69,7 +69,7 @@ def _discord_request(
             if resp.status == 204:
                 return None
             body = _read_limited_response_body(resp, _DISCORD_RESPONSE_BODY_MAX_BYTES, label="response body")
-            return json.loads(body.decode("utf-8"))
+            return json.loads(body.decode("utf-8-sig"))
     except urllib.error.HTTPError as e:
         try:
             error_body = _read_limited_response_body(
@@ -121,7 +121,7 @@ def _token_cache_key(token: str) -> str:
 def _read_caps_file(path: Path) -> Dict[str, Any]:
     """Disk cache contents ({token_key: {"caps", "ts"}}); {} when missing/corrupt."""
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
