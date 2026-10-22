@@ -1418,6 +1418,7 @@ platform_toolsets:
 #   auto_thread_replies: true        # Quote-replies also auto-thread (default: true; false = inline reply)
 #   free_response_auto_thread: false # Free-response channels also auto-thread (default: reply inline)
 #   free_response_channels: ""       # Channel IDs where no mention is needed
+#   thread_free_response_channels: ""  # free_response channels that still auto-thread
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)

@@ -766,6 +766,7 @@ _GATE_ENV_KEYS = (
     "DISCORD_IGNORED_CHANNELS",
     "DISCORD_NO_THREAD_CHANNELS",
     "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_THREAD_FREE_RESPONSE_CHANNELS",
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
     "DISCORD_ALLOW_ALL_USERS",
     "DISCORD_ALLOW_BOTS",
@@ -7456,6 +7457,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_thread_free_response_channels(self) -> set:
+        """Free-response channels that still auto-thread (``discord.thread_free_response_channels``).
+
+        Parsed like ``_get_no_thread_channels`` (``_gate_raw`` env-first precedence, then
+        ``config.extra``); ``_gate_csv_set`` str()s every scalar so YAML's bare-numeric int
+        channel IDs compare against the string channel keys.
+        """
+        return self._gate_csv_set(
+            self._gate_raw("thread_free_response_channels", "DISCORD_THREAD_FREE_RESPONSE_CHANNELS")
+        )
+
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract user-mention IDs (``<@ID>`` and legacy ``<@!ID>``) from raw content,
         since ``message.mentions`` isn't always populated (mobile/edited/relayed)."""
@@ -8938,6 +8950,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
+        #   discord.thread_free_response_channels: free_response channels that still auto-thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
         #   discord.auto_thread_replies: Quote-replies also auto-thread (default: true; false = inline)
         #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
@@ -9006,10 +9019,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
+            # thread_free_response_channels: free-response channels that still auto-thread
+            # (dedicated relay channels where every message is a mention-free task ping that
+            # must land in its own thread). Subtract them from the free-response set HERE only —
+            # the require_mention bypass above keeps the full free_channels set, so ingest
+            # stays mention-free.
+            thread_free = self._discord_thread_free_response_channels()
+            effective_free = free_channels - thread_free
             auto_thread = self._discord_auto_thread_enabled()
             # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
             skip_thread = bool(channel_keys & no_thread_channels) or (
-                is_free_channel and not self._discord_free_response_auto_thread()
+                (
+                    "*" in effective_free
+                    or bool(channel_keys & effective_free)
+                    or is_voice_linked_channel
+                )
+                and not self._discord_free_response_auto_thread()
             )
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             # Quote-replies auto-thread by default; discord.auto_thread_replies: false
@@ -10312,6 +10337,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("ignored_channels", "DISCORD_IGNORED_CHANNELS", from_platform_extra=False)
     _gate("allowed_channels", "DISCORD_ALLOWED_CHANNELS", from_platform_extra=False)
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)
+    _gate("thread_free_response_channels", "DISCORD_THREAD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
     # history_backfill: recover mention-gated channel messages between bot turns.
     if "history_backfill" in discord_cfg:
         seeded_extra["history_backfill"] = discord_cfg["history_backfill"]
@@ -10366,7 +10392,8 @@ def register(ctx) -> None:
         # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
         # (require_mention, free_response_channels, auto_thread, auto_thread_replies,
         # free_response_auto_thread, reactions, ignored_channels, allowed_channels,
-        # no_thread_channels, allow_mentions.*, reply_to_mode, thread_require_mention)
+        # no_thread_channels, thread_free_response_channels, allow_mentions.*,
+        # reply_to_mode, thread_require_mention)
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
         # block that used to live in ``gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,
