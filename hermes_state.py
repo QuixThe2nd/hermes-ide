@@ -7653,6 +7653,7 @@ class SessionDB(
         git_repo_root: str = None,
         origin_json: str = None,
         display_name: str = None,
+        transport_profile: Optional[str] = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -7711,10 +7712,10 @@ class SessionDB(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, system_prompt_hash,
-                   parent_session_id, cwd, profile_name, git_repo_root,
+                   parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
                    origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = CASE
@@ -7753,6 +7754,7 @@ class SessionDB(
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
                        cwd = COALESCE(sessions.cwd, excluded.cwd),
                        profile_name = COALESCE(sessions.profile_name, excluded.profile_name),
+                       transport_profile = COALESCE(sessions.transport_profile, excluded.transport_profile),
                        git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root),
                        origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
                        display_name = COALESCE(sessions.display_name, excluded.display_name)""",
@@ -7770,6 +7772,7 @@ class SessionDB(
                     parent_session_id,
                     cwd,
                     profile_name,
+                    transport_profile,
                     git_repo_root,
                     origin_json,
                     display_name,
@@ -7830,7 +7833,10 @@ class SessionDB(
                                             WHERE p.id = sessions.parent_session_id)),
                            origin_json = COALESCE(sessions.origin_json,
                                          (SELECT p.origin_json FROM sessions p
-                                           WHERE p.id = sessions.parent_session_id))
+                                           WHERE p.id = sessions.parent_session_id)),
+                           transport_profile = COALESCE(sessions.transport_profile,
+                                          (SELECT p.transport_profile FROM sessions p
+                                            WHERE p.id = sessions.parent_session_id))
                      WHERE id = ? AND parent_session_id IS NOT NULL
                        AND EXISTS (
                            SELECT 1 FROM sessions p
