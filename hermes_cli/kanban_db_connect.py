@@ -635,19 +635,15 @@ def _ensure_kanban_test_isolation(db_path: Path) -> None:
 
     Mirrors :func:`hermes_state._ensure_test_isolation` for ``connect`` /
     ``init_db`` entry points: env + ancestry test context, real install roots
-    (platform default plus conftest-injected extras), fail-closed when
-    classification is unavailable. No-op outside test context and for the
-    state-db guard bypass env (spawned children that legitimately need live
-    data). Delegated read-only connects skip this (handled before the call).
+    (platform default plus conftest-injected extras when ``hermes_state`` is
+    already loaded), fail-closed when classification is unavailable. No-op
+    outside test context. Does not honor SessionDB-only bypass flags. Delegated
+    read-only connects skip this (handled before the call).
     """
-    import os
+    import sys
 
-    from hermes_state import _STATE_DB_GUARD_BYPASS, _STATE_DB_GUARD_EXTRA_DENY_ROOTS
-    from hermes_state import _STATE_DB_GUARD_BYPASS_ENV
     from hermes_state_guard import _in_test_context, _real_platform_state_root
 
-    if _STATE_DB_GUARD_BYPASS or os.environ.get(_STATE_DB_GUARD_BYPASS_ENV):
-        return
     if not _in_test_context():
         return
     try:
@@ -664,8 +660,10 @@ def _ensure_kanban_test_isolation(db_path: Path) -> None:
             "real Hermes root could not be determined. Refusing to proceed."
         )
     roots: list[Path] = [real]
+    hs = sys.modules.get("hermes_state")
+    extra_roots = getattr(hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", ()) if hs is not None else ()
     try:
-        for extra in _STATE_DB_GUARD_EXTRA_DENY_ROOTS:
+        for extra in extra_roots:
             roots.append(Path(extra).expanduser().resolve())
     except Exception as exc:
         raise RuntimeError(
