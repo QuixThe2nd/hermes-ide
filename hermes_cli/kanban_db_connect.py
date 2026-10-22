@@ -630,6 +630,59 @@ def _schema_is_present(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _ensure_kanban_test_isolation(db_path: Path) -> None:
+    """Refuse production kanban writes from a detected test subprocess.
+
+    Mirrors :func:`hermes_state._ensure_test_isolation` for ``connect`` /
+    ``init_db`` entry points: env + ancestry test context, real install roots
+    (platform default plus conftest-injected extras when ``hermes_state`` is
+    already loaded), fail-closed when classification is unavailable. No-op
+    outside test context. Does not honor SessionDB-only bypass flags. Delegated
+    read-only connects skip this (handled before the call).
+    """
+    import sys
+
+    from hermes_state_guard import _in_test_context, _real_platform_state_root
+
+    if not _in_test_context():
+        return
+    try:
+        resolved = Path(db_path).expanduser().resolve()
+    except Exception as exc:
+        raise RuntimeError(
+            "live-system guard: test attempted to open a kanban DB but the "
+            f"path could not be resolved ({exc!s}). Refusing to proceed."
+        ) from exc
+    real = _real_platform_state_root()
+    if real is None:
+        raise RuntimeError(
+            "live-system guard: test attempted to open a kanban DB but the "
+            "real Hermes root could not be determined. Refusing to proceed."
+        )
+    roots: list[Path] = [real]
+    hs = sys.modules.get("hermes_state")
+    extra_roots = getattr(hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", ()) if hs is not None else ()
+    try:
+        for extra in extra_roots:
+            roots.append(Path(extra).expanduser().resolve())
+    except Exception as exc:
+        raise RuntimeError(
+            "live-system guard: test attempted to open a kanban DB but "
+            f"production-root classification failed ({exc!s}). Refusing."
+        ) from exc
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        raise RuntimeError(
+            "live-system guard: test attempted to open production kanban DB "
+            f"at {resolved} (under real Hermes root {root}). Tests must use a "
+            "temporary HERMES_HOME / HERMES_KANBAN_HOME or an explicit "
+            "disposable db_path. See #69283 / #82770."
+        )
+
+
 def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     """Open ``path`` with the kanban PRAGMA set, then run ``under_lock(conn)``.
     WAL activation and ``under_lock`` share the ``_INIT_LOCK`` critical section:
@@ -684,6 +737,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             conn.close()
             raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
         return conn
+    _ensure_kanban_test_isolation(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, skip the
@@ -758,6 +812,7 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     migration pass — callers that know the on-disk schema may have drifted
     (tests writing legacy event kinds, external upgrades) use it to force it."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    _ensure_kanban_test_isolation(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Clear the cache entry so connect() re-runs schema + migrations.
     with _INIT_LOCK:
