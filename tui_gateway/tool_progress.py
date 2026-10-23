@@ -229,6 +229,29 @@ def _emit_tool_lifecycle(event, sid, name, args, payload):
     transport.write(frame)
 
 
+def _tool_describe(name: str, args: object) -> str:
+    """Describe-mode progress line: the model's own ``description`` or a safe verb label —
+    never the command/code payload. Cap lives in ``describe_tool_call`` (independent of
+    tool_preview_length)."""
+    with contextlib.suppress(Exception):
+        from agent.display import describe_tool_call
+        return describe_tool_call(name, args if isinstance(args, dict) else None) or ""
+    return ""
+
+
+def _tool_args_required_for_ui(name: str, args: dict) -> bool:
+    """Clients build interactive state from tool.start/tool.complete args — clarify/connection
+    cards (``_tool_lifecycle_required_for_ui``), connector cards, the desktop's live todo patch
+    merge (``args.todos``) and delegation rows. Describe mode must not starve them."""
+    if (_tool_lifecycle_required_for_ui(name) or _connector_tool_lifecycle(name, args)
+            or name in _TODO_TOOL_NAMES):
+        return True
+    with contextlib.suppress(Exception):
+        from agent.display import _DELEGATE_TOOL_NAMES
+        return name in _DELEGATE_TOOL_NAMES
+    return False
+
+
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     if _connector_lifecycle_is_stale(sid, name, args):
         return
@@ -242,7 +265,14 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
-        payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
+        # Describe mode: progress surfaces carry the one-line description instead of the raw
+        # preview/args; tool.complete gets the same projection. The interactive events above
+        # stay authoritative and unchanged. Clients without args fall back to `context` for the row.
+        if _session_tool_progress_mode(sid) == "describe" and not _tool_args_required_for_ui(name, args):
+            payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_describe(name, args)}
+            _emit_tool_lifecycle("tool.start", sid, name, args, payload)
+            return
+        payload = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
         # Full args (not just the 80-char `context` preview) so the desktop's expanded tool row is complete
         # while the tool runs. args.todos may be a partial merge — tool.complete is the truth.
         if args:
@@ -255,7 +285,16 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
     if _connector_lifecycle_is_stale(sid, name, args):
         return
-    payload = {"tool_id": tool_call_id, "name": name, "args": args}
+    # Describe mode mirrors tool.start's projection without new wire fields (Payload is
+    # extra="forbid"): args carries ONLY the describe phrase under `context` — the desktop
+    # tool-row fallback chain reads args.context, so the completed row keeps the phrase (even
+    # on a reconnect where tool.complete is the first event seen) and never the raw
+    # command/code. result/summary/duration_s/inline_diff/todo below stay authoritative.
+    if _session_tool_progress_mode(sid) == "describe" and not _tool_args_required_for_ui(name, args):
+        payload: dict[str, object] = {"tool_id": tool_call_id, "name": name,
+                                      "args": {"context": _tool_describe(name, args)}}
+    else:
+        payload = {"tool_id": tool_call_id, "name": name, "args": args}
     session = _sessions.get(sid)
     snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
     started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None) if session is not None else None
@@ -372,7 +411,11 @@ _SUBAGENT_FIELDS = (
 )
 
 
-def _progress_subagent(sid, name, preview, kw, event_type):
+def _progress_subagent(sid, name, preview, kw, event_type, args=None):
+    if event_type == "subagent.tool" and preview and _session_tool_progress_mode(sid) == "describe":
+        # The child relays its raw build_tool_preview line; describe mode replaces it with the
+        # child's own description phrase (never the command/code), same as tool.start/complete.
+        preview = _tool_describe(name, args)
     payload = {"goal": str(kw.get("goal") or ""), "task_count": int(kw.get("task_count") or 1), "task_index": int(kw.get("task_index") or 0)}
     source = {**kw, "tool_name": name, "text": preview}
     for key, present, coerce in _SUBAGENT_FIELDS:
@@ -409,7 +452,7 @@ def _on_tool_progress(
     # Subagent lifecycle is application state (Desktop status stack, TUI spawn tree), not
     # tool-progress chrome: it must survive display.tool_progress=off like todo.updated does.
     if event_type.startswith("subagent."):
-        return _progress_subagent(sid, name, preview, _kwargs, event_type)
+        return _progress_subagent(sid, name, preview, _kwargs, event_type, _args)
     if not _tool_progress_enabled(sid):
         return
     handler, requires = _PROGRESS_HANDLERS.get(event_type, (None, None))
