@@ -712,7 +712,7 @@ class CLIStreamMixin:
                     pass
             # "verbose" must commit the same line as "all": non-streaming calls (MoA aggregator,
             # copilot-acp) never emit the "preparing" line, so nothing else builds history.
-            if function_name and self.tool_progress_mode in {"new", "all", "verbose"}:
+            if function_name and self.tool_progress_mode in {"new", "all", "verbose", "describe"}:
                 duration = kwargs.get("duration", 0.0)
                 # Pop stored args from tool.started for this function
                 stored = self._pending_tool_info.get(function_name)
@@ -725,8 +725,15 @@ class CLIStreamMixin:
                     return
                 self._last_scrollback_tool = function_name
                 try:
-                    from agent.display import get_cute_tool_message
-                    line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
+                    if self.tool_progress_mode == "describe":
+                        # describe: the call's own ``description`` phrase (or a short
+                        # verb label), never the raw command/code preview.
+                        from agent.display import describe_tool_call, get_tool_emoji
+                        line = (f"{get_tool_emoji(function_name, default='⚡')} "
+                                f"{describe_tool_call(function_name, stored_args)} ({duration:.1f}s)")
+                    else:
+                        from agent.display import get_cute_tool_message
+                        line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
                     _cprint(f"  {line}")
                 except Exception:
                     pass
@@ -753,9 +760,16 @@ class CLIStreamMixin:
         if function_name and not function_name.startswith("_"):
             from agent.display import get_tool_emoji, get_tool_preview_max_len
             label = preview or function_name
-            _pl = get_tool_preview_max_len()
-            if _pl > 0 and len(label) > _pl:
-                label = label[:_pl - 3] + "..."
+            if self.tool_progress_mode == "describe":
+                # describe spinner: the short description phrase for ANY args value
+                # (None included), never the raw preview. Uses the describe cap only,
+                # independent of the generic tool_preview_length budget.
+                from agent.display import describe_tool_call
+                label = describe_tool_call(function_name, function_args)
+            else:
+                _pl = get_tool_preview_max_len()
+                if _pl > 0 and len(label) > _pl:
+                    label = label[:_pl - 3] + "..."
             self._spinner_text = f"{get_tool_emoji(function_name)} {label}"
             self._tool_start_time = time.monotonic()
             # Store args for stacked scrollback line on completion

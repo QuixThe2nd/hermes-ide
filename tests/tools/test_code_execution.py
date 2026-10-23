@@ -535,7 +535,7 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         self.assertEqual(schema["name"], "execute_code")
         self.assertIn("parameters", schema)
         self.assertIn("code", schema["parameters"]["properties"])
-        self.assertEqual(schema["parameters"]["required"], ["code"])
+        self.assertEqual(schema["parameters"]["required"], ["code", "description"])
 
     def test_subset_only_lists_enabled_tools(self):
         enabled = {"terminal", "read_file"}

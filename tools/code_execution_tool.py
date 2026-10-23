@@ -138,9 +138,11 @@ _TOOL_STUBS = {
     "patch": ('path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
         '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
         '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}'),
-    "terminal": ("command: str, timeout: int = None, workdir: str = None",
+    # "description" mirrors terminal's model-facing schema param (progress
+    # metadata); forwarded but ignored by dispatch.
+    "terminal": ("command: str, timeout: int = None, workdir: str = None, description: str = None",
         '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
-        '{"command": command, "timeout": timeout, "workdir": workdir}'),
+        '{"command": command, "timeout": timeout, "workdir": workdir, "description": description}'),
 }
 
 
@@ -903,8 +905,15 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                     "and print your final result to stdout.")},
                 "reset": {"type": "boolean", "description": (
                     "Discard the kernel's persistent state and start fresh before running this code.")},
+                "description": {"type": "string", "description": (
+                    "One short phrase (max ~80 chars) saying WHAT this code does, e.g. 'summarizing "
+                    "test failures'. Shown to the user as progress instead of the code itself when "
+                    "they opt into quieter progress. Never put the code here.")},
             },
-            "required": ["code"],
+            # "description" is execution metadata: advertised as required so models
+            # supply it, but the handler never reads it — legacy callers that omit
+            # it (old transcripts) run unchanged.
+            "required": ["code", "description"],
         },
     }
 

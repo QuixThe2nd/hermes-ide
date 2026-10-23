@@ -1878,7 +1878,7 @@ def _load_memory_notifications() -> str:
     return str(raw).lower() if raw else "on"
 
 
-_TOOL_PROGRESS_MODES = frozenset({"off", "new", "all", "verbose"})
+_TOOL_PROGRESS_MODES = frozenset({"off", "new", "all", "verbose", "describe"})
 
 
 def _load_tool_progress_mode() -> str:

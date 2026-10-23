@@ -23,7 +23,7 @@ from hermes_cli.colors import Colors as _Colors
 
 CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
 
-_TOOL_PROGRESS_CYCLE = ["off", "new", "all", "verbose"]
+_TOOL_PROGRESS_CYCLE = ["off", "new", "all", "verbose", "describe"]
 # Raw ANSI (not Rich markup): _cprint routes through prompt_toolkit's renderer, while Rich markup
 # written to stdout gets mangled by patch_stdout's StdoutProxy ('?[33mTool progress: NEW?[0m').
 _TOOL_PROGRESS_LABELS = {
@@ -34,6 +34,7 @@ _TOOL_PROGRESS_LABELS = {
     "new": f"{_Colors.YELLOW}Tool progress: NEW{_Colors.RESET} — show each new tool (skip repeats).",
     "all": f"{_Colors.GREEN}Tool progress: ALL{_Colors.RESET} — show every tool call.",
     "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, and think blocks.",
+    "describe": f"{_Colors.CYAN}Tool progress: DESCRIBE{_Colors.RESET} — show each tool's own description, never raw commands.",
 }
 
 _RELOAD_MCP_CHOICES = [
@@ -567,7 +568,7 @@ class CLIInfoMixin:
             pass
 
     def _toggle_verbose(self):
-        """Cycle tool progress mode: off → new → all → verbose → off.
+        """Cycle tool progress mode: off → new → all → verbose → describe → off.
 
         Tool-progress display is INDEPENDENT of global DEBUG logging: this never changes
         ``self.verbose`` or the agent's ``verbose_logging`` / ``quiet_mode`` (those belong to

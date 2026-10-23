@@ -275,6 +275,7 @@ display:
 | `new` | Brief status for each new tool call (recommended for messaging) |
 | `all` | Every tool call with details |
 | `verbose` | Full tool output including command results |
+| `describe` | One short line saying what each tool call is for, instead of the raw command/code |
 
 Users can also change this per-session with the `/verbose` command in chat.
 
