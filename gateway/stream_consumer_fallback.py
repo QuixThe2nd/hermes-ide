@@ -336,19 +336,30 @@ class StreamFallbackMixin:
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
             _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
-            result = await self.adapter.send(
-                chat_id=self.chat_id, content=text,
-                reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
-            # Do NOT set _already_sent: commentary is interim, and the flag would
-            # suppress the real final after multiple tool calls.
-            if result.success:
-                self._notify_new_message()
-                # Lets run.py confirm whether an interim send carried the final.
-                # Record the exact delivered text so run.py can confirm whether an interim "preview"
-                # actually carried the final response, vs. unrelated commentary delivered during a session
-                # split (#14238).
-                self._delivered_commentary_texts.append(text)
-            return result.success
+
+            async def _deliver():
+                result = await self.adapter.send(
+                    chat_id=self.chat_id, content=text,
+                    reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
+                # Do NOT set _already_sent: commentary is interim, and the flag would
+                # suppress the real final after multiple tool calls.
+                if result.success:
+                    self._notify_new_message()
+                    # Lets run.py confirm whether an interim send carried the final.
+                    # Record the exact delivered text so run.py can confirm whether an interim "preview"
+                    # actually carried the final response, vs. unrelated commentary delivered during a session
+                    # split (#14238).
+                    self._delivered_commentary_texts.append(text)
+                    # Commentary is visible output: mark progress BEFORE the delivery
+                    # lock is released, so the heartbeat's silence clock restarts only
+                    # after this frame is serialized against the heartbeat (same
+                    # contract as _send_or_edit's locked marks).
+                    self._notify_visible_progress()
+                return result.success
+
+            # Serialize against the gateway heartbeat's edit/send under the turn's
+            # delivery lock (same boundary as _send_or_edit / _deliver_visible_frame).
+            return await self._deliver_visible_frame(_deliver)
         except Exception as e:
             logger.error("Commentary send error: %s", e)
             return False
