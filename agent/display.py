@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 
 from utils import safe_json_loads
@@ -545,22 +545,141 @@ def verb_drops_preview(tool_name: str) -> bool:
 # cap must not shrink it to nothing.
 DESCRIBE_TOOL_MAX_LEN = 120
 
+# Whole-list todo formatting: we only see the requested state per item, not the
+# diff, so label states plainly ("demo pending") instead of claiming an existing
+# pending task was newly added or an in-progress task newly started.
+_TODO_DESCRIBE_STATUS = {
+    "pending": "{} pending",
+    "in_progress": "{} in progress",
+    "completed": "{} completed",
+    "cancelled": "{} cancelled",
+}
+
+
+def _describe_cap(text: str, max_len: int) -> str:
+    # Single home for normalisation + capping: callers hand raw strings in.
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= max_len:
+        return text
+    if max_len < 3:  # degenerate cap: no room for an ellipsis
+        return text[:max_len]
+    return text[: max_len - 3].rstrip() + "..."
+
+
+def _describe_safe_str(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _describe_file_path(args: dict) -> str | None:
+    for key in ("path", "file", "filepath"):
+        path = _describe_safe_str(args.get(key))
+        if path is not None:
+            return path
+    return None
+
+
+def _describe_search_files_phrase(args: dict) -> str | None:
+    pattern = _describe_safe_str(args.get("pattern"))
+    if pattern is None:
+        return None
+    target = args.get("target")
+    if isinstance(target, str) and target.strip().lower() == "files":
+        phrase = f"Searching file names for {pattern}"
+    else:
+        phrase = f"Searching files for {pattern}"
+    location = _describe_safe_str(args.get("path"))
+    if location and location != ".":
+        phrase = f"{phrase} in {location}"
+    return phrase
+
+
+def _describe_todo_list_phrase(args: dict) -> str | None:
+    todos_arg = args.get("todos")
+    if todos_arg is None:
+        return "Reading current tasks"
+    if not isinstance(todos_arg, list):
+        return None
+    if not todos_arg:
+        # Empty list: without merge it clears the whole board; merged into an
+        # existing list it is a no-op, not a clear.
+        return "Reading current tasks" if args.get("merge") else "Clearing tasks"
+    item_phrases: list[str] = []
+    for item in todos_arg:
+        if not isinstance(item, dict):
+            continue
+        name = _describe_safe_str(item.get("content"))
+        if name is None:
+            continue
+        status = item.get("status")
+        if not isinstance(status, str):
+            continue
+        template = _TODO_DESCRIBE_STATUS.get(status.strip().lower())
+        if template is None:
+            continue
+        item_phrases.append(template.format(name))
+    if not item_phrases:
+        return None
+    summary = ", ".join(item_phrases[:3])
+    extra = len(item_phrases) - 3
+    if extra > 0:
+        summary = f"{summary}, +{extra} more"
+    return f"Updating tasks: {summary}"
+
+
+def _describe_file_tool_phrase(tool_name: str, args: dict) -> str | None:
+    path = _describe_file_path(args)
+    verb = get_tool_verb(tool_name)
+    return f"{verb} {path}" if verb and path else None
+
+
+def _describe_web_search_phrase(tool_name: str, args: dict) -> str | None:
+    query = _describe_safe_str(args.get("query"))
+    verb = get_tool_verb(tool_name)
+    return f"{verb} for {query}" if verb and query else None
+
+
+def _describe_session_search_phrase(tool_name: str, args: dict) -> str | None:
+    # No preview posture preserved: verb alone, never the (private) query.
+    return get_tool_verb(tool_name)
+
+
+# Curated safe-subject builders, table-driven like _TOOL_VERBS above: each entry
+# reads only its tool's safe argument fields (path, pattern, query, task names).
+_DESCRIBE_SUBJECT_BUILDERS: dict[str, Callable[[str, dict], str | None]] = {
+    "read_file": _describe_file_tool_phrase,
+    "write_file": _describe_file_tool_phrase,
+    "patch": _describe_file_tool_phrase,
+    "search_files": lambda name, args: _describe_search_files_phrase(args),
+    "todo_list": lambda name, args: _describe_todo_list_phrase(args),
+    "web_search": _describe_web_search_phrase,
+    "session_search": _describe_session_search_phrase,
+}
+
+
+def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
+    builder = _DESCRIBE_SUBJECT_BUILDERS.get(tool_name)
+    return builder(tool_name, args) if builder is not None else None
+
 
 def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIBE_TOOL_MAX_LEN) -> str:
     """One-line human phrase for the ``describe`` tool-progress mode.
 
     Uses the tool call's own ``description`` argument when it is a usable
-    string (whitespace-normalised, length-capped). Anything else — missing,
-    blank, non-string, no args — falls back to a short verb/tool label.
-    NEVER falls back to the command/code or any other argument payload.
+    string, else a curated safe subject built from a small set of argument
+    fields (file path, search pattern/query, task names) — both whitespace-
+    normalised and length-capped. Never the command/code/content payload;
+    unknown tools fall back to a short verb or the bare tool name.
     """
     if isinstance(args, dict):
         desc = args.get("description")
-        if isinstance(desc, str):
-            text = re.sub(r"\s+", " ", desc).strip()
-            if text:
-                return text if len(text) <= max_len else text[: max_len - 3].rstrip() + "..."
-    # Safe fallback only: curated verb or the bare tool name — never the arguments.
+        if isinstance(desc, str) and desc.strip():
+            return _describe_cap(desc, max_len)
+        derived = _describe_subject_phrase(tool_name, args)
+        if derived:
+            return _describe_cap(derived, max_len)
     verb = get_tool_verb(tool_name)
     return verb if verb else (tool_name or "working")
 
