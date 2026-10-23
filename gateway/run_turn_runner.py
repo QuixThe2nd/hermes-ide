@@ -264,6 +264,14 @@ class TurnRunner:
         ctx = self._ctx
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
+        # "describe": one short human phrase — the call's ``description`` argument
+        # when present, else a concise verb label. Handled before every other
+        # branch: an unlimited preview budget must NOT route describe through the
+        # verbose full-argument renderer, and terminal never gets a code block.
+        if ctx.progress_mode == "describe":
+            from agent.display import describe_tool_call
+            ctx.last_was_terminal_block[0] = False
+            return f"{emoji} {describe_tool_call(tool_name, args)}"
         if ctx.progress_mode == "compact":
             if isinstance(args, dict) and len(args) == 1:
                 args_str = json.dumps(
@@ -808,11 +816,16 @@ class TurnRunner:
         """Queue an ID-correlated native progress start from the agent thread."""
         if not self._native_card_gate():
             return
-        from agent.display import build_tool_preview
+        from agent.display import build_tool_preview, describe_tool_call
         name = str(tool_name or "tool")
+        if self._ctx.progress_mode == "describe":
+            # Describe mode: never surface the raw command/code in the card title.
+            preview = describe_tool_call(name, args or {})
+        else:
+            preview = build_tool_preview(name, args or {}, max_len=64) or ""
         self._ctx.progress_queue.put({
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
-            "preview": build_tool_preview(name, args or {}, max_len=64) or "",
+            "preview": preview,
         })
 
     def native_tool_complete_callback(self, call_id, tool_name, args, result):

@@ -281,7 +281,9 @@ def _norm_int(value: Any) -> int:
 
 
 _NORMALISERS: dict[str, Any] = {
-    "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log", "compact"}),
+    # "describe" (fork): one short human explanation (the call's ``description``
+    # argument) instead of the raw command/code/argument JSON.
+    "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log", "compact", "describe"}),
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,

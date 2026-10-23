@@ -6107,7 +6107,16 @@ class TurnRunner:
             _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
         _pl = ctx.tool_preview_max_len
-        if ctx.progress_mode == "compact":
+        # "describe": one short human phrase — the call's ``description`` argument
+        # when present, else a concise verb label. Before every other branch: an
+        # unlimited preview budget (tool_preview_length <= 0) must NOT route
+        # describe through the verbose full-argument renderer, and terminal
+        # commands never render as a fenced code block in this mode.
+        if ctx.progress_mode == "describe":
+            from agent.display import describe_tool_call
+            msg = f"{emoji} {describe_tool_call(tool_name, args)}"
+            ctx.last_was_terminal_block[0] = False
+        elif ctx.progress_mode == "compact":
             # One logical line per tool; single-key dicts show the sole value so
             # read_file({"path": "..."}) reads as read_file("..."). Empty/None → {}.
             if isinstance(args, dict) and len(args) == 1:
@@ -7334,17 +7343,20 @@ class TurnRunner:
                 return
         except Exception:
             pass
-        from agent.display import build_tool_preview
+        from agent.display import build_tool_preview, describe_tool_call
 
+        name = str(tool_name or "tool")
+        if ctx.progress_mode == "describe":
+            # Describe mode: never surface the raw command/code in the card title.
+            preview: str = describe_tool_call(name, args or {})
+        else:
+            preview = build_tool_preview(name, args or {}, max_len=64) or ""
         ctx.progress_queue.put(
             {
                 "type": "tool.started",
                 "tool_call_id": str(call_id or ""),
-                "tool_name": str(tool_name or "tool"),
-                "preview": build_tool_preview(
-                    str(tool_name or "tool"), args or {}, max_len=64
-                )
-                or "",
+                "tool_name": name,
+                "preview": preview,
             }
         )
 

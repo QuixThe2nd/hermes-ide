@@ -538,6 +538,33 @@ def verb_drops_preview(tool_name: str) -> bool:
     return tool_name in _TOOL_VERBS_NO_PREVIEW
 
 
+# ── "describe" tool progress: the model's own words, never the payload ──
+# Fixed budget, deliberately independent of tool_preview_length: describe is a
+# one-line human phrase, so an unlimited preview budget (Discord default 0)
+# must not turn it back into a full command/code dump, and a tight per-platform
+# cap must not shrink it to nothing.
+DESCRIBE_TOOL_MAX_LEN = 120
+
+
+def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIBE_TOOL_MAX_LEN) -> str:
+    """One-line human phrase for the ``describe`` tool-progress mode.
+
+    Uses the tool call's own ``description`` argument when it is a usable
+    string (whitespace-normalised, length-capped). Anything else — missing,
+    blank, non-string, no args — falls back to a short verb/tool label.
+    NEVER falls back to the command/code or any other argument payload.
+    """
+    if isinstance(args, dict):
+        desc = args.get("description")
+        if isinstance(desc, str):
+            text = re.sub(r"\s+", " ", desc).strip()
+            if text:
+                return text if len(text) <= max_len else text[: max_len - 3].rstrip() + "..."
+    # Safe fallback only: curated verb or the bare tool name — never the arguments.
+    verb = get_tool_verb(tool_name)
+    return verb if verb else (tool_name or "working")
+
+
 def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
     """Lowercase "is <verb> <preview>…" phrase following the bot's display name (Slack setStatus).
 

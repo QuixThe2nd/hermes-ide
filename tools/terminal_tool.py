@@ -4427,6 +4427,10 @@ TERMINAL_SCHEMA = {
                 "type": "string",
                 "description": "The shell command to execute"
             },
+            "description": {
+                "type": "string",
+                "description": "One short phrase (max ~80 chars) saying WHAT this command is for, e.g. 'checking git status'. Shown to the user as progress instead of the command itself when they opt into quieter progress. Never put the command here."
+            },
             "background": {
                 "type": "boolean",
                 "description": "Run in the background, returning a session_id. Pair with notify=true for anything with a defined end (tests, builds, deploys) — without it the process runs silently. Only servers/watchers/daemons that never exit should stay silent. Short commands: prefer foreground with a generous timeout.",
@@ -4457,7 +4461,10 @@ TERMINAL_SCHEMA = {
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
             # them in the dispatch wrapper; explicit notify wins on conflict.
         },
-        "required": ["command"]
+        # "description" is execution metadata: advertised as required so models
+        # supply it, but dispatch never reads it — legacy/internal callers that
+        # omit it (old transcripts, direct terminal_tool() calls) run unchanged.
+        "required": ["command", "description"]
     }
 }
 

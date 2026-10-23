@@ -730,7 +730,7 @@ See the [Session Model](#session-model-in-discord) section above for the full im
 
 #### `display.tool_progress`
 
-**Type:** string — **Default:** `"all"` — **Values:** `off`, `new`, `all`, `verbose`
+**Type:** string — **Default:** `"all"` — **Values:** `off`, `new`, `all`, `verbose`, `describe`
 
 Controls whether the bot sends progress messages in the chat while processing (e.g., "Reading file...", "Running terminal command..."). This is a global gateway setting that applies to all platforms.
 
@@ -743,6 +743,7 @@ display:
 - `new` — only show the first tool call per turn
 - `all` — show all tool calls (truncated to 40 characters in gateway messages)
 - `verbose` — show full tool call details (can produce long messages)
+- `describe` — one short line saying what each tool call is for (the call's own description), instead of the raw command/code
 
 When `delegate_cursor_agent` reports live progress, Discord posts a Cursor-branded embed with a **Watch live session** hyperlink instead of dumping the raw URL.
 

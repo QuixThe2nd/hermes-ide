@@ -11,8 +11,10 @@ FOCUS_CONFIG_KEY = "display.focus_view"  # plain boolean under ``display``, like
 FOCUS_TOOL_PROGRESS_MODE = "off"  # the SAME value ``/verbose off`` uses so both features share one suppression path
 # Modes in which the CLI commits a per-tool scrollback line. Mirrors the gate in
 # ``HermesCLI._on_tool_progress`` so the hidden-line counter and the renderer never drift apart.
-TOOL_PROGRESS_VISIBLE_MODES = frozenset({"new", "all", "verbose"})
-TOOL_PROGRESS_MODES = ("off", "new", "all", "verbose")  # ``log`` is a gateway-only extra step
+TOOL_PROGRESS_VISIBLE_MODES = frozenset({"new", "all", "verbose", "describe"})
+# ``log`` is a gateway-only extra step; ``describe`` shows the call's short
+# description phrase instead of the raw command/code preview.
+TOOL_PROGRESS_MODES = ("off", "new", "all", "verbose", "describe")
 FOCUS_STATUSBAR_LABEL = "◉ focus"  # short on purpose — the bar is width-constrained
 
 # /focus argument words -> (action, target); bare /focus toggles like /footer, /battery, /timestamps.

@@ -212,7 +212,7 @@ def _set_busy(rid, params, key, value, session):
 
 
 def _set_verbose(rid, params, key, value, session):
-    cycle = ["off", "new", "all", "verbose"]
+    cycle = ["off", "new", "all", "verbose", "describe"]
     if value and value != "cycle":
         nv = str(value).strip().lower()
         if nv not in cycle:
