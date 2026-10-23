@@ -6930,7 +6930,19 @@ class TurnRunner:
                             break
                     return
 
-                raw = ctx.progress_queue.get_nowait()
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                except queue.Empty:
+                    # Park INSIDE the main try, not in a bare await in an
+                    # ``except queue.Empty`` clause below: a task cancel
+                    # landing on an await inside an except handler bypasses
+                    # this try's CancelledError drain, and the finally-side
+                    # cancellation at a NORMAL turn finish would silently
+                    # drop any notices queued during this wait (e.g. a
+                    # correlated Claude delegation start). Same interval,
+                    # same owner, no second drain.
+                    await asyncio.sleep(0.3)
+                    continue
 
                 # Drain silently when interrupted: events queued in the
                 # window between tool parse and interrupt processing
@@ -7113,8 +7125,6 @@ class TurnRunner:
                 if ctx._run_still_current():
                     await adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
 
-            except queue.Empty:
-                await asyncio.sleep(0.3)
             except asyncio.CancelledError:
                 # Drain remaining queued messages.  An interrupted turn keeps
                 # the main loop's suppression here too: late tool rows, dedup
@@ -7132,11 +7142,20 @@ class TurnRunner:
                             _signal_context_flush_marker(raw)
                             continue
                         if is_claude_delegation_start_marker(raw):
-                            # Delegation start notice during drain: the
-                            # drain only runs at cancellation, so discard it
-                            # like any interrupted row — its call's later
-                            # viewer marker (still delivered below) simply
-                            # takes the legacy standalone path.
+                            # Delegation start notice during drain. The
+                            # drain is NOT only interrupt territory:
+                            # _run_agent_inner's finally ALWAYS cancels
+                            # progress_task, including on a NORMAL finish —
+                            # so a notice still queued at cleanup must go
+                            # out through the same delivery owner, keeping
+                            # the notice+viewer correlation (the viewer
+                            # marker below edits this exact message).
+                            # Discard it only when the turn was actually
+                            # interrupted, exactly like the live loop's
+                            # suppression above.
+                            if _agent_interrupted():
+                                continue
+                            await _claude_delivery.deliver_start(raw)
                             continue
                         if _is_agent_status_queue_marker(raw):
                             # Agent-viewer status during drain: flush the
