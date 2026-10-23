@@ -62,6 +62,24 @@ export function downloadLocalModel(modelId: string): Promise<{ already_downloade
   })
 }
 
+export function pauseLocalModelDownload(jobId: string): Promise<{ ok: boolean; paused: boolean }> {
+  return hermesApi<{ ok: boolean; paused: boolean }>({
+    ...profileScoped(),
+    body: { job_id: jobId },
+    method: 'POST',
+    path: '/api/local-models/download/pause'
+  })
+}
+
+export function resumeLocalModelDownload(jobId: string): Promise<{ ok: boolean; resumed: boolean }> {
+  return hermesApi<{ ok: boolean; resumed: boolean }>({
+    ...profileScoped(),
+    body: { job_id: jobId },
+    method: 'POST',
+    path: '/api/local-models/download/resume'
+  })
+}
+
 export function deleteLocalModel(modelId: string): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
     ...profileScoped(),

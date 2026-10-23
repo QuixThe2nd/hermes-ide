@@ -1387,7 +1387,7 @@ export interface LocalRuntimeJob {
   kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
   target: string
   model_id: string | null
-  status: 'running' | 'done' | 'error'
+  status: 'paused' | 'running' | 'done' | 'error'
   phase: string
   detail: string
   total_bytes: number | null

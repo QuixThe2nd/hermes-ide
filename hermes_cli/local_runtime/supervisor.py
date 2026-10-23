@@ -81,7 +81,7 @@ def _stable_api_key() -> str:
     """
     key_path = runtimes_root() / ".api_key"
     with suppress(OSError):
-        existing = key_path.read_text(encoding="utf-8").strip()
+        existing = key_path.read_text(encoding="utf-8-sig").strip()
         if len(existing) >= 16:
             return existing
     key = secrets.token_urlsafe(24)
@@ -115,11 +115,20 @@ class LlamaServerSupervisor:
     # comes back to.
     IDLE_UNLOAD_S = 15 * 60
 
-    def __init__(self, install_dir: Path, models_dir: Path, *,
+    def __init__(self, install_dir: Path | None = None, models_dir: Path | None = None, *,
+                 server_exe: Path | None = None,
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
                  preset_path: Path | None = None):
+        # Upstream a9be133aea passes the executable directly (server_exe);
+        # the fork's tag-runtimes layout passes the extracted install dir and
+        # resolves llama-server inside it. Both compose: an explicit exe wins.
+        if server_exe is not None:
+            self.server_exe = Path(server_exe)
+            install_dir = install_dir if install_dir is not None else self.server_exe.parent
+        else:
+            self.server_exe = None
         self.install_dir = Path(install_dir)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
@@ -166,7 +175,7 @@ class LlamaServerSupervisor:
     # ── lifecycle ────────────────────────────────────────────
 
     def _spawn(self) -> None:
-        exe = server_binary(self.install_dir)
+        exe = self.server_exe if self.server_exe is not None else server_binary(self.install_dir)
         cmd = [
             str(exe),
             "--host", "127.0.0.1",
@@ -339,7 +348,8 @@ class LlamaServerSupervisor:
         try:
             import psutil
 
-            exe = str(server_binary(self.install_dir))
+            exe = str(self.server_exe if self.server_exe is not None
+                      else server_binary(self.install_dir))
         except Exception:  # noqa: BLE001
             return
         own_pid = self.proc.pid if self.proc is not None else None
@@ -358,6 +368,17 @@ class LlamaServerSupervisor:
         """{model_id: status_value} from GET /models."""
         return {m["id"]: m.get("status", {}).get("value", "unknown")
                 for m in self._request("/models").get("data", [])}
+
+    def model_failures(self) -> dict:
+        """{model_id: exit_code} for children that died — surfaced to the
+        UI, never auto-retried (upstream a9be133aea: router children are
+        the router's problem; failures surface, restarts are explicit)."""
+        out: dict = {}
+        for m in self._request("/models").get("data", []):
+            status = m.get("status", {})
+            if status.get("value") == "failed" or status.get("exit_code"):
+                out[m["id"]] = status.get("exit_code")
+        return out
 
     def load_model(self, model_id: str, timeout_s: int = 600) -> None:
         self._request("/models/load", {"model": model_id}, timeout_s=timeout_s)

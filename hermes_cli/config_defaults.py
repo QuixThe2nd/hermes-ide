@@ -2746,8 +2746,9 @@ DEFAULT_CONFIG = {
     "local_runtime": {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
-        # Pinned llama.cpp release tag; bumped by Hermes releases after validation.
-        "tag": "b10964",
+        # The pinned llama.cpp release tag lives in pm/lock.json (the single
+        # version authority); a second default here could only disagree with it.
+        # An explicit user "tag" pin in config.yaml is still honored.
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",

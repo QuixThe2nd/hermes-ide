@@ -138,6 +138,12 @@ def _job_view(job: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+# Live handles for resumable download jobs (upstream a9be133aea): the pause
+# route needs the downloader's live object, the resume route the job body.
+# The job dict itself stays JSON-serializable for the poll route.
+_RUNNING: Dict[str, Dict[str, Any]] = {}
+
+
 def _step(job: Dict[str, Any], phase: str, detail: str) -> None:
     job["phase"] = phase
     job["detail"] = detail
@@ -151,24 +157,41 @@ def _finish(job: Dict[str, Any], detail: str) -> None:
 def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail_msg: str | None = None,
                on_exit: Callable[[], None] | None = None, download_label: str | None = None) -> None:
     """Run ``body`` on a daemon thread; an exception marks the job errored (warning ``fail_msg`` when
-    given); ``on_exit`` always runs last. ``download_label`` = download job: finishes as "<label> ready"
+    given) unless it is DownloadPaused (the job is already 'paused', partials kept for resume);
+    ``on_exit`` always runs last. ``download_label`` = download job: finishes as "<label> ready"
     and bounces the router to pick the file up."""
     def _run():
-        try:
-            body()
-            if download_label is not None:
-                _finish(job, f"{download_label} ready")
-                _refresh_runtime("post-download runtime refresh skipped")
-        except Exception as exc:  # noqa: BLE001
+        _spawn_body(job, body, fail_msg=fail_msg, on_exit=on_exit, download_label=download_label)
+
+    threading.Thread(target=_run, daemon=True, name=name).start()
+
+
+def _spawn_body(job: Dict[str, Any], body: Callable[[], None], *, fail_msg: str | None = None,
+                on_exit: Callable[[], None] | None = None, download_label: str | None = None) -> None:
+    """Job body shared by spawned and resumed jobs: run ``body``; an exception
+    marks the job errored (warning ``fail_msg`` when given) unless it is
+    DownloadPaused (the job is already 'paused', partials kept). ``on_exit``
+    always runs last."""
+    try:
+        body()
+        if job["status"] != "paused" and download_label is not None:
+            _finish(job, f"{download_label} ready")
+            _refresh_runtime("post-download runtime refresh skipped")
+    except Exception as exc:  # noqa: BLE001
+        from pm.downloader import DownloadPaused
+
+        if isinstance(exc, DownloadPaused):
+            pass  # status already "paused"; partials kept for resume
+        else:
             if fail_msg:
                 logger.warning(fail_msg, exc)
             job["status"] = "error"
             job["error"] = str(exc)
-        finally:
-            if on_exit is not None:
-                on_exit()
-
-    threading.Thread(target=_run, daemon=True, name=name).start()
+    finally:
+        if job["status"] != "paused":
+            _RUNNING.pop(job["job_id"], None)
+        if on_exit is not None:
+            on_exit()
 
 
 # ── runtime / router plumbing ────────────────────────────────
@@ -394,16 +417,44 @@ def _download_plan(entry, variant) -> list:
     return plan
 
 
+def _download_job(job: Dict[str, Any], plan) -> None:
+    """Run a plan of (url, dest, size) downloads as ONE resumable pm Download
+    (upstream a9be133aea). Completion and range progress feed the job dict
+    (done_bytes / total_bytes / ranges). Sources carry NO hash by design:
+    catalog sizes may lag an upstream re-upload, so completeness is judged
+    against the server's declared total, never the catalog. On pause the
+    downloader raises DownloadPaused; the caller marks the job 'paused' with
+    its partials intact for a later resume."""
+    from pm.downloader import Download, DownloadPaused, Source
+
+    dl = Download([Source(url, dest) for url, dest, _ in plan])
+    _RUNNING.setdefault(job["job_id"], {})["dl"] = dl
+
+    def tick(done: int, total: int, ranges: dict) -> None:
+        job["done_bytes"] = done
+        job["total_bytes"] = total or job["total_bytes"]
+        job["ranges"] = ranges
+
+    try:
+        dl.run(progress=tick)
+    except DownloadPaused:
+        job["status"] = "paused"
+        raise
+    finally:
+        _RUNNING.get(job["job_id"], {}).pop("dl", None)
+
+
 def _run_download_plan(job: Dict[str, Any], plan: list, label: str) -> None:
-    """Download every missing file in ``plan``; already-present files count toward progress without a transfer."""
+    """Announce a plan (already-present files count toward progress without a
+    transfer), then run it as one resumable Download via ``_download_job``."""
+    from pm.downloader import DownloadPaused
+
     _step(job, "downloading", f"{label} — {_human_gb(sum(p[2] for p in plan))}")
-    done_before = 0
-    for url, dest, size in plan:
-        if not dest.exists():
-            download_file(url, dest, job, base_done=done_before, keep_totals=True)
-            job["phase"] = "downloading"
-        done_before += size
-        job["done_bytes"] = done_before
+    try:
+        _download_job(job, plan)
+    except DownloadPaused:
+        _step(job, "paused", f"{label} — paused; partials kept for resume")
+        raise
 
 
 # ── status: the one call the pane opens with ─────────────────
@@ -463,10 +514,19 @@ def local_models_status():
     """Cheap, immediate: config state + installed runtime + staged models + supervisor state (GPU facts live
     in /hardware). Sync def on purpose: blocking urlopen/scans run in the threadpool."""
     section = _runtime_section()
-    configured_tag = section.get("tag") or binaries.default_tag()
+    # Single version authority (upstream a9be133aea): pm/lock.json pins the
+    # engine; an explicit user "tag" pin in config.yaml still wins.
+    configured_tag = section.get("tag") or binaries.engine_version() or binaries.default_tag()
     have = binaries.installed_tags()
-    # The tag actually serving (boot ladder: configured if installed, else newest installed).
-    tag = configured_tag if configured_tag in have else (have[0] if have else configured_tag)
+    backends = binaries.installed_backends()
+    # Serving tag: the INSTALLED pm engine's version (boot serves what is on
+    # disk, never the pin); fall back to the fork's tag-based runtimes when
+    # no pm engine is installed (configured if installed, else newest).
+    pm_tag = binaries.installed_engine_version(backends[0]) if backends else None
+    if pm_tag:
+        tag = pm_tag
+    else:
+        tag = configured_tag if configured_tag in have else (have[0] if have else configured_tag)
     runtime_backend = _installed_backend(tag)
     mdir = bootstrap.models_dir()
     running = _state_endpoint()
@@ -476,9 +536,18 @@ def local_models_status():
         lambda: _loaded_models(running), ({}, {}), warn="loaded-models read failed: %r")
     return {
         "enabled": bool(section.get("enabled")), "tag": tag, "configured_tag": configured_tag,
-        # Update pending = engine in use (enabled + something installed) and the configured tag
-        # (pinned or release default) isn't on disk. The download is a button click, never automatic.
-        "update_available": bool(section.get("enabled") and have and configured_tag not in have),
+        # Update pending = engine in use (enabled + something installed) and the
+        # offered build differs from the installed one: an explicit user pin is
+        # the offer and compares against the installed engine directly; an
+        # unpinned config defers to the pm lock's update check. The fork's
+        # tag-runtimes path keeps its "configured tag isn't on disk" rule when
+        # no pm engine exists. The download is a button click, never automatic.
+        "update_available": bool(section.get("enabled") and (
+            (backends and pm_tag is not None and (
+                (configured_tag != pm_tag) if section.get("tag")
+                else binaries.engine_update_pending()))
+            or (have and not backends and configured_tag not in have)
+        )),
         "runtime_installed": runtime_backend is not None, "runtime_backend": runtime_backend,
         "server_running": running is not None, "server_base_url": (running or {}).get("base_url"),
         "active_model_id": _active_llamacpp_model_id(), "loaded_models": loaded,
@@ -624,7 +693,7 @@ def _runtime_progress_hook(job: Dict[str, Any]):
                   + (f" of {_human_gb(plan_total)}" if total else ""))
             job["done_bytes"] = plan_done
             job["total_bytes"] = plan_total or None
-        elif stage == "extract":
+        elif stage in ("extract", "unpack"):  # extract = fork tag-runtimes stream; unpack = pm engine stream (upstream a9be133aea)
             pct = f" — {min(100, round(done / total * 100))}%" if total else ""
             _step(job, "unpacking-runtime", f"Unpacking the engine{suffix}{pct}")
         else:  # verify
@@ -647,6 +716,18 @@ def _restart_on_new_tag(job: Dict[str, Any], tag: str, previous: list) -> bool:
 @router.post("/api/local-models/runtime/install")
 async def local_models_runtime_install(body: RuntimeInstallBody):
     tag, backend = _runtime_target(body.backend)
+    # An impossible platform/backend combo is knowable before any work starts
+    # (upstream a9be133aea): an explicitly requested backend with no build for
+    # this target fails the POST with the pin table's own reason, not a
+    # background job that dies silently. "auto" instead walks down the ladder.
+    if body.backend:
+        reason = binaries.unavailable_reason(backend)
+        if reason is not None:
+            raise HTTPException(status_code=400, detail=reason)
+    try:
+        backend = binaries.resolve_backend(backend)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc))
     plan = _resolve_assets_or_400(tag, backend)
     job = _job("runtime-install", f"llama.cpp {tag} ({backend})")
 
@@ -690,9 +771,52 @@ async def local_models_download(body: ModelDownloadBody):
     plan = _download_plan(entry, variant)
     job = _job("model-download", f"{entry.display_name} ({variant.quant})", model_id=entry.id)
     job["total_bytes"] = sum(p[2] for p in plan)
-    _spawn_job(job, "lr-model-download", lambda: _run_download_plan(job, plan, entry.display_name),
-               fail_msg="model download failed: %s", download_label=entry.display_name)
+
+    def _body():
+        _RUNNING.setdefault(job["job_id"], {})["resume"] = _body
+        _run_download_plan(job, plan, entry.display_name)
+        _finish(job, f"{entry.display_name} ready")
+        _refresh_runtime("post-download runtime refresh skipped")
+
+    _spawn_job(job, "lr-model-download", _body, fail_msg="model download failed: %s")
     return {"job_id": job["job_id"], "model_id": variant.model_id}
+
+
+class JobIdBody(BaseModel):
+    job_id: str
+
+
+@router.post("/api/local-models/download/pause")
+async def local_models_download_pause(body: JobIdBody):
+    """Pause a running model download. The downloader's live handle is checked
+    off the job dict (which stays JSON-serializable for the poll route); when
+    none is active (already done/paused) this is a no-op."""
+    running = _RUNNING.get(body.job_id)
+    if running is None:
+        raise HTTPException(status_code=404, detail="unknown download job")
+    dl = running.get("dl")
+    if dl is None:
+        return {"ok": True, "paused": False}
+    dl.pause()
+    return {"ok": True, "paused": True}
+
+
+@router.post("/api/local-models/download/resume")
+async def local_models_download_resume(body: JobIdBody):
+    """Resume a paused model download. Completed files are skipped and
+    partials resume from their byte-range bitmap — the route just re-runs the
+    job body."""
+    job = _JOBS.get(body.job_id)
+    running = _RUNNING.get(body.job_id)
+    if job is None or running is None or running.get("resume") is None:
+        raise HTTPException(status_code=404, detail="unknown or finished download job")
+    if job["status"] != "paused":
+        return {"ok": True, "resumed": False}
+    job["status"] = "running"
+    threading.Thread(target=_spawn_body, args=(job, running["resume"]),
+                     kwargs={"fail_msg": "model download failed: %s"},
+                     daemon=True, name="lm-dl-resume").start()
+    return {"ok": True, "resumed": True}
 
 
 @router.delete("/api/local-models/models/{model_id}")
@@ -743,7 +867,9 @@ async def local_models_quickstart(body: QuickstartBody):
     synchronously so the button can explain itself; everything slow runs in the job with phase/byte progress."""
     entry, variant = _quickstart_target(body, hardware.probe_budget(planning=True))
     tag, backend = _runtime_target()
-    need_runtime = not binaries.installed_tags()
+    # Installed = a verified fork tag-runtimes manifest OR a pm-store engine
+    # (upstream a9be133aea records installs in pm facts).
+    need_runtime = not (binaries.installed_tags() or binaries.installed_backends())
     if need_runtime:
         _resolve_assets_or_400(tag, backend)
     need_download = variant.model_id not in bootstrap.staged_model_ids()
@@ -757,7 +883,13 @@ async def local_models_quickstart(body: QuickstartBody):
     def _run():
         if need_runtime:
             _step(job, "installing-runtime", "Installing the local engine")
-            binaries.ensure_runtime_installed(tag, backend, progress=_runtime_progress_hook(job))
+            if tag and tag != binaries.default_tag():
+                # Explicit user pin: install exactly that tag via the fork's
+                # tag-runtimes path (pins win over the shipped engine).
+                binaries.ensure_runtime_installed(tag, backend, progress=_runtime_progress_hook(job))
+            else:
+                # No pin: the pm store route — pm/lock.json is the authority.
+                binaries.ensure_engine(backend, progress=_runtime_progress_hook(job))
         if need_download:
             # The runtime leg repurposed the byte counters for its own stages — reset them to the model plan.
             job["done_bytes"] = 0

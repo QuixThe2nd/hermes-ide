@@ -212,10 +212,25 @@ def _uv_lock_digest(path: Path) -> bytes:
 _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
+def _file_digest(path: Path) -> bytes:
+    """sha256 of a small always-present project file (no cache needed)."""
+    import hashlib
+
+    try:
+        return hashlib.sha256(path.read_bytes()).digest()
+    except OSError:
+        return b""
+
+
 def uv_env(base_env: Optional[dict] = None) -> dict[str, str]:
     """Sanitized env for pm's internal uv invocations: user-level UV
     overrides and active-venv leakage must not steer which interpreter or
-    install dir uv picks (the interpreter-hijack class, #83914)."""
+    install dir uv picks (the interpreter-hijack class, #83914), and
+    ambient user/system uv config (uv.toml under XDG_CONFIG_HOME/DIRS)
+    must not reach the subprocess either. User config discovery is
+    redirected to an empty dir; HOME is left alone so caches, credentials,
+    and git keep working (the #82446 isolation contract, which lived in
+    the installers' run_locked_uv_sync() before the sync moved into pm)."""
     env = dict(os.environ if base_env is None else base_env)
     for key in list(env):
         if key.startswith("UV_") or key in (
@@ -226,14 +241,37 @@ def uv_env(base_env: Optional[dict] = None) -> dict[str, str]:
             "PYTHONEXECUTABLE",
         ):
             env.pop(key)
+    isolated = _isolated_config_dir()
+    env["XDG_CONFIG_HOME"] = str(isolated)
+    env["XDG_CONFIG_DIRS"] = str(isolated)
     env["UV_NO_CONFIG"] = "1"
     return env
+
+
+_ISOLATED_CONFIG_DIR: Optional[str] = None
+
+
+def _isolated_config_dir() -> Path:
+    """A per-process empty dir ambient uv config is redirected to. One
+    shared empty dir is all that's needed (and all that ever gets
+    created); it is never populated, so it cannot steer resolution."""
+    import tempfile
+
+    global _ISOLATED_CONFIG_DIR
+    if _ISOLATED_CONFIG_DIR is None:
+        _ISOLATED_CONFIG_DIR = tempfile.mkdtemp(prefix="pm-uv-")
+    return Path(_ISOLATED_CONFIG_DIR)
 
 
 @register
 class Venv(StatePackage):
     """The project venv: pyproject.toml + uv.lock + enabled extras.
-    Made true by `uv sync --frozen`; uv is its internal dependency."""
+    Made true by `uv sync --locked`; uv is its internal dependency.
+    `--locked` (not `--frozen`) is load-bearing: it asserts uv.lock is
+    up-to-date with pyproject.toml, so a stale lock fails the sync instead
+    of silently installing a set nothing reconciled. This is the
+    project/lock consistency validation the installers' old
+    run_locked_uv_sync() owned before the sync moved into pm."""
 
     name = "venv"
     deps = ("uv",)
@@ -254,7 +292,13 @@ class Venv(StatePackage):
         import sys
 
         h = hashlib.sha256()
-        h.update(_uv_lock_digest(self.project_root() / "uv.lock"))
+        root = self.project_root()
+        h.update(_uv_lock_digest(root / "uv.lock"))
+        # pyproject.toml is stamped too: editing it without re-locking
+        # leaves uv.lock bytes untouched, and a stamp over the lock alone
+        # would make sync_venv no-op past the `--locked` validation the
+        # installers' tier-0 sync ran on every install.
+        h.update(_file_digest(root / "pyproject.toml"))
         h.update(",".join(sorted(extras)).encode())
         h.update(f"{sys.version_info.major}.{sys.version_info.minor}".encode())
         return h.hexdigest()
@@ -265,7 +309,7 @@ class Venv(StatePackage):
         uv_bin, env = pm_uv(venv=self.venv_dir())
         if uv_bin is None:
             raise InstallError(self.name, "uv is not installed")
-        cmd = [uv_bin, "sync", "--frozen"]
+        cmd = [uv_bin, "sync", "--locked"]
         for extra in sorted(extras):
             cmd += ["--extra", extra]
         proc = subprocess.run(

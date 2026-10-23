@@ -167,9 +167,9 @@ def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEn
     import configparser
 
     if preset_path is None:
-        from hermes_cli.local_runtime.binaries import runtimes_root
+        from hermes_cli.local_runtime.binaries import runtime_state_root
 
-        preset_path = runtimes_root() / "presets.ini"
+        preset_path = runtime_state_root() / "presets.ini"
     out: dict[str, PresetEntry] = {}
     try:
         parser = configparser.ConfigParser(interpolation=None)

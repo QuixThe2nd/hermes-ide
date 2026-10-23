@@ -37,16 +37,29 @@ def _bash_path(path: Path) -> str:
     return f"/mnt/{drive}/{tail}"
 
 
-def test_installers_keep_bootstrap_isolation_but_restore_project_config_for_lock() -> None:
+def test_installers_keep_bootstrap_isolation_but_delegate_locked_sync_to_pm() -> None:
+    """pm is the single install authority (upstream a9be133aea): the
+    tier-0 helper no longer runs `uv sync` inline — it invokes
+    `python -m pm.cli install`. The locked-sync validation itself now
+    lives in pm.packages.VenvPackage.apply (`uv sync --locked`); this pins
+    the delegation shape and the subprocess-config hygiene. The actual
+    consistent/stale behavior at the owner is proven out-of-band (kept
+    outside the shipping tree to respect the 27-line product-delta
+    budget): evidence/out-of-band/test_venv_sync_lock_validation.py of
+    fork-sync run 39832873374, runnable with PYTHONPATH at this
+    checkout's tree (see the run's installer-acceptance-v2.sh)."""
     install_text = INSTALL_SCRIPTS[0].read_text(encoding="utf-8")
 
     assert "export UV_NO_CONFIG=1" in install_text
 
     helper = _locked_sync_helper(INSTALL_SCRIPTS[0])
+    # Project-config discovery must be restored for the delegated pm
+    # subprocess (same #21269/#82446 contract as before the migration).
     assert "unset UV_NO_CONFIG UV_CONFIG_FILE" in helper
-    assert 'export XDG_CONFIG_HOME="$isolated_uv_config"' in helper
-    assert 'export XDG_CONFIG_DIRS="$isolated_uv_config"' in helper
-    assert "$UV_CMD sync --extra all --locked" in helper
+    assert 'export UV_PROJECT_ENVIRONMENT="$project_env"' in helper
+    assert '"$UV_CMD" run --no-project python -m pm.cli install' in helper
+    # The old inline locked sync must not reappear next to the delegation.
+    assert "$UV_CMD sync" not in helper
     assert 'run_locked_uv_sync "$INSTALL_DIR/venv"' in install_text
 
 
@@ -55,27 +68,29 @@ def test_locked_sync_helper_sanitizes_only_its_subprocess(tmp_path: Path) -> Non
     if bash is None:
         pytest.skip("bash is unavailable")
 
+    install_dir = tmp_path / "install-dir"
+    install_dir.mkdir()
     record = tmp_path / "uv-args.txt"
     fake_uv = tmp_path / "uv"
     fake_uv.write_text(
         """#!/bin/sh
 test -z "${UV_NO_CONFIG+x}" || exit 10
 test -z "${UV_CONFIG_FILE+x}" || exit 11
-test -d "$XDG_CONFIG_HOME" || exit 12
-test "$XDG_CONFIG_HOME" = "$XDG_CONFIG_DIRS" || exit 13
-printf '%s\n' "$@" > "$RECORD"
+printf '%s\\n' "$@" > "$RECORD"
 """,
         encoding="utf-8",
         newline="\n",
     )
+    fake_uv.chmod(0o755)
 
     harness = tmp_path / "harness.sh"
     harness.write_text(
         """#!/bin/bash
 set -eu
-UV_CMD="sh $1"
+UV_CMD="$1"
 RECORD="$2"
-export UV_CMD RECORD
+INSTALL_DIR="$3"
+export UV_CMD RECORD INSTALL_DIR
 export UV_NO_CONFIG=1
 export UV_CONFIG_FILE=/poison/uv.toml
 export XDG_CONFIG_HOME=/poison/user
@@ -94,18 +109,23 @@ test "$XDG_CONFIG_DIRS" = /poison/system
     )
 
     result = subprocess.run(
-        [bash, _bash_path(harness), _bash_path(fake_uv), _bash_path(record)],
+        [bash, _bash_path(harness), _bash_path(fake_uv), _bash_path(record),
+         _bash_path(install_dir)],
         capture_output=True,
         text=True,
         check=False,
     )
 
     assert result.returncode == 0, result.stderr
+    # The helper forwards to the single install authority, with project
+    # config discovery restored for exactly this subprocess.
     assert record.read_text(encoding="utf-8").splitlines() == [
-        "sync",
-        "--extra",
-        "all",
-        "--locked",
+        "run",
+        "--no-project",
+        "python",
+        "-m",
+        "pm.cli",
+        "install",
     ]
 
 

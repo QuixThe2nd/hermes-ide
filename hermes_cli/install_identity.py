@@ -50,7 +50,7 @@ def _install_id_file_lock(root: Path):
 def _read_existing(path: Path) -> tuple[Optional[str], bool]:
     """``(valid id or None, mint?)`` — mint on a missing or malformed file, never on a read failure."""
     try:
-        existing = path.read_text(encoding="utf-8").strip().lower()
+        existing = path.read_text(encoding="utf-8-sig").strip().lower()
     except FileNotFoundError:
         return None, True
     except (OSError, UnicodeDecodeError):
@@ -78,7 +78,7 @@ def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
             if not mint:
                 return existing
             atomic_write_text(path, uuid.uuid4().hex + "\n", tmp_prefix=".install_id-", fsync_dir=True, mode=0o600)
-            committed = path.read_text(encoding="utf-8").strip().lower()
+            committed = path.read_text(encoding="utf-8-sig").strip().lower()
             return committed if _INSTALL_ID_RE.fullmatch(committed) else None
     except OSError:
         return None

@@ -65,7 +65,7 @@ export function AboutSettings() {
       )}
 
       <div className="mx-auto mt-4 w-full max-w-2xl">
-        <SectionHeading icon={RefreshCw} title={u.updatesSection} />
+        <SectionHeading icon={RefreshCw} title={t.settings.about.updates} />
 
         <div className="grid gap-3">
           <UpdateStatusCard target="client" />

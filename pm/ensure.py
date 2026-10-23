@@ -509,7 +509,13 @@ def uv(*, venv=None, realize: bool = True):
 
     env = uv_env()
     if venv is not None:
+        # UV_PROJECT_ENVIRONMENT is what `uv sync` actually reads —
+        # VIRTUAL_ENV alone is ignored for project environments, and the
+        # sanitized env above has already stripped the installer's
+        # UV_PROJECT_ENVIRONMENT, so it must be recomposed here or the
+        # sync silently lands in a sibling `.venv`.
         env["VIRTUAL_ENV"] = str(venv)
+        env["UV_PROJECT_ENVIRONMENT"] = str(venv)
         env.pop("UV_NO_CONFIG", None)
 
     lockfile = _lockfile()

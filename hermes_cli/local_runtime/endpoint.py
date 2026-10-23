@@ -143,7 +143,15 @@ def _boot_in_flight(config: dict | None) -> bool:
         config = _load_config_if_none(config)
         if not ((config or {}).get("local_runtime") or {}).get("enabled"):
             return False
-        from hermes_cli.local_runtime.binaries import manifest_verified, runtimes_root
+        from hermes_cli.local_runtime.binaries import (
+            installed_backends,
+            manifest_verified,
+            runtimes_root,
+        )
 
-        return any(manifest_verified(m) for m in runtimes_root().glob("*/*/manifest.json"))
+        # Fork tag-runtimes manifests OR a pm-store engine (upstream a9be133aea
+        # records installs in pm facts) — either counts as "installed".
+        if any(manifest_verified(m) for m in runtimes_root().glob("*/*/manifest.json")):
+            return True
+        return bool(installed_backends())
     return False

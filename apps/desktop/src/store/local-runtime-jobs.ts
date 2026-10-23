@@ -262,7 +262,7 @@ function poll(): Promise<void> {
       if (context === generation) {
         polling = null
 
-        if (owner.readPending || $localRuntimeJobs.get().some(j => j.status === 'running')) {
+        if (owner.readPending || $localRuntimeJobs.get().some(j => j.status === 'running' || j.status === 'paused')) {
           timer = setTimeout(() => void poll(), POLL_ACTIVE_MS)
         }
       }
@@ -285,7 +285,16 @@ export function watchLocalRuntimeJobs() {
 
 // Selector: the running download job for a catalog model id, if any.
 export function runningDownloadFor(jobs: readonly LocalRuntimeJob[], modelId: string): LocalRuntimeJob | null {
-  return jobs.find(j => j.kind === 'model-download' && j.status === 'running' && j.model_id === modelId) ?? null
+  // Paused downloads stay "the job for this model" — the row keeps its
+  // progress and shows Resume instead of Pause.
+  return (
+    jobs.find(
+      j =>
+        j.kind === 'model-download' &&
+        (j.status === 'running' || j.status === 'paused') &&
+        j.model_id === modelId
+    ) ?? null
+  )
 }
 
 // Selector: every model on its way to the library right now — plain
@@ -297,7 +306,8 @@ const DOWNLOAD_PHASES = new Set(['starting', 'installing-runtime', 'downloading'
 export function runningModelDownloads(jobs: readonly LocalRuntimeJob[]): LocalRuntimeJob[] {
   return jobs.filter(
     j =>
-      j.status === 'running' &&
+      // Paused downloads stay visible in the picker's in-flight rows too.
+      (j.status === 'running' || j.status === 'paused') &&
       (j.kind === 'model-download' || (j.kind === 'quickstart' && DOWNLOAD_PHASES.has(j.phase)))
   )
 }
