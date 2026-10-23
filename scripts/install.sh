@@ -1976,14 +1976,23 @@ install_deps() {
 
         # Try the broad Termux profile first (best-effort "install all" for Android),
         # then fall back to the conservative Termux baseline, then base package.
-        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt; then
+        # No `-c constraints-termux.txt` here: that file was deleted upstream by the
+        # unified package-manager migration (3d12e86) along with the installer this
+        # Termux branch originally shipped in, and every package it pinned (the
+        # IPython stack: ipython/jedi/parso/stack-data/pexpect/matplotlib-inline/
+        # asttokens) has since left the dependency graph entirely (absent from both
+        # pyproject.toml and uv.lock), so the constraint contract is vacuous — while
+        # a missing constraint file makes pip abort before resolving ANY tier.
+        # Version stability for the tested Android path now comes from the exact
+        # pins recorded in pyproject.toml's [termux]/[termux-all] extras.
+        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]'; then
             log_warn "Termux broad profile (.[termux-all]) failed, trying baseline Termux profile..."
-            if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
+            if ! "$PIP_PYTHON" -m pip install -e '.[termux]'; then
                 log_warn "Termux baseline profile (.[termux]) failed, trying base install..."
-                if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
+                if ! "$PIP_PYTHON" -m pip install -e '.'; then
                     log_error "Package installation failed on Termux."
                     log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl ca-certificates curl"
-                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]'"
                     exit 1
                 fi
             fi
@@ -2215,7 +2224,7 @@ setup_path() {
         log_warn "Hermes launcher prerequisites not found"
         log_info "This usually means the Python package install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
-            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]'"
         else
             log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
         fi
