@@ -343,11 +343,15 @@ class StreamTransportMixin:
         if self._use_native_streaming:
             ok = await self._native_push(text, finalize=finalize, is_turn_final=is_turn_final)
             if ok is not None:
+                if ok:
+                    self._notify_visible_progress()
                 return ok
         if self._use_draft_streaming and self._message_id is None:
             ok = await self._draft_push(text, pre_fence_text, finalize=finalize,
                                         is_turn_final=is_turn_final)
             if ok is not None:
+                if ok:
+                    self._notify_visible_progress()
                 return ok
         self._last_edit_overflowed = False
         try:
@@ -355,6 +359,9 @@ class StreamTransportMixin:
                 return await self._first_send(text, finalize=finalize)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
+            # Visible-progress notification happens inside _first_send/_edit_existing,
+            # ONLY where an adapter call actually landed — the unchanged-text
+            # short-circuit in _edit_existing is a no-op, not progress.
             return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final)
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)
@@ -454,6 +461,7 @@ class StreamTransportMixin:
             self._edit_supported = False
             return False
         self._already_sent = True
+        self._notify_visible_progress()  # landed send = user-visible progress
         self._last_sent_text = text
         if result.message_id:
             self._adopt_message_id(result.message_id)
@@ -483,6 +491,7 @@ class StreamTransportMixin:
         if finalize and (
             prefers_fresh or (not has_prefers_hook and self._should_send_fresh_final())
         ) and await self._try_fresh_final(text, is_turn_final=is_turn_final):
+            self._notify_visible_progress()  # fresh-final message landed
             return True
         result = await self._edit_message(message_id=self._message_id, content=text,
                                           finalize=finalize)
@@ -490,6 +499,7 @@ class StreamTransportMixin:
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)
         self._already_sent = True
+        self._notify_visible_progress()  # landed edit = user-visible progress
         self._track_preview_ids_from_result(result)
         # Oversized edit split across continuations: message_id is now the LAST
         # continuation, which holds only the final chunk — retarget edits and reset

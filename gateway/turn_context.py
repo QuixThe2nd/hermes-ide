@@ -7,6 +7,8 @@ single-element lists so mutation stays visible to the outer body.
 
 from __future__ import annotations
 
+import time
+
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
@@ -40,6 +42,14 @@ class TurnContext:
     _stage_embed_adapter: Any = None
 
     # --- mutable single-element containers (shared with the outer body) --
+    # Monotonic timestamp of this turn's last USER-VISIBLE progress (a delivered
+    # tool update, commentary line, successful progress/status/stream edit or
+    # send — never typing indicators, internal model/tool activity, or failed and
+    # suppressed sends). The long-running heartbeat waits for gateway_notify_interval
+    # of silence since this timestamp, so continuous visible progress suppresses
+    # "still working" bubbles. Turn-scoped by construction: another chat's traffic
+    # writes its own TurnContext. None until the first visible delivery.
+    _last_visible_progress: List[float] = field(default_factory=lambda: [None])
     last_progress_msg: list = field(default_factory=lambda: [None])
     last_tool: list = field(default_factory=lambda: [None])
     last_was_terminal_block: list = field(default_factory=lambda: [False])
@@ -109,3 +119,13 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    def mark_visible_progress(self) -> None:
+        """Record a successful user-visible delivery for this turn (see
+        ``_last_visible_progress``). Called only after a send/edit result confirmed
+        success, so failed, declined and suppressed output never resets the
+        heartbeat's silence clock."""
+        self._last_visible_progress[0] = time.monotonic()
+
+    def last_visible_progress_monotonic(self) -> Optional[float]:
+        return self._last_visible_progress[0]

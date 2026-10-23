@@ -245,7 +245,8 @@ DEFAULT_CONFIG = {
         # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
         "clarify_timeout": 3600,
         # "Still working" status interval (seconds); 0 = off. Lower = faster feedback, more noise;
-        # 180 catches spinning weak-model runs before users /restart.
+        # 180 catches spinning weak-model runs before users /restart. Measured from the turn's
+        # last user-visible progress, so continuous visible output suppresses heartbeats.
         "gateway_notify_interval": 180,
         # Session stall watchdog (seconds): RECOVERY notifier for an in-process AIAgent with an
         # adapter-queued follow-up while its activity clock is stale — NOT a general stall detector
