@@ -315,7 +315,20 @@ class StreamTransportMixin:
         self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
-        send; a transport returns None to fall through to the next."""
+        send; a transport returns None to fall through to the next.
+
+        The whole pipeline runs under the turn's delivery lock when one is wired
+        (see GatewayStreamConsumer.visible_delivery_lock): streamed frames
+        serialize against the gateway heartbeat's edit/send, and the internal
+        ``_notify_visible_progress`` marks never acquire the lock themselves."""
+        lock = self._visible_delivery_lock
+        if lock is None:
+            return await self._send_or_edit_unchecked(text, finalize=finalize, is_turn_final=is_turn_final)
+        async with lock:
+            return await self._send_or_edit_unchecked(text, finalize=finalize, is_turn_final=is_turn_final)
+
+    async def _send_or_edit_unchecked(
+        self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
         text = self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
@@ -331,6 +344,7 @@ class StreamTransportMixin:
                     and await self._try_frame(self._send_frame("✅", finalize=True),
                                               "Finalize empty stream failed: %s")):
                 self._mark_final_delivered()
+                self._notify_visible_progress()  # landed ✅ finalize frame
             return True  # cursor-only / whitespace-only update
         # Don't open a new message for 1-2 tokens + cursor (rapid tool-calling): if
         # the cursor-strip edit is then rate-limited, "X ▉" stays forever.
@@ -340,18 +354,19 @@ class StreamTransportMixin:
 
         # A failed native/draft transport disables itself and falls through so the
         # accumulated text still reaches the user via edit/send.
+        # No caller-level success inference here: _native_push/_draft_push
+        # return True BOTH for a landed frame and for an unchanged/no-I/O tick
+        # (nothing delivered). Each helper marks visible progress itself at its
+        # actual delivery sites, so repeated identical ticks never feed the
+        # heartbeat's silence clock.
         if self._use_native_streaming:
             ok = await self._native_push(text, finalize=finalize, is_turn_final=is_turn_final)
             if ok is not None:
-                if ok:
-                    self._notify_visible_progress()
                 return ok
         if self._use_draft_streaming and self._message_id is None:
             ok = await self._draft_push(text, pre_fence_text, finalize=finalize,
                                         is_turn_final=is_turn_final)
             if ok is not None:
-                if ok:
-                    self._notify_visible_progress()
                 return ok
         self._last_edit_overflowed = False
         try:
@@ -396,6 +411,7 @@ class StreamTransportMixin:
         if await self._try_frame(self._send_frame(text, finalize=finalize),
                                  "send_stream_frame raised, disabling native streaming: %s"):
             self._already_sent = True
+            self._notify_visible_progress()  # landed frame = user-visible progress
             self._last_sent_text = text
             self._native_last_pushed_len = len(text)
             if finalize:
@@ -441,7 +457,10 @@ class StreamTransportMixin:
             return True
         # Deliberately NOT _already_sent on success: the gateway's fallback final
         # send must still fire so the user gets a real message.
-        return True if await self._send_draft_frame(frame_text) else None
+        if not await self._send_draft_frame(frame_text):
+            return None  # failed/declined draft: nothing landed
+        self._notify_visible_progress()  # landed draft frame = user-visible progress
+        return True
 
     async def _first_send(self, text: str, *, finalize: bool) -> bool:
         """First send, threaded to the user's message (correct topic/thread)."""

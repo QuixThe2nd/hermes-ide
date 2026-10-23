@@ -407,11 +407,10 @@ class TurnRunner:
         if st.publication_suppressed:
             return
         if st.fallback_msg_id:
-            result = await st.adapter.edit_message(
+            result = await ctx.deliver_visible(lambda: st.adapter.edit_message(
                 chat_id=ctx.source.chat_id, message_id=st.fallback_msg_id, content=text, metadata=ctx._progress_metadata,
-            )
+            ))
             if getattr(result, "success", False):
-                ctx.mark_visible_progress()
                 return
             # P5(b): R5-4 made a declined native CARD terminal but left this
             # editable-text fallback: a declined edit fell through to
@@ -449,12 +448,11 @@ class TurnRunner:
             if st.publication_suppressed:
                 return
         if not st.native_failed:
-            result = await st.adapter.send_native_task_card_progress(
+            result = await ctx.deliver_visible(lambda: st.adapter.send_native_task_card_progress(
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
-            )
+            ))
             if getattr(result, "success", False):
-                ctx.mark_visible_progress()
                 return
             # P5(b): an AUTHORIZATION decline is not a broken card lane. The
             # fallback below sends the same task text to the same chat, which
@@ -596,12 +594,9 @@ class TurnRunner:
             kwargs["finalize"] = True
         if st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
-        result = await st.adapter.edit_message(**kwargs)
-        if getattr(result, "success", False):
-            # A landed edit is user-visible progress: it resets the heartbeat's
-            # silence clock for this turn.
-            ctx.mark_visible_progress()
-        return result
+        # deliver_visible holds the turn's delivery lock across the edit and
+        # marks only a landed edit as user-visible progress.
+        return await ctx.deliver_visible(lambda: st.adapter.edit_message(**kwargs))
 
     @staticmethod
     def _progress_text(lines: list) -> str:
@@ -621,11 +616,9 @@ class TurnRunner:
 
     async def _send_progress_text(self, st, text: str):
         ctx = self._ctx
-        result = await st.adapter.send(
+        result = await ctx.deliver_visible(lambda: st.adapter.send(
             chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
-        )
-        if getattr(result, "success", False):
-            ctx.mark_visible_progress()
+        ))
         self._track_progress_result(result)
         return result
 
@@ -886,19 +879,12 @@ class TurnRunner:
 
     def _send_status_text(self, text: str, metadata, log_message: str) -> None:
         ctx = self._ctx
-        fut = self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata), log_message)
-        if fut is not None:
-            fut.add_done_callback(self._mark_visible_progress_if_delivered)
-
-    def _mark_visible_progress_if_delivered(self, fut) -> None:
-        """Successful status/commentary delivery = user-visible progress (resets the
-        heartbeat silence clock). Failed/declined sends never reset it."""
-        try:
-            res = fut.result()
-        except Exception:
-            return
-        if getattr(res, "success", False):
-            self._ctx.mark_visible_progress()
+        # deliver_visible holds the turn's delivery lock across the send and
+        # marks only a successful delivery (failed/declined never reset the
+        # heartbeat silence clock).
+        fut = self._schedule(
+            ctx.deliver_visible(lambda: ctx._status_adapter.send(
+                ctx._status_chat_id, text, metadata=metadata)), log_message)
 
     def _attach_session_title_callback(self, agent, ctx) -> None:
         """Wire the platform thread-rename lane onto the agent as `_on_session_title`.
@@ -947,13 +933,12 @@ class TurnRunner:
             return
         def present():
             fut = self._schedule(
-                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
+                ctx.deliver_visible(lambda: _send_or_update_status_coro(
+                    ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata)),
                 f"status_callback ({event_type}) scheduling error",
             )
-            if fut is not None:
-                fut.add_done_callback(self._mark_visible_progress_if_delivered)
-                if ctx._cleanup_progress:
-                    fut.add_done_callback(self._track_future_cleanup_id)
+            if fut is not None and ctx._cleanup_progress:
+                fut.add_done_callback(self._track_future_cleanup_id)
         render_notification(present, platform=ctx.source.platform, user_config=ctx.user_config,
                             diagnostic=is_warning_status(event_type, message))
 
@@ -994,6 +979,7 @@ class TurnRunner:
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                         on_visible_progress=ctx.mark_visible_progress,
+                        visible_delivery_lock=ctx.delivery_lock(),
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
                     # #105341: a consumer created only for interim commentary (text streaming off)

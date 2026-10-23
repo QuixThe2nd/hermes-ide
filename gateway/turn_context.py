@@ -50,6 +50,11 @@ class TurnContext:
     # "still working" bubbles. Turn-scoped by construction: another chat's traffic
     # writes its own TurnContext. None until the first visible delivery.
     _last_visible_progress: List[float] = field(default_factory=lambda: [None])
+    # Lazily-created per-turn asyncio.Lock serializing user-visible transport
+    # operations (tool/commentary/stream send+edit) against the heartbeat
+    # edit/send, so a heartbeat can never interleave with - or land stale after -
+    # same-turn visible progress (and vice versa). Created on the turn's loop.
+    _delivery_lock: Any = None
     last_progress_msg: list = field(default_factory=lambda: [None])
     last_tool: list = field(default_factory=lambda: [None])
     last_was_terminal_block: list = field(default_factory=lambda: [False])
@@ -129,3 +134,27 @@ class TurnContext:
 
     def last_visible_progress_monotonic(self) -> Optional[float]:
         return self._last_visible_progress[0]
+
+    def delivery_lock(self):
+        """The per-turn visible-delivery lock (see ``_delivery_lock``); lazily
+        created on the running event loop."""
+        if self._delivery_lock is None:
+            import asyncio as _asyncio
+
+            self._delivery_lock = _asyncio.Lock()
+        return self._delivery_lock
+
+    async def deliver_visible(self, deliver):
+        """Await ``deliver()`` under the turn's delivery lock and mark visible
+        progress only when it reports success. Serializes actual tool/commentary/
+        stream transport operations against the heartbeat edit/send: whichever
+        acquires first completes (and marks) before the other's transport call
+        starts, so a heartbeat can no longer land an edit/send that same-turn
+        visible progress has already superseded. ``deliver`` (and anything it
+        calls back into, e.g. mark callbacks) must not acquire the lock -
+        reentrancy would deadlock."""
+        async with self.delivery_lock():
+            result = await deliver()
+            if getattr(result, "success", False):
+                self.mark_visible_progress()
+            return result

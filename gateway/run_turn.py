@@ -4192,28 +4192,47 @@ class GatewayTurnMixin:
             )
             try:
                 _notify_res = None
-                _lp_before_edit = turn_ctx.last_visible_progress_monotonic()
-                if _heartbeat_msg_id:
-                    try:
-                        _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
-                    except Exception as _ee:
-                        logger.debug("Heartbeat edit failed: %s", _ee)
-                        _notify_res = None
-                if not (_notify_res and getattr(_notify_res, "success", False)):
-                    # The edit above awaited; state may have moved while it was in
-                    # flight. A visible delivery that landed mid-edit restarted the
-                    # silence clock — sending a fresh bubble now would break the
-                    # "heartbeat only after an interval of silence" contract. The
-                    # next tick (a full interval from that delivery) retries.
-                    _lp_after_edit = turn_ctx.last_visible_progress_monotonic()
-                    if _lp_after_edit is not None and (
-                        _lp_before_edit is None or _lp_after_edit > _lp_before_edit
-                    ):
+                # The turn's delivery lock is the ordering boundary between the
+                # heartbeat and actual visible progress: while we hold it, no
+                # same-turn tool/commentary/stream transport call can interleave,
+                # so progress cannot land mid-edit and make this heartbeat stale
+                # before it is even sent.
+                async with turn_ctx.delivery_lock():
+                    # Revalidate under the guard: same-turn visible progress
+                    # that landed while this tick waited for the lock restarted
+                    # the silence clock - skip the whole tick (the next attempt
+                    # comes a full interval after that delivery).
+                    _lp_now = turn_ctx.last_visible_progress_monotonic()
+                    if _lp_now is not None and _lp_now > _silence_origin[0]:
                         continue
-                    # A restart-consent wait may have gone pending
-                    # meanwhile — skip this tick (no fresh "Working" bubble: that is exactly
-                    # the noise being suppressed) and let the next tick re-check, since the
-                    # wait can resolve or be cancelled mid-run.
+                    if self._heartbeat_temporarily_suppressed(session_key):
+                        # Restart-consent wait parked on the user: skip this
+                        # tick (no "Working" bubble: that is exactly the noise
+                        # being suppressed); the next tick re-checks, since
+                        # the wait can resolve or be cancelled mid-run.
+                        continue
+                    if not self._should_emit_long_running_notification(
+                        session_key, agent_holder[0], _executor_task_holder[0]
+                    ):
+                        break
+                    if _heartbeat_msg_id:
+                        try:
+                            _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
+                        except Exception as _ee:
+                            logger.debug("Heartbeat edit failed: %s", _ee)
+                            _notify_res = None
+                if _notify_res is not None and getattr(_notify_res, "success", False):
+                    continue
+                # The edit failed (or none existed): RELEASE the lock and
+                # yield so same-turn progress queued behind the failed edit
+                # lands FIRST, then REACQUIRE and revalidate everything - a
+                # delivery that landed invalidates the fresh-bubble fallback
+                # and the next tick comes a full interval after it.
+                await asyncio.sleep(0)
+                async with turn_ctx.delivery_lock():
+                    _lp_now = turn_ctx.last_visible_progress_monotonic()
+                    if _lp_now is not None and _lp_now > _silence_origin[0]:
+                        continue
                     if self._heartbeat_temporarily_suppressed(session_key):
                         continue
                     # A drain/restart notice may have gone out meanwhile, and

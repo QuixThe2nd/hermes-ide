@@ -119,7 +119,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None,
-        on_visible_progress: Optional[Callable[[], None]] = None):
+        on_visible_progress: Optional[Callable[[], None]] = None,
+        visible_delivery_lock=None):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
@@ -130,6 +131,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # text (feeds the long-running heartbeat's silence clock).
         self._on_new_message = on_new_message
         self._on_visible_progress = on_visible_progress
+        # Per-turn asyncio.Lock shared with the gateway's heartbeat edit/send
+        # (TurnContext.delivery_lock); None = unguarded (tests / standalone use).
+        self._visible_delivery_lock = visible_delivery_lock
         self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
@@ -448,6 +452,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         except Exception:
             logger.debug("on_new_message callback error", exc_info=True)
 
+    async def _deliver_visible_frame(self, deliver):
+        """Await ``deliver()`` under the turn's delivery lock when one is wired,
+        so this consumer's visible frames serialize against the heartbeat."""
+        lock = self._visible_delivery_lock
+        if lock is None:
+            return await deliver()
+        async with lock:
+            return await deliver()
+
     def _notify_visible_progress(self) -> None:
         """Fire the on_visible_progress callback (heartbeat silence clock), swallowing errors."""
         try:
@@ -532,7 +545,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                        "falling back to send() for pre-prompt text (chat=%s)",
                        _reason, self.chat_id)
         try:
-            if getattr(await self.adapter.send(self.chat_id, finalize_text), "success", False):
+            if getattr(await self._deliver_visible_frame(
+                    lambda: self.adapter.send(self.chat_id, finalize_text)), "success", False):
                 self._notify_visible_progress()
                 return True
         except Exception as send_err:
