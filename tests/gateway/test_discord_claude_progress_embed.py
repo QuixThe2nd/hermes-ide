@@ -228,4 +228,8 @@ async def test_discord_send_claude_progress_disconnected_client():
         "Claude Code Agent: http://192.168.30.20:8787/",
     )
 
-    assert result == SendResult(success=False, error="Not connected")
+    # Since #448 a dead transport is classified as send_path_degraded
+    # (retryable) so the delivery ledger's reconnect sweep can replay it.
+    assert result == SendResult(
+        success=False, error="send_path_degraded", retryable=True
+    )
