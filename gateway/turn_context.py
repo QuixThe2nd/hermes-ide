@@ -230,6 +230,18 @@ class TurnContext:
             waiter.cancel()
         self._context_gate_state[0] = True
 
+    # delegate_claude_agent single-message correlation (Discord): the sent
+    # message id + notice text for each delegation call, keyed by its native
+    # tool_call_id (written by the progress loop once the correlated start
+    # marker's notice is successfully delivered, read when that call's
+    # viewer marker arrives to EDIT that exact message into the one combined
+    # card). Calls whose notice failed to send — or whose viewer never
+    # arrives — keep the ordinary notice/standalone-card behavior.
+    _claude_delegation_messages: dict = field(default_factory=dict)
+    # tool_call_ids whose combined delegation card already went out — a
+    # duplicate viewer event for the same call must not spawn a second card.
+    _agent_viewer_cards_sent: set = field(default_factory=set)
+
     def mark_visible_progress(self) -> None:
         """Record a successful user-visible delivery for this turn (see
         ``_last_visible_progress``). Called only after a send/edit result confirmed

@@ -1570,16 +1570,41 @@ async def _retain_undelivered_status_notice(
 # on the same queue makes "tool row first, viewer notice second" a queue
 # ordering fact instead of a race between two scheduling rails.
 _AGENT_STATUS_QUEUE_MARKER = "__agent_status__"
+# Standalone delegate_claude_agent start notice, queued by the ID-bearing
+# native tool-start callback (combined_tool_start_callback) so the notice is
+# delivered as its own message — keyed by the REAL tool-call id — and can be
+# edited in place into the single combined card when that call's viewer
+# marker arrives. See TurnRunner._claude_delegation_start_callback.
+_CLAUDE_DELEGATION_START_MARKER = "__claude_delegation_start__"
 
 
-def _agent_status_queue_marker(event_type: str, content: str) -> tuple:
+def _is_claude_delegation_start_marker(raw: Any) -> bool:
+    return (
+        isinstance(raw, tuple)
+        and len(raw) == 3
+        and raw[0] == _CLAUDE_DELEGATION_START_MARKER
+    )
+
+
+def _agent_status_queue_marker(
+    event_type: str, content: str, tool_call_id: Optional[str] = None
+) -> tuple:
+    # 4-tuple when the emitting tool dispatch's native id is known (bound in
+    # the tool_status scope); legacy 3-tuples stay valid consumers-side.
+    if tool_call_id:
+        return (
+            _AGENT_STATUS_QUEUE_MARKER,
+            str(event_type),
+            str(content),
+            str(tool_call_id),
+        )
     return (_AGENT_STATUS_QUEUE_MARKER, str(event_type), str(content))
 
 
 def _is_agent_status_queue_marker(raw: Any) -> bool:
     return (
         isinstance(raw, tuple)
-        and len(raw) == 3
+        and len(raw) in (3, 4)
         and raw[0] == _AGENT_STATUS_QUEUE_MARKER
     )
 
@@ -6127,6 +6152,17 @@ class TurnRunner:
             return
         ctx.last_tool[0] = tool_name
 
+        # Discord Claude delegations: the ID-bearing native start callback
+        # owns this call's notice (a standalone correlated marker on this
+        # same FIFO, see combined_tool_start_callback), so the generic
+        # accumulating row would only duplicate it above the combined card.
+        # Suppress the row ONLY when that correlated path is active; every
+        # other platform/mode keeps the ordinary row.
+        _suppress_generic_row = (
+            tool_name == "delegate_claude_agent"
+            and self._claude_delegation_single_status()
+        )
+
         # Build progress message with primary argument preview
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
@@ -6225,6 +6261,8 @@ class TurnRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
+            if _suppress_generic_row:
+                return
             ctx.progress_queue.put(msg)
             return
 
@@ -6297,9 +6335,12 @@ class TurnRunner:
         # stream bubble instead of the separate progress queue.
         _sc = ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
         if _sc is not None and getattr(_sc, "accepts_tool_progress", False):
-            _sc.on_tool_progress(msg)
+            if not _suppress_generic_row:
+                _sc.on_tool_progress(msg)
             return
 
+        if _suppress_generic_row:
+            return
         ctx.progress_queue.put(msg)
 
     async def _send_native_task_card_progress(self, adapter) -> None:
@@ -6855,6 +6896,102 @@ class TurnRunner:
                     logger.debug("progress flush before agent status failed", exc_info=True)
             _last_edit_ts = time.monotonic()
 
+        async def _deliver_claude_delegation_start(raw: tuple) -> None:
+            """Send one delegation's standalone notice; remember its message id.
+
+            The notice goes out through the same door as agent-viewer markers
+            (``_deliver_agent_status_marker``) so platform rendering and
+            cleanup tracking are unchanged. Only a SUCCESSFUL send records
+            the (message id, notice text) pair under the call's native
+            tool-call id — a failed notice leaves the later viewer marker on
+            its legacy standalone delivery.
+            """
+            nonlocal progress_msg_id, progress_lines
+            _kind, call_id, notice_text = raw
+            if not _agent_interrupted():
+                await _flush_progress_before_agent_status()
+            message_id = await self._deliver_agent_status_marker(
+                (_AGENT_STATUS_QUEUE_MARKER, "agent.status", notice_text)
+            )
+            if message_id:
+                ctx._claude_delegation_messages[call_id] = {
+                    "id": str(message_id),
+                    "text": notice_text,
+                }
+            # Fresh bubble below the delivered notice, exactly like the
+            # viewer-marker rail, so later tool rows edit a message BELOW it.
+            progress_msg_id = None
+            progress_lines = []
+            _separate_pending_lines.clear()
+            ctx.last_progress_msg[0] = None
+            ctx.repeat_count[0] = 0
+
+        async def _deliver_agent_viewer_marker(raw: tuple) -> None:
+            """Deliver one queued branded agent-viewer marker (shared by the
+            live loop and the cancellation drain).
+
+            A Discord Claude delegation whose notice was already delivered by
+            the correlated start marker does NOT get a second message: that
+            exact recorded message id is EDITED in place into the single
+            combined card (notice text stays as the message content, the
+            already-validated viewer line renders as the branded embed via
+            the Discord adapter's narrowly metadata-gated edit path). A
+            duplicate viewer event for a call whose card went out is dropped;
+            success is marked only AFTER a successful edit or delivery. A
+            failed edit falls back to the legacy standalone delivery and
+            never touches the delivered notice text. Every other case
+            (Cursor, other platforms, uncorrelated markers) keeps the
+            standalone delivery byte-identical to before.
+            """
+            nonlocal progress_msg_id, progress_lines
+            from tools.tool_status import CLAUDE_AGENT_VIEWER_STATUS_PREFIX
+
+            content = raw[2]
+            call_id = str(raw[3]) if len(raw) > 3 and raw[3] else ""
+            if (
+                call_id
+                and ctx.source.platform == Platform.DISCORD
+                and content.startswith(CLAUDE_AGENT_VIEWER_STATUS_PREFIX)
+            ):
+                if call_id in ctx._agent_viewer_cards_sent:
+                    return
+                entry = ctx._claude_delegation_messages.get(call_id)
+                _edit = getattr(adapter, "edit_message", None)
+                if entry and callable(_edit):
+                    combined = f"{entry['text']}\n{content}"
+                    edit_result = None
+                    try:
+                        edit_result = await ctx.deliver_visible(lambda: _edit(
+                            ctx._status_chat_id,
+                            entry["id"],
+                            combined,
+                            metadata={"claude_agent_progress_combined": True},
+                        ))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug(
+                            "combined delegation card edit failed",
+                            exc_info=True,
+                        )
+                    if getattr(edit_result, "success", False):
+                        # Dedup only after success: a failed edit left the
+                        # notice intact and a later retry free.
+                        ctx._agent_viewer_cards_sent.add(call_id)
+                        return
+            if not _agent_interrupted():
+                await _flush_progress_before_agent_status()
+            delivered_id = await self._deliver_agent_status_marker(raw)
+            if call_id and delivered_id:
+                ctx._agent_viewer_cards_sent.add(call_id)
+            # Start a fresh progress bubble so later tool lines edit a
+            # message BELOW the notice instead of the one above it.
+            progress_msg_id = None
+            progress_lines = []
+            _separate_pending_lines.clear()
+            ctx.last_progress_msg[0] = None
+            ctx.repeat_count[0] = 0
+
         while True:
             try:
                 if not ctx._run_still_current():
@@ -6923,25 +7060,30 @@ class TurnRunner:
                         await _flush_progress_before_agent_status()
                     _signal_context_flush_marker(raw)
                     continue
+                elif _is_claude_delegation_start_marker(raw):
+                    # Standalone correlated delegate_claude_agent notice
+                    # (Discord single-message rail): deliver it as its own
+                    # message and remember the sent id for the in-place
+                    # combined-card edit when this call's viewer marker
+                    # arrives. Not exempt from interrupt suppression above —
+                    # an interrupted turn drops its notice like any row.
+                    await _deliver_claude_delegation_start(raw)
+                    continue
                 elif _is_agent_status_queue_marker(raw):
                     # Branded agent-viewer notice (Claude/Cursor live viewer
-                    # link): deliver the pending tool row FIRST, then the exact
-                    # status line as its own standalone message (Discord
-                    # converts it to a branded embed), then start a fresh
-                    # progress bubble so later tool lines edit a message BELOW
-                    # the notice instead of the one above it. Handled before
-                    # the edit throttle — the throttle batching a tool row
-                    # behind the notice is precisely the ordering bug this
-                    # marker exists to fix.  Once interrupted the pending rows
-                    # stay suppressed; only the spawned-run notice goes out.
-                    if not _agent_interrupted():
-                        await _flush_progress_before_agent_status()
-                    await self._deliver_agent_status_marker(raw)
-                    progress_msg_id = None
-                    progress_lines = []
-                    _separate_pending_lines.clear()
-                    ctx.last_progress_msg[0] = None
-                    ctx.repeat_count[0] = 0
+                    # link): deliver the pending tool rows FIRST, then the
+                    # notice — as its own standalone message, or (Discord
+                    # Claude delegation whose correlated start notice was
+                    # already sent) as an IN-PLACE EDIT of that exact message
+                    # into the one combined card — then start a fresh
+                    # progress bubble so later tool lines edit a message
+                    # BELOW the notice instead of the one above it. Handled
+                    # before the edit throttle — the throttle batching a tool
+                    # row behind the notice is precisely the ordering bug
+                    # this marker exists to fix. Once interrupted the pending
+                    # rows stay suppressed; only the spawned-run notice goes
+                    # out.
+                    await _deliver_agent_viewer_marker(raw)
                     continue
                 else:
                     msg = _absorb_row(raw)
@@ -7065,20 +7207,20 @@ class TurnRunner:
                             # waiter rather than letting it time out.
                             _signal_context_flush_marker(raw)
                             continue
+                        if _is_claude_delegation_start_marker(raw):
+                            # Delegation start notice during drain: the
+                            # drain only runs at cancellation, so discard it
+                            # like any interrupted row — its call's later
+                            # viewer marker (still delivered below) simply
+                            # takes the legacy standalone path.
+                            continue
                         if _is_agent_status_queue_marker(raw):
                             # Agent-viewer status during drain: flush the
-                            # pending row, then deliver the notice itself —
+                            # pending rows, then deliver the notice itself —
                             # never merge the tuple into the progress text.
                             # Pending rows stay suppressed when the turn was
                             # interrupted; the notice is still delivered.
-                            if not _agent_interrupted():
-                                await _flush_progress_before_agent_status()
-                            await self._deliver_agent_status_marker(raw)
-                            progress_msg_id = None
-                            progress_lines = []
-                            _separate_pending_lines.clear()
-                            ctx.last_progress_msg[0] = None
-                            ctx.repeat_count[0] = 0
+                            await _deliver_agent_viewer_marker(raw)
                         elif _agent_interrupted():
                             # Interrupted: discard the row.  A __reset__ still
                             # clears local bookkeeping (so nothing later edits
@@ -7605,6 +7747,69 @@ class TurnRunner:
             self.voice_ack_callback(call_id, tool_name, args)
         if ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
+        if (
+            str(tool_name or "") == "delegate_claude_agent"
+            and self._claude_delegation_single_status()
+        ):
+            self._claude_delegation_start_callback(call_id, tool_name, args)
+
+    def _claude_delegation_single_status(self) -> bool:
+        """True when this turn's Discord Claude delegations use the
+        single-message rail: a standalone ID-correlated start notice that
+        the viewer marker later edits in place. Requires an editable
+        progress adapter (the edit is the whole point) and the FIFO to be
+        live; every other platform/mode keeps the ordinary row + standalone
+        viewer card."""
+        ctx = self._ctx
+        return bool(
+            ctx.progress_queue
+            and ctx.source.platform == Platform.DISCORD
+            and ctx._status_adapter is not None
+            and _adapter_can_edit_progress(ctx._status_adapter)
+        )
+
+    def _claude_delegation_start_callback(self, call_id, tool_name, args):
+        """Queue an ID-correlated standalone delegation notice for Discord.
+
+        Rides the authoritative native start callback (real tool-call id —
+        the name-correlated text rail cannot distinguish concurrent
+        delegations). The generic progress row for this call is suppressed
+        (see progress_callback); this marker delivers the notice as its own
+        message and the consumer records the sent message id, so the spawned
+        run's viewer marker later EDITs that exact message into the single
+        combined card instead of posting a second one.
+        """
+        ctx = self._ctx
+        if not ctx.progress_queue or not ctx._run_still_current():
+            return
+        try:
+            _agent = ctx.agent_holder[0] if ctx.agent_holder else None
+            if _agent is not None and getattr(_agent, "is_interrupted", False):
+                return
+        except Exception:
+            pass
+        call_id = str(call_id or "")
+        if not call_id:
+            return
+        ctx.progress_queue.put((
+            _CLAUDE_DELEGATION_START_MARKER,
+            call_id,
+            self._claude_delegation_notice_text(str(tool_name or ""), args or {}),
+        ))
+
+    def _claude_delegation_notice_text(self, tool_name: str, args: dict) -> str:
+        """Format the delegation notice like the ordinary progress row.
+
+        Uses the same display helper the describe modes use for this tool —
+        its curated phrase ("Delegating to a Claude agent in <workdir>") —
+        so the single-message rail's notice reads like the ordinary
+        delegation notice it replaces, workdir surfaced, task prompt never
+        rendered.
+        """
+        from agent.display import describe_tool_call, get_tool_emoji
+
+        emoji = get_tool_emoji(tool_name, default="⚙️")
+        return f"{emoji} {describe_tool_call(tool_name, args)}"
 
     def _step_callback_sync(self, iteration: int, prev_tools: list) -> None:
         ctx = self._ctx
@@ -7829,11 +8034,24 @@ class TurnRunner:
             and not ctx._native_slack_task_cards
             and _adapter_can_edit_progress(ctx._status_adapter)
         ):
-            from tools.tool_status import is_agent_viewer_status_line
+            from tools.tool_status import (
+                get_tool_status_call_id,
+                is_agent_viewer_status_line,
+            )
 
             if is_agent_viewer_status_line(prepared_message):
+                # The emitting tool dispatch's native id (bound in the
+                # tool_status scope around this call) rides the marker so the
+                # consumer can correlate the notice to that exact call's own
+                # tool row — never a concurrently running sibling's.
+                try:
+                    _viewer_call_id = get_tool_status_call_id()
+                except Exception:
+                    _viewer_call_id = None
                 ctx.progress_queue.put(
-                    _agent_status_queue_marker(event_type, prepared_message)
+                    _agent_status_queue_marker(
+                        event_type, prepared_message, _viewer_call_id
+                    )
                 )
                 return
         _fut = safe_schedule_threadsafe(
@@ -7927,7 +8145,7 @@ class TurnRunner:
             diagnostic=diagnostic,
         )
 
-    async def _deliver_agent_status_marker(self, marker: tuple) -> None:
+    async def _deliver_agent_status_marker(self, marker: tuple) -> Optional[str]:
         """Send one queued branded agent-viewer status line as its own message.
 
         The consumer side of the ``_status_callback_sync`` reorder: the exact
@@ -7936,20 +8154,23 @@ class TurnRunner:
         (adapter, chat id, thread metadata, cleanup tracking), so platform
         rendering — Discord's branded embed conversion, Telegram's
         status-bubble editing — is byte-identical. Only the scheduling
-        changed: queue-ordered instead of independently scheduled. Never
-        raises on transport failure, so a dead platform call cannot take the
-        progress consumer down with it (and lose every later tool row).
+        changed: queue-ordered instead of independently scheduled. Returns
+        the sent message id on success (``None`` otherwise) so correlated
+        consumers can record the exact message for later in-place edits.
+        Never raises on transport failure, so a dead platform call cannot
+        take the progress consumer down with it (and lose every later tool
+        row).
         """
         ctx = self._ctx
         if not _is_agent_status_queue_marker(marker):
-            return
+            return None
         # No adapter re-resolution: _status_callback_sync only enqueues a
         # marker once ctx._status_adapter is set, and the direct rail sends
         # through that same adapter — the marker rail must not invent one.
         adapter = ctx._status_adapter
         if adapter is None:
-            return
-        _kind, event_type, content = marker
+            return None
+        _kind, event_type, content = marker[:3]
         try:
             result = await ctx.deliver_visible(lambda: _send_or_update_status_coro(
                 adapter,
@@ -7963,7 +8184,7 @@ class TurnRunner:
             logger.debug(
                 "agent-viewer status marker delivery failed", exc_info=True
             )
-            return
+            return None
         if (
             ctx._cleanup_progress
             and getattr(result, "success", False)
@@ -7985,6 +8206,9 @@ class TurnRunner:
                 status_key=event_type,
                 content=content,
             )
+        if getattr(result, "success", False) and getattr(result, "message_id", None):
+            return str(result.message_id)
+        return None
 
     def run_sync(self):
         ctx = self._ctx
@@ -8476,14 +8700,18 @@ class TurnRunner:
             agent._pending_fallback_notice = pending_fallback_notice
         agent.tool_progress_callback = ctx.progress_callback
         # Compose ID-bearing lifecycle consumers: Discord's one-time voice
-        # ack and Slack's native task cards both ride the authoritative
-        # start callback, so neither has to infer identity from tool names.
+        # ack, Slack's native task cards, and Discord's single-message Claude
+        # delegation rail all ride the authoritative start callback, so none
+        # has to infer identity from tool names. (Gap this closes: the start
+        # callback was previously attached only for voice-ack/Slack-card
+        # turns, so plain Discord turns had no ID-bearing start boundary.)
         _combined_start_cb = ctx.native_tool_start_callback or ctx.voice_ack_callback
         agent.tool_start_callback = (
             _combined_start_cb
             if (
                 ctx._voice_ack_guild[0] is not None
                 or ctx._native_slack_task_cards
+                or self._claude_delegation_single_status()
             )
             else None
         )
