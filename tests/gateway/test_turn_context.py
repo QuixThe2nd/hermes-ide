@@ -787,7 +787,7 @@ class TestTurnRunner:
         assert len(messages) > 1  # 5k-ish context is split for Discord
         assert all(len(message) <= 1936 for message in messages)  # 2000 - safety margin
         rendered = "\n".join(messages)
-        assert rendered.startswith("🧠 Context Injection")
+        assert rendered.startswith("🧠 Injecting Memory")
         assert "<memory-context>" in rendered
         assert "</memory-context>" in rendered
         assert secret not in rendered

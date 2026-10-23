@@ -5679,8 +5679,10 @@ def _format_context_injection_progress(
     if not isinstance(content, str) or not content:
         return []
 
+    heading = "🧠 Injecting Memory" if "memory" in (sources or []) else "🧠 Context Injection"
+
     if not include_content:
-        return ["🧠 Context Injection"]
+        return [heading]
 
     from agent.redact import redact_sensitive_text
 
@@ -5695,8 +5697,8 @@ def _format_context_injection_progress(
     # differ, and recalled text must never wake another user by accident.
     visible = visible.replace("@", "@\u200b")
 
-    header = "🧠 Context Injection"
-    continuation = "🧠 Context Injection"
+    header = heading
+    continuation = heading
     measure = message_len_fn if callable(message_len_fn) else len
 
     try:
