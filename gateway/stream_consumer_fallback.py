@@ -24,17 +24,32 @@ class StreamFallbackMixin:
         if not text.strip():
             return reply_to_id
         try:
-            result = await self.adapter.send(
-                chat_id=self.chat_id, content=text, reply_to=reply_to_id,
-                metadata=self._metadata_for_send(final=final, expect_edits=not final))
+            async def _deliver():
+                result = await self.adapter.send(
+                    chat_id=self.chat_id, content=text, reply_to=reply_to_id,
+                    metadata=self._metadata_for_send(final=final, expect_edits=not final))
+                if not (result.success and result.message_id):
+                    return result
+                # Overflow chunks are same-turn visible deliveries: adopt the
+                # message and mark progress BEFORE the delivery lock is released,
+                # so a landed chunk serializes against (and restarts) the
+                # heartbeat's silence clock (same contract as _send_or_edit).
+                self._message_id = str(result.message_id)
+                self._track_preview_ids_from_result(result)
+                self._already_sent = True
+                self._last_sent_text = text
+                self._notify_visible_progress()
+                self._notify_new_message()
+                return result
+
+            # Serialize the chunk send against the gateway heartbeat's edit/send
+            # under the turn's delivery lock (same boundary as _send_or_edit /
+            # _deliver_visible_frame).  Sole caller _split_first_send runs in the
+            # run() loop outside the lock, so this cannot reenter.
+            result = await self._deliver_visible_frame(_deliver)
             if not (result.success and result.message_id):
                 self._edit_supported = False
                 return reply_to_id
-            self._message_id = str(result.message_id)
-            self._track_preview_ids_from_result(result)
-            self._already_sent = True
-            self._last_sent_text = text
-            self._notify_new_message()
             return str(result.message_id)
         except Exception as e:
             logger.error("Stream send chunk error: %s", e)
@@ -210,7 +225,22 @@ class StreamFallbackMixin:
             kwargs["reply_to"] = reply_to
         result = None
         for attempt in range(2):
-            result = await self.adapter.send(**kwargs)
+            async def _deliver():
+                result = await self.adapter.send(**kwargs)
+                if getattr(result, "success", False):
+                    # Landed fallback chunk = user-visible progress.  Marked inside
+                    # the lock so the send serializes against the gateway heartbeat
+                    # AND restarts its silence clock (same contract as
+                    # _send_new_chunk / _send_or_edit).  Callers (_send_fallback_final,
+                    # _send_empty_fallback_final) run in the run() loop outside the
+                    # lock, so this cannot reenter.
+                    self._notify_visible_progress()
+                return result
+
+            # Each attempt is a same-turn visible delivery: run it under the turn's
+            # delivery lock, but keep the flood backoff sleep OUTSIDE it so a parked
+            # heartbeat is not held through the retry delay.
+            result = await self._deliver_visible_frame(_deliver)
             if getattr(result, "success", False):
                 break
             retry_delay = self._fallback_flood_retry_delay(result)
