@@ -304,9 +304,21 @@ class StreamFallbackMixin:
             # Interim: must never seal a native stream (see _send_commentary).
             _md = dict(self.metadata) if self.metadata else {}
             _md["_interim_send"] = True
-            result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
-            if result.success:
-                self._already_sent = True
+
+            async def _deliver():
+                result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
+                if result.success:
+                    self._already_sent = True
+                    # The flushed tail is visible output: mark progress BEFORE the
+                    # delivery lock is released, so the heartbeat's silence clock
+                    # restarts only after this frame is serialized against the
+                    # heartbeat (same contract as _send_commentary's locked mark).
+                    self._notify_visible_progress()
+                return result
+
+            # Serialize against the gateway heartbeat's edit/send under the turn's
+            # delivery lock (same boundary as _send_commentary / _send_or_edit).
+            await self._deliver_visible_frame(_deliver)
         except Exception as e:
             logger.error("Segment-break tail flush error: %s", e)
 
