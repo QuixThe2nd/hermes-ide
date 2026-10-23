@@ -7761,8 +7761,11 @@ class TurnRunner:
         live; every other platform/mode keeps the ordinary row + standalone
         viewer card."""
         ctx = self._ctx
+        # The FIFO also exists when only thinking is enabled; only the
+        # authoritative progress gate entitles delegations to the rail.
         return bool(
-            ctx.progress_queue
+            ctx.tool_progress_enabled
+            and ctx.progress_queue
             and ctx.source.platform == Platform.DISCORD
             and ctx._status_adapter is not None
             and _adapter_can_edit_progress(ctx._status_adapter)
