@@ -4130,8 +4130,15 @@ class GatewayTurnMixin:
         bound just after this task is scheduled (reads as None until then).
 
         Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
-        long_running_notifications=off disables)."""
-        from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
+        long_running_notifications=off disables). The interval is measured from the turn's last
+        USER-VISIBLE progress (delivered tool updates, commentary, successful message edits and
+        streamed output — see TurnContext.mark_visible_progress), so continuous visible output
+        suppresses the heartbeat and a genuinely quiet turn still hears from us after one full
+        interval of silence."""
+        from gateway.run import (
+            _float_env, _interim_metadata, _non_conversational_metadata,
+            _sleep_heartbeat_silence_deadline,
+        )
         _notify_start = time.time()
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
@@ -4143,8 +4150,15 @@ class GatewayTurnMixin:
         if not _notify_adapter:
             return
         _heartbeat_msg_id: Optional[str] = None
+        # Silence clock origin: the later of the turn start, the last visible
+        # progress and the last heartbeat tick (shared wait helper in gateway.run).
+        _silence_origin = [time.monotonic()]
+
         while True:
-            await asyncio.sleep(_NOTIFY_INTERVAL)
+            await _sleep_heartbeat_silence_deadline(_NOTIFY_INTERVAL, turn_ctx, _silence_origin)
+            # A consumed tick (heartbeat attempt or a suppressed skip) restarts the
+            # silence clock so this loop never fires faster than one interval.
+            _silence_origin[0] = time.monotonic()
             if self._heartbeat_temporarily_suppressed(session_key):
                 # Restart-consent wait parked on the user: skip this tick but keep
                 # the loop alive — the wait can resolve or be cancelled mid-run and
@@ -4178,17 +4192,47 @@ class GatewayTurnMixin:
             )
             try:
                 _notify_res = None
-                if _heartbeat_msg_id:
-                    try:
-                        _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
-                    except Exception as _ee:
-                        logger.debug("Heartbeat edit failed: %s", _ee)
-                        _notify_res = None
-                if not (_notify_res and getattr(_notify_res, "success", False)):
-                    # The edit above awaited; a restart-consent wait may have gone pending
-                    # meanwhile — skip this tick (no fresh "Working" bubble: that is exactly
-                    # the noise being suppressed) and let the next tick re-check, since the
-                    # wait can resolve or be cancelled mid-run.
+                # The turn's delivery lock is the ordering boundary between the
+                # heartbeat and actual visible progress: while we hold it, no
+                # same-turn tool/commentary/stream transport call can interleave,
+                # so progress cannot land mid-edit and make this heartbeat stale
+                # before it is even sent.
+                async with turn_ctx.delivery_lock():
+                    # Revalidate under the guard: same-turn visible progress
+                    # that landed while this tick waited for the lock restarted
+                    # the silence clock - skip the whole tick (the next attempt
+                    # comes a full interval after that delivery).
+                    _lp_now = turn_ctx.last_visible_progress_monotonic()
+                    if _lp_now is not None and _lp_now > _silence_origin[0]:
+                        continue
+                    if self._heartbeat_temporarily_suppressed(session_key):
+                        # Restart-consent wait parked on the user: skip this
+                        # tick (no "Working" bubble: that is exactly the noise
+                        # being suppressed); the next tick re-checks, since
+                        # the wait can resolve or be cancelled mid-run.
+                        continue
+                    if not self._should_emit_long_running_notification(
+                        session_key, agent_holder[0], _executor_task_holder[0]
+                    ):
+                        break
+                    if _heartbeat_msg_id:
+                        try:
+                            _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
+                        except Exception as _ee:
+                            logger.debug("Heartbeat edit failed: %s", _ee)
+                            _notify_res = None
+                if _notify_res is not None and getattr(_notify_res, "success", False):
+                    continue
+                # The edit failed (or none existed): RELEASE the lock and
+                # yield so same-turn progress queued behind the failed edit
+                # lands FIRST, then REACQUIRE and revalidate everything - a
+                # delivery that landed invalidates the fresh-bubble fallback
+                # and the next tick comes a full interval after it.
+                await asyncio.sleep(0)
+                async with turn_ctx.delivery_lock():
+                    _lp_now = turn_ctx.last_visible_progress_monotonic()
+                    if _lp_now is not None and _lp_now > _silence_origin[0]:
+                        continue
                     if self._heartbeat_temporarily_suppressed(session_key):
                         continue
                     # A drain/restart notice may have gone out meanwhile, and

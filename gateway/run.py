@@ -1971,6 +1971,26 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
+async def _sleep_heartbeat_silence_deadline(interval: float, turn_ctx, origin: list) -> None:
+    """Sleep until ``interval`` of USER-VISIBLE silence has elapsed for this turn.
+
+    ``origin`` is a single-element ``time.monotonic()`` holder naming the last
+    user-visible event (progress delivery or a consumed heartbeat tick). Sleeps
+    out the full remaining wait, then re-reads the turn's visible-progress
+    timestamp: a delivery that landed mid-wait (``TurnContext.mark_visible_
+    progress``) moves ``origin`` forward and the wait resumes — the heartbeat
+    never fires within ``interval`` after visible progress, while a genuinely
+    quiet turn still gets one a full interval after the last visible event.
+    Shared by both heartbeat loops (facade ``_notify_long_running`` and
+    ``run_turn._run_agent_notify_long_running``)."""
+    while True:
+        await asyncio.sleep(interval - (time.monotonic() - origin[0]))
+        _lp = turn_ctx.last_visible_progress_monotonic()
+        if _lp is None or _lp <= origin[0]:
+            return
+        origin[0] = _lp
+
+
 def _stamp_hygiene_compression_provenance(
     agent: Any,
     desc: str,
@@ -6314,40 +6334,43 @@ class TurnRunner:
             nonlocal fallback_msg_id
             text = _fallback_text()
             if fallback_msg_id:
-                result = await adapter.edit_message(
+                result = await ctx.deliver_visible(lambda: adapter.edit_message(
                     chat_id=ctx.source.chat_id,
                     message_id=fallback_msg_id,
                     content=text,
                     metadata=ctx._progress_metadata,
-                )
+                ))
                 if getattr(result, "success", False):
                     return
-            result = await adapter.send(
+            result = await ctx.deliver_visible(lambda: adapter.send(
                 chat_id=ctx.source.chat_id,
                 content=text,
                 reply_to=ctx._progress_reply_to,
                 metadata=ctx._progress_metadata,
-            )
-            if getattr(result, "success", False) and getattr(
-                result, "message_id", None
-            ):
-                fallback_msg_id = str(result.message_id)
-                if ctx._cleanup_progress:
-                    ctx._cleanup_msg_ids.append(fallback_msg_id)
+            ))
+            if getattr(result, "success", False):
+                # deliver_visible marks the landed send (even without a
+                # message_id: no edit-in-place then, but the silence clock
+                # still restarts).
+                _mid = getattr(result, "message_id", None)
+                if _mid:
+                    fallback_msg_id = str(_mid)
+                    if ctx._cleanup_progress:
+                        ctx._cleanup_msg_ids.append(fallback_msg_id)
 
         async def _publish_native_progress() -> None:
             nonlocal native_failed
             if not tasks:
                 return
             if not native_failed:
-                result = await adapter.send_native_task_card_progress(
+                result = await ctx.deliver_visible(lambda: adapter.send_native_task_card_progress(
                     chat_id=ctx.source.chat_id,
                     tasks=_visible_tasks(),
                     title="Hermes is working",
                     reply_to=ctx._progress_reply_to,
                     metadata=ctx._progress_metadata,
                     fallback_text=_fallback_text(),
-                )
+                ))
                 if getattr(result, "success", False):
                     return
                 native_failed = True
@@ -6534,7 +6557,9 @@ class TurnRunner:
                 kwargs["finalize"] = True
             if _edit_accepts_metadata:
                 kwargs["metadata"] = ctx._progress_metadata
-            return await adapter.edit_message(**kwargs)
+            # deliver_visible holds the turn's delivery lock across the edit
+            # and marks only a landed edit as user-visible progress.
+            return await ctx.deliver_visible(lambda: adapter.edit_message(**kwargs))
 
         def _progress_text(lines: list) -> str:
             return "\n".join(str(line) for line in lines)
@@ -6563,12 +6588,12 @@ class TurnRunner:
                 ctx._cleanup_msg_ids.append(str(result.message_id))
 
         async def _send_progress_text(text: str):
-            result = await adapter.send(
+            result = await ctx.deliver_visible(lambda: adapter.send(
                 chat_id=ctx.source.chat_id,
                 content=text,
                 reply_to=ctx._progress_reply_to,
                 metadata=ctx._progress_metadata,
-            )
+            ))
             _track_progress_result(result)
             return result
 
@@ -6791,36 +6816,40 @@ class TurnRunner:
                             _last_edit_ts = time.monotonic()
                         else:
                             can_edit = False
-                        _flood_result = await adapter.send(
+                        _flood_result = await ctx.deliver_visible(lambda: adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=msg,
                             reply_to=ctx._progress_reply_to,
                             metadata=ctx._progress_metadata,
-                        )
-                        if (
-                            ctx._cleanup_progress
-                            and getattr(_flood_result, "success", False)
-                            and getattr(_flood_result, "message_id", None)
-                        ):
-                            ctx._cleanup_msg_ids.append(str(_flood_result.message_id))
+                        ))
+                        if getattr(_flood_result, "success", False):
+                            # deliver_visible already marked the landed line.
+                            if (
+                                ctx._cleanup_progress
+                                and getattr(_flood_result, "message_id", None)
+                            ):
+                                ctx._cleanup_msg_ids.append(
+                                    str(_flood_result.message_id)
+                                )
                 else:
                     if can_edit:
                         # First tool: send all accumulated text as new message
                         full_text = "\n".join(progress_lines)
-                        result = await adapter.send(
+                        result = await ctx.deliver_visible(lambda: adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=full_text,
                             reply_to=ctx._progress_reply_to,
                             metadata=ctx._progress_metadata,
-                        )
+                        ))
                     else:
                         # Editing unsupported: send just this line
-                        result = await adapter.send(
+                        result = await ctx.deliver_visible(lambda: adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=msg,
                             reply_to=ctx._progress_reply_to,
                             metadata=ctx._progress_metadata,
-                        )
+                        ))
+                    # deliver_visible already marked the landed line.
                     if result.success and result.message_id:
                         progress_msg_id = result.message_id
                         if ctx._cleanup_progress:
@@ -6987,19 +7016,19 @@ class TurnRunner:
         try:
             message_id = embed_msg_ids.get(invocation)
             if message_id is None:
-                result = await adapter.send_tool_stage_embed(
+                result = await ctx.deliver_visible(lambda: adapter.send_tool_stage_embed(
                     ctx.source.chat_id,
                     event,
                     metadata=ctx._progress_metadata,
                     reply_to=ctx._progress_reply_to,
-                )
+                ))
             else:
-                result = await adapter.edit_tool_stage_embed(
+                result = await ctx.deliver_visible(lambda: adapter.edit_tool_stage_embed(
                     ctx.source.chat_id,
                     message_id,
                     event,
                     metadata=ctx._progress_metadata,
-                )
+                ))
             if result is not None and getattr(result, "success", False):
                 new_id = getattr(result, "message_id", None)
                 if new_id:
@@ -7624,7 +7653,8 @@ class TurnRunner:
                 )
                 return
         _fut = safe_schedule_threadsafe(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata),
+            ctx.deliver_visible(lambda: _send_or_update_status_coro(
+                ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata)),
             ctx._loop_for_step,
             logger=logger,
             log_message=f"status_callback ({event_type}) scheduling error",
@@ -7737,13 +7767,12 @@ class TurnRunner:
             return
         _kind, event_type, content = marker
         try:
-            result = await _send_or_update_status_coro(
+            result = await ctx.deliver_visible(lambda: _send_or_update_status_coro(
                 adapter,
                 ctx._status_chat_id,
                 event_type,
                 content,
-                ctx._status_thread_metadata,
-            )
+                ctx._status_thread_metadata))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -7905,6 +7934,8 @@ class TurnRunner:
                         on_before_finalize=_pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id,
                         run_still_current=ctx._run_still_current,
+                        on_visible_progress=ctx.mark_visible_progress,
+                        visible_delivery_lock=ctx.delivery_lock(),
                     )
                     if _want_stream_deltas:
                         def _stream_delta_cb(text: str) -> None:
@@ -7937,12 +7968,12 @@ class TurnRunner:
                 return
             if already_streamed or not ctx._status_adapter or not str(display_text or "").strip():
                 return
-            safe_schedule_threadsafe(
-                ctx._status_adapter.send(
+            _ia_fut = safe_schedule_threadsafe(
+                ctx.deliver_visible(lambda: ctx._status_adapter.send(
                     ctx._status_chat_id,
                     display_text,
                     metadata=ctx._status_thread_metadata,
-                ),
+                )),
                 ctx._loop_for_step,
                 logger=logger,
                 log_message="interim_assistant_callback scheduling error",
@@ -35891,7 +35922,10 @@ class GatewayRunner(
         # Fires every N seconds so the user knows the agent hasn't died.
         # Config: agent.gateway_notify_interval in config.yaml, or
         # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
-        # 0 = disable notifications.
+        # 0 = disable notifications.  The interval is measured from the turn's
+        # last USER-VISIBLE progress (see TurnContext.mark_visible_progress), so
+        # continuous visible output suppresses the heartbeat while a genuinely
+        # quiet turn still gets one after a full interval of silence.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
         _long_running_mode = _display_surface_mode(
@@ -35915,8 +35949,15 @@ class GatewayRunner(
             # interval. Falls back to send-new when edit fails or isn't
             # supported by the adapter.
             _heartbeat_msg_id: Optional[str] = None
+            # Silence clock origin: the later of the turn start, the last visible
+            # progress (turn_ctx.mark_visible_progress) and the last heartbeat tick.
+            _silence_origin = [time.monotonic()]
+
             while True:
-                await asyncio.sleep(_NOTIFY_INTERVAL)
+                await _sleep_heartbeat_silence_deadline(_NOTIFY_INTERVAL, turn_ctx, _silence_origin)
+                # A consumed tick (heartbeat attempt or a suppressed skip) restarts
+                # the silence clock so this loop never fires faster than one interval.
+                _silence_origin[0] = time.monotonic()
                 # Stop heartbeating once this run no longer owns the session
                 # slot or the executor has finished — otherwise a stale
                 # "running: delegate_agent" bubble can outlive the run that
@@ -35971,17 +36012,61 @@ class GatewayRunner(
                     _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 try:
                     _notify_res = None
-                    if _heartbeat_msg_id:
-                        try:
-                            _notify_res = await _notify_adapter.edit_message(
-                                source.chat_id,
-                                _heartbeat_msg_id,
-                                _heartbeat_text,
-                            )
-                        except Exception as _ee:
-                            logger.debug("Heartbeat edit failed: %s", _ee)
-                            _notify_res = None
-                    if not (_notify_res and getattr(_notify_res, "success", False)):
+                    # The turn's delivery lock is the ordering boundary between
+                    # the heartbeat and actual visible progress: while we hold
+                    # it, no same-turn tool/commentary/stream transport call can
+                    # interleave, so progress cannot land mid-edit and make this
+                    # heartbeat stale before it is even sent.
+                    async with turn_ctx.delivery_lock():
+                        # Revalidate under the guard: same-turn visible
+                        # progress that landed while this tick waited for the
+                        # lock restarted the silence clock - skip the whole
+                        # tick (the next attempt comes a full interval after
+                        # that delivery).
+                        _lp_now = turn_ctx.last_visible_progress_monotonic()
+                        if _lp_now is not None and _lp_now > _silence_origin[0]:
+                            continue
+                        if self._heartbeat_temporarily_suppressed(session_key):
+                            # Restart-consent wait parked on the user: skip
+                            # this tick without a "Working" bubble.
+                            continue
+                        if not self._should_emit_long_running_notification(
+                            session_key, agent_holder[0], _exec_ref
+                        ):
+                            break
+                        if _heartbeat_msg_id:
+                            try:
+                                _notify_res = await _notify_adapter.edit_message(
+                                    source.chat_id,
+                                    _heartbeat_msg_id,
+                                    _heartbeat_text,
+                                )
+                            except Exception as _ee:
+                                logger.debug("Heartbeat edit failed: %s", _ee)
+                                _notify_res = None
+                    if _notify_res is not None and getattr(_notify_res, "success", False):
+                        continue
+                    # The edit failed (or none existed): RELEASE the lock and
+                    # yield so same-turn progress queued behind the failed edit
+                    # lands FIRST, then REACQUIRE and revalidate everything - a
+                    # delivery that landed invalidates the fresh-bubble fallback
+                    # and the next tick comes a full interval after it.
+                    await asyncio.sleep(0)
+                    async with turn_ctx.delivery_lock():
+                        # Revalidate under the guard: same-turn visible
+                        # progress that landed while this tick waited for the
+                        # lock restarted the silence clock - skip the whole
+                        # tick (the next attempt comes a full interval after
+                        # that delivery).
+                        _lp_now = turn_ctx.last_visible_progress_monotonic()
+                        if _lp_now is not None and _lp_now > _silence_origin[0]:
+                            continue
+                        if self._heartbeat_temporarily_suppressed(session_key):
+                            continue
+                        if not self._should_emit_long_running_notification(
+                            session_key, agent_holder[0], _exec_ref
+                        ):
+                            break
                         _notify_res = await _notify_adapter.send(
                             source.chat_id,
                             _heartbeat_text,
