@@ -148,7 +148,6 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
         "delegate_assistant",
         # Hidden registry aliases (advertise=False) — dispatchable forever.
         "delegate_task",
-        "dispatch_assistant",
         "restart",
         # A foreground ``terminal`` call supervises its own child with its own
         # ``effective_timeout`` kill and structured timeout result, so the generic
@@ -166,7 +165,6 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
 _TOOL_NAME_ALIASES = {
     # legacy spellings normalize to the same exemption
     "delegate_task": "delegate_agent",
-    "dispatch_assistant": "delegate_assistant",
 }
 
 
