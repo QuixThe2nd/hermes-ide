@@ -24,17 +24,32 @@ class StreamFallbackMixin:
         if not text.strip():
             return reply_to_id
         try:
-            result = await self.adapter.send(
-                chat_id=self.chat_id, content=text, reply_to=reply_to_id,
-                metadata=self._metadata_for_send(final=final, expect_edits=not final))
+            async def _deliver():
+                result = await self.adapter.send(
+                    chat_id=self.chat_id, content=text, reply_to=reply_to_id,
+                    metadata=self._metadata_for_send(final=final, expect_edits=not final))
+                if not (result.success and result.message_id):
+                    return result
+                # Overflow chunks are same-turn visible deliveries: adopt the
+                # message and mark progress BEFORE the delivery lock is released,
+                # so a landed chunk serializes against (and restarts) the
+                # heartbeat's silence clock (same contract as _send_or_edit).
+                self._message_id = str(result.message_id)
+                self._track_preview_ids_from_result(result)
+                self._already_sent = True
+                self._last_sent_text = text
+                self._notify_visible_progress()
+                self._notify_new_message()
+                return result
+
+            # Serialize the chunk send against the gateway heartbeat's edit/send
+            # under the turn's delivery lock (same boundary as _send_or_edit /
+            # _deliver_visible_frame).  Sole caller _split_first_send runs in the
+            # run() loop outside the lock, so this cannot reenter.
+            result = await self._deliver_visible_frame(_deliver)
             if not (result.success and result.message_id):
                 self._edit_supported = False
                 return reply_to_id
-            self._message_id = str(result.message_id)
-            self._track_preview_ids_from_result(result)
-            self._already_sent = True
-            self._last_sent_text = text
-            self._notify_new_message()
             return str(result.message_id)
         except Exception as e:
             logger.error("Stream send chunk error: %s", e)
@@ -210,7 +225,22 @@ class StreamFallbackMixin:
             kwargs["reply_to"] = reply_to
         result = None
         for attempt in range(2):
-            result = await self.adapter.send(**kwargs)
+            async def _deliver():
+                result = await self.adapter.send(**kwargs)
+                if getattr(result, "success", False):
+                    # Landed fallback chunk = user-visible progress.  Marked inside
+                    # the lock so the send serializes against the gateway heartbeat
+                    # AND restarts its silence clock (same contract as
+                    # _send_new_chunk / _send_or_edit).  Callers (_send_fallback_final,
+                    # _send_empty_fallback_final) run in the run() loop outside the
+                    # lock, so this cannot reenter.
+                    self._notify_visible_progress()
+                return result
+
+            # Each attempt is a same-turn visible delivery: run it under the turn's
+            # delivery lock, but keep the flood backoff sleep OUTSIDE it so a parked
+            # heartbeat is not held through the retry delay.
+            result = await self._deliver_visible_frame(_deliver)
             if getattr(result, "success", False):
                 break
             retry_delay = self._fallback_flood_retry_delay(result)
@@ -304,9 +334,21 @@ class StreamFallbackMixin:
             # Interim: must never seal a native stream (see _send_commentary).
             _md = dict(self.metadata) if self.metadata else {}
             _md["_interim_send"] = True
-            result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
-            if result.success:
-                self._already_sent = True
+
+            async def _deliver():
+                result = await self.adapter.send(chat_id=self.chat_id, content=tail, metadata=_md)
+                if result.success:
+                    self._already_sent = True
+                    # The flushed tail is visible output: mark progress BEFORE the
+                    # delivery lock is released, so the heartbeat's silence clock
+                    # restarts only after this frame is serialized against the
+                    # heartbeat (same contract as _send_commentary's locked mark).
+                    self._notify_visible_progress()
+                return result
+
+            # Serialize against the gateway heartbeat's edit/send under the turn's
+            # delivery lock (same boundary as _send_commentary / _send_or_edit).
+            await self._deliver_visible_frame(_deliver)
         except Exception as e:
             logger.error("Segment-break tail flush error: %s", e)
 
@@ -336,19 +378,30 @@ class StreamFallbackMixin:
             _plat = getattr(getattr(self.adapter, "platform", None), "value", None)
             _platform_name = str(_plat or getattr(self.adapter, "name", "")).lower()
             _needs_reply_anchor = _platform_name in ("buzz", "slack", "mattermost", "feishu")
-            result = await self.adapter.send(
-                chat_id=self.chat_id, content=text,
-                reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
-            # Do NOT set _already_sent: commentary is interim, and the flag would
-            # suppress the real final after multiple tool calls.
-            if result.success:
-                self._notify_new_message()
-                # Lets run.py confirm whether an interim send carried the final.
-                # Record the exact delivered text so run.py can confirm whether an interim "preview"
-                # actually carried the final response, vs. unrelated commentary delivered during a session
-                # split (#14238).
-                self._delivered_commentary_texts.append(text)
-            return result.success
+
+            async def _deliver():
+                result = await self.adapter.send(
+                    chat_id=self.chat_id, content=text,
+                    reply_to=self._initial_reply_to_id if _needs_reply_anchor else None, metadata=_md)
+                # Do NOT set _already_sent: commentary is interim, and the flag would
+                # suppress the real final after multiple tool calls.
+                if result.success:
+                    self._notify_new_message()
+                    # Lets run.py confirm whether an interim send carried the final.
+                    # Record the exact delivered text so run.py can confirm whether an interim "preview"
+                    # actually carried the final response, vs. unrelated commentary delivered during a session
+                    # split (#14238).
+                    self._delivered_commentary_texts.append(text)
+                    # Commentary is visible output: mark progress BEFORE the delivery
+                    # lock is released, so the heartbeat's silence clock restarts only
+                    # after this frame is serialized against the heartbeat (same
+                    # contract as _send_or_edit's locked marks).
+                    self._notify_visible_progress()
+                return result.success
+
+            # Serialize against the gateway heartbeat's edit/send under the turn's
+            # delivery lock (same boundary as _send_or_edit / _deliver_visible_frame).
+            return await self._deliver_visible_frame(_deliver)
         except Exception as e:
             logger.error("Commentary send error: %s", e)
             return False

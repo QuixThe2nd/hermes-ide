@@ -533,8 +533,20 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Close the open native stream at a boundary; send() the pre-prompt text if that
         fails.  False only when both finalize and the fallback send failed."""
         finalize_text = self._accumulated or self._boundary_placeholder
+
+        async def _finalize_deliver():
+            ok = await self._send_frame(finalize_text, finalize=True)
+            if ok:
+                # Landed finalize frame is visible output: mark progress BEFORE the
+                # delivery lock is released (same contract as _send_or_edit).
+                self._notify_visible_progress()
+            return ok
+
         try:
-            if await self._send_frame(finalize_text, finalize=True):
+            # Both the finalize frame and the fallback send are same-turn visible
+            # deliveries: serialize against the gateway heartbeat under the turn's
+            # delivery lock (same boundary as _send_or_edit / _deliver_visible_frame).
+            if await self._deliver_visible_frame(_finalize_deliver):
                 logger.debug("%s boundary: finalized stream (chat=%s, turn=%s)",
                              _reason, self.chat_id, self._turn_id)
                 return True
@@ -544,10 +556,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         logger.warning("%s boundary: finalize not confirmed, "
                        "falling back to send() for pre-prompt text (chat=%s)",
                        _reason, self.chat_id)
-        try:
-            if getattr(await self._deliver_visible_frame(
-                    lambda: self.adapter.send(self.chat_id, finalize_text)), "success", False):
+
+        async def _fallback_deliver():
+            result = await self.adapter.send(self.chat_id, finalize_text)
+            if getattr(result, "success", False):
+                # Mark inside the lock, only on a landed send.
                 self._notify_visible_progress()
+            return result
+
+        try:
+            if getattr(await self._deliver_visible_frame(_fallback_deliver), "success", False):
                 return True
         except Exception as send_err:
             logger.warning("%s boundary: fallback send also failed: %s", _reason, send_err)
