@@ -559,6 +559,9 @@ _TODO_DESCRIBE_STATUS = {
 def _describe_cap(text: str, max_len: int) -> str:
     # Single home for normalisation + capping: callers hand raw strings in.
     text = re.sub(r"\s+", " ", text).strip()
+    if text:
+        # Uppercase before capping so an expanding initial (e.g. ß→SS) cannot exceed max_len.
+        text = text[0].upper() + text[1:]
     if len(text) <= max_len:
         return text
     if max_len < 3:  # degenerate cap: no room for an ellipsis
