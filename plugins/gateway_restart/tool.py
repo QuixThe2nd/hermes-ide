@@ -957,9 +957,19 @@ def _settle_restart_prompt(
             metadata = {}
             if source.thread_id:
                 metadata["thread_id"] = source.thread_id
-            coro = edit(
-                source.chat_id, prompt_message_id, text, metadata=metadata or None
-            )
+            import inspect
+
+            edit_kwargs = {}
+            try:
+                edit_params = inspect.signature(edit).parameters
+                if "metadata" in edit_params or any(
+                    param.kind is inspect.Parameter.VAR_KEYWORD
+                    for param in edit_params.values()
+                ):
+                    edit_kwargs["metadata"] = metadata or None
+            except (TypeError, ValueError):
+                pass
+            coro = edit(source.chat_id, prompt_message_id, text, **edit_kwargs)
         future, submit_error = _submit_to_loop(coro, loop)
         if submit_error is not None:
             logger.debug(
