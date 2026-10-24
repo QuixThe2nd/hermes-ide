@@ -424,6 +424,27 @@ def test_gc_keeps_used_removes_orphans(pm_env):
     assert any(p.name.startswith("faketool-1.0") for p in runtime.iterdir())
 
 
+def test_gc_removes_fetch_cache_archives(pm_env):
+    """The fetch-<sha> download-cache dirs are install-time only — gc must
+    drop them so a staged payload (and the CI cache that stores it) doesn't
+    carry the raw archives. The live package entry survives."""
+    from pm.cli import cmd_gc
+    from pm.ensure import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+
+    # install() fetched via store.fetch → a fetch-<sha> archive cache dir.
+    fetches = [p for p in runtime.iterdir() if p.name.startswith("fetch-")]
+    assert fetches, "install should have left fetch-<sha> download-cache dirs"
+
+    cmd_gc(None)
+    assert not [p for p in runtime.iterdir() if p.name.startswith("fetch-")], \
+        "gc must remove the fetch-<sha> archive cache"
+    assert any(p.name.startswith("faketool-1.0") for p in runtime.iterdir()), \
+        "the live package entry survives gc"
+
+
 def test_env_for_never_installs(pm_env):
     from pm.ensure import env_for
 

@@ -309,13 +309,20 @@ def cmd_develop(args) -> int:
     return subprocess.call([shell], env=env, cwd=paths.repo_root())
 
 
-def cmd_gc(args) -> int:
+def _gc_store(store, facts) -> tuple[int, int]:
+    """The sweep core shared by `pm gc` and `pm bundle`.
+
+    Removes every store entry nothing references: fetch-<sha> download-cache
+    dirs (the raw archives — needed only at install time, dead weight in a
+    staged payload or a CI cache), orphaned package versions from an older
+    lock, and expired partials. Keeps live package entries (recorded in
+    facts) and partials an in-flight download still owns. Returns
+    (removed, kept).
+    """
     from pm.downloader import gc_protected_names
 
-    facts = _facts()
-    store = _store()
     if not store.root.is_dir():
-        return 0
+        return (0, 0)
     removed = 0
     with store.install_lock():
         facts.reload()
@@ -344,7 +351,14 @@ def cmd_gc(args) -> int:
             print(f"removing {item.name}")
             shutil.rmtree(item, ignore_errors=True)
             removed += 1
-    print(f"gc: removed {removed}, kept {len(keep)}")
+    return (removed, len(keep))
+
+
+def cmd_gc(args) -> int:
+    facts = _facts()
+    store = _store()
+    removed, kept = _gc_store(store, facts)
+    print(f"gc: removed {removed}, kept {kept}")
     return 0
 
 
@@ -428,6 +442,14 @@ def cmd_bundle(args) -> int:
         [n for n in names if get_package(n).missing_reason(current_target()) is None]
     )
     _drop_unloadable_runtime_files(store_dir)
+
+    # Prune the staged store BEFORE the venv sync and packaging: drop the
+    # fetch-<sha> download-cache archives (needed only at install time — dead
+    # weight in the shipped payload AND in the CI cache that restores this
+    # dir) and any orphaned package versions left over from an older lock
+    # the cache carried in. A lean staged store = a lean CI cache.
+    removed, kept = _gc_store(_store(), _facts())
+    print(f"✓ gc: pruned {removed} fetch/stale entries, kept {kept}")
 
     uv_bin, env = pm_uv()
     if uv_bin is None:
