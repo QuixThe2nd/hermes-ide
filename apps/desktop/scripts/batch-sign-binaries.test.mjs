@@ -165,7 +165,7 @@ test('customSign does not mistake a similarly-named payload exe for the product 
   )
 })
 
-test('batchSignAppTree is a no-op (skipped=true) without the Azure env, and signs via chunked argv-array invocations when set', () => {
+test('batchSignAppTree is a no-op (skipped=true) without the Azure env, and signs via chunked argv-array invocations when set', async () => {
   const root = tmpTree()
   fs.mkdirSync(path.join(root, 'tools'), { recursive: true })
   const exe = path.join(root, 'Hermes.exe')
@@ -174,16 +174,17 @@ test('batchSignAppTree is a no-op (skipped=true) without the Azure env, and sign
   fs.writeFileSync(path.join(root, 'tools', 'ffmpeg.dll'), 'x')
 
   // Unsigned lane: loud no-op, nothing invoked.
-  const skipped = batchSignAppTree(root, exe, { env: {} })
+  const skipped = await batchSignAppTree(root, exe, { env: {} })
   assert.deepEqual(skipped, { signed: 0, chunks: 0, skipped: true })
 
-  // Signed lane: product exe excluded, chunked execFileSync with argv arrays.
+  // Signed lane: product exe excluded, chunked argv arrays. Two passes per
+  // chunk: 'sign' (Azure, no timestamp) then 'timestamp' (RFC3161, no dlib).
   const invocations = []
   const fakeExec = (tool, args) => {
     invocations.push({ tool, args })
     return Buffer.from('')
   }
-  const result = batchSignAppTree(root, exe, {
+  const result = await batchSignAppTree(root, exe, {
     env: {
       AZURE_SIGN_ENDPOINT: 'https://cus.codesigning.azure.net',
       AZURE_SIGN_ACCOUNT: 'codesign2',
@@ -196,10 +197,13 @@ test('batchSignAppTree is a no-op (skipped=true) without the Azure env, and sign
   })
 
   assert.deepEqual(result, { signed: 2, chunks: 1, skipped: false })
-  assert.equal(invocations.length, 1)
-  assert.equal(invocations[0].tool, 'signtool.exe')
-  assert.ok(Array.isArray(invocations[0].args), 'argv array, never a shell string')
-  const args = invocations[0].args
+  assert.equal(invocations.length, 2, 'one sign + one timestamp pass for a single chunk')
+  const [signInv, tsInv] = invocations
+  assert.equal(signInv.tool, 'signtool.exe')
+  assert.ok(Array.isArray(signInv.args), 'argv array, never a shell string')
+  assert.equal(signInv.args[0], 'sign')
+  assert.equal(tsInv.args[0], 'timestamp')
+  const args = signInv.args
   assert.ok(!args.some(arg => typeof arg === 'string' && arg.includes(' ')))
   assert.equal(args.includes(exe), false, 'product exe excluded — signed per-file after rcedit')
   assert.equal(args.includes(path.join(root, 'tools', 'node.exe')), true)
@@ -207,10 +211,20 @@ test('batchSignAppTree is a no-op (skipped=true) without the Azure env, and sign
   assert.equal(args[args.indexOf('/dlib') + 1], 'azure.codesigning.dlib.dll')
   assert.ok(args[args.indexOf('/dmdf') + 1].endsWith('batch-sign.json'))
   assert.equal(args[args.indexOf('/fd') + 1], 'SHA256')
-  assert.equal(args[args.indexOf('/td') + 1], 'SHA256')
+  // Sign pass carries NO timestamp flags — timestamping is the separate pass.
+  assert.equal(args.includes('/tr'), false)
+  assert.equal(args.includes('/td'), false)
+  // Timestamp pass carries /tr + /td but NO dlib / dmdf.
+  const tsArgs = tsInv.args
+  assert.equal(tsArgs[tsArgs.indexOf('/tr') + 1], 'http://timestamp.digicert.com')
+  assert.equal(tsArgs[tsArgs.indexOf('/td') + 1], 'SHA256')
+  assert.equal(tsArgs.includes('/dlib'), false)
+  assert.equal(tsArgs.includes('/dmdf'), false)
+  assert.ok(tsArgs.includes(path.join(root, 'tools', 'node.exe')), 'timestamp pass covers the same files')
+  assert.ok(tsArgs.includes(path.join(root, 'tools', 'ffmpeg.dll')))
 })
 
-test('batchSignAppTree chunks large trees into ~100-file signtool invocations', () => {
+test('batchSignAppTree chunks large trees into ~100-file signtool invocations, sign + timestamp passes', async () => {
   const root = tmpTree()
   fs.mkdirSync(path.join(root, 'tools'), { recursive: true })
   for (let i = 0; i < 250; i += 1) {
@@ -218,7 +232,7 @@ test('batchSignAppTree chunks large trees into ~100-file signtool invocations', 
   }
 
   const invocations = []
-  const result = batchSignAppTree(root, path.join(root, 'Hermes.exe'), {
+  const result = await batchSignAppTree(root, path.join(root, 'Hermes.exe'), {
     env: {
       AZURE_SIGN_ENDPOINT: 'https://cus.codesigning.azure.net',
       AZURE_SIGN_ACCOUNT: 'codesign2',
@@ -234,13 +248,85 @@ test('batchSignAppTree chunks large trees into ~100-file signtool invocations', 
   })
 
   assert.deepEqual(result, { signed: 250, chunks: 3, skipped: false })
-  assert.equal(invocations.length, 3)
+  // 3 chunks × 2 passes (sign + timestamp).
+  assert.equal(invocations.length, 6)
+  const signBatches = invocations.filter(a => a[0] === 'sign')
+  const tsBatches = invocations.filter(a => a[0] === 'timestamp')
+  assert.equal(signBatches.length, 3)
+  assert.equal(tsBatches.length, 3)
   assert.deepEqual(
-    invocations.map(batch => batch.filter(arg => arg.endsWith('.exe')).length),
-    [100, 100, 50]
+    signBatches.map(batch => batch.filter(arg => arg.endsWith('.exe')).length).sort((a, b) => a - b),
+    [50, 100, 100]
   )
-  const flat = invocations.flat().filter(arg => arg.endsWith('.exe'))
+  const flat = signBatches.flat().filter(arg => arg.endsWith('.exe'))
   assert.equal(new Set(flat).size, 250, 'every binary signed exactly once')
+  const tsFlat = tsBatches.flat().filter(arg => arg.endsWith('.exe'))
+  assert.equal(new Set(tsFlat).size, 250, 'every binary timestamped exactly once')
+  assert.deepEqual(new Set(tsFlat), new Set(flat), 'timestamp pass covers the same files as the sign pass')
+})
+
+test('sign chunks run concurrently, capped at the configured concurrency', async () => {
+  const root = tmpTree()
+  fs.mkdirSync(path.join(root, 'tools'), { recursive: true })
+  for (let i = 0; i < 12; i += 1) {
+    fs.writeFileSync(path.join(root, 'tools', `bin${i}.exe`), 'x')
+  }
+
+  // 12 files at chunk size 1 → 12 chunks, each a sign + timestamp pass. The
+  // fake holds its "child" open across an await so the pool's concurrency is
+  // actually observable (a sync fake would report max 1 by construction).
+  let inFlight = 0
+  let maxInFlight = 0
+  const fakeExec = async () => {
+    inFlight += 1
+    maxInFlight = Math.max(maxInFlight, inFlight)
+    await new Promise(resolve => setTimeout(resolve, 5))
+    inFlight -= 1
+  }
+
+  await batchSignAppTree(root, path.join(root, 'Hermes.exe'), {
+    env: {
+      AZURE_SIGN_ENDPOINT: 'https://cus.codesigning.azure.net',
+      AZURE_SIGN_ACCOUNT: 'codesign2',
+      AZURE_SIGN_PROFILE: 'hermesagent'
+    },
+    exec: fakeExec,
+    mkdtemp: () => root,
+    signtool: 'signtool.exe',
+    dlib: 'azure.codesigning.dlib.dll',
+    chunkSize: 1,
+    concurrency: 3
+  })
+
+  assert.equal(maxInFlight, 3, 'never more than the configured concurrency in flight')
+})
+
+test('timestamp pass retries a flaky server before giving up', async () => {
+  const root = tmpTree()
+  fs.mkdirSync(path.join(root, 'tools'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'tools', 'node.exe'), 'x')
+
+  let calls = 0
+  const fakeExec = (tool, args) => {
+    if (args[0] === 'sign') return
+    calls += 1
+    if (calls < 3) throw new Error('Invalid Time Stamp Request Length:-1')
+  }
+
+  await batchSignAppTree(root, path.join(root, 'Hermes.exe'), {
+    env: {
+      AZURE_SIGN_ENDPOINT: 'https://cus.codesigning.azure.net',
+      AZURE_SIGN_ACCOUNT: 'codesign2',
+      AZURE_SIGN_PROFILE: 'hermesagent'
+    },
+    exec: fakeExec,
+    mkdtemp: () => root,
+    signtool: 'signtool.exe',
+    dlib: 'azure.codesigning.dlib.dll',
+    timestampRetryDelayMs: 0
+  })
+
+  assert.equal(calls, 3, 'timestamp pass retried until the server succeeded')
 })
 
 // ── toolset resolution: signtool + dlib must be same-arch ───────────────────
@@ -301,7 +387,7 @@ test('resolveDotnetRuntimeDir finds the bundled .NET runtime dir', () => {
   assert.ok(/dotnet-runtime-/.test(path.basename(dotnet)), `unexpected dotnet dir ${dotnet}`)
 })
 
-test('batchSignBinaries sets DOTNET_ROOT from the bundled runtime for the signtool child', () => {
+test('batchSignBinaries sets DOTNET_ROOT from the bundled runtime for the signtool child', async () => {
   const { cache } = fakeToolsetCache()
   const root = tmpTree()
   fs.mkdirSync(path.join(root, 'tools'), { recursive: true })
@@ -309,7 +395,7 @@ test('batchSignBinaries sets DOTNET_ROOT from the bundled runtime for the signto
   const exe = path.join(root, 'Hermes.exe')
 
   const invocations = []
-  const result = batchSignAppTree(root, exe, {
+  const result = await batchSignAppTree(root, exe, {
     env: {
       ELECTRON_BUILDER_CACHE: cache,
       AZURE_SIGN_ENDPOINT: 'https://cus.codesigning.azure.net',
@@ -324,13 +410,18 @@ test('batchSignBinaries sets DOTNET_ROOT from the bundled runtime for the signto
   })
 
   assert.equal(result.signed, 1)
-  assert.equal(invocations.length, 1)
-  const opts = invocations[0].opts
+  assert.equal(invocations.length, 2, 'one sign + one timestamp pass')
+  const signInv = invocations.find(inv => inv.args[0] === 'sign')
+  const tsInv = invocations.find(inv => inv.args[0] === 'timestamp')
+  assert.ok(signInv, 'sign pass present')
+  assert.ok(tsInv, 'timestamp pass present')
+  const opts = signInv.opts
   assert.ok(opts && opts.env, 'exec must receive a child env')
   assert.equal(opts.env.DOTNET_ROOT, path.join(cache, 'win-codesign@1.3.0', 'dotnet-runtime-win-x64-8_0_28-ghi'))
   // The signtool chosen must be the host-arch one, not x86.
-  assert.match(invocations[0].tool, new RegExp(`[\\\\/]${signingArch()}[\\\\/]signtool\\.exe$`))
-  // dlib must be same arch.
-  const dlibArg = invocations[0].args[invocations[0].args.indexOf('/dlib') + 1]
+  assert.match(signInv.tool, new RegExp(`[\\\\/]${signingArch()}[\\\\/]signtool\\.exe$`))
+  assert.match(tsInv.tool, new RegExp(`[\\\\/]${signingArch()}[\\\\/]signtool\\.exe$`))
+  const dlibArg = signInv.args[signInv.args.indexOf('/dlib') + 1]
   assert.match(dlibArg, new RegExp(`[\\\\/]${signingArch()}[\\\\/]azure\\.codesigning\\.dlib\\.dll$`, 'i'))
+  assert.equal(tsInv.args.includes('/dlib'), false, 'timestamp pass has no dlib')
 })

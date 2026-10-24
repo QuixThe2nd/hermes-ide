@@ -38,12 +38,84 @@
 // electron-builder cache walk from scripts/stage-msixbundle.mjs; nothing is
 // hardcoded to C:\Tools.
 
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { isMain } from './utils.mjs'
 
 export const CHUNK_SIZE = 100
+// How many signtool children may run at once. Azure Trusted Signing and the
+// timestamp server are both network round-trips per file, so N concurrent
+// children multiply throughput ~Nx. Keep it modest — the timestamp server
+// rate-limits aggressive bursters.
+export const DEFAULT_CONCURRENCY = 4
+// Separate timestamp pass URL. `timestamp.acs.microsoft.com` intermittently
+// fails with "Invalid Time Stamp Request Length:-1" (documented widely);
+// digicert's RFC3161 endpoint has been reliable in the release pipeline.
+const TIMESTAMP_URL = 'http://timestamp.digicert.com'
+
+/**
+ * execFile as a promise, so chunks can run concurrently.
+ * @returns {Promise<void>} rejects with the child's error on non-zero exit.
+ */
+function execFileAsync(cmd, args, options) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, options, (error) => {
+      if (error) reject(error)
+      else resolve()
+    })
+  })
+}
+
+/**
+ * Retry a fallible op (bounded). Used for the timestamp pass, where the
+ * external server flakes intermittently — a retried timestamp beats a whole
+ * rebuild. Exponential backoff (1s, 2s, ...) between attempts.
+ *
+ * @param {() => Promise<void>} fn
+ * @param {{ attempts?: number, baseDelayMs?: number }} [opts]
+ */
+export async function withRetry(fn, opts = {}) {
+  const attempts = opts.attempts ?? 3
+  const baseDelayMs = opts.baseDelayMs ?? 1000
+  let lastError
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn()
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt))
+      }
+    }
+  }
+  throw lastError
+}
+
+/**
+ * Run up to `concurrency` async workers over items. Each worker pulls the
+ * next item as it frees up, so unevenly-sized work balances itself.
+ *
+ * @param {T[]} items
+ * @param {number} concurrency
+ * @param {(item: T, index: number) => Promise<void>} worker
+ * @template T
+ */
+export async function runPool(items, concurrency, worker) {
+  let index = 0
+  const next = async () => {
+    while (index < items.length) {
+      const i = index
+      index += 1
+      await worker(items[i], i)
+    }
+  }
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), items.length) },
+    () => next()
+  )
+  await Promise.all(workers)
+}
 
 /**
  * Recursively collect every .exe/.dll under dir. Symbolic links are skipped
@@ -247,35 +319,73 @@ export function resolveDotnetRuntimeDir(env = process.env) {
 /**
  * Sign one chunk of binaries with a single signtool invocation (argv array,
  * never a shell string — the joined list can be long and must not interpolate
- * through a shell).
+ * through a shell). Azure-only: NO timestamp here (see timestampChunk — the
+ * sign pass would otherwise hold each file hostage to the flaky timestamp
+ * server, and a timestamp failure would force a full re-sign).
  *
  * @param {string[]} files
- * @param {{ signtool: string, dlib: string, metadataPath: string, exec?: typeof execFileSync, env?: NodeJS.ProcessEnv }} opts
+ * @param {{ signtool: string, dlib: string, metadataPath: string, exec?: typeof execFile, execOptions?: import('node:child_process').ExecFileOptions }} opts
  */
-export function signChunk(files, opts) {
-  const exec = opts.exec ?? execFileSync
-  const execOptions = { stdio: 'inherit' }
-  if (opts.env) execOptions.env = opts.env
-  exec(opts.signtool, [
+export async function signChunk(files, opts) {
+  const args = [
     'sign',
     '/fd', 'SHA256',
-    '/td', 'SHA256',
-    '/tr', 'http://timestamp.digicert.com',
     '/dlib', opts.dlib,
     '/dmdf', opts.metadataPath,
     ...files
-  ], execOptions)
+  ]
+  if (opts.exec) {
+    await opts.exec(opts.signtool, args, opts.execOptions)
+    return
+  }
+  await execFileAsync(opts.signtool, args, opts.execOptions ?? { stdio: 'inherit' })
+}
+
+/**
+ * RFC3161-timestamp one chunk of ALREADY-SIGNED files. No /dlib, no /dmdf —
+ * this is pure timestamping, so it neither re-auths against Azure nor
+ * re-initializes the .NET dlib. The timestamp server is the flaky external
+ * dependency, so this pass retries per chunk (a retried timestamp beats a
+ * whole re-sign) and runs concurrently like the sign pass.
+ *
+ * @param {string[]} files
+ * @param {{ signtool: string, timestampUrl?: string, exec?: typeof execFile, execOptions?: import('node:child_process').ExecFileOptions, timestampAttempts?: number, timestampRetryDelayMs?: number }} opts
+ */
+export async function timestampChunk(files, opts) {
+  const args = [
+    'timestamp',
+    '/tr', opts.timestampUrl ?? TIMESTAMP_URL,
+    '/td', 'SHA256',
+    ...files
+  ]
+  const run = async () => {
+    if (opts.exec) {
+      await opts.exec(opts.signtool, args, opts.execOptions)
+      return
+    }
+    await execFileAsync(opts.signtool, args, opts.execOptions ?? { stdio: 'inherit' })
+  }
+  await withRetry(run, {
+    attempts: opts.timestampAttempts,
+    baseDelayMs: opts.timestampRetryDelayMs
+  })
 }
 
 /**
  * Batch-sign every binary under a tree.
  *
+ * Two passes: (1) Azure Authenticode sign — concurrent signtool children,
+ * no timestamp; (2) RFC3161 timestamp — concurrent, no Azure/dlib, retried
+ * per chunk. Parallelism is the whole speed story: both Azure and the
+ * timestamp server are per-file network round-trips, so N concurrent children
+ * multiply throughput ~Nx.
+ *
  * @param {string[]} binaries file list from getBinaries
- * @param {{ env?: NodeJS.ProcessEnv, exec?: typeof execFileSync, chunkSize?: number, mkdtemp?: typeof fs.mkdtempSync, signtool?: string, dlib?: string }} [opts]
- * @returns {{ signed: number, chunks: number, skipped: boolean }}
+ * @param {{ env?: NodeJS.ProcessEnv, exec?: typeof execFile, chunkSize?: number, concurrency?: number, mkdtemp?: typeof fs.mkdtempSync, signtool?: string, dlib?: string, timestampUrl?: string, timestampAttempts?: number, timestampRetryDelayMs?: number }} [opts]
+ * @returns {Promise<{ signed: number, chunks: number, skipped: boolean }>}
  *   skipped=true when Azure signing is not configured (caller warns).
  */
-export function batchSignBinaries(binaries, opts = {}) {
+export async function batchSignBinaries(binaries, opts = {}) {
   const env = opts.env ?? process.env
   if (!azureSigningConfigured(env)) {
     return { signed: 0, chunks: 0, skipped: true }
@@ -306,11 +416,25 @@ export function batchSignBinaries(binaries, opts = {}) {
     CodeSigningAccountName: env.AZURE_SIGN_ACCOUNT,
     CertificateProfileName: env.AZURE_SIGN_PROFILE
   }))
+  const concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY
+  const batches = chunk(binaries, opts.chunkSize ?? CHUNK_SIZE)
+  const execOptions = { stdio: 'inherit', env: signEnv }
   try {
-    const batches = chunk(binaries, opts.chunkSize ?? CHUNK_SIZE)
-    for (const batch of batches) {
-      signChunk(batch, { signtool, dlib, metadataPath, exec: opts.exec, env: signEnv })
-    }
+    // Pass 1: Azure Authenticode sign — concurrent, no timestamp.
+    await runPool(batches, concurrency, (batch) =>
+      signChunk(batch, { signtool, dlib, metadataPath, exec: opts.exec, execOptions })
+    )
+    // Pass 2: RFC3161 timestamp — concurrent, no Azure/dlib, retried.
+    await runPool(batches, concurrency, (batch) =>
+      timestampChunk(batch, {
+        signtool,
+        timestampUrl: opts.timestampUrl,
+        exec: opts.exec,
+        execOptions,
+        timestampAttempts: opts.timestampAttempts,
+        timestampRetryDelayMs: opts.timestampRetryDelayMs
+      })
+    )
     return { signed: binaries.length, chunks: batches.length, skipped: false }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true })
@@ -324,9 +448,9 @@ export function batchSignBinaries(binaries, opts = {}) {
  *
  * @param {string} appOutDir
  * @param {string} productExePath absolute path of the main product exe
- * @param {{ env?: NodeJS.ProcessEnv, exec?: typeof execFileSync }} [opts]
+ * @param {{ env?: NodeJS.ProcessEnv, exec?: typeof execFile, chunkSize?: number, concurrency?: number, timestampUrl?: string, timestampAttempts?: number, timestampRetryDelayMs?: number }} [opts]
  */
-export function batchSignAppTree(appOutDir, productExePath, opts = {}) {
+export async function batchSignAppTree(appOutDir, productExePath, opts = {}) {
   const env = opts.env ?? process.env
   if (!azureSigningConfigured(env)) {
     console.warn(
@@ -340,7 +464,7 @@ export function batchSignAppTree(appOutDir, productExePath, opts = {}) {
     skip: (file) => (productExe ? path.resolve(file) === productExe : false)
   })
   if (binaries.length === 0) return { signed: 0, chunks: 0, skipped: false }
-  const result = batchSignBinaries(binaries, opts)
+  const result = await batchSignBinaries(binaries, opts)
   console.log(
     `[batch-sign] signed ${result.signed} payload binaries in ${result.chunks} signtool batch(es)` +
     ` (product exe excluded — signed per-file after rcedit)`
@@ -393,13 +517,13 @@ export async function customSign(configuration, packager, deps = {}) {
   return true
 }
 
-function main() {
+async function main() {
   const root = process.argv[2]
   if (!root) {
     console.error('usage: batch-sign-binaries.mjs <dir>')
     process.exit(2)
   }
-  const result = batchSignAppTree(root, process.env.HERMES_PRODUCT_EXE || path.join(root, 'Hermes.exe'))
+  const result = await batchSignAppTree(root, process.env.HERMES_PRODUCT_EXE || path.join(root, 'Hermes.exe'))
   if (result.skipped) process.exit(0)
 }
 
