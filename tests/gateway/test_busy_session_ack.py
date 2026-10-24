@@ -4,6 +4,7 @@ Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
 import asyncio
+import itertools
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -959,7 +960,13 @@ class TestLongRunningHeartbeatIterationDetail:
         adapter.edit_message = AsyncMock(side_effect=_edit_then_restart)
         runner._adapter_for_source = lambda source: adapter
         runner._delivery_adapter_for = lambda source: adapter
-        runner._agent_activity_summary = staticmethod(lambda agent: None)
+        # The edit path is only taken when the heartbeat text changes between
+        # ticks (run_turn.py dedups identical text), so the activity summary
+        # must advance: send "compiling", then edit to "linking".
+        _activity = itertools.cycle(("compiling", "linking"))
+        runner._agent_activity_summary = staticmethod(
+            lambda agent: {"current_tool": next(_activity)}
+        )
         agent = MagicMock()
         runner._running_agents["sess"] = agent
         disp = MagicMock()

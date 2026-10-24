@@ -4156,6 +4156,7 @@ class GatewayTurnMixin:
         if not _notify_adapter:
             return
         _heartbeat_msg_id: Optional[str] = None
+        _heartbeat_sent_text: Optional[str] = None
         # Silence clock origin: the later of the turn start, the last visible
         # progress and the last heartbeat tick (shared wait helper in gateway.run).
         _silence_origin = [time.monotonic()]
@@ -4196,6 +4197,8 @@ class GatewayTurnMixin:
                 if _long_running_mode == "generic"
                 else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
             )
+            if _heartbeat_msg_id is not None and _heartbeat_sent_text == _heartbeat_text:
+                continue
             try:
                 _notify_res = None
                 # The turn's delivery lock is the ordering boundary between the
@@ -4228,6 +4231,7 @@ class GatewayTurnMixin:
                             logger.debug("Heartbeat edit failed: %s", _ee)
                             _notify_res = None
                 if _notify_res is not None and getattr(_notify_res, "success", False):
+                    _heartbeat_sent_text = _heartbeat_text
                     continue
                 # The edit failed (or none existed): RELEASE the lock and
                 # yield so same-turn progress queued behind the failed edit
@@ -4255,6 +4259,7 @@ class GatewayTurnMixin:
                         _heartbeat_msg_id = str(_notify_res.message_id)
                         if turn_ctx._cleanup_progress:
                             turn_ctx._cleanup_msg_ids.append(_heartbeat_msg_id)
+                        _heartbeat_sent_text = _heartbeat_text
             except Exception as _ne:
                 logger.debug("Long-running notification error: %s", _ne)
 

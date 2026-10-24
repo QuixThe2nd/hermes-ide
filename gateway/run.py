@@ -36182,6 +36182,7 @@ class GatewayRunner(
             # interval. Falls back to send-new when edit fails or isn't
             # supported by the adapter.
             _heartbeat_msg_id: Optional[str] = None
+            _heartbeat_sent_text: Optional[str] = None
             # Silence clock origin: the later of the turn start, the last visible
             # progress (turn_ctx.mark_visible_progress) and the last heartbeat tick.
             _silence_origin = [time.monotonic()]
@@ -36243,6 +36244,8 @@ class GatewayRunner(
                     _heartbeat_text = _generic_status_phrase("status")
                 else:
                     _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                if _heartbeat_msg_id is not None and _heartbeat_sent_text == _heartbeat_text:
+                    continue
                 try:
                     _notify_res = None
                     # The turn's delivery lock is the ordering boundary between
@@ -36278,6 +36281,7 @@ class GatewayRunner(
                                 logger.debug("Heartbeat edit failed: %s", _ee)
                                 _notify_res = None
                     if _notify_res is not None and getattr(_notify_res, "success", False):
+                        _heartbeat_sent_text = _heartbeat_text
                         continue
                     # The edit failed (or none existed): RELEASE the lock and
                     # yield so same-turn progress queued behind the failed edit
@@ -36311,6 +36315,7 @@ class GatewayRunner(
                             _heartbeat_msg_id = str(_notify_res.message_id)
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(_heartbeat_msg_id)
+                            _heartbeat_sent_text = _heartbeat_text
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
