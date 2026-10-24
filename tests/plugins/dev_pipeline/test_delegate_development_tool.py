@@ -305,9 +305,10 @@ def test_open_pr_non_boolean_rejected(kanban_home, git_repo, monkeypatch):
 def test_parked_tool_not_registered_via_plugin_discovery(tmp_path, monkeypatch):
     """PARKED 2026-08-28 — delegate_development is not a live tool.
 
-    Real loader, real manifest: the plugin still loads (status tool, executor
-    hook), but the delegate_development registration stays commented out in
-    ``plugins/dev_pipeline/__init__.py`` until the user unparks it.
+    Real loader, real manifest: the plugin still loads (executor hook), but
+    the delegate_development registration stays commented out in
+    ``plugins/dev_pipeline/__init__.py`` until the user unparks it, and no
+    dev-pipeline tool is registered.
     """
     repo_root = Path(__file__).resolve().parents[3]
     monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(repo_root / "plugins"))
@@ -322,7 +323,7 @@ def test_parked_tool_not_registered_via_plugin_discovery(tmp_path, monkeypatch):
     mgr.discover_and_load()
 
     assert "delegate_development" not in mgr._plugin_tool_names
-    assert "dev_pipeline_status" in mgr._plugin_tool_names
+    assert "dev_pipeline_status" not in mgr._plugin_tool_names
 
 
 class TestRepoUrlCredentialGuard:
