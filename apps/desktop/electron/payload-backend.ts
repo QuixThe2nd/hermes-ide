@@ -82,9 +82,11 @@ export function resolvePayload(
   // bundled builds.
   let storePython = ''
   let sitePackages = ''
+
   try {
     const facts = JSON.parse(fs.readFileSync(path.join(toolsDir, 'facts.json'), 'utf8'))
     const entry = facts?.packages?.python?.entry
+
     if (typeof entry === 'string') {
       storePython = path.join(toolsDir, entry, deps.isWindows ? 'python.exe' : 'bin', deps.isWindows ? '' : 'python3')
       sitePackages = deps.isWindows
@@ -145,8 +147,10 @@ export function adoptPayloadVenv(
 ): boolean {
   if (!payload.storePython || !payload.sitePackages) {
     deps.log?.('[payload] missing store python or site-packages')
+
     return false
   }
+
   return true
 }
 
