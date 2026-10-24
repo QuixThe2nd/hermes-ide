@@ -366,8 +366,7 @@ declare global {
       glassSupported?: boolean
       /** Main-process fact: this OS can do any translucency at all (not Linux). */
       translucencySupported?: boolean
-      /** Launch flag: the app was started with --local, enabling the
-       *  local-models GUI surfaces. Absent/false = every local surface hides. */
+      /** Feature flag: the local-models UI is enabled. */
       localModelsEnabled?: boolean
       /** Launch flag: the Nous free tier is on for this launch
        *  (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only fact the

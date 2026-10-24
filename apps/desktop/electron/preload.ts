@@ -13,14 +13,16 @@ import { customWindowControlsEnabled } from './window-controls'
 const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
+const featureFlags = ipcRenderer.sendSync('hermes:feature-flags')
 const launchFlags = ipcRenderer.sendSync('hermes:launch-flags')
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
-  // Launch-flag fact: the app was started with --local, so the renderer may
-  // show the local-models surfaces. Static for the window's lifetime.
-  localModelsEnabled: launchFlags?.localModels === true,
+  // Feature-flag fact (feature-flags.ts): the local-models surfaces are on
+  // when launched with --local or this is a canary build. Static for the
+  // window's lifetime.
+  localModelsEnabled: featureFlags?.localModels === true,
   // Launch-flag fact: the Nous free tier is on for this launch
   // (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only; the same
   // decision is stamped onto every backend the app spawns.

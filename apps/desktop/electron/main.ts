@@ -194,6 +194,7 @@ import {
   tuiResumeArgs
 } from './external-terminal'
 import { type FaviconIo, resolveFavicon } from './favicon'
+import { isCanaryTag, resolveFeatureFlags } from './feature-flags'
 import {
   installFindShortcut,
   installFoundInPageForwarder,
@@ -3561,8 +3562,7 @@ function readUpdatesFeedBaseFromConfig(): string {
 
 /** The updater channel from the baked install stamp ('canary' vs 'stable'). */
 function resolveUpdaterChannelFromStamp(): 'stable' | 'canary' {
-  const tag = INSTALL_STAMP?.tag || ''
-  return /-canary\./.test(tag) ? 'canary' : 'stable'
+  return isCanaryTag(INSTALL_STAMP?.tag) ? 'canary' : 'stable'
 }
 
 /** True when this artifact is the light (remote-only) variant. */
@@ -17606,6 +17606,20 @@ ipcMain.on('hermes:launch-flags', event => {
     guestOnboarding: GUEST_ONBOARDING,
     skipIntro: SKIP_INTRO
   }
+})
+
+// Feature-flag facts the renderer needs before first paint (same sendSync
+// pattern as translucency). Resolved in feature-flags.ts from the launch
+// argv and the artifact's channel: `--local` (from `hermes desktop --local`
+// or directly on Hermes.exe, a shortcut edit) gates the local-models GUI on
+// stable builds, and canary builds get the same surfaces by default. Launch
+// flags survive self-relaunches because collectRelaunchArgs only strips
+// internal flags.
+ipcMain.on('hermes:feature-flags', event => {
+  event.returnValue = resolveFeatureFlags({
+    argv: process.argv,
+    canary: resolveUpdaterChannelFromStamp() === 'canary'
+  })
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {
