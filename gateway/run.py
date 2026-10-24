@@ -25083,6 +25083,34 @@ class GatewayRunner(
         # would bust the agent-cache signature — and tells the model this is
         # the SAME message re-delivered, not a new request, so it answers
         # once instead of per copy.
+        # Restart-drain lifecycle receipt: this event was durably queued while
+        # a PREVIOUS gateway process drained for a requested restart, and this
+        # turn replays it from the drain snapshot after that restart finished
+        # (proven per-record at replay time — see
+        # ``run_drain_queue.drain_restart_receipt_for_record``; a same-process
+        # or unprovable replay never sets the attribute). Like the re-delivery
+        # note below it is per-turn user content, so the cached system prompt
+        # signature is untouched; it states the lifecycle fact only — the
+        # restart completed — and claims nothing about deployment health.
+        from gateway.run_drain_queue import DRAIN_RESTART_COMPLETED_ATTR
+
+        _restart_receipt = getattr(event, DRAIN_RESTART_COMPLETED_ATTR, None)
+        if isinstance(_restart_receipt, dict):
+            _receipt_note = "[Gateway restart completed"
+            _receipt_pid = _restart_receipt.get("queued_pid")
+            if isinstance(_receipt_pid, int) and _receipt_pid > 0:
+                _receipt_note += (
+                    f" — this message arrived while the previous gateway "
+                    f"process (pid {_receipt_pid}) was draining for the "
+                    f"restart"
+                )
+            _receipt_note += (
+                ". The restart finished and this successor process is "
+                "delivering the queued message now; no action is needed "
+                "about the restart itself.]"
+            )
+            message_text = f"{_receipt_note}\n\n{message_text}"
+
         if getattr(event, "redelivered", False):
             _redelivery_id = getattr(event, "message_id", None)
             _redelivery_note = "[Re-delivered message"

@@ -80,6 +80,84 @@ _SNAPSHOT_VERSION = 1
 # copies arrive clean and drain normally.
 DRAIN_SNAPSHOT_OWNED_ATTR = "_drain_snapshot_owned"
 
+# Lifecycle receipt for post-restart replay. ``serialize_drain_event`` stamps
+# the RECORD (gateway-owned durable state beside auth.json — the one place a
+# platform message cannot forge it: event metadata is user-influenceable, so
+# the ownership fact must not ride the event) with the identity of the
+# process that queued the event during its restart-requested drain. Replay
+# in a DIFFERENT process proves that restart completed — the queueing
+# process is gone and its successor is delivering the message — which is the
+# weakest cross-process provenance that states the fact. Legacy records
+# (no stamp) and same-process reconnect replay (the restart never finished,
+# or was cancelled) prove nothing and get no receipt; delivery is unchanged
+# either way. Never serialized onto the event: replay sets the in-memory
+# attribute below only after the record check passes.
+DRAIN_RESTART_STAMP_FIELD = "restart_drain"
+DRAIN_RESTART_COMPLETED_ATTR = "_drain_restart_completed"
+# A durable JSON stamp can carry any integer; no host allocates pids past the
+# signed 32-bit range, so anything larger is malformed data, never a pid whose
+# death could be proven (probing it must not throw either).
+_MAX_PROBEABLE_PID = 2**31 - 1
+
+
+def _restart_drain_stamp(restart_requested: bool) -> Optional[Dict[str, Any]]:
+    """Record-level lifecycle stamp for a drain-time queueing (see above)."""
+    if not restart_requested:
+        return None
+    return {"requested": True, "pid": os.getpid()}
+
+
+def drain_restart_receipt_for_record(record: Any) -> Optional[Dict[str, Any]]:
+    """Prove, from one queue record, that the restart it was queued for completed.
+
+    Returns receipt facts (``{"queued_pid": ...}``) only when the record was
+    stamped by a restart-requested drain of ANOTHER process that is no longer
+    running — i.e. the queueing process bounced and this process is its
+    successor delivering the message. Returns None for absent/malformed
+    stamps (legacy records, corruption), same-process stamps (a live process
+    that queued during its own drain: the restart has not completed, or was
+    cancelled), a queueing pid that is somehow still alive, an out-of-range
+    pid (the stamp is durable JSON: a corrupted or oversized integer is not a
+    pid anyone can prove dead), or an unavailable liveness backend; in every
+    None case replay proceeds unchanged, just without the receipt.
+    """
+    if not isinstance(record, dict):
+        return None
+    stamp = record.get(DRAIN_RESTART_STAMP_FIELD)
+    if not isinstance(stamp, dict) or stamp.get("requested") is not True:
+        return None
+    pid = stamp.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    if pid > _MAX_PROBEABLE_PID:
+        return None  # beyond any host pid space: malformed, not provably dead
+    if pid == os.getpid():
+        return None
+    # Liveness via the shared non-signalling tri-state probe. Never
+    # ``os.kill(pid, 0)``: it raises OverflowError for oversized JSON ints
+    # and on Windows signals the target's whole console group. The helper
+    # returns False ONLY for a kernel-confirmed NoSuchProcess (proven dead)
+    # and None for an unavailable/erroring backend — unknown is never dead.
+    try:
+        from hermes_cli.process_identity import _pid_alive_matches
+    except Exception:
+        return None
+    try:
+        alive = _pid_alive_matches(pid, None)
+    except Exception:
+        return None
+    if alive is False:
+        return {"queued_pid": pid}  # queueing process is gone: restart completed
+    return None
+
+
+def _mark_drain_restart_receipt(event: MessageEvent, receipt: Dict[str, Any]) -> None:
+    """Attach the proven receipt to the replayed event (never serialized)."""
+    try:
+        setattr(event, DRAIN_RESTART_COMPLETED_ATTR, dict(receipt))
+    except Exception:
+        pass
+
 
 def _mark_drain_snapshot_owned(event: MessageEvent) -> None:
     """Record durable acceptance on the event itself.
@@ -203,7 +281,9 @@ def _json_safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return kept
 
 
-def serialize_drain_event(session_key: str, event: MessageEvent) -> Dict[str, Any]:
+def serialize_drain_event(
+    session_key: str, event: MessageEvent, *, restart_requested: bool = False
+) -> Dict[str, Any]:
     """Flatten one queued event + its source into a JSON-safe record.
 
     The FULL metadata dict is persisted, not just the security keys
@@ -248,13 +328,21 @@ def serialize_drain_event(session_key: str, event: MessageEvent) -> Dict[str, An
     if metadata:
         event_data["metadata"] = _json_safe_metadata(metadata)
     timestamp = getattr(event, "timestamp", None)
-    return {
+    record = {
         "session_key": str(session_key or ""),
         "queued_at": time.time(),
         "source": source_data,
         "event": event_data,
         "event_timestamp": timestamp.isoformat() if timestamp is not None else None,
     }
+    # The restart-drain stamp closes one gap: nothing else in the record (or
+    # anywhere durable) binds the queued message to the restart-draining
+    # PROCESS, so replay could not tell "queued by the pre-restart process"
+    # from "queued by this live process during a cancelled restart".
+    stamp = _restart_drain_stamp(restart_requested)
+    if stamp is not None:
+        record[DRAIN_RESTART_STAMP_FIELD] = stamp
+    return record
 
 
 def deserialize_drain_event(record: Any) -> Tuple[str, MessageEvent]:
@@ -448,7 +536,11 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
         )
         return False
     try:
-        record = serialize_drain_event(session, event)
+        record = serialize_drain_event(
+            session,
+            event,
+            restart_requested=bool(getattr(runner, "_restart_requested", False)),
+        )
     except Exception as exc:
         logger.warning("Drain queue serialization failed for %s: %s", session, exc)
         return False
@@ -896,6 +988,14 @@ def replay_drain_queue(
             # platform message: mark the event so the model can tell it from
             # a fresh user message and answer it once, not per copy.
             event.redelivered = True
+            # Lifecycle receipt, proved per-record (see
+            # ``drain_restart_receipt_for_record``): only a record stamped by
+            # a finished restart's draining process earns it, and the note is
+            # idempotent — a repeated replay of the same record produces the
+            # same one receipt on that turn, never a stacked one.
+            _receipt = drain_restart_receipt_for_record(_record)
+            if _receipt is not None:
+                _mark_drain_restart_receipt(event, _receipt)
             runner._queue_or_replace_pending_event(session_key, event)
         injected[session_key] = adapter
 
