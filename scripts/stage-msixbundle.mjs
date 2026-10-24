@@ -16,6 +16,8 @@
 //  2. STORE ARCHIVE: re-upload the Store-submission .msix files (built by
 //     the win legs, prefixed Store-) to the tag archive. The Store is the
 //     distribution for those — they never touch a feed dir.
+//     NOTE: the store variant build is currently DISABLED (publish-win32-store
+//     is a dummy skip), so this step has no inputs until it is re-enabled.
 //
 // Usage (win runner, bash):
 //   node scripts/stage-msixbundle.mjs --tag vX.Y.Z [--variant bundled|light]

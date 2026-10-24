@@ -15,10 +15,9 @@ name: Desktop Bundled Release
 #   publish-win32-updater                   → App Installer feed
 #     (needs build-win32): releases/win32/<stable|nightly>/*.appinstaller +
 #       *.msixbundle (stage-msixbundle.mjs --variant bundled)
-#   publish-win32-store                     → PARALLEL job (needs build-win32):
-#     bundle the Store-*.msix into one universal Store .msixbundle and submit
-#     it to the Windows Store via the MSStore CLI (stable tags only — the
-#     Store never receives nightlies).
+#   publish-win32-store                     → DISABLED for now (dummy skip —
+#     the Store submission + store variant build are turned off; app
+#     installer is the update path)
 #   publish-darwin-updater                  → DISABLED (dummy skip — the
 #     darwin electron-updater arm was removed; nothing publishes a mac feed)
 #
@@ -49,16 +48,17 @@ name: Desktop Bundled Release
 # non-secret vars. scripts/r2-release.mjs derives the S3 endpoint from
 # the account id and needs only node — no npm ci, no extra deps.
 #
-# Windows Store submission (publish-win32-store, stable tags only):
-#   MSStore CLI via microsoft/microsoft-store-apppublisher. Credentials live
-#   in the release-signing environment:
+# Windows Store submission (publish-win32-store): DISABLED for now — the job
+# is a dummy skip and the store variant build is turned off. App installer
+# (releases/win32/<channel>/) is the update path. When re-enabling, the flow
+# is the MSStore CLI (microsoft/microsoft-store-apppublisher) with the
+# credentials in the release-signing environment:
 #     secrets: MS_STORE_TENANT_ID, MS_STORE_SELLER_ID, MS_STORE_CLIENT_ID,
 #              MS_STORE_CLIENT_SECRET
-#     vars:    MS_STORE_PRODUCT_ID (the Partner Center product ID — gates
-#              the job so it stays skipped until configured)
-#   Flow: msstore reconfigure → msstore publish <Store-*.msixbundle> -id
-#   The Store bundle is UNSIGNED on purpose — Partner Center re-signs on
-#   ingestion (see sign-msix.mjs).
+#     vars:    MS_STORE_PRODUCT_ID (the Partner Center product ID)
+#   msstore reconfigure → msstore publish <Store-*.msixbundle> -id
+# The Store bundle is UNSIGNED on purpose — Partner Center re-signs on
+# ingestion (see sign-msix.mjs).
 
 on:
   workflow_dispatch:
@@ -386,11 +386,11 @@ jobs:
           AZURE_TOKEN_CREDENTIALS: prod
         run: |
           node scripts/build-bundled-desktop.mjs --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
-          # The Store-submission MSIX is the same bundled payload re-packed
-          # with the Partner Center packaging identity (publish-win32-store
-          # bundles these into the universal Store .msixbundle and submits it;
-          # they also land in the tag archive, never a feed dir).
-          node scripts/build-bundled-desktop.mjs --tag="$HERMES_PAYLOAD_TAG" --variant=store
+          # The Store-submission variant build is DISABLED for now (publish-win32-store
+          # is a dummy skip). Re-enable: re-pack the same bundled payload with the
+          # Partner Center identity, bundle the two Store-*.msix into a universal
+          # Store .msixbundle (scripts/bundle-store-msixbundle.mjs), and submit via
+          # the MSStore CLI — see the commit that added the flow.
 
       - name: Audit bundle architecture
         shell: bash
@@ -402,9 +402,8 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          # The win32 legs' actual .msix + Store-.msix binaries: publish-win32-updater
-          # bundles the per-arch .msix for the feed, publish-win32-store bundles the
-          # Store-*.msix for the Windows Store submission.
+          # The win32 legs' actual .msix binaries: publish-win32-updater bundles
+          # the per-arch .msix for the App Installer feed.
           name: hermes-bundled-${{ matrix.target.label }}-${{ inputs.tag }}
           path: |
             apps/desktop/release/*.msix
@@ -415,28 +414,16 @@ jobs:
         if: inputs.upload_release == true
         shell: bash
         # Every artifact goes to releases/tag/<tag>/ (immutable staging).
-        # The publish-win32-updater / publish-win32-store jobs merge these
-        # into the feed / Store after the whole win32 matrix is green —
-        # never from a leg, so a failed leg cannot publish a partial feed.
+        # publish-win32-updater consumes the per-arch .msix to build the App
+        # Installer feed after the whole win32 matrix is green — never from a
+        # leg, so a failed leg cannot publish a partial feed.
         run: |
           shopt -s nullglob
-          # Store-*.msix are archived by the dedicated loop below — exclude
-          # them here so they are not uploaded twice.
           files=(apps/desktop/release/*.msix)
           if [ ${#files[@]} -eq 0 ]; then
             echo "::error::no release artifacts found"; exit 1
           fi
           for f in "${files[@]}"; do
-            case "$f" in
-              */Store-*) continue ;;  # archived by the Store loop below
-            esac
-            node scripts/r2-release.mjs put \
-              --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
-          done
-          # The Store-submission MSIX (built by the win legs) goes to the tag
-          # archive too — hidden from the builds table and never a feed dir.
-          for f in apps/desktop/release/Store-*.msix; do
-            [ -f "$f" ] || continue
             node scripts/r2-release.mjs put \
               --tag "$HERMES_PAYLOAD_TAG" --key "$(basename "$f")" --file "$f"
           done
@@ -600,138 +587,25 @@ jobs:
           # .msix to the tag archive (never a feed dir).
           node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled
 
-  # ── Windows Store submission (REAL — PARALLEL with publish-win32-updater) ─
-  # Bundles the two Store-*.msix into one universal Store .msixbundle and
-  # submits it to the Windows Store. Stable tags only: the Store must never
-  # receive a nightly (4-part monotonic version policy). Runs in PARALLEL
-  # with the updater channel job — both gate on build-win32 only.
+  # ── Windows Store submission (DISABLED for now — dummy skip) ──────────────
+  # The Store-submission flow (bundle Store-*.msix → universal Store
+  # .msixbundle → msstore publish) is turned off, and the store variant build
+  # in build-win32 is disabled with it. The App Installer feed
+  # (publish-win32-updater) is the update path. Kept as a dummy success so
+  # the dependency graph stays green. Re-enable: restore the store variant
+  # build step in build-win32, then rebuild this job from the MSStore CLI
+  # steps removed in this commit (bundle-store-msixbundle.mjs is still in the
+  # tree, and the original flow lives in the commit that added it).
   publish-win32-store:
-    name: Publish the Store submission to the Windows Store
+    name: Publish the Store submission to the Windows Store (disabled for now)
     needs: [validate, build-win32]
-    if: |
-      inputs.upload_release == true
-      && !contains(inputs.tag, '-nightly.')
-      && vars.MS_STORE_PRODUCT_ID != ''
-    runs-on: windows-2025
-    environment: release-signing
-    timeout-minutes: 60
-    env:
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
-      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-      MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}
-      MS_STORE_SELLER_ID: ${{ secrets.MS_STORE_SELLER_ID }}
-      MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
-      MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
-      MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
+    if: inputs.upload_release == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          # Privileged job: pin to the SHA validate admitted, not the tag.
-          ref: ${{ needs.validate.outputs.sha }}
-          fetch-tags: true
-
-      - name: Resolve toolchain pins from pm/lock.json
-        id: pins
+      - name: Disabled
         shell: bash
-        run: |
-          python -c '
-          import json
-          pkgs = json.load(open("pm/lock.json"))["packages"]
-          for tool in ("node", "npm", "uv"):
-              print(tool + "=" + pkgs[tool]["version"])
-          ' >> "$GITHUB_OUTPUT"
-
-      - name: Resolve toolchain cache key
-        id: toolchain
-        shell: bash
-        run: |
-          node -e '
-            const l = require("./package-lock.json")
-            const el = l.packages["apps/desktop/node_modules/electron"].version
-            const eb = l.packages["node_modules/electron-builder"].version
-            if (!el || !eb) process.exit(1)
-            console.log(`electron=${el}`)
-            console.log(`builder=${eb}`)
-          ' >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-node@v7.0.0 # immutable release. safe to pin.
-        with:
-          node-version: ${{ steps.pins.outputs.node }}
-
-      # makeappx for the Store bundle lives in the same winCodeSign toolset
-      # the win32 legs downloaded — restore the identical eb2 cache.
-      - name: Resolve electron's default download cache path
-        shell: bash
-        run: |
-          case "$RUNNER_OS" in
-            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
-            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
-            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
-          esac
-
-      - name: Cache electron + electron-builder toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ${{ github.workspace }}/.cache/electron-builder
-            ${{ github.workspace }}/.cache/electron
-            ${{ env.ELECTRON_DEFAULT_CACHE }}
-          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
-          restore-keys: |
-            eb2-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Download win legs' MSIX (incl. Store-*.msix)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: hermes-bundled-win32-*-${{ inputs.tag }}
-          path: apps/desktop/release
-          merge-multiple: true
-
-      - name: Bundle the Store submission MSIX
-        id: storebundle
-        shell: bash
-        run: |
-          # Prints the absolute bundle path on stdout (the machine-readable
-          # result); logs go to stderr.
-          bundle="$(node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG")"
-          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
-          echo "Store bundle: $bundle"
-
-      - name: Archive the Store bundle to the tag dir
-        shell: bash
-        run: |
-          # The per-arch Store-*.msix are already in the immutable archive
-          # (uploaded by the build legs); keep the assembled universal bundle
-          # there too as the record of exactly what was submitted.
-          node scripts/r2-release.mjs put \
-            --tag "$HERMES_PAYLOAD_TAG" \
-            --key "$(basename "${{ steps.storebundle.outputs.bundle }}")" \
-            --file "${{ steps.storebundle.outputs.bundle }}"
-
-      - name: Setup MSStore CLI
-        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
-
-      - name: Configure Store credentials
-        shell: bash
-        run: |
-          msstore reconfigure \
-            --tenantId "$MS_STORE_TENANT_ID" \
-            --sellerId "$MS_STORE_SELLER_ID" \
-            --clientId "$MS_STORE_CLIENT_ID" \
-            --clientSecret "$MS_STORE_CLIENT_SECRET"
-
-      - name: Publish the Store submission
-        shell: bash
-        run: |
-          # The universal Store .msixbundle is accepted directly by msstore
-          # publish (PackageFilesExtensionInclude: .msix/.msixbundle/.msixupload).
-          # Partner Center signs on ingestion — no signing here.
-          msstore publish "${{ steps.storebundle.outputs.bundle }}" -id "$MS_STORE_PRODUCT_ID"
+        run: echo "::notice::Windows Store submission is disabled for now — app installer feeds (publish-win32-updater) are the update path; re-enable the MSStore CLI flow when ready"
 
   # ── macOS updater channel (DISABLED — dummy skip) ─────────────────────────
   # No macOS updater arm exists (darwin electron-updater was removed in
