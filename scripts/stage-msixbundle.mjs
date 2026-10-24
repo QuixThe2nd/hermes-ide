@@ -197,7 +197,7 @@ if (process.env.AZURE_SIGN_ENDPOINT && process.env.AZURE_SIGN_ACCOUNT && process
     const dotnetRoot = resolveDotnetRuntimeDir()
     if (dotnetRoot) signEnv.DOTNET_ROOT = dotnetRoot
     execFileSync(signtool, [
-      'sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', 'http://timestamp.acs.microsoft.com',
+      'sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', 'http://timestamp.digicert.com',
       '/dlib', dlib, '/dmdf', metaPath, bundle
     ], { stdio: 'inherit', env: signEnv })
     execFileSync(signtool, ['verify', '/pa', bundle], { stdio: 'inherit' })

@@ -260,7 +260,7 @@ export function signChunk(files, opts) {
     'sign',
     '/fd', 'SHA256',
     '/td', 'SHA256',
-    '/tr', 'http://timestamp.acs.microsoft.com',
+    '/tr', 'http://timestamp.digicert.com',
     '/dlib', opts.dlib,
     '/dmdf', opts.metadataPath,
     ...files
