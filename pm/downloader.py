@@ -125,12 +125,6 @@ def _existing_dest_ok(source: "Source") -> bool:
         return False
 
 
-def _default_partials() -> Path:
-    from pm import paths
-
-    return paths.store_root() / "partials"
-
-
 # `pm gc` must not delete partials an in-flight download is still writing.
 # A sidecar's mtime is the heartbeat: it is (re)written whenever a download
 # pauses or errors, and the .part grows on every chunk. Anything touched
@@ -197,7 +191,12 @@ class Download:
         self.sources = [Source(s.url, Path(s.dest), s.sha256) for s in sources]
         self.resume = resume
         self.connections = max(1, int(connections))
-        self.partials_dir = Path(partials_dir) if partials_dir else _default_partials()
+        if partials_dir:
+            self.partials_dir = Path(partials_dir)
+        else:
+            from pm import paths
+
+            self.partials_dir = paths.partials_root()
         self._paused = threading.Event()
 
     def pause(self) -> None:

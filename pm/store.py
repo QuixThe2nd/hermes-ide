@@ -109,11 +109,11 @@ def download(url: str, dest: Path, sha256: str, progress=None) -> Path:
     """Fetch url into dest dir, hash-verified, via the resumable downloader.
     The digest is proven before the caller ever sees the file.
     ``progress(done, total)`` ticks per chunk — a several-hundred-MB engine
-    archive on a slow line must never look hung. Partial state lives in the
-    store's managed partials area (outside scratch, keyed by sha256(url)), so
-    an interrupted = failed fetch resumes on the next call instead of
-    re-fetching the whole archive. Non-https/non-loopback urls are refused by
-    Download itself (ValueError)."""
+    archive on a slow line must never look hung. Partial state lives in
+    the downloader's writable partials area (outside scratch, keyed by
+    sha256(url)), so an interrupted = failed fetch resumes on the next
+    call instead of re-fetching the whole archive. Non-https/non-loopback
+    urls are refused by Download itself (ValueError)."""
     from pm.downloader import Download, Source
 
     dest.mkdir(parents=True, exist_ok=True)

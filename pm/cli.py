@@ -320,31 +320,33 @@ def _gc_store(store, facts) -> tuple[int, int]:
     (removed, kept).
     """
     from pm.downloader import gc_protected_names
+    from pm import paths
 
-    if not store.root.is_dir():
+    partials_dir = paths.partials_root()
+    if not store.root.is_dir() and not partials_dir.is_dir():
         return (0, 0)
     removed = 0
     with store.install_lock():
         facts.reload()
         keep = facts.entries_in_use()
         # Partials an in-flight (or recently interrupted) download still
-        # owns must survive the sweep.
-        protected_partials = gc_protected_names(store.root / "partials")
+        # owns must survive the sweep. They live in the writable partials
+        # area, NOT the store root, so sweep that area directly.
+        protected_partials = gc_protected_names(partials_dir)
+        if partials_dir.is_dir():
+            for child in sorted(partials_dir.iterdir()):
+                if child.name in protected_partials:
+                    continue
+                print(f"removing partials/{child.name}")
+                if child.is_dir():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    try:
+                        child.unlink()
+                    except OSError:
+                        pass
         for item in sorted(store.root.iterdir()):
             if not item.is_dir() or item.name.startswith("."):
-                continue
-            if item.name == "partials" and protected_partials:
-                for child in sorted(item.iterdir()):
-                    if child.name in protected_partials:
-                        continue
-                    print(f"removing {item.name}/{child.name}")
-                    if child.is_dir():
-                        shutil.rmtree(child, ignore_errors=True)
-                    else:
-                        try:
-                            child.unlink()
-                        except OSError:
-                            pass
                 continue
             if item.name in keep:
                 continue

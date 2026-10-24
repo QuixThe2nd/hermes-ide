@@ -352,15 +352,16 @@ def test_adopt_refuses_when_fact_lacks_identity(pm_env):
 
 
 def test_gc_protects_in_flight_partials(pm_env):
-    """gc sweeps the store root, but partials an in-flight download still
-    owns (fresh mtimes) survive; stale partials are swept."""
+    """gc sweeps the store root and the partials area, but partials an
+    in-flight download still owns (fresh mtimes) survive; stale partials
+    are swept."""
     from pm.cli import cmd_gc
 
     env = pm_env
     runtime = env["runtime"]
     runtime.mkdir(parents=True, exist_ok=True)
-    partials = runtime / "partials"
-    partials.mkdir()
+    partials = paths.partials_root()
+    partials.mkdir(parents=True, exist_ok=True)
     fresh = partials / "abc.part"
     fresh.write_bytes(b"x")
     stale = partials / "old.part"

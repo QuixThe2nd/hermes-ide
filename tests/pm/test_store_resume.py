@@ -67,7 +67,7 @@ def test_store_fetch_resumes_interrupted_download(tmp_path, dl_server, monkeypat
     url = _url(dl_server, f"/{name}")
 
     store = Store(runtime / "store")
-    partials = paths.store_root() / "partials"
+    partials = paths.partials_root()
     key = hashlib.sha256(url.encode("utf-8")).hexdigest()
 
     # First fetch: the server drops the connection ~halfway through the body,
