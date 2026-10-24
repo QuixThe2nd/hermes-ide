@@ -1055,12 +1055,26 @@ def _handle_delegate_claude_agent(args, **kw):
     )
 
 
+def _handle_delegate_claude_agent_alias(args, **kw):
+    """Hidden legacy alias (advertise=False, same precedent as delegate_task).
+
+    The model-facing surface is the unified ``delegate_agent(backend="claude")``;
+    this name stays dispatchable forever — replayed transcripts, gateway
+    name-keyed correlation and receipts keep working — and forwards every
+    argument verbatim with ``backend`` preset.
+    """
+    from tools.delegate_tool import _delegate_agent_handler
+
+    return _delegate_agent_handler({**args, "backend": "claude"}, **kw)
+
+
 registry.register(
     name="delegate_claude_agent",
     toolset="delegation",
     schema=DELEGATE_CLAUDE_AGENT_SCHEMA,
-    handler=_handle_delegate_claude_agent,
+    handler=_handle_delegate_claude_agent_alias,
     check_fn=check_claude_agent_requirements,
     emoji="🤖",
     max_result_size_chars=100_000,
+    advertise=False,
 )

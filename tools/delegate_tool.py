@@ -621,6 +621,8 @@ _DESCRIPTION_HEAD = (
     "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
+    # No backend prose here: the compaction ceiling leaves no room, and the
+    # `backend` parameter's own description carries the routing contract.
     "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
 )
 
@@ -674,6 +676,65 @@ DELEGATE_TASK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            # ── Unified delegation backend ────────────────────────────────────
+            # The one model-facing delegation dispatch surface: backend routes
+            # to the subagent engine (default), the Claude Code CLI handler, or
+            # the Cursor My Machines cloud handler. The legacy names
+            # delegate_claude_agent / delegate_cursor_agent stay dispatchable
+            # as hidden aliases that preset backend and forward verbatim.
+            "backend": _p(
+                "string",
+                "Which delegate engine runs this call. 'subagent' (default): spawn the native "
+                "isolated-context children described below (tasks=[...]). 'claude': delegate one dev "
+                "task to the Claude Code CLI in `workdir` — medium/large jobs, `goal` should start "
+                "with '/goal <condition>'. 'cursor': delegate to a Cursor My Machines cloud agent "
+                "built from workdir's pushed GitHub origin — small/medium jobs, nothing runs on this "
+                "host. claude/cursor take `goal` + `workdir` (never `tasks`) and validate their own "
+                "parameters; a missing prerequisite binary is a clear error, never a silent skip.",
+                enum=["subagent", "claude", "cursor"],
+            ),
+            "goal": _p(
+                "string",
+                "The task brief. REQUIRED for backend=claude/cursor (their `task`): a self-contained dev "
+                "task, phrased as a verifiable done condition. For backend=claude start it with "
+                "'/goal <condition>' to run goal mode headless (auto-continues until done; over-4000-char "
+                "conditions are auto-spilled to <workdir>/.hermes-claude-goal-brief.md). For "
+                "backend=subagent prefer `tasks` (this is the legacy single-task shape).",
+            ),
+            "workdir": _p(
+                "string",
+                "backend=claude/cursor only: absolute path to the target git repo / workspace directory.",
+            ),
+            "model": _p(
+                "string",
+                "backend=claude/cursor only: model for the run. claude: names containing 'kimi' route to "
+                "the claude-kimi wrapper, everything else to claude-glm (omit for the wrapper's pinned "
+                "model). cursor: cloud agent model id (omit for the CLI-configured default).",
+            ),
+            "timeout_seconds": {
+                "type": "integer",
+                "description": (
+                    "backend=claude/cursor only: maximum wall-clock seconds before the run is "
+                    "terminated. 0 (default) means no limit at all — a quiet run is never killed "
+                    "for silence. Positive values clamp to the backend's min/max."
+                ),
+                "default": 0,
+            },
+            "allowed_tools": _p(
+                "string",
+                "backend=claude only: comma-separated list of tools Claude Code may use.",
+            ),
+            "permission_mode": _p(
+                "string",
+                "backend=claude only: Claude Code permission mode. 'acceptEdits' auto-approves file "
+                "edits; 'plan' only plans without writing.",
+                enum=["acceptEdits", "plan"],
+            ),
+            "force": _p(
+                "boolean",
+                "backend=cursor only: accepted for compatibility; never enables API-side "
+                "auto-created PRs or reviewer requests.",
+            ),
             # The handler also accepts the legacy single-goal shape (top-level `goal`/`context`/`output_schema`),
             # wrapped into a one-entry batch at dispatch, and a per-task `role` (legacy, ignored: capability is
             # depth-derived). Both unadvertised on purpose (old transcripts only); do not re-add. No maxItems — the
@@ -798,27 +859,136 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
     return [{k: v for k, v in t.items() if k not in _MODEL_HIDDEN_TASK_FIELDS} if isinstance(t, dict) else t for t in tasks]
 
 
-def _delegate_agent_handler(args: dict, **kw):
-    """Shared dispatch body for ``delegate_agent`` and its legacy alias.
+# ── Unified backend routing ─────────────────────────────────────────────────
+# delegate_agent is the ONE model-facing delegation dispatch surface. backend
+# routes to the subagent engine (default), the existing Claude Code CLI
+# handler, or the existing Cursor My Machines cloud handler; the old two-tool
+# split stays dispatchable as hidden aliases that preset backend and forward
+# every argument verbatim (same precedent as the delegate_task alias).
 
-    The alias forwards ``background`` verbatim, so the mode is decided solely
-    by the argument for BOTH names — an aliased dispatch can never reintroduce
-    context-dependent semantics.
-    """
-    return delegate_agent(
-        goal=args.get("goal"),
-        context=args.get("context"),
-        tasks=_strip_model_hidden_task_fields(args.get("tasks")),
-        max_iterations=args.get("max_iterations"),
-        role=args.get("role"),
-        background=_model_background_value(args, kw.get("parent_agent")),
-        output_schema=args.get("output_schema"),
-        images=args.get("images"),
-        action=args.get("action"),
-        subagent_id=args.get("subagent_id"),
-        message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
+_BACKENDS = ("subagent", "claude", "cursor")
+
+# Parameters meaningful to exactly one backend family. A call mixing families
+# is a model error: refused with a clear message naming the offending
+# parameter and the backend it belongs to, never silently dropped.
+_SUBAGENT_ONLY_PARAMS = (
+    "tasks", "context", "output_schema", "images", "action", "subagent_id", "message", "max_iterations", "role",
+)
+_CLAUDE_ONLY_PARAMS = ("allowed_tools", "permission_mode")
+_CURSOR_ONLY_PARAMS = ("force",)
+# Shared by both external backends; forwarded verbatim when present.
+_EXTERNAL_SHARED_PARAMS = ("model", "timeout_seconds", "background")
+
+
+def _normalize_backend(value: Any) -> str:
+    """'' | None | unknown casing -> 'subagent'; otherwise the lowered value (caller validates membership)."""
+    return str(value or "").strip().lower() or "subagent"
+
+
+def _is_external_backend(value: Any) -> bool:
+    """True when *value* names a non-subagent delegate backend (claude / cursor)."""
+    return _normalize_backend(value) in ("claude", "cursor")
+
+
+def _backend_param_error(backend: str, bad_params: list) -> Optional[str]:
+    if not bad_params:
+        return None
+    return (
+        f"delegate_agent(backend={backend}) does not accept: {', '.join(sorted(bad_params))}. "
+        "Those parameters belong to a different backend; re-issue the call with only this "
+        "backend's parameters (goal, workdir, model, timeout_seconds, background"
+        + (", allowed_tools, permission_mode" if backend == "claude" else "")
+        + (", force" if backend == "cursor" else "")
+        + ")."
     )
+
+
+def _external_backend_handler(backend: str):
+    """Per-backend prerequisite check (availability moved off check_fn to dispatch)
+    plus the existing model-facing handler. Returns ``(handler, error)``."""
+    if backend == "claude":
+        from tools.claude_agent_tool import (
+            _handle_delegate_claude_agent, check_claude_agent_requirements,
+        )
+        if not check_claude_agent_requirements():
+            return None, tool_error(
+                "backend=claude requires the Claude Code wrapper binary (claude-glm / claude-kimi at "
+                "~/.local/bin, on PATH, or via CLAUDE_GLM_BIN / CLAUDE_KIMI_BIN); none was found."
+            )
+        return _handle_delegate_claude_agent, None
+    from tools.cursor_agent_tool import (
+        _handle_delegate_cursor_agent, check_cursor_agent_requirements,
+    )
+    if not check_cursor_agent_requirements():
+        return None, tool_error(
+            "backend=cursor requires the Cursor Agent CLI binary (`agent` on PATH or "
+            "~/.local/bin/agent); it was not found."
+        )
+    return _handle_delegate_cursor_agent, None
+
+
+def _delegate_agent_handler(args: dict, **kw):
+    """Shared dispatch body for ``delegate_agent`` and its legacy aliases.
+
+    ``backend`` (default subagent) routes the call; every other argument is
+    forwarded verbatim. ``background`` is decided exactly once — the subagent
+    path resolves it via ``_model_background_value``, the external backends
+    receive the argument untouched and resolve it in their own handler — so an
+    aliased dispatch can never reintroduce context-dependent mode decisions.
+    """
+    backend = _normalize_backend(args.get("backend"))
+    if backend not in _BACKENDS:
+        return tool_error(
+            f"Unknown backend {args.get('backend')!r} for delegate_agent; use one of {list(_BACKENDS)}."
+        )
+
+    if backend == "subagent":
+        err = _backend_param_error(backend, [p for p in _CLAUDE_ONLY_PARAMS + _CURSOR_ONLY_PARAMS if p in args])
+        if err:
+            return err
+        return delegate_agent(
+            goal=args.get("goal"),
+            context=args.get("context"),
+            tasks=_strip_model_hidden_task_fields(args.get("tasks")),
+            max_iterations=args.get("max_iterations"),
+            role=args.get("role"),
+            background=_model_background_value(args, kw.get("parent_agent")),
+            output_schema=args.get("output_schema"),
+            images=args.get("images"),
+            action=args.get("action"),
+            subagent_id=args.get("subagent_id"),
+            message=args.get("message"),
+            parent_agent=kw.get("parent_agent"),
+        )
+
+    # External backends (claude / cursor): validate the parameter family, then
+    # forward to the existing handler with `goal` mapped to its `task` (an
+    # alias-replayed old-style `task` argument is honoured too).
+    bad = [p for p in _SUBAGENT_ONLY_PARAMS if p in args]
+    bad += [p for p in (_CURSOR_ONLY_PARAMS if backend == "claude" else _CLAUDE_ONLY_PARAMS) if p in args]
+    err = _backend_param_error(backend, bad)
+    if err:
+        return err
+    goal = args.get("goal")
+    if goal is None:
+        goal = args.get("task")
+    if not goal or not str(goal).strip():
+        return tool_error(f"goal is required for delegate_agent(backend={backend}).")
+    workdir = args.get("workdir")
+    if not workdir or not str(workdir).strip():
+        return tool_error(f"workdir is required for delegate_agent(backend={backend}).")
+
+    handler, err = _external_backend_handler(backend)
+    if err:
+        return err
+    forwarded: Dict[str, Any] = {"task": str(goal), "workdir": str(workdir)}
+    for p in _EXTERNAL_SHARED_PARAMS:
+        if args.get(p) is not None:
+            forwarded[p] = args.get(p)
+    for p in (_CLAUDE_ONLY_PARAMS if backend == "claude" else _CURSOR_ONLY_PARAMS):
+        if args.get(p) is not None:
+            forwarded[p] = args.get(p)
+    return handler(forwarded, **kw)
 
 
 registry.register(

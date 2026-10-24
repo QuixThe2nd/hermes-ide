@@ -1818,6 +1818,28 @@ def _execute_cloud_delegation(
     return result_json
 
 
+def _is_cursor_delegation_function(function: Dict[str, Any]) -> bool:
+    """True when an assistant tool-call function is a cursor delegation.
+
+    Matches both spellings: the hidden legacy alias ``delegate_cursor_agent``
+    (replayed transcripts) and the unified ``delegate_agent`` carrying
+    ``backend="cursor"`` in its arguments.
+    """
+    name = str(function.get("name") or "")
+    if name == "delegate_cursor_agent":
+        return True
+    if name != "delegate_agent":
+        return False
+    try:
+        call_args = json.loads(str(function.get("arguments") or "{}"))
+    except json.JSONDecodeError:
+        return False
+    return (
+        isinstance(call_args, dict)
+        and str(call_args.get("backend") or "").strip().lower() == "cursor"
+    )
+
+
 def _find_dangling_delegate_cursor_call(
     agent_history: List[Dict[str, Any]],
 ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
@@ -1844,7 +1866,7 @@ def _find_dangling_delegate_cursor_call(
         return None
     for call in last.get("tool_calls") or []:
         function = call.get("function") or {}
-        if str(function.get("name") or "") != "delegate_cursor_agent":
+        if not _is_cursor_delegation_function(function):
             continue
         call_id = str(call.get("id") or call.get("call_id") or "")
         if call_id in unanswered:
@@ -1986,7 +2008,7 @@ def _envelope_answered_call(
             continue
         for call in msg.get("tool_calls") or []:
             function = call.get("function") or {}
-            if str(function.get("name") or "") != "delegate_cursor_agent":
+            if not _is_cursor_delegation_function(function):
                 continue
             cid = str(call.get("id") or call.get("call_id") or "")
             if cid:
@@ -2029,7 +2051,7 @@ def recover_delegate_cursor_agent_history(
         if isinstance(last, dict) and last.get("role") == "assistant":
             for call in last.get("tool_calls") or []:
                 function = call.get("function") or {}
-                if str(function.get("name") or "") == "delegate_cursor_agent":
+                if _is_cursor_delegation_function(function):
                     last_call = call
                     break
         if last_call is not None:
@@ -2851,12 +2873,26 @@ def _handle_delegate_cursor_agent(args, **kw):
     )
 
 
+def _handle_delegate_cursor_agent_alias(args, **kw):
+    """Hidden legacy alias (advertise=False, same precedent as delegate_task).
+
+    The model-facing surface is the unified ``delegate_agent(backend="cursor")``;
+    this name stays dispatchable forever — replayed transcripts, restart
+    recovery and receipts keep working — and forwards every argument verbatim
+    with ``backend`` preset.
+    """
+    from tools.delegate_tool import _delegate_agent_handler
+
+    return _delegate_agent_handler({**args, "backend": "cursor"}, **kw)
+
+
 registry.register(
     name="delegate_cursor_agent",
     toolset="delegation",
     schema=CURSOR_AGENT_SCHEMA,
-    handler=_handle_delegate_cursor_agent,
+    handler=_handle_delegate_cursor_agent_alias,
     check_fn=check_cursor_agent_requirements,
     emoji="🖥️",
     max_result_size_chars=100_000,
+    advertise=False,
 )

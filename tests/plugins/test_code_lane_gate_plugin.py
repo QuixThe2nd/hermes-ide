@@ -164,8 +164,8 @@ class TestOptOut:
 def _assert_block(out) -> None:
     assert isinstance(out, dict)
     assert out["action"] == "block"
-    assert "delegate_cursor_agent" in out["message"]
-    assert "delegate_claude_agent" in out["message"]
+    assert 'backend="cursor"' in out["message"]
+    assert 'backend="claude"' in out["message"]
     assert "CODE_LANE_GATE_E2E=0" in out["message"]
 
 

@@ -216,9 +216,31 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     ),
     "manage_connections": _manage_connections,
     "setup_mcp": _setup_mcp_shim,
-    "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
-    "delegate_agent": lambda agent, args, ctx: agent._dispatch_delegate_agent(args),
+    "delegate_task": lambda agent, args, ctx: _dispatch_delegate_inline(agent, args, ctx),
+    "delegate_agent": lambda agent, args, ctx: _dispatch_delegate_inline(agent, args, ctx),
 }
+
+
+def _dispatch_delegate_inline(agent, args: dict, ctx: InlineToolContext):
+    """Inline delegate dispatch: the subagent fast path needs the live agent.
+
+    A backend-carrying call (delegate_agent(backend=claude|cursor)) routes to
+    the registry instead — the external handlers key spawn/restart receipts on
+    the session/tool-call ids only the registry dispatch path supplies.
+    """
+    from tools.delegate_tool import _is_external_backend
+
+    if _is_external_backend(args.get("backend")):
+        from tools.registry import registry
+
+        return registry.dispatch(
+            "delegate_agent",
+            args,
+            task_id=ctx.effective_task_id,
+            session_id=getattr(agent, "session_id", None) or None,
+            tool_call_id=ctx.tool_call_id,
+        )
+    return agent._dispatch_delegate_agent(args)
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three
 # names and before the remaining inline tools; ``message_agent`` falls through to the
