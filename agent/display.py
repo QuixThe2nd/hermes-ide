@@ -659,9 +659,604 @@ _DESCRIBE_SUBJECT_BUILDERS: dict[str, Callable[[str, dict], str | None]] = {
 }
 
 
+# ── describe: action-style tools (skill/cron/process/memory/discord/kanban) ──
+# Same posture as the builders above: fixed verb tables validated against each
+# tool's known action enum (never reflected from the raw argument), with only
+# allowlisted safe fields as subjects — IDs, names, targets, domains. Payloads
+# (command, code, content, message bodies, prompts, schedules) never render.
+
+def _describe_arg(args: dict, *keys: str) -> str | None:
+    """First non-empty string among *keys*, whitespace-normalised (IDs/names only)."""
+    for key in keys:
+        value = _describe_safe_str(args.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _describe_enum_label(table: dict[str, str], action: object) -> str | None:
+    """Label for *action* when it is a known enum value, else None (no reflection)."""
+    if not isinstance(action, str):
+        return None
+    return table.get(action.strip().lower())
+
+
+def _describe_action_key(args: dict) -> str | None:
+    """Whitespace-normalised lowercase ``action`` for comparisons, or None."""
+    action = args.get("action")
+    return action.strip().lower() if isinstance(action, str) else None
+
+
+def _describe_skill_phrase(_tool_name: str, args: dict) -> str | None:
+    name = _describe_arg(args, "name")
+    file_path = _describe_arg(args, "file_path")
+    if name is None and file_path is None:
+        return None
+    subject = f"{name} → {file_path}" if name and file_path else (name or file_path)
+    return f"Reading skill {subject}"
+
+
+def _describe_skills_list_phrase(_tool_name: str, args: dict) -> str | None:
+    category = _describe_arg(args, "category")
+    return f"Listing skills in {category}" if category else "Listing skills"
+
+
+_SKILL_MANAGE_DESCRIBE_ACTIONS = {
+    "create": "Creating skill", "edit": "Editing skill", "patch": "Editing skill",
+    "write_file": "Updating file in skill", "remove_file": "Removing file from skill",
+    "delete": "Deleting skill",
+}
+
+
+def _describe_skill_manage_op(op: object) -> str:
+    """One-line phrase for a skill_manage operation dict — name/path only, never contents."""
+    if not isinstance(op, dict):
+        return "Updating skill"  # malformed entry: safe generic verb, no reflection
+    label = _describe_enum_label(_SKILL_MANAGE_DESCRIBE_ACTIONS, op.get("action"))
+    if label is None:
+        label = "Updating skill"  # missing/unknown action: generic safe verb
+    name = _describe_arg(op, "name")
+    if name is not None:
+        label = f"{label} {name}"
+    file_path = _describe_arg(op, "file_path")
+    action = op.get("action")
+    action = action.strip().lower() if isinstance(action, str) else None
+    if file_path is not None and action in ("write_file", "remove_file"):
+        label = f"{label}: {file_path}"
+    return label
+
+
+def _describe_skill_manage_phrase(_tool_name: str, args: dict) -> str | None:
+    operations = args.get("operations")
+    if operations is not None:
+        # Current interface: every operation lives in ``operations``; there is
+        # no top-level ``action``. Empty/malformed arrays stay safe and content-free.
+        if not isinstance(operations, list) or not operations:
+            return "Updating skills"
+        phrases = [_describe_skill_manage_op(op) for op in operations[:3]]
+        extra = len(operations) - 3
+        summary = ", ".join(phrases)
+        return f"{summary}, +{extra} more" if extra > 0 else summary
+    action = _describe_action_key(args)
+    label = _describe_enum_label(_SKILL_MANAGE_DESCRIBE_ACTIONS, args.get("action"))
+    if label is None:
+        label = "Updating skill" if action is not None else None  # unknown action: generic safe verb
+        if label is None:
+            return None
+    name = _describe_arg(args, "name")
+    file_path = _describe_arg(args, "file_path")
+    if name is not None:
+        label = f"{label} {name}"
+    if file_path is not None and action in ("write_file", "remove_file"):
+        label = f"{label}: {file_path}"
+    return label
+
+
+_CRON_DESCRIBE_ACTIONS = {
+    "create": "Scheduling cron job", "list": "Listing cron jobs", "update": "Updating cron job",
+    "pause": "Pausing cron job", "resume": "Resuming cron job", "remove": "Removing cron job",
+    "run": "Running cron job",
+    # resnap re-adopts the *current model/inference settings* for unpinned jobs; it never reschedules.
+    "resnap": "Refreshing model settings for cron jobs",
+}
+
+# describe-only neutral phrase for cron tools called with wholly non-dict args.
+_CRON_NEUTRAL_TOOL_PHRASES = {"cronjob_manage": "Managing cron jobs", "cronjob": "Managing cron jobs"}
+
+
+def _describe_cronjob_phrase(_tool_name: str, args: dict) -> str | None:
+    action = _describe_action_key(args)
+    label = _describe_enum_label(_CRON_DESCRIBE_ACTIONS, args.get("action"))
+    if label is None:
+        # missing/null/unknown action (None, int, list, dict, bad string): never claim scheduling
+        return "Managing cron jobs"
+    subject = _describe_arg(args, "name", "job_id") if action != "list" else None
+    if subject is None and action == "create":
+        skills = args.get("skills")
+        subject = skills[0] if isinstance(skills, list) and skills and isinstance(skills[0], str) else None
+        subject = subject or _describe_arg(args, "skill")
+    return f"{label} {subject}" if subject else label
+
+
+_PROCESS_DESCRIBE_ACTIONS = {
+    "list": "Listing terminal sessions", "poll": "Polling terminal session", "log": "Reading log of terminal session",
+    "wait": "Waiting for terminal session", "kill": "Stopping terminal session", "write": "Writing to terminal session",
+    "submit": "Submitting to terminal session", "close": "Closing terminal session", "handoff": "Handing off terminal session",
+}
+
+
+def _describe_process_manage_phrase(_tool_name: str, args: dict) -> str | None:
+    label = _describe_enum_label(_PROCESS_DESCRIBE_ACTIONS, args.get("action"))
+    if label is None:
+        return None
+    session_id = _describe_arg(args, "session_id")
+    return f"{label} {session_id}" if session_id and _describe_action_key(args) != "list" else label
+
+
+_MEMORY_DESCRIBE_ACTIONS = {"add": "Saving a memory", "replace": "Replacing a memory", "remove": "Removing a memory"}
+
+
+def _describe_memory_phrase(_tool_name: str, args: dict) -> str | None:
+    # target is a memory/user enum; invalid strings are never reflected.
+    target = _describe_arg(args, "target")
+    target = target if target in ("memory", "user") else None
+    if "operations" in args and args.get("action") is None:
+        # Current batch shape: operations with a top-level target, no action
+        # ("batch" is not a schema enum). Only the count renders — never contents.
+        operations = args.get("operations")
+        count = len(operations) if isinstance(operations, list) else 0
+        label = f"Updating memories ({count} operation{'s' if count != 1 else ''})"
+        return f"{label} ({target})" if target else label
+    label = _describe_enum_label(_MEMORY_DESCRIBE_ACTIONS, args.get("action"))
+    if label is None:
+        return None
+    return f"{label} ({target})" if target else label
+
+
+def _describe_send_message_phrase(_tool_name: str, args: dict) -> str | None:
+    target = _describe_arg(args, "target")
+    return f"Sending a message to {target}" if target else None  # body never renders
+
+
+def _describe_delegate_phrase(tool_name: str, args: dict) -> str | None:
+    # Spawn calls count agents but never render goals: they are prompt payloads.
+    label = _describe_enum_label({"list": "Listing subagents", "steer": "Steering subagent", "stop": "Stopping subagent"}, args.get("action"))
+    if label is None:
+        tasks = args.get("tasks")
+        if isinstance(tasks, list) and tasks:
+            count = sum(1 for t in tasks if isinstance(t, dict))
+            return f"Dispatching to {count} subagent{'s' if count != 1 else ''}" if count else get_tool_verb(tool_name)
+        return get_tool_verb(tool_name)
+    subagent_id = _describe_arg(args, "subagent_id")
+    return f"{label} {subagent_id}" if subagent_id and _describe_action_key(args) != "list" else label
+
+
+def _describe_delegate_child_phrase(label: str):
+    def _build(_tool_name: str, args: dict) -> str | None:
+        # workdir is a path, the only safe subject; the task prompt never renders.
+        workdir = _describe_arg(args, "workdir")
+        return f"{label} in {workdir}" if workdir else label
+    return _build
+
+
+def _describe_delegate_assistant_phrase(_tool_name: str, args: dict) -> str | None:
+    # chat_name/chat_id identify the destination; goal is a prompt payload.
+    chat = _describe_arg(args, "chat_name", "chat_id")
+    return f"Delegating to a messaging assistant for {chat}" if chat else "Delegating to a messaging assistant"
+
+
+def _describe_delegate_research_phrase(_tool_name: str, args: dict) -> str | None:
+    # brief/research_questions are prompt payloads and never render; job ids are safe.
+    label = _describe_enum_label({
+        "start": "Starting background research", "list": "Listing research jobs",
+        "status": "Checking research job", "cancel": "Cancelling research job",
+        "result": "Reading result of research job",
+    }, args.get("action"))
+    if label is None:
+        return "Managing research jobs"  # action is required; never claim an unknown/missing one is start
+    job_id = _describe_arg(args, "job_id")
+    return f"{label} {job_id}" if job_id and _describe_action_key(args) != "list" else label
+
+
+_DISPATCH_AGENT_DESCRIBE_ACTIONS = {
+    "start": "Starting an assistant mission", "status": "Checking assistant missions",
+    "cancel": "Cancelling an assistant mission", "complete": "Completing an assistant mission",
+}
+
+
+def _describe_dispatch_agent_phrase(_tool_name: str, args: dict) -> str | None:
+    label = _describe_enum_label(_DISPATCH_AGENT_DESCRIBE_ACTIONS, args.get("action"))
+    if label is None:
+        return "Managing assistant missions"  # required action missing/unknown: no start claim
+    action = _describe_action_key(args)
+    if action == "start":
+        subject = _describe_arg(args, "chat_name", "chat_id")
+    else:
+        subject = _describe_arg(args, "mission_id", "chat_id")
+    return f"{label} {subject}" if subject else label
+
+
+_PAPERCUTS_DESCRIBE_ACTIONS = {
+    "log": "Logging a workflow papercut", "list": "Listing workflow papercuts",
+    "stats": "Summarizing workflow papercuts", "resolve": "Resolving a workflow papercut",
+    "ignore": "Ignoring a workflow papercut",
+}
+
+
+def _describe_papercuts_phrase(_tool_name: str, args: dict) -> str | None:
+    label = _describe_enum_label(_PAPERCUTS_DESCRIBE_ACTIONS, args.get("action"))
+    if label is None:
+        return "Managing workflow papercuts"  # required action missing/unknown: no mutation claim
+    papercut_id = _describe_arg(args, "id")
+    return f"{label} {papercut_id}" if papercut_id and _describe_action_key(args) in ("resolve", "ignore") else label
+
+
+_RESOLVE_TICKET_DESCRIBE_ACTIONS = {
+    "propose": "Proposing to close a Discord ticket", "close": "Closing a Discord ticket",
+}
+
+
+def _describe_resolve_ticket_phrase(_tool_name: str, args: dict) -> str | None:
+    action = args.get("action") or "propose"  # function/schema default
+    label = _describe_enum_label(_RESOLVE_TICKET_DESCRIBE_ACTIONS, action)
+    if label is None:
+        return "Managing Discord ticket resolution"
+    channel_id = _describe_arg(args, "channel_id")
+    return f"{label} in channel {channel_id}" if channel_id else label
+
+
+_START_CONVERSATION_DESCRIBE_ACTIONS = {
+    "start": "Starting a conversation", "setup": "Provisioning a conversation channel",
+}
+
+
+def _describe_start_conversation_phrase(_tool_name: str, args: dict) -> str | None:
+    action = args.get("action") or "start"  # handler default
+    label = _describe_enum_label(_START_CONVERSATION_DESCRIBE_ACTIONS, action)
+    if label is None:
+        return "Managing conversations"
+    channel_name = _describe_arg(args, "channel_name") if action == "setup" else None
+    return f"{label} {channel_name}" if channel_name else label
+
+
+# discord and discord_admin have *separate* action enums; a shared table would
+# let one tool claim actions that only belong to the other. IDs are the only
+# channel/member subject we have — we never invent channel names.
+_DISCORD_DESCRIBE_ACTIONS = {
+    "fetch_messages": "Fetching recent Discord messages",
+    "search_members": "Searching Discord members",
+    "create_thread": "Creating Discord thread",
+}
+
+_DISCORD_ADMIN_DESCRIBE_ACTIONS = {
+    "list_guilds": "Listing Discord servers", "server_info": "Reading Discord server info",
+    "list_channels": "Listing Discord channels", "channel_info": "Reading Discord channel info",
+    "list_roles": "Listing Discord roles", "member_info": "Looking up a Discord member",
+    "list_pins": "Listing pinned Discord messages", "pin_message": "Pinning a Discord message",
+    "unpin_message": "Unpinning a Discord message", "delete_message": "Deleting a Discord message",
+    "add_role": "Adding a Discord role", "remove_role": "Removing a Discord role",
+}
+
+
+def _describe_discord_phrase(_tool_name: str, args: dict) -> str | None:
+    label = _describe_enum_label(_DISCORD_DESCRIBE_ACTIONS, args.get("action"))
+    if label is None:
+        return None
+    action = _describe_action_key(args)
+    channel_id = _describe_arg(args, "channel_id")
+    if action == "create_thread":
+        thread_name = _describe_arg(args, "name")
+        subject = f" {thread_name}" if thread_name else (f" in channel {channel_id}" if channel_id else "")
+        return label + subject
+    if action == "search_members":
+        query = _describe_arg(args, "query")
+        return f"{label} for {query}" if query else label
+    return f"{label} in channel {channel_id}" if channel_id else label
+
+
+# Subject field and connector vary by operation: a channel id is not a message
+# id, and role/member/server operations each have their own primary target.
+_DISCORD_ADMIN_DESCRIBE_SUBJECTS = {
+    "server_info": ("guild_id", "in server {}"),
+    "list_channels": ("guild_id", "in server {}"),
+    "list_roles": ("guild_id", "in server {}"),
+    "channel_info": ("channel_id", "in channel {}"),
+    "list_pins": ("channel_id", "in channel {}"),
+    "member_info": ("user_id", "{}"),
+    "pin_message": ("message_id", "{}"),
+    "unpin_message": ("message_id", "{}"),
+    "delete_message": ("message_id", "{}"),
+    "add_role": ("role_id", "{}"),
+    "remove_role": ("role_id", "{}"),
+}
+
+
+def _describe_discord_admin_phrase(_tool_name: str, args: dict) -> str | None:
+    label = _describe_enum_label(_DISCORD_ADMIN_DESCRIBE_ACTIONS, args.get("action"))
+    if label is None:
+        return None
+    subject_spec = _DISCORD_ADMIN_DESCRIBE_SUBJECTS.get(_describe_action_key(args))
+    if subject_spec is None:
+        return label
+    key, connector = subject_spec
+    subject = _describe_arg(args, key)
+    return f"{label} {connector.format(subject)}" if subject else label
+
+
+_DISCORD_GUESTS_DESCRIBE_ACTIONS = {
+    "setup": "Setting up Discord guest lounges", "add": "Adding Discord guest",
+    "remove": "Removing Discord guest",
+}
+
+
+def _describe_discord_guests_phrase(_tool_name: str, args: dict) -> str | None:
+    # action defaults to "list": discord_guests({}) is a valid list request.
+    action = args.get("action")
+    if action is None:
+        return "Listing Discord guests"
+    label = _describe_enum_label(_DISCORD_GUESTS_DESCRIBE_ACTIONS, action)
+    if label is None:
+        label = "Listing Discord guests" if _describe_action_key(args) == "list" else None
+        if label is None:
+            return None
+    # add/remove select a guest; user_id wins over member, per the tool schema.
+    # list/setup select no guest, so their labels never carry a suffix.
+    if _describe_action_key(args) not in ("add", "remove"):
+        return label
+    guest = _describe_arg(args, "user_id") or _describe_arg(args, "member")
+    return f"{label} {guest}" if guest else label
+
+
+_DISCORD_HISTORY_DESCRIBE_ACTIONS = {
+    "search": "Searching Discord history", "get": "Reading a Discord history message",
+    "context": "Reading Discord history context", "status": "Checking Discord history status",
+}
+
+
+def _describe_discord_history_phrase(_tool_name: str, args: dict) -> str | None:
+    label = _describe_enum_label(_DISCORD_HISTORY_DESCRIBE_ACTIONS, args.get("action"))
+    if label is None:
+        return None
+    if _describe_action_key(args) == "search":
+        query = _describe_arg(args, "query")
+        return f"{label} for {query}" if query else label
+    message_id = _describe_arg(args, "message_id")
+    return f"{label} {message_id}" if message_id else label
+
+
+def _describe_domain(url: object) -> str | None:
+    """Host of an http(s) URL, minus userinfo and port — never the path/query (creds, tokens).
+
+    ``urlsplit(...).hostname`` handles bracketed IPv6 literals (a naive
+    ``netloc.split(":")`` yields ``"["``) and rejects malformed netlocs.
+    """
+    text = _describe_safe_str(url)
+    if text is None:
+        return None
+    try:
+        parsed = urlsplit(text)
+        host = parsed.hostname
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not host:
+        return None
+    return host or None
+
+
+def _describe_browser_navigate_phrase(_tool_name: str, args: dict) -> str | None:
+    domain = _describe_domain(args.get("url"))
+    return f"Browsing {domain}" if domain else None
+
+
+def _describe_web_extract_phrase(_tool_name: str, args: dict) -> str | None:
+    urls = args.get("urls")
+    first = urls[0] if isinstance(urls, list) and urls else urls
+    domain = _describe_domain(first)
+    if domain is None:
+        return None
+    extra = len(urls) - 1 if isinstance(urls, list) and len(urls) > 1 else 0
+    return f"Reading {domain}" + (f" +{extra} more" if extra else "")
+
+
+def _describe_clarify_phrase(_tool_name: str, _args: dict) -> str | None:
+    return "Asking a clarifying question"  # question body never renders
+
+
+_KANBAN_STATUS_ENUM = frozenset({"triage", "todo", "ready", "running", "blocked", "done", "archived"})
+
+
+def _describe_kanban_list_phrase(_tool_name: str, args: dict) -> str | None:
+    status = _describe_arg(args, "status")
+    status = status if status in _KANBAN_STATUS_ENUM else None  # enum-validated, never reflected
+    return f"Listing Kanban tasks with status {status}" if status else "Listing Kanban tasks"
+
+
+# ── describe: fixed action-only labels for opaque/private payloads ──
+# Browser interactions, agent/research delegation, Hindsight, media: subjects
+# are keystrokes, prompts, credentials or generated content — all payload. The
+# operation itself is the whole useful, safe description.
+
+def _describe_fixed(label: str):
+    def _build(_tool_name: str, _args: dict) -> str | None:
+        return label
+    return _build
+
+
+def _describe_browser_ref_phrase(label: str):
+    def _build(_tool_name: str, args: dict) -> str | None:
+        ref = _describe_arg(args, "ref", "element", "index")
+        return f"{label} {ref}" if ref else label
+    return _build
+
+
+def _describe_browser_scroll_phrase(_tool_name: str, args: dict) -> str | None:
+    direction = _describe_arg(args, "direction")
+    direction = direction if direction in ("up", "down") else None
+    return f"Scrolling {direction}" if direction else "Scrolling the page"
+
+
+def _describe_terminal_phrase(_tool_name: str, args: dict) -> str | None:
+    session_id = _describe_arg(args, "session_id")
+    return f"Running a terminal command {session_id}" if session_id else "Running a terminal command"
+
+
+def _describe_x_search_phrase(_tool_name: str, args: dict) -> str | None:
+    query = _describe_safe_str(args.get("query"))
+    return f"Searching X for {query}" if query else "Searching X"
+
+
+def _describe_kanban_task_phrase(label: str):
+    def _build(_tool_name: str, args: dict) -> str | None:
+        task_id = _describe_arg(args, "task_id")
+        return f"{label} {task_id}" if task_id else label
+    return _build
+
+
+_DESCRIBE_SUBJECT_BUILDERS.update({
+    "skill_view": _describe_skill_phrase,
+    "skills_list": _describe_skills_list_phrase,
+    "skill_manage": _describe_skill_manage_phrase,
+    "cronjob_manage": _describe_cronjob_phrase, "cronjob": _describe_cronjob_phrase,  # legacy spelling
+    "process_manage": _describe_process_manage_phrase,
+    "memory": _describe_memory_phrase,
+    "send_message": _describe_send_message_phrase,
+    "delegate_task": _describe_delegate_phrase, "delegate_agent": _describe_delegate_phrase,  # legacy spelling
+    "delegate_claude_agent": _describe_delegate_child_phrase("Delegating to a Claude agent"),
+    "delegate_cursor_agent": _describe_delegate_child_phrase("Delegating to a Cursor agent"),
+    "delegate_assistant": _describe_delegate_assistant_phrase,
+    "delegate_research": _describe_delegate_research_phrase,
+    "dispatch_agent": _describe_dispatch_agent_phrase,
+    "moa_ask": _describe_fixed("Asking advisor models"),
+    "moa_debate": _describe_fixed("Running an advisor debate"),
+    "restart": _describe_fixed("Restarting the agent"),
+    "resolve_ticket": _describe_resolve_ticket_phrase,
+    "papercuts": _describe_papercuts_phrase,
+    "start_conversation": _describe_start_conversation_phrase,
+    "dev_pipeline_status": _describe_fixed("Checking the dev pipeline"),
+    "x_search": _describe_x_search_phrase,
+    "terminal": _describe_terminal_phrase,
+    "execute_code": _describe_fixed("Running code"),
+    "hindsight_retain": _describe_fixed("Saving to long-term memory"),
+    "hindsight_recall": _describe_fixed("Searching long-term memory"),
+    "hindsight_reflect": _describe_fixed("Reflecting on long-term memory"),
+    "image_generate": _describe_fixed("Generating an image"),
+    "text_to_speech": _describe_fixed("Synthesizing speech"),
+    "vision_analyze": _describe_fixed("Analyzing an image"),
+    "multi_tool_use.parallel": _describe_fixed("Running tools in parallel"),  # orchestration wrapper
+    "browser_navigate": _describe_browser_navigate_phrase,
+    "browser_back": _describe_fixed("Going back a page"),
+    "browser_click": _describe_browser_ref_phrase("Clicking page element"),
+    "browser_press": _describe_fixed("Pressing a key"),
+    "browser_scroll": _describe_browser_scroll_phrase,
+    "browser_snapshot": _describe_fixed("Taking a page snapshot"),
+    "browser_type": _describe_browser_ref_phrase("Typing into page element"),
+    "browser_console": _describe_fixed("Reading the browser console"),
+    "browser_get_images": _describe_fixed("Reading images from the page"),
+    "browser_vision": _describe_fixed("Inspecting the page visually"),
+    "browser_vault_list": _describe_fixed("Listing saved browser vault items"),
+    "browser_vault_save_login": _describe_fixed("Saving browser login credentials"),
+    "browser_vault_fill": _describe_fixed("Filling a saved browser vault item"),
+    "browser_vault_enter_code": _describe_fixed("Entering a vault security code"),
+    "browser_vault_unlock": _describe_fixed("Unlocking the credential vault"),
+    "discord": _describe_discord_phrase, "discord_admin": _describe_discord_admin_phrase,
+    "discord_guests": _describe_discord_guests_phrase,
+    "discord_history": _describe_discord_history_phrase,
+    "web_extract": _describe_web_extract_phrase,
+    "clarify": _describe_clarify_phrase,
+    "kanban_list": _describe_kanban_list_phrase,
+    "kanban_show": _describe_kanban_task_phrase("Reading Kanban task"),
+    "kanban_complete": _describe_kanban_task_phrase("Completing Kanban task"),
+    "kanban_block": _describe_kanban_task_phrase("Blocking Kanban task"),
+    "kanban_heartbeat": _describe_kanban_task_phrase("Sending Kanban heartbeat for"),
+    "kanban_request_review": _describe_kanban_task_phrase("Requesting review of Kanban task"),
+    "kanban_request_changes": _describe_kanban_task_phrase("Requesting changes on Kanban task"),
+    "kanban_comment": _describe_kanban_task_phrase("Commenting on Kanban task"),
+    "kanban_attach": _describe_kanban_task_phrase("Attaching a file to Kanban task"),
+    "kanban_attach_url": _describe_kanban_task_phrase("Attaching a URL to Kanban task"),
+})
+
+# The Discord MCP server exposes operation-in-name tools with camelCase fields
+# and no action argument. Only this validated suffix set maps to curated
+# semantics; arbitrary ``mcp__<server>__<name>`` tools are NOT reinterpreted as
+# native tools on name collision (unknown servers keep the generic fallback).
+_MCP_DISCORD_SERVER_RE = re.compile(r"^mcp__discord__discord_([a-z0-9_]+)$")
+
+_MCP_DISCORD_TOOL_LABELS = {
+    "read_messages": "Reading recent Discord messages",
+    "send": "Sending a Discord message",
+    "reply_to_forum": "Replying to a Discord forum post",
+    "create_forum_post": "Creating a Discord forum post",
+    "create_text_channel": "Creating a Discord text channel",
+    "create_category": "Creating a Discord category",
+    "create_webhook": "Creating a Discord webhook",
+    "edit_category": "Editing a Discord category",
+    "edit_webhook": "Editing a Discord webhook",
+    "delete_channel": "Deleting a Discord channel",
+    "delete_category": "Deleting a Discord category",
+    "delete_forum_post": "Deleting a Discord forum post",
+    "delete_message": "Deleting a Discord message",
+    "delete_webhook": "Deleting a Discord webhook",
+    "get_forum_channels": "Listing Discord forum channels",
+    "get_forum_post": "Reading a Discord forum post",
+    "get_server_info": "Reading Discord server info",
+    "login": "Signing in to Discord",
+    "add_reaction": "Adding a Discord reaction",
+    "add_multiple_reactions": "Adding Discord reactions",
+    "remove_reaction": "Removing a Discord reaction",
+    "send_webhook_message": "Sending a Discord webhook message",
+}
+
+# Safe camelCase subject field and wording per Discord MCP suffix: IDs/names
+# only — never message/content/token/webhookToken/topic. In particular,
+# channelId for read/send is a source/destination channel, not a message id,
+# and forum get/delete/reply identify an existing thread with threadId.
+_MCP_DISCORD_SUBJECTS = {
+    "read_messages": ("channelId", "in channel {}"),
+    "send": ("channelId", "to channel {}"),
+    "reply_to_forum": ("threadId", "{}"),
+    "create_forum_post": ("title", "{}"),
+    "create_text_channel": ("channelName", "{}"),
+    "create_category": ("name", "{}"),
+    "create_webhook": ("channelId", "in channel {}"),
+    "edit_category": ("categoryId", "{}"),
+    "edit_webhook": ("webhookId", "{}"),
+    "delete_channel": ("channelId", "{}"),
+    "delete_category": ("categoryId", "{}"),
+    "delete_forum_post": ("threadId", "{}"),
+    "delete_message": ("messageId", "{}"),
+    "delete_webhook": ("webhookId", "{}"),
+    "get_forum_channels": ("guildId", "in server {}"),
+    "get_forum_post": ("threadId", "{}"),
+    "get_server_info": ("guildId", "for server {}"),
+    "add_reaction": ("messageId", "to message {}"),
+    "add_multiple_reactions": ("messageId", "to message {}"),
+    "remove_reaction": ("messageId", "from message {}"),
+    "send_webhook_message": None,
+    "login": None,
+}
+
+
+def _describe_mcp_discord_phrase(tool_name: str, args: dict) -> str | None:
+    match = _MCP_DISCORD_SERVER_RE.match(tool_name)
+    if match is None:
+        return None
+    suffix = match.group(1)
+    label = _MCP_DISCORD_TOOL_LABELS.get(suffix)
+    if label is None:
+        return None
+    subject_spec = _MCP_DISCORD_SUBJECTS.get(suffix)
+    if subject_spec is None:
+        return label
+    key, connector = subject_spec
+    subject = _describe_arg(args, key)
+    return f"{label} {connector.format(subject)}" if subject else label
+
+
 def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
     builder = _DESCRIBE_SUBJECT_BUILDERS.get(tool_name)
-    return builder(tool_name, args) if builder is not None else None
+    if builder is not None:
+        return builder(tool_name, args)
+    return _describe_mcp_discord_phrase(tool_name, args)
 
 
 def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIBE_TOOL_MAX_LEN) -> str:
@@ -680,8 +1275,13 @@ def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIB
         derived = _describe_subject_phrase(tool_name, args)
         if derived:
             return _describe_cap(derived, max_len)
+    else:
+        # describe-only neutral fallback: non-dict args (None/list/string/number) for cron tools
+        neutral = _CRON_NEUTRAL_TOOL_PHRASES.get(tool_name)
+        if neutral:
+            return _describe_cap(neutral, max_len)
     verb = get_tool_verb(tool_name)
-    return verb if verb else (tool_name or "working")
+    return _describe_cap(verb or tool_name or "working", max_len)
 
 
 def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) -> str | None:
