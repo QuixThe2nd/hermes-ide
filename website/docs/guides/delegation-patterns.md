@@ -222,6 +222,7 @@ delegation:
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_agent`
 - **Default 250 iterations** — set `delegation.max_iterations` lower in `config.yaml` for fleets of simple tasks to save cost
 - **Async by default** — an omitted `background` detaches when the session can receive a late completion and blocks inline otherwise (one-shot chats, cron, workers, stateless endpoints). Pass `background=false` to always block this turn or `background=true` to require a handle; explicit values are never overridden. Setting `delegation.default_background: false` in config restores blocking-by-default for omitted arguments.
+- **Runtime state is delivered automatically** — each parent model request carries a compact harness-observed snapshot of its live background workers (accepted/queued, actually started, current observed activity), so the parent never needs to poll `action='list'` or tail logs to know whether a dispatch really started.
 - **Not durable** — a `background=true` delegation posts its result back later, but it remains tied to the owning session and Hermes process. Session closure, `/stop`, `/new`, or a process restart can cancel or strand in-progress work. Use `cronjob` or `terminal(background=True, notify_on_complete=True)` for work that must survive those boundaries.
 
 ---

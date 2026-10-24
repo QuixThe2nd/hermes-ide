@@ -104,7 +104,11 @@ class TurnRunner:
         q = self._ctx.progress_queue
         with suppress(Exception):
             while not q.empty():
-                q.get_nowait()
+                raw = q.get_nowait()
+                # Rows are discarded by design on this rail; a context-flush
+                # marker's waiter must still be released.
+                if self._is_flush_marker(raw):
+                    self._signal_flush_marker(raw)
 
     def _track_progress_result(self, result) -> None:
         """Remember a delivered progress/status message id for end-of-turn cleanup."""
@@ -522,7 +526,11 @@ class TurnRunner:
         changed = False
         try:
             while True:
-                changed = st.apply_event(self._ctx.progress_queue.get_nowait()) or changed
+                _raw = self._ctx.progress_queue.get_nowait()
+                if self._is_flush_marker(_raw):
+                    self._signal_flush_marker(_raw)
+                    continue
+                changed = st.apply_event(_raw) or changed
         except queue.Empty:
             pass
         except Exception:
@@ -543,6 +551,11 @@ class TurnRunner:
                     raw = ctx.progress_queue.get_nowait()
                 except queue.Empty:
                     await asyncio.sleep(0.1)
+                    continue
+                # Native rail drops plain text rows by design: a flush marker
+                # only needs its waiter released.
+                if self._is_flush_marker(raw):
+                    self._signal_flush_marker(raw)
                     continue
                 if not self._agent_interrupted() and st.apply_event(raw):
                     await self._task_card_publish(st)
@@ -574,6 +587,14 @@ class TurnRunner:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        # Oversized-row chunking (codebox only): a boxed row sliced across
+        # several messages leaves only its tail slices editable; _row_head_len
+        # counts the escaped chars of the CURRENT row already visible in the
+        # earlier chunks, and _row_slices how many trailing buffer lines belong
+        # to that row — unrelated earlier rows never contribute to either.
+        _row_tail: bool = False
+        _row_head_len: int = 0
+        _row_slices: int = 0
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -610,9 +631,17 @@ class TurnRunner:
         # marks only a landed edit as user-visible progress.
         return await ctx.deliver_visible(lambda: st.adapter.edit_message(**kwargs))
 
-    @staticmethod
-    def _progress_text(lines: list) -> str:
-        return "\n".join(str(line) for line in lines)
+    def _progress_text(self, st, lines: list) -> str:
+        # Code-box presentation (display.tool_progress_codebox): the whole
+        # accumulated group becomes ONE unlabelled fenced block, with inner ```
+        # escaped so already-fenced command/code previews render inside the box
+        # instead of breaking out. Only the editable (accumulate) lane boxes;
+        # "separate"-mode rows keep their plain per-row text.
+        from gateway.display_config import format_progress_group
+
+        return format_progress_group(
+            lines, bool(self._ctx.progress_codebox) and st.can_edit
+        )
 
     def _split_progress_groups(self, st, lines: list) -> list[list]:
         """Partition progress lines into platform-sized editable bubbles."""
@@ -620,7 +649,7 @@ class TurnRunner:
         current: list = []
         for line in lines:
             candidate = current + [line]
-            if current and st._progress_len_fn(self._progress_text(candidate)) > st._PROGRESS_TEXT_LIMIT:
+            if current and st._progress_len_fn(self._progress_text(st, candidate)) > st._PROGRESS_TEXT_LIMIT:
                 groups.append(current)
                 candidate = [line]
             current = candidate
@@ -646,7 +675,7 @@ class TurnRunner:
         if len(groups) <= 1:
             return False
         if st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(groups[0]))
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, groups[0]))
             if not result.success:
                 if getattr(result, "retryable", False):
                     logger.debug("[%s] Transient overflow edit failure — keeping can_edit=True", st.adapter.name)
@@ -656,11 +685,20 @@ class TurnRunner:
                 return False
             groups = groups[1:]
         for group in groups:
-            result = await self._send_progress_text(st, self._progress_text(group))
+            result = await self._send_progress_text(st, self._progress_text(st, group))
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
         # The newest continuation is the only mutable bubble: keep just its lines so later
         # edits update it instead of replaying the full transcript into new messages.
+        if st._row_tail:
+            # Only the current row's slices delivered into earlier groups count
+            # towards its head offset — never unrelated preceding rows.
+            kept = min(st._row_slices, len(groups[-1]))
+            st._row_head_len += sum(
+                len(line)
+                for line in st.progress_lines[len(st.progress_lines) - st._row_slices : len(st.progress_lines) - kept]
+            )
+            st._row_slices = kept
         st.progress_lines = groups[-1]
         return True
 
@@ -668,33 +706,98 @@ class TurnRunner:
     def _is_reset_marker(raw) -> bool:
         return isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__"
 
+    @staticmethod
+    def _is_flush_marker(raw) -> bool:
+        """Context-card ordering gate marker (gateway.run._CONTEXT_FLUSH_QUEUE_MARKER):
+        ('__flush__', asyncio.Event) — deliver what was absorbed ahead of it, then set."""
+        return isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__flush__"
+
+    def _signal_flush_marker(self, raw) -> None:
+        from gateway.run import _signal_context_flush_marker
+
+        _signal_context_flush_marker(raw)
+
+    async def _handle_flush_marker(self, st, raw) -> None:
+        """Force-deliver the absorbed bubble (throttle bypassed), then release the
+        gate's waiter. Interrupted turns keep row suppression — release only."""
+        if st.progress_lines and not self._agent_interrupted():
+            if not await self._roll_progress_overflow_if_needed(st):
+                await self._progress_send_or_edit(st, st.progress_lines[-1])
+        self._signal_flush_marker(raw)
+
     def _reset_progress_bubble(self, st) -> None:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
         st.progress_msg_id, st.progress_lines = None, []
+        st._row_tail, st._row_head_len, st._row_slices = False, 0, 0
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
+    def _codebox_active(self, st) -> bool:
+        return bool(self._ctx.progress_codebox) and st.can_edit
+
     def _progress_absorb(self, st, raw) -> Any:
-        """Fold a queue item into the bubble buffer; returns the line to render this tick."""
+        """Fold a queue item into the bubble buffer; returns the line to render this tick.
+
+        A boxed row whose escaped body plus fence overhead alone exceeds the platform cap is
+        sliced into limit-fitting lines (the group splitter can only partition between rows;
+        without this the native adapter split the row and later edits truncated the tail,
+        losing repeat counters).
+        """
+        from gateway.display_config import chunk_oversized_progress_row, repeat_row_text
+
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
                 return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+            if st._row_tail:
+                # The repeated row is already split across chunk messages. Slicing is
+                # prefix-stable, so earlier chunks hold an unchanged prefix — re-render
+                # only the editable tail with the counter instead of duplicating the head.
+                # Only the trailing lines of that row are replaced; earlier pending
+                # rows must stay visible.
+                tail = repeat_row_text(base_msg, count, self._codebox_active(st))[st._row_head_len:]
+                if self._codebox_active(st):
+                    slices = chunk_oversized_progress_row(tail, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
+                    if len(slices) > 1:
+                        st.progress_lines[-st._row_slices:] = slices
+                        st._row_slices = len(slices)
+                        return slices[-1]
+                st.progress_lines[-st._row_slices:] = [tail]
+                st._row_slices = 1
+                return tail
+            line = f"{base_msg} (×{count + 1})"
+            if self._codebox_active(st):
+                slices = chunk_oversized_progress_row(line, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
+                if len(slices) > 1:
+                    st.progress_lines[-1:] = slices
+                    st._row_tail, st._row_head_len, st._row_slices = True, 0, len(slices)
+                    return slices[-1]
+            st.progress_lines[-1] = line
             return st.progress_lines[-1]
+        if self._codebox_active(st):
+            slices = chunk_oversized_progress_row(raw, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
+            if len(slices) > 1:
+                st.progress_lines.extend(slices)
+                st._row_tail, st._row_head_len, st._row_slices = True, 0, len(slices)
+                return slices[-1]
         st.progress_lines.append(raw)
+        st._row_tail, st._row_slices = False, 0
         return raw
 
     async def _flush_progress_edit(self, st) -> None:
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             with suppress(Exception):
-                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, st.progress_lines))
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
         with suppress(Exception):
             while not ctx.progress_queue.empty():
                 raw = ctx.progress_queue.get_nowait()
+                if self._is_flush_marker(raw):
+                    # Cancelled drain: release the ordering gate's waiter.
+                    self._signal_flush_marker(raw)
+                    continue
                 if self._is_reset_marker(raw):
                     # Content-bubble marker during drain: close the current progress bubble
                     # and start a fresh one for tool lines that arrived after.
@@ -722,7 +825,7 @@ class TurnRunner:
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
         if st.can_edit and st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, st.progress_lines))
             if result.success:
                 return True
             if getattr(result, "retryable", False):
@@ -735,7 +838,7 @@ class TurnRunner:
             await self._send_progress_text(st, msg)
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
-        result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        result = await self._send_progress_text(st, self._progress_text(st, st.progress_lines) if st.can_edit else msg)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
         return True
@@ -764,6 +867,11 @@ class TurnRunner:
                     self._drain_progress_queue()
                     return
                 raw = ctx.progress_queue.get_nowait()
+                # Context-card ordering gate: force-deliver everything absorbed
+                # ahead of the marker, then release the gated first output.
+                if self._is_flush_marker(raw):
+                    await self._handle_flush_marker(st, raw)
+                    continue
                 # Drain silently when interrupted: events queued in the window between tool parse
                 # and interrupt processing should not render as bubbles.
                 if self._agent_interrupted():
@@ -992,6 +1100,7 @@ class TurnRunner:
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                         on_visible_progress=ctx.mark_visible_progress,
                         visible_delivery_lock=ctx.delivery_lock(),
+                        context_gate=ctx.wait_context_cards_delivered,
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
                     # #105341: a consumer created only for interim commentary (text streaming off)

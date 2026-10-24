@@ -26,6 +26,11 @@ class TurnContext:
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
+    # This turn's resolved tool_progress_codebox flag: accumulated progress
+    # groups render as one unlabelled fenced code block when true. Snapshotted
+    # at turn start like progress_grouping — never read from process-global
+    # config mid-turn.
+    progress_codebox: bool = False
     # This turn's resolved tool_preview_length (0 = unlimited), snapshotted at turn
     # start. Rendering reads this turn-owned value, never the process-global
     # agent.display budget: interleaved turns (Discord unlimited vs a capped
@@ -124,6 +129,106 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+    # Context-card ordering gate. ``_context_cards_queued`` flips True in
+    # progress_callback (agent thread, plain box write) when the first
+    # context.injected card lands on progress_queue — always BEFORE the first
+    # model call. ``_context_gate_state`` is the shared one-shot latch:
+    #   None  → gate not armed yet (nothing has waited so far)
+    #   Event → armed: the FIRST waiter enqueued the ("__flush__", event)
+    #           marker behind the cards; EVERY concurrent/ subsequent caller
+    #           awaits the SAME event, so they all observe actual drain
+    #           completion, never "someone started waiting".
+    #   True  → cleared (delivered, or drain-lifecycle release) — cheap no-op.
+    # ``_progress_task`` is the turn's OWN progress drain task
+    # (TurnRunner.send_progress_messages), bound by the turn setup that
+    # creates it. Its lifecycle — not any timer — is the gate's shutdown
+    # signal: a task that never started, or that already ended, cancelled or
+    # failed, can never deliver the marker, so the gate releases immediately.
+    _context_cards_queued: list = field(default_factory=lambda: [False])
+    _context_gate_state: list = field(default_factory=lambda: [None])
+    _progress_task: list = field(default_factory=lambda: [None])
+
+    def bind_progress_task(self, task) -> None:
+        """Record the turn's owning progress-drain task (the
+        ``asyncio.create_task(send_progress_messages())`` started by the turn
+        setup). Its lifecycle is the ordering gate's shutdown signal — see
+        ``wait_context_cards_delivered``."""
+        self._progress_task[0] = task
+
+    async def wait_context_cards_delivered(self) -> None:
+        """Ordering gate for the turn's visible assistant output.
+
+        The progress drain (``send_progress_messages``) polls on a 0.3s cadence
+        and throttles edits to 1.5s, while stream/interim/final output reaches
+        the user on separate paths that only share the ACTIVE-I/O delivery lock —
+        queued context cards could still be sitting in ``progress_queue`` when the
+        reply that used them becomes visible. The missing signal is queue-
+        admission completion, so the first caller enqueues a ``("__flush__",
+        event)`` marker BEHIND everything already queued (queue.Queue is FIFO, so
+        all context cards injected before the first model call precede it) and
+        waits for the drain to deliver what it absorbed and set the event.
+
+        Completion is SHARED: concurrent callers await the same event, so no
+        second output lane can slip past while the first is still gated. There
+        is no invented timeout: the wait ends when the marker is set, or when
+        the turn's OWN progress task (``_progress_task``, bound at turn setup)
+        ends — a drain that never started, or already returned, was cancelled
+        or failed can never deliver the marker, so the gate releases with
+        ordering degraded to the pre-fix behavior instead of stalling the
+        reply. A transport-hung send stays the transport's problem: its own
+        timeouts/cancellation end the task, which ends this wait. A waiter
+        cancelled from outside re-raises without touching the shared event or
+        the progress worker. No cards queued / no progress queue / stale turn
+        → immediate return."""
+        import asyncio as _asyncio
+
+        state = self._context_gate_state[0]
+        if state is True:
+            return
+        if state is None:
+            # Arming is synchronous on the turn's event loop (all gate callers
+            # are loop tasks), so check-and-set here is atomic — exactly one
+            # caller can ever enqueue the marker.
+            q = self.progress_queue
+            if (
+                q is None
+                or not self._context_cards_queued[0]
+                or not self._run_still_current()
+            ):
+                self._context_gate_state[0] = True
+                return
+            ev = _asyncio.Event()
+            try:
+                q.put(("__flush__", ev))
+            except Exception:
+                # Unwritable/closed queue: nothing can ever drain it.
+                self._context_gate_state[0] = True
+                return
+            self._context_gate_state[0] = ev
+            state = ev
+        if state.is_set():
+            self._context_gate_state[0] = True
+            return
+        task = self._progress_task[0]
+        if task is None or task.done():
+            # Drain never started or already ended (returned, cancelled,
+            # failed): nothing will ever set the marker — release now.
+            self._context_gate_state[0] = True
+            return
+        waiter = _asyncio.ensure_future(state.wait())
+        try:
+            # First of: marker delivered (event set) OR the drain task ended.
+            # If the task ends after delivering everything the event is
+            # already set, so this races only against a drain that stopped
+            # without (or before) delivering — exactly the release case.
+            await _asyncio.wait({waiter, task}, return_when=_asyncio.FIRST_COMPLETED)
+        except _asyncio.CancelledError:
+            # This waiter was cancelled: leave the shared event armed for the
+            # other lanes, never cancel the progress worker, and re-raise.
+            raise
+        finally:
+            waiter.cancel()
+        self._context_gate_state[0] = True
 
     def mark_visible_progress(self) -> None:
         """Record a successful user-visible delivery for this turn (see

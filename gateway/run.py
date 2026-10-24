@@ -1584,6 +1584,36 @@ def _is_agent_status_queue_marker(raw: Any) -> bool:
     )
 
 
+# FIFO marker for the context-card ordering gate (TurnContext.
+# wait_context_cards_delivered). Enqueued by the turn's FIRST visible
+# assistant output, i.e. strictly behind every context.injected card queued
+# before the first model call; the progress drain delivers whatever it
+# absorbed ahead of the marker and then sets the embedded asyncio.Event so
+# the gated output can proceed. Same queue-ordering trick as the agent-
+# status marker above: admission order becomes the delivery-order contract.
+_CONTEXT_FLUSH_QUEUE_MARKER = "__flush__"
+
+
+def _context_flush_queue_marker(event) -> tuple:
+    return (_CONTEXT_FLUSH_QUEUE_MARKER, event)
+
+
+def _is_context_flush_queue_marker(raw: Any) -> bool:
+    return (
+        isinstance(raw, tuple)
+        and len(raw) == 2
+        and raw[0] == _CONTEXT_FLUSH_QUEUE_MARKER
+    )
+
+
+def _signal_context_flush_marker(raw: Any) -> None:
+    """Release a flush marker's waiter; never raises (best-effort signal)."""
+    try:
+        raw[1].set()
+    except Exception:
+        logger.debug("context flush marker signal failed", exc_info=True)
+
+
 def _adapter_can_edit_progress(adapter: Any) -> bool:
     """True when *adapter* renders progress by editing one bubble.
 
@@ -5969,6 +5999,13 @@ class TurnRunner:
             )
             for message in messages:
                 ctx.progress_queue.put(message)
+            # Arm the ordering gate: the first visible assistant output waits
+            # (see TurnContext.wait_context_cards_delivered) until the
+            # drain below delivers these cards, so they land above the reply
+            # that used them instead of being overtaken by the stream/final
+            # lanes. Cards are queued before the first model call, so the
+            # gate's flush marker always trails them in the FIFO.
+            ctx._context_cards_queued[0] = True
             # A context card is its own progress beat. Do not let terminal-card
             # header suppression or ordinary tool dedup bleed across it.
             ctx.last_was_terminal_block[0] = False
@@ -6401,8 +6438,12 @@ class TurnRunner:
             changed = False
             while True:
                 try:
+                    _raw = ctx.progress_queue.get_nowait()
+                    if _is_context_flush_queue_marker(_raw):
+                        _signal_context_flush_marker(_raw)
+                        continue
                     changed = _apply_native_event(
-                        ctx.progress_queue.get_nowait()
+                        _raw
                     ) or changed
                 except queue.Empty:
                     return changed
@@ -6430,6 +6471,13 @@ class TurnRunner:
                     raw = ctx.progress_queue.get_nowait()
                 except queue.Empty:
                     await asyncio.sleep(0.1)
+                    continue
+
+                # Context-flush marker: the native task-card rail drops plain
+                # text rows by design, so there is nothing to flush — just
+                # release the ordering gate's waiter.
+                if _is_context_flush_queue_marker(raw):
+                    _signal_context_flush_marker(raw)
                     continue
 
                 if _agent_interrupted():
@@ -6496,15 +6544,29 @@ class TurnRunner:
                 # Tool rows are discarded here by design (every edit would
                 # be a new bubble), but a queued agent-viewer status marker
                 # is a standalone send, not an edit — deliver it, don't
-                # strand it.
+                # strand it.  A context-flush marker carries no content:
+                # release its waiter so the gated first output isn't left
+                # to time out.
                 if _is_agent_status_queue_marker(raw):
                     await self._deliver_agent_status_marker(raw)
+                elif _is_context_flush_queue_marker(raw):
+                    _signal_context_flush_marker(raw)
             return
 
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
         _separate_pending_lines = []  # "separate" mode rows appended but not yet sent
+        # Oversized-row chunking (codebox only): when one boxed row alone
+        # exceeds the platform cap it is sliced across several messages; the
+        # buffer then holds only that row's undelivered tail slices and
+        # ``_row_head_len`` counts the escaped chars of the CURRENT row already
+        # visible in the earlier (immutable) chunk messages, and ``_row_slices``
+        # how many trailing buffer lines belong to that row — unrelated earlier
+        # rows never contribute to either.
+        _row_tail = False
+        _row_head_len = 0
+        _row_slices = 0
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -6576,7 +6638,84 @@ class TurnRunner:
             return await ctx.deliver_visible(lambda: adapter.edit_message(**kwargs))
 
         def _progress_text(lines: list) -> str:
-            return "\n".join(str(line) for line in lines)
+            # Code-box presentation (display.tool_progress_codebox): the whole
+            # accumulated group — including every already-fenced command/code
+            # preview row — becomes ONE unlabelled fenced block, with inner ```
+            # escaped so they render inside the box instead of breaking out.
+            # Only the editable (accumulate) lane boxes; "separate"-mode rows
+            # and no-edit fallback bubbles keep their plain per-row text.
+            from gateway.display_config import format_progress_group
+
+            return format_progress_group(
+                lines, bool(ctx.progress_codebox) and can_edit
+            )
+
+        def _codebox_active() -> bool:
+            return bool(ctx.progress_codebox) and can_edit
+
+        def _absorb_row(raw) -> str:
+            """Append a tool row, slicing it when its boxed rendering alone
+            exceeds the platform cap (the group splitter can only partition
+            between rows — without this the native adapter split the row and
+            later edits truncated the tail, losing repeat counters)."""
+            nonlocal _row_tail, _row_head_len, _row_slices
+            if _codebox_active():
+                from gateway.display_config import chunk_oversized_progress_row
+
+                slices = chunk_oversized_progress_row(
+                    raw, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                )
+                if len(slices) > 1:
+                    progress_lines.extend(slices)
+                    _row_tail, _row_head_len, _row_slices = True, 0, len(slices)
+                    return slices[-1]
+            progress_lines.append(raw)
+            _row_tail, _row_slices = False, 0
+            return raw
+
+        def _absorb_dedup(base_msg, count) -> str:
+            """Fold a repeat update into the last row, re-slicing oversized ones."""
+            nonlocal _row_tail, _row_head_len, _row_slices
+            if not progress_lines:
+                return base_msg
+            if _row_tail:
+                # The repeated row is already split across chunk messages.
+                # Slicing is prefix-stable, so the earlier chunks hold an
+                # unchanged prefix — re-render only the editable tail with
+                # the counter instead of duplicating the head.  Only the
+                # trailing lines of that row are replaced; earlier pending
+                # rows must stay visible.
+                from gateway.display_config import repeat_row_text
+
+                tail = repeat_row_text(base_msg, count, _codebox_active())[
+                    _row_head_len:
+                ]
+                if _codebox_active():
+                    from gateway.display_config import chunk_oversized_progress_row
+
+                    slices = chunk_oversized_progress_row(
+                        tail, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                    )
+                    if len(slices) > 1:
+                        progress_lines[-_row_slices:] = slices
+                        _row_slices = len(slices)
+                        return slices[-1]
+                progress_lines[-_row_slices:] = [tail]
+                _row_slices = 1
+                return tail
+            line = f"{base_msg} (×{count + 1})"
+            if _codebox_active():
+                from gateway.display_config import chunk_oversized_progress_row
+
+                slices = chunk_oversized_progress_row(
+                    line, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                )
+                if len(slices) > 1:
+                    progress_lines[-1:] = slices
+                    _row_tail, _row_head_len, _row_slices = True, 0, len(slices)
+                    return slices[-1]
+            progress_lines[-1] = line
+            return line
 
         def _split_progress_groups(lines: list) -> list[list]:
             """Partition progress lines into platform-sized editable bubbles."""
@@ -6619,7 +6758,7 @@ class TurnRunner:
                 intact for a later retry.  In either case the caller should skip
                 the normal send/edit path for this tick.
                 """
-            nonlocal progress_msg_id, progress_lines, can_edit
+            nonlocal progress_msg_id, progress_lines, can_edit, _row_tail, _row_head_len, _row_slices
             if not progress_lines or not can_edit:
                 return False
             groups = _split_progress_groups(progress_lines)
@@ -6652,6 +6791,18 @@ class TurnRunner:
             # The newest continuation is now the only mutable bubble.  Keep
             # just its lines so subsequent edits update it instead of
             # replaying the full historical transcript into new messages.
+            if _row_tail:
+                # Only the current row's slices delivered into earlier
+                # groups count towards its head offset — never unrelated
+                # rows that happened to precede it in the buffer.
+                kept = min(_row_slices, len(groups[-1]))
+                _row_head_len += sum(
+                    len(line)
+                    for line in progress_lines[
+                        len(progress_lines) - _row_slices : len(progress_lines) - kept
+                    ]
+                )
+                _row_slices = kept
             progress_lines = groups[-1]
             return True
 
@@ -6709,7 +6860,11 @@ class TurnRunner:
                 if not ctx._run_still_current():
                     while not ctx.progress_queue.empty():
                         try:
-                            ctx.progress_queue.get_nowait()
+                            _raw = ctx.progress_queue.get_nowait()
+                            # Stale turn: rows are discarded, but a flush
+                            # marker's waiter must still be released.
+                            if _is_context_flush_queue_marker(_raw):
+                                _signal_context_flush_marker(_raw)
                         except Exception:
                             break
                     return
@@ -6724,7 +6879,13 @@ class TurnRunner:
                 # Agent-viewer markers are exempt: one denotes a
                 # subprocess/cloud run that already spawned and keeps
                 # running after the interrupt — its link stays visible.
-                if _agent_interrupted() and not _is_agent_status_queue_marker(raw):
+                # Flush markers are exempt so their waiter is released
+                # below instead of timing out.
+                if (
+                    _agent_interrupted()
+                    and not _is_agent_status_queue_marker(raw)
+                    and not _is_context_flush_queue_marker(raw)
+                ):
                     # Drop this event and continue draining.
                     await asyncio.sleep(0)
                     continue
@@ -6732,9 +6893,7 @@ class TurnRunner:
                 # Handle dedup messages: update last line with repeat counter
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
-                    if progress_lines:
-                        progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                    msg = progress_lines[-1] if progress_lines else base_msg
+                    msg = _absorb_dedup(base_msg, count)
                 elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                     # Content bubble just landed on the platform — close off
                     # the current tool-progress bubble so the next tool
@@ -6749,6 +6908,20 @@ class TurnRunner:
                     _separate_pending_lines.clear()
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
+                    continue
+                elif _is_context_flush_queue_marker(raw):
+                    # Context-card ordering gate: the turn's first visible
+                    # assistant output is waiting on this marker. Deliver
+                    # everything absorbed ahead of it — the context.injected
+                    # cards queued before the first model call — right now,
+                    # bypassing the edit throttle (same forced flush the
+                    # agent-viewer marker uses), then release the waiter so
+                    # the reply lands BELOW the cards it was built from.
+                    # Interrupted turns keep row suppression: the waiter is
+                    # released without a send.
+                    if not _agent_interrupted():
+                        await _flush_progress_before_agent_status()
+                    _signal_context_flush_marker(raw)
                     continue
                 elif _is_agent_status_queue_marker(raw):
                     # Branded agent-viewer notice (Claude/Cursor live viewer
@@ -6771,8 +6944,7 @@ class TurnRunner:
                     ctx.repeat_count[0] = 0
                     continue
                 else:
-                    msg = raw
-                    progress_lines.append(msg)
+                    msg = _absorb_row(raw)
                     if not can_edit:
                         # "separate" mode: this row becomes its own message
                         # later on this tick — remember it until that send
@@ -6805,7 +6977,7 @@ class TurnRunner:
 
                 if can_edit and progress_msg_id is not None:
                     # Try to edit the existing progress message
-                    full_text = "\n".join(progress_lines)
+                    full_text = _progress_text(progress_lines)
                     result = await _edit_progress_message(progress_msg_id, full_text)
                     if not result.success:
                         _err = (getattr(result, "error", "") or "").lower()
@@ -6848,7 +7020,7 @@ class TurnRunner:
                 else:
                     if can_edit:
                         # First tool: send all accumulated text as new message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _progress_text(progress_lines)
                         result = await ctx.deliver_visible(lambda: adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=full_text,
@@ -6856,24 +7028,17 @@ class TurnRunner:
                             metadata=ctx._progress_metadata,
                         ))
                     else:
-                        # Editing unsupported: send just this line
-                        result = await ctx.deliver_visible(lambda: adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=msg,
-                            reply_to=ctx._progress_reply_to,
-                            metadata=ctx._progress_metadata,
-                        ))
-                    # deliver_visible already marked the landed line.
-                    if result.success and result.message_id:
-                        progress_msg_id = result.message_id
-                        if ctx._cleanup_progress:
-                            ctx._cleanup_msg_ids.append(str(result.message_id))
-                        if not can_edit:
-                            # The newest row just went out as its own message;
-                            # older pending rows were either already sent or
-                            # skipped by the throttle (pre-v0.9 "separate"
-                            # behavior: one message per row, no catch-up).
-                            _separate_pending_lines.clear()
+                        # Editing unsupported: deliver every pending row as
+                        # its own message, oldest first (FIFO) — the flush
+                        # helper drains _separate_pending_lines, tracks
+                        # sends/cleanup IDs, and clears the list.
+                        await _flush_progress_before_agent_status()
+                    if can_edit:
+                        # deliver_visible already marked the landed line.
+                        if result.success and result.message_id:
+                            progress_msg_id = result.message_id
+                            if ctx._cleanup_progress:
+                                ctx._cleanup_msg_ids.append(str(result.message_id))
 
                 _last_edit_ts = time.monotonic()
 
@@ -6895,6 +7060,11 @@ class TurnRunner:
                 while not ctx.progress_queue.empty():
                     try:
                         raw = ctx.progress_queue.get_nowait()
+                        if _is_context_flush_queue_marker(raw):
+                            # Cancelled drain: release the ordering gate's
+                            # waiter rather than letting it time out.
+                            _signal_context_flush_marker(raw)
+                            continue
                         if _is_agent_status_queue_marker(raw):
                             # Agent-viewer status during drain: flush the
                             # pending row, then deliver the notice itself —
@@ -6925,7 +7095,7 @@ class TurnRunner:
                         elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
                             if progress_lines:
-                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                _absorb_dedup(base_msg, count)
                                 await _roll_progress_overflow_if_needed()
                         elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                             # Content-bubble marker during drain: close off
@@ -6944,7 +7114,7 @@ class TurnRunner:
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         else:
-                            progress_lines.append(raw)
+                            _absorb_row(raw)
                             if not can_edit:
                                 _separate_pending_lines.append(raw)
                             await _roll_progress_overflow_if_needed()
@@ -7950,6 +8120,7 @@ class TurnRunner:
                         run_still_current=ctx._run_still_current,
                         on_visible_progress=ctx.mark_visible_progress,
                         visible_delivery_lock=ctx.delivery_lock(),
+                        context_gate=ctx.wait_context_cards_delivered,
                     )
                     if _want_stream_deltas:
                         def _stream_delta_cb(text: str) -> None:
@@ -7982,12 +8153,20 @@ class TurnRunner:
                 return
             if already_streamed or not ctx._status_adapter or not str(display_text or "").strip():
                 return
-            _ia_fut = safe_schedule_threadsafe(
-                ctx.deliver_visible(lambda: ctx._status_adapter.send(
+
+            # Interim assistant text IS visible assistant output: let the
+            # context-card ordering gate clear before it lands (no stream
+            # consumer exists on this turn, so this status rail is the lane).
+            async def _gated_interim_send():
+                await ctx.wait_context_cards_delivered()
+                await ctx.deliver_visible(lambda: ctx._status_adapter.send(
                     ctx._status_chat_id,
                     display_text,
                     metadata=ctx._status_thread_metadata,
-                )),
+                ))
+
+            _ia_fut = safe_schedule_threadsafe(
+                _gated_interim_send(),
                 ctx._loop_for_step,
                 logger=logger,
                 log_message="interim_assistant_callback scheduling error",
@@ -16200,6 +16379,27 @@ class GatewayRunner(
             if getattr(self, "_running", True):
                 self._draining = False
             raise
+        # The restart task is real: it now owns its state outright. Sweep any
+        # restart-confirmation waits that were already blocked on an older
+        # runner's prompt — a committed restart supersedes them without
+        # requiring another queue call. Runs only here, after the task is
+        # established: a rolled-back setup above never settles a sibling
+        # wait, and the flags are provisional until create_task succeeds.
+        try:
+            from tools.clarify_gateway import resolve_restart_waits_superseded
+
+            superseded_gates = resolve_restart_waits_superseded()
+        except Exception as exc:
+            superseded_gates = 0
+            logger.debug(
+                "Restart owner: superseded-gate sweep failed: %s", exc
+            )
+        if superseded_gates:
+            logger.info(
+                "Restart owner: %d pending restart gate(s) superseded by "
+                "this restart",
+                superseded_gates,
+            )
         return True
 
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
@@ -25097,6 +25297,15 @@ class GatewayRunner(
         # would bust the agent-cache signature — and tells the model this is
         # the SAME message re-delivered, not a new request, so it answers
         # once instead of per copy.
+        # Restart-drain lifecycle receipt, proved and rendered by the
+        # queue's own module (see ``run_drain_queue.drain_restart_receipt_for_record``
+        # and ``format_drain_restart_receipt``); None leaves the text unchanged.
+        from gateway.run_drain_queue import format_drain_restart_receipt
+
+        _receipt_note = format_drain_restart_receipt(event)
+        if _receipt_note is not None:
+            message_text = f"{_receipt_note}\n\n{message_text}"
+
         if getattr(event, "redelivered", False):
             _redelivery_id = getattr(event, "message_id", None)
             _redelivery_note = "[Re-delivered message"
@@ -35247,6 +35456,10 @@ class GatewayRunner(
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        # Code-box presentation for accumulated groups (opt-in; plain otherwise)
+        _progress_codebox = bool(
+            resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
+        )
         from gateway.status_phrases import (
             choose_status_phrase,
             format_phase_heartbeat,
@@ -35446,6 +35659,7 @@ class GatewayRunner(
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
             progress_grouping=progress_grouping,
+            progress_codebox=_progress_codebox,
             tool_preview_max_len=_tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled,
             progress_queue=progress_queue,
@@ -35799,6 +36013,11 @@ class GatewayRunner(
         progress_task = None
         if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
+            # The ordering gate (TurnContext.wait_context_cards_delivered)
+            # releases when this drain ends — bind the owning task so the gate
+            # never waits on an invented timeout, and never outlives the
+            # worker that owns delivery.
+            turn_ctx.bind_progress_task(progress_task)
 
         # Tool-stage embed drain (Discord): one self-editing embed per MoA
         # tool invocation. The subscription is turn-scoped — unsubscribed in
@@ -36899,6 +37118,19 @@ class GatewayRunner(
             # Capture the exact mutable object an early return may already have
             # evaluated before awaiting stream cleanup below.
             _held_agent_result = result_holder[0]
+
+            # Ordering gate for the non-streamed final reply — run BEFORE the
+            # progress drain is cancelled below: a turn with no stream consumer
+            # and no interim lane delivers its FIRST visible assistant output
+            # from the outer handler's send after this unwind, and the flush
+            # marker must reach a LIVE drain. No-op when no context cards were
+            # queued, an earlier lane already cleared the gate, or the turn is
+            # stale; the wait ends when the marker is delivered or the bound
+            # drain task ends (TurnContext.wait_context_cards_delivered).
+            try:
+                await turn_ctx.wait_context_cards_delivered()
+            except Exception:
+                logger.debug("context-card gate before cleanup failed", exc_info=True)
 
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:

@@ -2910,6 +2910,7 @@ class GatewayTurnMixin:
         resolve_display_setting: Any = None
         progress_mode: str = "all"
         progress_grouping: str = "accumulate"
+        progress_codebox: bool = False
         _display_surface_mode: Any = None
         tool_progress_enabled: bool = False
         # This turn's safely parsed tool_preview_length (0 = unlimited). The
@@ -2960,6 +2961,10 @@ class GatewayTurnMixin:
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        # Code-box presentation for accumulated groups (opt-in; plain otherwise)
+        progress_codebox = bool(
+            resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
+        )
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
 
@@ -3033,6 +3038,7 @@ class GatewayTurnMixin:
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
             progress_mode=progress_mode, progress_grouping=progress_grouping,
+            progress_codebox=progress_codebox,
             _display_surface_mode=_display_surface_mode, tool_preview_max_len=tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
@@ -3046,7 +3052,7 @@ class GatewayTurnMixin:
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
-        "progress_grouping", "tool_preview_max_len", "tool_progress_enabled", "log_queue",
+        "progress_grouping", "progress_codebox", "tool_preview_max_len", "tool_progress_enabled", "log_queue",
         "resolve_display_setting", "user_config", "enabled_toolsets", "disabled_toolsets",
         "log_mode_enabled", "interim_assistant_messages_enabled", "needs_progress_queue",
         "_native_slack_task_cards",
@@ -4312,6 +4318,11 @@ class GatewayTurnMixin:
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task
         progress_task = spawn(turn_runner.send_progress_messages()) if disp.needs_progress_queue else None
+        if progress_task is not None:
+            # The ordering gate (TurnContext.wait_context_cards_delivered)
+            # releases when this drain ends — bind the owning task so the gate
+            # never waits on an invented timeout.
+            turn_ctx.bind_progress_task(progress_task)
         log_task = spawn(self._run_agent_write_tool_log(disp.log_queue)) if disp.log_mode_enabled else None
         # The stream consumer is created inside run_sync; this task polls for it.
         stream_task = spawn(self._run_agent_stream_consumer_task(turn_ctx.stream_consumer_holder))

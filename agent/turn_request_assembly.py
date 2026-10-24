@@ -103,6 +103,72 @@ def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_req
     return prepared, api_messages, pending_moa_prepared_request
 
 
+def _active_home_key() -> str:
+    """Canonical context-local home identity (``hermes_home_key``); ``""`` on failure.
+
+    The identity the registries already key on — NOT ``get_active_profile_name()``,
+    a display label that returns ``custom`` for every distinct custom home."""
+    try:
+        from hermes_constants import hermes_home_key
+        return str(hermes_home_key() or "")
+    except Exception:
+        return ""
+
+
+def _delegation_runtime_note(agent: Any) -> str:
+    """Bounded snapshot of THIS durable conversation's live delegations, or ``""``.
+
+    Scoped by durable session identity only: ``agent.session_id`` plus its
+    compression-lineage ancestors (the existing resolved-identity walk — a
+    rotated session keeps seeing its pre-rotation workers). The routing
+    ``session_key`` is deliberately NOT a selector: it survives ``/new`` and
+    spans profiles, so it must not pull a different durable session's workers
+    in. The home fence is the canonical ``hermes_home_key``; a missing/failed
+    identity yields NO context (unknown ownership excludes records, it never
+    widens the view)."""
+    try:
+        from tools.async_delegation import build_delegation_runtime_note
+
+        durable = str(getattr(agent, "session_id", "") or "")
+        home_key = _active_home_key()
+        if not durable or not home_key:
+            return ""
+        ids = {durable}
+        db = getattr(agent, "_session_db", None)
+        if db is not None:
+            try:
+                lineage = db.get_compression_lineage(durable)
+            except Exception:
+                lineage = None
+            if isinstance(lineage, (list, tuple)):
+                ids.update(x for x in lineage if isinstance(x, str) and x)
+        return build_delegation_runtime_note(ids, owner_home_key=home_key)
+    except Exception:
+        logger.debug("delegation runtime-state note failed", exc_info=True)
+        return ""
+
+
+def _append_delegation_runtime_note(agent: Any, api_messages: Any) -> None:
+    """Append the runtime-state note to the request's LAST user/tool message.
+
+    Request-local only: ``api_messages`` rows are send copies, so nothing is
+    persisted, cached as a prefix, or replayed next request (each request
+    recomputes a fresh note). Skipped when there is no note or no legal tail
+    message — never fabricates a message or changes any role."""
+    note = _delegation_runtime_note(agent)
+    if not note:
+        return
+    last = api_messages[-1] if api_messages else None
+    if not isinstance(last, dict) or last.get("role") not in ("user", "tool"):
+        return
+    content = last.get("content")
+    if isinstance(content, str):
+        last["content"] = f"{content}\n\n{note}" if content else note
+    elif isinstance(content, list):
+        last["content"] = [*content, {"type": "text", "text": "\n\n" + note}]
+    # Other content shapes (None, exotic parts): skip rather than guess.
+
+
 def assemble_api_request(
     agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
     _plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
@@ -186,6 +252,13 @@ def assemble_api_request(
     # Strip lone surrogates (U+D800-U+DFFF) that some Ollama-served models emit;
     # they crash json.dumps() inside the OpenAI SDK and trigger the 3-retry cycle.
     _sanitize_messages_surrogates(api_messages)
+
+    # Delegated-worker runtime state rides the OUTGOING REQUEST ONLY: a fresh,
+    # bounded, owner-scoped snapshot per model request (so it refreshes across
+    # tool rounds within one turn), appended to the latest legal user/tool-result
+    # content. Stored history, api_content sidecars, prior rows and the system
+    # prompt stay untouched — ``api_messages`` is the request-local copy above.
+    _append_delegation_runtime_note(agent, api_messages)
 
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
