@@ -598,9 +598,17 @@ class TurnRunner:
         # marks only a landed edit as user-visible progress.
         return await ctx.deliver_visible(lambda: st.adapter.edit_message(**kwargs))
 
-    @staticmethod
-    def _progress_text(lines: list) -> str:
-        return "\n".join(str(line) for line in lines)
+    def _progress_text(self, st, lines: list) -> str:
+        # Code-box presentation (display.tool_progress_codebox): the whole
+        # accumulated group becomes ONE unlabelled fenced block, with inner ```
+        # escaped so already-fenced command/code previews render inside the box
+        # instead of breaking out. Only the editable (accumulate) lane boxes;
+        # "separate"-mode rows keep their plain per-row text.
+        from gateway.display_config import format_progress_group
+
+        return format_progress_group(
+            lines, bool(self._ctx.progress_codebox) and st.can_edit
+        )
 
     def _split_progress_groups(self, st, lines: list) -> list[list]:
         """Partition progress lines into platform-sized editable bubbles."""
@@ -608,7 +616,7 @@ class TurnRunner:
         current: list = []
         for line in lines:
             candidate = current + [line]
-            if current and st._progress_len_fn(self._progress_text(candidate)) > st._PROGRESS_TEXT_LIMIT:
+            if current and st._progress_len_fn(self._progress_text(st, candidate)) > st._PROGRESS_TEXT_LIMIT:
                 groups.append(current)
                 candidate = [line]
             current = candidate
@@ -634,7 +642,7 @@ class TurnRunner:
         if len(groups) <= 1:
             return False
         if st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(groups[0]))
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, groups[0]))
             if not result.success:
                 if getattr(result, "retryable", False):
                     logger.debug("[%s] Transient overflow edit failure — keeping can_edit=True", st.adapter.name)
@@ -644,7 +652,7 @@ class TurnRunner:
                 return False
             groups = groups[1:]
         for group in groups:
-            result = await self._send_progress_text(st, self._progress_text(group))
+            result = await self._send_progress_text(st, self._progress_text(st, group))
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
         # The newest continuation is the only mutable bubble: keep just its lines so later
@@ -676,7 +684,7 @@ class TurnRunner:
     async def _flush_progress_edit(self, st) -> None:
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             with suppress(Exception):
-                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, st.progress_lines))
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
@@ -710,7 +718,7 @@ class TurnRunner:
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
         if st.can_edit and st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, st.progress_lines))
             if result.success:
                 return True
             if getattr(result, "retryable", False):
@@ -723,7 +731,7 @@ class TurnRunner:
             await self._send_progress_text(st, msg)
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
-        result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        result = await self._send_progress_text(st, self._progress_text(st, st.progress_lines) if st.can_edit else msg)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
         return True

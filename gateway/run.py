@@ -6562,7 +6562,17 @@ class TurnRunner:
             return await ctx.deliver_visible(lambda: adapter.edit_message(**kwargs))
 
         def _progress_text(lines: list) -> str:
-            return "\n".join(str(line) for line in lines)
+            # Code-box presentation (display.tool_progress_codebox): the whole
+            # accumulated group — including every already-fenced command/code
+            # preview row — becomes ONE unlabelled fenced block, with inner ```
+            # escaped so they render inside the box instead of breaking out.
+            # Only the editable (accumulate) lane boxes; "separate"-mode rows
+            # and no-edit fallback bubbles keep their plain per-row text.
+            from gateway.display_config import format_progress_group
+
+            return format_progress_group(
+                lines, bool(ctx.progress_codebox) and can_edit
+            )
 
         def _split_progress_groups(lines: list) -> list[list]:
             """Partition progress lines into platform-sized editable bubbles."""
@@ -6791,7 +6801,7 @@ class TurnRunner:
 
                 if can_edit and progress_msg_id is not None:
                     # Try to edit the existing progress message
-                    full_text = "\n".join(progress_lines)
+                    full_text = _progress_text(progress_lines)
                     result = await _edit_progress_message(progress_msg_id, full_text)
                     if not result.success:
                         _err = (getattr(result, "error", "") or "").lower()
@@ -6834,7 +6844,7 @@ class TurnRunner:
                 else:
                     if can_edit:
                         # First tool: send all accumulated text as new message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _progress_text(progress_lines)
                         result = await ctx.deliver_visible(lambda: adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=full_text,
@@ -35233,6 +35243,10 @@ class GatewayRunner(
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        # Code-box presentation for accumulated groups (opt-in; plain otherwise)
+        _progress_codebox = bool(
+            resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
+        )
         from gateway.status_phrases import (
             choose_status_phrase,
             format_phase_heartbeat,
@@ -35432,6 +35446,7 @@ class GatewayRunner(
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
             progress_grouping=progress_grouping,
+            progress_codebox=_progress_codebox,
             tool_preview_max_len=_tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled,
             progress_queue=progress_queue,
