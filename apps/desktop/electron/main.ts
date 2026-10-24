@@ -298,6 +298,7 @@ import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallba
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { adoptPayloadVenv, installIdForRoot, isBundledInstall, resolvePayload, type PayloadInfo } from './payload-backend'
+import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { PLACEHOLDER_FEED_BASE_URL } from './app-updater'
 import { AppInstallerStrategy } from './updater/app-installer'
 import { ExternalStrategy } from './updater/external'
@@ -12943,6 +12944,58 @@ async function stopAllPoolBackends() {
   entries.forEach(releaseLocalBackendSlot)
 }
 
+/**
+ * Last teardown act on Windows: kill anything still running out of THIS
+ * install's roots, so no straggler holds an image open.
+ *
+ * Two roots, because two install shapes have the same daemon problem:
+ *
+ *  - The artifact resources dir (bundled/MSIX). A live process rooted in the
+ *    package family pins the family's container silo, and every later
+ *    activation then fails the job → silo conversion with 0x80070020 — the app
+ *    never launches again. Live cause on windows-11-arm was the payload's
+ *    bundled-git gpg-agent, which daemonizes out of our process tree and so is
+ *    unreachable by taskkill /T.
+ *  - The managed tool store (mutable install.ps1 / install.sh checkout), where
+ *    pm stages node, git and uv. A daemonized tool there keeps its own image
+ *    open, and Windows cannot overwrite a running image — so the next
+ *    `hermes update` fails to replace exactly those files.
+ *
+ * HERMES_RUNTIME_DIR is the store when pm is aimed at one (a bundled payload
+ * aims it at its own, where the roots overlap harmlessly); otherwise the store
+ * is <hermes root>/tools, mirroring pm.paths.store_root().
+ *
+ * Runs AFTER the graceful backend teardown and skips the pids it owned, so
+ * this is only the net for what detached. Best effort throughout: quit must
+ * never hang or fail on it. See package-process-reap.ts for the evidence.
+ */
+function reapInstallRootedStragglers(excludePids: number[]): void {
+  if (!IS_WINDOWS) {
+    return
+  }
+
+  const payloadRoot = isBundledInstall(process.resourcesPath, { fileExists }) ? process.resourcesPath : null
+  // HERMES_HOME is already root-normalized by resolveHermesHome().
+  const managedStore = process.env.HERMES_RUNTIME_DIR || path.join(HERMES_HOME, 'tools')
+
+  try {
+    reapPackageRootedProcesses({
+      installRoots: [payloadRoot, managedStore],
+      listProcesses: () => listWindowsProcesses((file, args, options) => execFileSync(file, args, {
+        ...hiddenWindowsChildOptions({ encoding: 'utf8', timeout: options.timeout }),
+        windowsHide: options.windowsHide
+      }) as unknown as string),
+      killProcess: pid => process.kill(pid, 'SIGKILL'),
+      selfPid: process.pid,
+      excludePids,
+      isWindows: true,
+      log: message => rememberLog(message)
+    })
+  } catch (err) {
+    rememberLog(`[package-reap] skipped: ${(err as Error).message}`)
+  }
+}
+
 const backendShutdown = createBackendShutdownCoordinator(async () => {
   const localShutdown = localBackendLifecycle.shutdown()
   const primary = backendConnectionState.invalidate()
@@ -12956,6 +13009,8 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
   }
 
   await waitForTeardown([localShutdown, waitForBackendExit(primary), pooledStops], 7_000)
+
+  reapInstallRootedStragglers(Number.isInteger(primary?.pid) ? [primary.pid] : [])
 })
 
 const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
