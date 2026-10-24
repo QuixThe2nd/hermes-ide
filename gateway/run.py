@@ -6029,6 +6029,20 @@ class TurnRunner:
         }:
             return
 
+        # Structured MoA stage embeds (Discord): send_tool_stage_embeds already
+        # renders exactly one self-editing card per moa_ask/moa_debate
+        # invocation, so the ordinary plain-text bubble for the same
+        # invocation's start would be a duplicate status message. Skip only the
+        # bubble; the stage card pipeline itself is untouched. Adapters without
+        # the stage-embed capability (every non-card platform) fall through to
+        # normal progress.
+        if (
+            ctx._stage_embed_adapter is not None
+            and event_type == "tool.started"
+            and tool_name in ("moa_ask", "moa_debate")
+        ):
+            return
+
         # If tool_progress is off, only _thinking passes through (above).
         # Regular tool calls are suppressed.
         if not ctx.tool_progress_enabled:
