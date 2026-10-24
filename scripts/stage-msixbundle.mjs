@@ -122,31 +122,30 @@ if (process.env.AZURE_SIGN_ENDPOINT && process.env.AZURE_SIGN_ACCOUNT && process
     const signEnv = { ...process.env }
     const dotnetRoot = resolveDotnetRuntimeDir()
     if (dotnetRoot) signEnv.DOTNET_ROOT = dotnetRoot
-    // Two passes, mirroring batch-sign-binaries.mjs's split:
-    //   1. Azure Authenticode sign — /dlib, NO /tr. Passing /tr on the sign
-    //      call hands the URL to the dlib (`@url:` form), and the ATS dlib
-    //      cannot extract a token from a third-party RFC3161 server —
-    //      "no content extracted", exit 3.
-    //   2. RFC3161 timestamp — `signtool timestamp` with NO dlib; signtool
-    //      itself does the exchange against the public server (digicert).
-    // A timestamp failure never forces a re-sign of the 2.7GB bundle.
-    execFileSync(signtool, [
-      'sign', '/fd', 'SHA256',
-      '/dlib', dlib, '/dmdf', metaPath, bundle
-    ], { stdio: 'inherit', env: signEnv })
-    const timestamp = () =>
+    // MSIX/appx packages REQUIRE a timestamp — signtool silently exits 3 on
+    // a .msixbundle sign without /tr (untimestamped appx is invalid). And
+    // the /tr URL must be one the ATS dlib can speak: the dlib handles the
+    // RFC3161 exchange itself (@url: form) and cannot parse a third-party
+    // server's response ("no content extracted" with digicert). The only
+    // known-working timestamp server for the dlib is Microsoft's own
+    // timestamp.acs.microsoft.com (electron-builder's default, and what the
+    // build legs' .msix sign uses). acs is intermittently flaky, so retry
+    // the whole sign — a retried sign beats a failed bundle, and signtool
+    // replaces the signature on re-sign so a retry is safe.
+    const sign = () =>
       execFileSync(signtool, [
-        'timestamp', '/tr', 'http://timestamp.digicert.com', '/td', 'SHA256', bundle
+        'sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', 'http://timestamp.acs.microsoft.com',
+        '/dlib', dlib, '/dmdf', metaPath, bundle
       ], { stdio: 'inherit', env: signEnv })
     let attempt = 0
     for (;;) {
       try {
-        timestamp()
+        sign()
         break
       } catch (err) {
         attempt += 1
         if (attempt >= 3) throw err
-        console.warn(`[stage-msixbundle] timestamp attempt ${attempt} failed, retrying…`)
+        console.warn(`[stage-msixbundle] sign attempt ${attempt} failed, retrying…`)
       }
     }
     execFileSync(signtool, ['verify', '/pa', bundle], { stdio: 'inherit' })
