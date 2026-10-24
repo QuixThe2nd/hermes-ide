@@ -159,6 +159,40 @@ def _mark_drain_restart_receipt(event: MessageEvent, receipt: Dict[str, Any]) ->
         pass
 
 
+def format_drain_restart_receipt(event: MessageEvent) -> Optional[str]:
+    """Render the lifecycle-receipt note for one replayed event, if proven.
+
+    The event carries a receipt only when it was durably queued while a
+    PREVIOUS gateway process drained for a requested restart, and this turn
+    replays it from the drain snapshot after that restart finished (proven
+    per-record at replay time — see ``drain_restart_receipt_for_record``; a
+    same-process or unprovable replay never sets the attribute). Like the
+    re-delivery note in ``run.py`` it is per-turn user content, so the cached
+    system prompt signature is untouched; it states the lifecycle fact only —
+    the restart completed — and claims nothing about deployment health.
+
+    Returns the bracketed note, or None when the event carries no receipt
+    (in which case the caller leaves the message text unchanged).
+    """
+    receipt = getattr(event, DRAIN_RESTART_COMPLETED_ATTR, None)
+    if not isinstance(receipt, dict):
+        return None
+    note = "[Gateway restart completed"
+    queued_pid = receipt.get("queued_pid")
+    if isinstance(queued_pid, int) and queued_pid > 0:
+        note += (
+            f" — this message arrived while the previous gateway "
+            f"process (pid {queued_pid}) was draining for the "
+            f"restart"
+        )
+    note += (
+        ". The restart finished and this successor process is "
+        "delivering the queued message now; no action is needed "
+        "about the restart itself.]"
+    )
+    return note
+
+
 def _mark_drain_snapshot_owned(event: MessageEvent) -> None:
     """Record durable acceptance on the event itself.
 
