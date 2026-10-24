@@ -413,7 +413,17 @@ def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
     if len_fn(text) + CODEBOX_FENCE_COST <= limit:
         return [line]
     width = max(1, limit - CODEBOX_FENCE_COST)
-    return [text[i : i + width] for i in range(0, len(text), width)]
+    chunks = [text[i : i + width] for i in range(0, len(text), width)]
+    counter_start = text.rfind(" (×")
+    if counter_start > 0 and text.endswith(")") and text[counter_start + 3 : -1].isdigit():
+        boundary = (counter_start // width + 1) * width
+        if counter_start < boundary < len(text):
+            # Never freeze part of a repeat counter: its complete suffix must
+            # remain in the mutable tail when a later repeat re-renders it.
+            index, offset = boundary // width - 1, counter_start % width
+            chunks[index + 1] = chunks[index][offset:] + chunks[index + 1]
+            chunks[index] = chunks[index][:offset]
+    return chunks
 
 
 def repeat_row_text(base_msg, count: int, codebox: bool) -> str:
