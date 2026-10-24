@@ -152,6 +152,18 @@ class TurnRunner:
         # name-correlated text events would duplicate cards and mispair concurrent same-tool calls.
         if ctx._native_slack_task_cards and event_type in {"tool.started", "tool.completed"}:
             return
+        # Structured MoA stage embeds (Discord): send_tool_stage_embeds already
+        # renders exactly one self-editing card per moa_ask/moa_debate invocation,
+        # so the ordinary plain-text bubble for the same invocation's start would
+        # be a duplicate status message. Skip only the bubble; the stage card
+        # pipeline itself is untouched. Adapters without the stage-embed
+        # capability (every non-card platform) fall through to normal progress.
+        if (
+            ctx._stage_embed_adapter is not None
+            and event_type == "tool.started"
+            and tool_name in ("moa_ask", "moa_debate")
+        ):
+            return
         # tool_progress off → only _thinking passes (above). Only tool.started renders. clarify:
         # send_clarify IS the user-facing rendering (a bubble would duplicate it, and verbose mode
         # would dump the raw args JSON right under the prompt). Post-`stop`: N parallel tool calls
