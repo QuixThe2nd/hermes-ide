@@ -793,9 +793,11 @@ function loadInstallStamp() {
           path: p,
           // Bundled/light artifacts carry these; mirror them so the union
           // with the baked stamp stays typed (tag/payload drive the App
-          // Installer channel + variant).
+          // Installer channel + variant; store separates Microsoft Store
+          // deployments from App Installer sideloads).
           tag: typeof parsed.tag === 'string' ? parsed.tag : null,
-          payload: parsed.payload === 'light' || parsed.payload === 'bundled' ? parsed.payload : 'bootstrap'
+          payload: parsed.payload === 'light' || parsed.payload === 'bundled' ? parsed.payload : 'bootstrap',
+          store: typeof parsed.store === 'boolean' ? parsed.store : undefined
         })
       }
     } catch (e) {
@@ -3516,6 +3518,16 @@ function resolveBundledUpdateStrategy(bundledPayload) {
 
 /** True when this process is a Microsoft Store deployment. */
 function isWindowsStore(): boolean {
+  // process.windowsStore is true for ANY MSIX package — App Installer
+  // sideloads included — not just Microsoft Store deployments (electron.d.ts:
+  // "If the app is running as an MSIX package ... this property is true").
+  // The store-vs-sideload distinction is a BUILD-TIME fact baked into the
+  // stamp (HERMES_DESKTOP_VARIANT=store vs bundled); trust it when present
+  // and fall back to the Electron flag only for dev runs / legacy stamps.
+  if (INSTALL_STAMP && typeof INSTALL_STAMP.store === 'boolean') {
+    return INSTALL_STAMP.store
+  }
+
   return Boolean((process as any).windowsStore)
 }
 

@@ -38,6 +38,8 @@ export interface InstallStamp {
   displayVersion: string | null
   distance: number | null
   payload: ArtifactKind
+  /** True for the Store-submission build (HERMES_DESKTOP_VARIANT=store). */
+  store?: boolean
   /** The pinned release tag. Always set for 'bundled' and 'light', never for 'bootstrap'. */
   tag: string | null
 }
