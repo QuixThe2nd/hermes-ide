@@ -589,8 +589,9 @@ def restart_committed(runner: Any) -> bool:
     half-open queue sequence — and settles its own wait as shared consent
     when covered, instead of waiting on (or prompting for) a consent the
     committed restart already provides. ``_restart_requested`` only: it is
-    set by ``request_restart`` after its rollback window and cleared only by
-    that rollback, while ``_draining`` alone is a generic shutdown (signal,
+    set BEFORE the setup/rollback window, so it is authoritative only when
+    read on the gateway loop after that synchronous transaction finishes;
+    failed setup clears it. ``_draining`` alone is a generic shutdown (signal,
     supervisor stop) that never carried restart consent.
     """
     return bool(getattr(runner, "_restart_requested", False))

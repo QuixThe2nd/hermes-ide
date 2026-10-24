@@ -687,6 +687,23 @@ def _record_cancelled_restart_notice(
         )
 
 
+def _probe_restart_state(runner: Any, loop: Any) -> Optional[tuple[bool, bool]]:
+    """Read ``(committed, draining)`` in one gateway-loop snapshot."""
+    from gateway.restart import restart_committed
+
+    async def _probe() -> tuple[bool, bool]:
+        return restart_committed(runner), bool(getattr(runner, "_draining", False))
+
+    future, submit_error = _submit_to_loop(_probe(), loop)
+    if submit_error is not None:
+        return None
+    try:
+        return future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+    except Exception:
+        future.cancel()
+        return None
+
+
 def _probe_restart_committed(runner: Any, loop: Any) -> bool:
     """Recheck the authoritative committed-restart state ON the gateway loop.
 
@@ -697,19 +714,8 @@ def _probe_restart_committed(runner: Any, loop: Any) -> bool:
     reads as "not committed": the ordinary wait then decides, exactly as
     before this recheck existed.
     """
-    from gateway.restart import restart_committed
-
-    async def _probe() -> bool:
-        return restart_committed(runner)
-
-    future, submit_error = _submit_to_loop(_probe(), loop)
-    if submit_error is not None:
-        return False
-    try:
-        return bool(future.result(timeout=_BEGIN_RESTART_TIMEOUT_S))
-    except Exception:
-        future.cancel()
-        return False
+    state = _probe_restart_state(runner, loop)
+    return state is not None and state[0]
 
 
 _PROMPT_NOT_SENT_COMMITTED = object()
@@ -1038,7 +1044,6 @@ def handle_restart(args: dict, **_: Any) -> str:
     7. On confirmation (or a skipped confirm), returns once the restart is
        queued — the bounce happens after this turn ends.
     """
-    from gateway.restart import restart_committed
     from gateway.session_context import get_session_env
     from utils import is_truthy_value
 
@@ -1064,25 +1069,9 @@ def handle_restart(args: dict, **_: Any) -> str:
     ):
         return _error_json(_UNSUPPORTED_RUNNER_ERROR)
 
-    if restart_committed(runner):
-        # A restart already in flight owns the notify payload — no ping, no
-        # confirm wait, no second request_restart.
-        return _result_json(
-            runner,
-            {
-                "status": "already_in_progress",
-                "active_agents": runner._running_agent_count(),
-                "via_service": None,
-            },
-        )
-    if getattr(runner, "_draining", False):
-        return _error_json(
-            "Gateway shutdown is already in progress; no restart was started."
-        )
-
     # Tool handlers run in a worker thread, and request_restart() calls
-    # asyncio.create_task — every gateway-side coroutine (the confirm prompt
-    # send included) must land on the gateway event loop, never on this
+    # asyncio.create_task — every gateway-side observation and coroutine (the
+    # confirm prompt send included) must use the gateway event loop, never this
     # thread's (nonexistent) loop.
     loop = getattr(runner, "_gateway_loop", None)
     if loop is None or loop.is_closed():
@@ -1102,6 +1091,29 @@ def handle_restart(args: dict, **_: Any) -> str:
         return _error_json(
             "The restart tool cannot wait for a confirmation on the gateway "
             "event loop; it must run from a tool worker thread."
+        )
+
+    state = _probe_restart_state(runner, loop)
+    if state is None:
+        return _error_json(
+            "The gateway event loop could not confirm the current restart "
+            "state; no restart was started."
+        )
+    committed, draining = state
+    if committed:
+        # A restart already in flight owns the notify payload — no ping, no
+        # confirm wait, no second request_restart.
+        return _result_json(
+            runner,
+            {
+                "status": "already_in_progress",
+                "active_agents": runner._running_agent_count(),
+                "via_service": None,
+            },
+        )
+    if draining:
+        return _error_json(
+            "Gateway shutdown is already in progress; no restart was started."
         )
 
     source = _source_from_session_context()
