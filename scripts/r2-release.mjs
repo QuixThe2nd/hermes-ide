@@ -20,11 +20,13 @@
 //   releases/tag/<tag>/<filename>          immutable per-release staging/archive
 //   releases/win32/<channel>/<channel>.appinstaller   App Installer feed
 //     releases/win32/<channel>/*.msixbundle           (produced by the
-//                                                     msixbundle job)
+//                                                     publish-win32-updater job)
 //   releases/darwin/<channel>/<channel>-mac.yml   electron-updater feed
 //     releases/darwin/<channel>/*.{dmg,zip,blockmap}
 // where <channel> is stable | nightly (from the tag: -nightly. → nightly).
-// The finalize job merges the matrix legs' staging into these feeds.
+// The publish-win32-updater job merges the win32 legs' staging into the
+// win32 feed; the darwin feed merge (r2 finalize) is currently DISABLED
+// (no macOS updater arm).
 
 import { createHash, createHmac } from 'node:crypto'
 import fs from 'node:fs'

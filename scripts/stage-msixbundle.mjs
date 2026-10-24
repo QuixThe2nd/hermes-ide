@@ -27,7 +27,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { appIdentity, buildAppInstaller } from './msix-shared.mjs'
+import { appIdentity, buildAppInstaller, resolveWinSdkTools } from './msix-shared.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -79,80 +79,6 @@ function msixFile(arch) {
 }
 function bundleFile() {
   return path.join(releaseDir, `${name}-${version}-win.msixbundle`)
-}
-
-// ── makeappx / signtool resolution (SDK BuildTools nuget) ──────────────────
-// electron-builder downloads Microsoft.Windows.SDK.BuildTools into its winCodeSign
-// cache; this job uses the SAME pin so makeappx/signtool match the builder's.
-function resolveWinSdkTools() {
-  const candidates = []
-  // electron-builder downloads its signing toolsets into the cache root
-  // (ELECTRON_BUILDER_CACHE on CI, %LOCALAPPDATA%/electron-builder/Cache
-  // by default) under `win-codesign@<ver>/` — there is NO `winCodeSign`
-  // subdir. The Windows Kits bundle extracts to
-  // win-codesign@<ver>/windows-kits-bundle-10_0_26100_0-<hash>/ with the
-  // HOST tools (signtool.exe + makeappx.exe) in its x64/ subdir. Legacy
-  // winCodeSign-2.6.0 used windows-10/<arch>/; the old nuget layout
-  // bin/<ver>/x64/ is long gone.
-  const roots = [
-    process.env.ELECTRON_BUILDER_CACHE || '',
-    path.join(process.env.LOCALAPPDATA || '', 'electron-builder', 'Cache'),
-    path.join(process.env.LOCALAPPDATA || '', 'electron-builder', 'cache'),
-    path.join(process.env.USERPROFILE || '', 'AppData', 'Local', 'electron-builder', 'Cache')
-  ]
-  for (const root of roots) {
-    if (!root || !fs.existsSync(root)) continue
-    for (const entry of fs.readdirSync(root)) {
-      const dir = path.join(root, entry)
-      if (!fs.statSync(dir).isDirectory()) continue
-      // Modern electron-builder (win-codesign@1.x): the Windows Kits bundle
-      // extracts to <cacheDir>/win-codesign@<ver>/windows-kits-bundle-10_0_26100_0-<hash>/,
-      // with the HOST tools (signtool.exe + makeappx.exe) directly in the
-      // x64/ subdir of the bundle folder — two levels under the cache root.
-      // Legacy winCodeSign-2.6.0 used windows-10/<arch>/ under the toolset
-      // dir; the old nuget layout bin/<ver>/x64/ is gone. Check every dir
-      // two levels down that carries a makeappx.exe + signtool.exe.
-      const toolDirs = []
-      for (const sub of fs.readdirSync(dir)) {
-        const subDir = path.join(dir, sub)
-        if (!fs.statSync(subDir).isDirectory()) continue
-        for (const arch of ['x64']) {
-          const x64 = path.join(subDir, arch)
-          if (fs.existsSync(path.join(x64, 'makeappx.exe')) && fs.existsSync(path.join(x64, 'signtool.exe'))) {
-            toolDirs.push(x64)
-          }
-        }
-        // Legacy: windows-10/x64 (winCodeSign-2.6.0)
-        const win10 = path.join(subDir, 'windows-10', 'x64')
-        if (fs.existsSync(path.join(win10, 'makeappx.exe')) && fs.existsSync(path.join(win10, 'signtool.exe'))) {
-          toolDirs.push(win10)
-        }
-        // Legacy nuget: bin/<ver>/x64
-        const binDir = path.join(subDir, 'bin')
-        if (fs.existsSync(binDir)) {
-          for (const bsub of fs.readdirSync(binDir)) {
-            const x64 = path.join(binDir, bsub, 'x64')
-            if (fs.existsSync(path.join(x64, 'makeappx.exe')) && fs.existsSync(path.join(x64, 'signtool.exe'))) {
-              toolDirs.push(x64)
-            }
-          }
-        }
-      }
-      // First root with a usable kit wins — the configured
-      // ELECTRON_BUILDER_CACHE must beat any stray default cache.
-      if (toolDirs.length > 0) {
-        toolDirs.sort()
-        return toolDirs[toolDirs.length - 1]
-      }
-    }
-  }
-  if (candidates.length === 0) {
-    console.error('[stage-msixbundle] no makeappx/signtool found under electron-builder winCodeSign cache')
-    process.exit(1)
-  }
-  // Prefer the newest SDK build.
-  candidates.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-  return candidates[candidates.length - 1]
 }
 
 const winSdk = resolveWinSdkTools()
