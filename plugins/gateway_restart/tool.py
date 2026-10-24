@@ -409,6 +409,7 @@ def _deliver_confirm_prompt(
     prompt: str,
     content: str,
     metadata: dict,
+    runner: Any = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Deliver the confirmation prompt; ``(None, message_id)`` when it landed.
 
@@ -430,6 +431,12 @@ def _deliver_confirm_prompt(
     """
     from gateway.config import Platform
 
+    # Send-boundary commit recheck: a restart may have committed during the
+    # title operations above — probing HERE (on the gateway loop, before the
+    # send is even scheduled, rich or plain) keeps an actionable consent
+    # prompt from being created after the restart already happened.
+    if runner is not None and _probe_restart_committed(runner, loop):
+        return (_PROMPT_NOT_SENT_COMMITTED, None)
     rich_send = getattr(adapter, "send_restart_confirmation", None)
     use_rich = source.platform == Platform.DISCORD and callable(rich_send)
     if use_rich:
@@ -473,6 +480,8 @@ def _deliver_confirm_prompt(
         return error, None
 
     # The embed never landed — one plain prompt, requester mention included.
+    if runner is not None and _probe_restart_committed(runner, loop):
+        return (_PROMPT_NOT_SENT_COMMITTED, None)
     fallback_future, submit_error = _submit_to_loop(
         adapter.send(source.chat_id, content, metadata=metadata or None), loop
     )
@@ -695,6 +704,41 @@ def _probe_restart_committed(runner: Any, loop: Any) -> bool:
         return False
 
 
+_PROMPT_NOT_SENT_COMMITTED = object()
+
+
+def _settle_confirm_shared(clarify_mod: Any, clarify_id: str) -> tuple[Optional[Any], Optional[str]]:
+    """Settle a registered confirm wait as shared consent, first-writer-wins.
+
+    Resolves the wait with the distinguished superseded token — losing the
+    resolve means a real reply (or the drain sweep) already settled it — then
+    reaps and returns the ACTUAL recorded outcome: an earlier cancellation
+    wins and is never overwritten with fabricated shared consent.
+    """
+    won = False
+    try:
+        won = clarify_mod.resolve_gateway_clarify(
+            clarify_id, clarify_mod.SUPERSEDED_RESPONSE
+        )
+    except Exception:
+        logger.debug("Failed to settle restart confirm as shared", exc_info=True)
+    try:
+        actual = clarify_mod.wait_for_response(clarify_id, 1.0)
+    except Exception:
+        actual = None
+    if actual == clarify_mod.SUPERSEDED_RESPONSE:
+        return (_SUPERSEDED_CONFIRM, None)
+    if str(actual or "").strip() == _CONFIRM_WORD:
+        return (None, None)
+    if not won and actual:
+        return (
+            "Restart cancelled — the reply was not the exact word "
+            f"`{_CONFIRM_WORD}`.",
+            None,
+        )
+    return (_SUPERSEDED_CONFIRM, None)
+
+
 def _confirm_restart_with_requester(
     runner: Any,
     loop: Any,
@@ -801,8 +845,7 @@ def _confirm_restart_with_requester(
     # reap it — the requester must NOT be sent another actionable consent
     # prompt for a restart that is already happening.
     if _probe_restart_committed(runner, loop):
-        _drop_pending_confirm(clarify_gateway, clarify_id)
-        return (_SUPERSEDED_CONFIRM, None)
+        return _settle_confirm_shared(clarify_gateway, clarify_id)
 
     # The thread itself becomes the pending indicator: retitled before the
     # prompt can land, restored on every exit below — and always before the
@@ -814,9 +857,28 @@ def _confirm_restart_with_requester(
     try:
         title_restore = _begin_restart_pending_thread_title(adapter, loop, source)
         deliver_error, prompt_message_id = _deliver_confirm_prompt(
-            adapter, loop, source, prompt, content, metadata
+            adapter, loop, source, prompt, content, metadata, runner=runner
         )
+        if deliver_error is _PROMPT_NOT_SENT_COMMITTED:
+            return _settle_confirm_shared(clarify_gateway, clarify_id)
         if deliver_error is not None:
+            # The send failed, but a shared sweep may have recorded approval
+            # WHILE it was failing: reap the actual recorded outcome before
+            # cancelling, so committed shared consent survives the transport
+            # failure instead of being overwritten by a recoverable-cancel
+            # notice for a restart that is already covered.
+            if _probe_restart_committed(runner, loop):
+                settled_error, _ = _settle_confirm_shared(
+                    clarify_gateway, clarify_id
+                )
+                if settled_error is None:
+                    return (None, None)
+                if settled_error is not _SUPERSEDED_CONFIRM:
+                    _record_cancelled_restart_notice(
+                        runner, source, adapter, session_key, deliver_error
+                    )
+                    return (settled_error, None)
+                return (_SUPERSEDED_CONFIRM, None)
             _drop_pending_confirm(clarify_gateway, clarify_id)
             _record_cancelled_restart_notice(
                 runner, source, adapter, session_key, deliver_error
@@ -897,7 +959,19 @@ def _settle_restart_prompt(
                 submit_error,
             )
             return
-        future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+        try:
+            result = future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+        except Exception:
+            # Timed out / dead loop: cancel OUR pending edit so a zombie
+            # coroutine cannot land a settled prompt late. The restart's
+            # truth is already in the tool result — never undo it.
+            future.cancel()
+            raise
+        if result is not None and getattr(result, "success", True) is False:
+            logger.debug(
+                "restart tool: prompt settlement edit reported failure: %s",
+                getattr(result, "error", None) or "send failed",
+            )
     except Exception as exc:
         logger.debug("restart tool: prompt settlement failed: %s", exc)
 

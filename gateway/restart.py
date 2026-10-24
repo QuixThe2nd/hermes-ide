@@ -587,11 +587,12 @@ def restart_committed(runner: Any) -> bool:
     a confirm wait — read on the gateway loop so it can never observe a
     half-open queue sequence — and settles its own wait as shared consent
     when covered, instead of waiting on (or prompting for) a consent the
-    committed restart already provides.
+    committed restart already provides. ``_restart_requested`` only: it is
+    set by ``request_restart`` after its rollback window and cleared only by
+    that rollback, while ``_draining`` alone is a generic shutdown (signal,
+    supervisor stop) that never carried restart consent.
     """
-    return bool(getattr(runner, "_restart_requested", False)) or bool(
-        getattr(runner, "_draining", False)
-    )
+    return bool(getattr(runner, "_restart_requested", False))
 
 
 def _iso8601_utc(value: object) -> str:
