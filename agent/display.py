@@ -760,12 +760,16 @@ _CRON_DESCRIBE_ACTIONS = {
     "resnap": "Refreshing model settings for cron jobs",
 }
 
+# describe-only neutral phrase for cron tools called with wholly non-dict args.
+_CRON_NEUTRAL_TOOL_PHRASES = {"cronjob_manage": "Managing cron jobs", "cronjob": "Managing cron jobs"}
+
 
 def _describe_cronjob_phrase(_tool_name: str, args: dict) -> str | None:
     action = _describe_action_key(args)
     label = _describe_enum_label(_CRON_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
-        return "Managing cron jobs" if action is not None else None  # never a bare "Scheduling"
+        # missing/null/unknown action (None, int, list, dict, bad string): never claim scheduling
+        return "Managing cron jobs"
     subject = _describe_arg(args, "name", "job_id") if action != "list" else None
     if subject is None and action == "create":
         skills = args.get("skills")
@@ -1271,6 +1275,11 @@ def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIB
         derived = _describe_subject_phrase(tool_name, args)
         if derived:
             return _describe_cap(derived, max_len)
+    else:
+        # describe-only neutral fallback: non-dict args (None/list/string/number) for cron tools
+        neutral = _CRON_NEUTRAL_TOOL_PHRASES.get(tool_name)
+        if neutral:
+            return _describe_cap(neutral, max_len)
     verb = get_tool_verb(tool_name)
     return _describe_cap(verb or tool_name or "working", max_len)
 
