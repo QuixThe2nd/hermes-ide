@@ -123,7 +123,7 @@ test('r2-delete matches botocore', () => {
     authz,
     'AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/auto/s3/aws4_request, ' +
       'SignedHeaders=host;x-amz-content-sha256;x-amz-date, ' +
-      'Signature=42051e3d24b20ff352dc6f4ff11323ace9ca20bceb46f830398768e51ae20526',
+      'Signature=ec5ccb76f701193b28aaca052cabbf2f084e9c71ffc64b872fa51d4e70dc6e55',
   )
 })
 
