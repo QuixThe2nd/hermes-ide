@@ -93,7 +93,7 @@ from agent.turn_iteration_prep import (
 )
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_preflight_gate import run_preflight_gate
-from agent.turn_request_assembly import assemble_api_request
+from agent.turn_request_assembly import assemble_api_request, _append_delegation_runtime_note
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
@@ -2468,6 +2468,16 @@ def _run_conversation_inlined(
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
+
+        # Delegated-worker runtime state rides the OUTGOING REQUEST ONLY: a
+        # fresh, bounded, owner-scoped snapshot per model request (so it
+        # refreshes across tool rounds within one turn), appended to the
+        # latest legal user/tool-result content. Stored history, api_content
+        # sidecars, prior rows and the system prompt stay untouched —
+        # ``api_messages`` is the request-local send copy built above. Same
+        # seam and same helper as the decomposed turn path
+        # (agent/turn_request_assembly.assemble_api_request).
+        _append_delegation_runtime_note(agent, api_messages)
 
         # NOTE (empty-content class fix): no send-time pad loop here.  The
         # single owner for "never send a turn strict wire validation rejects
