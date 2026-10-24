@@ -127,7 +127,7 @@ def _delegation_runtime_note(agent: Any) -> str:
     identity yields NO context (unknown ownership excludes records, it never
     widens the view)."""
     try:
-        from tools.async_delegation import build_delegation_runtime_note
+        from tools.delegation_runtime_note import build_delegation_runtime_note
 
         durable = str(getattr(agent, "session_id", "") or "")
         home_key = _active_home_key()
