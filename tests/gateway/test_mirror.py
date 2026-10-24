@@ -162,6 +162,85 @@ class TestAppendToSqlite:
         )
 
 
+class TestThreadCanonicalOriginLookup:
+    """Discord thread sessions persist chat_id == thread_id; a mirror addressed
+    with the parent channel id plus thread_id must resolve via the zero-row
+    fallback in SessionDB.find_session_by_origin, without weakening any
+    ambiguity refusal."""
+
+    @staticmethod
+    def _make_db(tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        # A durable thread-canonical row: chat_id == thread_id (Discord).
+        db.create_session(
+            "sess_thread", "discord", user_id="u1",
+            session_key="agent:main:discord:thread:t9:t9", chat_id="t9",
+            chat_type="thread", thread_id="t9",
+        )
+        return db
+
+    def _find(self, db, **kwargs):
+        with patch("hermes_state_registry.acquire", return_value=db), \
+             patch("hermes_state_registry.release_or_close"):
+            return _find_session_id(**kwargs)
+
+    def test_parent_plus_thread_resolves_thread_canonical_row(self, tmp_path):
+        db = self._make_db(tmp_path)
+        try:
+            assert self._find(
+                db, platform="discord", chat_id="ch_parent", thread_id="t9"
+            ) == "sess_thread"
+        finally:
+            db.close()
+
+    def test_unknown_user_in_populated_parent_chat_still_refuses(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            for uid in ("u1", "u2"):
+                db.create_session(
+                    f"sess_parent_{uid}", "discord", user_id=uid,
+                    session_key=f"agent:main:discord:group:ch1:{uid}",
+                    chat_id="ch1", chat_type="group", thread_id="t9",
+                )
+            # A thread-canonical row exists, but the parent query returned
+            # rows — an ambiguity refusal must not be treated as absence.
+            db.create_session(
+                "sess_thread", "discord", user_id="u3",
+                session_key="agent:main:discord:thread:t9:t9", chat_id="t9",
+                chat_type="thread", thread_id="t9",
+            )
+            assert self._find(
+                db, platform="discord", chat_id="ch1", thread_id="t9", user_id="nobody"
+            ) is None
+        finally:
+            db.close()
+
+    def test_exact_user_match_wins_via_thread_fallback(self, tmp_path):
+        db = self._make_db(tmp_path)
+        try:
+            assert self._find(
+                db, platform="discord", chat_id="ch_parent", thread_id="t9", user_id="u1"
+            ) == "sess_thread"
+        finally:
+            db.close()
+
+    def test_parent_only_lookup_without_thread_unaffected(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(
+                "sess_flat", "discord", user_id="u1",
+                session_key="agent:main:discord:group:ch1", chat_id="ch1",
+                chat_type="group",
+            )
+            assert self._find(db, platform="discord", chat_id="ch1") == "sess_flat"
+            assert self._find(db, platform="discord", chat_id="nope") is None
+        finally:
+            db.close()
+
+
 class TestSessionsIndexProfileScoping:
     """#112844: the fallback index must follow the active profile, not the launch one."""
 
