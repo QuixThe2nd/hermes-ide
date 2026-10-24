@@ -6491,6 +6491,13 @@ class TurnRunner:
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
         _separate_pending_lines = []  # "separate" mode rows appended but not yet sent
+        # Oversized-row chunking (codebox only): when one boxed row alone
+        # exceeds the platform cap it is sliced across several messages; the
+        # buffer then holds only that row's undelivered tail slices and
+        # ``_row_head_len`` counts the escaped chars already visible in the
+        # earlier (immutable) chunk messages.
+        _row_tail = False
+        _row_head_len = 0
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -6574,6 +6581,69 @@ class TurnRunner:
                 lines, bool(ctx.progress_codebox) and can_edit
             )
 
+        def _codebox_active() -> bool:
+            return bool(ctx.progress_codebox) and can_edit
+
+        def _absorb_row(raw) -> str:
+            """Append a tool row, slicing it when its boxed rendering alone
+            exceeds the platform cap (the group splitter can only partition
+            between rows — without this the native adapter split the row and
+            later edits truncated the tail, losing repeat counters)."""
+            nonlocal _row_tail, _row_head_len
+            if _codebox_active():
+                from gateway.display_config import chunk_oversized_progress_row
+
+                slices = chunk_oversized_progress_row(
+                    raw, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                )
+                if len(slices) > 1:
+                    progress_lines.extend(slices)
+                    _row_tail, _row_head_len = True, 0
+                    return slices[-1]
+            progress_lines.append(raw)
+            _row_tail = False
+            return raw
+
+        def _absorb_dedup(base_msg, count) -> str:
+            """Fold a repeat update into the last row, re-slicing oversized ones."""
+            nonlocal _row_tail, _row_head_len
+            if not progress_lines:
+                return base_msg
+            if _row_tail:
+                # The repeated row is already split across chunk messages.
+                # Slicing is prefix-stable, so the earlier chunks hold an
+                # unchanged prefix — re-render only the editable tail with
+                # the counter instead of duplicating the head.
+                from gateway.display_config import repeat_row_text
+
+                tail = repeat_row_text(base_msg, count, _codebox_active())[
+                    _row_head_len:
+                ]
+                if _codebox_active():
+                    from gateway.display_config import chunk_oversized_progress_row
+
+                    slices = chunk_oversized_progress_row(
+                        tail, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                    )
+                    if len(slices) > 1:
+                        progress_lines[:] = slices
+                        return slices[-1]
+                progress_lines[:] = [tail]
+                return tail
+            line = f"{base_msg} (×{count + 1})"
+            if _codebox_active():
+                from gateway.display_config import chunk_oversized_progress_row
+
+                slices = chunk_oversized_progress_row(
+                    line, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                )
+                if len(slices) > 1:
+                    progress_lines[-1:] = slices
+                    _row_tail, _row_head_len = True, 0
+                    return slices[-1]
+            progress_lines[-1] = line
+            return line
+
         def _split_progress_groups(lines: list) -> list[list]:
             """Partition progress lines into platform-sized editable bubbles."""
             groups: list[list] = []
@@ -6615,7 +6685,7 @@ class TurnRunner:
                 intact for a later retry.  In either case the caller should skip
                 the normal send/edit path for this tick.
                 """
-            nonlocal progress_msg_id, progress_lines, can_edit
+            nonlocal progress_msg_id, progress_lines, can_edit, _row_tail, _row_head_len
             if not progress_lines or not can_edit:
                 return False
             groups = _split_progress_groups(progress_lines)
@@ -6648,6 +6718,10 @@ class TurnRunner:
             # The newest continuation is now the only mutable bubble.  Keep
             # just its lines so subsequent edits update it instead of
             # replaying the full historical transcript into new messages.
+            if _row_tail:
+                _row_head_len += sum(
+                    len(line) for group in groups[:-1] for line in group
+                )
             progress_lines = groups[-1]
             return True
 
@@ -6679,6 +6753,8 @@ class TurnRunner:
                             exc_info=True,
                         )
                 _separate_pending_lines.clear()
+                _row_tail = False
+                _row_head_len = 0
                 _last_edit_ts = time.monotonic()
                 return
             rolled = False
@@ -6728,9 +6804,7 @@ class TurnRunner:
                 # Handle dedup messages: update last line with repeat counter
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
-                    if progress_lines:
-                        progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                    msg = progress_lines[-1] if progress_lines else base_msg
+                    msg = _absorb_dedup(base_msg, count)
                 elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                     # Content bubble just landed on the platform — close off
                     # the current tool-progress bubble so the next tool
@@ -6743,6 +6817,8 @@ class TurnRunner:
                     progress_msg_id = None
                     progress_lines = []
                     _separate_pending_lines.clear()
+                    _row_tail = False
+                    _row_head_len = 0
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
                     continue
@@ -6763,12 +6839,13 @@ class TurnRunner:
                     progress_msg_id = None
                     progress_lines = []
                     _separate_pending_lines.clear()
+                    _row_tail = False
+                    _row_head_len = 0
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
                     continue
                 else:
-                    msg = raw
-                    progress_lines.append(msg)
+                    msg = _absorb_row(raw)
                     if not can_edit:
                         # "separate" mode: this row becomes its own message
                         # later on this tick — remember it until that send
@@ -6870,6 +6947,8 @@ class TurnRunner:
                             # skipped by the throttle (pre-v0.9 "separate"
                             # behavior: one message per row, no catch-up).
                             _separate_pending_lines.clear()
+                            _row_tail = False
+                            _row_head_len = 0
 
                 _last_edit_ts = time.monotonic()
 
@@ -6903,6 +6982,8 @@ class TurnRunner:
                             progress_msg_id = None
                             progress_lines = []
                             _separate_pending_lines.clear()
+                            _row_tail = False
+                            _row_head_len = 0
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         elif _agent_interrupted():
@@ -6915,13 +6996,15 @@ class TurnRunner:
                                 progress_msg_id = None
                                 progress_lines = []
                                 _separate_pending_lines.clear()
+                                _row_tail = False
+                                _row_head_len = 0
                                 ctx.last_progress_msg[0] = None
                                 ctx.repeat_count[0] = 0
                             continue
                         elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
                             if progress_lines:
-                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                _absorb_dedup(base_msg, count)
                                 await _roll_progress_overflow_if_needed()
                         elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                             # Content-bubble marker during drain: close off
@@ -6937,10 +7020,12 @@ class TurnRunner:
                             progress_msg_id = None
                             progress_lines = []
                             _separate_pending_lines.clear()
+                            _row_tail = False
+                            _row_head_len = 0
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         else:
-                            progress_lines.append(raw)
+                            _absorb_row(raw)
                             if not can_edit:
                                 _separate_pending_lines.append(raw)
                             await _roll_progress_overflow_if_needed()

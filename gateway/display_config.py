@@ -389,3 +389,38 @@ def format_progress_group(lines: list, codebox: bool) -> str:
     from gateway.stream_consumer_fences import escape_code_fences_for_display
 
     return f"```\n{escape_code_fences_for_display(body)}\n```"
+
+
+# "```\n" + "\n```" around a one-line boxed group.
+CODEBOX_FENCE_COST = 8
+
+
+def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
+    """Slice one boxed tool-progress row into lines that each render within ``limit``.
+
+    Fills the gap ``format_progress_group`` leaves for the gateway's group
+    splitter: it partitions *between* rows, so a single row whose escaped body
+    plus fence overhead alone crossed the platform cap reached the native
+    adapter intact, was split into multiple messages there, and later edits
+    truncated the first message only — losing repeat counters and tail text.
+    Slices are cut from the escaped text (escaping is idempotent) so a later
+    repeat update of the same row re-slices to identical prefixes. Returns
+    ``[line]`` unchanged when it already fits; plain rows never change.
+    """
+    from gateway.stream_consumer_fences import escape_code_fences_for_display
+
+    text = escape_code_fences_for_display(str(line))
+    if len_fn(text) + CODEBOX_FENCE_COST <= limit:
+        return [line]
+    width = max(1, limit - CODEBOX_FENCE_COST)
+    return [text[i : i + width] for i in range(0, len(text), width)]
+
+
+def repeat_row_text(base_msg, count: int, codebox: bool) -> str:
+    """The repeat-rendered row text for a ``__dedup__`` update (escaped when boxed)."""
+    text = f"{base_msg} (×{count + 1})"
+    if not codebox:
+        return text
+    from gateway.stream_consumer_fences import escape_code_fences_for_display
+
+    return escape_code_fences_for_display(text)

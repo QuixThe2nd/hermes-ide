@@ -562,6 +562,11 @@ class TurnRunner:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        # Oversized-row chunking (codebox only): a boxed row sliced across
+        # several messages leaves only its tail slices editable; _row_head_len
+        # counts the escaped chars already visible in the earlier chunks.
+        _row_tail: bool = False
+        _row_head_len: int = 0
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -657,6 +662,8 @@ class TurnRunner:
                 st.progress_msg_id = result.message_id
         # The newest continuation is the only mutable bubble: keep just its lines so later
         # edits update it instead of replaying the full transcript into new messages.
+        if st._row_tail:
+            st._row_head_len += sum(len(line) for group in groups[:-1] for line in group)
         st.progress_lines = groups[-1]
         return True
 
@@ -668,17 +675,55 @@ class TurnRunner:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
         st.progress_msg_id, st.progress_lines = None, []
+        st._row_tail, st._row_head_len = False, 0
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
+    def _codebox_active(self, st) -> bool:
+        return bool(self._ctx.progress_codebox) and st.can_edit
+
     def _progress_absorb(self, st, raw) -> Any:
-        """Fold a queue item into the bubble buffer; returns the line to render this tick."""
+        """Fold a queue item into the bubble buffer; returns the line to render this tick.
+
+        A boxed row whose escaped body plus fence overhead alone exceeds the platform cap is
+        sliced into limit-fitting lines (the group splitter can only partition between rows;
+        without this the native adapter split the row and later edits truncated the tail,
+        losing repeat counters).
+        """
+        from gateway.display_config import chunk_oversized_progress_row, repeat_row_text
+
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
                 return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+            if st._row_tail:
+                # The repeated row is already split across chunk messages. Slicing is
+                # prefix-stable, so earlier chunks hold an unchanged prefix — re-render
+                # only the editable tail with the counter instead of duplicating the head.
+                tail = repeat_row_text(base_msg, count, self._codebox_active(st))[st._row_head_len:]
+                if self._codebox_active(st):
+                    slices = chunk_oversized_progress_row(tail, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
+                    if len(slices) > 1:
+                        st.progress_lines[:] = slices
+                        return slices[-1]
+                st.progress_lines[:] = [tail]
+                return tail
+            line = f"{base_msg} (×{count + 1})"
+            if self._codebox_active(st):
+                slices = chunk_oversized_progress_row(line, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
+                if len(slices) > 1:
+                    st.progress_lines[-1:] = slices
+                    st._row_tail, st._row_head_len = True, 0
+                    return slices[-1]
+            st.progress_lines[-1] = line
             return st.progress_lines[-1]
+        if self._codebox_active(st):
+            slices = chunk_oversized_progress_row(raw, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
+            if len(slices) > 1:
+                st.progress_lines.extend(slices)
+                st._row_tail, st._row_head_len = True, 0
+                return slices[-1]
         st.progress_lines.append(raw)
+        st._row_tail = False
         return raw
 
     async def _flush_progress_edit(self, st) -> None:
