@@ -524,16 +524,19 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
 
     vi.mocked(desktop.getConnection).mockImplementation(async profile => {
       await activation.promise
+
       return { ...(await getConnection(profile)), mode: 'remote' }
     })
     vi.mocked(desktop.getConnectionFor!).mockImplementation(async route => {
       await activation.promise
+
       return getConnectionFor(route)
     })
 
     const ambientRequest = vi.fn(async (method: string, params?: Record<string, unknown>) =>
       (activeGateway() as unknown as MockGateway).request(method, params)
     )
+
     let handle: HarnessHandle | null = null
     render(<Harness ambientRequest={ambientRequest} onReady={h => (handle = h)} />)
     await waitFor(() => expect(handle).not.toBeNull())
