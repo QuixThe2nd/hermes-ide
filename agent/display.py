@@ -995,7 +995,11 @@ def _describe_discord_guests_phrase(_tool_name: str, args: dict) -> str | None:
         label = "Listing Discord guests" if _describe_action_key(args) == "list" else None
         if label is None:
             return None
-    guest = _describe_arg(args, "member", "user_id")
+    # add/remove select a guest; user_id wins over member, per the tool schema.
+    # list/setup select no guest, so their labels never carry a suffix.
+    if _describe_action_key(args) not in ("add", "remove"):
+        return label
+    guest = _describe_arg(args, "user_id") or _describe_arg(args, "member")
     return f"{label} {guest}" if guest else label
 
 
