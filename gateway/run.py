@@ -16200,6 +16200,27 @@ class GatewayRunner(
             if getattr(self, "_running", True):
                 self._draining = False
             raise
+        # The restart task is real: it now owns its state outright. Sweep any
+        # restart-confirmation waits that were already blocked on an older
+        # runner's prompt — a committed restart supersedes them without
+        # requiring another queue call. Runs only here, after the task is
+        # established: a rolled-back setup above never settles a sibling
+        # wait, and the flags are provisional until create_task succeeds.
+        try:
+            from tools.clarify_gateway import resolve_restart_waits_superseded
+
+            superseded_gates = resolve_restart_waits_superseded()
+        except Exception as exc:
+            superseded_gates = 0
+            logger.debug(
+                "Restart owner: superseded-gate sweep failed: %s", exc
+            )
+        if superseded_gates:
+            logger.info(
+                "Restart owner: %d pending restart gate(s) superseded by "
+                "this restart",
+                superseded_gates,
+            )
         return True
 
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
