@@ -201,12 +201,22 @@ def test_pending_gate_superseded_by_another_confirmed_restarts_queue(
         )
 
         result = json.loads(outcome["result"])
-        # The exact truthful result, byte-for-byte the brief's contract.
-        assert set(result) == {"success", "status", "consent", "message"}
+        # The exact truthful result, byte-for-byte the brief's contract —
+        # including the reserved terminal control field: the shared restart
+        # is committed and draining this turn too, so the executor must end
+        # it exactly as a normal "restarting" result would.
+        assert set(result) == {
+            "success",
+            "status",
+            "consent",
+            "message",
+            "_hermes_turn_control",
+        }
         assert result["success"] is True
         assert result["status"] == SHARED_RESTART_STATUS == "restarting"
         assert result["consent"] == SHARED_RESTART_CONSENT == "shared"
         assert result["message"] == SHARED_RESTART_EXPLANATION
+        assert result["_hermes_turn_control"] == "gateway_restart"
         # Never claims a cancellation or a failure — no error field at all.
         assert "cancelled" not in result
         assert "error" not in result
@@ -559,6 +569,30 @@ def test_resume_note_is_surgical_about_what_it_annotates():
     lookalike = {"role": "tool", "tool_call_id": "t1", "content": lookalike_content}
     assert annotate_superseded_restart_tail([lookalike]) == 0
     assert lookalike["content"] == lookalike_content
+
+    # Historical pre-upgrade superseded results (success:false,
+    # status:"superseded" + its exact error) still match — persisted
+    # transcripts keep being annotated — while the status alone is not
+    # enough (a lookalike must not catch it).
+    from gateway.restart import LEGACY_SUPERSEDED_RESTART_ERROR
+
+    legacy = {
+        "role": "tool",
+        "tool_call_id": "t1b",
+        "content": json.dumps(
+            {
+                "success": False,
+                "status": "superseded",
+                "error": LEGACY_SUPERSEDED_RESTART_ERROR,
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ),
+    }
+    assert is_superseded_restart_tool_result(legacy["content"]) is True
+    assert annotate_superseded_restart_tail([legacy]) == 1
+    legacy_lookalike = '{"success":false,"status":"superseded","error":"other"}'
+    assert is_superseded_restart_tool_result(legacy_lookalike) is False
 
     # A genuine cancellation keeps its exact text.
     cancelled = {
