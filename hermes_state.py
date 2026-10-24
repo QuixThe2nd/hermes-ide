@@ -2076,7 +2076,7 @@ def _log_journal_mode_upgrade_once(db_label: str, previous_mode: str) -> None:
     WARNING, not ERROR, and deliberately so. The reverse move is logged at
     ERROR by ``_log_wal_fallback_once`` because dropping to DELETE is a real
     loss of concurrency; this direction is normally the desirable one (see
-    ``hermes_cli/managed_uv._default_live_venv``, which treats a database
+    ``hermes_cli/runtime_repair._default_live_venv``, which treats a database
     stuck on DELETE as a bug worth repairing on update). The problem is not
     the change, it is that the change was invisible: an operator who chose
     DELETE deliberately had no way to learn their choice had been overwritten,
