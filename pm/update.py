@@ -26,6 +26,7 @@ venv (uv sync) — and with the dep legs enabled, uv.lock + package-lock.json.
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.request
 from dataclasses import dataclass, field
@@ -163,9 +164,20 @@ def resolve_package(package, targets: list[str], locked: Optional[str]) -> Resol
 _UA = {"User-Agent": "hermes-pm"}
 
 
+def _github_headers() -> dict:
+    """Headers for GitHub API calls. A GH_TOKEN / GITHUB_TOKEN env var lifts
+    the unauthenticated 60 req/hr cap to 5000 — a full `pm update --check`
+    across every github-sourced package burns the anonymous budget fast."""
+    headers = dict(_UA)
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def _get_json(url: str) -> dict | list:
     with urllib.request.urlopen(
-        urllib.request.Request(url, headers=_UA), timeout=60
+        urllib.request.Request(url, headers=_github_headers()), timeout=60
     ) as resp:
         return json.load(resp)
 
