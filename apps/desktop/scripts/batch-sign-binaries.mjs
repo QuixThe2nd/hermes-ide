@@ -33,7 +33,7 @@
 // Gating matches the rest of the pipeline: this module only signs when the
 // Azure Trusted Signing variables are present (the same AZURE_SIGN_* set the
 // release-signing workflow arms provide). Without them — local builds, forks,
-// unsigned nightly lanes — it is a no-op with a loud warning, exactly like
+// unsigned canary lanes — it is a no-op with a loud warning, exactly like
 // stage-msixbundle.mjs. The dlib + signtool resolution reuses the
 // electron-builder cache walk from scripts/stage-msixbundle.mjs; nothing is
 // hardcoded to C:\Tools.

@@ -8,7 +8,7 @@
 //   node scripts/r2-release.mjs put --tag vX.Y.Z --key <filename> --file <path>
 //   node scripts/r2-release.mjs finalize --tag vX.Y.Z --dir <staging-dir>
 //   node scripts/r2-release.mjs list [--prefix <p>]
-//   node scripts/r2-release.mjs prune-nightlies --keep-days 14 [--dry-run]
+//   node scripts/r2-release.mjs prune-canaries --keep-days 14 [--dry-run]
 //
 // Env (all required except where noted):
 //   CLOUDFLARE_R2_ACCOUNT_ID       → S3 endpoint https://<account>.r2.cloudflarestorage.com
@@ -23,7 +23,7 @@
 //                                                     publish-win32-updater job)
 //   releases/darwin/<channel>/<channel>-mac.yml   electron-updater feed
 //     releases/darwin/<channel>/*.{dmg,zip,blockmap}
-// where <channel> is stable | nightly (from the tag: -nightly. → nightly).
+// where <channel> is stable | canary (from the tag: -canary. → canary).
 // The publish-win32-updater job merges the win32 legs' staging into the
 // win32 feed; the darwin feed merge (r2 finalize) is currently DISABLED
 // (no macOS updater arm).
@@ -212,9 +212,9 @@ async function retry(fn, tries = 3) {
 // Layout helpers (pure)
 // ---------------------------------------------------------------------------
 
-/** 'stable' for a stable tag, 'nightly' for a -nightly.<ts> tag. */
+/** 'stable' for a stable tag, 'canary' for a -canary.<ts> tag. */
 export function channelForTag(tag) {
-  return /-nightly\.20\d{6}(?:\d{6})?$/.test(tag) ? 'nightly' : 'stable'
+  return /-canary\.20\d{6}(?:\d{6})?$/.test(tag) ? 'canary' : 'stable'
 }
 
 // Content-Type for MSIX / App Installer artifacts lives in msix-shared.mjs
@@ -232,7 +232,7 @@ export function feedDirFor(platform, channel) {
 
 /**
  * Merge per-leg electron-updater feed ymls (same channel + platform) into one.
- * Each leg's yml (mac: latest-mac.yml / nightly-mac.yml) lists only its own
+ * Each leg's yml (mac: latest-mac.yml / canary-mac.yml) lists only its own
  * arch's files[]; the merged yml keeps the top-level fields of the first leg
  * (version/releaseDate) and the trailing top-level path/sha512, with the
  * files[] entries concatenated and deduped by url. Idempotent: merging an
@@ -475,10 +475,10 @@ async function cmdList({ prefix }) {
   for (const key of await listObjects(prefix)) console.log(key)
 }
 
-/** Keys whose own nightly date (YYYYMMDD in the name) is before `cutoff`. */
-export function nightlyDoomedKeys(keys, cutoff) {
+/** Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`. */
+export function canaryDoomedKeys(keys, cutoff) {
   return keys.filter((key) => {
-    const m = key.match(/-nightly\.(\d{8})/)
+    const m = key.match(/-canary\.(\d{8})/)
     return m && m[1] < cutoff
   })
 }
@@ -491,13 +491,13 @@ async function cmdPrune({ keepDays, dryRun }) {
   const creds = { accessKeyId, secretKey }
   const base = s3Endpoint(accountId)
 
-  // Cutoff dated by the nightly suffix in the KEY (like release.py's
-  // --prune-nightlies: a re-uploaded old tag never resets its clock).
+  // Cutoff dated by the canary suffix in the KEY (like release.py's
+  // --prune-canaries: a re-uploaded old tag never resets its clock).
   const cutoff = new Date(Date.now() - keepDays * 86400_000).toISOString().slice(0, 10).replace(/-/g, '')
   const keys = await listObjects()
-  const doomed = nightlyDoomedKeys(keys, cutoff)
+  const doomed = canaryDoomedKeys(keys, cutoff)
   if (doomed.length === 0) {
-    console.log(`✓ r2: no nightly objects older than ${keepDays} days`)
+    console.log(`✓ r2: no canary objects older than ${keepDays} days`)
     return
   }
   const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
@@ -522,7 +522,7 @@ function usage() {
   node scripts/r2-release.mjs put --tag vX.Y.Z --key <filename> --file <path> [--key-is-full]
   node scripts/r2-release.mjs finalize --tag vX.Y.Z --dir <staging-dir>
   node scripts/r2-release.mjs list [--prefix <p>]
-  node scripts/r2-release.mjs prune-nightlies --keep-days <n> [--dry-run]
+  node scripts/r2-release.mjs prune-canaries --keep-days <n> [--dry-run]
 
   --key-is-full: the --key is a FULL object key (e.g. releases/win32/stable/…),
                  not a filename to archive under releases/tag/<tag>/.`)
@@ -555,7 +555,7 @@ export async function main(argv = process.argv.slice(2)) {
     await cmdFinalize({ tag: args.tag, dir: args.dir })
   } else if (cmd === 'list') {
     await cmdList({ prefix: args.prefix ?? '' })
-  } else if (cmd === 'prune-nightlies') {
+  } else if (cmd === 'prune-canaries') {
     const keepDays = Number(args['keep-days'])
     if (!Number.isFinite(keepDays) || keepDays <= 0) usage()
     await cmdPrune({ keepDays, dryRun: Boolean(args.dryRun) })

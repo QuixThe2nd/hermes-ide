@@ -774,9 +774,9 @@ export interface DesktopUpdateStatus {
   currentSha?: string
   /** Backend only: the version string the backend reports for itself. */
   currentVersion?: string
-  /** Release feed the check read from ('stable'/'nightly'); when set, the
+  /** Release feed the check read from ('stable'/'canary'); when set, the
    *  update is a release and `latestTag` names it instead of a commit count. */
-  channel?: 'stable' | 'nightly'
+  channel?: 'stable' | 'canary'
   /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
   latestTag?: string | null
   targetSha?: string

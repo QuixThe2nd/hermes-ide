@@ -11,7 +11,7 @@ under releases/tag/<tag>/, and the download links point at the R2 public
 URL (CLOUDFLARE_R2_PUBLIC_URL / --r2-base-url).
 
 Tables: Hermes Desktop (bundled) and Hermes Light, one row per (OS,
-arch). Feed manifests (latest*/light*/nightly*.yml), blockmaps and mac .zip
+arch). Feed manifests (latest*/light*/canary*.yml), blockmaps and mac .zip
 (an electron-updater delta target, not a user download) stay out of the
 tables on purpose; they still live in the bucket for the updater to
 consume.
@@ -44,7 +44,7 @@ END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
 #   Hermes-0.28.0-mac-arm64.dmg        (bundled)
 #   HermesBundled-0.28.0-win-x64.msix  (bundled)
 _ASSET_RE = re.compile(
-    r"^(?P<app>HermesBundled|HermesLight)-(?P<version>[^-]+(?:-nightly\.\d{8}(?:\d{6})?)?)"
+    r"^(?P<app>HermesBundled|HermesLight)-(?P<version>[^-]+(?:-canary\.\d{8}(?:\d{6})?)?)"
     r"-(?P<os>mac|win|linux)-(?P<arch>x64|arm64)\.(?P<ext>dmg|msix|AppImage)$"
 )
 
@@ -126,7 +126,7 @@ def r2_object_names(tag: str) -> list[str]:
     """Object keys in the R2 staging dir for `tag`, under releases/tag/<tag>/.
 
     Exact version match, never prefix: 'v0.28.0' must not pick up
-    '0.28.0-nightly.20260818...' objects (they live under their own tag
+    '0.28.0-canary.20260818...' objects (they live under their own tag
     directory, and the basename filter would reject them anyway). The list
     call shells out to scripts/r2-release.mjs, which reads the R2 env vars
     and needs only node (no npm ci in this job).

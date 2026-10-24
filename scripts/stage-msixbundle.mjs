@@ -7,8 +7,8 @@
 //  1. OUT-OF-STORE FEED: bundle the x64 + arm64 per-arch .msix into one
 //     universal .msixbundle, sign the bundle envelope, write the per-channel
 //     .appinstaller, and upload both to the win32 feed dirs:
-//         releases/win32/<stable|nightly>/<name>-<ver>.win.msixbundle
-//         releases/win32/<stable|nightly>/stable.appinstaller (or nightly.*)
+//         releases/win32/<stable|canary>/<name>-<ver>.win.msixbundle
+//         releases/win32/<stable|canary>/stable.appinstaller (or canary.*)
 //     The .appinstaller is the install + auto-update entry point; the bundle
 //     is what the OS installs and swaps on update. Per-arch .msix files stay
 //     in the immutable releases/tag/<tag>/ archive (uploaded by the legs).
@@ -62,8 +62,8 @@ if (process.platform !== 'win32') {
   process.exit(1)
 }
 
-const nightly = /-nightly\./.test(tag)
-const channel = nightly ? 'nightly' : 'stable'
+const canary = /-canary\./.test(tag)
+const channel = canary ? 'canary' : 'stable'
 const channelDir = `releases/win32/${variant === 'light' ? 'light/' : ''}${channel}`
 
 const desktop = path.join(REPO_ROOT, 'apps', 'desktop')
@@ -71,7 +71,7 @@ const releaseDir = path.join(desktop, 'release')
 const { identity, version, name, fileVersion } = appIdentity(desktop, tag)
 
 // Per-arch .msix files are found by the name electron-builder gave them
-// (appInfo.version = the 3-part or full-nightly string, NOT the 4-part feed
+// (appInfo.version = the 3-part or full-canary string, NOT the 4-part feed
 // version). The bundle /bv, .appinstaller Version and feed filenames all use
 // the 4-part `version` — what Windows compares for updates.
 function msixFile(arch) {

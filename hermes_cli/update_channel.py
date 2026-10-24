@@ -6,11 +6,11 @@ Channel storage — per install, never home-global::
       installs:
         a4f3b2c1d0e9f8a7:                      # install id (sha16 of the
           path: /home/u/.hermes/hermes-agent   #   canonical install root)
-          channel: nightly
+          channel: canary
 
 One config.yaml serves many installs (host + docker gateway + desktop all
 bind-mount one ``~/.hermes``), so a home-global ``update.channel`` key is
-UNSAFE and does not exist: setting nightly for a dev checkout must not
+UNSAFE and does not exist: setting canary for a dev checkout must not
 flip the desktop app's feed. The id is sha16 of the canonical
 install-root PATH — the same key that names the ``installs/<sha16>/``
 state folder (``boot_bootstrap._install_key``; a byte-identical helper is
@@ -22,8 +22,8 @@ same path, and the channel opt-in must survive that.
   (it knows its own id — the user never types a sha).
 * Shown by ``hermes update --install-id`` and the desktop About page.
 * Channels are meaningful ONLY where the mechanism is ``self`` (which git
-  ref: main / stable / nightly→main) or ``electron-updater`` (which feed:
-  latest.yml / nightly.yml). ``external`` installs have no channel; the
+  ref: main / stable / canary→main) or ``electron-updater`` (which feed:
+  latest.yml / canary.yml). ``external`` installs have no channel; the
   steward owns updates.
 
 Pure-stdlib leaf module (plus hermes-internal imports done lazily): the
@@ -43,35 +43,35 @@ logger = logging.getLogger(__name__)
 
 CHANNEL_MAIN = "main"
 CHANNEL_STABLE = "stable"
-CHANNEL_NIGHTLY = "nightly"
-VALID_CHANNELS = (CHANNEL_MAIN, CHANNEL_STABLE, CHANNEL_NIGHTLY)
+CHANNEL_CANARY = "canary"
+VALID_CHANNELS = (CHANNEL_MAIN, CHANNEL_STABLE, CHANNEL_CANARY)
 
-# A nightly release tag: v<major>.<minor>.<patch>-nightly.<YYYYMMDDHHMMSS>,
+# A canary release tag: v<major>.<minor>.<patch>-canary.<YYYYMMDDHHMMSS>,
 # or the legacy date-only shape. THIS is the single authority for the
-# nightly tag shape — scripts/release.py (produces them) and
+# canary tag shape — scripts/release.py (produces them) and
 # scripts/write_install_stamp.py (validates the feed key) import it rather
-# than re-typing the rule. Nightlies are current-stable patch+1, so any
+# than re-typing the rule. Canaries are current-stable patch+1, so any
 # patch is accepted here.
-_NIGHTLY_TAG_RE = re.compile(r"^v(?:0|[1-9]\d{0,2})\.\d+\.\d+-nightly\.20\d{6}(?:\d{6})?$")
+_CANARY_TAG_RE = re.compile(r"^v(?:0|[1-9]\d{0,2})\.\d+\.\d+-canary\.20\d{6}(?:\d{6})?$")
 
 
-def is_nightly_tag(tag: Any) -> bool:
-    """True when ``tag`` is a nightly release tag."""
-    return isinstance(tag, str) and bool(_NIGHTLY_TAG_RE.match(tag.strip()))
+def is_canary_tag(tag: Any) -> bool:
+    """True when ``tag`` is a canary release tag."""
+    return isinstance(tag, str) and bool(_CANARY_TAG_RE.match(tag.strip()))
 
 
-def nightly_tag_for_date(version: str, date_utc: str) -> str:
-    """The nightly tag name for a UTC timestamp: next PATCH over ``version``
+def canary_tag_for_date(version: str, date_utc: str) -> str:
+    """The canary tag name for a UTC timestamp: next PATCH over ``version``
     (the newest stable's patch + 1), second-precision UTC suffix —
-    v0.27.5-nightly.20260818103000 when stable is v0.27.4. A nightly
+    v0.27.5-canary.20260818103000 when stable is v0.27.4. A canary
     outversions every stable at or below its patch and loses to the next
     stable patch, which is exactly the channel-switch upgrade path
-    (nightly→stable = wait for that patch bump to ship as stable).
+    (canary→stable = wait for that patch bump to ship as stable).
     """
     parts = version.lstrip("v").split(".")
     major, minor = int(parts[0]), int(parts[1])
     patch = int(parts[2]) if len(parts) >= 3 else 0
-    return f"v{major}.{minor}.{patch + 1}-nightly.{date_utc}"
+    return f"v{major}.{minor}.{patch + 1}-canary.{date_utc}"
 
 
 def _install_key_sha16(project_root: Path) -> str:
@@ -149,12 +149,12 @@ def default_channel(project_root: Optional[Path] = None) -> str:
 
     ``self`` source installs follow main (historical behavior).
     ``electron-updater`` bundles follow the channel their own artifact was
-    published to: a nightly artifact tracks nightly, every other bundle
+    published to: a canary artifact tracks canary, every other bundle
     tracks stable. The stamp's ``tag`` is the authority, the same fact
     apps/desktop/product-identity.cjs keys the published feed name on — so
-    the feed a nightly artifact asks for and the feed it was published to
+    the feed a canary artifact asks for and the feed it was published to
     can never disagree. Deriving stable here instead would send a fresh
-    nightly install to look for its ``nightly.yml`` feed file under the
+    canary install to look for its ``canary.yml`` feed file under the
     newest STABLE release, where that file does not exist (404), leaving
     the install unable to update at all.
     """
@@ -162,7 +162,7 @@ def default_channel(project_root: Optional[Path] = None) -> str:
     stamp = _read_stamp(root)
     if stamp.get("updateMechanism") != "electron-updater":
         return CHANNEL_MAIN
-    return CHANNEL_NIGHTLY if is_nightly_tag(stamp.get("tag")) else CHANNEL_STABLE
+    return CHANNEL_CANARY if is_canary_tag(stamp.get("tag")) else CHANNEL_STABLE
 
 
 def resolve_update_channel(
@@ -173,8 +173,8 @@ def resolve_update_channel(
 
     Resolution: the per-install record (``update.installs.<sha16>.channel``)
     when valid; otherwise the mechanism default (main for self-source,
-    stable/nightly for electron-updater bundles by artifact tag). Source
-    installs asking for nightly normalize to main — nightly builds are
+    stable/canary for electron-updater bundles by artifact tag). Source
+    installs asking for canary normalize to main — canary builds are
     release artifacts, and a git checkout tracks branches; callers print
     the note.
     """
@@ -184,19 +184,19 @@ def resolve_update_channel(
     else:
         channel = default_channel(project_root)
 
-    if channel == CHANNEL_NIGHTLY:
+    if channel == CHANNEL_CANARY:
         root = Path(project_root) if project_root is not None else _default_root()
         if _read_stamp(root).get("updateMechanism") != "electron-updater":
-            # nightly→main normalization for source installs.
+            # canary→main normalization for source installs.
             return CHANNEL_MAIN
     return channel
 
 
-def nightly_normalized_note() -> str:
-    """The one-line note callers print when nightly normalizes to main."""
+def canary_normalized_note() -> str:
+    """The one-line note callers print when canary normalizes to main."""
     return (
-        "→ Channel 'nightly' on a source install tracks main "
-        "(nightly builds are desktop release artifacts)."
+        "→ Channel 'canary' on a source install tracks main "
+        "(canary builds are desktop release artifacts)."
     )
 
 

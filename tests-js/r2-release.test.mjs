@@ -27,7 +27,7 @@ import {
   encodeKeyPath,
   feedDirFor,
   mergeFeedYmls,
-  nightlyDoomedKeys,
+  canaryDoomedKeys,
   rewriteFeedPaths,
   stagingKeyFor,
   parseListXml,
@@ -111,7 +111,7 @@ test('r2-delete matches botocore', () => {
   const authz = authHeader({
     method: 'DELETE',
     host,
-    path: '/hermes-releases/HermesBundled-0.28.0-nightly.20260818-win-arm64.msix',
+    path: '/hermes-releases/HermesBundled-0.28.0-canary.20260818-win-arm64.msix',
     query: '',
     headers: { host, 'x-amz-date': NOW, 'x-amz-content-sha256': EMPTY_SHA },
     payloadHash: EMPTY_SHA,
@@ -156,32 +156,32 @@ test('parseListXml extracts keys, truncation, continuation token, entities', () 
   assert.equal(parsed.nextToken, 'abc+def/=')
 })
 
-test('nightlyDoomedKeys dates by the key suffix, ignores stable artifacts', () => {
+test('canaryDoomedKeys dates by the key suffix, ignores stable artifacts', () => {
   const keys = [
     'releases/tag/v0.28.0/HermesBundled-0.28.0-win-x64.msix', // stable — never doomed
-    'releases/tag/v0.28.0-nightly.20260801/HermesBundled-0.28.0-nightly.20260801-win-x64.msix',
-    'releases/tag/v0.28.0-nightly.20260818/HermesBundled-0.28.0-nightly.20260818-win-x64.msix', // today — kept
-    'releases/tag/v0.28.0-nightly.20260801/HermesBundled-0.28.0-nightly.20260801-win-x64.msix.blockmap',
+    'releases/tag/v0.28.0-canary.20260801/HermesBundled-0.28.0-canary.20260801-win-x64.msix',
+    'releases/tag/v0.28.0-canary.20260818/HermesBundled-0.28.0-canary.20260818-win-x64.msix', // today — kept
+    'releases/tag/v0.28.0-canary.20260801/HermesBundled-0.28.0-canary.20260801-win-x64.msix.blockmap',
     'latest.yml',
-    'nightly.yml',
+    'canary.yml',
   ]
-  assert.deepEqual(nightlyDoomedKeys(keys, '20260814'), [
-    'releases/tag/v0.28.0-nightly.20260801/HermesBundled-0.28.0-nightly.20260801-win-x64.msix',
-    'releases/tag/v0.28.0-nightly.20260801/HermesBundled-0.28.0-nightly.20260801-win-x64.msix.blockmap',
+  assert.deepEqual(canaryDoomedKeys(keys, '20260814'), [
+    'releases/tag/v0.28.0-canary.20260801/HermesBundled-0.28.0-canary.20260801-win-x64.msix',
+    'releases/tag/v0.28.0-canary.20260801/HermesBundled-0.28.0-canary.20260801-win-x64.msix.blockmap',
   ])
 })
 
-test('channelForTag maps stable vs nightly', () => {
+test('channelForTag maps stable vs canary', () => {
   assert.equal(channelForTag('v0.28.0'), 'stable')
-  assert.equal(channelForTag('v0.28.0-nightly.20260818101010'), 'nightly')
-  assert.equal(channelForTag('v0.28.0-nightly.20260818'), 'nightly')
+  assert.equal(channelForTag('v0.28.0-canary.20260818101010'), 'canary')
+  assert.equal(channelForTag('v0.28.0-canary.20260818'), 'canary')
 })
 
 test('stagingKeyFor + feedDirFor produce the layout keys', () => {
   assert.equal(stagingKeyFor('v0.28.0', 'HermesBundled-0.28.0-win-x64.msix'),
     'releases/tag/v0.28.0/HermesBundled-0.28.0-win-x64.msix')
   assert.equal(feedDirFor('win32', 'stable'), 'releases/win32/stable')
-  assert.equal(feedDirFor('darwin', 'nightly'), 'releases/darwin/nightly')
+  assert.equal(feedDirFor('darwin', 'canary'), 'releases/darwin/canary')
 })
 
 test('contentTypeFor maps MSIX / App Installer artifacts to their MIME types', () => {

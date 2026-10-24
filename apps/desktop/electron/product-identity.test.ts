@@ -48,14 +48,14 @@ test('light identity is fully distinct from the full identity', async () => {
   }
 })
 
-test('a nightly payload tag moves BOTH variants onto their nightly feed channel', async () => {
-  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0-nightly.20260818'
+test('a canary payload tag moves BOTH variants onto their canary feed channel', async () => {
+  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0-canary.20260818'
   const full = await identityForVariant(undefined)
-  assert.equal(full.channel, 'nightly')
+  assert.equal(full.channel, 'canary')
 
-  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0-nightly.20260818'
+  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0-canary.20260818'
   const light = await identityForVariant('light')
-  assert.equal(light.channel, 'light-nightly')
+  assert.equal(light.channel, 'light-canary')
 })
 
 test('stable tags and tagless dev builds publish to the stable channels', async () => {

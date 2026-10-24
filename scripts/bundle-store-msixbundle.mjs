@@ -53,7 +53,7 @@ const releaseDir = path.join(desktop, 'release')
 const { name, version, fileVersion } = appIdentity(desktop, tag)
 
 // Per-arch Store-submission packages: electron-builder names them with the
-// Store- prefix + appInfo.version (the 3-part or full-nightly string), which
+// Store- prefix + appInfo.version (the 3-part or full-canary string), which
 // appIdentity reports as `fileVersion` — same convention as the out-of-store
 // bundle in stage-msixbundle.mjs.
 const storeMsix = (arch) => path.join(releaseDir, `Store-${name}-${fileVersion}-win-${arch}.msix`)

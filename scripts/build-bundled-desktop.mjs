@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { CLI_LAUNCHER_SPECS, posixTrampolineScripts, renderWinWrapper } from './desktop-cli/cli-entrypoints.mjs'
 import { windowsFileVersion } from '../apps/desktop/scripts/windows-file-version.mjs'
 import { relativizePayloadLinks } from '../apps/desktop/scripts/materialize-payload-links.mjs'
-import { nightlyBuildMinutes } from './msix-shared.mjs'
+import { canaryBuildMinutes } from './msix-shared.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PAYLOAD_DIR = path.join(REPO_ROOT, 'apps', 'desktop', 'build', 'agent-payload')
@@ -182,8 +182,8 @@ if (!tag) {
     fail('no --tag=vX.Y.Z given and HEAD is not at an exact release tag')
   }
 }
-if (!/^v(?:0|[1-9]\d{0,2})\.\d+\.\d+(?:-nightly\.20\d{6}(?:\d{6})?)?$/.test(tag)) {
-  fail(`'${tag}' is not a release tag (vX.Y.Z or vX.Y.0-nightly.YYYYMMDDHHMMSS)`)
+if (!/^v(?:0|[1-9]\d{0,2})\.\d+\.\d+(?:-canary\.20\d{6}(?:\d{6})?)?$/.test(tag)) {
+  fail(`'${tag}' is not a release tag (vX.Y.Z or vX.Y.0-canary.YYYYMMDDHHMMSS)`)
 }
 
 const pyprojectVersion = fs
@@ -192,11 +192,11 @@ const pyprojectVersion = fs
 if (!pyprojectVersion) {
   fail('could not read version from pyproject.toml')
 }
-const isNightly = tag.includes('-nightly.')
-if (!isNightly && tag !== `v${pyprojectVersion}`) {
+const isCanary = tag.includes('-canary.')
+if (!isCanary && tag !== `v${pyprojectVersion}`) {
   fail(`tag ${tag} does not match pyproject.toml version ${pyprojectVersion}`)
 }
-const artifactVersion = isNightly ? tag.slice(1) : pyprojectVersion
+const artifactVersion = isCanary ? tag.slice(1) : pyprojectVersion
 const fileVersion = windowsFileVersion(tag)
 
 const passes = {
@@ -411,7 +411,7 @@ const env = {
   // msix.setBuildNumber is on; a stable build leaves it unset and ships
   // X.Y.Z.0. Computed here so the manifest, the .msixbundle /bv and the
   // .appinstaller feed all agree (same derivation, same value).
-  ...(isNightly ? { BUILD_NUMBER: String(nightlyBuildMinutes(tag, REPO_ROOT)) } : {})
+  ...(isCanary ? { BUILD_NUMBER: String(canaryBuildMinutes(tag, REPO_ROOT)) } : {})
 }
 const desktop = path.join(REPO_ROOT, 'apps', 'desktop')
 

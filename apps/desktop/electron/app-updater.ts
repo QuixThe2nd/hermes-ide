@@ -38,7 +38,7 @@
  *   <base>/win32/<channel>/            — App Installer feed dir (.appinstaller
  *                                        + .msixbundle) for out-of-store MSIX.
  *
- * `<channel>` is 'stable' or 'nightly'.
+ * `<channel>` is 'stable' or 'canary'.
  */
 export const PLACEHOLDER_FEED_BASE_URL = 'https://updates.invalid/hermes-desktop'
 
@@ -50,7 +50,7 @@ export const PLACEHOLDER_FEED_BASE_URL = 'https://updates.invalid/hermes-desktop
  * packages.
  */
 export function win32AppInstallerFeedPath(
-  channel: 'stable' | 'nightly',
+  channel: 'stable' | 'canary',
   light: boolean
 ): string {
   const variant = light ? 'light/' : ''
@@ -120,7 +120,7 @@ export async function checkAppInstallerUpdate(
  */
 export async function triggerAppInstallerUpdate(
   feedBaseUrl: string,
-  channel: 'stable' | 'nightly',
+  channel: 'stable' | 'canary',
   light: boolean,
   shell: { openExternal: (url: string) => Promise<void> },
   beforeInstall?: () => void | Promise<void>

@@ -19,14 +19,14 @@ class TestParseReleaseTag:
         for tag in ("v1.2.3-rc1", "v1.2.3-beta.1", "v1.2", "1.2.3", "release-1", "vv1.2.3", ""):
             assert _parse_release_tag(tag) is None, tag
 
-    def test_nightly_tags_never_reach_the_stable_channel(self):
-        """The inverse direction of the nightly channel: nightly tags are
-        version-suffixed (v0.28.0-nightly.20260818), and the stable
-        selector's no-suffix rule is what keeps a nightly prerelease from
+    def test_canary_tags_never_reach_the_stable_channel(self):
+        """The inverse direction of the canary channel: canary tags are
+        version-suffixed (v0.28.0-canary.20260818), and the stable
+        selector's no-suffix rule is what keeps a canary prerelease from
         ever winning a stable-channel update. If this shape ever parses,
-        stable users get nightlies."""
-        assert _parse_release_tag("v0.28.0-nightly.20260818") is None
-        assert _parse_release_tag("v1.0.0-nightly.1") is None
+        stable users get canaries."""
+        assert _parse_release_tag("v0.28.0-canary.20260818") is None
+        assert _parse_release_tag("v1.0.0-canary.1") is None
 
     def test_calver_tags_rejected(self):
         """Historical CalVer tags (v2026.7.20) must not win a numeric sort.
@@ -93,8 +93,8 @@ class TestStableChannelActive:
         no config read happens when it is present."""
         assert _stable_channel_active(_Args(channel="stable")) is True
         assert _stable_channel_active(_Args(channel="main")) is False
-        # nightly on a source tree normalizes to main, never stable.
-        assert _stable_channel_active(_Args(channel="nightly")) is False
+        # canary on a source tree normalizes to main, never stable.
+        assert _stable_channel_active(_Args(channel="canary")) is False
 
     def test_per_install_record_activates(self, tmp_path, monkeypatch):
         from hermes_cli.update_channel import install_id

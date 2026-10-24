@@ -1,5 +1,5 @@
 // msix-shared — the 4-part MSIX version derivation (minutes-since-stable
-// for nightlies). The git-backed lookup is deterministic here because
+// for canaries). The git-backed lookup is deterministic here because
 // node:child_process.execFileSync is mocked; the math it feeds is the
 // contract App Installer compares.
 import assert from 'node:assert/strict'
@@ -48,52 +48,52 @@ test('stable tag keeps the 3-part version plus .0', () => {
   assert.equal(fileVersion, '0.27.1')
 })
 
-test('nightly version is tag base + minutes since the same-minor stable', () => {
+test('canary version is tag base + minutes since the same-minor stable', () => {
   const desktop = makeFakeDesktop('0.27.1')
-  // Stable v0.27.1 committed 2026-08-01T00:00:00Z; nightly cut 2026-08-29T01:02:03Z.
+  // Stable v0.27.1 committed 2026-08-01T00:00:00Z; canary cut 2026-08-29T01:02:03Z.
   const stableEpoch = Math.floor(Date.UTC(2026, 7, 1) / 1000)
-  gitMock(['v0.27.1', 'v0.27.2-nightly.20260829010203'], stableEpoch)
-  const { version, fileVersion } = msix.appIdentity(desktop, 'v0.27.2-nightly.20260829010203')
+  gitMock(['v0.27.1', 'v0.27.2-canary.20260829010203'], stableEpoch)
+  const { version, fileVersion } = msix.appIdentity(desktop, 'v0.27.2-canary.20260829010203')
   const expectedMinutes = Math.floor((Date.UTC(2026, 7, 29, 1, 2, 3) - Date.UTC(2026, 7, 1)) / 60000)
   assert.equal(version, `0.27.2.${expectedMinutes}`)
-  // The artifact FILENAME carries the full nightly string (appInfo.version),
+  // The artifact FILENAME carries the full canary string (appInfo.version),
   // not the 4-part feed version.
-  assert.equal(fileVersion, '0.27.2-nightly.20260829010203')
+  assert.equal(fileVersion, '0.27.2-canary.20260829010203')
 })
 
-test('nightlyBuildMinutesFor is pure minutes math', () => {
+test('canaryBuildMinutesFor is pure minutes math', () => {
   const base = Date.UTC(2026, 7, 1) / 1000
-  const minutes = msix.nightlyBuildMinutesFor('v0.27.2-nightly.20260829010203', base)
+  const minutes = msix.canaryBuildMinutesFor('v0.27.2-canary.20260829010203', base)
   assert.equal(minutes, Math.floor((Date.UTC(2026, 7, 29, 1, 2, 3) - Date.UTC(2026, 7, 1)) / 60000))
 })
 
-test('nightlyBuildMinutesFor returns null for a stable tag', () => {
-  assert.equal(msix.nightlyBuildMinutesFor('v0.27.1', 0), null)
+test('canaryBuildMinutesFor returns null for a stable tag', () => {
+  assert.equal(msix.canaryBuildMinutesFor('v0.27.1', 0), null)
 })
 
-test('nightlyBuildMinutesFor rejects a stable base older than 45 days', () => {
+test('canaryBuildMinutesFor rejects a stable base older than 45 days', () => {
   const base = Date.UTC(2026, 5, 1) / 1000 // 2026-06-01
   assert.throws(
-    () => msix.nightlyBuildMinutesFor('v0.27.2-nightly.20260829010203', base),
+    () => msix.canaryBuildMinutesFor('v0.27.2-canary.20260829010203', base),
     /45 days|16-bit/i
   )
 })
 
-test('legacy 8-digit nightly stamp still computes minutes (midnight of that day)', () => {
+test('legacy 8-digit canary stamp still computes minutes (midnight of that day)', () => {
   const base = Date.UTC(2026, 7, 1) / 1000
-  const minutes = msix.nightlyBuildMinutesFor('v0.27.2-nightly.20260801', base)
+  const minutes = msix.canaryBuildMinutesFor('v0.27.2-canary.20260801', base)
   assert.equal(minutes, 0)
 })
 
 test('buildAppInstaller pins the derived 4-part version everywhere', () => {
   const xml = msix.buildAppInstaller({
     baseUrl: 'https://updates.example.com',
-    variantChannelPath: 'win32/nightly',
+    variantChannelPath: 'win32/canary',
     identityName: 'NousResearch.HermesBundled',
     version: '0.27.2.1234',
     bundleFilename: 'HermesBundled-0.27.2.1234-win.msixbundle'
   })
-  assert.match(xml, /Uri="https:\/\/updates\.example\.com\/win32\/nightly\/HermesBundled-0\.27\.2\.1234-win\.msixbundle"/)
+  assert.match(xml, /Uri="https:\/\/updates\.example\.com\/win32\/canary\/HermesBundled-0\.27\.2\.1234-win\.msixbundle"/)
   const versionCount = (xml.match(/Version="0\.27\.2\.1234"/g) || []).length
   assert.equal(versionCount, 2)
 })

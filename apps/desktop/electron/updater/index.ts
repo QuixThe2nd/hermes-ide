@@ -59,7 +59,7 @@ export interface UpdaterStatusWire {
   behind?: number | null
   currentSha?: string
   currentVersion?: string
-  channel?: 'stable' | 'nightly'
+  channel?: 'stable' | 'canary'
   latestTag?: string | null
   targetSha?: string
   commits?: { sha: string; summary: string; author: string; at: number }[]

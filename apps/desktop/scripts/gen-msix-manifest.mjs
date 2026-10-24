@@ -86,7 +86,7 @@ const manifest = substituteManifestMacros(template, (m) => {
     case "publisher": return options.publisher
     case "publisherDisplayName": return options.publisherDisplayName
     // Same 4-part derivation the real build uses (msix-shared::appIdentity) —
-    // a nightly shows its minutes-since-stable component here too, so this
+    // a canary shows its minutes-since-stable component here too, so this
     // inspection tool never disagrees with what electron-builder shipped.
     case "version": return appIdentity(desktop, process.env.HERMES_PAYLOAD_TAG).version
     case "applicationId": return resolvePackageApplicationId(options.applicationId, options.identityName, appInfoName, "MSIX")

@@ -2,7 +2,7 @@
 // gen-appinstaller.mjs — generate the Windows App Installer (.appinstaller)
 // file for an out-of-store MSIX channel feed.
 //
-// The out-of-store distribution is App Installer owned: each stable/nightly
+// The out-of-store distribution is App Installer owned: each stable/canary
 // channel dir under the feed host holds a universal .msixbundle plus an
 // .appinstaller that (a) installs the bundle and (b) records the .appinstaller
 // URI as the package's update source, so the OS can re-check it on launch.
@@ -52,9 +52,9 @@ if (isCli) {
     process.exit(1)
   }
 
-  const nightly = /-nightly/.test(process.env.HERMES_PAYLOAD_TAG || '')
+  const canary = /-canary/.test(process.env.HERMES_PAYLOAD_TAG || '')
   const variantDir = identity.light ? 'light/' : ''
-  const ch = nightly ? 'nightly' : 'stable'
+  const ch = canary ? 'canary' : 'stable'
   const channelPath = `win32/${variantDir}${ch}`
 
   const xml = buildAppInstaller({

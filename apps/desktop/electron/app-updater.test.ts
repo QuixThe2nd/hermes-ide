@@ -19,9 +19,9 @@ test('the feed base URL placeholder is a documented dead end', () => {
 
 test('win32 App Installer feed paths are per-channel and per-variant', () => {
   assert.equal(win32AppInstallerFeedPath('stable', false), 'win32/stable/')
-  assert.equal(win32AppInstallerFeedPath('nightly', false), 'win32/nightly/')
+  assert.equal(win32AppInstallerFeedPath('canary', false), 'win32/canary/')
   assert.equal(win32AppInstallerFeedPath('stable', true), 'win32/light/stable/')
-  assert.equal(win32AppInstallerFeedPath('nightly', true), 'win32/light/nightly/')
+  assert.equal(win32AppInstallerFeedPath('canary', true), 'win32/light/canary/')
 })
 
 // ── win32 arm (OS App Installer checker + trigger) ─────────────────
@@ -85,13 +85,13 @@ test('win32 trigger opens ms-appinstaller with the channel .appinstaller after t
   ])
 })
 
-test('win32 trigger light+nightly targets the light nightly feed dir', async () => {
+test('win32 trigger light+canary targets the light canary feed dir', async () => {
   const calls: string[] = []
   const shell = {
     openExternal: async (url: string) => void calls.push(url)
   }
 
-  await triggerAppInstallerUpdate('https://updates.example.com', 'nightly', true, shell as any)
+  await triggerAppInstallerUpdate('https://updates.example.com', 'canary', true, shell as any)
 
-  assert.equal(calls[0], 'ms-appinstaller:?source=https%3A%2F%2Fupdates.example.com%2Fwin32%2Flight%2Fnightly%2Fnightly.appinstaller')
+  assert.equal(calls[0], 'ms-appinstaller:?source=https%3A%2F%2Fupdates.example.com%2Fwin32%2Flight%2Fcanary%2Fcanary.appinstaller')
 })

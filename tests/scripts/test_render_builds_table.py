@@ -47,8 +47,8 @@ class TestParseAssets:
         assert len(parsed["HermesBundled"]) == 4   # zip/msixbundle/blockmap/yml excluded
         assert parsed["HermesLight"] == {("win", "x64"): ("releases/tag/v0.28.0/HermesLight-0.28.0-win-x64.msix", "msix")}
 
-    def test_nightly_versions_parse(self):
-        parsed = rbt.parse_assets(["releases/tag/v0.28.0-nightly.20260818/HermesBundled-0.28.0-nightly.20260818-win-x64.msix"])
+    def test_canary_versions_parse(self):
+        parsed = rbt.parse_assets(["releases/tag/v0.28.0-canary.20260818/HermesBundled-0.28.0-canary.20260818-win-x64.msix"])
         assert ("win", "x64") in parsed["HermesBundled"]
 
     def test_flat_names_still_parse(self):
@@ -59,12 +59,12 @@ class TestParseAssets:
 
 
 class TestFilterNamesForVersion:
-    def test_stable_tag_does_not_match_nightly_objects(self):
-        # '0.28.0' is a prefix of '0.28.0-nightly...' — the filter must be
-        # exact, or a stable table would list nightly binaries.
+    def test_stable_tag_does_not_match_canary_objects(self):
+        # '0.28.0' is a prefix of '0.28.0-canary...' — the filter must be
+        # exact, or a stable table would list canary binaries.
         names = [
             "releases/tag/v0.28.0/HermesBundled-0.28.0-mac-arm64.dmg",
-            "releases/tag/v0.28.0-nightly.20260818/HermesBundled-0.28.0-nightly.20260818-win-x64.msix",
+            "releases/tag/v0.28.0-canary.20260818/HermesBundled-0.28.0-canary.20260818-win-x64.msix",
             "releases/tag/v0.29.0/HermesBundled-0.29.0-win-x64.msix",
             "latest.yml",
         ]
@@ -72,15 +72,15 @@ class TestFilterNamesForVersion:
             "releases/tag/v0.28.0/HermesBundled-0.28.0-mac-arm64.dmg",
         ]
 
-    def test_nightly_tag_matches_its_objects(self):
+    def test_canary_tag_matches_its_objects(self):
         names = [
-            "releases/tag/v0.28.0-nightly.20260818/HermesBundled-0.28.0-nightly.20260818-win-x64.msix",
-            "releases/tag/v0.28.0-nightly.20260818/HermesBundled-0.28.0-nightly.20260818-win-x64.msix.blockmap",
-            "releases/tag/v0.28.0-nightly.20260817/HermesBundled-0.28.0-nightly.20260817-win-arm64.msix",
+            "releases/tag/v0.28.0-canary.20260818/HermesBundled-0.28.0-canary.20260818-win-x64.msix",
+            "releases/tag/v0.28.0-canary.20260818/HermesBundled-0.28.0-canary.20260818-win-x64.msix.blockmap",
+            "releases/tag/v0.28.0-canary.20260817/HermesBundled-0.28.0-canary.20260817-win-arm64.msix",
             "releases/tag/v0.28.0/HermesBundled-0.28.0-mac-arm64.dmg",
         ]
-        assert rbt.filter_names_for_version(names, "0.28.0-nightly.20260818") == [
-            "releases/tag/v0.28.0-nightly.20260818/HermesBundled-0.28.0-nightly.20260818-win-x64.msix",
+        assert rbt.filter_names_for_version(names, "0.28.0-canary.20260818") == [
+            "releases/tag/v0.28.0-canary.20260818/HermesBundled-0.28.0-canary.20260818-win-x64.msix",
         ]
 
 

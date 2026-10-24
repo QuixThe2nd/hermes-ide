@@ -27,7 +27,7 @@ export interface AppInstallerStrategyDeps {
   script: string
   run: PayloadPythonRunner['run']
   /** Channel + variant from the baked install stamp. */
-  channel: 'stable' | 'nightly'
+  channel: 'stable' | 'canary'
   light: boolean
   /** The App Installer feed base URL; empty when nothing configured it. */
   feedBaseUrl: string

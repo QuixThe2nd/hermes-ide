@@ -612,7 +612,7 @@ def _stable_channel_active(args) -> bool:
     if transient:
         from hermes_cli.update_channel import CHANNEL_STABLE
 
-        # nightly on a source tree normalizes to main (not stable).
+        # canary on a source tree normalizes to main (not stable).
         return transient == CHANNEL_STABLE
     try:
         from hermes_cli.config import load_config

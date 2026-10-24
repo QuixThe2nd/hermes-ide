@@ -171,12 +171,12 @@ module.exports = {
     displayName,
     publisher: store ? storeMsix.publisher : OUT_OF_STORE_PUBLISHER,
     publisherDisplayName: store ? storeMsix.publisherDisplayName : 'Nous Research',
-    // Nightly MSIX versions are `X.Y.Z.<minutes-since-stable>` (see
+    // Canary MSIX versions are `X.Y.Z.<minutes-since-stable>` (see
     // scripts/msix-shared.mjs). setBuildNumber makes getVersionInWeirdWindowsForm
     // use the BUILD_NUMBER env (4th component) instead of hardcoding ".0" — a
-    // stable build sets no BUILD_NUMBER and stays X.Y.Z.0, a nightly build sets
+    // stable build sets no BUILD_NUMBER and stays X.Y.Z.0, a canary build sets
     // it via build-bundled-desktop.mjs so App Installer updates over equal
-    // nightly-over-nightly versions instead of refusing them.
+    // canary-over-canary versions instead of refusing them.
     setBuildNumber: true,
     // Floor Windows 11 22H2. Below build 18307 the manifest schema caps
     // AppExtension Name at 39 chars and Microsoft's own

@@ -3559,10 +3559,10 @@ function readUpdatesFeedBaseFromConfig(): string {
   }
 }
 
-/** The updater channel from the baked install stamp ('nightly' vs 'stable'). */
-function resolveUpdaterChannelFromStamp(): 'stable' | 'nightly' {
+/** The updater channel from the baked install stamp ('canary' vs 'stable'). */
+function resolveUpdaterChannelFromStamp(): 'stable' | 'canary' {
   const tag = INSTALL_STAMP?.tag || ''
-  return /-nightly\./.test(tag) ? 'nightly' : 'stable'
+  return /-canary\./.test(tag) ? 'canary' : 'stable'
 }
 
 /** True when this artifact is the light (remote-only) variant. */

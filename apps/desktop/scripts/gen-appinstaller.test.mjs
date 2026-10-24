@@ -43,8 +43,8 @@ describe('buildAppInstaller', () => {
   })
 
   test('a variant channel path with a trailing slash still resolves under the host', () => {
-    const xml = buildAppInstaller({ ...base, variantChannelPath: 'win32/nightly/' })
-    assert.match(xml, /https:\/\/updates\.example\.com\/win32\/nightly\//)
+    const xml = buildAppInstaller({ ...base, variantChannelPath: 'win32/canary/' })
+    assert.match(xml, /https:\/\/updates\.example\.com\/win32\/canary\//)
   })
 
   test('reserved XML characters in identity values are escaped', () => {

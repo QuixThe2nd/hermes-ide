@@ -205,9 +205,9 @@ def test_tag_not_on_origin_main_is_refused(tmp_path: Path):
     (clone / "rogue.txt").write_text("unreviewed\n", encoding="utf-8")
     _git("add", "-A", cwd=clone)
     _git("commit", "-m", "rogue", cwd=clone)
-    _git("tag", "v0.1.3-nightly.20260830120000", cwd=clone)
+    _git("tag", "v0.1.3-canary.20260830120000", cwd=clone)
 
-    proc = _run_admission(clone, "v0.1.3-nightly.20260830120000")
+    proc = _run_admission(clone, "v0.1.3-canary.20260830120000")
     assert proc.returncode != 0, "a tag off origin/main must not be admitted"
     assert "not an ancestor of origin/main" in proc.stdout + proc.stderr
     # And nothing was exported for the signing jobs to consume.

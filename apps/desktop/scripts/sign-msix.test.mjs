@@ -23,16 +23,16 @@ test('shouldSignFile rejects the Store-submission variant (Partner Center re-sig
   // cannot customize CN and CA/B requires the legal entity name — so
   // SignerSign would fail 0x8007000B. Partner Center signs on ingestion.
   assert.equal(
-    shouldSignFile('release/Store-HermesBundled-0.28.0-nightly.20260828211829-win-x64.msix'),
+    shouldSignFile('release/Store-HermesBundled-0.28.0-canary.20260828211829-win-x64.msix'),
     false
   )
   assert.equal(
-    shouldSignFile('release/Store-HermesBundled-0.28.0-nightly.20260828211829-win-arm64.msixbundle'),
+    shouldSignFile('release/Store-HermesBundled-0.28.0-canary.20260828211829-win-arm64.msixbundle'),
     false
   )
   // The out-of-store artifacts keep the only signature Windows validates.
   assert.equal(
-    shouldSignFile('release/HermesBundled-0.28.0-nightly.20260828211829-win-x64.msix'),
+    shouldSignFile('release/HermesBundled-0.28.0-canary.20260828211829-win-x64.msix'),
     true
   )
 })

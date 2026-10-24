@@ -116,13 +116,13 @@ test('buildStampPayload without a variant keeps the legacy 5-field shape', () =>
 test('buildStampPayload with bundled variant stamps payload bundled, store false', () => {
   const payload = buildStampPayload(baseStamp, {
     HERMES_DESKTOP_VARIANT: 'bundled',
-    HERMES_PAYLOAD_TAG: 'v0.27.1-nightly.20260901072553'
+    HERMES_PAYLOAD_TAG: 'v0.27.1-canary.20260901072553'
   })
   assert.equal(payload.payload, 'bundled')
   assert.equal(payload.store, false)
   assert.equal(payload.distribution, 'desktop-app')
   assert.equal(payload.updateMechanism, 'external')
-  assert.equal(payload.tag, 'v0.27.1-nightly.20260901072553')
+  assert.equal(payload.tag, 'v0.27.1-canary.20260901072553')
 })
 
 test('buildStampPayload with store variant stamps payload bundled, store true', () => {

@@ -80,12 +80,12 @@ test('stable tag: appIdentity derivation round-trips into the manifest Version',
   assert.equal(identityVersion(xml), version)
 })
 
-test('nightly tag: minutes-since-stable build number round-trips into the manifest Version', () => {
+test('canary tag: minutes-since-stable build number round-trips into the manifest Version', () => {
   const app = makeFakeDesktop('0.27.1')
-  // Stable v0.27.1 committed 2026-08-01T00:00:00Z; nightly cut 2026-08-29T01:02:03Z.
+  // Stable v0.27.1 committed 2026-08-01T00:00:00Z; canary cut 2026-08-29T01:02:03Z.
   const stableEpoch = Math.floor(Date.UTC(2026, 7, 1) / 1000)
-  gitMock(['v0.27.1', 'v0.27.2-nightly.20260829010203'], stableEpoch)
-  const { version, xml } = buildManifest(app, 'v0.27.2-nightly.20260829010203')
+  gitMock(['v0.27.1', 'v0.27.2-canary.20260829010203'], stableEpoch)
+  const { version, xml } = buildManifest(app, 'v0.27.2-canary.20260829010203')
   const expectedMinutes = Math.floor((Date.UTC(2026, 7, 29, 1, 2, 3) - Date.UTC(2026, 7, 1)) / 60000)
   assert.equal(version, `0.27.2.${expectedMinutes}`)
   assert.equal(identityVersion(xml), version)
@@ -94,21 +94,21 @@ test('nightly tag: minutes-since-stable build number round-trips into the manife
 test('manifest Version components are 16-bit (makeappx rejects anything larger)', () => {
   const app = makeFakeDesktop('0.27.1')
   const stableEpoch = Math.floor(Date.UTC(2026, 7, 1) / 1000)
-  gitMock(['v0.27.1', 'v0.27.2-nightly.20260829010203'], stableEpoch)
-  const { xml } = buildManifest(app, 'v0.27.2-nightly.20260829010203')
+  gitMock(['v0.27.1', 'v0.27.2-canary.20260829010203'], stableEpoch)
+  const { xml } = buildManifest(app, 'v0.27.2-canary.20260829010203')
   for (const part of identityVersion(xml).split('.')) {
     const n = Number(part)
     assert.ok(Number.isInteger(n) && n >= 0 && n <= 65535, `component ${part} outside 16 bits`)
   }
 })
 
-test('a later nightly stamps a strictly larger BUILD_NUMBER than an earlier one', () => {
-  // The build number exists so Windows can order nightlies on the same
+test('a later canary stamps a strictly larger BUILD_NUMBER than an earlier one', () => {
+  // The build number exists so Windows can order canaries on the same
   // base version; monotonicity across the stamp is the actual contract.
   const app = makeFakeDesktop('0.27.1')
   const stableEpoch = Math.floor(Date.UTC(2026, 7, 1) / 1000)
-  const early = 'v0.27.2-nightly.20260815080000'
-  const late = 'v0.27.2-nightly.20260829010203'
+  const early = 'v0.27.2-canary.20260815080000'
+  const late = 'v0.27.2-canary.20260829010203'
   gitMock([early, late, 'v0.27.1'], stableEpoch)
   const earlyBuild = Number(buildManifest(app, early).version.split('.')[3])
   const lateBuild = Number(buildManifest(app, late).version.split('.')[3])

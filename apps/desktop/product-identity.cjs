@@ -35,12 +35,12 @@ const store = variant === 'store'
 const light = variant === 'light'
 const name = variants[store ? 'bundled' : (variant || '')]
 
-// The electron-updater feed channel this build PUBLISHES to. A nightly
-// tag (vX.Y.0-nightly.YYYYMMDDHHMMSS) writes nightly.yml / light-nightly.yml;
+// The electron-updater feed channel this build PUBLISHES to. A canary
+// tag (vX.Y.0-canary.YYYYMMDDHHMMSS) writes canary.yml / light-canary.yml;
 // stable tags write latest.yml / light.yml. Keyed on the payload tag so
-// the one release workflow serves both channels — a nightly build can
+// the one release workflow serves both channels — a canary build can
 // never overwrite the stable feed file, and vice versa.
-const nightly = /-nightly\.20\d{6}(?:\d{6})?$/.test(process.env.HERMES_PAYLOAD_TAG || '')
+const canary = /-canary\.20\d{6}(?:\d{6})?$/.test(process.env.HERMES_PAYLOAD_TAG || '')
 
 /** @typedef {import("./product-identity.d.cts")} ProductIdentity */
 
@@ -52,7 +52,7 @@ const identity = {
   appId: `com.nousresearch.${name.kebab}`,
   // The store build never publishes to a release feed (the Store owns its
   // updates); null means "no feed" for its publish config.
-  channel: store ? null : light ? (nightly ? 'light-nightly' : 'light') : (nightly ? 'nightly' : 'latest'),
+  channel: store ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
   appNamePascal: name.pascal,
   msixAppIdWithOrg: `NousResearch.${name.pascal}`,
   ...(store

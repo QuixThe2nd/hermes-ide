@@ -31,7 +31,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Bootstrap the repo root onto sys.path so the nightly tag shape can come
+# Bootstrap the repo root onto sys.path so the canary tag shape can come
 # from hermes_cli.update_channel — the single authority — instead of a
 # re-typed regex (hermes_cli/__init__.py is import-light).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -231,18 +231,18 @@ def build_stamp(
         )
     payload = "bundled" if variant == "store" else (variant or "bootstrap")
     tag = os.environ.get("HERMES_PAYLOAD_TAG") or None
-    # Stable (vX.Y.Z) and nightly (vX.Y.<any patch>-nightly.<YYYYMMDDHHMMSS>,
+    # Stable (vX.Y.Z) and canary (vX.Y.<any patch>-canary.<YYYYMMDDHHMMSS>,
     # or the legacy date-only shape) tags are both release-feed keys; anything
-    # else cannot update itself and refuses. The nightly shape is validated by
+    # else cannot update itself and refuses. The canary shape is validated by
     # hermes_cli.update_channel — the single authority — so it accepts the
-    # patch+1 form scripts/release.py's nightly_tag_for_date produces.
+    # patch+1 form scripts/release.py's canary_tag_for_date produces.
     _stable_tag = re.compile(r"^v(0|[1-9]\d{0,2})\.\d+\.\d+$")
     if payload != "bootstrap" and not (
-        tag and (_stable_tag.match(tag) or update_channel.is_nightly_tag(tag))
+        tag and (_stable_tag.match(tag) or update_channel.is_canary_tag(tag))
     ):
         raise SystemExit(
             f"write_install_stamp: HERMES_DESKTOP_VARIANT={payload} requires "
-            f"HERMES_PAYLOAD_TAG=vX.Y.Z or vX.Y.<n>-nightly.YYYYMMDDHHMMSS (got {tag!r})"
+            f"HERMES_PAYLOAD_TAG=vX.Y.Z or vX.Y.<n>-canary.YYYYMMDDHHMMSS (got {tag!r})"
         )
 
     stamp = {

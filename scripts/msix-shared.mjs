@@ -119,7 +119,7 @@ function escapeAttr(value) {
  *
  * @param {{
  *   baseUrl: string             // feed host root (no trailing slash)
- *   variantChannelPath: string  // e.g. "win32/", "win32/light/", "win32/nightly/"
+ *   variantChannelPath: string  // e.g. "win32/", "win32/light/", "win32/canary/"
  *   identityName: string        // package Identity Name (e.g. "NousResearch.HermesBundled")
  *   version: string             // 4-part MSIX version, e.g. "1.2.3.0"
  *   bundleFilename: string      // the universal .msixbundle filename in the feed dir
@@ -149,16 +149,16 @@ export function buildAppInstaller(o) {
   ].join('\n')
 }
 
-// The nightly tag base + embedded UTC stamp: v0.27.2-nightly.20260829034013
+// The canary tag base + embedded UTC stamp: v0.27.2-canary.20260829034013
 // (8- or 14-digit; the shorter legacy form is midnight of that day). The
 // base is the next PATCH over the newest stable, so the first three MSIX
 // components come from it (0.27.2) and outversion the stable line
 // structurally — cross-line monotonicity is free.
-const NIGHTLY_TAG_RE = /^v(\d+\.\d+\.\d+)-nightly\.(20\d{6}(?:\d{6})?)$/
+const CANARY_TAG_RE = /^v(\d+\.\d+\.\d+)-canary\.(20\d{6}(?:\d{6})?)$/
 const STABLE_TAG_RE = /^v\d+\.\d+\.\d+$/
 
 // MSIX version components are 16-bit (makeappx rejects >65535). Minutes
-// since the last stable cross it at 45.5 days; a nightly cut more than 45
+// since the last stable cross it at 45.5 days; a canary cut more than 45
 // days after its stable is a process failure worth surfacing loudly, not a
 // number to clamp (a clamped number would break monotonicity).
 const MAX_BUILD_MINUTES = 45 * 24 * 60
@@ -179,27 +179,27 @@ export function gitTagCommitTime(gitRoot, tag) {
   return Number(execFileSync('git', ['log', '-1', '--format=%ct', tag], { cwd: gitRoot, encoding: 'utf8' }).trim())
 }
 
-export function nightlyBuildMinutesFor(tag, stableEpoch) {
-  const m = NIGHTLY_TAG_RE.exec(String(tag || ''))
+export function canaryBuildMinutesFor(tag, stableEpoch) {
+  const m = CANARY_TAG_RE.exec(String(tag || ''))
   if (!m) return null
   const minutes = Math.floor((stampToEpoch(m[2]) - stableEpoch) / 60)
   if (minutes < 0) return 0
   if (minutes > MAX_BUILD_MINUTES) {
     throw new Error(
-      `nightly ${tag} is ${Math.floor(minutes / 1440)} days past its stable base — ` +
+      `canary ${tag} is ${Math.floor(minutes / 1440)} days past its stable base — ` +
       `MSIX versions cap at 16 bits (45 days); cut a stable first`
     )
   }
   return minutes
 }
 
-export function nightlyBuildMinutes(tag, gitRoot) {
-  const m = NIGHTLY_TAG_RE.exec(String(tag || ''))
+export function canaryBuildMinutes(tag, gitRoot) {
+  const m = CANARY_TAG_RE.exec(String(tag || ''))
   if (!m) return null
   const majorMinor = m[1].split('.').slice(0, 2).join('.')
   const stable = listGitTags(gitRoot, `v${majorMinor}.*`).find(t => STABLE_TAG_RE.test(t))
   if (!stable) return 0 // degenerate: no stable on this line; build number restarts
-  return nightlyBuildMinutesFor(tag, gitTagCommitTime(gitRoot, stable))
+  return canaryBuildMinutesFor(tag, gitTagCommitTime(gitRoot, stable))
 }
 
 /**
@@ -216,15 +216,15 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
   const identity = require(path.join(desktopDir, 'product-identity.cjs'))
   const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'))
   const repoRoot = path.resolve(desktopDir, '..', '..')
-  const nightly = NIGHTLY_TAG_RE.exec(String(tag))
-  if (nightly) {
+  const canary = CANARY_TAG_RE.exec(String(tag))
+  if (canary) {
     // Manifest + feed version: tag base (0.27.2) + minutes-since-stable.
     // The artifact FILENAME carries electron-builder's appInfo.version — the
-    // full nightly string (HermesBundled-0.27.2-nightly.X-win-x64.msix) — so
+    // full canary string (HermesBundled-0.27.2-canary.X-win-x64.msix) — so
     // callers that look files up by name need that string separately.
     return {
       identity,
-      version: `${nightly[1]}.${nightlyBuildMinutes(String(tag), repoRoot)}`,
+      version: `${canary[1]}.${canaryBuildMinutes(String(tag), repoRoot)}`,
       fileVersion: String(tag).slice(1),
       name: identity.appNamePascal,
     }

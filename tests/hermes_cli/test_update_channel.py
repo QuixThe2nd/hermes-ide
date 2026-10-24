@@ -13,7 +13,7 @@ import pytest
 
 from hermes_cli.update_channel import (
     CHANNEL_MAIN,
-    CHANNEL_NIGHTLY,
+    CHANNEL_CANARY,
     CHANNEL_STABLE,
     default_channel,
     install_id,
@@ -98,34 +98,34 @@ class TestResolve:
         assert resolve_update_channel({}, source) == CHANNEL_MAIN
         assert resolve_update_channel({}, bundle) == CHANNEL_STABLE
 
-    def test_nightly_artifact_defaults_to_its_own_feed(self, tmp_path):
-        """A nightly bundle with no per-install record tracks nightly.
+    def test_canary_artifact_defaults_to_its_own_feed(self, tmp_path):
+        """A canary bundle with no per-install record tracks canary.
 
-        The artifact publishes to nightly.yml (product-identity.cjs keys the
+        The artifact publishes to canary.yml (product-identity.cjs keys the
         feed on this same tag). Defaulting it to stable made the updater ask
-        for nightly.yml under the newest STABLE release, which 404s and
-        leaves a fresh nightly install unable to update at all.
+        for canary.yml under the newest STABLE release, which 404s and
+        leaves a fresh canary install unable to update at all.
         """
-        root = tmp_path / "nightly-bundle"
-        _stamp(root, "electron-updater", tag="v0.28.0-nightly.20260819171926")
-        assert default_channel(root) == CHANNEL_NIGHTLY
-        assert resolve_update_channel({}, root) == CHANNEL_NIGHTLY
+        root = tmp_path / "canary-bundle"
+        _stamp(root, "electron-updater", tag="v0.28.0-canary.20260819171926")
+        assert default_channel(root) == CHANNEL_CANARY
+        assert resolve_update_channel({}, root) == CHANNEL_CANARY
 
-    def test_legacy_date_only_nightly_tag_is_a_nightly(self, tmp_path):
-        root = tmp_path / "legacy-nightly"
-        _stamp(root, "electron-updater", tag="v0.28.0-nightly.20260818")
-        assert default_channel(root) == CHANNEL_NIGHTLY
+    def test_legacy_date_only_canary_tag_is_a_canary(self, tmp_path):
+        root = tmp_path / "legacy-canary"
+        _stamp(root, "electron-updater", tag="v0.28.0-canary.20260818")
+        assert default_channel(root) == CHANNEL_CANARY
 
     def test_explicit_record_still_overrides_the_artifact_default(self, tmp_path):
         """The tag only supplies the DEFAULT: an opt-out must still work."""
-        root = tmp_path / "nightly-bundle"
-        _stamp(root, "electron-updater", tag="v0.28.0-nightly.20260819171926")
+        root = tmp_path / "canary-bundle"
+        _stamp(root, "electron-updater", tag="v0.28.0-canary.20260819171926")
         assert resolve_update_channel(_config_for(root, "stable"), root) == CHANNEL_STABLE
 
-    def test_a_nightly_tag_on_a_source_install_is_not_a_nightly_channel(self, tmp_path):
+    def test_a_canary_tag_on_a_source_install_is_not_a_canary_channel(self, tmp_path):
         """Only electron-updater bundles have release feeds to track."""
         root = tmp_path / "src"
-        _stamp(root, "self", tag="v0.28.0-nightly.20260819171926")
+        _stamp(root, "self", tag="v0.28.0-canary.20260819171926")
         assert default_channel(root) == CHANNEL_MAIN
 
     def test_stampless_tree_defaults_to_main(self, tmp_path):
@@ -133,17 +133,17 @@ class TestResolve:
         root.mkdir()
         assert resolve_update_channel({}, root) == CHANNEL_MAIN
 
-    def test_nightly_normalizes_to_main_for_source(self, tmp_path):
+    def test_canary_normalizes_to_main_for_source(self, tmp_path):
         root = tmp_path / "src"
         _stamp(root, "self")
-        config = _config_for(root, "nightly")
+        config = _config_for(root, "canary")
         assert resolve_update_channel(config, root) == CHANNEL_MAIN
 
-    def test_nightly_stays_for_electron_updater(self, tmp_path):
+    def test_canary_stays_for_electron_updater(self, tmp_path):
         root = tmp_path / "bundle"
         _stamp(root, "electron-updater")
-        config = _config_for(root, "nightly")
-        assert resolve_update_channel(config, root) == CHANNEL_NIGHTLY
+        config = _config_for(root, "canary")
+        assert resolve_update_channel(config, root) == CHANNEL_CANARY
 
     def test_garbage_record_falls_to_default(self, tmp_path):
         root = tmp_path / "src"
@@ -187,7 +187,7 @@ class TestSetChannel:
                     "model": {"provider": "nous"},
                     "update": {
                         "installs": {
-                            install_id(other): {"path": str(other), "channel": "nightly"}
+                            install_id(other): {"path": str(other), "channel": "canary"}
                         }
                     },
                 }
@@ -199,7 +199,7 @@ class TestSetChannel:
 
         written = yaml.safe_load((home / "config.yaml").read_text())
         assert written["model"] == {"provider": "nous"}
-        assert written["update"]["installs"][install_id(other)]["channel"] == "nightly"
+        assert written["update"]["installs"][install_id(other)]["channel"] == "canary"
         assert written["update"]["installs"][install_id(root)]["channel"] == "stable"
 
     def test_external_mechanism_refuses(self, tmp_path, monkeypatch):
@@ -228,7 +228,7 @@ class TestSetChannelCLI:
         base.update(kw)
         return SimpleNamespace(**base)
 
-    def test_stable_switch_from_nightly_is_an_honest_wait(self, capsys):
+    def test_stable_switch_from_canary_is_an_honest_wait(self, capsys):
         from unittest.mock import patch
 
         from hermes_cli.main import cmd_update
@@ -241,7 +241,7 @@ class TestSetChannelCLI:
                 "hermes_cli.steward.read_install_stamp",
                 return_value={
                     "updateMechanism": "electron-updater",
-                    "displayVersion": "0.28.0-nightly.20260818",
+                    "displayVersion": "0.28.0-canary.20260818",
                 },
             ),
         ):
@@ -249,11 +249,11 @@ class TestSetChannelCLI:
                 cmd_update(self._args(set_channel="stable"))
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "0.28.0-nightly.20260818" in out       # names where you are
+        assert "0.28.0-canary.20260818" in out       # names where you are
         assert "v0.28.0" in out                       # names the wait target
         assert "hermes-agent.nousresearch.com" in out  # the impatient path
 
-    def test_nightly_optin_warns_about_forward_incompatible_state(self, capsys):
+    def test_canary_optin_warns_about_forward_incompatible_state(self, capsys):
         from unittest.mock import patch
 
         from hermes_cli.main import cmd_update
@@ -264,7 +264,7 @@ class TestSetChannelCLI:
             patch("hermes_cli.update_channel.set_install_channel", return_value="a" * 16),
         ):
             with pytest.raises(SystemExit) as exc:
-                cmd_update(self._args(set_channel="nightly"))
+                cmd_update(self._args(set_channel="canary"))
         assert exc.value.code == 0
         out = capsys.readouterr().out
         assert "forward-incompatible" in out

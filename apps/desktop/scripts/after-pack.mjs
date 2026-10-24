@@ -91,6 +91,6 @@ export default async function afterPack(context) {
   // invalidate the signature. The product exe is excluded here and signed
   // per-file by the customSign hook (scripts/batch-sign-binaries.mjs) after
   // electron-builder's own rcedit + fuses pass. No-op with a loud warning when
-  // the AZURE_SIGN_* environment is absent (unsigned/fork/nightly lanes).
+  // the AZURE_SIGN_* environment is absent (unsigned/fork/canary lanes).
   await batchSignAppTree(context.appOutDir, exe)
 }
