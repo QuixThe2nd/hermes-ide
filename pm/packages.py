@@ -23,6 +23,8 @@ from pm.store import ALL_TARGETS, Store, flatten_single_dir, merge_tree
 from pm.update import (
     btbn_versions,
     github_release_tags,
+    llama_app_bucket_versions,
+    llama_app_latest,
     martin_riedl_versions,
     node_latest_versions,
     npm_dist_tags,
@@ -793,9 +795,17 @@ class LlamaCpp(BinaryPackage):
         return self.fetch_urls(version, target)[0]
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        # llama.cpp tags are b<build> (b10362); the lock version is the
-        # bare build number (10362).
-        return github_release_tags("ggml-org/llama.cpp", strip_prefix="b")
+        # Resolve from the llama.app installer bucket (the installer's own
+        # updater pointer + version index — no API token, no rate limit):
+        # the `latest` pointer is the authoritative "next version"; the
+        # bucket tree supplies the full candidate list. Artifacts still
+        # come from the llama.cpp GitHub releases (1:1 tag correspondence).
+        latest = llama_app_latest()
+        if latest is not None:
+            return [latest, *llama_app_bucket_versions()]
+        return llama_app_bucket_versions() or github_release_tags(
+            "ggml-org/llama.cpp", strip_prefix="b"
+        )
 
     def known_sha256(self, version: str, url: str) -> Optional[str]:
         """GitHub's release API serves every asset's digest, so pinning a

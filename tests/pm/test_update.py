@@ -182,3 +182,93 @@ def test_resolve_package_calls_latest_versions_per_target():
     assert isinstance(r, Resolved)
     assert r.changed
     assert r.version == "26.8.1"
+
+
+# ── llama.app installer bucket helpers (pure, monkeypatched) ───────────────
+
+
+def test_llama_app_latest_parses_build_number(monkeypatch):
+    from pm import update as u
+
+    calls = []
+    monkeypatch.setattr(
+        u,
+        "_get_text",
+        lambda url, headers=None: (calls.append((url, headers)) or "b10679\n"),
+    )
+    assert u.llama_app_latest() == "10679"
+    url, headers = calls[0]
+    assert url.endswith("/resolve/latest")
+    assert headers == {}  # no HF_TOKEN → no auth header
+
+
+def test_llama_app_latest_honors_hf_token(monkeypatch):
+    from pm import update as u
+
+    monkeypatch.setenv("HF_TOKEN", "hf-secret")
+    seen = {}
+    monkeypatch.setattr(u, "_get_text", lambda url, headers=None: (seen.update(headers) or "b10612\n"))
+    assert u.llama_app_latest() == "10612"
+    assert seen.get("Authorization") == "Bearer hf-secret"
+
+
+def test_llama_app_latest_unreachable_returns_none(monkeypatch):
+    from pm import update as u
+
+    monkeypatch.setattr(u, "_get_text", lambda url, headers=None: (_ for _ in ()).throw(OSError("down")))
+    assert u.llama_app_latest() is None
+
+
+def test_llama_app_bucket_versions_dedupes_and_sorts(monkeypatch):
+    from pm import update as u
+
+    # The HF tree API ignores offset and returns only the FIRST page —
+    # the oldest ~1000 paths sorted by path ascending. The helper must
+    # dedupe (the same build appears on many paths) and sort by build
+    # number descending so the newest of what the tree can see comes first.
+    page = [
+        {"path": "b10326/aarch64/linux/cpu/kk/llama-app.zst"},
+        {"path": "b10098/x86_64/linux/vulkan/kk/llama-app.zst"},
+        {"path": "b10326/x86_64/windows/cuda/13/kk/llama-app.exe.zst"},  # dup
+        {"path": "b9733/aarch64/macos/metal/kk/llama-app.zst"},
+        {"path": "latest/whatever"},  # non-build path must be ignored
+    ]
+    monkeypatch.setattr(u, "_get_json", lambda url: page)
+    assert u.llama_app_bucket_versions() == ["10326", "10098", "9733"]
+
+
+def test_llama_app_bucket_versions_unreachable_returns_empty(monkeypatch):
+    from pm import update as u
+
+    monkeypatch.setattr(u, "_get_json", lambda url: (_ for _ in ()).throw(OSError("down")))
+    assert u.llama_app_bucket_versions() == []
+
+
+def test_llamacpp_latest_versions_prefers_bucket(monkeypatch):
+    """The real LlamaCppCpu class: latest from the llama.app `latest`
+    pointer first, then the bucket tree, GitHub only as a fallback.
+    Patching targets the from-imported names in pm.packages (a from-import
+    copies the reference at import time — patching pm.update would miss)."""
+    import pm.packages as pkgs
+
+    monkeypatch.setattr(pkgs, "llama_app_latest", lambda: "10679")
+    monkeypatch.setattr(pkgs, "llama_app_bucket_versions", lambda: ["10679", "10612", "10362"])
+    called = []
+    monkeypatch.setattr(pkgs, "github_release_tags", lambda *a, **k: (called.append(a) or ["99999"]))
+
+    pkg = pkgs.LlamaCppCpu()
+    versions = pkg.latest_versions("linux-x64")
+    assert versions == ["10679", "10679", "10612", "10362"]
+    assert called == []  # GitHub never consulted when the bucket answered
+
+
+def test_llamacpp_latest_versions_github_fallback(monkeypatch):
+    """Bucket unreachable → fall back to the GitHub releases tags."""
+    import pm.packages as pkgs
+
+    monkeypatch.setattr(pkgs, "llama_app_latest", lambda: None)
+    monkeypatch.setattr(pkgs, "llama_app_bucket_versions", lambda: [])
+    monkeypatch.setattr(pkgs, "github_release_tags", lambda *a, **k: ["10362", "10217"])
+
+    pkg = pkgs.LlamaCppCpu()
+    assert pkg.latest_versions("linux-x64") == ["10362", "10217"]
