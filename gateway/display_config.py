@@ -9,6 +9,7 @@ Exception: ``display.streaming`` is CLI-only; gateway streaming follows the top-
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from gateway.runtime_footer import _format_duration
@@ -388,6 +389,14 @@ def format_progress_group(lines: list, codebox: bool) -> str:
         return body
     from gateway.stream_consumer_fences import escape_code_fences_for_display
 
+    # A body that already contains fenced code must nest, not escape: Discord
+    # renders escaped fences as literal \` text. Escalate the outer fence to one
+    # longer than the longest backtick run anywhere in the joined body, so any
+    # inner fence (including a 4+ backtick one) stays a valid nested block.
+    max_run = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    if max_run >= 3:
+        fence = "`" * (max_run + 1)
+        return f"{fence}\n{body}\n{fence}"
     return f"```\n{escape_code_fences_for_display(body)}\n```"
 
 
@@ -409,10 +418,24 @@ def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
     """
     from gateway.stream_consumer_fences import escape_code_fences_for_display
 
-    text = escape_code_fences_for_display(str(line))
-    if len_fn(text) + CODEBOX_FENCE_COST <= limit:
-        return [line]
-    width = max(1, limit - CODEBOX_FENCE_COST)
+    raw = str(line)
+    # A row that itself contains fenced code must nest, not escape: slice the
+    # raw body and budget for the escalated outer fence the formatter will use
+    # (one longer than the longest backtick run), so no escaped \` text leaks
+    # and every chunk stays independently boxable within the limit.
+    max_run = max((len(run) for run in re.findall(r"`+", raw)), default=0)
+    fenced = max_run >= 3
+    if fenced:
+        fence_cost = 2 * (max_run + 1) + 2
+        if len_fn(raw) + fence_cost <= limit:
+            return [line]
+        text = raw
+    else:
+        text = escape_code_fences_for_display(raw)
+        fence_cost = CODEBOX_FENCE_COST
+        if len_fn(text) + fence_cost <= limit:
+            return [line]
+    width = max(1, limit - fence_cost)
     chunks = [text[i : i + width] for i in range(0, len(text), width)]
     counter_start = text.rfind(" (×")
     if counter_start > 0 and text.endswith(")") and text[counter_start + 3 : -1].isdigit():
