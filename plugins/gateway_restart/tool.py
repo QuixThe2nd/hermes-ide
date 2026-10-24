@@ -232,9 +232,14 @@ def _error_json(message: str) -> str:
     )
 
 
-def _cancelled_json(message: str) -> str:
+def _cancelled_json(message: str, reply: Optional[str] = None) -> str:
     return json.dumps(
-        {"success": False, "error": message, "status": "cancelled"},
+        {
+            "success": False,
+            "error": message,
+            "status": "cancelled",
+            "reply": reply,
+        },
         separators=(",", ":"),
         ensure_ascii=False,
     )
@@ -721,13 +726,37 @@ def _probe_restart_committed(runner: Any, loop: Any) -> bool:
 _PROMPT_NOT_SENT_COMMITTED = object()
 
 
-def _settle_confirm_shared(clarify_mod: Any, clarify_id: str) -> tuple[Optional[Any], Optional[str]]:
+def _cancel_reason_not_confirm_word(reply: Any) -> str:
+    """Human-readable cancel reason, echoing a real reply verbatim.
+
+    ``None`` has nothing to echo: the generic not-the-exact-word wording,
+    exactly as before the ``reply`` field existed. Any other value (even a
+    blank/whitespace string) is a reply the requester actually sent, so it
+    rides the error text unmodified — no strip, no reformat — for the
+    calling agent to act on.
+    """
+    if reply is None:
+        return (
+            "Restart cancelled — the reply was not the exact word "
+            f"`{_CONFIRM_WORD}`."
+        )
+    return (
+        "Restart cancelled — the reply was not the exact word "
+        f"`{_CONFIRM_WORD}`. The requester replied: {reply}"
+    )
+
+
+def _settle_confirm_shared(
+    clarify_mod: Any, clarify_id: str
+) -> tuple[Optional[Any], Optional[str], Optional[str]]:
     """Settle a registered confirm wait as shared consent, first-writer-wins.
 
     Resolves the wait with the distinguished superseded token — losing the
     resolve means a real reply (or the drain sweep) already settled it — then
     reaps and returns the ACTUAL recorded outcome: an earlier cancellation
-    wins and is never overwritten with fabricated shared consent.
+    wins and is never overwritten with fabricated shared consent. Returns
+    ``(reason, prompt_message_id, reply)``; ``reply`` is the reap'd
+    non-matching reply text when the race was lost to one, else ``None``.
     """
     try:
         clarify_mod.resolve_gateway_clarify(
@@ -740,14 +769,10 @@ def _settle_confirm_shared(clarify_mod: Any, clarify_id: str) -> tuple[Optional[
     except Exception:
         actual = None
     if actual == clarify_mod.SUPERSEDED_RESPONSE:
-        return (_SUPERSEDED_CONFIRM, None)
+        return (_SUPERSEDED_CONFIRM, None, None)
     if str(actual or "").strip() == _CONFIRM_WORD:
-        return (None, None)
-    return (
-        "Restart cancelled — the reply was not the exact word "
-        f"`{_CONFIRM_WORD}`.",
-        None,
-    )
+        return (None, None, None)
+    return (_cancel_reason_not_confirm_word(actual), None, actual)
 
 
 def _confirm_restart_with_requester(
@@ -756,16 +781,18 @@ def _confirm_restart_with_requester(
     source: Any,
     session_key: str,
     prompt: str = _CONFIRM_PROMPT,
-) -> tuple[Optional[Any], Optional[str]]:
+) -> tuple[Optional[Any], Optional[str], Optional[str]]:
     """Ping the requester and block until they type the exact word.
 
-    Returns ``(None, prompt_message_id)`` when the requester confirmed;
-    ``(_SUPERSEDED_CONFIRM, prompt_message_id)`` when the restart this gate
-    shares was already committed — either ANOTHER confirmed restart's queue
-    resolved the wait, or the post-registration recheck below settled it —
-    (the gateway is bouncing without this gate's confirmation, though the
-    prompt may not have been sent at all); otherwise ``(reason, None)`` with
-    a human-readable reason the restart must not happen. The retained
+    Returns ``(None, prompt_message_id, None)`` when the requester confirmed;
+    ``(_SUPERSEDED_CONFIRM, prompt_message_id, None)`` when the restart this
+    gate shares was already committed — either ANOTHER confirmed restart's
+    queue resolved the wait, or the post-registration recheck below settled
+    it — (the gateway is bouncing without this gate's confirmation, though
+    the prompt may not have been sent at all); otherwise
+    ``(reason, prompt_message_id, reply)`` with a human-readable reason the
+    restart must not happen and the non-matching reply text (verbatim, or
+    ``None`` when no reply arrived). The retained
     ``prompt_message_id`` lets the caller edit the already-visible prompt to
     its settled state instead of sending a second message. Runs on the
     tool's worker thread — the blocking wait is a ``threading.Event`` (same
@@ -784,6 +811,7 @@ def _confirm_restart_with_requester(
             "Cannot confirm the restart: this session has no chat to "
             "confirm in (no platform/chat or session key bound).",
             None,
+            None,
         )
 
     try:
@@ -794,6 +822,7 @@ def _confirm_restart_with_requester(
         return (
             "Cannot confirm the restart: no live adapter for this "
             "session's platform.",
+            None,
             None,
         )
 
@@ -879,19 +908,19 @@ def _confirm_restart_with_requester(
             # failure instead of being overwritten by a recoverable-cancel
             # notice for a restart that is already covered.
             if _probe_restart_committed(runner, loop):
-                settled_error, _ = _settle_confirm_shared(
+                settled_error, _, settled_reply = _settle_confirm_shared(
                     clarify_gateway, clarify_id
                 )
                 if settled_error is None:
-                    return (None, None)
+                    return (None, None, None)
                 if settled_error is not _SUPERSEDED_CONFIRM:
-                    return (settled_error, None)
-                return (_SUPERSEDED_CONFIRM, None)
+                    return (settled_error, None, settled_reply)
+                return (_SUPERSEDED_CONFIRM, None, None)
             _drop_pending_confirm(clarify_gateway, clarify_id)
             _record_cancelled_restart_notice(
                 runner, source, adapter, session_key, deliver_error
             )
-            return (deliver_error, None)
+            return (deliver_error, None, None)
 
         # Race guard, part two: the send was in flight while a restart may
         # have committed — no sweep resolved this wait (it registered too
@@ -910,13 +939,13 @@ def _confirm_restart_with_requester(
     # The superseded token is checked FIRST: a drain-resolved wait never saw
     # a reply at all, so it must not fall through into the cancel branch.
     if response == clarify_gateway.SUPERSEDED_RESPONSE:
-        return (_SUPERSEDED_CONFIRM, prompt_message_id)
+        return (_SUPERSEDED_CONFIRM, prompt_message_id, None)
     if str(response or "").strip() == _CONFIRM_WORD:
-        return (None, prompt_message_id)
+        return (None, prompt_message_id, None)
     return (
-        "Restart cancelled — the reply was not the exact word "
-        f"`{_CONFIRM_WORD}`.",
+        _cancel_reason_not_confirm_word(response),
         prompt_message_id,
+        response if response is not None else None,
     )
 
 
@@ -1031,7 +1060,10 @@ def handle_restart(args: dict, **_: Any) -> str:
        blocks until they reply. Only the exact word ``restart`` (after
        ``strip()``, nothing else — not ``Restart``, not ``yes``, not
        ``/restart``) confirms; anything else or empty cancels with
-       ``{"success": false, "status": "cancelled"}``. If ANOTHER confirmed
+       ``{"success": false, "status": "cancelled", "reply": ...}`` — the
+       ``reply`` field echoes the requester's actual reply verbatim
+       (``null`` when no reply arrived), like ``clarify``'s
+       ``user_response``. If ANOTHER confirmed
        restart queues while this gate waits, the drain resolves the wait
        with the distinguished superseded token and the result is the
        truthful ``{"success": true, "status": "restarting", "consent":
@@ -1134,16 +1166,18 @@ def handle_restart(args: dict, **_: Any) -> str:
         # Other work is in flight — or aloneness cannot be proven — so keep
         # today's timing gate: the exact word `restart` confirms, anything
         # else cancels, and the wait for the reply stays unbounded.
-        confirm_error, prompt_message_id = _confirm_restart_with_requester(
-            runner,
-            loop,
-            source,
-            session_key,
-            prompt=(
-                _CONFIRM_PROMPT_WAITING_ON_OTHERS
-                if _other_active_work_in_flight(runner, session_key)
-                else _CONFIRM_PROMPT
-            ),
+        confirm_error, prompt_message_id, confirm_reply = (
+            _confirm_restart_with_requester(
+                runner,
+                loop,
+                source,
+                session_key,
+                prompt=(
+                    _CONFIRM_PROMPT_WAITING_ON_OTHERS
+                    if _other_active_work_in_flight(runner, session_key)
+                    else _CONFIRM_PROMPT
+                ),
+            )
         )
         if confirm_error is _SUPERSEDED_CONFIRM:
             # Another confirmed restart owns the bounce — and it IS bouncing,
@@ -1161,7 +1195,7 @@ def handle_restart(args: dict, **_: Any) -> str:
             )
             return _superseded_json()
         if confirm_error is not None:
-            return _cancelled_json(confirm_error)
+            return _cancelled_json(confirm_error, confirm_reply)
 
         # The word landed, so the bounce is committed — queue the shared
         # drain right away, with no plugin-side wait beside it. Waiting for
