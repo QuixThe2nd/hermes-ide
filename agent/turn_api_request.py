@@ -99,6 +99,7 @@ def build_api_request(
     middleware/hooks/debug dumps observe the payload)."""
     from agent.conversation_loop import (
         _moa_client_consumes_prepared_request, _redecorate_prompt_cache_for_provider,
+        _send_copy_with_delegation_runtime_note,
     )
 
     agent._reset_stream_delivery_tracking()
@@ -114,10 +115,21 @@ def build_api_request(
             tools_for_api=tools_for_api,
         )
     )
+    # Delegated-worker runtime state rides the OUTGOING REQUEST only: the
+    # ``api_messages`` handed back to the retry loop stays note-free, so every
+    # attempt rebuilds the snapshot from CURRENT ownership/runtime facts and
+    # legitimate content quoting the note header survives byte-for-byte (the
+    # note never re-enters the retry input, so nothing is text-stripped). On
+    # MoA the aggregator facade attaches its own fresh note below its own
+    # destination cache plan.
+    _send_messages = (
+        _send_copy_with_delegation_runtime_note(agent, api_messages)
+        if agent.provider != "moa" else api_messages
+    )
     if tools_for_api == agent.tools:
-        api_kwargs = agent._build_api_kwargs(api_messages)
+        api_kwargs = agent._build_api_kwargs(_send_messages)
     else:
-        api_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=tools_for_api)
+        api_kwargs = agent._build_api_kwargs(_send_messages, tools_for_api=tools_for_api)
     # Messages were scrubbed above; this walk covers the rest of the payload (tool descriptions,
     # extra_body, kwargs strings) — see sanitize_outbound_kwargs for the #50959 rationale.
     sanitize_outbound_kwargs(agent, api_kwargs)

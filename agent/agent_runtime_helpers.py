@@ -2381,7 +2381,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     from tools.tool_status import tool_status_scope
 
     emit = getattr(agent, "_emit_status", None)
-    with tool_status_scope(emit if callable(emit) else None):
+    with tool_status_scope(emit if callable(emit) else None, tool_call_id=tool_call_id):
         if skip_tool_execution_middleware:
             return _execute(function_args)
 

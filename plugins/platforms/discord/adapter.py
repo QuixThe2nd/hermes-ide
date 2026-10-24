@@ -4996,6 +4996,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             channel = await self._resolve_channel(chat_id)
             msg = channel.get_partial_message(int(message_id))
+            if (metadata or {}).get("claude_agent_progress_combined"):
+                # Discord Claude delegation single-message rail: the gateway
+                # is editing the exact notice message it recorded for this
+                # delegate_claude_agent call into the combined card. Selected
+                # ONLY by this internal metadata key — arbitrary edits never
+                # take the embed path.
+                return await self._edit_combined_agent_progress(
+                    msg, message_id, content
+                )
             formatted = self.format_message(content)
             _preview_key = (str(chat_id), str(message_id))
             _saturated_preview = False
@@ -5042,6 +5051,34 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def _edit_combined_agent_progress(
+        self, msg, message_id: str, content: str
+    ) -> SendResult:
+        """Edit a delegation notice into the single combined card (metadata-gated).
+
+        Reached only from ``edit_message`` with the internal
+        ``claude_agent_progress_combined`` metadata key: the notice text
+        stays as the message content and the FINAL line — a viewer URL
+        re-validated here by the same strict ``_claude_agent_status_url``
+        checks used for sends — renders as the branded embed. A line that
+        no longer validates degrades to a plain-text edit of the full
+        content (notice + link both stay visible) rather than losing
+        either. Embed-transport failures raise to the caller so the
+        gateway can fall back to the legacy standalone card.
+        """
+        text = (content or "").strip()
+        lines = text.split("\n") if text else []
+        url = _claude_agent_status_url(lines[-1]) if lines else None
+        if url is None:
+            await msg.edit(content=self.format_message(content))
+            return SendResult(success=True, message_id=message_id)
+        prefix = "\n".join(lines[:-1]).strip()
+        await msg.edit(
+            content=self.format_message(prefix) if prefix else None,
+            embed=_build_claude_agent_embed(url),
+        )
+        return SendResult(success=True, message_id=message_id)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a previously sent Discord message.

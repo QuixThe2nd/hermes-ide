@@ -93,7 +93,9 @@ from agent.turn_iteration_prep import (
 )
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_preflight_gate import run_preflight_gate
-from agent.turn_request_assembly import assemble_api_request, _append_delegation_runtime_note
+from agent.turn_request_assembly import (
+    assemble_api_request, _send_copy_with_delegation_runtime_note,
+)
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
@@ -1213,6 +1215,9 @@ def _redecorate_prompt_cache_for_provider(
         _ensure_cached_system_prompt_static(agent, system_message=system_message)
         static = getattr(agent, "_cached_system_prompt_static", None)
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
+        _tool_part_markers = envelope_tool_part_cache_markers_supported(
+            getattr(agent, "provider", ""), getattr(agent, "base_url", "")
+        )
         plan = build_prompt_cache_plan(
             messages,
             planned_tools,
@@ -1226,9 +1231,7 @@ def _redecorate_prompt_cache_for_provider(
             )(),
             # LiteLLM-style envelope routes forward part-level markers into
             # tool_result.content[] → non-retryable 400 (#89886).
-            tool_part_markers=envelope_tool_part_cache_markers_supported(
-                getattr(agent, "provider", ""), getattr(agent, "base_url", "")
-            ),
+            tool_part_markers=_tool_part_markers,
         )
         messages, planned_tools = plan.messages, plan.tools
 
@@ -2469,16 +2472,6 @@ def _run_conversation_inlined(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Delegated-worker runtime state rides the OUTGOING REQUEST ONLY: a
-        # fresh, bounded, owner-scoped snapshot per model request (so it
-        # refreshes across tool rounds within one turn), appended to the
-        # latest legal user/tool-result content. Stored history, api_content
-        # sidecars, prior rows and the system prompt stay untouched —
-        # ``api_messages`` is the request-local send copy built above. Same
-        # seam and same helper as the decomposed turn path
-        # (agent/turn_request_assembly.assemble_api_request).
-        _append_delegation_runtime_note(agent, api_messages)
-
         # NOTE (empty-content class fix): no send-time pad loop here.  The
         # single owner for "never send a turn strict wire validation rejects
         # as empty" is ``repair_empty_non_final_messages``, which runs inside
@@ -2536,6 +2529,12 @@ def _run_conversation_inlined(
             )
             api_messages = _initial_cache_plan.messages
             tools_for_api = _initial_cache_plan.tools
+
+        # NOTE: the delegated-worker runtime note is NOT attached here — the
+        # send path re-renders the cache decoration per attempt
+        # (_redecorate_prompt_cache_for_provider) and attaches one fresh note
+        # to a per-attempt send copy below that final boundary (see
+        # turn_request_assembly._send_copy_with_delegation_runtime_note).
 
         # Build a persistent-MoA request before measuring compression pressure.
         # MoA reference output is injected into the aggregator prompt, but it
@@ -3096,11 +3095,19 @@ def _run_conversation_inlined(
                         tools_for_api=tools_for_api,
                     )
                 )
+                # Delegated-worker runtime state rides the OUTGOING REQUEST
+                # only: ``api_messages`` (reused verbatim by retry/failover
+                # attempts) stays note-free, so every attempt rebuilds the
+                # snapshot from CURRENT ownership/runtime facts and legitimate
+                # content quoting the note header survives byte-for-byte.
+                _send_messages = _send_copy_with_delegation_runtime_note(
+                    agent, api_messages,
+                ) if agent.provider != "moa" else api_messages
                 if tools_for_api == agent.tools:
-                    api_kwargs = agent._build_api_kwargs(api_messages)
+                    api_kwargs = agent._build_api_kwargs(_send_messages)
                 else:
                     api_kwargs = agent._build_api_kwargs(
-                        api_messages,
+                        _send_messages,
                         tools_for_api=tools_for_api,
                     )
                 # Outbound-request surrogate chokepoint (#50959): the messages
