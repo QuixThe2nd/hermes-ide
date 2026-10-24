@@ -20,9 +20,6 @@ from agent.turn_context import build_api_messages
 
 logger = logging.getLogger("agent.conversation_loop")
 
-# The volatile runtime note's recognizable header (idempotent strip on retries).
-_RUNTIME_NOTE_MARK = "[delegated workers: current runtime state"
-
 
 @dataclass
 class AssembledRequest:
@@ -151,18 +148,43 @@ def _delegation_runtime_note(agent: Any) -> str:
         return ""
 
 
-def _append_delegation_runtime_note(
-    agent: Any, api_messages: Any, *, native_anthropic: bool = False, tool_part_markers: bool = True,
-) -> None:
-    """Append the runtime-state note to the request's LAST user/tool message.
+def _runtime_note_layout(agent: Any) -> tuple:
+    """Cache-layout flags ``(native_anthropic, tool_part_markers)`` for the note's
+    placement: the same flags the send-path ``build_prompt_cache_plan`` used, so
+    marker relocation agrees with the decoration that actually shipped. Defaults
+    ``(False, True)`` mirror the no-decoration-pass case (plain tail append)."""
+    try:
+        if not agent._use_prompt_caching or agent.provider == "moa":
+            return False, True
+        from agent.prompt_caching import envelope_tool_part_cache_markers_supported
 
-    Runs at the FINAL wire boundary — after the last ``build_prompt_cache_plan``
-    (``_redecorate_prompt_cache_for_provider``, which re-renders the decoration
-    for every attempt) — so the fresh note never enters the cached prefix: the
-    previous request's breakpoints must stay byte-identical to what the next
-    round rebuilds from stored history (a note folded into a marked row would
-    poison that row's cached bytes for every later request — the cache owner's
-    prefix-purity contract). Placement per shape:
+        return (bool(agent._use_native_cache_layout),
+                envelope_tool_part_cache_markers_supported(
+                    getattr(agent, "provider", ""), getattr(agent, "base_url", "")))
+    except Exception:
+        return False, True
+
+
+def _send_copy_with_delegation_runtime_note(
+    agent: Any, api_messages: Any, *, native_anthropic: Any = None, tool_part_markers: Any = None,
+) -> Any:
+    """Return a per-attempt SEND COPY of ``api_messages`` carrying ONE fresh
+    runtime-state note on the LAST user/tool message, or ``api_messages``
+    itself when there is nothing to attach.
+
+    Callers hand this the canonical per-attempt request — the list the retry /
+    failover loops reuse — and keep that list note-free (the note rides only
+    the outgoing ``api_kwargs``), so every attempt rebuilds from current
+    ownership/runtime facts and there is NOTHING to strip. Content text is not
+    injection provenance: a user/tool string or content part that happens to
+    quote the note header is preserved byte-for-byte (no delimiter guessing,
+    no text-stripping). Copy-on-write: only the rows the placement touches
+    (the tail, and a marker-relocation target) are shallow-copied — the input
+    rows and any already-captured request object are never mutated.
+
+    Placement (after the last ``build_prompt_cache_plan``, so the fresh note
+    never enters the cached prefix — prior breakpoints must stay
+    byte-reconstructible from stored history):
 
     - list content: a NEW unmarked text part AFTER the marked part — the
       breakpoint closes before it, so the note rides outside the prefix;
@@ -173,29 +195,21 @@ def _append_delegation_runtime_note(
       helpers), then the note appends — never into a marked block. No
       relocatable row → the note is skipped (fail closed; caching untouched).
 
-    IDEMPOTENT: the retry/failover loops reuse ``api_messages`` across attempts,
-    so any note already on the tail row is stripped before the fresh one is
-    appended — one note per request, never accumulation. Request-local only:
-    nothing is persisted or replayed next request. Skipped when there is no
-    note or no legal tail message — never fabricates a message or changes any
-    role."""
+    Request-local only: nothing is persisted or replayed next request. Skipped
+    when there is no note or no legal tail message — never fabricates a
+    message or changes any role."""
+    if native_anthropic is None or tool_part_markers is None:
+        native_anthropic, tool_part_markers = _runtime_note_layout(agent)
     note = _delegation_runtime_note(agent)
     if not note:
-        return
+        return api_messages
     last = api_messages[-1] if api_messages else None
     if not isinstance(last, dict) or last.get("role") not in ("user", "tool"):
-        return
-    # Strip a previous attempt's note from the tail (idempotence).
+        return api_messages
+    out = list(api_messages)
+    last = dict(last)
+    out[-1] = last
     content = last.get("content")
-    if isinstance(content, str) and _RUNTIME_NOTE_MARK in content:
-        cut = content.find(f"\n\n{_RUNTIME_NOTE_MARK}")
-        last["content"] = content[:cut] if cut >= 0 else ""
-        content = last["content"]
-    elif isinstance(content, list):
-        kept = [p for p in content
-                if not (isinstance(p, dict) and _RUNTIME_NOTE_MARK in str(p.get("text", "")))]
-        if len(kept) != len(content):
-            last["content"] = content = kept
     if isinstance(content, str) and "cache_control" in last:
         # A top-level marker + string content means the whole block (tool_result
         # content on native) is the cached prefix — relocate the breakpoint to
@@ -210,35 +224,40 @@ def _append_delegation_runtime_note(
                 isinstance(m.get("content"), list) and any(
                     isinstance(p, dict) and "cache_control" in p for p in m["content"])))
 
-        target = None
+        target_idx = None
         any_earlier_marked = False
-        for prev in reversed(api_messages[:-1]):
+        for idx in range(len(out) - 2, -1, -1):
+            prev = out[idx]
             if not isinstance(prev, dict) or prev.get("role") == "system":
                 continue
             if _marked(prev):
                 any_earlier_marked = True
                 continue
             if _can_carry_marker(prev, native_anthropic, tool_part_markers):
-                target = prev
+                target_idx = idx
                 break
-        if target is not None:
-            _apply_cache_marker(target, marker, native_anthropic=native_anthropic,
+        if target_idx is not None:
+            # Copy-on-write: the relocation target is a row the caller may
+            # reuse (retry input / captured request) — decorate a copy only.
+            out[target_idx] = dict(out[target_idx])
+            _apply_cache_marker(out[target_idx], marker, native_anthropic=native_anthropic,
                                 tool_part_markers=tool_part_markers)
         elif not any_earlier_marked:
             # No breakpoint anywhere to keep the prefix anchored: never weaken
             # the cache contract to deliver a note — restore and skip.
             last["cache_control"] = marker
-            return
+            return out
         # else: an earlier row already carries a breakpoint; leaving the tail
         # row unmarked spends one of the four slots this request, which is the
         # honest cost of keeping the volatile note out of the cached prefix.
         last["content"] = f"{content}\n\n{note}" if content else note
-        return
+        return out
     if isinstance(content, str):
         last["content"] = f"{content}\n\n{note}" if content else note
     elif isinstance(content, list):
         last["content"] = [*content, {"type": "text", "text": "\n\n" + note}]
     # Other content shapes (None, exotic parts): skip rather than guess.
+    return out
 
 
 def assemble_api_request(
@@ -362,7 +381,8 @@ def assemble_api_request(
     # not the final wire boundary — every attempt re-renders the cache
     # decoration in ``_redecorate_prompt_cache_for_provider`` (send path), which
     # would re-mark the tail and pull the volatile note INTO the cached prefix.
-    # The note rides the outgoing request at that final boundary instead.
+    # The send path attaches one fresh note to a per-attempt send copy at that
+    # final boundary (``_send_copy_with_delegation_runtime_note``) instead.
 
     # Prepare the persistent-MoA request before measuring compression pressure: the
     # ephemeral advisor output is absent from ``messages``; ``create()`` reuses the

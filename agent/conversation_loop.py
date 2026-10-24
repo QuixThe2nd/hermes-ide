@@ -93,7 +93,9 @@ from agent.turn_iteration_prep import (
 )
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_preflight_gate import run_preflight_gate
-from agent.turn_request_assembly import assemble_api_request, _append_delegation_runtime_note
+from agent.turn_request_assembly import (
+    assemble_api_request, _send_copy_with_delegation_runtime_note,
+)
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
@@ -1199,9 +1201,6 @@ def _redecorate_prompt_cache_for_provider(
     planned_tools = strip_anthropic_tool_cache_control(
         tools_for_api if tools_for_api is not None else getattr(agent, "tools", [])
     )
-    # Cache-layout flags for the runtime-note append below (defaults: no
-    # decoration pass ran — plain tail append).
-    _note_native, _note_tpm = False, True
     if prepared is not None and getattr(agent, "provider", None) == "moa":
         # Prepared MoA state is canonical: the synchronous acting-aggregator
         # sender owns its destination-local cache plan after it resolves the slot.
@@ -1235,16 +1234,6 @@ def _redecorate_prompt_cache_for_provider(
             tool_part_markers=_tool_part_markers,
         )
         messages, planned_tools = plan.messages, plan.tools
-        _note_native, _note_tpm = bool(agent._use_native_cache_layout), _tool_part_markers
-
-    # Delegated-worker runtime state rides the OUTGOING REQUEST at THIS final
-    # wire boundary only — after the last cache-decoration pass, so the volatile
-    # note never enters any cached prefix (marker-aware placement; see
-    # agent.turn_request_assembly). Idempotent per attempt (retry loops reuse
-    # api_messages). Also runs when caching is off (plain tail append).
-    _append_delegation_runtime_note(
-        agent, messages, native_anthropic=_note_native, tool_part_markers=_note_tpm,
-    )
 
     if tools_for_api is None:
         return messages, prepared
@@ -2543,8 +2532,9 @@ def _run_conversation_inlined(
 
         # NOTE: the delegated-worker runtime note is NOT attached here — the
         # send path re-renders the cache decoration per attempt
-        # (_redecorate_prompt_cache_for_provider) and the volatile note rides
-        # the wire at that final boundary instead (see turn_request_assembly).
+        # (_redecorate_prompt_cache_for_provider) and attaches one fresh note
+        # to a per-attempt send copy below that final boundary (see
+        # turn_request_assembly._send_copy_with_delegation_runtime_note).
 
         # Build a persistent-MoA request before measuring compression pressure.
         # MoA reference output is injected into the aggregator prompt, but it
@@ -3105,11 +3095,19 @@ def _run_conversation_inlined(
                         tools_for_api=tools_for_api,
                     )
                 )
+                # Delegated-worker runtime state rides the OUTGOING REQUEST
+                # only: ``api_messages`` (reused verbatim by retry/failover
+                # attempts) stays note-free, so every attempt rebuilds the
+                # snapshot from CURRENT ownership/runtime facts and legitimate
+                # content quoting the note header survives byte-for-byte.
+                _send_messages = _send_copy_with_delegation_runtime_note(
+                    agent, api_messages,
+                ) if agent.provider != "moa" else api_messages
                 if tools_for_api == agent.tools:
-                    api_kwargs = agent._build_api_kwargs(api_messages)
+                    api_kwargs = agent._build_api_kwargs(_send_messages)
                 else:
                     api_kwargs = agent._build_api_kwargs(
-                        api_messages,
+                        _send_messages,
                         tools_for_api=tools_for_api,
                     )
                 # Outbound-request surrogate chokepoint (#50959): the messages
