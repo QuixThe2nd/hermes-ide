@@ -115,6 +115,13 @@ def test_progress_hook_translates_stages_to_job_fields():
     hook("extract", 10, 100, "")
     assert job["phase"] in ("downloading-runtime", "unpacking-runtime")
 
+    # pm's engine stream says "unpack" where the fork tag-runtimes stream says
+    # "extract" — the same hook is wired to binaries.ensure_engine (upstream
+    # a9be133aea), so both vocabularies must map to the unpacking phase.
+    hook("unpack", 100, 100, "2/2")
+    assert job["phase"] == "unpacking-runtime"
+    assert "2/2" in job["detail"]
+
     job2 = _job("runtime-install", "x")
     hook2 = _runtime_progress_hook(job2)
     hook2("extract", 100, 100, "")

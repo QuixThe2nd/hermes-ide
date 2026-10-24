@@ -76,6 +76,15 @@ def test_boot_replaces_incumbent_with_stale_presets(hermes_home, monkeypatch):
     _stage(hermes_home, "model-b")
     _write_presets(hermes_home, "model-a")
 
+    # An installed engine so boot proceeds to server_binary().
+    from pm import paths
+    from pm.lock import Facts
+
+    store = paths.store_root()
+    entry = "llamacpp-cpu-10362-win32-x64"
+    (store / entry).mkdir(parents=True, exist_ok=True)
+    Facts(store / "facts.json").record("llamacpp-cpu", "10362", entry, {}, store)
+
     stopped = {}
     monkeypatch.setattr(
         "hermes_cli.local_runtime.endpoint._state_endpoint",
@@ -83,23 +92,21 @@ def test_boot_replaces_incumbent_with_stale_presets(hermes_home, monkeypatch):
     monkeypatch.setattr(boot, "_stop_state_server",
                         lambda state: stopped.setdefault("pid", state["pid"]))
 
-    sentinel = object()
+    class _BootReached(Exception):
+        pass
 
     def fake_boot(*a, **k):
         raise _BootReached()
 
-    class _BootReached(Exception):
-        pass
-
     # Fail fast once boot proper begins — reaching it IS the assertion.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed", fake_boot)
+        "hermes_cli.local_runtime.binaries.server_binary", fake_boot)
 
     result = boot.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert stopped.get("pid") == 12345, "stale incumbent was not stopped"
     # Boot proceeded past adoption (our fake raised inside the try block,
     # which ensure_local_runtime swallows into a None return).
-    assert result is None or result is sentinel
+    assert result is None
 
 
 def test_refresh_bounces_an_adopted_server(hermes_home, monkeypatch):

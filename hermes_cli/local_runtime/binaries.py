@@ -30,10 +30,10 @@ _WIN_CUDA_VERSION_ARM64 = "13.4"
 
 
 def default_tag() -> str:
-    """Fallback when the config section is missing entirely; DEFAULT_CONFIG owns the shipped tag."""
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-
-    return DEFAULT_CONFIG["local_runtime"]["tag"]
+    """Fallback when the config section is missing entirely. pm/lock.json is
+    the single version authority (upstream a9be133aea): the config no longer
+    ships a default tag that could disagree with the pin."""
+    return engine_version() or "b0"
 
 
 class BinaryResolutionError(RuntimeError):
@@ -328,6 +328,132 @@ def ensure_runtime_installed(tag: str, backend: str,
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
+
+
+# ---- pm engine contracts (upstream a9be133aea) --------------------------------
+# The engine BINARIES are pm packages (llamacpp-cuda and friends): pm owns
+# urls, digests, download, extraction and the machine-wide store. These
+# adapters answer the questions the build cannot, while the fork's tag-based
+# runtimes_root()/ensure_runtime_installed() flow above keeps serving the
+# fork's explicit runtime pins. One version authority: pm/lock.json.
+
+BACKEND_PACKAGES = {
+    "cuda": "llamacpp-cuda",
+    "vulkan": "llamacpp-vulkan",
+    "metal": "llamacpp-metal",
+    "cpu": "llamacpp-cpu",
+}
+
+# Preference order when the configured backend is unavailable here.
+_LADDER = ("cuda", "metal", "vulkan", "cpu")
+
+
+def runtime_state_root() -> Path:
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "runtimes" / "llamacpp"
+
+
+def models_root() -> Path:
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "models"
+
+
+def unavailable_reason(backend: str) -> "str | None":
+    from pm.registry import get_package
+    from pm.store import current_target
+
+    name = BACKEND_PACKAGES.get(backend)
+    if name is None:
+        return f"unknown backend {backend}"
+    return get_package(name).missing_reason(current_target())
+
+
+def resolve_backend(backend: str) -> str:
+    tried = [backend] + [b for b in _LADDER if b != backend]
+    reasons = []
+    for candidate in tried:
+        reason = unavailable_reason(candidate)
+        if reason is None:
+            if candidate != backend:
+                logging.getLogger(__name__).info(
+                    "backend %s unavailable here; using %s", backend, candidate)
+            return candidate
+        reasons.append(f"{candidate}: {reason}")
+    raise BinaryResolutionError("; ".join(reasons))
+
+
+def installed_backends() -> "list[str]":
+    """Backends with an engine on disk, in ladder order. Deliberately NOT
+    version-gated: an engine from a previous pin still serves, and the boot
+    ladder must keep working after a lockfile bump."""
+    from pm.ensure import _facts, _store
+
+    facts = _facts()
+    root = _store().root
+    return [b for b in _LADDER if facts.installed(BACKEND_PACKAGES[b], None, root)]
+
+
+def engine_update_pending() -> bool:
+    """True when an installed engine is older than the pinned one. The
+    lockfile is the version authority; installing an update is a click."""
+    from pm.ensure import is_installed
+
+    installed = installed_backends()
+    return bool(installed) and not all(
+        is_installed(BACKEND_PACKAGES[b]) for b in installed
+    )
+
+
+def engine_version() -> "str | None":
+    from pm.ensure import _lockfile
+
+    version = _lockfile().version("llamacpp-cpu")
+    return f"b{version}" if version else None
+
+
+def installed_engine_version(backend: str) -> "str | None":
+    from pm.ensure import _facts
+
+    fact = _facts().get(BACKEND_PACKAGES.get(backend, ""))
+    return f"b{fact['version']}" if fact else None
+
+
+def server_binary_for_backend(backend: str) -> Path:
+    """llama-server for an INSTALLED backend. Never installs."""
+    from pm.ensure import _facts, _store
+    from pm.registry import get_package
+    from pm.store import current_target
+
+    name = BACKEND_PACKAGES.get(backend)
+    if name is None:
+        raise BinaryResolutionError(f"unknown backend {backend}")
+    fact = _facts().get(name)
+    if fact is None:
+        raise BinaryResolutionError(f"llama.cpp {backend} build is not installed")
+    binary = get_package(name).binary(_store().entry(fact["entry"]), current_target())
+    if binary is None or not binary.is_file():
+        raise BinaryResolutionError(f"llama.cpp {backend} entry is missing its binary")
+    return binary
+
+
+def ensure_engine(backend: str, progress=None) -> "tuple[str, Path]":
+    """Install (if needed) and return (backend, llama-server path). Explicit
+    consent only — nothing on the boot path calls this; boot serves what is
+    already installed."""
+    from pm.ensure import ensure
+    from pm.package import InstallError
+
+    resolved = resolve_backend(backend)
+    try:
+        ensure(BACKEND_PACKAGES[resolved], progress=progress, explicit=True)
+    except InstallError as exc:
+        raise BinaryResolutionError(str(exc)) from exc
+    return resolved, server_binary_for_backend(resolved)
+
+
+# ---- END pm engine contracts ----
 
 
 _PLUGIN_COMPAT_LAZY = {

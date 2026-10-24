@@ -59,6 +59,12 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  externalOpenFailed: {
+    title: string
+    message: string
+    copyUrl: string
+    close: string
+  },
   connectors: {
     title: string
     connect: string
@@ -233,6 +239,8 @@ export interface Translations {
       back: string
       openLogs: string
       repairHint: string
+      bundledReinstallHint: string
+      reinstallApp: string
       remoteSignInHint: (signInLabel: string) => string
       signOutAndSignIn: string
       remoteFailureHint: string
@@ -797,6 +805,7 @@ export interface Translations {
       tapCheck: string
       updateReady: (count: number) => string
       updateReadyUnknown: string
+    availableBodyRelease: (tag: string) => string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
@@ -1251,6 +1260,9 @@ export interface Translations {
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
+      downloadPausedLabel: string
+      downloadPauseAction: string
+      downloadResumeAction: string
       downloadDoneToast: (model: string) => string
       installDoneToast: string
       quickstartTitle: string
@@ -2878,6 +2890,45 @@ export interface Translations {
       failed: string
       noReturn: string
     }
+    /** Update-status overlay + version-details (mechanism-aware update UI):
+     * the overlay reads these off t.updates directly. */
+    appName: string
+    version: (value: string) => string
+    versionUnavailable: string
+    checkNow: string
+    seeWhatsNew: string
+    releaseNotes: string
+    onLatest: string
+    installing: string
+    cantReach: string
+    tapCheck: string
+    updateReady: (count: number) => string
+    updateReadyUnknown: string
+    availableBodyRelease: (tag: string) => string
+    lastChecked: (age: string) => string
+    never: string
+    justNow: string
+    minAgo: (count: number) => string
+    hoursAgo: (count: number) => string
+    daysAgo: (count: number) => string
+    justNowSuffix: string
+    bundleOutOfSync: string
+    bundleOutOfSyncDesc: string
+    bundleOutOfSyncAction: string
+    checkingShort: string
+    releaseAvailable: (tag: string) => string
+    versionDetailsTitle: string
+    versionDetailsBody: string
+    versionDetailsVersion: string
+    versionDetailsCommit: string
+    versionDetailsBuildOrigin: string
+    versionDetailsDistribution: string
+    versionDetailsDistributionDesktop: string
+    versionDetailsRuntime: string
+    versionDetailsRuntimeEmbedded: string
+    versionDetailsRuntimeExternal: string
+    versionDetailsInstallId: string
+    versionDetailsUncommittedChanges: string
   }
 
   /** The guided first run's pre-written opening line — banked, not generated,
@@ -2908,11 +2959,18 @@ export interface Translations {
     retryAfterRun: string
     setupChoiceTitle: string
     setupChoiceDesc: string
+    setupChoiceDescLocal: string
     connectExistingTitle: string
     connectExistingShort: string
     connectExistingDesc: string
     installLocalTitle: string
     installLocalDesc: string
+    useLocalTitle: string
+    useLocalDesc: string
+    bundledLocalDesc: string
+    bundledDamagedTitle: string
+    bundledDamagedDesc: string
+    reinstallApp: string
     localStartUnavailable: string
     remoteSetupTitle: string
     remoteSetupDesc: string
@@ -3181,6 +3239,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      releaseAvailable: (tag: string) => string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

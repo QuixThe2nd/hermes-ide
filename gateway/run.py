@@ -4939,7 +4939,7 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
     can't be read or lacks a ``name:`` in its frontmatter.
     """
     try:
-        content = skill_md.read_text(encoding="utf-8", errors="replace")
+        content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
     except Exception:
         return None, None
     content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
@@ -5063,12 +5063,48 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
     """
     if config_path is None:
         config_path = _gateway_config_home() / 'config.yaml'
+    raw: dict = {}
+    used_canonical = False
     try:
         from hermes_cli.config_effective import load_user_config_effective
         return load_user_config_effective(config_path)
     except Exception:
-        logger.debug("Could not load gateway config from %s", config_path, exc_info=True)
+        pass
+
+    # Fallback path when the effective loader is unavailable: reuse the
+    # shared mtime-keyed raw-yaml cache when reading the canonical config
+    # location, else read the file directly (keeps monkeypatched
+    # ``_hermes_home`` fixtures working). Upstream a9be133aea intent.
+    try:
+        from hermes_cli.config import get_config_path, read_raw_config
+        if config_path == get_config_path():
+            raw = read_raw_config()
+            used_canonical = True
+    except Exception:
+        pass
+
+    if not used_canonical:
+        try:
+            if config_path.exists():
+                import yaml
+                with open(config_path, 'r', encoding='utf-8-sig') as f:
+                    raw = yaml.safe_load(f) or {}
+        except Exception:
+            logger.debug("Could not load gateway config from %s", config_path)
+            raw = {}
+
+    # Overlay managed scope. read_raw_config() returns the user's raw YAML
+    # WITHOUT the managed merge (that lives in load_config/_load_config_impl),
+    # so the overlay is required on both paths for the gateway to honor pinned
+    # values. Helper is fail-open and a no-op when no managed scope exists.
+    try:
+        from hermes_cli import managed_scope
+        raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
+    except Exception:
+        pass
+    if not isinstance(raw, dict):
         return {}
+    return raw
 
 
 def _checkpoint_agent_kwargs(config: dict | None) -> dict:
@@ -11112,7 +11148,7 @@ class GatewayRunner(
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
-            data = json.loads(self._VOICE_MODE_PATH.read_text(encoding="utf-8"))
+            data = json.loads(self._VOICE_MODE_PATH.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return {}
 
@@ -13513,7 +13549,7 @@ class GatewayRunner(
             logger.warning("Prefill messages file not found: %s", path)
             return []
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 logger.warning("Prefill messages file must contain a JSON array: %s", path)
@@ -15937,7 +15973,7 @@ class GatewayRunner(
 
         path = _hermes_home / self._STUCK_LOOP_FILE
         try:
-            counts = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            counts = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
         except Exception:
             counts = {}
 
@@ -15967,7 +16003,7 @@ class GatewayRunner(
             return 0
 
         try:
-            counts = json.loads(path.read_text(encoding="utf-8"))
+            counts = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             return 0
 
@@ -16015,7 +16051,7 @@ class GatewayRunner(
         if not path.exists():
             return
         try:
-            counts = json.loads(path.read_text(encoding="utf-8"))
+            counts = json.loads(path.read_text(encoding="utf-8-sig"))
             if session_key in counts:
                 del counts[session_key]
                 if counts:
@@ -28868,7 +28904,7 @@ class GatewayRunner(
                     self._booted_from_restart = False
                     return True
                 return False
-            data = json.loads(marker_path.read_text(encoding="utf-8"))
+            data = json.loads(marker_path.read_text(encoding="utf-8-sig"))
         except Exception:
             return False
 
@@ -31739,7 +31775,7 @@ class GatewayRunner(
         for path in (claimed_path, pending_path):
             if path.exists():
                 try:
-                    pending = json.loads(path.read_text(encoding="utf-8"))
+                    pending = json.loads(path.read_text(encoding="utf-8-sig"))
                     platform_str = pending.get("platform")
                     chat_id = pending.get("chat_id")
                     chat_type = pending.get("chat_type")
@@ -31840,7 +31876,7 @@ class GatewayRunner(
 
                 # Send final status
                 try:
-                    exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
+                    exit_code_raw = exit_code_path.read_text(encoding="utf-8-sig").strip() or "1"
                     exit_code = int(exit_code_raw)
                     if exit_code == 0:
                         await adapter.send(
@@ -31894,7 +31930,7 @@ class GatewayRunner(
                         and _up_pending_state.persistent.update_prompt_pending
                     )):
                 try:
-                    prompt_data = json.loads(prompt_path.read_text(encoding="utf-8"))
+                    prompt_data = json.loads(prompt_path.read_text(encoding="utf-8-sig"))
                     prompt_text = prompt_data.get("prompt", "")
                     default = prompt_data.get("default", "")
                     if prompt_text:
@@ -31992,7 +32028,7 @@ class GatewayRunner(
             elif not claimed_path.exists():
                 return True
 
-            pending = json.loads(claimed_path.read_text(encoding="utf-8"))
+            pending = json.loads(claimed_path.read_text(encoding="utf-8-sig"))
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
             chat_type = pending.get("chat_type")
@@ -32006,7 +32042,7 @@ class GatewayRunner(
                 claimed_path.replace(pending_path)
                 return False
 
-            exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
+            exit_code_raw = exit_code_path.read_text(encoding="utf-8-sig").strip() or "1"
             exit_code = int(exit_code_raw)
 
             # Read the captured update output
@@ -32088,7 +32124,7 @@ class GatewayRunner(
             return None
 
         try:
-            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            data = json.loads(notify_path.read_text(encoding="utf-8-sig"))
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             chat_type = data.get("chat_type")
@@ -38653,8 +38689,9 @@ def main():
     config = None
     if args.config:
         import yaml
-        with open(args.config, encoding="utf-8") as f:
-            config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
+        with open(args.config, encoding="utf-8-sig") as f:
+            data = yaml.safe_load(f) or {}
+            config = GatewayConfig.from_dict(data)
         # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
         from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
         log_multiplex_decision(resolve_multiplex_mode(config))

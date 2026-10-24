@@ -1905,27 +1905,28 @@ setup_venv() {
 }
 
 run_locked_uv_sync() {
-    # Bootstrap uv calls stay isolated from ambient config via UV_NO_CONFIG
-    # (#21269). A locked project sync is different: uv.lock records resolver
-    # settings from this checkout's [tool.uv], so hiding pyproject.toml makes
-    # uv 0.12+ reject the valid lock. Re-enable project discovery only for
-    # this subprocess while redirecting user/system config lookups to an empty
-    # directory. Keep HOME unchanged so caches, credentials, and git continue
-    # to work normally.
+    # pm is the single install authority (upstream a9be133aea): install.sh
+    # no longer runs `uv sync` directly. `python -m pm.cli install` installs
+    # the lockfile packages and syncs the venv to the [all] feature set via
+    # pm.ensure.sync_venv / pm.packages.uv_env, which owns the frozen-lock
+    # validation and the ambient-config isolation contract (#21269) that
+    # used to be inline here. The venv the installer created is the sync
+    # target (pm unions extras into the existing environment).
     local project_env="$1"
-    local isolated_uv_config
-    local sync_rc
-    isolated_uv_config="$(mktemp -d)" || return 1
 
     (
         unset UV_NO_CONFIG UV_CONFIG_FILE
-        export XDG_CONFIG_HOME="$isolated_uv_config"
-        export XDG_CONFIG_DIRS="$isolated_uv_config"
-        UV_PROJECT_ENVIRONMENT="$project_env" $UV_CMD sync --extra all --locked
+        export UV_PROJECT_ENVIRONMENT="$project_env"
+        # The launcher `uv run` runs BEFORE pm's env sanitation applies,
+        # so ambient uv.toml under XDG would break (or steer) even the
+        # launch into pm. Redirect discovery to an empty dir for the
+        # launcher; pm.packages.uv_env re-sanitizes everything it passes
+        # to the actual sync.
+        isolated="$(mktemp -d)"
+        export XDG_CONFIG_HOME="$isolated" XDG_CONFIG_DIRS="$isolated"
+        cd "$INSTALL_DIR" || exit 1
+        "$UV_CMD" run --no-project python -m pm.cli install
     )
-    sync_rc=$?
-    rmdir "$isolated_uv_config" 2>/dev/null || true
-    return "$sync_rc"
 }
 
 install_deps() {
@@ -1975,14 +1976,23 @@ install_deps() {
 
         # Try the broad Termux profile first (best-effort "install all" for Android),
         # then fall back to the conservative Termux baseline, then base package.
-        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt; then
+        # No `-c constraints-termux.txt` here: that file was deleted upstream by the
+        # unified package-manager migration (3d12e86) along with the installer this
+        # Termux branch originally shipped in, and every package it pinned (the
+        # IPython stack: ipython/jedi/parso/stack-data/pexpect/matplotlib-inline/
+        # asttokens) has since left the dependency graph entirely (absent from both
+        # pyproject.toml and uv.lock), so the constraint contract is vacuous — while
+        # a missing constraint file makes pip abort before resolving ANY tier.
+        # Version stability for the tested Android path now comes from the exact
+        # pins recorded in pyproject.toml's [termux]/[termux-all] extras.
+        if ! "$PIP_PYTHON" -m pip install -e '.[termux-all]'; then
             log_warn "Termux broad profile (.[termux-all]) failed, trying baseline Termux profile..."
-            if ! "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt; then
+            if ! "$PIP_PYTHON" -m pip install -e '.[termux]'; then
                 log_warn "Termux baseline profile (.[termux]) failed, trying base install..."
-                if ! "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt; then
+                if ! "$PIP_PYTHON" -m pip install -e '.'; then
                     log_error "Package installation failed on Termux."
                     log_info "Ensure these packages are installed: pkg install clang rust make pkg-config libffi openssl ca-certificates curl"
-                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+                    log_info "Then re-run: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]'"
                     exit 1
                 fi
             fi
@@ -2032,7 +2042,7 @@ install_deps() {
     # Install the main package in editable mode with all extras.
     #
     # Hash-verified install (Tier 0) — when uv.lock is present, prefer
-    # `uv sync --locked`. The lockfile records SHA256 hashes for every
+    # `python -m pm.cli install` (frozen uv lock). The lockfile records SHA256 hashes for every
     # transitive, so a compromised transitive (different hash than what
     # we shipped) is REJECTED by the resolver. This is the *only* path
     # that protects against the "direct dep is fine, but the dep's dep
@@ -2214,7 +2224,7 @@ setup_path() {
         log_warn "Hermes launcher prerequisites not found"
         log_info "This usually means the Python package install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
-            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
+            log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]'"
         else
             log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
         fi

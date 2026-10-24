@@ -2989,7 +2989,7 @@ function Install-Dependencies {
     }
 
     # Hash-verified install (Tier 0) -- when uv.lock is present, prefer
-    # `uv sync --locked`. The lockfile records SHA256 hashes for every
+    # `python -m pm.cli install` (frozen uv lock). The lockfile records SHA256 hashes for every
     # transitive dependency, so a compromised transitive (different hash
     # than what we shipped) is REJECTED by the resolver. This is the
     # *only* path that protects against the "direct dep is fine, but the
@@ -3020,8 +3020,34 @@ function Install-Dependencies {
         # empty and producing the broken state where `hermes.exe` exists
         # in the wrong directory and imports fail with ModuleNotFoundError.
         # (Mirrors the same flag in scripts/install.sh::install_deps.)
+        # pm is the single install authority (upstream a9be133aea): the
+        # installers delegate to `python -m pm.cli install` instead of running
+        # `uv sync` themselves. pm.ensure.sync_venv unions the [all] extras
+        # into this venv (UV_PROJECT_ENVIRONMENT still pins the target) with
+        # the same frozen-lock validation and ambient-config isolation.
         $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
-        Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked }
+        # The launcher `uv run` executes BEFORE pm.packages.uv_env sanitizes
+        # anything, so an ambient uv.toml could break (or steer) even the
+        # launch into pm. On Windows uv discovers config at
+        # %APPDATA%\uv\uv.toml (user) and %PROGRAMDATA%\uv\uv.toml (system),
+        # plus UV_CONFIG_FILE — UV_NO_CONFIG=1 suppresses all of them for
+        # this invocation. Mirrors scripts/install.sh::run_locked_uv_sync;
+        # pm.cli re-sanitizes (and, for the venv sync, un-pins UV_NO_CONFIG
+        # so the project's own config stays visible) inside the child.
+        $savedNoConfig = $env:UV_NO_CONFIG
+        $savedConfigFile = $env:UV_CONFIG_FILE
+        $env:UV_NO_CONFIG = "1"
+        Remove-Item Env:\UV_CONFIG_FILE -ErrorAction SilentlyContinue
+        Push-Location $InstallDir
+        try {
+            Invoke-NativeWithRelaxedErrorAction { & $UvCmd run --no-project python -m pm.cli install }
+        } finally {
+            Pop-Location
+            # Restore the caller's environment on success AND failure.
+            if ($null -ne $savedConfigFile) { $env:UV_CONFIG_FILE = $savedConfigFile }
+            if ($null -ne $savedNoConfig) { $env:UV_NO_CONFIG = $savedNoConfig }
+            else { Remove-Item Env:\UV_NO_CONFIG -ErrorAction SilentlyContinue }
+        }
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
             $script:InstalledTier = "hash-verified (uv.lock)"
@@ -3138,7 +3164,7 @@ except Exception:
             $hint = if (Test-Path $sibling) {
                 "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Close Hermes processes, preserve the existing venv, and rerun the installer so the transactional recovery path can move directories safely."
             } else {
-                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; pm sync (python -m pm.cli install) into that venv"
             }
             throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
         }

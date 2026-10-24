@@ -14,15 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 def window_overrides_path():
-    from hermes_cli.local_runtime.binaries import runtimes_root
+    from hermes_cli.local_runtime.binaries import runtime_state_root
 
-    return runtimes_root() / "window_overrides.json"
+    return runtime_state_root() / "window_overrides.json"
 
 
 def load_window_overrides() -> dict:
     """model_id -> granted window (int). Empty on any read problem."""
     with suppress(Exception):
-        with open(window_overrides_path(), encoding="utf-8") as fh:
+        with open(window_overrides_path(), encoding="utf-8-sig") as fh:
             data = json.load(fh)
         return {str(k): int(v) for k, v in data.items()}
     return {}

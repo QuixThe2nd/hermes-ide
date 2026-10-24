@@ -17,7 +17,9 @@ import {
   type HFFileGroup,
   type HFSearchHit,
   listHFRepoFiles,
+  pauseLocalModelDownload,
   quickstartLocalModels,
+  resumeLocalModelDownload,
   searchHFModels,
   setLocalServer,
   sideloadLocalModel
@@ -33,6 +35,8 @@ import {
   Loader2,
   Monitor,
   Package,
+  Pause,
+  Play,
   Search,
   StopFilled,
   Trash2,
@@ -669,11 +673,42 @@ export function LocalModelsSettings() {
                     <div className="mt-2 grid gap-1">
                       <ProgressBar percent={dJob.percent} />
 
-                      <p className="text-[0.68rem] text-muted-foreground">
-                        {!dJob.done_bytes && dJob.detail
-                          ? dJob.detail
-                          : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
-                      </p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[0.68rem] text-muted-foreground">
+                          {dJob.status === 'paused' ? (
+                            <>
+                              {copy.downloadPausedLabel} ·{' '}
+                              {copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
+                            </>
+                          ) : !dJob.done_bytes && dJob.detail ? (
+                            dJob.detail
+                          ) : (
+                            copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))
+                          )}
+                        </p>
+
+                        {dJob.kind === 'model-download' ? (
+                          dJob.status === 'paused' ? (
+                            <Button
+                              onClick={() => void resumeLocalModelDownload(dJob.job_id).catch(err => notifyError(err, copy.downloadResumeAction))}
+                              size="sm"
+                              variant="ghost"
+                            >
+                              <Play />
+                              {copy.downloadResumeAction}
+                            </Button>
+                          ) : (
+                            <Button
+                              onClick={() => void pauseLocalModelDownload(dJob.job_id).catch(err => notifyError(err, copy.downloadPauseAction))}
+                              size="sm"
+                              variant="ghost"
+                            >
+                              <Pause />
+                              {copy.downloadPauseAction}
+                            </Button>
+                          )
+                        ) : undefined}
+                      </div>
                     </div>
                   ) : undefined
                 }
