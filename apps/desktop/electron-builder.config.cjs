@@ -24,6 +24,24 @@ const {
   msixAppIdWithOrg
 } = require('./product-identity.cjs')
 
+// `storeMsix` is optional on the identity type but guaranteed present when
+// `store` is true (product-identity.cjs spreads it only in that branch).
+// The `store` flag is typed `boolean` in the identity, so checkJs cannot
+// correlate the two; `mustStoreMsix` is the single assertion point and the
+// invariant lives in product-identity.cjs:33-34/58-68.
+/** @type {NonNullable<typeof storeMsix> | undefined} */
+const storeMsixWhenStore = storeMsix
+
+/**
+ * The store MSIX packaging identity. Callers must only invoke this when
+ * `store` is true (see the invariant note above).
+ * @param {NonNullable<typeof storeMsix> | undefined} value
+ * @returns {NonNullable<typeof storeMsix>}
+ */
+function mustStoreMsix(value) {
+  return /** @type {NonNullable<typeof storeMsix>} */ (value)
+}
+
 // The out-of-store MSIX publisher (ATS cert subject) — single source, shared
 // with the .appinstaller generator so the manifest and the App Installer can
 // never drift (see scripts/msix-shared.mjs).
@@ -166,11 +184,11 @@ module.exports = {
     // A store build uses the Partner Center packaging identity (the Store
     // re-signs + rewrites the publisher on submission); everything else uses
     // the out-of-store ATS-cert identity.
-    identityName: store ? storeMsix.identityName : msixAppIdWithOrg,
+    identityName: store ? mustStoreMsix(storeMsixWhenStore).identityName : msixAppIdWithOrg,
     applicationId: appNamePascal,
     displayName,
-    publisher: store ? storeMsix.publisher : OUT_OF_STORE_PUBLISHER,
-    publisherDisplayName: store ? storeMsix.publisherDisplayName : 'Nous Research',
+    publisher: store ? mustStoreMsix(storeMsixWhenStore).publisher : OUT_OF_STORE_PUBLISHER,
+    publisherDisplayName: store ? mustStoreMsix(storeMsixWhenStore).publisherDisplayName : 'Nous Research',
     // Canary MSIX versions are `X.Y.Z.<minutes-since-stable>` (see
     // scripts/msix-shared.mjs). setBuildNumber makes getVersionInWeirdWindowsForm
     // use the BUILD_NUMBER env (4th component) instead of hardcoding ".0" — a

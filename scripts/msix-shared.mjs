@@ -31,7 +31,11 @@ const CONTENT_TYPES = {
   '.msix': 'application/msix'
 }
 
-/** The Content-Type to store for a staged release artifact, if any. */
+/**
+ * The Content-Type to store for a staged release artifact, if any.
+ * @param {string} filename the artifact filename
+ * @returns {string | undefined}
+ */
 export function contentTypeFor(filename) {
   const lower = String(filename).toLowerCase()
   for (const [suffix, mime] of Object.entries(CONTENT_TYPES)) {
@@ -110,6 +114,10 @@ export function resolveWinSdkTools() {
   process.exit(1)
 }
 
+/**
+ * @param {unknown} value any value to XML-escape
+ * @returns {string}
+ */
 function escapeAttr(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
@@ -163,6 +171,10 @@ const STABLE_TAG_RE = /^v\d+\.\d+\.\d+$/
 // number to clamp (a clamped number would break monotonicity).
 const MAX_BUILD_MINUTES = 45 * 24 * 60
 
+/**
+ * @param {string} stamp YYYYMMDD[HHMMSS] UTC stamp
+ * @returns {number} epoch seconds
+ */
 function stampToEpoch(stamp) {
   const parts = /^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?$/.exec(stamp)
   if (!parts) return 0
@@ -170,15 +182,35 @@ function stampToEpoch(stamp) {
   return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h ?? 0), Number(mi ?? 0), Number(s ?? 0)) / 1000
 }
 
+/**
+ * List git tags matching `pattern`, newest-first (git's -v:refname sort).
+ * @param {string} gitRoot the repo root
+ * @param {string} pattern git tag glob, e.g. "v0.27.*"
+ * @returns {string[]}
+ */
 export function listGitTags(gitRoot, pattern) {
   return execFileSync('git', ['tag', '--list', pattern, '--sort=-v:refname'], { cwd: gitRoot, encoding: 'utf8' })
     .split('\n').filter(Boolean)
 }
 
+/**
+ * The commit time (epoch seconds) of `tag`, for minutes-since-stable math.
+ * @param {string} gitRoot the repo root
+ * @param {string} tag a git tag
+ * @returns {number}
+ */
 export function gitTagCommitTime(gitRoot, tag) {
   return Number(execFileSync('git', ['log', '-1', '--format=%ct', tag], { cwd: gitRoot, encoding: 'utf8' }).trim())
 }
 
+/**
+ * Minutes between a canary tag's UTC stamp and the given stable epoch —
+ * the MSIX 4th version component. Null for a stable tag; throws when the
+ * stable base is older than 45 days (16-bit component would overflow).
+ * @param {string} tag the release tag
+ * @param {number} stableEpoch stable tag commit time, epoch seconds
+ * @returns {number | null}
+ */
 export function canaryBuildMinutesFor(tag, stableEpoch) {
   const m = CANARY_TAG_RE.exec(String(tag || ''))
   if (!m) return null
@@ -193,6 +225,13 @@ export function canaryBuildMinutesFor(tag, stableEpoch) {
   return minutes
 }
 
+/**
+ * Minutes-since-stable for a canary tag, resolving the stable base from
+ * the repo's tags on the same major.minor line.
+ * @param {string} tag the release tag
+ * @param {string} gitRoot the repo root
+ * @returns {number | null}
+ */
 export function canaryBuildMinutes(tag, gitRoot) {
   const m = CANARY_TAG_RE.exec(String(tag || ''))
   if (!m) return null

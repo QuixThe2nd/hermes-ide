@@ -198,7 +198,7 @@ export function isUnderInstallRoot(
   const candidates = typeof roots === 'string' || roots == null ? [roots] : roots
 
   for (const root of candidates) {
-    if (!root) {
+    if (typeof root !== 'string' || !root) {
       continue
     }
 
