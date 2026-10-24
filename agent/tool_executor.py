@@ -1757,24 +1757,28 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         # here (the actual sequential execution boundary) for mid-tool status
         # emits; the scope restores the outer callback/id on exit.
         with tool_status_scope(get_tool_status_callback(), tool_call_id=tool_call_id):
-            with model_tools.suppress_post_tool_call_hook():
-                return model_tools.handle_function_call(
-                    function_name,
-                    next_args,
-                    effective_task_id,
-                    tool_call_id=tool_call_id,
-                    session_id=agent.session_id or "",
-                    turn_id=getattr(agent, "_current_turn_id", "") or "",
-                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                    skip_pre_tool_call_hook=True,
-                    skip_tool_request_middleware=True,
-                    skip_tool_execution_middleware=True,
-                    tool_request_middleware_trace=list(middleware_trace),
-                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                )
-
+            # Bind the live agent so registry-level delegate dispatch on this
+            # interceptor-less seam (backend-routed calls, child/cron/resumed
+            # sessions) resolves its parent instead of the loop stub.
+            from tools.agent_dispatch_context import bound_agent_dispatch_context
+            with bound_agent_dispatch_context(agent):
+                with model_tools.suppress_post_tool_call_hook():
+                    return model_tools.handle_function_call(
+                        function_name,
+                        next_args,
+                        effective_task_id,
+                        tool_call_id=tool_call_id,
+                        session_id=agent.session_id or "",
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                        skip_pre_tool_call_hook=True,
+                        skip_tool_request_middleware=True,
+                        skip_tool_execution_middleware=True,
+                        tool_request_middleware_trace=list(middleware_trace),
+                        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                    )
     return _SequentialDispatch(
         execute=_execute,
         spinner=_start_quiet_tool_spinner(agent, function_name, function_args) if agent.quiet_mode else None,

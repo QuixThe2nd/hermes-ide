@@ -239,6 +239,7 @@ def _dispatch_delegate_inline(agent, args: dict, ctx: InlineToolContext):
             task_id=ctx.effective_task_id,
             session_id=getattr(agent, "session_id", None) or None,
             tool_call_id=ctx.tool_call_id,
+            parent_agent=agent,
         )
     return agent._dispatch_delegate_agent(args)
 

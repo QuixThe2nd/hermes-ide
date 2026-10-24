@@ -648,9 +648,16 @@ def _resolve_active_context_length() -> int:
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-# ``delegate_task`` must be listed too: a replayed/transcript-fed call with
-# the legacy name would otherwise fall through to the registry stub error.
-_AGENT_LOOP_TOOLS = {"todo", "todo_list", "memory", "session_search", "delegate_agent", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo", "todo_list", "memory", "session_search"}
+
+# Delegate names are NOT stubbed: delegate_agent must execute its real handler
+# wherever delegation is legal - backend-routed (claude/cursor) calls that the
+# turn loop deliberately falls through to the registry, and child/cron/resumed
+# sessions that dispatch without any turn-loop interceptor. _execute_tool
+# forwards the ambient dispatch context's agent as ``parent_agent``; with no
+# bound agent the handler still answers with a clear error instead of the loop
+# stub (replayed-transcript ``delegate_task`` calls included).
+_DELEGATE_DISPATCH_TOOLS = {"delegate_agent", "delegate_task"}
 
 # Legacy tool-name aliases accepted at every dispatch seam (old sessions/saved
 # prompts keep working); schemas advertise only new names.
@@ -868,6 +875,14 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
     # (delegate_claude_agent & co.) can bind spawn receipts to this exact call.
     dispatch_kwargs: Dict[str, Any] = {
         "task_id": ids.task_id, "session_id": ids.session_id, "tool_call_id": ids.tool_call_id}
+    if function_name in _DELEGATE_DISPATCH_TOOLS:
+        # Registry-level delegate dispatch on an interceptor-less path (the
+        # turn loop's backend-routed fall-through, child/cron/resumed
+        # sessions): forward the ambient dispatch context's agent as
+        # ``parent_agent``. None on truly parentless callers - the handler
+        # then returns a clear error, never the agent-loop stub.
+        from tools.agent_dispatch_context import get_agent_dispatch_context
+        dispatch_kwargs["parent_agent"] = get_agent_dispatch_context()
     if function_name == "execute_code":
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
