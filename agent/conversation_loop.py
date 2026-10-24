@@ -1199,6 +1199,9 @@ def _redecorate_prompt_cache_for_provider(
     planned_tools = strip_anthropic_tool_cache_control(
         tools_for_api if tools_for_api is not None else getattr(agent, "tools", [])
     )
+    # Cache-layout flags for the runtime-note append below (defaults: no
+    # decoration pass ran — plain tail append).
+    _note_native, _note_tpm = False, True
     if prepared is not None and getattr(agent, "provider", None) == "moa":
         # Prepared MoA state is canonical: the synchronous acting-aggregator
         # sender owns its destination-local cache plan after it resolves the slot.
@@ -1213,6 +1216,9 @@ def _redecorate_prompt_cache_for_provider(
         _ensure_cached_system_prompt_static(agent, system_message=system_message)
         static = getattr(agent, "_cached_system_prompt_static", None)
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
+        _tool_part_markers = envelope_tool_part_cache_markers_supported(
+            getattr(agent, "provider", ""), getattr(agent, "base_url", "")
+        )
         plan = build_prompt_cache_plan(
             messages,
             planned_tools,
@@ -1226,11 +1232,19 @@ def _redecorate_prompt_cache_for_provider(
             )(),
             # LiteLLM-style envelope routes forward part-level markers into
             # tool_result.content[] → non-retryable 400 (#89886).
-            tool_part_markers=envelope_tool_part_cache_markers_supported(
-                getattr(agent, "provider", ""), getattr(agent, "base_url", "")
-            ),
+            tool_part_markers=_tool_part_markers,
         )
         messages, planned_tools = plan.messages, plan.tools
+        _note_native, _note_tpm = bool(agent._use_native_cache_layout), _tool_part_markers
+
+    # Delegated-worker runtime state rides the OUTGOING REQUEST at THIS final
+    # wire boundary only — after the last cache-decoration pass, so the volatile
+    # note never enters any cached prefix (marker-aware placement; see
+    # agent.turn_request_assembly). Idempotent per attempt (retry loops reuse
+    # api_messages). Also runs when caching is off (plain tail append).
+    _append_delegation_runtime_note(
+        agent, messages, native_anthropic=_note_native, tool_part_markers=_note_tpm,
+    )
 
     if tools_for_api is None:
         return messages, prepared
@@ -2469,16 +2483,6 @@ def _run_conversation_inlined(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Delegated-worker runtime state rides the OUTGOING REQUEST ONLY: a
-        # fresh, bounded, owner-scoped snapshot per model request (so it
-        # refreshes across tool rounds within one turn), appended to the
-        # latest legal user/tool-result content. Stored history, api_content
-        # sidecars, prior rows and the system prompt stay untouched —
-        # ``api_messages`` is the request-local send copy built above. Same
-        # seam and same helper as the decomposed turn path
-        # (agent/turn_request_assembly.assemble_api_request).
-        _append_delegation_runtime_note(agent, api_messages)
-
         # NOTE (empty-content class fix): no send-time pad loop here.  The
         # single owner for "never send a turn strict wire validation rejects
         # as empty" is ``repair_empty_non_final_messages``, which runs inside
@@ -2536,6 +2540,11 @@ def _run_conversation_inlined(
             )
             api_messages = _initial_cache_plan.messages
             tools_for_api = _initial_cache_plan.tools
+
+        # NOTE: the delegated-worker runtime note is NOT attached here — the
+        # send path re-renders the cache decoration per attempt
+        # (_redecorate_prompt_cache_for_provider) and the volatile note rides
+        # the wire at that final boundary instead (see turn_request_assembly).
 
         # Build a persistent-MoA request before measuring compression pressure.
         # MoA reference output is injected into the aggregator prompt, but it
