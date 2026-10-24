@@ -223,7 +223,8 @@ def test_run_without_correlation_ids_completes_and_writes_nothing(
     monkeypatch.setattr("tools.agent_cli_runner._MONITOR_POLL_SECONDS",
                         0.01)
     out = tool._handle_delegate_claude_agent(
-        {"task": "finish the work", "workdir": str(repo)})
+        {"task": "finish the work", "workdir": str(repo),
+         "background": False})
     parsed = json.loads(out)
     assert parsed["success"] is True
     assert parsed["final_report"] == "claude report: done"

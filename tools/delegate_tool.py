@@ -946,19 +946,28 @@ def _delegate_agent_handler(args: dict, **kw):
         err = _backend_param_error(backend, [p for p in _CLAUDE_ONLY_PARAMS + _CURSOR_ONLY_PARAMS if p in args])
         if err:
             return err
+        parent_agent = kw.get("parent_agent")
+        if parent_agent is None:
+            # Registry-level dispatch on an interceptor-less path (child/cron/
+            # resumed sessions, bare handle_function_call): resolve the live
+            # parent from the ambient dispatch context bound at the agent-loop
+            # seams. Stays None for truly parentless callers - delegate_agent
+            # below answers with a clear error, never a crash.
+            from tools.agent_dispatch_context import get_agent_dispatch_context
+            parent_agent = get_agent_dispatch_context()
         return delegate_agent(
             goal=args.get("goal"),
             context=args.get("context"),
             tasks=_strip_model_hidden_task_fields(args.get("tasks")),
             max_iterations=args.get("max_iterations"),
             role=args.get("role"),
-            background=_model_background_value(args, kw.get("parent_agent")),
+            background=_model_background_value(args, parent_agent),
             output_schema=args.get("output_schema"),
             images=args.get("images"),
             action=args.get("action"),
             subagent_id=args.get("subagent_id"),
             message=args.get("message"),
-            parent_agent=kw.get("parent_agent"),
+            parent_agent=parent_agent,
         )
 
     # External backends (claude / cursor): validate the parameter family, then

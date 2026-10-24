@@ -634,6 +634,7 @@ def test_handler_force_string_false(monkeypatch, tmp_path):
             "task": "handler force",
             "workdir": str(workdir.resolve()),
             "force": "false",
+            "background": False,
         },
         session_id="handler-session",
         tool_call_id="handler-call",
@@ -2067,7 +2068,8 @@ def test_progress_url_emitted_once_before_poll_via_handle_function_call(monkeypa
     with tool_status_scope(received.append):
         raw = handle_function_call(
             "delegate_cursor_agent",
-            {"task": "ship it", "workdir": str(workdir.resolve())},
+            {"task": "ship it", "workdir": str(workdir.resolve()),
+             "background": False},
             session_id=session_id,
             tool_call_id=tool_call_id,
             skip_pre_tool_call_hook=True,
@@ -2126,7 +2128,8 @@ def test_progress_notice_is_noop_without_tool_status_context(monkeypatch, tmp_pa
     workdir.mkdir()
     raw = handle_function_call(
         "delegate_cursor_agent",
-        {"task": "no context", "workdir": str(workdir.resolve())},
+        {"task": "no context", "workdir": str(workdir.resolve()),
+         "background": False},
         session_id=session_id,
         tool_call_id=tool_call_id,
         skip_pre_tool_call_hook=True,
