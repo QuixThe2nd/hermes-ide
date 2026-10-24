@@ -189,8 +189,8 @@ def test_file_tool_descriptions_route_source_edits_to_delegate_lanes():
 
     for schema in (WRITE_FILE_SCHEMA, PATCH_SCHEMA):
         description = schema["description"]
-        assert "delegate_cursor_agent" in description, schema["name"]
-        assert "delegate_claude_agent" in description, schema["name"]
+        assert 'delegate_agent(backend="cursor")' in description, schema["name"]
+        assert 'delegate_agent(backend="claude")' in description, schema["name"]
 
 
 # ---------------------------------------------------------------------------

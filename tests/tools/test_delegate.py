@@ -62,11 +62,12 @@ class TestDelegateRequirements(unittest.TestCase):
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_agent")
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        # tasks[] is the only advertised spawn shape (single task = one-entry
-        # array); legacy top-level goal/context/output_schema stay
-        # handler-accepted but unadvertised.
+        # tasks[] is the advertised SUBAGENT spawn shape (single task =
+        # one-entry array); the unified backend surface additionally
+        # advertises top-level `goal` (backend=claude/cursor task brief).
+        # Legacy context/output_schema stay handler-accepted but unadvertised.
         self.assertIn("tasks", props)
-        self.assertNotIn("goal", props)
+        self.assertIn("goal", props)
         self.assertNotIn("context", props)
         self.assertNotIn("output_schema", props)
         task_props = props["tasks"]["items"]["properties"]

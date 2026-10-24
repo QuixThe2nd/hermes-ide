@@ -745,7 +745,7 @@ display:
 - `verbose` — show full tool call details (can produce long messages)
 - `describe` — one short line saying what each tool call is for (the call's own description), instead of the raw command/code
 
-When `delegate_cursor_agent` reports live progress, Discord posts a Cursor-branded embed with a **Watch live session** hyperlink instead of dumping the raw URL.
+When a `delegate_agent(backend="cursor")` (or legacy `delegate_cursor_agent`) call reports live progress, Discord posts a Cursor-branded embed with a **Watch live session** hyperlink instead of dumping the raw URL.
 
 #### `display.tool_progress_command`
 
