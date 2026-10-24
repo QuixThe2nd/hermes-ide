@@ -13,7 +13,7 @@ import asyncio
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 
 from agent.i18n import t
 
@@ -27,8 +27,8 @@ from gateway.kanban_watchers_common import (
     logger,
 )
 # Shared delivery helpers live in the upstream notifier module; the fork keeps
-# its dev-pipeline / agent-wake delivery loop inline below (see the note on
-# ``_kanban_notifier_watcher``) and reuses these two seam functions from it.
+# its delivery loop inline below (see the note on ``_kanban_notifier_watcher``)
+# and reuses these two seam functions from it.
 from gateway.kanban_watchers_notifier import _safe_review_reason, _wake_scope_id
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
@@ -40,186 +40,6 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
-
-
-# Plain-English verb for each dev-pipeline phase, so job progress reads as
-# sentences ("finished planning the work and is now writing the code") instead
-# of PHASE → PHASE arrows.
-_DEV_PHASE_VERBS = {
-    "PLANNING": "planning the work",
-    "ROUTING": "picking a build lane",
-    "PREPARING": "setting up the workspace",
-    "RUNNING": "writing the code",
-    "VERIFYING": "checking the result",
-    "REVIEWING": "reviewing the change",
-    "PUBLISHING": "opening the pull request",
-}
-
-# Preference order when one notifier tick claims a burst of same-phase
-# progress events: an edit says more than a command, which says more than a
-# generic checkpoint. ``stream_activity`` is deliberately absent — those
-# heartbeats are never worth a message.
-_DEV_PROGRESS_PRIORITY = {"file_edited": 0, "command": 1, "checkpoint": 2}
-
-
-def _dev_phase_verb(phase: str) -> str:
-    verb = _DEV_PHASE_VERBS.get(str(phase).strip().upper())
-    return verb if verb else str(phase).strip().lower()
-
-
-def _plan_dev_phase_messages(
-    events: Sequence[Any],
-    task_id: str,
-    prev_phase: Optional[str],
-) -> dict[int, str]:
-    """Map dev_phase event indexes to the chat messages worth sending.
-
-    Phase changes narrate themselves (first phase "started …", later ones
-    "finished … and is now …"). Same-phase events only speak up when their
-    payload carries a progress ``kind``/``detail``, and a burst of same-phase
-    progress collapses to ONE message — preferring file_edited over command
-    over checkpoint — so a 15s heartbeat cadence can never flood a chat.
-    Events that should stay silent are simply absent from the map; the claim
-    that fetched them still advances the cursor, so they never replay.
-    """
-    plans: dict[int, str] = {}
-    seen: set[tuple[str, str]] = set()
-    phase = prev_phase
-    burst: Optional[tuple[int, int, str]] = None  # (priority, index, text)
-
-    def _flush_burst() -> None:
-        nonlocal burst
-        if burst is not None:
-            plans[burst[1]] = burst[2]
-            burst = None
-
-    for idx, ev in enumerate(events):
-        if getattr(ev, "kind", None) != "dev_phase":
-            continue
-        payload = ev.payload if isinstance(getattr(ev, "payload", None), dict) else {}
-        ev_phase = str(payload.get("phase") or "")
-        if ev_phase and ev_phase != phase:
-            _flush_burst()
-            if phase:
-                plans[idx] = (
-                    f"Dev job {task_id} finished {_dev_phase_verb(phase)} "
-                    f"and is now {_dev_phase_verb(ev_phase)}."
-                )
-            else:
-                plans[idx] = (
-                    f"Dev job {task_id} started {_dev_phase_verb(ev_phase)}."
-                )
-            phase = ev_phase
-            continue
-        kind = str(payload.get("kind") or "")
-        detail = str(payload.get("detail") or "").strip()
-        priority = _DEV_PROGRESS_PRIORITY.get(kind)
-        if priority is None or not detail or (kind, detail) in seen:
-            continue
-        seen.add((kind, detail))
-        if kind == "file_edited":
-            text = f"Dev job {task_id} is editing `{detail}`."
-        elif kind == "command":
-            text = f"Dev job {task_id} ran `{detail}`."
-        else:
-            text = f"Dev job {task_id}: {detail}."
-        if burst is None or priority < burst[0]:
-            burst = (priority, idx, text)
-    _flush_burst()
-    return plans
-
-
-def _agent_wake_enabled_safe() -> bool:
-    """Read ``dev_pipeline.agent_wake_on_block`` without ever raising.
-
-    The gate is re-read every notifier tick so turning it off halts agent
-    wakes immediately; a broken read falls back to the shipped default
-    (on) rather than disabling the owner-requested behaviour.
-    """
-    try:
-        from gateway.kanban_agent_wake import agent_wake_enabled
-
-        return agent_wake_enabled()
-    except Exception:
-        return True
-
-
-def _plan_agent_wake(
-    conn: Any,
-    board: str,
-    sub: dict,
-    task: Any,
-    events: Sequence[Any],
-    enabled: bool,
-) -> Optional[dict]:
-    """Decide whether this claim owes the subscribing agent a wake turn.
-
-    Returns ``None`` (and logs at most a warning) for every reason not to
-    wake: the gate is off, the claim carries no ``dev_blocked`` event, the
-    newest block is a deliberate human/safety stop, or this destination was
-    already woken for this exact block signature — the ledger check that
-    makes an agent-recovery re-block a human-only signal instead of a
-    self-sustaining loop.
-    """
-    if not enabled:
-        return None
-    task_id = sub["task_id"]
-    try:
-        from gateway import kanban_agent_wake as _aw
-
-        payload = _aw.actionable_dev_block(events)
-        if payload is None:
-            return None
-        signature = _aw.block_signature(payload)
-        destination = "/".join(
-            str(part or "")
-            for part in (sub.get("platform"), sub.get("chat_id"), sub.get("thread_id"))
-        )
-        ledger = _aw.wake_ledger_path()
-        if _aw.already_woke(ledger, board, task_id, signature, destination):
-            logger.debug(
-                "kanban notifier: agent wake for %s on board %s already "
-                "delivered to %s for signature %s; human ping only",
-                task_id, board, destination, signature,
-            )
-            return None
-        return {
-            "brief": _aw.build_dev_block_brief(
-                conn,
-                board=board,
-                task_id=task_id,
-                task=task,
-                payload=payload,
-                triage=any(
-                    getattr(ev, "kind", None) == "block_loop_detected"
-                    for ev in events
-                ),
-            ),
-            "board": board,
-            "task_id": task_id,
-            "signature": signature,
-            "destination": destination,
-            "ledger": ledger,
-        }
-    except Exception as exc:
-        logger.warning(
-            "kanban notifier: agent wake planning failed for %s on board %s: %s",
-            task_id, board, exc,
-        )
-        return None
-
-
-def _record_agent_wake(wake: dict) -> None:
-    """Persist a delivered agent wake. Sync; runs via to_thread."""
-    try:
-        from gateway import kanban_agent_wake as _aw
-
-        _aw.record_wake(
-            wake["ledger"], wake["board"], wake["task_id"],
-            wake["signature"], wake["destination"],
-        )
-    except Exception as exc:
-        logger.warning("kanban notifier: agent wake ledger update failed: %s", exc)
 
 
 class GatewayKanbanWatchersMixin:
@@ -279,12 +99,6 @@ class GatewayKanbanWatchersMixin:
         # archived, so the subscription stays alive and later review
         # cycles keep notifying.
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
-        # ``dev_blocked`` is claimed but never texted: the paired ``blocked`` /
-        # ``block_loop_detected`` event already carries the human message, and
-        # the dev-pipeline block taxonomy (block_kind) lives only in this
-        # event's payload. Claiming it lets the cursor advance past it and lets
-        # the agent-wake path below read the taxonomy.
-        AGENT_WAKE_KIND = "dev_blocked"
         # Subscriptions are removed only when the task reaches the irreversible
         # archived status. ``done`` is reversible in review/controller flows,
         # so removing its subscription would silence a later reopen. We used
@@ -336,10 +150,6 @@ class GatewayKanbanWatchersMixin:
 
                 def _collect():
                     deliveries: list[dict] = []
-                    # Read the agent-wake gate once per tick (not per sub) —
-                    # same posture as progress_notifications above/below: a
-                    # config flip applies on the next tick, no restart.
-                    agent_wake_on = _agent_wake_enabled_safe()
                     include_unowned = self._owns_kanban_dispatcher_lock()
                     notifier_profiles = {notifier_profile}
                     notifier_profiles.update(
@@ -492,40 +302,11 @@ class GatewayKanbanWatchersMixin:
                                         platform=sub["platform"],
                                         chat_id=sub["chat_id"],
                                         thread_id=sub.get("thread_id") or "",
-                                        kinds=TERMINAL_KINDS + ("dev_phase", AGENT_WAKE_KIND),
+                                        kinds=TERMINAL_KINDS,
                                     )
                                     if not events:
                                         continue
-                                    prev_phase = None
-                                    if any(ev.kind == "dev_phase" for ev in events):
-                                        prior = conn.execute(
-                                            """
-                                            SELECT payload FROM task_events
-                                             WHERE task_id = ? AND kind = 'dev_phase'
-                                               AND id <= ?
-                                             ORDER BY id DESC LIMIT 1
-                                            """,
-                                            (sub["task_id"], old_cursor),
-                                        ).fetchone()
-                                        if prior and prior["payload"]:
-                                            try:
-                                                import json as _json
-
-                                                _payload = _json.loads(prior["payload"])
-                                                if isinstance(_payload, dict):
-                                                    prev_phase = _payload.get("phase")
-                                            except Exception:
-                                                pass
                                     task = _kb.get_task(conn, sub["task_id"])
-                                    # Plan the agent-wake turn here, on the
-                                    # board connection this claim already
-                                    # holds, so the delivery phase below only
-                                    # has to inject text. Failure here must
-                                    # cost the wake, never the tick.
-                                    agent_wake = _plan_agent_wake(
-                                        conn, slug, sub, task, events,
-                                        agent_wake_on,
-                                    )
                                     logger.debug(
                                         "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                         len(events), sub["task_id"], slug, old_cursor, cursor,
@@ -537,8 +318,6 @@ class GatewayKanbanWatchersMixin:
                                         "events": events,
                                         "task": task,
                                         "board": slug,
-                                        "prev_phase": prev_phase,
-                                        "agent_wake": agent_wake,
                                     })
                                 except Exception as sub_exc:
                                     # Isolate per-subscription failures so one
@@ -553,14 +332,6 @@ class GatewayKanbanWatchersMixin:
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
-                try:
-                    from plugins.dev_pipeline.pipeline import get_dev_pipeline_config
-
-                    _progress_enabled = bool(
-                        get_dev_pipeline_config().get("progress_notifications", True)
-                    )
-                except Exception:
-                    _progress_enabled = True
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
@@ -618,13 +389,7 @@ class GatewayKanbanWatchersMixin:
                     # exists on the board.
                     wake_handoff = ""
                     wake_review_detail = ""
-                    # Pre-render every dev_phase event in this claim: silent
-                    # same-phase heartbeats drop out here, and a same-phase
-                    # burst collapses to one message.
-                    dev_phase_msgs = _plan_dev_phase_messages(
-                        d["events"], sub["task_id"], d.get("prev_phase"),
-                    )
-                    for ev_idx, ev in enumerate(d["events"]):
+                    for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
@@ -740,22 +505,6 @@ class GatewayKanbanWatchersMixin:
                                 f"🛑 {board_tag}{tag}Kanban {sub['task_id']} routed to TRIAGE"
                                 f" — needs a human decision{rc}{reason}"
                             )
-                        elif kind == "dev_phase":
-                            msg = dev_phase_msgs.get(ev_idx)
-                            if msg is None:
-                                # Same-phase heartbeat with nothing new to
-                                # report: silent. The claim already covers
-                                # these rows, so the cursor still advances
-                                # and they are never replayed.
-                                continue
-                            if not _progress_enabled:
-                                continue
-                        elif kind == "dev_blocked":
-                            # Dev-pipeline block taxonomy (block_kind). The
-                            # paired ``blocked`` / ``block_loop_detected``
-                            # event in this same claim already texted the
-                            # human; this one exists for the agent wake below.
-                            continue
                         else:
                             # archived / unblocked are claimed by TERMINAL_KINDS
                             # (so the cursor advances past them and they can't
@@ -774,8 +523,6 @@ class GatewayKanbanWatchersMixin:
 
                         if sub.get("thread_id") and not metadata.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
-                        if kind == "dev_phase":
-                            metadata.pop("telegram_reply_to_message_id", None)
                         # Adapters with no push channel (the API server —
                         # ``supports_async_delivery = False``) can NEVER
                         # satisfy a text-send: ``send()`` always reports
@@ -920,16 +667,7 @@ class GatewayKanbanWatchersMixin:
                             if wake_agent
                             else set()
                         )
-                        # Dev-pipeline agent wake: independent of
-                        # ``delivery_mode`` because the submitting agent's
-                        # subscription is registered by delegate_development
-                        # with the plain "notify" default — there is no way for
-                        # it to opt into a wake mode at submit time. Gated by
-                        # dev_pipeline.agent_wake_on_block and deduped per
-                        # (task, block signature, destination) upstream in
-                        # _plan_agent_wake.
-                        _agent_wake = d.get("agent_wake")
-                        _needs_turn = bool(_wake_kinds) or _agent_wake is not None
+                        _needs_turn = bool(_wake_kinds)
                         from gateway.wake import adapter_supports_push as _adapter_push_ok
 
                         _is_push_adapter = _adapter_push_ok(adapter)
@@ -952,15 +690,7 @@ class GatewayKanbanWatchersMixin:
                                     or getattr(task, "session_id", None)
                                     or ""
                                 )
-                        if _agent_wake is not None:
-                            # A blocked dev-pipeline job: the generic
-                            # one-line status wake is replaced by the
-                            # self-contained brief (block kind + reason, run
-                            # history, workspace/logs, standing instruction),
-                            # so the woken agent can act instead of asking the
-                            # human which job broke and where the logs are.
-                            _synth = _agent_wake["brief"]
-                        elif _wake_kinds:
+                        if _wake_kinds:
                             _title = (task.title if task else sub["task_id"])[:120]
                             _assignee = task.assignee if task else ""
                             _parts = []
@@ -1015,10 +745,6 @@ class GatewayKanbanWatchersMixin:
                                     "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                                     sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
                                 )
-                                if _agent_wake is not None:
-                                    await _to_thread_process_service(
-                                        _record_agent_wake, _agent_wake,
-                                    )
                                 sub_fail_counts.pop(sub_key, None)
                             except Exception as _wk_err:
                                 fails = sub_fail_counts.get(sub_key, 0) + 1
@@ -1107,10 +833,6 @@ class GatewayKanbanWatchersMixin:
                                 "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                                 sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
                             )
-                            if _agent_wake is not None:
-                                await _to_thread_process_service(
-                                    _record_agent_wake, _agent_wake,
-                                )
 
                         if _is_push_adapter and not send_passive and _needs_turn:
                             # Wake-only (delivery_mode='wake') push sub: the
@@ -1172,8 +894,7 @@ class GatewayKanbanWatchersMixin:
                         # retained cursor prevents replay while preserving the
                         # original delivery and wake ownership for that cycle.
                         if _is_push_adapter and send_passive and _needs_turn:
-                            # notify+wake (and a notify-mode dev-pipeline agent
-                            # wake): the text ping above was the delivery and
+                            # notify+wake: the text ping above was the delivery and
                             # the cursor has advanced; the wake injection stays
                             # best-effort.
                             try:
