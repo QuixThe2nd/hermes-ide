@@ -411,17 +411,6 @@ async def queue_user_restart(
     preflight_attempt = await restart_preflight.warn_before_user_restart(
         runner, source
     )
-    if preflight_attempt is restart_preflight.ACTIVE_OWNER_PENDING:
-        # A concurrent caller's setup still owns the pending restart (its
-        # wind-down offer can outlast a coalescing rider's budget). This
-        # caller lost the race: keep the winner's routing, enter no setup of
-        # its own, and report the shared already-in-progress result. If that
-        # owner's setup fails, it releases the attempt for a later retry.
-        return {
-            "status": "already_in_progress",
-            "active_agents": runner._running_agent_count(),
-            "via_service": None,
-        }
     try:
         # Ownership recheck after the preflight's awaits: another entry point
         # (or a signal-initiated drain) may have opened the restart while this
