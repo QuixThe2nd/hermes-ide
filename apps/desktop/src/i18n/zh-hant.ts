@@ -1273,7 +1273,7 @@ export const zhHant = defineLocale({
       quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
-      downloadProgress: (done, total) => `正在下載 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
       downloadPausedLabel: '已暫停',
       downloadPauseAction: '暫停',
       downloadResumeAction: '繼續',

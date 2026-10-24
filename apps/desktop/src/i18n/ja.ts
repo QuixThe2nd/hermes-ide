@@ -1249,7 +1249,7 @@ export const ja = defineLocale({
       quickstartConfigure: '自分で選ぶ',
       downloaded: 'ダウンロード済み',
       downloadAction: size => `ダウンロード · ${size}`,
-      downloadProgress: (done, total) => `ダウンロード中 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
       downloadPausedLabel: '一時停止中',
       downloadPauseAction: '一時停止',
       downloadResumeAction: '再開',

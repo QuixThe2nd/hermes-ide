@@ -3030,7 +3030,7 @@ function Install-Dependencies {
         # anything, so an ambient uv.toml could break (or steer) even the
         # launch into pm. On Windows uv discovers config at
         # %APPDATA%\uv\uv.toml (user) and %PROGRAMDATA%\uv\uv.toml (system),
-        # plus UV_CONFIG_FILE — UV_NO_CONFIG=1 suppresses all of them for
+        # plus UV_CONFIG_FILE -- UV_NO_CONFIG=1 suppresses all of them for
         # this invocation. Mirrors scripts/install.sh::run_locked_uv_sync;
         # pm.cli re-sanitizes (and, for the venv sync, un-pins UV_NO_CONFIG
         # so the project's own config stays visible) inside the child.

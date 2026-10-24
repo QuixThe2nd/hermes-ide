@@ -1442,7 +1442,7 @@ export const en: Translations = {
       noRecommendationAction: 'Browse models',
       downloaded: 'Downloaded',
       downloadAction: size => `Download · ${size}`,
-      downloadProgress: (done, total) => `Downloading ${done} of ${total}`,
+      downloadProgress: (done, total) => `${done} of ${total}`,
       downloadPausedLabel: 'Paused',
       downloadPauseAction: 'Pause',
       downloadResumeAction: 'Resume',

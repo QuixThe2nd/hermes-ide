@@ -842,6 +842,23 @@ def _release_repair_lock(lock: _RepairLock) -> None:
             os.close(lock.fd)
 
 
+def _windows_runtime_holders() -> tuple[bool, str]:
+    if platform.system() != "Windows":
+        return False, ""
+    main_module = sys.modules.get("hermes_cli.main")
+    detector = getattr(main_module, "_detect_venv_python_processes", None)
+    if detector is None:
+        return True, "cannot verify Windows venv holders from this update context"
+    try:
+        holders = detector()
+    except Exception as exc:
+        return True, f"could not verify Windows venv holders: {exc}"
+    if holders:
+        pids = ", ".join(str(item[0]) for item in holders[:6])
+        return True, f"other Hermes processes still hold the venv (PID {pids})"
+    return False, ""
+
+
 def _default_live_venv(root: Path) -> Path:
     """Return the venv that runtime repair should target for *root*.
 
@@ -959,6 +976,15 @@ def repair_vulnerable_runtime(
             "safe",
             sqlite_before=current.sqlite_version_string,
             sqlite_after=current.sqlite_version_string,
+        )
+
+    blocked, detail = _windows_runtime_holders()
+    if blocked:
+        print(f"  ⚠ SQLite runtime repair deferred: {detail}")
+        return RuntimeRepairResult(
+            "skipped",
+            detail,
+            sqlite_before=current.sqlite_version_string,
         )
 
     runtime_root = _runtime_dir(root)

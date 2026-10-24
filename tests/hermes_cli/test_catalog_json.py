@@ -108,11 +108,11 @@ def test_loader_ignores_unknown_fields():
     assert entries[0].id == doc["models"][0]["id"]
 
 
-def test_min_engine_gate():
-    from hermes_cli.local_runtime.binaries import engine_version
+def test_min_engine_gate(monkeypatch):
     from hermes_cli.web_routers.local_models import _engine_too_old
 
-    pinned = int(engine_version().lstrip("b"))
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags",
+                        lambda: ["b10362"])
     assert _engine_too_old("") is False, "no requirement, no gate"
-    assert _engine_too_old(f"b{pinned}") is False, "current pin suffices"
-    assert _engine_too_old(f"b{pinned + 1}") is True, "newer requirement gates"
+    assert _engine_too_old("b10000") is False, "installed engine suffices"
+    assert _engine_too_old("b10363") is True, "newer requirement gates"

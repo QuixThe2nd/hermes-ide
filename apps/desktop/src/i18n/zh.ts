@@ -1648,7 +1648,7 @@ export const zh = defineLocale({
       noRecommendationAction: '浏览模型',
       downloaded: '已下载',
       downloadAction: size => `下载 · ${size}`,
-      downloadProgress: (done, total) => `正在下载 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
       downloadPausedLabel: '已暂停',
       downloadPauseAction: '暂停',
       downloadResumeAction: '继续',

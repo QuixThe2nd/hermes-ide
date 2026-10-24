@@ -1913,11 +1913,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if pruned:
             print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
 
-        # Surface autostashes left by earlier updates (--keep-stash, failed restores).
-        # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
-        # runs and failed restores preserve the stash but nothing ever mentioned it again.
-        _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
-
         # target_ref is the reference that we count against, fast-forward to,
         # and reset to. On the main channel it is origin/<branch>. That is the
         # historical behavior. On the stable channel it is the commit of the
@@ -1938,6 +1933,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 sys.exit(1)
             print(f"→ Latest release: {stable_tag}")
             target_ref = stable_tag
+
+        # Surface autostash entries left behind by earlier updates (#63717
+        # problem 6) — parked --keep-stash runs and failed restores preserve
+        # the stash but nothing ever mentioned it again.
+        _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
         fetch_target = ["tag", stable_tag] if stable_tag else [branch]

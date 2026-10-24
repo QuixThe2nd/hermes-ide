@@ -535,6 +535,10 @@ exclude-newer = "14 days"
 # (Termux/Android) it must build from sdist, and the isolated build
 # environment resolves under the same cutoff ("Failed to resolve
 # requirements from build-system.requires ... maturin>=1.9,<2").
+#
+# google-cloud-pubsub: same exact-pin shape (==2.39.2, google-chat adapter).
+# The pin bump WAS the review; exclude-newer only filters it because the
+# 14-day window is younger than the reviewed release.
 [tool.uv.exclude-newer-package]
 agent-client-protocol = false
 ai-edge-litert = false
