@@ -893,6 +893,108 @@ def test_cancel_with_other_sessions_live_never_restarts(gateway_loop, monkeypatc
     runner.request_restart.assert_not_called()
 
 
+# ── the cancelled result's reply echo ────────────────────────────────────────
+
+
+def test_cancel_result_echoes_the_requesters_reply(gateway_loop, monkeypatch):
+    """A non-matching reply surfaces verbatim so the agent can act on it."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(
+        monkeypatch,
+        gateway_loop,
+        _running_agents={"tg-42": object(), "tg-99": object()},
+    )
+    _register, _wait = _mock_confirm(monkeypatch, "resolve conflicts first")
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert result["reply"] == "resolve conflicts first"
+    assert "resolve conflicts first" in result["error"]
+    runner.request_restart.assert_not_called()
+
+
+def test_cancel_result_reply_is_null_when_no_reply_arrived(gateway_loop, monkeypatch):
+    """``None`` has nothing to echo: null field, generic wording kept."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(
+        monkeypatch,
+        gateway_loop,
+        _running_agents={"tg-42": object(), "tg-99": object()},
+    )
+    _register, _wait = _mock_confirm(monkeypatch, None)
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert result["reply"] is None
+    assert "not the exact word" in result["error"]
+    runner.request_restart.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "reply", ["Restart", "/restart", "restart please", "   "]
+)
+def test_cancel_result_echoes_the_reply_verbatim(gateway_loop, monkeypatch, reply):
+    """No strip, no reformat — the reply rides the result unmodified."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(
+        monkeypatch,
+        gateway_loop,
+        _running_agents={"tg-42": object(), "tg-99": object()},
+    )
+    _register, _wait = _mock_confirm(monkeypatch, reply)
+
+    _bind_session(**_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert result["status"] == "cancelled"
+    assert result["reply"] == reply
+    assert reply in result["error"]
+    runner.request_restart.assert_not_called()
+
+
+def test_settle_confirm_shared_race_lost_carries_the_reply():
+    """First-writer-wins reap of a real non-matching reply echoes it too."""
+    from plugins.gateway_restart import tool as restart_tool
+
+    superseded = object()
+
+    class _FakeClarifyMod:
+        SUPERSEDED_RESPONSE = superseded
+        resolve_gateway_clarify = MagicMock(return_value=None)
+
+        @staticmethod
+        def wait_for_response(clarify_id, timeout):
+            return "resolve conflicts first"
+
+    reason, prompt_message_id, reply = restart_tool._settle_confirm_shared(
+        _FakeClarifyMod, "abc123"
+    )
+
+    assert reason is not restart_tool._SUPERSEDED_CONFIRM
+    assert prompt_message_id is None
+    assert reply == "resolve conflicts first"
+    assert "resolve conflicts first" in reason
+
+
 # ── the Discord confirmation embed ──────────────────────────────────────────
 #
 # On Discord the confirm gate renders as ONE dedicated embed owned by the

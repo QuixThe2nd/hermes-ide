@@ -251,4 +251,8 @@ async def test_discord_send_cursor_progress_disconnected_client():
         "Cursor Cloud Agent: https://cursor.com/agents/bc-offline",
     )
 
-    assert result == SendResult(success=False, error="Not connected")
+    # Since #448 a dead transport is classified as send_path_degraded
+    # (retryable) so the delivery ledger's reconnect sweep can replay it.
+    assert result == SendResult(
+        success=False, error="send_path_degraded", retryable=True
+    )

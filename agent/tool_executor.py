@@ -1728,10 +1728,29 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         # its live-agent intercept.
         from tools.delegate_tool import _is_external_backend
 
-        if not _is_external_backend(function_args.get("backend")):
-            spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
-            agent._delegate_spinner = spinner
-            return _SequentialDispatch(agent._dispatch_delegate_agent, spinner=spinner, is_delegate=True)
+        if _is_external_backend(function_args.get("backend")):
+            # Straight to the registry: the external handlers key spawn/restart
+            # receipts on the session and tool-call ids supplied here. Bind the
+            # live agent for the duration so the unified delegate handler
+            # resolves its parent the same way it does on interceptor-less
+            # registry paths (child/cron/resumed sessions).
+            from tools.registry import registry
+            from tools.agent_dispatch_context import bound_agent_dispatch_context
+
+            def _dispatch_external(next_args: dict) -> Any:
+                with bound_agent_dispatch_context(agent):
+                    return registry.dispatch(
+                        function_name,
+                        next_args,
+                        task_id=effective_task_id,
+                        session_id=getattr(agent, "session_id", None) or None,
+                        tool_call_id=tool_call_id,
+                    )
+
+            return _SequentialDispatch(_dispatch_external)
+        spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
+        agent._delegate_spinner = spinner
+        return _SequentialDispatch(agent._dispatch_delegate_agent, spinner=spinner, is_delegate=True)
     if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
         return _SequentialDispatch(
             execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),
