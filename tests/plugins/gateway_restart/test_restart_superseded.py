@@ -616,4 +616,3 @@ def test_resume_note_is_surgical_about_what_it_annotates():
     stamped = [{"role": "tool", "tool_call_id": "t4", "content": superseded}]
     assert annotate_superseded_restart_tail(stamped, restarted_at=1760000000) == 1
     assert "at 2025-10-09T" in stamped[0]["content"]
-

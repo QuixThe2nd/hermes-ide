@@ -389,9 +389,15 @@ async def queue_user_restart(
     """
     from gateway.run import _hermes_home
 
-    if getattr(runner, "_restart_requested", False) or getattr(runner, "_draining", False):
+    if restart_committed(runner):
         return {
             "status": "already_in_progress",
+            "active_agents": runner._running_agent_count(),
+            "via_service": None,
+        }
+    if getattr(runner, "_draining", False):
+        return {
+            "status": "shutdown_in_progress",
             "active_agents": runner._running_agent_count(),
             "via_service": None,
         }
@@ -421,9 +427,15 @@ async def queue_user_restart(
         # (or a signal-initiated drain) may have opened the restart while this
         # caller was inspecting or delivering. The loser keeps the winner's
         # routing and sends nothing further.
-        if getattr(runner, "_restart_requested", False) or getattr(runner, "_draining", False):
+        if restart_committed(runner):
             return {
                 "status": "already_in_progress",
+                "active_agents": runner._running_agent_count(),
+                "via_service": None,
+            }
+        if getattr(runner, "_draining", False):
+            return {
+                "status": "shutdown_in_progress",
                 "active_agents": runner._running_agent_count(),
                 "via_service": None,
             }

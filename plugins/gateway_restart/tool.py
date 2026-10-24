@@ -430,26 +430,32 @@ def _deliver_confirm_prompt(
     may already exist) is ambiguous: disarm, cancel, and no fallback.
     """
     from gateway.config import Platform
+    from gateway.restart import restart_committed
 
-    # Send-boundary commit recheck: a restart may have committed during the
-    # title operations above — probing HERE (on the gateway loop, before the
-    # send is even scheduled, rich or plain) keeps an actionable consent
-    # prompt from being created after the restart already happened.
-    if runner is not None and _probe_restart_committed(runner, loop):
-        return (_PROMPT_NOT_SENT_COMMITTED, None)
     rich_send = getattr(adapter, "send_restart_confirmation", None)
     use_rich = source.platform == Platform.DISCORD and callable(rich_send)
-    if use_rich:
-        coro = rich_send(
-            chat_id=source.chat_id,
-            prompt=prompt,
-            requester_user_id=str(getattr(source, "user_id", "") or ""),
-            metadata=metadata or None,
-        )
-    else:
-        coro = adapter.send(source.chat_id, content, metadata=metadata or None)
 
-    send_future, submit_error = _submit_to_loop(coro, loop)
+    async def _send_with_commit_check(*, rich: bool) -> Any:
+        try:
+            committed = runner is not None and restart_committed(runner)
+        except Exception:
+            committed = False
+        if committed:
+            return _PROMPT_NOT_SENT_COMMITTED
+        if rich:
+            return await rich_send(
+                chat_id=source.chat_id,
+                prompt=prompt,
+                requester_user_id=str(getattr(source, "user_id", "") or ""),
+                metadata=metadata or None,
+            )
+        return await adapter.send(
+            source.chat_id, content, metadata=metadata or None
+        )
+
+    send_future, submit_error = _submit_to_loop(
+        _send_with_commit_check(rich=use_rich), loop
+    )
     if submit_error is not None:
         # The loop closed before the send could be scheduled — nothing was
         # delivered, so the caller cancels and disarms the registration.
@@ -469,6 +475,8 @@ def _deliver_confirm_prompt(
             f"{_describe_send_exception(exc)}",
             None,
         )
+    if send_result is _PROMPT_NOT_SENT_COMMITTED:
+        return (_PROMPT_NOT_SENT_COMMITTED, None)
     if send_result is None or getattr(send_result, "success", True) is not False:
         return None, str(getattr(send_result, "message_id", "") or "") or None
 
@@ -480,10 +488,8 @@ def _deliver_confirm_prompt(
         return error, None
 
     # The embed never landed — one plain prompt, requester mention included.
-    if runner is not None and _probe_restart_committed(runner, loop):
-        return (_PROMPT_NOT_SENT_COMMITTED, None)
     fallback_future, submit_error = _submit_to_loop(
-        adapter.send(source.chat_id, content, metadata=metadata or None), loop
+        _send_with_commit_check(rich=False), loop
     )
     if submit_error is not None:
         return (
@@ -499,6 +505,8 @@ def _deliver_confirm_prompt(
             f"{_describe_send_exception(exc)}",
             None,
         )
+    if fallback_result is _PROMPT_NOT_SENT_COMMITTED:
+        return (_PROMPT_NOT_SENT_COMMITTED, None)
     if (
         fallback_result is not None
         and getattr(fallback_result, "success", True) is False
@@ -715,9 +723,8 @@ def _settle_confirm_shared(clarify_mod: Any, clarify_id: str) -> tuple[Optional[
     reaps and returns the ACTUAL recorded outcome: an earlier cancellation
     wins and is never overwritten with fabricated shared consent.
     """
-    won = False
     try:
-        won = clarify_mod.resolve_gateway_clarify(
+        clarify_mod.resolve_gateway_clarify(
             clarify_id, clarify_mod.SUPERSEDED_RESPONSE
         )
     except Exception:
@@ -730,13 +737,11 @@ def _settle_confirm_shared(clarify_mod: Any, clarify_id: str) -> tuple[Optional[
         return (_SUPERSEDED_CONFIRM, None)
     if str(actual or "").strip() == _CONFIRM_WORD:
         return (None, None)
-    if not won and actual:
-        return (
-            "Restart cancelled — the reply was not the exact word "
-            f"`{_CONFIRM_WORD}`.",
-            None,
-        )
-    return (_SUPERSEDED_CONFIRM, None)
+    return (
+        "Restart cancelled — the reply was not the exact word "
+        f"`{_CONFIRM_WORD}`.",
+        None,
+    )
 
 
 def _confirm_restart_with_requester(
@@ -874,9 +879,6 @@ def _confirm_restart_with_requester(
                 if settled_error is None:
                     return (None, None)
                 if settled_error is not _SUPERSEDED_CONFIRM:
-                    _record_cancelled_restart_notice(
-                        runner, source, adapter, session_key, deliver_error
-                    )
                     return (settled_error, None)
                 return (_SUPERSEDED_CONFIRM, None)
             _drop_pending_confirm(clarify_gateway, clarify_id)
@@ -1036,6 +1038,7 @@ def handle_restart(args: dict, **_: Any) -> str:
     7. On confirmation (or a skipped confirm), returns once the restart is
        queued — the bounce happens after this turn ends.
     """
+    from gateway.restart import restart_committed
     from gateway.session_context import get_session_env
     from utils import is_truthy_value
 
@@ -1061,9 +1064,7 @@ def handle_restart(args: dict, **_: Any) -> str:
     ):
         return _error_json(_UNSUPPORTED_RUNNER_ERROR)
 
-    if getattr(runner, "_restart_requested", False) or getattr(
-        runner, "_draining", False
-    ):
+    if restart_committed(runner):
         # A restart already in flight owns the notify payload — no ping, no
         # confirm wait, no second request_restart.
         return _result_json(
@@ -1073,6 +1074,10 @@ def handle_restart(args: dict, **_: Any) -> str:
                 "active_agents": runner._running_agent_count(),
                 "via_service": None,
             },
+        )
+    if getattr(runner, "_draining", False):
+        return _error_json(
+            "Gateway shutdown is already in progress; no restart was started."
         )
 
     # Tool handlers run in a worker thread, and request_restart() calls
@@ -1162,6 +1167,11 @@ def handle_restart(args: dict, **_: Any) -> str:
         future.cancel()
         logger.warning("restart tool: queued restart failed: %s", exc)
         return _error_json(f"Failed to begin gateway restart: {exc}")
+
+    if status.get("status") == "shutdown_in_progress":
+        return _error_json(
+            "Gateway shutdown is already in progress; no restart was started."
+        )
 
     # The requester's own consent landed AND the shared queue committed the
     # restart — only now is the approved state truthful. A failure above
