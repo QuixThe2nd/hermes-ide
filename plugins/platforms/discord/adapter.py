@@ -8449,6 +8449,58 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         msg = await channel.send(**send_kwargs)
         return SendResult(success=True, message_id=str(msg.id))
 
+    async def settle_restart_confirmation(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        shared: bool = False,
+        thread_id: Optional[str] = None,
+    ) -> SendResult:
+        """Edit a delivered restart confirmation embed to its settled state.
+
+        The in-place counterpart of :meth:`send_restart_confirmation`: once a
+        restart outcome is known (the requester's own confirm queued it, or
+        another chat's confirmed restart covers this prompt), the SAME
+        message that asked for the word is edited — the pending embed and
+        the requester mention are REPLACED by one concise settled line, so
+        the prompt stops being actionable and stops pinging, and no second
+        status message is ever sent. ``shared=True`` is the wording for a
+        prompt settled by another chat's consent.
+
+        Best-effort and cosmetic: any failure is logged and returned as a
+        failure result; the tool never gates a restart on this edit. The
+        generic :meth:`edit_message` cannot be used here because it only
+        edits ``content`` — the embed (and the mention riding ``content``)
+        must be cleared in the same edit.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+        target_id = str(thread_id or chat_id)
+        text = (
+            "♻️ Restart approved in another chat — gateway restart pending; "
+            "no reply needed here."
+            if shared
+            else "♻️ Restart approved — gateway restart pending; no reply needed."
+        )
+        try:
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+            msg = channel.get_partial_message(int(message_id))
+            edit_kwargs: Dict[str, Any] = {"content": text, "embed": None}
+            allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+            if allowed_mentions_cls is not None:
+                # The old prompt's mention must never re-notify on the edit.
+                edit_kwargs["allowed_mentions"] = allowed_mentions_cls.none()
+            await msg.edit(**edit_kwargs)
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            logger.debug(
+                "[%s] settle_restart_confirmation failed: %s", self.name, e
+            )
+            return SendResult(success=False, error=str(e))
+
     async def capture_restart_pending_thread_title(
         self, thread_id: str
     ) -> Optional[RestartPendingThreadTitle]:
