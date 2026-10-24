@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from pm.ensure import uv as pm_uv
 from pm.package import InstallError
 from pm.registry import get_package
 from pm.store import ALL_TARGETS, current_target, hash_url
+from pm.update import Resolved, resolve_package
 
 
 def cmd_lock(args) -> int:
@@ -398,6 +400,127 @@ def _run_live(cmd: list[str], *, cwd, env, timeout: int = 3600) -> tuple[int, st
         return code, tail
 
 
+def cmd_update(args) -> int:
+    """`hermes pm update [names...] [--check] [--target T] [--uv] [--npm]`.
+
+    Resolve each package's latest via its own latest_versions() hook,
+    intersect across targets, and (real mode) re-pin the lockfile + install
+    the changed ones. --check is dry-run: hits upstream indexes, writes
+    nothing. --uv / --npm also refresh uv.lock (+sync venv) / package-lock.
+    """
+    lockfile = _lockfile()
+    names = args.names or [n for n in lockfile.names() if not get_package(n).internal or n == "uv"]
+    if args.target and not args.check:
+        print("::warning::--target is a CHECK-only cross-resolution flag; ignoring it for apply (the lockfile pins every target)")
+        args.target = None
+    target = args.target or current_target()
+
+    resolved = []
+    for name in names:
+        package = get_package(name)
+        targets = [t for t in ALL_TARGETS if package.missing_reason(t) is None]
+        if args.target:  # cross-target check: only the requested target matters
+            targets = [t for t in targets if t == args.target]
+        if not targets:
+            continue
+        try:
+            decision = resolve_package(package, targets, lockfile.version(name))
+        except Exception as e:  # an upstream index outage must not kill the whole check
+            decision = Resolved(name, lockfile.version(name), package.version_style, reason=f"resolve failed: {e}")
+        resolved.append(decision)
+
+    # ── report ────────────────────────────────────────────────────────────
+    changed = [d for d in resolved if d.changed]
+    if not resolved:
+        print("pm update: nothing to check (no resolvable packages)")
+        return 0
+    width = max(len(d.name) for d in resolved)
+    for d in resolved:
+        if d.version is None:
+            print(f"{d.name:<{width}}  {d.reason or 'up to date'}")
+        elif d.changed:
+            per = ""
+            if d.per_target and len(set(d.per_target.values())) > 1:
+                per = " (" + ", ".join(f"{t}={v}" for t, v in sorted(d.per_target.items())) + ")"
+            print(f"{d.name:<{width}}  {d.locked or '—'} → {d.version}{per}")
+        else:
+            print(f"{d.name:<{width}}  {d.locked} up to date")
+    if args.check:
+        if args.uv:
+            print("uv deps: would run `uv update` + venv sync")
+        if args.npm:
+            print("npm deps: would run `npm update`")
+        return 1 if changed else 0
+
+    # ── apply ─────────────────────────────────────────────────────────────
+    if changed:
+        for d in changed:
+            package = get_package(d.name)
+            artifacts = _pin_artifacts(package, d)
+            lockfile.set_pin(d.name, d.version, artifacts)
+            print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
+        lockfile.save()
+        failed = _install_names([d.name for d in changed])
+        if failed:
+            return 1
+        try:
+            from pm.ensure import sync_venv
+            sync_venv(explicit=True)
+            print("✓ venv")
+        except InstallError as e:
+            print(f"✗ {e}")
+            return 1
+    else:
+        print("pm update: nothing to update")
+
+    if args.uv:
+        uv_bin, env = pm_uv()
+        if uv_bin is None:
+            print("✗ uv: not installed")
+            return 1
+        code, tail = _run_live([uv_bin, "update"], cwd=".", env=env)
+        if code != 0:
+            print(f"✗ uv update failed:\n{tail}")
+            return 1
+        print("✓ uv.lock refreshed")
+        try:
+            from pm.ensure import sync_venv
+            sync_venv(explicit=True)
+            print("✓ venv")
+        except InstallError as e:
+            print(f"✗ {e}")
+            return 1
+    if args.npm:
+        code, tail = _run_live(["npm", "update"], cwd=".", env=dict(os.environ))
+        if code != 0:
+            print(f"✗ npm update failed:\n{tail}")
+            return 1
+        print("✓ package-lock.json refreshed")
+    return 0
+
+
+def _pin_artifacts(package, decision) -> dict:
+    """The lockfile artifacts dict for a resolved update, mirroring cmd_lock's
+    per-target shape (identical single artifacts collapse to 'any'). For
+    minor-style packages each target pins its OWN patch version. The
+    lockfile always pins EVERY target the package serves — apply never
+    narrows to the current machine."""
+    per_target = decision.per_target or {t: decision.version for t in ALL_TARGETS}
+    urls_by_target = {}
+    for t, version in per_target.items():
+        if package.missing_reason(t) is not None:
+            continue
+        urls_by_target[t] = [
+            {"url": u, "sha256": package.known_sha256(version, u) or hash_url(u)}
+            for u in package.fetch_urls(version, t)
+        ]
+    distinct = {tuple(u["url"] for u in v) for v in urls_by_target.values()}
+    if len(distinct) == 1:
+        first = next(iter(urls_by_target.values()))
+        return {"any": first[0] if len(first) == 1 else first}
+    return urls_by_target
+
+
 def cmd_bundle(args) -> int:
     """Stage a complete payload for THIS machine's target into --out:
     repo snapshot + store + facts (via the normal install path, redirected)
@@ -578,6 +701,15 @@ def main(argv=None) -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--ref", help="git ref for the repo snapshot (default HEAD)")
     p.set_defaults(func=cmd_bundle)
+
+    p = sub.add_parser("update", help="resolve latest versions and re-pin the lockfile")
+    p.add_argument("names", nargs="*", help="packages to check/update (default: all with a latest source)")
+    p.add_argument("--check", action="store_true",
+                   help="dry-run: print what would change, write nothing (exit 1 if updates exist)")
+    p.add_argument("--target", help="resolve for a different target instead of this machine (e.g. win32-arm64)")
+    p.add_argument("--uv", action="store_true", help="also refresh uv.lock + venv (uv update + sync)")
+    p.add_argument("--npm", action="store_true", help="also refresh package-lock.json (npm update)")
+    p.set_defaults(func=cmd_update)
 
     args = parser.parse_args(argv)
     return args.func(args)

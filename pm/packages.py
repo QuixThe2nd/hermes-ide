@@ -20,6 +20,14 @@ from pm.package import (
 )
 from pm.registry import register
 from pm.store import ALL_TARGETS, Store, flatten_single_dir, merge_tree
+from pm.update import (
+    btbn_versions,
+    github_release_tags,
+    martin_riedl_versions,
+    node_latest_versions,
+    npm_dist_tags,
+    pbs_build_tags,
+)
 
 _RUST_TRIPLE = {
     "win32-x64": "x86_64-pc-windows-msvc",
@@ -116,6 +124,9 @@ class Uv(BinaryPackage):
         ext = "zip" if target.startswith("win32") else "tar.gz"
         return f"https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.{ext}"
 
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("astral-sh/uv")
+
 
 _MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
 
@@ -183,7 +194,7 @@ class Python(BinaryPackage):
             _macos_sign_managed_python(binary)
 
     def fetch_url(self, version: str, target: str) -> str:
-        # lock version is "<python>+<release tag>", e.g. "3.11.13+20250807"
+        # lock version is "<python>+<release tag>", e.g. "3.11.13+202****0807"
         pyver, _, tag = version.partition("+")
         if not tag:
             raise InstallError(self.name, f"version {version!r} needs the +<release> tag")
@@ -192,6 +203,16 @@ class Python(BinaryPackage):
             "https://github.com/astral-sh/python-build-standalone/releases/download/"
             f"{tag}/cpython-{pyver}+{tag}-{triple}-install_only.tar.gz"
         )
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Stay on the locked python minor line (3.11); bump only the
+        # +<build-tag>. A major/minor bump is a deliberate decision, never
+        # an auto-update.
+        if not locked or "+" not in locked:
+            return []
+        pyver = locked.partition("+")[0]
+        minor = ".".join(pyver.split(".")[:2])
+        return [f"{pyver}+{tag}" for tag in pbs_build_tags(minor, target)]
 
 
 def _uv_lock_digest(path: Path) -> bytes:
@@ -336,6 +357,9 @@ class Nodejs(BinaryPackage):
         ext = "zip" if target.startswith("win32") else "tar.xz"
         return f"https://nodejs.org/dist/v{version}/node-v{version}-{plat}.{ext}"
 
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return node_latest_versions()
+
 
 @register
 class Npm(BinaryPackage):
@@ -398,6 +422,10 @@ class Npm(BinaryPackage):
                 self.name, f"self-install exited {proc.returncode}: {proc.stderr[-400:]}"
             )
 
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        latest = npm_dist_tags("npm").get("latest")
+        return [latest] if latest else []
+
 
 @register
 class Git(BinaryPackage):
@@ -423,6 +451,15 @@ class Git(BinaryPackage):
             f"https://github.com/git-for-windows/git/releases/download/"
             f"v{tag}.windows.{build}/Git-{tag}.{build}-{arch}.tar.bz2"
         )
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Tag is v2.53.0.windows.3; the lock version is 2.53.0+3.
+        out = []
+        for tag in github_release_tags("git-for-windows/git", strip_prefix="v"):
+            if ".windows." in tag:
+                base, _, build = tag.partition(".windows.")
+                out.append(f"{base}+{build}")
+        return out
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
         """stdlib tar extract, but skip members the data filter refuses —
@@ -458,6 +495,9 @@ class Gh(BinaryPackage):
             f"gh_{version}_{plat}_{arch}.{ext}"
         )
 
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("cli/cli", strip_prefix="v")
+
 
 @register
 class Ffmpeg(BinaryPackage):
@@ -472,6 +512,10 @@ class Ffmpeg(BinaryPackage):
 
     name = "ffmpeg"
     optional = False
+    # The posix (martin-riedl) and win32 (BtbN) build streams have no shared
+    # release cadence — they drift in PATCH. The lockfile version label is
+    # major.minor; each target's exact patch lives in its artifact urls.
+    version_style = "minor"
     # martin-riedl (posix) zips are a single `ffmpeg` file at the zip root;
     # BtbN (win32) zips carry bin/ffmpeg.exe under one top-level dir that
     # flatten hoists.
@@ -485,26 +529,43 @@ class Ffmpeg(BinaryPackage):
     def fetch_url(self, version: str, target: str) -> str:
         osname, arch = target.split("-")
         if osname == "win32":
-            # BtbN ships branch builds; the URL is the immutable dated tag.
-            return (
-                "https://github.com/BtbN/FFmpeg-Builds/releases/download/"
-                f"autobuild-{self._btbn_tag}/{self._btbn_asset(target)}"
-            )
+            # BtbN: the newest autobuild tag whose assets carry this version.
+            for tag, asset in btbn_index().get(version, [])[:1]:
+                return (
+                    "https://github.com/BtbN/FFmpeg-Builds/releases/download/"
+                    f"{tag}/{asset}"
+                )
+            # Fall back to the pinned build (index unreachable) — this must
+            # match what the lockfile's own urls carry for the same version.
+            return self._btbn_fallback(version, target)
+        # martin-riedl: /download/<os>/<arch>/<epoch>_<version>/ffmpeg.zip
         martin = {
             ("linux", "x64"): "linux/amd64/1787074600_9.0.1",
             ("linux", "arm64"): "linux/arm64/1787072884_9.0.1",
             ("darwin", "x64"): "macos/amd64/1787081194_9.0.1",
             ("darwin", "arm64"): "macos/arm64/1787073674_9.0.1",
         }
+        epoch = None
+        for t, by_version in martin_riedl_index().items():
+            if t == target and version in by_version:
+                epoch = by_version[version]
+                break
+        if epoch is not None:
+            osdir = "macos" if osname == "darwin" else "linux"
+            return f"https://ffmpeg.martin-riedl.de/download/{osdir}/{arch}/{epoch}_{version}/ffmpeg.zip"
+        # Fall back to the hardcoded pinned path (index unreachable).
         return f"https://ffmpeg.martin-riedl.de/download/{martin[(osname, arch)]}/ffmpeg.zip"
 
-    def _btbn_tag(self) -> str:
-        return "2026-08-28-17-08"
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        if target.startswith("win32"):
+            return btbn_versions()
+        return martin_riedl_versions(target)
 
-    def _btbn_asset(self, target: str) -> str:
+    def _btbn_fallback(self, version: str, target: str) -> str:
         arch = "arm64" if target.endswith("arm64") else "64"
         return (
-            "ffmpeg-n9.0.1-11-ge47273f4d9-"
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/"
+            f"autobuild-2026-08-28-17-08/ffmpeg-n{version}-11-ge47273f4d9-"
             f"win{arch}-gpl-9.0.zip"
         )
 
@@ -522,6 +583,9 @@ class Ripgrep(BinaryPackage):
             f"https://github.com/BurntSushi/ripgrep/releases/download/{version}/"
             f"ripgrep-{version}-{triple}.{ext}"
         )
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("BurntSushi/ripgrep")
 
 
 @register
@@ -544,6 +608,9 @@ class CuaDriver(BinaryPackage):
             f"https://github.com/trycua/cua/releases/download/cua-driver-rs-v{version}/"
             f"cua-driver-rs-{version}-{arch}-binary.{ext}"
         )
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v")
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         flatten_single_dir(staged)
@@ -573,6 +640,10 @@ class AgentBrowser(BinaryPackage):
     # ARM64 runs it via built-in emulation (its own postinstall falls back
     # to x64 on arm64). chromium is likewise the x64 build on win32-arm64.
     emulated_arch_targets = frozenset({"win32-arm64"})
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        latest = npm_dist_tags("agent-browser").get("latest")
+        return [latest] if latest else []
 
     def _rel(self, target: str) -> Optional[str]:
         ext = ".exe" if target.startswith("win32") else ""
@@ -720,6 +791,11 @@ class LlamaCpp(BinaryPackage):
 
     def fetch_url(self, version: str, target: str) -> str:
         return self.fetch_urls(version, target)[0]
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        # llama.cpp tags are b<build> (b10362); the lock version is the
+        # bare build number (10362).
+        return github_release_tags("ggml-org/llama.cpp", strip_prefix="b")
 
     def known_sha256(self, version: str, url: str) -> Optional[str]:
         """GitHub's release API serves every asset's digest, so pinning a

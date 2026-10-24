@@ -69,6 +69,12 @@ class Package:
     on_path: bool = True
     url: str = ""
     gaps: dict[str, str] = {}
+    # How the lockfile `version` field labels this package for `pm update`:
+    #   "semver" — one shared version across targets (node 26.7.0, uv 0.12.3).
+    #   "minor"  — the version label is major.minor; each target's exact
+    #              patch lives in ITS artifact urls (ffmpeg's posix vs win32
+    #              builds have no shared release cadence).
+    version_style: str = "semver"
     # Targets where this package's binary is the x64 build run under
     # Windows ARM64 built-in emulation (no native arm64 artifact exists).
     # The arch guard accepts the x64 PE on these targets.
@@ -76,6 +82,20 @@ class Package:
 
     def missing_reason(self, target: str) -> Optional[str]:
         return self.gaps.get(target)
+
+    def latest_versions(self, target: str, locked: Optional[str] = None) -> list[str]:
+        """Newest-first candidate versions for `target` — the "how do I find
+        latest" hook for `hermes pm update`. Empty list = this package has
+        no auto-update source (chromium follows agent-browser; venv is a
+        state; Playwright browsers are revision-pinned by playwright).
+
+        Subclasses resolve their upstream's real release index here; the
+        update driver intersects across targets (per version_style) and
+        only ever pins a version every relevant target can serve. ``locked``
+        is the current lockfile version when the resolver needs it (python
+        keeps its 3.11 line and bumps only the +<build-tag>)."""
+        return []
+
 
     def fetch_url(self, version: str, target: str) -> str:
         if not self.url:
