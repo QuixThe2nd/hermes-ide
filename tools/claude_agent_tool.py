@@ -776,6 +776,11 @@ def _dispatch_claude_background(
     )
 
     live: Dict[str, subprocess.Popen] = {}
+    # Shared with the delegation record: stamped when the REAL child process
+    # exists, so runtime-state snapshots distinguish "accepted/queued on the
+    # pool" from "CLI process actually created" (executor scheduling alone
+    # never reads as running).
+    evidence: Dict[str, Any] = {}
 
     def _runner() -> Dict[str, Any]:
         # Runs on the async registry's daemon thread. On /stop or gateway
@@ -784,6 +789,10 @@ def _dispatch_claude_background(
         # poll unwinds and kills the process group with no per-tool code.
         def _on_proc(proc: subprocess.Popen) -> None:
             live["proc"] = proc
+            # Real startup evidence: the timestamp proves creation; the live
+            # handle lets runtime-state snapshots poll() for actual liveness.
+            evidence["process_started_at"] = time.time()
+            evidence["proc"] = proc
 
         out = _run_claude_agent_sync(
             cmd,
@@ -876,6 +885,7 @@ def _dispatch_claude_background(
         session_key=session_key,
         parent_session_id=parent_session_id,
         max_async_children=max_children,
+        startup_evidence=evidence,
         model=model_name or None,
         note=(
             "The Claude Code run is underway in the background. You and the "
