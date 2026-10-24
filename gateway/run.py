@@ -6000,7 +6000,7 @@ class TurnRunner:
             for message in messages:
                 ctx.progress_queue.put(message)
             # Arm the ordering gate: the first visible assistant output waits
-            # (bounded, see TurnContext.wait_context_cards_delivered) until the
+            # (see TurnContext.wait_context_cards_delivered) until the
             # drain below delivers these cards, so they land above the reply
             # that used them instead of being overtaken by the stream/final
             # lanes. Cards are queued before the first model call, so the
@@ -6932,24 +6932,17 @@ class TurnRunner:
                             metadata=ctx._progress_metadata,
                         ))
                     else:
-                        # Editing unsupported: send just this line
-                        result = await ctx.deliver_visible(lambda: adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=msg,
-                            reply_to=ctx._progress_reply_to,
-                            metadata=ctx._progress_metadata,
-                        ))
-                    # deliver_visible already marked the landed line.
-                    if result.success and result.message_id:
-                        progress_msg_id = result.message_id
-                        if ctx._cleanup_progress:
-                            ctx._cleanup_msg_ids.append(str(result.message_id))
-                        if not can_edit:
-                            # The newest row just went out as its own message;
-                            # older pending rows were either already sent or
-                            # skipped by the throttle (pre-v0.9 "separate"
-                            # behavior: one message per row, no catch-up).
-                            _separate_pending_lines.clear()
+                        # Editing unsupported: deliver every pending row as
+                        # its own message, oldest first (FIFO) — the flush
+                        # helper drains _separate_pending_lines, tracks
+                        # sends/cleanup IDs, and clears the list.
+                        await _flush_progress_before_agent_status()
+                    if can_edit:
+                        # deliver_visible already marked the landed line.
+                        if result.success and result.message_id:
+                            progress_msg_id = result.message_id
+                            if ctx._cleanup_progress:
+                                ctx._cleanup_msg_ids.append(str(result.message_id))
 
                 _last_edit_ts = time.monotonic()
 
@@ -35889,6 +35882,11 @@ class GatewayRunner(
         progress_task = None
         if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
+            # The ordering gate (TurnContext.wait_context_cards_delivered)
+            # releases when this drain ends — bind the owning task so the gate
+            # never waits on an invented timeout, and never outlives the
+            # worker that owns delivery.
+            turn_ctx.bind_progress_task(progress_task)
 
         # Tool-stage embed drain (Discord): one self-editing embed per MoA
         # tool invocation. The subscription is turn-scoped — unsubscribed in
@@ -36990,6 +36988,19 @@ class GatewayRunner(
             # evaluated before awaiting stream cleanup below.
             _held_agent_result = result_holder[0]
 
+            # Ordering gate for the non-streamed final reply — run BEFORE the
+            # progress drain is cancelled below: a turn with no stream consumer
+            # and no interim lane delivers its FIRST visible assistant output
+            # from the outer handler's send after this unwind, and the flush
+            # marker must reach a LIVE drain. No-op when no context cards were
+            # queued, an earlier lane already cleared the gate, or the turn is
+            # stale; the wait ends when the marker is delivered or the bound
+            # drain task ends (TurnContext.wait_context_cards_delivered).
+            try:
+                await turn_ctx.wait_context_cards_delivered()
+            except Exception:
+                logger.debug("context-card gate before cleanup failed", exc_info=True)
+
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()
@@ -37317,14 +37328,6 @@ class GatewayRunner(
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
-
-        # Ordering gate for the non-streamed final reply: this turn had no
-        # stream consumer / interim lane (or they never fired), so the outer
-        # handler's send is the FIRST visible assistant output — let the
-        # context cards queued before the first model call land above it.
-        # No-op once any earlier lane already cleared the gate.
-        with suppress(Exception):
-            await turn_ctx.wait_context_cards_delivered()
 
         return response
 

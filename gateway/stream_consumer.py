@@ -135,13 +135,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Per-turn asyncio.Lock shared with the gateway's heartbeat edit/send
         # (TurnContext.delivery_lock); None = unguarded (tests / standalone use).
         self._visible_delivery_lock = visible_delivery_lock
-        # Ordering gate for the turn's FIRST visible output (TurnContext.
-        # wait_context_cards_delivered): awaited once before the first frame /
+        # Ordering gate for the turn's visible output (TurnContext.
+        # wait_context_cards_delivered): awaited before each frame /
         # commentary / boundary send so context cards queued on the progress
-        # queue land above the reply that used them. None = ungated (tests /
-        # standalone use). One-shot per consumer via _context_gate_done.
+        # queue land above the reply that used them. One-shot semantics live
+        # in TurnContext (shared completion event), so CONCURRENT output
+        # callers on this consumer all observe actual drain completion —
+        # never "someone already started waiting". None = ungated
+        # (tests / standalone use); after the gate clears it is a cheap no-op.
         self._context_gate = context_gate
-        self._context_gate_done = False
         self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
@@ -470,13 +472,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return await deliver()
 
     async def _gate_context_cards(self) -> None:
-        """Before this consumer's FIRST visible output: bounded wait for the
-        context cards queued before the first model call to finish delivery
-        (see TurnContext.wait_context_cards_delivered). Never raises and never
-        waits twice; a missing gate (tests / standalone) is a no-op."""
-        if self._context_gate_done or self._context_gate is None:
+        """Before visible output: bounded wait for the context cards queued
+        before the first model call to finish delivery (see TurnContext.
+        wait_context_cards_delivered). Every call participates — TurnContext
+        shares one completion event across concurrent callers and latches
+        after, so repeat calls are cheap no-ops. Never raises; a missing gate
+        (tests / standalone) is a no-op."""
+        if self._context_gate is None:
             return
-        self._context_gate_done = True
         try:
             _res = self._context_gate()
             if inspect.isawaitable(_res):

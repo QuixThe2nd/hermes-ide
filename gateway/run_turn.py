@@ -4312,6 +4312,11 @@ class GatewayTurnMixin:
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task
         progress_task = spawn(turn_runner.send_progress_messages()) if disp.needs_progress_queue else None
+        if progress_task is not None:
+            # The ordering gate (TurnContext.wait_context_cards_delivered)
+            # releases when this drain ends — bind the owning task so the gate
+            # never waits on an invented timeout.
+            turn_ctx.bind_progress_task(progress_task)
         log_task = spawn(self._run_agent_write_tool_log(disp.log_queue)) if disp.log_mode_enabled else None
         # The stream consumer is created inside run_sync; this task polls for it.
         stream_task = spawn(self._run_agent_stream_consumer_task(turn_ctx.stream_consumer_holder))
