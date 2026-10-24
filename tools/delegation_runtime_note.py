@@ -118,6 +118,11 @@ def _runtime_lifecycle(record: Dict[str, Any], activity: Optional[Dict[str, Any]
         return "finishing", "delivering result"
     evidence = record.get("startup_evidence") or {}
     if status == "running":
+        if record.get("external"):
+            # BEFORE any OS-process vocabulary: an externally-driven unit
+            # (assistant mission) has no worker of ours — "queued for the
+            # background pool" would misreport it as an OS process.
+            return "underway", "externally driven; not an OS worker of this process"
         proc_obs = _proc_observation(evidence, now)
         # Only a CONFIRMED observation names a state: (True, …) → running,
         # (False, …) → exited. (None, …) means startup was observed but the
@@ -146,8 +151,6 @@ def _runtime_lifecycle(record: Dict[str, Any], activity: Optional[Dict[str, Any]
                 age = None
             return "started", ("process started" + (f" {age}s ago" if age is not None else "")
                                + "; liveness not directly observed")
-        if record.get("external"):
-            return "accepted", "externally driven; not an OS worker of this process"
         if str(record.get("tool") or "") == "delegate_cursor_agent":
             remote = evidence.get("remote_observed")
             if isinstance(remote, str) and remote:

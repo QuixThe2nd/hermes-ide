@@ -20,6 +20,9 @@ from agent.turn_context import build_api_messages
 
 logger = logging.getLogger("agent.conversation_loop")
 
+# The volatile runtime note's recognizable header (idempotent strip on retries).
+_RUNTIME_NOTE_MARK = "[delegated workers: current runtime state"
+
 
 @dataclass
 class AssembledRequest:
@@ -148,20 +151,89 @@ def _delegation_runtime_note(agent: Any) -> str:
         return ""
 
 
-def _append_delegation_runtime_note(agent: Any, api_messages: Any) -> None:
+def _append_delegation_runtime_note(
+    agent: Any, api_messages: Any, *, native_anthropic: bool = False, tool_part_markers: bool = True,
+) -> None:
     """Append the runtime-state note to the request's LAST user/tool message.
 
-    Request-local only: ``api_messages`` rows are send copies, so nothing is
-    persisted, cached as a prefix, or replayed next request (each request
-    recomputes a fresh note). Skipped when there is no note or no legal tail
-    message — never fabricates a message or changes any role."""
+    Runs at the FINAL wire boundary — after the last ``build_prompt_cache_plan``
+    (``_redecorate_prompt_cache_for_provider``, which re-renders the decoration
+    for every attempt) — so the fresh note never enters the cached prefix: the
+    previous request's breakpoints must stay byte-identical to what the next
+    round rebuilds from stored history (a note folded into a marked row would
+    poison that row's cached bytes for every later request — the cache owner's
+    prefix-purity contract). Placement per shape:
+
+    - list content: a NEW unmarked text part AFTER the marked part — the
+      breakpoint closes before it, so the note rides outside the prefix;
+    - string content with no marker on the row: plain append (uncached row);
+    - string content with a top-level marker (native role:tool, the adapter
+      carries the marker onto the whole tool_result): the marker is RELOCATED
+      to the nearest earlier row the layout can carry (existing cache owner
+      helpers), then the note appends — never into a marked block. No
+      relocatable row → the note is skipped (fail closed; caching untouched).
+
+    IDEMPOTENT: the retry/failover loops reuse ``api_messages`` across attempts,
+    so any note already on the tail row is stripped before the fresh one is
+    appended — one note per request, never accumulation. Request-local only:
+    nothing is persisted or replayed next request. Skipped when there is no
+    note or no legal tail message — never fabricates a message or changes any
+    role."""
     note = _delegation_runtime_note(agent)
     if not note:
         return
     last = api_messages[-1] if api_messages else None
     if not isinstance(last, dict) or last.get("role") not in ("user", "tool"):
         return
+    # Strip a previous attempt's note from the tail (idempotence).
     content = last.get("content")
+    if isinstance(content, str) and _RUNTIME_NOTE_MARK in content:
+        cut = content.find(f"\n\n{_RUNTIME_NOTE_MARK}")
+        last["content"] = content[:cut] if cut >= 0 else ""
+        content = last["content"]
+    elif isinstance(content, list):
+        kept = [p for p in content
+                if not (isinstance(p, dict) and _RUNTIME_NOTE_MARK in str(p.get("text", "")))]
+        if len(kept) != len(content):
+            last["content"] = content = kept
+    if isinstance(content, str) and "cache_control" in last:
+        # A top-level marker + string content means the whole block (tool_result
+        # content on native) is the cached prefix — relocate the breakpoint to
+        # the nearest earlier row this layout can carry, so the note appends
+        # outside every cached prefix.
+        from agent.prompt_caching import _apply_cache_marker, _can_carry_marker
+
+        marker = last.pop("cache_control")
+
+        def _marked(m: Any) -> bool:
+            return isinstance(m, dict) and ("cache_control" in m or (
+                isinstance(m.get("content"), list) and any(
+                    isinstance(p, dict) and "cache_control" in p for p in m["content"])))
+
+        target = None
+        any_earlier_marked = False
+        for prev in reversed(api_messages[:-1]):
+            if not isinstance(prev, dict) or prev.get("role") == "system":
+                continue
+            if _marked(prev):
+                any_earlier_marked = True
+                continue
+            if _can_carry_marker(prev, native_anthropic, tool_part_markers):
+                target = prev
+                break
+        if target is not None:
+            _apply_cache_marker(target, marker, native_anthropic=native_anthropic,
+                                tool_part_markers=tool_part_markers)
+        elif not any_earlier_marked:
+            # No breakpoint anywhere to keep the prefix anchored: never weaken
+            # the cache contract to deliver a note — restore and skip.
+            last["cache_control"] = marker
+            return
+        # else: an earlier row already carries a breakpoint; leaving the tail
+        # row unmarked spends one of the four slots this request, which is the
+        # honest cost of keeping the volatile note out of the cached prefix.
+        last["content"] = f"{content}\n\n{note}" if content else note
+        return
     if isinstance(content, str):
         last["content"] = f"{content}\n\n{note}" if content else note
     elif isinstance(content, list):
@@ -253,13 +325,6 @@ def assemble_api_request(
     # they crash json.dumps() inside the OpenAI SDK and trigger the 3-retry cycle.
     _sanitize_messages_surrogates(api_messages)
 
-    # Delegated-worker runtime state rides the OUTGOING REQUEST ONLY: a fresh,
-    # bounded, owner-scoped snapshot per model request (so it refreshes across
-    # tool rounds within one turn), appended to the latest legal user/tool-result
-    # content. Stored history, api_content sidecars, prior rows and the system
-    # prompt stay untouched — ``api_messages`` is the request-local copy above.
-    _append_delegation_runtime_note(agent, api_messages)
-
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
 
@@ -292,6 +357,12 @@ def assemble_api_request(
         )
         api_messages = _initial_cache_plan.messages
         tools_for_api = _initial_cache_plan.tools
+
+    # NOTE: the delegated-worker runtime note is NOT attached here. Assembly is
+    # not the final wire boundary — every attempt re-renders the cache
+    # decoration in ``_redecorate_prompt_cache_for_provider`` (send path), which
+    # would re-mark the tail and pull the volatile note INTO the cached prefix.
+    # The note rides the outgoing request at that final boundary instead.
 
     # Prepare the persistent-MoA request before measuring compression pressure: the
     # ephemeral advisor output is absent from ``messages``; ``create()`` reuses the

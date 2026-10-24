@@ -1996,6 +1996,12 @@ def register_background_delegation(
         # owns this unit's outcome, so a dead owner_pid must not classify it
         # as abandoned at the next boot.
         "external": True,
+        # Owning home identity, stamped by THIS producer exactly as
+        # _dispatch_admitted stamps its records: hermes_home_key() captured on
+        # the registering thread. The runtime-note consumer (fail-closed)
+        # requires an EXACT home-key match, so without this stamp every
+        # external mission is invisible to its own parent's snapshot.
+        "owner_home_key": _dispatch_home_key(),
         "status": "running",
         "dispatched_at": now,
         "completed_at": None,
