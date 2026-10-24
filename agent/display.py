@@ -645,8 +645,9 @@ def _describe_web_search_phrase(tool_name: str, args: dict) -> str | None:
 
 
 def _describe_session_search_phrase(tool_name: str, args: dict) -> str | None:
-    # No preview posture preserved: verb alone, never the (private) query.
-    return get_tool_verb(tool_name)
+    query = _describe_safe_str(args.get("query"))
+    verb = get_tool_verb(tool_name)
+    return f"{verb} for {query}" if verb and query else None
 
 
 # Curated safe-subject builders, table-driven like _TOOL_VERBS above: each entry
