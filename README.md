@@ -74,7 +74,7 @@ The typing indicator stays on while a background delegated task is still running
 
 ## Coding delegated from chat
 
-Coding jobs leave the chat and run against the target checkout. `delegate_agent(backend="cursor")` sends small and medium jobs to a Cursor My Machines Cloud Agent. Cursor builds its checkout from pushed refs only, so the tool refuses to start when your local HEAD has unpushed commits. It does not quietly run against yesterday's code.
+Coding jobs leave the chat and run against the target checkout. `delegate_agent(backend="cursor")` sends small and medium jobs to a Cursor My Machines Cloud Agent. Cursor builds its checkout from pushed refs only, so the tool refuses to start when your local HEAD has unpushed commits. It does not quietly run against yesterday's code. The default Cursor orchestration delegates implementation to a `composer-2.5` subagent and the read-only review to `cursor-grok-4.6-high`; if that review Task cannot run, the run reports `UNVERIFIABLE` instead of success.
 
 `delegate_agent(backend="claude")` handles medium and large jobs through the Claude Code CLI, with headless `/goal` as the default lane. Give it a `/goal <condition>` and it keeps going until a model judge, verified through the claude-glm wrapper — bundled with Hermes and installed alongside the `hermes` command, primary glm-5.2 with a glm-5.3-flash fallback — says the condition has been met. If the goal is too long for Claude Code's 4000-character limit, Hermes puts it in a brief inside the workdir instead of aborting the run. Claude writes stream-json output to the `claude-runs` logs while it works, so you can tail the run instead of staring at a silent chat.
 
