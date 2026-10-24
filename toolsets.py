@@ -324,15 +324,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    "dev-pipeline": {
-        "description": (
-            "Durable automated development jobs — the dev-pipeline lane that "
-            "plans, implements, verifies, reviews, and opens draft PRs"
-        ),
-        "tools": ["delegate_development"],
-        "includes": [],
-    },
-
     "quota_channels": {
         "description": "Discord voice-channel quota display for Codex, Kimi, z.ai, Cursor, and Grok",
         "tools": ["quota_channels_tick"],
