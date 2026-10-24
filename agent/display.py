@@ -843,6 +843,18 @@ def _describe_delegate_child_phrase(label: str):
     return _build
 
 
+def _describe_delegate_agent_phrase(tool_name: str, args: dict) -> str | None:
+    # The unified delegation surface: `backend` picks the engine, so the
+    # progress phrase follows it (the hidden legacy aliases keep their own
+    # entries below and never carry `backend`).
+    backend = str(args.get("backend") or "").strip().lower()
+    if backend == "claude":
+        return _describe_delegate_child_phrase("Delegating to a Claude agent")(tool_name, args)
+    if backend == "cursor":
+        return _describe_delegate_child_phrase("Delegating to a Cursor agent")(tool_name, args)
+    return _describe_delegate_phrase(tool_name, args)
+
+
 def _describe_delegate_assistant_phrase(_tool_name: str, args: dict) -> str | None:
     # chat_name/chat_id identify the destination; goal is a prompt payload.
     chat = _describe_arg(args, "chat_name", "chat_id")
@@ -1124,7 +1136,8 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "process_manage": _describe_process_manage_phrase,
     "memory": _describe_memory_phrase,
     "send_message": _describe_send_message_phrase,
-    "delegate_task": _describe_delegate_phrase, "delegate_agent": _describe_delegate_phrase,  # legacy spelling
+    "delegate_task": _describe_delegate_phrase,  # legacy alias: subagent phrasing
+    "delegate_agent": _describe_delegate_agent_phrase,  # backend-aware (subagent/claude/cursor)
     "delegate_claude_agent": _describe_delegate_child_phrase("Delegating to a Claude agent"),
     "delegate_cursor_agent": _describe_delegate_child_phrase("Delegating to a Cursor agent"),
     "delegate_assistant": _describe_delegate_assistant_phrase,

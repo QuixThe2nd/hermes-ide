@@ -1722,9 +1722,16 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
         return _SequentialDispatch(lambda next_args: inline_executor(agent, next_args, inline_ctx), finish_in_finally=False)
     if function_name in ("delegate_agent", "delegate_task"):
-        spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
-        agent._delegate_spinner = spinner
-        return _SequentialDispatch(agent._dispatch_delegate_agent, spinner=spinner, is_delegate=True)
+        # Backend-routed calls (claude/cursor) need the registry dispatch path:
+        # the external handlers key spawn/restart receipts on the session and
+        # tool-call ids only that path supplies. The subagent fast path keeps
+        # its live-agent intercept.
+        from tools.delegate_tool import _is_external_backend
+
+        if not _is_external_backend(function_args.get("backend")):
+            spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
+            agent._delegate_spinner = spinner
+            return _SequentialDispatch(agent._dispatch_delegate_agent, spinner=spinner, is_delegate=True)
     if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
         return _SequentialDispatch(
             execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),
