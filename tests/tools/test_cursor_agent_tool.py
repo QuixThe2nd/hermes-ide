@@ -2559,3 +2559,122 @@ def test_delegate_refuses_unpushed_workdir(monkeypatch, tmp_path):
     assert result["success"] is False
     assert "unpushed commit" in result["error"]
     assert called == []
+
+
+class TestPollCloudRunTransientRetries:
+    """pc_f102e70f957e / pc_69b1e891ad5e / pc_771cb1cb101f: a single transient
+    status-GET failure (timeout or HTTP 5xx) must not kill the waiter while the
+    remote run keeps executing."""
+
+    def _poll(self, monkeypatch, responses, *, timeout_seconds=0, started_mono=0.0):
+        from tools import cursor_agent_tool
+
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def fake_request(method, path, *, api_key, timeout=None):
+            calls["n"] += 1
+            action = responses[min(calls["n"] - 1, len(responses) - 1)]
+            if isinstance(action, Exception):
+                raise action
+            return action
+
+        monkeypatch.setattr(cursor_agent_tool, "_http_request", fake_request)
+        monkeypatch.setattr(cursor_agent_tool.time, "sleep", sleeps.append)
+        monkeypatch.setattr(cursor_agent_tool, "cancel_cloud_run", lambda *a, **k: None)
+
+        result = cursor_agent_tool.poll_cloud_run(
+            agent_id="agent-1",
+            run_id="run-1",
+            api_key="k",
+            timeout_seconds=timeout_seconds,
+            started_mono=started_mono,
+        )
+        return result, calls["n"], sleeps
+
+    def test_single_timeout_then_success_returns_terminal(self, monkeypatch):
+        from tools import cursor_agent_tool
+
+        result, attempts, sleeps = self._poll(
+            monkeypatch,
+            [
+                TimeoutError("Cursor Cloud Agent request timed out: GET /v1/agents/a/runs/r"),
+                {"id": "run-1", "agentId": "agent-1", "status": "FINISHED", "result": "ok"},
+            ],
+        )
+        assert result["status"] == "FINISHED"
+        assert attempts == 2
+        assert cursor_agent_tool.STATUS_POLL_TRANSIENT_RETRY_SLEEP_SECONDS in sleeps
+
+    def test_single_http_503_then_success_returns_terminal(self, monkeypatch):
+        from tools import cursor_agent_tool
+
+        result, attempts, sleeps = self._poll(
+            monkeypatch,
+            [
+                cursor_agent_tool.CursorCloudError(
+                    "Cursor Cloud Agent API error (GET /v1/agents/a/runs/r): HTTP 503"
+                ),
+                {"id": "run-1", "agentId": "agent-1", "status": "FINISHED"},
+            ],
+        )
+        assert result["status"] == "FINISHED"
+        assert attempts == 2
+
+    def test_transients_inside_cap_then_success(self, monkeypatch):
+        from tools import cursor_agent_tool
+
+        result, attempts, _ = self._poll(
+            monkeypatch,
+            [
+                cursor_agent_tool.CursorCloudError("... HTTP 503"),
+                TimeoutError("timed out"),
+                cursor_agent_tool.CursorCloudError("... HTTP 502: bad gateway"),
+                {"id": "run-1", "agentId": "agent-1", "status": "RUNNING"},
+                {"id": "run-1", "agentId": "agent-1", "status": "FINISHED"},
+            ],
+        )
+        assert result["status"] == "FINISHED"
+        assert attempts == 5
+
+    def test_consecutive_failures_beyond_cap_raise(self, monkeypatch):
+        from tools import cursor_agent_tool
+
+        boom = TimeoutError("timed out")
+        with pytest.raises(cursor_agent_tool.CursorCloudError):
+            self._poll(
+                monkeypatch,
+                [boom] * (cursor_agent_tool.STATUS_POLL_TRANSIENT_MAX_FAILURES + 1),
+            )
+
+    def test_http_4xx_fails_immediately_without_retry(self, monkeypatch):
+        from tools import cursor_agent_tool
+
+        with pytest.raises(cursor_agent_tool.CursorCloudError) as excinfo:
+            self._poll(
+                monkeypatch,
+                [
+                    cursor_agent_tool.CursorCloudError(
+                        "Cursor Cloud Agent API error (GET /v1/agents/a/runs/r): HTTP 401: nope"
+                    ),
+                    {"id": "run-1", "agentId": "agent-1", "status": "FINISHED"},
+                ],
+            )
+        assert "401" in str(excinfo.value)
+
+    def test_success_resets_consecutive_failure_counter(self, monkeypatch):
+        from tools import cursor_agent_tool
+
+        result, attempts, _ = self._poll(
+            monkeypatch,
+            [
+                TimeoutError("t1"),
+                {"id": "run-1", "agentId": "agent-1", "status": "RUNNING"},
+                TimeoutError("t2"),
+                TimeoutError("t3"),
+                TimeoutError("t4"),
+                {"id": "run-1", "agentId": "agent-1", "status": "FINISHED"},
+            ],
+        )
+        assert result["status"] == "FINISHED"
+        assert attempts == 6
