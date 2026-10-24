@@ -8257,23 +8257,37 @@ class SessionDB(
         provided, exact sender matches are preferred; if multiple distinct
         users share the chat and none matches, returns None rather than
         contaminating another participant's session.
+
+        Discord keys thread conversations canonically on the thread id, so
+        a caller addressing the parent channel plus a thread_id finds no
+        rows under the parent chat_id.  In that zero-row case (absence)
+        only, retry once with chat_id == thread_id.  A refusal — rows
+        matched but were rejected as ambiguous — must NOT fall back.
         """
         if not platform or chat_id in (None, ""):
             return None
-        query = """
-            SELECT id, user_id, started_at FROM sessions
-            WHERE LOWER(source) = LOWER(?)
-              AND session_key IS NOT NULL
-              AND chat_id = ?
-              AND ended_at IS NULL
-        """
-        params: list = [platform, str(chat_id)]
-        if thread_id is not None:
-            query += " AND COALESCE(thread_id, '') = ?"
-            params.append(str(thread_id))
-        query += " ORDER BY started_at DESC"
-        with self._read_ctx() as conn:
-            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+
+        def _query(effective_chat_id: str) -> list:
+            query = """
+                SELECT id, user_id, started_at FROM sessions
+                WHERE LOWER(source) = LOWER(?)
+                  AND session_key IS NOT NULL
+                  AND chat_id = ?
+                  AND ended_at IS NULL
+            """
+            params: list = [platform, str(effective_chat_id)]
+            if thread_id is not None:
+                query += " AND COALESCE(thread_id, '') = ?"
+                params.append(str(thread_id))
+            query += " ORDER BY started_at DESC"
+            with self._read_ctx() as conn:
+                return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+        rows = _query(chat_id)
+        if not rows:
+            if thread_id in (None, "") or str(thread_id) == str(chat_id):
+                return None
+            rows = _query(thread_id)
         if not rows:
             return None
         if user_id:
