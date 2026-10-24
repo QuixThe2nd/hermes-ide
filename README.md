@@ -82,7 +82,7 @@ All four delegate tools (`delegate_agent`, `delegate_claude_agent`, `delegate_cu
 
 Sometimes you want the whole coding process handed off, including the paperwork. The dev-pipeline plugin takes a repo and task through MoA planning, Cursor execution, mechanical verification, dual-model review, and a draft PR. It reports each stage back to chat in plain English and skips useless same-stage heartbeats. A separate claude-endurance lane uses Claude Code through claude-glm for broad or long builds.
 
-Planning normally uses a consult; `delegate_development plan_mode=debate` runs the multi-round adversarial council instead. Reviews use a Russian-language kimi and grok pair, and `open_pr=false` skips the draft PR when you do not want one. `delegate_development` itself is currently parked and not registered, while `dev_pipeline_status` remains live.
+Planning normally uses a consult; `delegate_development plan_mode=debate` runs the multi-round adversarial council instead. Reviews use a Russian-language kimi and grok pair, and `open_pr=false` skips the draft PR when you do not want one. `delegate_development` itself is currently parked and not registered.
 
 Research has a lane of its own. `delegate_research` hands a substantial research brief to durable `researcher`-profile lanes (transient systemd user or system service) and returns one citation-checked report; every cited URL must have been fetched during the job. Set `deep_research.worker_file_tools: false` in the calling profile's config to run no-file jobs instead: lanes are pinned to `web,browser` and the synthesis writer to the empty `research_writer` toolset.
 

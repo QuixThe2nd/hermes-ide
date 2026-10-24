@@ -1136,7 +1136,6 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "resolve_ticket": _describe_resolve_ticket_phrase,
     "papercuts": _describe_papercuts_phrase,
     "start_conversation": _describe_start_conversation_phrase,
-    "dev_pipeline_status": _describe_fixed("Checking the dev pipeline"),
     "x_search": _describe_x_search_phrase,
     "terminal": _describe_terminal_phrase,
     "execute_code": _describe_fixed("Running code"),
