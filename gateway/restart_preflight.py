@@ -578,9 +578,10 @@ def render_notice(scan: _SourceScan) -> str:
 
     Clean matching revisions stay silent; clean with a known revision
     difference gets a short informational note (a normal update also causes
-    it); dirty and unknown get one bounded warning with whatever revision
-    context is available. The entry count always precedes the samples so the
-    full count survives any truncation.
+    it); unknown gets one bounded warning with whatever revision context is
+    available; dirty gets a short count-only status — ``🔄 Applying N
+    change(s)`` — with no warning emoji, no sample paths, and no revision
+    suffix.
     """
     if scan.kind == "not_applicable":
         return ""
@@ -592,25 +593,8 @@ def render_notice(scan: _SourceScan) -> str:
             f"Restart will continue; source consistency was not verified.{f' {context}' if context else ''}"
         )
     if scan.kind == "dirty":
-        plural = "entry" if scan.count == 1 else "entries"
-        for shown in range(min(_MAX_SAMPLE_PATHS, len(scan.samples)), -1, -1):
-            sample_list = scan.samples[:shown]
-            omitted = scan.count - len(sample_list)
-            parts = [f"`{sample}`" for sample in sample_list]
-            if omitted > 0:
-                parts.append(f"+{omitted} more")
-            listing = ", ".join(parts)
-            message = (
-                f"⚠️ Runtime source changes detected before restart: "
-                f"{scan.count} changed {plural}"
-                + (f" ({listing})" if listing else "")
-                + (f" {context}" if context else "")
-                + " Restart will continue using the files on disk at startup — "
-                "this check does not freeze them or prove they work together."
-            )
-            if len(message) <= _NOTICE_CHAR_LIMIT:
-                return message
-        return message[:_NOTICE_CHAR_LIMIT]
+        plural = "change" if scan.count == 1 else "changes"
+        return f"🔄 Applying {scan.count} {plural}"
     # Clean tree: only a known process-vs-disk revision difference is worth a
     # short informational note. Unavailable process identity says nothing
     # (never claim a match that was not observed).
