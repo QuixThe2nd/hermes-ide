@@ -122,10 +122,33 @@ if (process.env.AZURE_SIGN_ENDPOINT && process.env.AZURE_SIGN_ACCOUNT && process
     const signEnv = { ...process.env }
     const dotnetRoot = resolveDotnetRuntimeDir()
     if (dotnetRoot) signEnv.DOTNET_ROOT = dotnetRoot
+    // Two passes, mirroring batch-sign-binaries.mjs's split:
+    //   1. Azure Authenticode sign — /dlib, NO /tr. Passing /tr on the sign
+    //      call hands the URL to the dlib (`@url:` form), and the ATS dlib
+    //      cannot extract a token from a third-party RFC3161 server —
+    //      "no content extracted", exit 3.
+    //   2. RFC3161 timestamp — `signtool timestamp` with NO dlib; signtool
+    //      itself does the exchange against the public server (digicert).
+    // A timestamp failure never forces a re-sign of the 2.7GB bundle.
     execFileSync(signtool, [
-      'sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', 'http://timestamp.digicert.com',
+      'sign', '/fd', 'SHA256',
       '/dlib', dlib, '/dmdf', metaPath, bundle
     ], { stdio: 'inherit', env: signEnv })
+    const timestamp = () =>
+      execFileSync(signtool, [
+        'timestamp', '/tr', 'http://timestamp.digicert.com', '/td', 'SHA256', bundle
+      ], { stdio: 'inherit', env: signEnv })
+    let attempt = 0
+    for (;;) {
+      try {
+        timestamp()
+        break
+      } catch (err) {
+        attempt += 1
+        if (attempt >= 3) throw err
+        console.warn(`[stage-msixbundle] timestamp attempt ${attempt} failed, retrying…`)
+      }
+    }
     execFileSync(signtool, ['verify', '/pa', bundle], { stdio: 'inherit' })
   } else {
     console.warn('[stage-msixbundle] Azure Trusted Signing dlib not found — bundle will be UNSIGNED')
