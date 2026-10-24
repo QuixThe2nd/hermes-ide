@@ -25214,6 +25214,15 @@ class GatewayRunner(
         # would bust the agent-cache signature — and tells the model this is
         # the SAME message re-delivered, not a new request, so it answers
         # once instead of per copy.
+        # Restart-drain lifecycle receipt, proved and rendered by the
+        # queue's own module (see ``run_drain_queue.drain_restart_receipt_for_record``
+        # and ``format_drain_restart_receipt``); None leaves the text unchanged.
+        from gateway.run_drain_queue import format_drain_restart_receipt
+
+        _receipt_note = format_drain_restart_receipt(event)
+        if _receipt_note is not None:
+            message_text = f"{_receipt_note}\n\n{message_text}"
+
         if getattr(event, "redelivered", False):
             _redelivery_id = getattr(event, "message_id", None)
             _redelivery_note = "[Re-delivered message"
