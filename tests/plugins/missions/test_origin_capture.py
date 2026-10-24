@@ -77,7 +77,7 @@ def _dispatch_start(pm, *, session_id: str, tool_call_id: str) -> dict:
     try:
         out = json.loads(
             registry.dispatch(
-                "dispatch_assistant",
+                "delegate_assistant",
                 {"chat_id": CHAT, "goal": "Agree picnic time", "background": True},
                 task_id=f"task-{tool_call_id}",
                 session_id=session_id,
@@ -121,7 +121,7 @@ class TestOriginCapture:
         token = set_current_session_key(ORIGIN_KEY)
         try:
             out = registry.dispatch(
-                "dispatch_assistant",
+                "delegate_assistant",
                 {
                     "chat_id": CHAT,
                     "goal": "g",

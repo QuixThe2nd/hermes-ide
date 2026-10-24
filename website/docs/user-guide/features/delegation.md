@@ -8,7 +8,7 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 The `delegate_agent` tool spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
-Delivery follows one lifecycle across all four delegate tools (`delegate_agent`, `delegate_claude_agent`, `delegate_cursor_agent`, `delegate_assistant`): the mode comes only from the explicit `background` argument. Omitted or false **blocks** the calling turn until the work is terminal and returns the final result inline. `background=true` returns a handle immediately so the conversation can continue, then posts exactly one completion back as a new message — and fails up front, with nothing started, when the session cannot receive a late completion. The old `delegate_task` / `dispatch_assistant` spellings still dispatch as hidden aliases that forward `background` unchanged.
+Delivery follows one lifecycle across all four delegate tools (`delegate_agent`, `delegate_claude_agent`, `delegate_cursor_agent`, `delegate_assistant`): the mode comes only from the explicit `background` argument. Omitted or false **blocks** the calling turn until the work is terminal and returns the final result inline. `background=true` returns a handle immediately so the conversation can continue, then posts exactly one completion back as a new message — and fails up front, with nothing started, when the session cannot receive a late completion. The old `delegate_task` spelling still dispatches as a hidden alias that forwards `background` unchanged.
 
 ## Completion delivery
 

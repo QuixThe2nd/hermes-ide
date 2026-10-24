@@ -1,4 +1,4 @@
-"""Tests for the missions plugin (dispatch_agent / dispatch_assistant / end_session).
+"""Tests for the missions plugin (dispatch_agent / delegate_assistant / end_session).
 
 Covers DM missions (start/complete/origin wakeup, automatic origin capture,
 alias-complete pairing grant+revoke) and group missions (chat_type inference,
@@ -60,7 +60,7 @@ def _start_origin(pm, chat_id="61400000000@s.whatsapp.net", **kw):
     args = {"chat_id": chat_id, "goal": kw.pop("goal", "Agree picnic time"), "background": True}
     args.update(kw)
     started = json.loads(
-        pm.handle_dispatch_assistant(
+        pm.handle_delegate_assistant(
             args,
             session_key="agent:main:discord:thread:abc:abc",
             session_id="sess-1",

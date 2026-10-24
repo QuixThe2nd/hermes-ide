@@ -1232,22 +1232,6 @@ DELEGATE_ASSISTANT_SCHEMA = {
     },
 }
 
-# Hidden (advertise=False) registry alias: ``dispatch_assistant`` was renamed
-# to ``delegate_assistant`` (uniform delegation lifecycle). The old name stays
-# DISPATCHABLE forever — replayed transcripts, cached tool schemas, user
-# prompts, third-party scripts — but is never advertised, so it costs no
-# schema tokens. It forwards every argument, including ``background``,
-# verbatim, so the mode stays decided by the argument alone.
-DISPATCH_ASSISTANT_ALIAS_DESCRIPTION = (
-    "Deprecated alias for delegate_assistant. Kept dispatchable so old "
-    "transcripts and scripts keep working; new calls should use "
-    "delegate_assistant."
-)
-
-# Back-compat module alias for direct Python callers of the old constant.
-DISPATCH_ASSISTANT_SCHEMA = DELEGATE_ASSISTANT_SCHEMA
-
-
 END_SESSION_SCHEMA = {
     "name": "end_session",
     "description": (
@@ -2187,18 +2171,6 @@ def _register_background_mission(mission_id: str, goal: str) -> str:
     )
 
 
-def handle_dispatch_assistant(args: Dict[str, Any], **kwargs: Any) -> str:
-    """Back-compat module alias for :func:`handle_delegate_assistant`.
-
-    The registered tool was renamed (uniform delegation lifecycle); the old
-    spelling stays dispatchable through a hidden registry alias, and this
-    module-level name keeps direct Python callers (and the tests that predate
-    the rename) working. It forwards every argument — including
-    ``background`` — verbatim.
-    """
-    return handle_delegate_assistant(args, **kwargs)
-
-
 def register(ctx) -> None:
     ctx.register_tool(
         name="dispatch_agent",
@@ -2215,19 +2187,6 @@ def register(ctx) -> None:
         handler=handle_delegate_assistant,
         check_fn=check_requirements,
         emoji="\U0001F4AC",
-    )
-    ctx.register_tool(
-        name="dispatch_assistant",
-        toolset="missions",
-        schema={
-            "name": "dispatch_assistant",
-            "description": DISPATCH_ASSISTANT_ALIAS_DESCRIPTION,
-            "parameters": {"type": "object", "properties": {}},
-        },
-        handler=handle_delegate_assistant,
-        check_fn=check_requirements,
-        emoji="\U0001F4AC",
-        advertise=False,
     )
     ctx.register_tool(
         name="end_session",

@@ -55,7 +55,7 @@ def _start_group_mission(pm, chat_id=GROUP, *, profile="assistant"):
     # default (uniform delegation lifecycle) and these tests only need a
     # started mission.
     result = json.loads(
-        pm.handle_dispatch_assistant(
+        pm.handle_delegate_assistant(
             {
                 "chat_id": chat_id,
                 "chat_name": "Picnic Crew",
@@ -231,7 +231,7 @@ class TestGroupMissionAuthorization:
         for var in ("WHATSAPP_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "WHATSAPP_ALLOW_ALL_USERS"):
             monkeypatch.delenv(var, raising=False)
         json.loads(
-            missions_home.handle_dispatch_assistant(
+            missions_home.handle_delegate_assistant(
                 {"chat_id": MEMBER, "goal": "dm mission", "background": True},
                 session_key="agent:main:discord:thread:abc:abc",
                 session_id="sess-1",

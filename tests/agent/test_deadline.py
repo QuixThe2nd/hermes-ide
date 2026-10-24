@@ -650,8 +650,8 @@ class TestUnboundedToolsResolver:
     ):
         """Every delegation tool blocks by default, so every name is exempt.
 
-        The hidden registry aliases stay dispatchable forever, and a replayed
-        old-name call is exactly as long-running as a new-name one.
+        The hidden ``delegate_task`` registry alias stays dispatchable, and a
+        replayed old-name call is exactly as long-running as a new-name one.
         """
         from agent import tool_executor
 
@@ -659,7 +659,8 @@ class TestUnboundedToolsResolver:
         names = tool_executor._resolve_unbounded_tools()
         assert {"delegate_agent", "delegate_claude_agent"} <= names
         assert {"delegate_cursor_agent", "delegate_assistant"} <= names
-        assert {"delegate_task", "dispatch_assistant"} <= names
+        assert "delegate_task" in names
+        assert "dispatch_assistant" not in names
 
     def test_user_override_normalizes_legacy_spellings(self, monkeypatch):
         """A pre-rename override list must keep exempting the renamed tools."""
@@ -668,17 +669,16 @@ class TestUnboundedToolsResolver:
         monkeypatch.setattr(
             "agent.deadline._timeouts_section",
             lambda: {
-                "tools": {"unbounded_tools": ["delegate_task", "dispatch_assistant"]}
+                "tools": {"unbounded_tools": ["delegate_task"]}
             },
         )
         assert tool_executor._resolve_unbounded_tools() == frozenset(
             {
                 "delegate_task",
-                "dispatch_assistant",
                 "delegate_agent",
-                "delegate_assistant",
             }
         )
+        assert "dispatch_assistant" not in tool_executor._TOOL_NAME_ALIASES
 
     def test_config_override_replaces_default(self, monkeypatch):
         from agent import tool_executor
