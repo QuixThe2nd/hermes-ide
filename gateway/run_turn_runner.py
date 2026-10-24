@@ -104,7 +104,11 @@ class TurnRunner:
         q = self._ctx.progress_queue
         with suppress(Exception):
             while not q.empty():
-                q.get_nowait()
+                raw = q.get_nowait()
+                # Rows are discarded by design on this rail; a context-flush
+                # marker's waiter must still be released.
+                if self._is_flush_marker(raw):
+                    self._signal_flush_marker(raw)
 
     def _track_progress_result(self, result) -> None:
         """Remember a delivered progress/status message id for end-of-turn cleanup."""
@@ -522,7 +526,11 @@ class TurnRunner:
         changed = False
         try:
             while True:
-                changed = st.apply_event(self._ctx.progress_queue.get_nowait()) or changed
+                _raw = self._ctx.progress_queue.get_nowait()
+                if self._is_flush_marker(_raw):
+                    self._signal_flush_marker(_raw)
+                    continue
+                changed = st.apply_event(_raw) or changed
         except queue.Empty:
             pass
         except Exception:
@@ -543,6 +551,11 @@ class TurnRunner:
                     raw = ctx.progress_queue.get_nowait()
                 except queue.Empty:
                     await asyncio.sleep(0.1)
+                    continue
+                # Native rail drops plain text rows by design: a flush marker
+                # only needs its waiter released.
+                if self._is_flush_marker(raw):
+                    self._signal_flush_marker(raw)
                     continue
                 if not self._agent_interrupted() and st.apply_event(raw):
                     await self._task_card_publish(st)
@@ -668,6 +681,25 @@ class TurnRunner:
     def _is_reset_marker(raw) -> bool:
         return isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__"
 
+    @staticmethod
+    def _is_flush_marker(raw) -> bool:
+        """Context-card ordering gate marker (gateway.run._CONTEXT_FLUSH_QUEUE_MARKER):
+        ('__flush__', asyncio.Event) — deliver what was absorbed ahead of it, then set."""
+        return isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__flush__"
+
+    def _signal_flush_marker(self, raw) -> None:
+        from gateway.run import _signal_context_flush_marker
+
+        _signal_context_flush_marker(raw)
+
+    async def _handle_flush_marker(self, st, raw) -> None:
+        """Force-deliver the absorbed bubble (throttle bypassed), then release the
+        gate's waiter. Interrupted turns keep row suppression — release only."""
+        if st.progress_lines and not self._agent_interrupted():
+            if not await self._roll_progress_overflow_if_needed(st):
+                await self._progress_send_or_edit(st, st.progress_lines[-1])
+        self._signal_flush_marker(raw)
+
     def _reset_progress_bubble(self, st) -> None:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
@@ -695,6 +727,10 @@ class TurnRunner:
         with suppress(Exception):
             while not ctx.progress_queue.empty():
                 raw = ctx.progress_queue.get_nowait()
+                if self._is_flush_marker(raw):
+                    # Cancelled drain: release the ordering gate's waiter.
+                    self._signal_flush_marker(raw)
+                    continue
                 if self._is_reset_marker(raw):
                     # Content-bubble marker during drain: close the current progress bubble
                     # and start a fresh one for tool lines that arrived after.
@@ -764,6 +800,11 @@ class TurnRunner:
                     self._drain_progress_queue()
                     return
                 raw = ctx.progress_queue.get_nowait()
+                # Context-card ordering gate: force-deliver everything absorbed
+                # ahead of the marker, then release the gated first output.
+                if self._is_flush_marker(raw):
+                    await self._handle_flush_marker(st, raw)
+                    continue
                 # Drain silently when interrupted: events queued in the window between tool parse
                 # and interrupt processing should not render as bubbles.
                 if self._agent_interrupted():
@@ -992,6 +1033,7 @@ class TurnRunner:
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                         on_visible_progress=ctx.mark_visible_progress,
                         visible_delivery_lock=ctx.delivery_lock(),
+                        context_gate=ctx.wait_context_cards_delivered,
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
                     # #105341: a consumer created only for interim commentary (text streaming off)

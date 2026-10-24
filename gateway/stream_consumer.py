@@ -120,7 +120,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None,
         on_visible_progress: Optional[Callable[[], None]] = None,
-        visible_delivery_lock=None):
+        visible_delivery_lock=None,
+        context_gate: Optional[Callable[[], Any]] = None):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
@@ -134,6 +135,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Per-turn asyncio.Lock shared with the gateway's heartbeat edit/send
         # (TurnContext.delivery_lock); None = unguarded (tests / standalone use).
         self._visible_delivery_lock = visible_delivery_lock
+        # Ordering gate for the turn's FIRST visible output (TurnContext.
+        # wait_context_cards_delivered): awaited once before the first frame /
+        # commentary / boundary send so context cards queued on the progress
+        # queue land above the reply that used them. None = ungated (tests /
+        # standalone use). One-shot per consumer via _context_gate_done.
+        self._context_gate = context_gate
+        self._context_gate_done = False
         self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
@@ -461,6 +469,21 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         async with lock:
             return await deliver()
 
+    async def _gate_context_cards(self) -> None:
+        """Before this consumer's FIRST visible output: bounded wait for the
+        context cards queued before the first model call to finish delivery
+        (see TurnContext.wait_context_cards_delivered). Never raises and never
+        waits twice; a missing gate (tests / standalone) is a no-op."""
+        if self._context_gate_done or self._context_gate is None:
+            return
+        self._context_gate_done = True
+        try:
+            _res = self._context_gate()
+            if inspect.isawaitable(_res):
+                await _res
+        except Exception:
+            logger.debug("context-card ordering gate failed", exc_info=True)
+
     def _notify_visible_progress(self) -> None:
         """Fire the on_visible_progress callback (heartbeat silence clock), swallowing errors."""
         try:
@@ -533,6 +556,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Close the open native stream at a boundary; send() the pre-prompt text if that
         fails.  False only when both finalize and the fallback send failed."""
         finalize_text = self._accumulated or self._boundary_placeholder
+
+        # First visible output of the turn may happen here (approval-boundary
+        # pre-prompt text): respect the context-card ordering gate.
+        await self._gate_context_cards()
 
         async def _finalize_deliver():
             ok = await self._send_frame(finalize_text, finalize=True)
@@ -952,6 +979,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Post commentary as its own message.  Cumulative transports keep the stream going —
         resetting _accumulated would break the append-only invariant / lose text."""
         cumulative = self._cumulative_transport()
+        # Commentary is visible assistant output: the context-card ordering
+        # gate must clear before it lands.
+        await self._gate_context_cards()
         if not cumulative:
             self._reset_segment_state()
         await self._send_commentary(commentary_text)
@@ -1027,6 +1057,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Remember turn-finality so the first-send's notify metadata (the reply-ping
         # signal) is only set on the turn-final answer, never a segment preamble.
         self._first_send_turn_final = bool(is_turn_final)
+        # Every frame path (native / draft / edit / first-send / fresh-final)
+        # funnels through here: the FIRST visible frame waits for the queued
+        # context cards to land above it.
+        await self._gate_context_cards()
         return await super()._send_or_edit(text, finalize=finalize, is_turn_final=is_turn_final)
 
     async def _first_send(self, text: str, *, finalize: bool) -> bool:

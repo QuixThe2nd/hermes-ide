@@ -1584,6 +1584,36 @@ def _is_agent_status_queue_marker(raw: Any) -> bool:
     )
 
 
+# FIFO marker for the context-card ordering gate (TurnContext.
+# wait_context_cards_delivered). Enqueued by the turn's FIRST visible
+# assistant output, i.e. strictly behind every context.injected card queued
+# before the first model call; the progress drain delivers whatever it
+# absorbed ahead of the marker and then sets the embedded asyncio.Event so
+# the gated output can proceed. Same queue-ordering trick as the agent-
+# status marker above: admission order becomes the delivery-order contract.
+_CONTEXT_FLUSH_QUEUE_MARKER = "__flush__"
+
+
+def _context_flush_queue_marker(event) -> tuple:
+    return (_CONTEXT_FLUSH_QUEUE_MARKER, event)
+
+
+def _is_context_flush_queue_marker(raw: Any) -> bool:
+    return (
+        isinstance(raw, tuple)
+        and len(raw) == 2
+        and raw[0] == _CONTEXT_FLUSH_QUEUE_MARKER
+    )
+
+
+def _signal_context_flush_marker(raw: Any) -> None:
+    """Release a flush marker's waiter; never raises (best-effort signal)."""
+    try:
+        raw[1].set()
+    except Exception:
+        logger.debug("context flush marker signal failed", exc_info=True)
+
+
 def _adapter_can_edit_progress(adapter: Any) -> bool:
     """True when *adapter* renders progress by editing one bubble.
 
@@ -5969,6 +5999,13 @@ class TurnRunner:
             )
             for message in messages:
                 ctx.progress_queue.put(message)
+            # Arm the ordering gate: the first visible assistant output waits
+            # (bounded, see TurnContext.wait_context_cards_delivered) until the
+            # drain below delivers these cards, so they land above the reply
+            # that used them instead of being overtaken by the stream/final
+            # lanes. Cards are queued before the first model call, so the
+            # gate's flush marker always trails them in the FIFO.
+            ctx._context_cards_queued[0] = True
             # A context card is its own progress beat. Do not let terminal-card
             # header suppression or ordinary tool dedup bleed across it.
             ctx.last_was_terminal_block[0] = False
@@ -6401,8 +6438,12 @@ class TurnRunner:
             changed = False
             while True:
                 try:
+                    _raw = ctx.progress_queue.get_nowait()
+                    if _is_context_flush_queue_marker(_raw):
+                        _signal_context_flush_marker(_raw)
+                        continue
                     changed = _apply_native_event(
-                        ctx.progress_queue.get_nowait()
+                        _raw
                     ) or changed
                 except queue.Empty:
                     return changed
@@ -6430,6 +6471,13 @@ class TurnRunner:
                     raw = ctx.progress_queue.get_nowait()
                 except queue.Empty:
                     await asyncio.sleep(0.1)
+                    continue
+
+                # Context-flush marker: the native task-card rail drops plain
+                # text rows by design, so there is nothing to flush — just
+                # release the ordering gate's waiter.
+                if _is_context_flush_queue_marker(raw):
+                    _signal_context_flush_marker(raw)
                     continue
 
                 if _agent_interrupted():
@@ -6496,9 +6544,13 @@ class TurnRunner:
                 # Tool rows are discarded here by design (every edit would
                 # be a new bubble), but a queued agent-viewer status marker
                 # is a standalone send, not an edit — deliver it, don't
-                # strand it.
+                # strand it.  A context-flush marker carries no content:
+                # release its waiter so the gated first output isn't left
+                # to time out.
                 if _is_agent_status_queue_marker(raw):
                     await self._deliver_agent_status_marker(raw)
+                elif _is_context_flush_queue_marker(raw):
+                    _signal_context_flush_marker(raw)
             return
 
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
@@ -6709,7 +6761,11 @@ class TurnRunner:
                 if not ctx._run_still_current():
                     while not ctx.progress_queue.empty():
                         try:
-                            ctx.progress_queue.get_nowait()
+                            _raw = ctx.progress_queue.get_nowait()
+                            # Stale turn: rows are discarded, but a flush
+                            # marker's waiter must still be released.
+                            if _is_context_flush_queue_marker(_raw):
+                                _signal_context_flush_marker(_raw)
                         except Exception:
                             break
                     return
@@ -6724,7 +6780,13 @@ class TurnRunner:
                 # Agent-viewer markers are exempt: one denotes a
                 # subprocess/cloud run that already spawned and keeps
                 # running after the interrupt — its link stays visible.
-                if _agent_interrupted() and not _is_agent_status_queue_marker(raw):
+                # Flush markers are exempt so their waiter is released
+                # below instead of timing out.
+                if (
+                    _agent_interrupted()
+                    and not _is_agent_status_queue_marker(raw)
+                    and not _is_context_flush_queue_marker(raw)
+                ):
                     # Drop this event and continue draining.
                     await asyncio.sleep(0)
                     continue
@@ -6749,6 +6811,20 @@ class TurnRunner:
                     _separate_pending_lines.clear()
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
+                    continue
+                elif _is_context_flush_queue_marker(raw):
+                    # Context-card ordering gate: the turn's first visible
+                    # assistant output is waiting on this marker. Deliver
+                    # everything absorbed ahead of it — the context.injected
+                    # cards queued before the first model call — right now,
+                    # bypassing the edit throttle (same forced flush the
+                    # agent-viewer marker uses), then release the waiter so
+                    # the reply lands BELOW the cards it was built from.
+                    # Interrupted turns keep row suppression: the waiter is
+                    # released without a send.
+                    if not _agent_interrupted():
+                        await _flush_progress_before_agent_status()
+                    _signal_context_flush_marker(raw)
                     continue
                 elif _is_agent_status_queue_marker(raw):
                     # Branded agent-viewer notice (Claude/Cursor live viewer
@@ -6895,6 +6971,11 @@ class TurnRunner:
                 while not ctx.progress_queue.empty():
                     try:
                         raw = ctx.progress_queue.get_nowait()
+                        if _is_context_flush_queue_marker(raw):
+                            # Cancelled drain: release the ordering gate's
+                            # waiter rather than letting it time out.
+                            _signal_context_flush_marker(raw)
+                            continue
                         if _is_agent_status_queue_marker(raw):
                             # Agent-viewer status during drain: flush the
                             # pending row, then deliver the notice itself —
@@ -7950,6 +8031,7 @@ class TurnRunner:
                         run_still_current=ctx._run_still_current,
                         on_visible_progress=ctx.mark_visible_progress,
                         visible_delivery_lock=ctx.delivery_lock(),
+                        context_gate=ctx.wait_context_cards_delivered,
                     )
                     if _want_stream_deltas:
                         def _stream_delta_cb(text: str) -> None:
@@ -7982,12 +8064,20 @@ class TurnRunner:
                 return
             if already_streamed or not ctx._status_adapter or not str(display_text or "").strip():
                 return
-            _ia_fut = safe_schedule_threadsafe(
-                ctx.deliver_visible(lambda: ctx._status_adapter.send(
+
+            # Interim assistant text IS visible assistant output: let the
+            # context-card ordering gate clear before it lands (no stream
+            # consumer exists on this turn, so this status rail is the lane).
+            async def _gated_interim_send():
+                await ctx.wait_context_cards_delivered()
+                await ctx.deliver_visible(lambda: ctx._status_adapter.send(
                     ctx._status_chat_id,
                     display_text,
                     metadata=ctx._status_thread_metadata,
-                )),
+                ))
+
+            _ia_fut = safe_schedule_threadsafe(
+                _gated_interim_send(),
                 ctx._loop_for_step,
                 logger=logger,
                 log_message="interim_assistant_callback scheduling error",
@@ -37227,6 +37317,14 @@ class GatewayRunner(
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+
+        # Ordering gate for the non-streamed final reply: this turn had no
+        # stream consumer / interim lane (or they never fired), so the outer
+        # handler's send is the FIRST visible assistant output — let the
+        # context cards queued before the first model call land above it.
+        # No-op once any earlier lane already cleared the gate.
+        with suppress(Exception):
+            await turn_ctx.wait_context_cards_delivered()
 
         return response
 

@@ -124,6 +124,50 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+    # Context-card ordering gate. ``_context_cards_queued`` flips True in
+    # progress_callback (agent thread, plain box write) when the first
+    # context.injected card lands on progress_queue — always BEFORE the first
+    # model call. ``_context_gate_done`` makes the gate one-shot per turn: only
+    # the FIRST visible assistant output waits; both boxes are otherwise idle.
+    _context_cards_queued: list = field(default_factory=lambda: [False])
+    _context_gate_done: list = field(default_factory=lambda: [False])
+
+    async def wait_context_cards_delivered(self, timeout: float = 8.0) -> None:
+        """Bounded ordering gate for the turn's first visible assistant output.
+
+        The progress drain (``send_progress_messages``) polls on a 0.3s cadence
+        and throttles edits to 1.5s, while stream/interim/final output reaches
+        the user on separate paths that only share the ACTIVE-I/O delivery lock —
+        queued context cards could still be sitting in ``progress_queue`` when the
+        reply that used them becomes visible. The missing signal is queue-
+        admission completion, so this enqueues a ``("__flush__", event)`` marker
+        BEHIND everything already queued (queue.Queue is FIFO, so all context
+        cards injected before the first model call precede it) and waits, bounded,
+        for the drain to deliver what it absorbed and set the event. Never hangs:
+        no cards queued / progress queue absent / stale turn → immediate return;
+        a dead, disabled or wedged drain only costs ``timeout``. Subsequent calls
+        in the same turn are no-ops (``_context_gate_done``)."""
+        import asyncio as _asyncio
+
+        if self._context_gate_done[0]:
+            return
+        self._context_gate_done[0] = True
+        q = self.progress_queue
+        if (
+            q is None
+            or not self._context_cards_queued[0]
+            or not self._run_still_current()
+        ):
+            return
+        ev = _asyncio.Event()
+        q.put(("__flush__", ev))
+        try:
+            await _asyncio.wait_for(ev.wait(), timeout)
+        except Exception:
+            # Drain dead/wedged/never started (progress disabled mid-turn,
+            # native task-card rail, cancellation): ordering degrades to the
+            # previous behavior rather than stalling the reply.
+            pass
 
     def mark_visible_progress(self) -> None:
         """Record a successful user-visible delivery for this turn (see
