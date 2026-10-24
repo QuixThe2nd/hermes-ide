@@ -28,10 +28,11 @@ Discord applied it cannot lose the restore.
 If ANOTHER confirmed restart queues while this gate is still waiting for the
 word, the shared queue sequence resolves the pending wait with a
 distinguished superseded token and this tool reports
-``{"success": false, "status": "superseded"}`` — never ``cancelled``, which
-would claim the requester replied when the gateway actually bounced out from
-under the wait (see ``gateway.restart`` for the queue-side sweep and the
-resume-seam note that names the bounce post-restart).
+``{"success": true, "status": "restarting", "consent": "shared"}`` — the
+restart IS happening, via the other chat's consent — never ``cancelled``
+(which would claim the requester replied) and never a failure (see
+``gateway.restart`` for the queue-side sweep and the resume-seam note that
+names the bounce post-restart).
 """
 
 from __future__ import annotations
@@ -228,21 +229,25 @@ def _cancelled_json(message: str) -> str:
 def _superseded_json() -> str:
     """The truthful result for a gate whose wait another restart's queue closed.
 
-    Still ``success: false`` — this gate started nothing, so the model must
-    not claim a restart is coming from it — but ``status: "superseded"``,
-    never "cancelled": the requester replied nothing; the gateway bounced
-    out from under the wait. Wording and status come from
-    ``gateway.restart`` so the resume-seam annotator (which matches this
-    exact JSON in a forced victim's transcript tail) can never drift from
-    what the tool emits.
+    ``success: true`` — the restart IS happening, via the other chat's
+    consent — with ``status: "restarting"`` and ``consent: "shared"``, never
+    "cancelled" (the requester replied nothing) and never an error field on
+    a success. Wording and status come from ``gateway.restart`` so the
+    resume-seam annotator (which matches this exact JSON in a forced
+    victim's transcript tail) can never drift from what the tool emits.
     """
-    from gateway.restart import SUPERSEDED_RESTART_ERROR, SUPERSEDED_RESTART_STATUS
+    from gateway.restart import (
+        SHARED_RESTART_CONSENT,
+        SHARED_RESTART_EXPLANATION,
+        SHARED_RESTART_STATUS,
+    )
 
     return json.dumps(
         {
-            "success": False,
-            "status": SUPERSEDED_RESTART_STATUS,
-            "error": SUPERSEDED_RESTART_ERROR,
+            "success": True,
+            "status": SHARED_RESTART_STATUS,
+            "consent": SHARED_RESTART_CONSENT,
+            "message": SHARED_RESTART_EXPLANATION,
         },
         separators=(",", ":"),
         ensure_ascii=False,
@@ -795,8 +800,11 @@ def handle_restart(args: dict, **_: Any) -> str:
        ``{"success": false, "status": "cancelled"}``. If ANOTHER confirmed
        restart queues while this gate waits, the drain resolves the wait
        with the distinguished superseded token and the result is the
-       truthful ``{"success": false, "status": "superseded", ...}`` — never
-       "cancelled", which would claim a reply that never arrived. While the
+       truthful ``{"success": true, "status": "restarting", "consent":
+       "shared", ...}`` — the restart is happening via the other chat's
+       consent, never "cancelled" (no reply arrived) and never a failure.
+       Multiple pending restart prompts settle the same way: one consent
+       shared across all of them. While the
        tool waits, a Discord thread is temporarily retitled ``Restart
        Pending`` and restored to its exact original name on every exit —
        before the restart can be queued, and cosmetically (a rename or
@@ -894,10 +902,10 @@ def handle_restart(args: dict, **_: Any) -> str:
             ),
         )
         if confirm_error is _SUPERSEDED_CONFIRM:
-            # Another confirmed restart owns the bounce; this gate started
-            # nothing. Still success=false (no restart to narrate), but
-            # superseded — a "cancelled" here would be a false statement
-            # about a reply that never arrived.
+            # Another confirmed restart owns the bounce — and it IS bouncing,
+            # with this gate riding the same restart via that chat's consent:
+            # success=true, consent="shared", never "cancelled" (a false
+            # statement about a reply that never arrived).
             return _superseded_json()
         if confirm_error is not None:
             return _cancelled_json(confirm_error)

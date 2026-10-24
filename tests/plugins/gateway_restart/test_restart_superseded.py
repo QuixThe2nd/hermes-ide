@@ -1,14 +1,15 @@
-"""Concurrently-superseded restart gates resolve truthfully — ``superseded``.
+"""Concurrently-superseded restart gates resolve truthfully — shared consent.
 
 When a confirmed restart queues (either user-restart entry point funnels into
-``gateway.restart.queue_user_restart``) while ANOTHER restart gate's confirm
-wait is still pending, that pending wait is resolved with the distinguished
-``SUPERSEDED_RESPONSE`` token and the waiting ``restart`` tool must answer
-``{"success": false, "status": "superseded"}`` — never ``cancelled``, which
-would claim the requester replied when the gateway actually bounced out from
-under the wait. These tests pin the brief's five cases end to end through the
-REAL clarify registry and the REAL shared queue sequence, plus the
-resume-seam note that names the bounce on the replayed tool result.
+``gateway.restart.queue_user_restart``) while OTHER restart gates' confirm
+waits are still pending, those pending waits are resolved with the
+distinguished ``SUPERSEDED_RESPONSE`` token and each waiting ``restart``
+tool must answer ``{"success": true, "status": "restarting", "consent":
+"shared"}`` — the restart IS happening, via the other chat's consent — never
+``cancelled`` (which would claim the requester replied) and never a failure.
+These tests pin the brief's cases end to end through the REAL clarify
+registry and the REAL shared queue sequence, plus the resume-seam note that
+names the bounce on the replayed tool result.
 """
 
 from __future__ import annotations
@@ -159,10 +160,11 @@ def test_pending_gate_superseded_by_another_confirmed_restarts_queue(
     The gate runs on a worker thread against the REAL registry (exactly the
     production shape: the tool blocks on a threading.Event while another
     session's confirmed restart queues on the gateway loop). The result must
-    be the exact superseded JSON — ``success: false`` so the model cannot
-    claim a restart of its own, ``status: "superseded"`` and never
-    ``cancelled``, which would be a false statement about a reply that never
-    arrived — and the OTHER gate's queue must be the only restart started.
+    be the exact shared-consent JSON — ``success: true`` (the restart IS
+    happening via the other chat's consent), ``status: "restarting"``,
+    ``consent: "shared"`` and never ``cancelled``, which would be a false
+    statement about a reply that never arrived — and the OTHER gate's queue
+    must be the only restart started.
     """
     from plugins.gateway_restart.tool import handle_restart
 
@@ -192,15 +194,22 @@ def test_pending_gate_superseded_by_another_confirmed_restarts_queue(
         assert not gate.is_alive(), "the superseded gate never returned"
         assert "error" not in outcome
 
-        from gateway.restart import SUPERSEDED_RESTART_ERROR
+        from gateway.restart import (
+            SHARED_RESTART_CONSENT,
+            SHARED_RESTART_EXPLANATION,
+            SHARED_RESTART_STATUS,
+        )
 
         result = json.loads(outcome["result"])
         # The exact truthful result, byte-for-byte the brief's contract.
-        assert set(result) == {"success", "status", "error"}
-        assert result["success"] is False
-        assert result["status"] == "superseded"
-        assert result["status"] != "cancelled"
-        assert result["error"] == SUPERSEDED_RESTART_ERROR
+        assert set(result) == {"success", "status", "consent", "message"}
+        assert result["success"] is True
+        assert result["status"] == SHARED_RESTART_STATUS == "restarting"
+        assert result["consent"] == SHARED_RESTART_CONSENT == "shared"
+        assert result["message"] == SHARED_RESTART_EXPLANATION
+        # Never claims a cancellation or a failure — no error field at all.
+        assert "cancelled" not in result
+        assert "error" not in result
         # Only the OTHER gate's queue reached request_restart — this gate
         # started nothing and queued nothing of its own.
         runner.request_restart.assert_called_once_with(detached=True, via_service=False)
@@ -448,8 +457,9 @@ def test_superseded_path_restores_the_thread_title(gateway_loop, monkeypatch):
         assert "error" not in outcome
 
         result = json.loads(outcome["result"])
-        assert result["success"] is False
-        assert result["status"] == "superseded"
+        assert result["success"] is True
+        assert result["status"] == "restarting"
+        assert result["consent"] == "shared"
         # Retitled before the prompt; the exact original name restored on
         # the superseded exit — and the only queued restart was the OTHER
         # gate's, which owns the loop until its request_restart returns.
@@ -470,10 +480,11 @@ def test_resume_note_names_the_bounce_on_the_superseded_tool_result():
     """The replayed superseded result gains one line naming the bounce.
 
     The forced-resume seam annotates the model-facing copy of the tail's
-    superseded restart result (never a synthetic user row): the original
+    shared-consent restart result (never a synthetic user row): the original
     JSON stays intact and one appended line names the bounce with an
-    ISO-8601 UTC stamp, says who caused it, and corrects the record —
-    superseded, not cancelled.
+    ISO-8601 UTC stamp, says the result was resolved by another chat's
+    shared consent, and that the gateway has since restarted — never reading
+    as a cancellation.
     """
     from datetime import datetime, timezone
 
@@ -505,8 +516,11 @@ def test_resume_note_names_the_bounce_on_the_superseded_tool_result():
     assert content.count("\n") == 1
     assert content.startswith(f"{original}\n{SUPERSEDED_RESTART_NOTE_PREFIX}")
     assert "at 2026-09-14T10:30:00Z" in content
-    assert "by another confirmed restart" in content
-    assert "superseded, not cancelled" in content
+    assert "by another chat's shared consent" in content
+    assert "the gateway has since restarted" in content
+    assert "pre-restart state" in content
+    # Never reads as a cancellation.
+    assert "cancel" not in content
     # Idempotent: the note prefix is the mark, a second pass annotates nothing.
     assert (
         annotate_superseded_restart_tail(
@@ -520,13 +534,28 @@ def test_resume_note_names_the_bounce_on_the_superseded_tool_result():
 def test_resume_note_is_surgical_about_what_it_annotates():
     """Lookalikes, cancellations, and non-tail rows are never annotated."""
 
-    from gateway.restart import annotate_superseded_restart_tail
+    from gateway.restart import (
+        annotate_superseded_restart_tail,
+        is_superseded_restart_tool_result,
+    )
     from plugins.gateway_restart.tool import _superseded_json
 
     superseded = _superseded_json()
 
-    # A lookalike echoing only the status field — not the tool's result.
-    lookalike_content = '{"success":false,"status":"superseded"}'
+    # A normal (non-shared) restart result also says "status":"restarting"
+    # but carries no consent field — the matcher must not catch it.
+    normal_restart = json.dumps(
+        {"success": True, "status": "restarting", "active_agents": 0},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    assert is_superseded_restart_tool_result(normal_restart) is False
+    normal = {"role": "tool", "tool_call_id": "t0", "content": normal_restart}
+    assert annotate_superseded_restart_tail([normal]) == 0
+    assert normal["content"] == normal_restart
+
+    # A lookalike echoing only the consent field — not the tool's result.
+    lookalike_content = '{"success":true,"consent":"shared"}'
     lookalike = {"role": "tool", "tool_call_id": "t1", "content": lookalike_content}
     assert annotate_superseded_restart_tail([lookalike]) == 0
     assert lookalike["content"] == lookalike_content
@@ -553,3 +582,77 @@ def test_resume_note_is_surgical_about_what_it_annotates():
     stamped = [{"role": "tool", "tool_call_id": "t4", "content": superseded}]
     assert annotate_superseded_restart_tail(stamped, restarted_at=1760000000) == 1
     assert "at 2025-10-09T" in stamped[0]["content"]
+
+
+# ── 6. TWO pending gates both settle as shared consent on one queue ──────────
+
+
+def test_two_pending_gates_both_resolve_shared_consent_on_one_queued_restart(
+    gateway_loop, monkeypatch
+):
+    """Every pending restart gate settles success:true/consent:shared at once.
+
+    With two chats' restart gates waiting simultaneously, ONE other chat's
+    confirmed restart queues through the shared sequence — the sweep must
+    resolve BOTH waits with the distinguished token, and both tools must
+    answer the shared-consent payload (the old behavior failed them both
+    with success:false). Still only one restart is ever started.
+    """
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(monkeypatch, gateway_loop)
+    sessions = [
+        {**_TELEGRAM_SESSION, "chat_id": "101", "session_key": "tg-101"},
+        {**_TELEGRAM_SESSION, "chat_id": "102", "session_key": "tg-102"},
+    ]
+    outcomes: list = []
+
+    def _run_gate(session, slot):
+        set_session_vars(**session)
+        try:
+            slot["result"] = handle_restart({})
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            slot["error"] = exc
+        finally:
+            clear_session_vars(None)
+
+    gates = []
+    try:
+        for session in sessions:
+            slot: dict = {}
+            outcomes.append(slot)
+            gate = threading.Thread(
+                target=_run_gate, args=(session, slot), daemon=True
+            )
+            gate.start()
+            gates.append(gate)
+
+        assert _wait_until(lambda: cg.has_pending("tg-101") and cg.has_pending("tg-102")), (
+            "both confirm gates never armed their waits"
+        )
+        assert _queue_other_gates_restart(runner, gateway_loop)["status"] == (
+            "restarting"
+        )
+
+        for gate in gates:
+            gate.join(timeout=10)
+            assert not gate.is_alive(), "a superseded gate never returned"
+        for slot in outcomes:
+            assert "error" not in slot
+            result = json.loads(slot["result"])
+            assert result["success"] is True
+            assert result["status"] == "restarting"
+            assert result["consent"] == "shared"
+            assert "error" not in result
+
+        # One consent, one restart — never two.
+        runner.request_restart.assert_called_once_with(
+            detached=True, via_service=False
+        )
+        for session in sessions:
+            assert cg.has_pending(session["session_key"]) is False
+    finally:
+        for session in sessions:
+            cg.clear_session(session["session_key"])
+        for gate in gates:
+            gate.join(timeout=10)
