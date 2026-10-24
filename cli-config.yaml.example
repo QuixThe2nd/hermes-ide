@@ -1843,7 +1843,11 @@ display:
   # When false, the platform does not receive periodic "⏳ Working — N min"
   # notifications even if agent.gateway_notify_interval is non-zero. The
   # heartbeat edits a single message in place (where the adapter supports
-  # editing) instead of posting a new bubble each interval.
+  # editing) instead of posting a new bubble each interval. The interval is
+  # measured from the turn's last user-visible progress (delivered tool
+  # updates, commentary, streamed output), so continuous visible output
+  # suppresses the heartbeat; a genuinely quiet turn gets one after
+  # agent.gateway_notify_interval of silence.
   # Default: true everywhere, including Telegram (silent agents are worse
   # than a single edit-in-place heartbeat).
   long_running_notifications: true

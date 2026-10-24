@@ -28,10 +28,11 @@ Discord applied it cannot lose the restore.
 If ANOTHER confirmed restart queues while this gate is still waiting for the
 word, the shared queue sequence resolves the pending wait with a
 distinguished superseded token and this tool reports
-``{"success": false, "status": "superseded"}`` — never ``cancelled``, which
-would claim the requester replied when the gateway actually bounced out from
-under the wait (see ``gateway.restart`` for the queue-side sweep and the
-resume-seam note that names the bounce post-restart).
+``{"success": true, "status": "restarting", "consent": "shared"}`` — the
+restart IS happening, via the other chat's consent — never ``cancelled``
+(which would claim the requester replied) and never a failure (see
+``gateway.restart`` for the queue-side sweep and the resume-seam note that
+names the bounce post-restart).
 """
 
 from __future__ import annotations
@@ -110,6 +111,20 @@ _CONFIRM_PROMPT_WAITING_ON_OTHERS = (
     "Gateway restart requested — reply with the exact word `restart` "
     "(lowercase, on its own) and the gateway will bounce once the other "
     "active sessions finish. Anything else cancels."
+)
+
+# In-place settlement states for an already-delivered confirm prompt. The
+# requester's prompt must not stay actionable forever once the outcome is
+# known: the SAME message is edited to a concise settled state — no fresh
+# status message, no mention, no reply still expected. Own-consent wording
+# is deliberately "approved"/"pending" only: the edit lands after the shared
+# queue committed, but never claims more than that.
+_SETTLE_APPROVED_TEXT = (
+    "♻️ Restart approved — gateway restart pending; no reply needed."
+)
+_SETTLE_SHARED_TEXT = (
+    "♻️ Restart approved in another chat — gateway restart pending; no "
+    "reply needed here."
 )
 
 _NO_RUNNER_ERROR = (
@@ -217,9 +232,14 @@ def _error_json(message: str) -> str:
     )
 
 
-def _cancelled_json(message: str) -> str:
+def _cancelled_json(message: str, reply: Optional[str] = None) -> str:
     return json.dumps(
-        {"success": False, "error": message, "status": "cancelled"},
+        {
+            "success": False,
+            "error": message,
+            "status": "cancelled",
+            "reply": reply,
+        },
         separators=(",", ":"),
         ensure_ascii=False,
     )
@@ -228,25 +248,33 @@ def _cancelled_json(message: str) -> str:
 def _superseded_json() -> str:
     """The truthful result for a gate whose wait another restart's queue closed.
 
-    Still ``success: false`` — this gate started nothing, so the model must
-    not claim a restart is coming from it — but ``status: "superseded"``,
-    never "cancelled": the requester replied nothing; the gateway bounced
-    out from under the wait. Wording and status come from
-    ``gateway.restart`` so the resume-seam annotator (which matches this
-    exact JSON in a forced victim's transcript tail) can never drift from
-    what the tool emits.
+    ``success: true`` — the restart IS happening, via the other chat's
+    consent — with ``status: "restarting"`` and ``consent: "shared"``, never
+    "cancelled" (the requester replied nothing) and never an error field on
+    a success. Wording and status come from ``gateway.restart`` so the
+    resume-seam annotator (which matches this exact JSON in a forced
+    victim's transcript tail) can never drift from what the tool emits.
     """
-    from gateway.restart import SUPERSEDED_RESTART_ERROR, SUPERSEDED_RESTART_STATUS
-
-    return json.dumps(
-        {
-            "success": False,
-            "status": SUPERSEDED_RESTART_STATUS,
-            "error": SUPERSEDED_RESTART_ERROR,
-        },
-        separators=(",", ":"),
-        ensure_ascii=False,
+    from gateway.restart import (
+        SHARED_RESTART_CONSENT,
+        SHARED_RESTART_EXPLANATION,
+        SHARED_RESTART_STATUS,
     )
+
+    payload = {
+        "success": True,
+        "status": SHARED_RESTART_STATUS,
+        "consent": SHARED_RESTART_CONSENT,
+        "message": SHARED_RESTART_EXPLANATION,
+    }
+    # The shared restart is committed and draining this process too, so the
+    # reserved terminal control field rides the success exactly as it does a
+    # normal "restarting" result: the executor arms the per-turn flag and ends
+    # this turn instead of continuing the provider/tool loop inside the drain.
+    control_field = turn_control_field_for(SHARED_RESTART_STATUS)
+    if control_field:
+        payload.update(control_field)
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
 def _authoritative_work_beside_requester(
@@ -386,8 +414,14 @@ def _deliver_confirm_prompt(
     prompt: str,
     content: str,
     metadata: dict,
-) -> Optional[str]:
-    """Deliver the confirmation prompt; ``None`` when exactly one landed.
+    runner: Any = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Deliver the confirmation prompt; ``(None, message_id)`` when it landed.
+
+    The retained ``message_id`` (the rich embed's, or the plain fallback's,
+    or the plain prompt's on non-Discord adapters) is what a later shared
+    settlement edits in place — so the prompt the requester already sees is
+    the one that gets marked approved/pending, never a second message.
 
     Discord adapters that offer ``send_restart_confirmation`` render one
     dedicated confirmation embed (requester ping included) — the Discord
@@ -401,24 +435,39 @@ def _deliver_confirm_prompt(
     may already exist) is ambiguous: disarm, cancel, and no fallback.
     """
     from gateway.config import Platform
+    from gateway.restart import restart_committed
 
     rich_send = getattr(adapter, "send_restart_confirmation", None)
     use_rich = source.platform == Platform.DISCORD and callable(rich_send)
-    if use_rich:
-        coro = rich_send(
-            chat_id=source.chat_id,
-            prompt=prompt,
-            requester_user_id=str(getattr(source, "user_id", "") or ""),
-            metadata=metadata or None,
-        )
-    else:
-        coro = adapter.send(source.chat_id, content, metadata=metadata or None)
 
-    send_future, submit_error = _submit_to_loop(coro, loop)
+    async def _send_with_commit_check(*, rich: bool) -> Any:
+        try:
+            committed = runner is not None and restart_committed(runner)
+        except Exception:
+            committed = False
+        if committed:
+            return _PROMPT_NOT_SENT_COMMITTED
+        if rich:
+            return await rich_send(
+                chat_id=source.chat_id,
+                prompt=prompt,
+                requester_user_id=str(getattr(source, "user_id", "") or ""),
+                metadata=metadata or None,
+            )
+        return await adapter.send(
+            source.chat_id, content, metadata=metadata or None
+        )
+
+    send_future, submit_error = _submit_to_loop(
+        _send_with_commit_check(rich=use_rich), loop
+    )
     if submit_error is not None:
         # The loop closed before the send could be scheduled — nothing was
         # delivered, so the caller cancels and disarms the registration.
-        return f"Failed to deliver the restart confirmation prompt: {submit_error}"
+        return (
+            f"Failed to deliver the restart confirmation prompt: {submit_error}",
+            None,
+        )
     try:
         send_result = send_future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
     except Exception as exc:
@@ -428,41 +477,54 @@ def _deliver_confirm_prompt(
         send_future.cancel()
         return (
             "Failed to deliver the restart confirmation prompt: "
-            f"{_describe_send_exception(exc)}"
+            f"{_describe_send_exception(exc)}",
+            None,
         )
+    if send_result is _PROMPT_NOT_SENT_COMMITTED:
+        return (_PROMPT_NOT_SENT_COMMITTED, None)
     if send_result is None or getattr(send_result, "success", True) is not False:
-        return None
+        return None, str(getattr(send_result, "message_id", "") or "") or None
 
     error = (
         "Failed to deliver the restart confirmation prompt: "
         f"{getattr(send_result, 'error', None) or 'send failed'}"
     )
     if not use_rich:
-        return error
+        return error, None
 
     # The embed never landed — one plain prompt, requester mention included.
     fallback_future, submit_error = _submit_to_loop(
-        adapter.send(source.chat_id, content, metadata=metadata or None), loop
+        _send_with_commit_check(rich=False), loop
     )
     if submit_error is not None:
-        return f"Failed to deliver the restart confirmation prompt: {submit_error}"
+        return (
+            f"Failed to deliver the restart confirmation prompt: {submit_error}",
+            None,
+        )
     try:
         fallback_result = fallback_future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
     except Exception as exc:
         fallback_future.cancel()
         return (
             "Failed to deliver the restart confirmation prompt: "
-            f"{_describe_send_exception(exc)}"
+            f"{_describe_send_exception(exc)}",
+            None,
         )
+    if fallback_result is _PROMPT_NOT_SENT_COMMITTED:
+        return (_PROMPT_NOT_SENT_COMMITTED, None)
     if (
         fallback_result is not None
         and getattr(fallback_result, "success", True) is False
     ):
         return (
             "Failed to deliver the restart confirmation prompt: "
-            f"{getattr(fallback_result, 'error', None) or 'send failed'}"
+            f"{getattr(fallback_result, 'error', None) or 'send failed'}",
+            None,
         )
-    return None
+    return (
+        None,
+        str(getattr(fallback_result, "message_id", "") or "") or None,
+    )
 
 
 def _begin_restart_pending_thread_title(adapter: Any, loop: Any, source: Any) -> Any:
@@ -630,23 +692,114 @@ def _record_cancelled_restart_notice(
         )
 
 
+def _probe_restart_state(runner: Any, loop: Any) -> Optional[tuple[bool, bool]]:
+    """Read ``(committed, draining)`` in one gateway-loop snapshot."""
+    from gateway.restart import restart_committed
+
+    async def _probe() -> tuple[bool, bool]:
+        return restart_committed(runner), bool(getattr(runner, "_draining", False))
+
+    future, submit_error = _submit_to_loop(_probe(), loop)
+    if submit_error is not None:
+        return None
+    try:
+        return future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+    except Exception:
+        future.cancel()
+        return None
+
+
+def _probe_restart_committed(runner: Any, loop: Any) -> bool:
+    """Recheck the authoritative committed-restart state ON the gateway loop.
+
+    The queue sequence that commits a restart (``queue_user_restart`` →
+    ``request_restart``) runs on the loop, so a plain off-loop attribute
+    read can observe a half-open sequence. One tiny round trip on the loop
+    reads the authoritative answer. Any failure — dead loop, timeout —
+    reads as "not committed": the ordinary wait then decides, exactly as
+    before this recheck existed.
+    """
+    state = _probe_restart_state(runner, loop)
+    return state is not None and state[0]
+
+
+_PROMPT_NOT_SENT_COMMITTED = object()
+
+
+def _cancel_reason_not_confirm_word(reply: Any) -> str:
+    """Human-readable cancel reason, echoing a real reply verbatim.
+
+    ``None`` has nothing to echo: the generic not-the-exact-word wording,
+    exactly as before the ``reply`` field existed. Any other value (even a
+    blank/whitespace string) is a reply the requester actually sent, so it
+    rides the error text unmodified — no strip, no reformat — for the
+    calling agent to act on.
+    """
+    if reply is None:
+        return (
+            "Restart cancelled — the reply was not the exact word "
+            f"`{_CONFIRM_WORD}`."
+        )
+    return (
+        "Restart cancelled — the reply was not the exact word "
+        f"`{_CONFIRM_WORD}`. The requester replied: {reply}"
+    )
+
+
+def _settle_confirm_shared(
+    clarify_mod: Any, clarify_id: str
+) -> tuple[Optional[Any], Optional[str], Optional[str]]:
+    """Settle a registered confirm wait as shared consent, first-writer-wins.
+
+    Resolves the wait with the distinguished superseded token — losing the
+    resolve means a real reply (or the drain sweep) already settled it — then
+    reaps and returns the ACTUAL recorded outcome: an earlier cancellation
+    wins and is never overwritten with fabricated shared consent. Returns
+    ``(reason, prompt_message_id, reply)``; ``reply`` is the reap'd
+    non-matching reply text when the race was lost to one, else ``None``.
+    """
+    try:
+        clarify_mod.resolve_gateway_clarify(
+            clarify_id, clarify_mod.SUPERSEDED_RESPONSE
+        )
+    except Exception:
+        logger.debug("Failed to settle restart confirm as shared", exc_info=True)
+    try:
+        actual = clarify_mod.wait_for_response(clarify_id, 1.0)
+    except Exception:
+        actual = None
+    if actual == clarify_mod.SUPERSEDED_RESPONSE:
+        return (_SUPERSEDED_CONFIRM, None, None)
+    if str(actual or "").strip() == _CONFIRM_WORD:
+        return (None, None, None)
+    return (_cancel_reason_not_confirm_word(actual), None, actual)
+
+
 def _confirm_restart_with_requester(
     runner: Any,
     loop: Any,
     source: Any,
     session_key: str,
     prompt: str = _CONFIRM_PROMPT,
-) -> Optional[str]:
+) -> tuple[Optional[Any], Optional[str], Optional[str]]:
     """Ping the requester and block until they type the exact word.
 
-    Returns ``None`` when the requester confirmed; ``_SUPERSEDED_CONFIRM``
-    when ANOTHER confirmed restart's queue resolved the wait (the gateway is
-    bouncing without this gate's confirmation); otherwise a human-readable
-    reason the restart must not happen. Runs on the tool's worker thread —
-    the blocking wait is a ``threading.Event`` (same primitive as
-    ``clarify``), so the gateway event loop stays free while the platform
-    adapters resolve the reply. ``prompt`` is the question the requester
-    sees; the caller picks the wording for whether other work is in flight.
+    Returns ``(None, prompt_message_id, None)`` when the requester confirmed;
+    ``(_SUPERSEDED_CONFIRM, prompt_message_id, None)`` when the restart this
+    gate shares was already committed — either ANOTHER confirmed restart's
+    queue resolved the wait, or the post-registration recheck below settled
+    it — (the gateway is bouncing without this gate's confirmation, though
+    the prompt may not have been sent at all); otherwise
+    ``(reason, prompt_message_id, reply)`` with a human-readable reason the
+    restart must not happen and the non-matching reply text (verbatim, or
+    ``None`` when no reply arrived). The retained
+    ``prompt_message_id`` lets the caller edit the already-visible prompt to
+    its settled state instead of sending a second message. Runs on the
+    tool's worker thread — the blocking wait is a ``threading.Event`` (same
+    primitive as ``clarify``), so the gateway event loop stays free while
+    the platform adapters resolve the reply. ``prompt`` is the question the
+    requester sees; the caller picks the wording for whether other work is
+    in flight.
     """
     import uuid
 
@@ -656,7 +809,9 @@ def _confirm_restart_with_requester(
     if source is None or not source.chat_id or not session_key:
         return (
             "Cannot confirm the restart: this session has no chat to "
-            "confirm in (no platform/chat or session key bound)."
+            "confirm in (no platform/chat or session key bound).",
+            None,
+            None,
         )
 
     try:
@@ -666,7 +821,9 @@ def _confirm_restart_with_requester(
     if adapter is None:
         return (
             "Cannot confirm the restart: no live adapter for this "
-            "session's platform."
+            "session's platform.",
+            None,
+            None,
         )
 
     content = prompt
@@ -720,6 +877,16 @@ def _confirm_restart_with_requester(
         wait_kind="restart",
     )
 
+    # Registration-to-wait race guard, part one: a confirmed restart may have
+    # committed while this gate was registering (the entry-level initial-state
+    # check in handle_restart ran before the registration existed). Recheck
+    # the authoritative committed state on the gateway loop IMMEDIATELY after
+    # registering: when covered, settle the fresh wait as shared consent and
+    # reap it — the requester must NOT be sent another actionable consent
+    # prompt for a restart that is already happening.
+    if _probe_restart_committed(runner, loop):
+        return _settle_confirm_shared(clarify_gateway, clarify_id)
+
     # The thread itself becomes the pending indicator: retitled before the
     # prompt can land, restored on every exit below — and always before the
     # caller can queue the restart. The setup runs INSIDE the guarded region
@@ -729,15 +896,41 @@ def _confirm_restart_with_requester(
     title_restore = None
     try:
         title_restore = _begin_restart_pending_thread_title(adapter, loop, source)
-        deliver_error = _deliver_confirm_prompt(
-            adapter, loop, source, prompt, content, metadata
+        deliver_error, prompt_message_id = _deliver_confirm_prompt(
+            adapter, loop, source, prompt, content, metadata, runner=runner
         )
+        if deliver_error is _PROMPT_NOT_SENT_COMMITTED:
+            return _settle_confirm_shared(clarify_gateway, clarify_id)
         if deliver_error is not None:
+            # The send failed, but a shared sweep may have recorded approval
+            # WHILE it was failing: reap the actual recorded outcome before
+            # cancelling, so committed shared consent survives the transport
+            # failure instead of being overwritten by a recoverable-cancel
+            # notice for a restart that is already covered.
+            if _probe_restart_committed(runner, loop):
+                settled_error, _, settled_reply = _settle_confirm_shared(
+                    clarify_gateway, clarify_id
+                )
+                if settled_error is None:
+                    return (None, None, None)
+                if settled_error is not _SUPERSEDED_CONFIRM:
+                    return (settled_error, None, settled_reply)
+                return (_SUPERSEDED_CONFIRM, None, None)
             _drop_pending_confirm(clarify_gateway, clarify_id)
             _record_cancelled_restart_notice(
                 runner, source, adapter, session_key, deliver_error
             )
-            return deliver_error
+            return (deliver_error, None, None)
+
+        # Race guard, part two: the send was in flight while a restart may
+        # have committed — no sweep resolved this wait (it registered too
+        # late), so settle it HERE, with the same distinguished token, and
+        # answer shared consent. The already-delivered prompt is settled
+        # in place by the caller via the retained message id.
+        if _probe_restart_committed(runner, loop):
+            clarify_gateway.resolve_gateway_clarify(
+                clarify_id, clarify_gateway.SUPERSEDED_RESPONSE
+            )
 
         response = clarify_gateway.wait_for_response(clarify_id, 0)
     finally:
@@ -746,13 +939,88 @@ def _confirm_restart_with_requester(
     # The superseded token is checked FIRST: a drain-resolved wait never saw
     # a reply at all, so it must not fall through into the cancel branch.
     if response == clarify_gateway.SUPERSEDED_RESPONSE:
-        return _SUPERSEDED_CONFIRM
+        return (_SUPERSEDED_CONFIRM, prompt_message_id, None)
     if str(response or "").strip() == _CONFIRM_WORD:
-        return None
+        return (None, prompt_message_id, None)
     return (
-        "Restart cancelled — the reply was not the exact word "
-        f"`{_CONFIRM_WORD}`."
+        _cancel_reason_not_confirm_word(response),
+        prompt_message_id,
+        response if response is not None else None,
     )
+
+
+def _settle_restart_prompt(
+    adapter: Any,
+    loop: Any,
+    source: Any,
+    prompt_message_id: Optional[str],
+    *,
+    shared: bool,
+) -> None:
+    """Edit the delivered confirm prompt in place to its settled state.
+
+    Best-effort and cosmetic: the restart's truth lives in the tool result,
+    so any failure here is logged and never gates, cancels, or queues
+    anything. Adapters that offer ``settle_restart_confirmation`` (native
+    Discord) replace the whole prompt message — embed, mention, and all —
+    with the concise settled text on the SAME message id, in the correct
+    thread; every other adapter keeps the generic plain ``edit_message``
+    fallback. No new message is ever sent, and no mention rides the edit.
+    """
+    if prompt_message_id is None or source is None:
+        return
+    text = _SETTLE_SHARED_TEXT if shared else _SETTLE_APPROVED_TEXT
+    settle = getattr(adapter, "settle_restart_confirmation", None)
+    try:
+        if callable(settle):
+            coro = settle(
+                chat_id=source.chat_id,
+                message_id=prompt_message_id,
+                shared=shared,
+                thread_id=str(getattr(source, "thread_id", "") or "") or None,
+            )
+        else:
+            edit = getattr(adapter, "edit_message", None)
+            if not callable(edit):
+                return
+            metadata = {}
+            if source.thread_id:
+                metadata["thread_id"] = source.thread_id
+            import inspect
+
+            edit_kwargs = {}
+            try:
+                edit_params = inspect.signature(edit).parameters
+                if "metadata" in edit_params or any(
+                    param.kind is inspect.Parameter.VAR_KEYWORD
+                    for param in edit_params.values()
+                ):
+                    edit_kwargs["metadata"] = metadata or None
+            except (TypeError, ValueError):
+                pass
+            coro = edit(source.chat_id, prompt_message_id, text, **edit_kwargs)
+        future, submit_error = _submit_to_loop(coro, loop)
+        if submit_error is not None:
+            logger.debug(
+                "restart tool: prompt settlement could not be submitted: %s",
+                submit_error,
+            )
+            return
+        try:
+            result = future.result(timeout=_BEGIN_RESTART_TIMEOUT_S)
+        except Exception:
+            # Timed out / dead loop: cancel OUR pending edit so a zombie
+            # coroutine cannot land a settled prompt late. The restart's
+            # truth is already in the tool result — never undo it.
+            future.cancel()
+            raise
+        if result is not None and getattr(result, "success", True) is False:
+            logger.debug(
+                "restart tool: prompt settlement edit reported failure: %s",
+                getattr(result, "error", None) or "send failed",
+            )
+    except Exception as exc:
+        logger.debug("restart tool: prompt settlement failed: %s", exc)
 
 
 async def _queue_user_restart(runner: Any, source: Any, message_id: Optional[str]) -> dict:
@@ -792,11 +1060,17 @@ def handle_restart(args: dict, **_: Any) -> str:
        blocks until they reply. Only the exact word ``restart`` (after
        ``strip()``, nothing else — not ``Restart``, not ``yes``, not
        ``/restart``) confirms; anything else or empty cancels with
-       ``{"success": false, "status": "cancelled"}``. If ANOTHER confirmed
+       ``{"success": false, "status": "cancelled", "reply": ...}`` — the
+       ``reply`` field echoes the requester's actual reply verbatim
+       (``null`` when no reply arrived), like ``clarify``'s
+       ``user_response``. If ANOTHER confirmed
        restart queues while this gate waits, the drain resolves the wait
        with the distinguished superseded token and the result is the
-       truthful ``{"success": false, "status": "superseded", ...}`` — never
-       "cancelled", which would claim a reply that never arrived. While the
+       truthful ``{"success": true, "status": "restarting", "consent":
+       "shared", ...}`` — the restart is happening via the other chat's
+       consent, never "cancelled" (no reply arrived) and never a failure.
+       Multiple pending restart prompts settle the same way: one consent
+       shared across all of them. While the
        tool waits, a Discord thread is temporarily retitled ``Restart
        Pending`` and restored to its exact original name on every exit —
        before the restart can be queued, and cosmetically (a rename or
@@ -837,23 +1111,9 @@ def handle_restart(args: dict, **_: Any) -> str:
     ):
         return _error_json(_UNSUPPORTED_RUNNER_ERROR)
 
-    if getattr(runner, "_restart_requested", False) or getattr(
-        runner, "_draining", False
-    ):
-        # A restart already in flight owns the notify payload — no ping, no
-        # confirm wait, no second request_restart.
-        return _result_json(
-            runner,
-            {
-                "status": "already_in_progress",
-                "active_agents": runner._running_agent_count(),
-                "via_service": None,
-            },
-        )
-
     # Tool handlers run in a worker thread, and request_restart() calls
-    # asyncio.create_task — every gateway-side coroutine (the confirm prompt
-    # send included) must land on the gateway event loop, never on this
+    # asyncio.create_task — every gateway-side observation and coroutine (the
+    # confirm prompt send included) must use the gateway event loop, never this
     # thread's (nonexistent) loop.
     loop = getattr(runner, "_gateway_loop", None)
     if loop is None or loop.is_closed():
@@ -875,32 +1135,67 @@ def handle_restart(args: dict, **_: Any) -> str:
             "event loop; it must run from a tool worker thread."
         )
 
+    state = _probe_restart_state(runner, loop)
+    if state is None:
+        return _error_json(
+            "The gateway event loop could not confirm the current restart "
+            "state; no restart was started."
+        )
+    committed, draining = state
+    if committed:
+        # A restart already in flight owns the notify payload — no ping, no
+        # confirm wait, no second request_restart.
+        return _result_json(
+            runner,
+            {
+                "status": "already_in_progress",
+                "active_agents": runner._running_agent_count(),
+                "via_service": None,
+            },
+        )
+    if draining:
+        return _error_json(
+            "Gateway shutdown is already in progress; no restart was started."
+        )
+
     source = _source_from_session_context()
     session_key = get_session_env("HERMES_SESSION_KEY", "").strip()
 
+    prompt_message_id: Optional[str] = None
     if not _session_is_only_active_work(runner, session_key):
         # Other work is in flight — or aloneness cannot be proven — so keep
         # today's timing gate: the exact word `restart` confirms, anything
         # else cancels, and the wait for the reply stays unbounded.
-        confirm_error = _confirm_restart_with_requester(
-            runner,
-            loop,
-            source,
-            session_key,
-            prompt=(
-                _CONFIRM_PROMPT_WAITING_ON_OTHERS
-                if _other_active_work_in_flight(runner, session_key)
-                else _CONFIRM_PROMPT
-            ),
+        confirm_error, prompt_message_id, confirm_reply = (
+            _confirm_restart_with_requester(
+                runner,
+                loop,
+                source,
+                session_key,
+                prompt=(
+                    _CONFIRM_PROMPT_WAITING_ON_OTHERS
+                    if _other_active_work_in_flight(runner, session_key)
+                    else _CONFIRM_PROMPT
+                ),
+            )
         )
         if confirm_error is _SUPERSEDED_CONFIRM:
-            # Another confirmed restart owns the bounce; this gate started
-            # nothing. Still success=false (no restart to narrate), but
-            # superseded — a "cancelled" here would be a false statement
-            # about a reply that never arrived.
+            # Another confirmed restart owns the bounce — and it IS bouncing,
+            # with this gate riding the same restart via that chat's consent:
+            # success=true, consent="shared", never "cancelled" (a false
+            # statement about a reply that never arrived). The delivered
+            # prompt, if any, is edited in place to the shared settled state
+            # so it stops asking for a reply that no longer matters.
+            try:
+                adapter = runner._adapter_for_source(source)
+            except Exception:
+                adapter = None
+            _settle_restart_prompt(
+                adapter, loop, source, prompt_message_id, shared=True
+            )
             return _superseded_json()
         if confirm_error is not None:
-            return _cancelled_json(confirm_error)
+            return _cancelled_json(confirm_error, confirm_reply)
 
         # The word landed, so the bounce is committed — queue the shared
         # drain right away, with no plugin-side wait beside it. Waiting for
@@ -928,4 +1223,22 @@ def handle_restart(args: dict, **_: Any) -> str:
         future.cancel()
         logger.warning("restart tool: queued restart failed: %s", exc)
         return _error_json(f"Failed to begin gateway restart: {exc}")
+
+    if status.get("status") == "shutdown_in_progress":
+        return _error_json(
+            "Gateway shutdown is already in progress; no restart was started."
+        )
+
+    # The requester's own consent landed AND the shared queue committed the
+    # restart — only now is the approved state truthful. A failure above
+    # leaves the prompt untouched rather than claiming a restart that never
+    # queued. Best-effort edit of the SAME message, no mention, no new send.
+    if prompt_message_id is not None:
+        try:
+            adapter = runner._adapter_for_source(source)
+        except Exception:
+            adapter = None
+        _settle_restart_prompt(
+            adapter, loop, source, prompt_message_id, shared=False
+        )
     return _result_json(runner, status)

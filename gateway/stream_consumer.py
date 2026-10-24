@@ -118,14 +118,32 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
-        run_still_current: Optional[Callable[[], bool]] = None):
+        run_still_current: Optional[Callable[[], bool]] = None,
+        on_visible_progress: Optional[Callable[[], None]] = None,
+        visible_delivery_lock=None,
+        context_gate: Optional[Callable[[], Any]] = None):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
         # Hooks (exceptions swallowed): on_new_message per fresh content bubble (next
-        # tool-progress bubble goes BELOW it); on_before_finalize once (pause typing).
+        # tool-progress bubble goes BELOW it); on_before_finalize once (pause typing);
+        # on_visible_progress after any transport call that actually delivered visible
+        # text (feeds the long-running heartbeat's silence clock).
         self._on_new_message = on_new_message
+        self._on_visible_progress = on_visible_progress
+        # Per-turn asyncio.Lock shared with the gateway's heartbeat edit/send
+        # (TurnContext.delivery_lock); None = unguarded (tests / standalone use).
+        self._visible_delivery_lock = visible_delivery_lock
+        # Ordering gate for the turn's visible output (TurnContext.
+        # wait_context_cards_delivered): awaited before each frame /
+        # commentary / boundary send so context cards queued on the progress
+        # queue land above the reply that used them. One-shot semantics live
+        # in TurnContext (shared completion event), so CONCURRENT output
+        # callers on this consumer all observe actual drain completion —
+        # never "someone already started waiting". None = ungated
+        # (tests / standalone use); after the gate clears it is a cheap no-op.
+        self._context_gate = context_gate
         self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
@@ -444,6 +462,39 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         except Exception:
             logger.debug("on_new_message callback error", exc_info=True)
 
+    async def _deliver_visible_frame(self, deliver):
+        """Await ``deliver()`` under the turn's delivery lock when one is wired,
+        so this consumer's visible frames serialize against the heartbeat."""
+        lock = self._visible_delivery_lock
+        if lock is None:
+            return await deliver()
+        async with lock:
+            return await deliver()
+
+    async def _gate_context_cards(self) -> None:
+        """Before visible output: bounded wait for the context cards queued
+        before the first model call to finish delivery (see TurnContext.
+        wait_context_cards_delivered). Every call participates — TurnContext
+        shares one completion event across concurrent callers and latches
+        after, so repeat calls are cheap no-ops. Never raises; a missing gate
+        (tests / standalone) is a no-op."""
+        if self._context_gate is None:
+            return
+        try:
+            _res = self._context_gate()
+            if inspect.isawaitable(_res):
+                await _res
+        except Exception:
+            logger.debug("context-card ordering gate failed", exc_info=True)
+
+    def _notify_visible_progress(self) -> None:
+        """Fire the on_visible_progress callback (heartbeat silence clock), swallowing errors."""
+        try:
+            if self._on_visible_progress is not None:
+                self._on_visible_progress()
+        except Exception:
+            logger.debug("on_visible_progress callback error", exc_info=True)
+
     @staticmethod
     def _signal_flush(flush_event) -> None:
         """Wake a thread blocked in flush_pending_sync(), swallowing errors.  Every loop path
@@ -508,8 +559,24 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Close the open native stream at a boundary; send() the pre-prompt text if that
         fails.  False only when both finalize and the fallback send failed."""
         finalize_text = self._accumulated or self._boundary_placeholder
+
+        # First visible output of the turn may happen here (approval-boundary
+        # pre-prompt text): respect the context-card ordering gate.
+        await self._gate_context_cards()
+
+        async def _finalize_deliver():
+            ok = await self._send_frame(finalize_text, finalize=True)
+            if ok:
+                # Landed finalize frame is visible output: mark progress BEFORE the
+                # delivery lock is released (same contract as _send_or_edit).
+                self._notify_visible_progress()
+            return ok
+
         try:
-            if await self._send_frame(finalize_text, finalize=True):
+            # Both the finalize frame and the fallback send are same-turn visible
+            # deliveries: serialize against the gateway heartbeat under the turn's
+            # delivery lock (same boundary as _send_or_edit / _deliver_visible_frame).
+            if await self._deliver_visible_frame(_finalize_deliver):
                 logger.debug("%s boundary: finalized stream (chat=%s, turn=%s)",
                              _reason, self.chat_id, self._turn_id)
                 return True
@@ -519,8 +586,16 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         logger.warning("%s boundary: finalize not confirmed, "
                        "falling back to send() for pre-prompt text (chat=%s)",
                        _reason, self.chat_id)
+
+        async def _fallback_deliver():
+            result = await self.adapter.send(self.chat_id, finalize_text)
+            if getattr(result, "success", False):
+                # Mark inside the lock, only on a landed send.
+                self._notify_visible_progress()
+            return result
+
         try:
-            if getattr(await self.adapter.send(self.chat_id, finalize_text), "success", False):
+            if getattr(await self._deliver_visible_frame(_fallback_deliver), "success", False):
                 return True
         except Exception as send_err:
             logger.warning("%s boundary: fallback send also failed: %s", _reason, send_err)
@@ -907,6 +982,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Post commentary as its own message.  Cumulative transports keep the stream going —
         resetting _accumulated would break the append-only invariant / lose text."""
         cumulative = self._cumulative_transport()
+        # Commentary is visible assistant output: the context-card ordering
+        # gate must clear before it lands.
+        await self._gate_context_cards()
         if not cumulative:
             self._reset_segment_state()
         await self._send_commentary(commentary_text)
@@ -982,6 +1060,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Remember turn-finality so the first-send's notify metadata (the reply-ping
         # signal) is only set on the turn-final answer, never a segment preamble.
         self._first_send_turn_final = bool(is_turn_final)
+        # Every frame path (native / draft / edit / first-send / fresh-final)
+        # funnels through here: the FIRST visible frame waits for the queued
+        # context cards to land above it.
+        await self._gate_context_cards()
         return await super()._send_or_edit(text, finalize=finalize, is_turn_final=is_turn_final)
 
     async def _first_send(self, text: str, *, finalize: bool) -> bool:
@@ -1007,6 +1089,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._edit_supported = False
             return False
         self._already_sent = True
+        self._notify_visible_progress()  # landed send = user-visible progress
         self._last_sent_text = text
         if result.message_id:
             self._adopt_message_id(result.message_id)
@@ -1050,6 +1133,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             or (not has_prefers_hook and self._should_send_fresh_final())
         ):
             if await self._try_fresh_final(text, is_turn_final=is_turn_final):
+                self._notify_visible_progress()  # fresh-final message landed
                 return True
             # Discord (and any adapter that prefers fresh final) cannot attach a
             # reply reference via edit.  A failed fresh-final must not fall back
@@ -1063,6 +1147,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)
         self._already_sent = True
+        self._notify_visible_progress()  # landed edit = user-visible progress
         self._track_preview_ids_from_result(result)
         # Oversized edit split across continuations: message_id is now the LAST
         # continuation, which holds only the final chunk — retarget edits and reset

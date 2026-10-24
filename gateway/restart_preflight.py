@@ -44,15 +44,6 @@ _REAP_ALLOWANCE_S = 0.5
 # SIGTERM's share of the allowance; whatever remains waits for the SIGKILL
 # reap. A stubborn (TERM-ignoring) child is still collected, promptly.
 _TERM_WAIT_S = 0.25
-# A coalesced caller rides the owning caller's pending attempt until that
-# attempt's setup RESOLVES (release below) — parking the rider past the
-# owner's routing write is what keeps a losing caller from overwriting the
-# winner's comeback route. The owner's scan+delivery are hard-bounded above;
-# the remainder of its setup is the wind-down offer round trip, so the budget
-# covers the whole sequence with slack. Past it the rider stops waiting, but
-# it still never overtakes a live owner (see ACTIVE_OWNER_PENDING below).
-_RIDE_BUDGET_S = _SCAN_BUDGET_S + _DELIVERY_BUDGET_S + 4.0
-
 # Captured Git stdout cap per command (spec §5: 1 MiB → unknown, never a
 # truncated clean result).
 _MAX_GIT_OUTPUT_BYTES = 1024 * 1024
@@ -162,20 +153,6 @@ class _Attempt:
             self.finished.set_result(None)
 
 
-class _ActiveOwnerPending:
-    """Sentinel: another caller's pending setup still owns the restart."""
-
-
-#: Returned by :func:`warn_before_user_restart` when this caller lost the race
-#: to an owner whose setup is still in flight (its wind-down offer can easily
-#: outlast a rider's budget). The loser must report the shared
-#: already-in-progress result WITHOUT writing comeback routing, entering
-#: setup, or sending anything — losing callers never overtake an active owner.
-#: If that owner's setup later fails, it releases the attempt and a future
-#: call retries.
-ACTIVE_OWNER_PENDING = _ActiveOwnerPending()
-
-
 # One live gateway per process → one pending attempt. Riders never mutate it.
 _attempt: Optional[_Attempt] = None
 
@@ -186,7 +163,7 @@ def release_restart_preflight(attempt: Any) -> None:
     Called from ``queue_user_restart``'s ``finally``: after a successful
     hand-off (later callers hit the already-in-progress check anyway), or after
     a failed/cancelled setup so a later attempt retries the preflight. Tolerant
-    of ``None``/``ACTIVE_OWNER_PENDING`` (losing callers hold no state).
+    of ``None``.
     """
     global _attempt
     if not isinstance(attempt, _Attempt):
@@ -207,10 +184,10 @@ async def warn_before_user_restart(runner: Any, source: Any) -> Any:
     """Run the warning-only source preflight for one queue caller.
 
     Returns the attempt token the caller must hand to
-    :func:`release_restart_preflight` when its setup resolves,
-    :data:`ACTIVE_OWNER_PENDING` when another caller's pending setup still
-    owns the restart (this caller lost the race and must not overtake it), or
-    ``None`` when a restart is already established / there was nothing to do.
+    :func:`release_restart_preflight` when its setup resolves, or ``None``
+    when a restart is already established / there was nothing to do. A
+    coalesced caller waits for the existing owner's actual outcome, then
+    rechecks committed state or retries after an owner failure/cancellation.
     Never raises except cancellation — an inspection or delivery failure only
     downgrades the notice, never blocks the restart.
     """
@@ -272,30 +249,16 @@ async def warn_before_user_restart(runner: Any, source: Any) -> Any:
                     pass
                 return attempt
 
-        # A pending attempt exists: coalesce onto it. Its owner delivers the
-        # one warning and performs the setup; this caller parks (bounded) so
-        # it can neither send a duplicate warning nor overwrite the owner's
-        # comeback routing.
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(pending.finished), timeout=_RIDE_BUDGET_S
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # Owner still unresolved past the ride budget: stop waiting —
-            # but see the ownership check below before doing anything else.
-            pass
-        if _attempt is not None:
-            # Still (or newly) owned: the pending caller keeps the restart.
-            # Report the shared already-in-progress result; never replace its
-            # route, enter a second setup, or warn again.
-            return ACTIVE_OWNER_PENDING
-        # The owner's setup resolved. Loop: either a restart is now in
-        # progress (the recheck above answers None → the queue caller reports
-        # already_in_progress) or that setup failed/cancelled and released
-        # the attempt — this caller then retries as the owner of a fresh
-        # attempt.
+        # A pending attempt exists: coalesce onto its EXISTING completion
+        # signal. Provisional setup is not a committed restart, so there is no
+        # ride-budget result to report. Shielding lets this caller's outer
+        # timeout/cancellation leave the shared owner and its future intact.
+        await asyncio.shield(pending.finished)
+        # The owner's queue handoff resolved (not the natural-work drain).
+        # Loop: either a restart is now committed (the recheck above answers
+        # None → the queue caller reports already_in_progress) or that setup
+        # failed/cancelled and released the attempt — this caller then retries
+        # as the owner of a fresh attempt.
 
 
 def _installed_source_root() -> Path:
@@ -578,9 +541,10 @@ def render_notice(scan: _SourceScan) -> str:
 
     Clean matching revisions stay silent; clean with a known revision
     difference gets a short informational note (a normal update also causes
-    it); dirty and unknown get one bounded warning with whatever revision
-    context is available. The entry count always precedes the samples so the
-    full count survives any truncation.
+    it); unknown gets one bounded warning with whatever revision context is
+    available; dirty gets a short count-only status — ``🔄 Applying N
+    change(s)`` — with no warning emoji, no sample paths, and no revision
+    suffix.
     """
     if scan.kind == "not_applicable":
         return ""
@@ -592,25 +556,8 @@ def render_notice(scan: _SourceScan) -> str:
             f"Restart will continue; source consistency was not verified.{f' {context}' if context else ''}"
         )
     if scan.kind == "dirty":
-        plural = "entry" if scan.count == 1 else "entries"
-        for shown in range(min(_MAX_SAMPLE_PATHS, len(scan.samples)), -1, -1):
-            sample_list = scan.samples[:shown]
-            omitted = scan.count - len(sample_list)
-            parts = [f"`{sample}`" for sample in sample_list]
-            if omitted > 0:
-                parts.append(f"+{omitted} more")
-            listing = ", ".join(parts)
-            message = (
-                f"⚠️ Runtime source changes detected before restart: "
-                f"{scan.count} changed {plural}"
-                + (f" ({listing})" if listing else "")
-                + (f" {context}" if context else "")
-                + " Restart will continue using the files on disk at startup — "
-                "this check does not freeze them or prove they work together."
-            )
-            if len(message) <= _NOTICE_CHAR_LIMIT:
-                return message
-        return message[:_NOTICE_CHAR_LIMIT]
+        plural = "change" if scan.count == 1 else "changes"
+        return f"🔄 Applying {scan.count} {plural}"
     # Clean tree: only a known process-vs-disk revision difference is worth a
     # short informational note. Unavailable process identity says nothing
     # (never claim a match that was not observed).

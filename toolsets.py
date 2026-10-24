@@ -67,13 +67,12 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
-    # Code execution + delegation
+    # Code execution + delegation. delegate_agent is the ONE delegation
+    # dispatch surface: backend=claude (Claude Code CLI) and backend=cursor
+    # (Cursor My Machines cloud) route inside it with a per-backend
+    # prerequisite check; the old delegate_claude_agent /
+    # delegate_cursor_agent names are hidden dispatchable aliases.
     "execute_code", "delegate_agent",
-    # Cursor My Machines Cloud Agent (gated via check_fn on the agent binary)
-    "delegate_cursor_agent",
-    # Claude Code CLI delegation via the claude-glm wrapper (gated via
-    # check_fn on the wrapper binary)
-    "delegate_claude_agent",
     # MoA consultation (gated via check_fn on the default MoA preset)
     "moa_ask", "moa_debate",
     # Cronjob management
@@ -322,15 +321,6 @@ TOOLSETS = {
         "description": "Consult configured Mixture-of-Agents advisors while the acting model retains control",
         "tools": ["moa_ask", "moa_debate"],
         "includes": []
-    },
-
-    "dev-pipeline": {
-        "description": (
-            "Durable automated development jobs — the dev-pipeline lane that "
-            "plans, implements, verifies, reviews, and opens draft PRs"
-        ),
-        "tools": ["delegate_development"],
-        "includes": [],
     },
 
     "quota_channels": {

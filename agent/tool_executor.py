@@ -148,7 +148,6 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
         "delegate_assistant",
         # Hidden registry aliases (advertise=False) — dispatchable forever.
         "delegate_task",
-        "dispatch_assistant",
         "restart",
         # A foreground ``terminal`` call supervises its own child with its own
         # ``effective_timeout`` kill and structured timeout result, so the generic
@@ -166,7 +165,6 @@ _DEFAULT_UNBOUNDED_TOOLS = frozenset(
 _TOOL_NAME_ALIASES = {
     # legacy spellings normalize to the same exemption
     "delegate_task": "delegate_agent",
-    "dispatch_assistant": "delegate_assistant",
 }
 
 
@@ -1724,6 +1722,27 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
         return _SequentialDispatch(lambda next_args: inline_executor(agent, next_args, inline_ctx), finish_in_finally=False)
     if function_name in ("delegate_agent", "delegate_task"):
+        # Backend-routed calls (claude/cursor) need the registry dispatch path:
+        # the external handlers key spawn/restart receipts on the session and
+        # tool-call ids only that path supplies. The subagent fast path keeps
+        # its live-agent intercept.
+        from tools.delegate_tool import _is_external_backend
+
+        if _is_external_backend(function_args.get("backend")):
+            # Straight to the registry: the external handlers key spawn/restart
+            # receipts on the session and tool-call ids supplied here.
+            from tools.registry import registry
+
+            def _dispatch_external(next_args: dict) -> Any:
+                return registry.dispatch(
+                    function_name,
+                    next_args,
+                    task_id=effective_task_id,
+                    session_id=getattr(agent, "session_id", None) or None,
+                    tool_call_id=tool_call_id,
+                )
+
+            return _SequentialDispatch(_dispatch_external)
         spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
         agent._delegate_spinner = spinner
         return _SequentialDispatch(agent._dispatch_delegate_agent, spinner=spinner, is_delegate=True)
@@ -1746,24 +1765,29 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     # Registry tools: post hook is owned by this executor (inner observer suppressed).
     def _execute(next_args: dict) -> Any:
         import model_tools
+        from tools.tool_status import get_tool_status_callback, tool_status_scope
 
-        with model_tools.suppress_post_tool_call_hook():
-            return model_tools.handle_function_call(
-                function_name,
-                next_args,
-                effective_task_id,
-                tool_call_id=tool_call_id,
-                session_id=agent.session_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                skip_pre_tool_call_hook=True,
-                skip_tool_request_middleware=True,
-                skip_tool_execution_middleware=True,
-                tool_request_middleware_trace=list(middleware_trace),
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-            )
+        # Registry dispatch bypasses invoke_tool, so bind this call's native id
+        # here (the actual sequential execution boundary) for mid-tool status
+        # emits; the scope restores the outer callback/id on exit.
+        with tool_status_scope(get_tool_status_callback(), tool_call_id=tool_call_id):
+            with model_tools.suppress_post_tool_call_hook():
+                return model_tools.handle_function_call(
+                    function_name,
+                    next_args,
+                    effective_task_id,
+                    tool_call_id=tool_call_id,
+                    session_id=agent.session_id or "",
+                    turn_id=getattr(agent, "_current_turn_id", "") or "",
+                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                    skip_pre_tool_call_hook=True,
+                    skip_tool_request_middleware=True,
+                    skip_tool_execution_middleware=True,
+                    tool_request_middleware_trace=list(middleware_trace),
+                    enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                    disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                )
 
     return _SequentialDispatch(
         execute=_execute,

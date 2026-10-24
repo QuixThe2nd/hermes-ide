@@ -15,8 +15,8 @@ rail. These tests pin the whole matrix around that split:
 - restart losing the wait but neither the mission nor its result;
 - cross-process terminalization (the disk re-check fallback);
 - origin vs assistant session non-interference;
-- the legacy ``dispatch_assistant`` name staying dispatchable while never
-  appearing in advertised definitions.
+- the removed ``dispatch_assistant`` legacy name absent from the registry and
+  rejected on dispatch while ``delegate_assistant`` stays advertised.
 """
 
 from __future__ import annotations
@@ -413,7 +413,7 @@ class TestForegroundRestart:
         """A gateway restart must not fire on a still-active background mission."""
         missions_env.register(_RegistrationCtx())
         out = json.loads(
-            missions_env.handle_dispatch_assistant(
+            missions_env.handle_delegate_assistant(
                 {"chat_id": CHAT, "goal": "Agree picnic time", "background": True},
                 session_key=ORIGIN_KEY,
                 session_id="sess-fg",
@@ -694,7 +694,7 @@ class TestCrossProcessTerminalization:
 
 
 class TestLegacyAliasVisibility:
-    def test_old_name_hidden_from_definitions_but_dispatchable(self, missions_env):
+    def test_removed_dispatch_assistant_not_registered(self, missions_env):
         scope = registry.current_scope_key()
 
         class _Ctx:
@@ -703,23 +703,14 @@ class TestLegacyAliasVisibility:
 
         missions_env.register(_Ctx())
         try:
-            # Advertised definitions carry only the new name.
             names = {
                 d["function"]["name"]
-                for d in registry.get_definitions(
-                    {"delegate_assistant", "dispatch_assistant"}
-                )
+                for d in registry.get_definitions({"delegate_assistant"})
             }
             assert "delegate_assistant" in names
             assert "dispatch_assistant" not in names
-            # The alias entry exists, is hidden, and shares the handler.
-            entry = registry.get_entry("dispatch_assistant", scope=scope)
-            assert entry is not None and entry.advertise is False
-            assert entry.handler is registry.get_entry(
-                "delegate_assistant", scope=scope
-            ).handler
+            assert registry.get_entry("dispatch_assistant", scope=scope) is None
 
-            # Both names dispatch, and both forward `background` unchanged.
             via_new = json.loads(
                 registry.dispatch(
                     "delegate_assistant",
@@ -731,7 +722,8 @@ class TestLegacyAliasVisibility:
             )
             assert via_new["status"] == "dispatched"
             assert via_new["tool"] == "delegate_assistant"
-            via_old = json.loads(
+
+            rejected = json.loads(
                 registry.dispatch(
                     "dispatch_assistant",
                     {"chat_id": OTHER_CHAT, "goal": "g", "background": True},
@@ -740,9 +732,8 @@ class TestLegacyAliasVisibility:
                     session_id="sess-alias-2",
                 )
             )
-            assert via_old["status"] == "dispatched"
-            assert via_old["tool"] == "delegate_assistant"
-            assert via_old["result_kind"] == "mission"
+            assert "error" in rejected
+            assert "Unknown tool" in rejected["error"]
         finally:
             with registry._lock:
                 registry._scoped_tools.pop(scope, None)

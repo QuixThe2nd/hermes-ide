@@ -1684,7 +1684,11 @@ def test_rename_submit_race_never_bypasses_the_confirm_cleanup(
 
     def _rename_submit_fails(coro, loop):
         submitted.append(coro)
-        if len(submitted) == 2:  # capture → RENAME → prompt send → restore
+        # The MUTATING rename is the submission that must fail — keyed on the
+        # coroutine, not a position, because the post-registration committed-
+        # restart probe also submits ahead of it (capture → probe → RENAME →
+        # prompt send → probe → restore).
+        if getattr(coro, "__name__", "") == "begin_restart_pending_thread_title":
             raise RuntimeError("Event loop is closed")
         return real_submit(coro, loop)
 

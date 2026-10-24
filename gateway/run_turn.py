@@ -2910,6 +2910,7 @@ class GatewayTurnMixin:
         resolve_display_setting: Any = None
         progress_mode: str = "all"
         progress_grouping: str = "accumulate"
+        progress_codebox: bool = False
         _display_surface_mode: Any = None
         tool_progress_enabled: bool = False
         # This turn's safely parsed tool_preview_length (0 = unlimited). The
@@ -2960,6 +2961,10 @@ class GatewayTurnMixin:
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        # Code-box presentation for accumulated groups (opt-in; plain otherwise)
+        progress_codebox = bool(
+            resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
+        )
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
 
@@ -3033,6 +3038,7 @@ class GatewayTurnMixin:
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
             progress_mode=progress_mode, progress_grouping=progress_grouping,
+            progress_codebox=progress_codebox,
             _display_surface_mode=_display_surface_mode, tool_preview_max_len=tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
@@ -3046,7 +3052,7 @@ class GatewayTurnMixin:
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
-        "progress_grouping", "tool_preview_max_len", "tool_progress_enabled", "log_queue",
+        "progress_grouping", "progress_codebox", "tool_preview_max_len", "tool_progress_enabled", "log_queue",
         "resolve_display_setting", "user_config", "enabled_toolsets", "disabled_toolsets",
         "log_mode_enabled", "interim_assistant_messages_enabled", "needs_progress_queue",
         "_native_slack_task_cards",
@@ -4130,8 +4136,15 @@ class GatewayTurnMixin:
         bound just after this task is scheduled (reads as None until then).
 
         Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
-        long_running_notifications=off disables)."""
-        from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
+        long_running_notifications=off disables). The interval is measured from the turn's last
+        USER-VISIBLE progress (delivered tool updates, commentary, successful message edits and
+        streamed output — see TurnContext.mark_visible_progress), so continuous visible output
+        suppresses the heartbeat and a genuinely quiet turn still hears from us after one full
+        interval of silence."""
+        from gateway.run import (
+            _float_env, _interim_metadata, _non_conversational_metadata,
+            _sleep_heartbeat_silence_deadline,
+        )
         _notify_start = time.time()
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
@@ -4143,8 +4156,16 @@ class GatewayTurnMixin:
         if not _notify_adapter:
             return
         _heartbeat_msg_id: Optional[str] = None
+        _heartbeat_sent_text: Optional[str] = None
+        # Silence clock origin: the later of the turn start, the last visible
+        # progress and the last heartbeat tick (shared wait helper in gateway.run).
+        _silence_origin = [time.monotonic()]
+
         while True:
-            await asyncio.sleep(_NOTIFY_INTERVAL)
+            await _sleep_heartbeat_silence_deadline(_NOTIFY_INTERVAL, turn_ctx, _silence_origin)
+            # A consumed tick (heartbeat attempt or a suppressed skip) restarts the
+            # silence clock so this loop never fires faster than one interval.
+            _silence_origin[0] = time.monotonic()
             if self._heartbeat_temporarily_suppressed(session_key):
                 # Restart-consent wait parked on the user: skip this tick but keep
                 # the loop alive — the wait can resolve or be cancelled mid-run and
@@ -4176,19 +4197,52 @@ class GatewayTurnMixin:
                 if _long_running_mode == "generic"
                 else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
             )
+            if _heartbeat_msg_id is not None and _heartbeat_sent_text == _heartbeat_text:
+                continue
             try:
                 _notify_res = None
-                if _heartbeat_msg_id:
-                    try:
-                        _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
-                    except Exception as _ee:
-                        logger.debug("Heartbeat edit failed: %s", _ee)
-                        _notify_res = None
-                if not (_notify_res and getattr(_notify_res, "success", False)):
-                    # The edit above awaited; a restart-consent wait may have gone pending
-                    # meanwhile — skip this tick (no fresh "Working" bubble: that is exactly
-                    # the noise being suppressed) and let the next tick re-check, since the
-                    # wait can resolve or be cancelled mid-run.
+                # The turn's delivery lock is the ordering boundary between the
+                # heartbeat and actual visible progress: while we hold it, no
+                # same-turn tool/commentary/stream transport call can interleave,
+                # so progress cannot land mid-edit and make this heartbeat stale
+                # before it is even sent.
+                async with turn_ctx.delivery_lock():
+                    # Revalidate under the guard: same-turn visible progress
+                    # that landed while this tick waited for the lock restarted
+                    # the silence clock - skip the whole tick (the next attempt
+                    # comes a full interval after that delivery).
+                    _lp_now = turn_ctx.last_visible_progress_monotonic()
+                    if _lp_now is not None and _lp_now > _silence_origin[0]:
+                        continue
+                    if self._heartbeat_temporarily_suppressed(session_key):
+                        # Restart-consent wait parked on the user: skip this
+                        # tick (no "Working" bubble: that is exactly the noise
+                        # being suppressed); the next tick re-checks, since
+                        # the wait can resolve or be cancelled mid-run.
+                        continue
+                    if not self._should_emit_long_running_notification(
+                        session_key, agent_holder[0], _executor_task_holder[0]
+                    ):
+                        break
+                    if _heartbeat_msg_id:
+                        try:
+                            _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
+                        except Exception as _ee:
+                            logger.debug("Heartbeat edit failed: %s", _ee)
+                            _notify_res = None
+                if _notify_res is not None and getattr(_notify_res, "success", False):
+                    _heartbeat_sent_text = _heartbeat_text
+                    continue
+                # The edit failed (or none existed): RELEASE the lock and
+                # yield so same-turn progress queued behind the failed edit
+                # lands FIRST, then REACQUIRE and revalidate everything - a
+                # delivery that landed invalidates the fresh-bubble fallback
+                # and the next tick comes a full interval after it.
+                await asyncio.sleep(0)
+                async with turn_ctx.delivery_lock():
+                    _lp_now = turn_ctx.last_visible_progress_monotonic()
+                    if _lp_now is not None and _lp_now > _silence_origin[0]:
+                        continue
                     if self._heartbeat_temporarily_suppressed(session_key):
                         continue
                     # A drain/restart notice may have gone out meanwhile, and
@@ -4205,6 +4259,7 @@ class GatewayTurnMixin:
                         _heartbeat_msg_id = str(_notify_res.message_id)
                         if turn_ctx._cleanup_progress:
                             turn_ctx._cleanup_msg_ids.append(_heartbeat_msg_id)
+                        _heartbeat_sent_text = _heartbeat_text
             except Exception as _ne:
                 logger.debug("Long-running notification error: %s", _ne)
 
@@ -4268,6 +4323,11 @@ class GatewayTurnMixin:
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task
         progress_task = spawn(turn_runner.send_progress_messages()) if disp.needs_progress_queue else None
+        if progress_task is not None:
+            # The ordering gate (TurnContext.wait_context_cards_delivered)
+            # releases when this drain ends — bind the owning task so the gate
+            # never waits on an invented timeout.
+            turn_ctx.bind_progress_task(progress_task)
         log_task = spawn(self._run_agent_write_tool_log(disp.log_queue)) if disp.log_mode_enabled else None
         # The stream consumer is created inside run_sync; this task polls for it.
         stream_task = spawn(self._run_agent_stream_consumer_task(turn_ctx.stream_consumer_holder))

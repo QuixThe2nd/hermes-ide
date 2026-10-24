@@ -76,7 +76,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 from utils import is_truthy_value
@@ -782,6 +782,20 @@ def _dispatch(**kwargs) -> Dict[str, Any]:
         return _dispatch_admitted(**kwargs)
 
 
+def _dispatch_home_key() -> str:
+    """Canonical context-local home identity (``hermes_home_key``); ``""`` on failure.
+
+    The same identity the registries key on — NOT ``get_active_profile_name()``,
+    which is a display label and collapses distinct custom homes to "custom".
+    Never a hard dependency of dispatch: a failed identity stamps ``""`` and the
+    runtime-note consumer (``tools.delegation_runtime_note``) excludes such
+    records instead of admitting them."""
+    try:
+        return str(hermes_home_key() or "")
+    except Exception:
+        return ""
+
+
 def _dispatch_admitted(
     *, delegation_id: str, goal: str, goals: Optional[List[str]], context: Optional[str],
     toolsets: Optional[List[str]], role: str, model: Optional[str], session_key: str,
@@ -789,6 +803,7 @@ def _dispatch_admitted(
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None, tool: str = "", result_kind: str = "",
+    startup_evidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -811,6 +826,20 @@ def _dispatch_admitted(
         "result_kind": result_kind,
         "status": "running", "dispatched_at": dispatched_at, "completed_at": None,
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
+        # Shared mutable dict the owning tool stamps with REAL startup evidence
+        # (e.g. the CLI child's Popen creation) — a receipt alone must never
+        # read as "running". Read by tools.delegation_runtime_note.
+        "startup_evidence": startup_evidence if startup_evidence is not None else {},
+        # Owning home identity: hermes_home_key() — the canonical context-local
+        # identity the registries already use (NOT get_active_profile_name(),
+        # which is a display label and returns "custom" for every custom
+        # home). Captured on the parent thread at dispatch. The registry is
+        # process-global and one routing ``session_key`` can span homes, so the
+        # runtime note requires BOTH durable-session AND exact home-key match.
+        # An unresolvable producer identity stamps "" — the consumer then
+        # EXCLUDES the record (unknown ownership → no snapshot, never an
+        # unfiltered view). Control-plane _session_records semantics unchanged.
+        "owner_home_key": _dispatch_home_key(),
         "slot_key": slot_key or delegation_id,
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
@@ -912,6 +941,7 @@ def dispatch_async_delegation(
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
     tool: str = "", result_kind: str = "", progress_fn: Optional[Callable[[], tuple]] = None,
+    startup_evidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
     ``session_key``/``parent_session_id`` are captured on the parent thread (the worker carries
@@ -928,6 +958,7 @@ def dispatch_async_delegation(
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children,
         tool=tool, result_kind=result_kind, progress_fn=progress_fn,
+        startup_evidence=startup_evidence,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or run this task synchronously (background=false). "
@@ -945,6 +976,7 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
     tool: str = "", result_kind: str = "", progress_fn: Optional[Callable[[], tuple]] = None,
     slot_key: Optional[str] = None, task_indexes: Optional[List[int]] = None,
+    startup_evidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
@@ -963,7 +995,7 @@ def dispatch_async_delegation_batch(
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children,
         tool=tool, result_kind=result_kind, progress_fn=progress_fn, slot_key=slot_key,
-        task_indexes=task_indexes,
+        task_indexes=task_indexes, startup_evidence=startup_evidence,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
@@ -1380,7 +1412,13 @@ def list_async_delegations() -> List[Dict[str, Any]]:
     with _records_lock:
         items = []
         for r in _records.values():
-            item = {k: v for k, v in r.items() if k not in {"interrupt_fn", "progress_fn"} and not k.startswith("_")}
+            # startup_evidence holds a live Popen handle (and other non-JSON runtime
+            # receipts); owner_home_key is a private filesystem path. Both are
+            # registry-private, like the callbacks above them.
+            item = {k: v for k, v in r.items()
+                    if k not in {"interrupt_fn", "progress_fn", "startup_evidence",
+                                 "owner_home_key"}
+                    and not k.startswith("_")}
             status = r.get("status")
             if status in _ACTIVE_STATES:
                 if r.get("_progress_ts"):
@@ -1958,6 +1996,12 @@ def register_background_delegation(
         # owns this unit's outcome, so a dead owner_pid must not classify it
         # as abandoned at the next boot.
         "external": True,
+        # Owning home identity, stamped by THIS producer exactly as
+        # _dispatch_admitted stamps its records: hermes_home_key() captured on
+        # the registering thread. The runtime-note consumer (fail-closed)
+        # requires an EXACT home-key match, so without this stamp every
+        # external mission is invisible to its own parent's snapshot.
+        "owner_home_key": _dispatch_home_key(),
         "status": "running",
         "dispatched_at": now,
         "completed_at": None,
@@ -2051,6 +2095,7 @@ def dispatch_background_delegation(
     note: str = "",
     control_hint: str = "",
     progress_fn: Optional[Callable[[], tuple]] = None,
+    startup_evidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Thin single chokepoint for a background dispatch + acceptance envelope.
 
@@ -2078,6 +2123,7 @@ def dispatch_background_delegation(
             tool=tool,
             result_kind=result_kind,
             progress_fn=progress_fn,
+            startup_evidence=startup_evidence,
         )
     else:
         dispatch = dispatch_async_delegation(
@@ -2097,6 +2143,7 @@ def dispatch_background_delegation(
             tool=tool,
             result_kind=result_kind,
             progress_fn=progress_fn,
+            startup_evidence=startup_evidence,
         )
     if dispatch.get("status") != "dispatched":
         return dispatch

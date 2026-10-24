@@ -1150,13 +1150,16 @@ class MoAChatCompletions:
 
     def _plan_aggregator_cache(
         self, agg_messages: list[dict[str, Any]], tools: Any, guidance: Any, agg_runtime: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], Any]:
+    ) -> tuple[list[dict[str, Any]], Any, bool, bool]:
         """Cache-breakpoint the aggregator request for its destination.
 
         Guidance is peeled before planning and re-attached after so a breakpoint never
         lands on the turn-varying block. Any error → undecorated request (warning, not
-        debug: this is the aggregator's ONLY decoration path).
+        debug: this is the aggregator's ONLY decoration path). Also returns the
+        ``(native_anthropic, tool_part_markers)`` layout flags the plan used, so the
+        runtime-note attach below the plan places its marker relocation consistently.
         """
+        native_layout, tpm = False, True
         try:
             from agent.agent_runtime_helpers import plan_cache_sections_for_destination
             planning_messages = peel_reference_guidance(agg_messages, str(guidance)) if guidance else agg_messages
@@ -1168,10 +1171,20 @@ class MoAChatCompletions:
             _agent = getattr(self, "_agent", None)
             cache_disabled, cache_ttl = _agent_cache_opts(_agent)
             # Agent TTL + stable system prefix so MoA does not regress 1h → 5m.
+            dest = dict(provider=agg_runtime.get("provider") or "",
+                        base_url=agg_runtime.get("base_url") or "",
+                        api_mode=agg_runtime.get("api_mode") or "",
+                        model=agg_runtime.get("model") or "")
+            from agent.agent_runtime_helpers import (
+                anthropic_prompt_cache_policy, blank_cache_policy_stub,
+            )
+            from agent.prompt_caching import envelope_tool_part_cache_markers_supported
+
+            should_cache, native_layout = anthropic_prompt_cache_policy(
+                blank_cache_policy_stub(cache_disabled), **dest)
+            tpm = envelope_tool_part_cache_markers_supported(dest["provider"], dest["base_url"])
             agg_messages, tools = plan_cache_sections_for_destination(
-                planning_messages, tools, provider=agg_runtime.get("provider") or "",
-                base_url=agg_runtime.get("base_url") or "", api_mode=agg_runtime.get("api_mode") or "",
-                model=agg_runtime.get("model") or "", cache_disabled=cache_disabled, cache_ttl=cache_ttl,
+                planning_messages, tools, **dest, cache_disabled=cache_disabled, cache_ttl=cache_ttl,
                 static_system_prefix=getattr(_agent, "_cached_system_prompt_static", None),
             )
             if guidance:
@@ -1181,7 +1194,7 @@ class MoAChatCompletions:
                 "MoA aggregator cache plan failed — sending undecorated "
                 "request (cache misses expected): %s", exc,
             )
-        return agg_messages, tools
+        return agg_messages, tools, native_layout, tpm
 
     def _call_prepared_aggregator(self, prepared: dict[str, Any], api_kwargs: dict[str, Any]) -> Any:
         """Send an already prepared MoA aggregator request exactly once."""
@@ -1189,9 +1202,23 @@ class MoAChatCompletions:
         if aggregator.get("provider") == "moa":
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
         agg_runtime = _slot_runtime(aggregator)
-        agg_messages, tools = self._plan_aggregator_cache(
+        agg_messages, tools, _note_native, _note_tpm = self._plan_aggregator_cache(
             prepared["messages"], api_kwargs.get("tools"), prepared.get("guidance"), agg_runtime
         )
+        # Delegated-worker runtime state rides the AGGREGATOR's outgoing request
+        # at its own final wire boundary — BELOW this destination cache plan, so
+        # the volatile note is never re-cached by the re-decoration (a note in
+        # ``prepared["messages"]`` would poison the plan's tail row for every
+        # later request). Fresh per send, copy-on-write; the prepared state and
+        # any captured request object stay note-free.
+        _agent = getattr(self, "_agent", None)
+        if _agent is not None:
+            from agent.turn_request_assembly import _send_copy_with_delegation_runtime_note
+
+            agg_messages = _send_copy_with_delegation_runtime_note(
+                _agent, agg_messages, native_anthropic=_note_native,
+                tool_part_markers=_note_tpm,
+            )
         trace = self._pending_trace
         if trace is not None:
             trace["aggregator_label"] = _slot_label(aggregator)

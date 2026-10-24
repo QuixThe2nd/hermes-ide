@@ -1163,7 +1163,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed. Source-code edits do not belong here — route code changes through delegate_cursor_agent (small/medium) or delegate_claude_agent with /goal (medium/large); this tool is for configs, docs, memory, and scratch.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed. Source-code edits do not belong here — route code changes through delegate_agent(backend=\"cursor\") (small/medium) or delegate_agent(backend=\"claude\") with /goal (medium/large); this tool is for configs, docs, memory, and scratch.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1195,8 +1195,9 @@ PATCH_SCHEMA = {
         "Returns a unified diff. Auto-runs syntax checks after editing. "
         "Finds a unique string and replaces it. "
         "Source-code edits do not belong here — route code changes through "
-        "delegate_cursor_agent (small/medium) or delegate_claude_agent with "
-        "/goal (medium/large); this tool is for configs, docs, memory, and scratch."
+        "delegate_agent(backend=\"cursor\") (small/medium) or "
+        "delegate_agent(backend=\"claude\") with /goal (medium/large); "
+        "this tool is for configs, docs, memory, and scratch."
     ),
     "parameters": {
         "type": "object",
@@ -1239,8 +1240,9 @@ _PATCH_V4A_DESCRIPTION = (
     "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
     "REQUIRED PARAMETERS: mode, patch. "
     "Source-code edits do not belong here — route code changes through "
-    "delegate_cursor_agent (small/medium) or delegate_claude_agent with "
-    "/goal (medium/large); this tool is for configs, docs, memory, and scratch."
+    "delegate_agent(backend=\"cursor\") (small/medium) or "
+    "delegate_agent(backend=\"claude\") with /goal (medium/large); "
+    "this tool is for configs, docs, memory, and scratch."
 )
 
 _PATCH_V4A_PARAMS = {

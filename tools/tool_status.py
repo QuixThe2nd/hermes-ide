@@ -25,6 +25,15 @@ _tool_status_callback: ContextVar[Optional[ToolStatusCallback]] = ContextVar(
     default=None,
 )
 
+# Native tool-call id of the dispatch the status scope is bound around (see
+# ``tool_status_scope``). A viewer status line emitted mid-tool can carry this
+# id so the consumer side correlates it to that exact call's own tool-progress
+# row — never to another overlapping call's row.
+_tool_status_call_id: ContextVar[Optional[str]] = ContextVar(
+    "hermes_tool_status_call_id",
+    default=None,
+)
+
 # Branded agent-viewer status lines. ``delegate_claude_agent`` and
 # ``delegate_cursor_agent`` announce a freshly spawned run's live viewer page
 # through this callback while the run is still going; platform adapters render
@@ -57,13 +66,26 @@ def get_tool_status_callback() -> Optional[ToolStatusCallback]:
 @contextmanager
 def tool_status_scope(
     callback: Optional[ToolStatusCallback],
+    tool_call_id: Optional[str] = None,
 ) -> Iterator[None]:
-    """Bind *callback* for the current task. ``None`` leaves emits as no-ops."""
+    """Bind *callback* for the current task. ``None`` leaves emits as no-ops.
+
+    ``tool_call_id`` records the native id of the tool dispatch this scope
+    wraps (no-op when unset), so emits from inside the tool can be correlated
+    to that exact call downstream.
+    """
     token = _tool_status_callback.set(callback)
+    id_token = _tool_status_call_id.set(str(tool_call_id) if tool_call_id else None)
     try:
         yield
     finally:
         _tool_status_callback.reset(token)
+        _tool_status_call_id.reset(id_token)
+
+
+def get_tool_status_call_id() -> Optional[str]:
+    """Return the bound tool-call id for this task, or ``None``."""
+    return _tool_status_call_id.get()
 
 
 def emit_tool_status(message: str) -> bool:

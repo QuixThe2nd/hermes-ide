@@ -776,6 +776,11 @@ def _dispatch_claude_background(
     )
 
     live: Dict[str, subprocess.Popen] = {}
+    # Shared with the delegation record: stamped when the REAL child process
+    # exists, so runtime-state snapshots distinguish "accepted/queued on the
+    # pool" from "CLI process actually created" (executor scheduling alone
+    # never reads as running).
+    evidence: Dict[str, Any] = {}
 
     def _runner() -> Dict[str, Any]:
         # Runs on the async registry's daemon thread. On /stop or gateway
@@ -784,6 +789,10 @@ def _dispatch_claude_background(
         # poll unwinds and kills the process group with no per-tool code.
         def _on_proc(proc: subprocess.Popen) -> None:
             live["proc"] = proc
+            # Real startup evidence: the timestamp proves creation; the live
+            # handle lets runtime-state snapshots poll() for actual liveness.
+            evidence["process_started_at"] = time.time()
+            evidence["proc"] = proc
 
         out = _run_claude_agent_sync(
             cmd,
@@ -876,6 +885,7 @@ def _dispatch_claude_background(
         session_key=session_key,
         parent_session_id=parent_session_id,
         max_async_children=max_children,
+        startup_evidence=evidence,
         model=model_name or None,
         note=(
             "The Claude Code run is underway in the background. You and the "
@@ -1045,12 +1055,26 @@ def _handle_delegate_claude_agent(args, **kw):
     )
 
 
+def _handle_delegate_claude_agent_alias(args, **kw):
+    """Hidden legacy alias (advertise=False, same precedent as delegate_task).
+
+    The model-facing surface is the unified ``delegate_agent(backend="claude")``;
+    this name stays dispatchable forever — replayed transcripts, gateway
+    name-keyed correlation and receipts keep working — and forwards every
+    argument verbatim with ``backend`` preset.
+    """
+    from tools.delegate_tool import _delegate_agent_handler
+
+    return _delegate_agent_handler({**args, "backend": "claude"}, **kw)
+
+
 registry.register(
     name="delegate_claude_agent",
     toolset="delegation",
     schema=DELEGATE_CLAUDE_AGENT_SCHEMA,
-    handler=_handle_delegate_claude_agent,
+    handler=_handle_delegate_claude_agent_alias,
     check_fn=check_claude_agent_requirements,
     emoji="🤖",
     max_result_size_chars=100_000,
+    advertise=False,
 )

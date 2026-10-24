@@ -245,7 +245,8 @@ DEFAULT_CONFIG = {
         # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
         "clarify_timeout": 3600,
         # "Still working" status interval (seconds); 0 = off. Lower = faster feedback, more noise;
-        # 180 catches spinning weak-model runs before users /restart.
+        # 180 catches spinning weak-model runs before users /restart. Measured from the turn's
+        # last user-visible progress, so continuous visible output suppresses heartbeats.
         "gateway_notify_interval": 180,
         # Session stall watchdog (seconds): RECOVERY notifier for an in-process AIAgent with an
         # adapter-queued follow-up while its activity clock is stale — NOT a general stall detector
@@ -978,6 +979,9 @@ DEFAULT_CONFIG = {
         # "separate" one message per tool (noisier). Needs tool_progress enabled. Per-platform:
         # display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
+        # Gateway tool-progress groups render as one fenced code box per group when true.
+        # Opt-in per platform: display.platforms.<platform>.tool_progress_codebox.
+        "tool_progress_codebox": False,
         # Custom long-running status phrases. Defaults: gateway/assets/status_phrases.yaml.
         # `path`/`paths` = HERMES_HOME-relative YAML files/dirs (or conventional status_phrases.yaml
         # / status_phrases/*.yaml). Keys: status, generic. mode: "append" (default) | "replace".

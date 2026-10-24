@@ -4996,6 +4996,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             channel = await self._resolve_channel(chat_id)
             msg = channel.get_partial_message(int(message_id))
+            if (metadata or {}).get("claude_agent_progress_combined"):
+                # Discord Claude delegation single-message rail: the gateway
+                # is editing the exact notice message it recorded for this
+                # delegate_claude_agent call into the combined card. Selected
+                # ONLY by this internal metadata key — arbitrary edits never
+                # take the embed path.
+                return await self._edit_combined_agent_progress(
+                    msg, message_id, content
+                )
             formatted = self.format_message(content)
             _preview_key = (str(chat_id), str(message_id))
             _saturated_preview = False
@@ -5042,6 +5051,34 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def _edit_combined_agent_progress(
+        self, msg, message_id: str, content: str
+    ) -> SendResult:
+        """Edit a delegation notice into the single combined card (metadata-gated).
+
+        Reached only from ``edit_message`` with the internal
+        ``claude_agent_progress_combined`` metadata key: the notice text
+        stays as the message content and the FINAL line — a viewer URL
+        re-validated here by the same strict ``_claude_agent_status_url``
+        checks used for sends — renders as the branded embed. A line that
+        no longer validates degrades to a plain-text edit of the full
+        content (notice + link both stay visible) rather than losing
+        either. Embed-transport failures raise to the caller so the
+        gateway can fall back to the legacy standalone card.
+        """
+        text = (content or "").strip()
+        lines = text.split("\n") if text else []
+        url = _claude_agent_status_url(lines[-1]) if lines else None
+        if url is None:
+            await msg.edit(content=self.format_message(content))
+            return SendResult(success=True, message_id=message_id)
+        prefix = "\n".join(lines[:-1]).strip()
+        await msg.edit(
+            content=self.format_message(prefix) if prefix else None,
+            embed=_build_claude_agent_embed(url),
+        )
+        return SendResult(success=True, message_id=message_id)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a previously sent Discord message.
@@ -8448,6 +8485,58 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # rather than be reported as a definitive SendResult failure.
         msg = await channel.send(**send_kwargs)
         return SendResult(success=True, message_id=str(msg.id))
+
+    async def settle_restart_confirmation(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        shared: bool = False,
+        thread_id: Optional[str] = None,
+    ) -> SendResult:
+        """Edit a delivered restart confirmation embed to its settled state.
+
+        The in-place counterpart of :meth:`send_restart_confirmation`: once a
+        restart outcome is known (the requester's own confirm queued it, or
+        another chat's confirmed restart covers this prompt), the SAME
+        message that asked for the word is edited — the pending embed and
+        the requester mention are REPLACED by one concise settled line, so
+        the prompt stops being actionable and stops pinging, and no second
+        status message is ever sent. ``shared=True`` is the wording for a
+        prompt settled by another chat's consent.
+
+        Best-effort and cosmetic: any failure is logged and returned as a
+        failure result; the tool never gates a restart on this edit. The
+        generic :meth:`edit_message` cannot be used here because it only
+        edits ``content`` — the embed (and the mention riding ``content``)
+        must be cleared in the same edit.
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+        target_id = str(thread_id or chat_id)
+        text = (
+            "♻️ Restart approved in another chat — gateway restart pending; "
+            "no reply needed here."
+            if shared
+            else "♻️ Restart approved — gateway restart pending; no reply needed."
+        )
+        try:
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+            msg = channel.get_partial_message(int(message_id))
+            edit_kwargs: Dict[str, Any] = {"content": text, "embed": None}
+            allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+            if allowed_mentions_cls is not None:
+                # The old prompt's mention must never re-notify on the edit.
+                edit_kwargs["allowed_mentions"] = allowed_mentions_cls.none()
+            await msg.edit(**edit_kwargs)
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            logger.debug(
+                "[%s] settle_restart_confirmation failed: %s", self.name, e
+            )
+            return SendResult(success=False, error=str(e))
 
     async def capture_restart_pending_thread_title(
         self, thread_id: str

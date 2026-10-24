@@ -8,7 +8,7 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 The `delegate_agent` tool spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
-Delivery follows one lifecycle across all four delegate tools (`delegate_agent`, `delegate_claude_agent`, `delegate_cursor_agent`, `delegate_assistant`): the mode comes only from the explicit `background` argument. Omitted or false **blocks** the calling turn until the work is terminal and returns the final result inline. `background=true` returns a handle immediately so the conversation can continue, then posts exactly one completion back as a new message — and fails up front, with nothing started, when the session cannot receive a late completion. The old `delegate_task` / `dispatch_assistant` spellings still dispatch as hidden aliases that forward `background` unchanged.
+Delivery follows one lifecycle across the delegate tools (`delegate_agent` with its `subagent`/`claude`/`cursor` backends, and `delegate_assistant`): the mode comes only from the explicit `background` argument. Omitted or false **blocks** the calling turn until the work is terminal and returns the final result inline. `background=true` returns a handle immediately so the conversation can continue, then posts exactly one completion back as a new message — and fails up front, with nothing started, when the session cannot receive a late completion. The old `delegate_task`, `delegate_claude_agent` and `delegate_cursor_agent` spellings still dispatch as hidden aliases that forward `background` unchanged.
 
 ## Completion delivery
 
@@ -606,9 +606,9 @@ directory, on docker/ssh/modal backends, or if worktree creation fails, the
 setting degrades silently to today's shared-workspace behavior — never an
 error.
 
-## Cursor My Machines (`delegate_cursor_agent`)
+## Cursor My Machines (`delegate_agent(backend="cursor")`)
 
-`delegate_cursor_agent` is a separate delegation surface from `delegate_agent`. It keeps the same parameter schema and follows the same lifecycle as `delegate_agent`: an omitted `background` detaches when the session can receive a late completion and blocks inline otherwise, `background=false` always blocks this turn, and `background=true` always returns a background handle plus one later completion.
+`backend="cursor"` on `delegate_agent` routes to the Cursor My Machines cloud agent (the former `delegate_cursor_agent` tool, still dispatchable as a hidden alias). It keeps the same parameter schema and follows the same lifecycle as `delegate_agent`: an omitted `background` detaches when the session can receive a late completion and blocks inline otherwise, `background=false` always blocks this turn, and `background=true` always returns a background handle plus one later completion.
 
 The backend is a [Cursor My Machines](https://cursor.com/docs/cloud-agent/self-hosted-guides/my-machines.md) Cloud Agent, not a local `agent -p` subprocess:
 

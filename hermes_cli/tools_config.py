@@ -81,7 +81,6 @@ CONFIGURABLE_TOOLSETS = [
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
-    ("dev-pipeline",    "🏗️ Dev Pipeline",              "durable automated development jobs"),
     ("quota_channels",  "📊 Quota Channels",            "quota_channels_tick (Discord voice-channel quota display)"),
     ("assistant_handoff", "📤 Assistant Handoff",        "mission close or one-way escalation"),
     ("gateway",         "♻️ Gateway",                   "restart (same drain path as /restart)"),
@@ -113,8 +112,8 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-# NOTE(fork): "dev-pipeline", "discord" and "discord_admin" removed from the
-# default-off set — the fork wants its dev pipeline and Discord-native
+# NOTE(fork): "discord" and "discord_admin" removed from the
+# default-off set — the fork wants its Discord-native
 # toolsets available by default on every instance running the fork.
 # discord/discord_admin stay platform-restricted to discord via
 # _TOOLSET_PLATFORM_RESTRICTIONS, so this only affects Discord sessions.
