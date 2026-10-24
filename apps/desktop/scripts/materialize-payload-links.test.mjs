@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'vitest'
 
-import { findPackedPayload, relativizePayloadLinks, stripFetchCache } from './materialize-payload-links.mjs'
+import { findPackedPayload, relativizePayloadLinks } from './materialize-payload-links.mjs'
 
 function tempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-relativize-'))
@@ -119,41 +119,6 @@ test('relativizePayloadLinks leaves already-relative links alone', () => {
 
     assert.equal(relativizePayloadLinks(root), 0)
     assert.equal(fs.readlinkSync(link), path.relative(venv, real))
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('stripFetchCache removes only fetch- dirs under tools/', () => {
-  const root = tempRoot()
-  try {
-    const tools = path.join(root, 'tools')
-    fs.mkdirSync(path.join(tools, 'fetch-546f7f8a6c70ff13'), { recursive: true })
-    fs.writeFileSync(path.join(tools, 'fetch-546f7f8a6c70ff13', 'uv.tar.gz'), 'x')
-    fs.mkdirSync(path.join(tools, 'uv-0.12.3-darwin-arm64'), { recursive: true })
-    fs.writeFileSync(path.join(tools, 'uv-0.12.3-darwin-arm64', 'uv'), 'bin')
-    assert.equal(stripFetchCache(root), 1)
-    assert.equal(fs.existsSync(path.join(tools, 'fetch-546f7f8a6c70ff13')), false)
-    assert.equal(fs.existsSync(path.join(tools, 'uv-0.12.3-darwin-arm64', 'uv')), true)
-    assert.equal(stripFetchCache(root), 0)
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('stripFetchCache also drops leftover chromium store entries', () => {
-  const root = tempRoot()
-  try {
-    const tools = path.join(root, 'tools')
-    fs.mkdirSync(path.join(tools, 'chromium-1208'), { recursive: true })
-    fs.writeFileSync(path.join(tools, 'chromium-1208', 'INSTALLATION_COMPLETE'), '')
-    fs.mkdirSync(path.join(tools, 'chromium_headless_shell-1208'), { recursive: true })
-    fs.mkdirSync(path.join(tools, 'uv-0.12.3-darwin-arm64'), { recursive: true })
-    fs.writeFileSync(path.join(tools, 'uv-0.12.3-darwin-arm64', 'uv'), 'bin')
-    assert.equal(stripFetchCache(root), 2)
-    assert.equal(fs.existsSync(path.join(tools, 'chromium-1208')), false)
-    assert.equal(fs.existsSync(path.join(tools, 'chromium_headless_shell-1208')), false)
-    assert.equal(fs.existsSync(path.join(tools, 'uv-0.12.3-darwin-arm64', 'uv')), true)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

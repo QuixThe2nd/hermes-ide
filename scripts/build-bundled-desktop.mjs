@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 
 import { CLI_LAUNCHER_SPECS, posixTrampolineScripts, renderWinWrapper } from './desktop-cli/cli-entrypoints.mjs'
 import { windowsFileVersion } from '../apps/desktop/scripts/windows-file-version.mjs'
-import { relativizePayloadLinks, stripFetchCache } from '../apps/desktop/scripts/materialize-payload-links.mjs'
+import { relativizePayloadLinks } from '../apps/desktop/scripts/materialize-payload-links.mjs'
 import { nightlyBuildMinutes } from './msix-shared.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -273,8 +273,6 @@ if (!fs.existsSync(path.join(plantedWeb, 'index.html'))) {
 }
 console.log('[build-bundled] planted hermes_cli/tui_dist/entry.js and hermes_cli/web_dist into the payload')
 
-const dropped = stripFetchCache(PAYLOAD_DIR)
-console.log(`[build-bundled] dropped ${dropped} fetch- cache dirs from the payload`)
 if (process.platform === 'darwin') {
   const n = relativizePayloadLinks(PAYLOAD_DIR)
   console.log(`[build-bundled] relativized ${n} payload links so codesign can sign each path once`)
