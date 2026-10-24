@@ -6494,10 +6494,13 @@ class TurnRunner:
         # Oversized-row chunking (codebox only): when one boxed row alone
         # exceeds the platform cap it is sliced across several messages; the
         # buffer then holds only that row's undelivered tail slices and
-        # ``_row_head_len`` counts the escaped chars already visible in the
-        # earlier (immutable) chunk messages.
+        # ``_row_head_len`` counts the escaped chars of the CURRENT row already
+        # visible in the earlier (immutable) chunk messages, and ``_row_slices``
+        # how many trailing buffer lines belong to that row — unrelated earlier
+        # rows never contribute to either.
         _row_tail = False
         _row_head_len = 0
+        _row_slices = 0
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -6589,7 +6592,7 @@ class TurnRunner:
             exceeds the platform cap (the group splitter can only partition
             between rows — without this the native adapter split the row and
             later edits truncated the tail, losing repeat counters)."""
-            nonlocal _row_tail, _row_head_len
+            nonlocal _row_tail, _row_head_len, _row_slices
             if _codebox_active():
                 from gateway.display_config import chunk_oversized_progress_row
 
@@ -6598,22 +6601,24 @@ class TurnRunner:
                 )
                 if len(slices) > 1:
                     progress_lines.extend(slices)
-                    _row_tail, _row_head_len = True, 0
+                    _row_tail, _row_head_len, _row_slices = True, 0, len(slices)
                     return slices[-1]
             progress_lines.append(raw)
-            _row_tail = False
+            _row_tail, _row_slices = False, 0
             return raw
 
         def _absorb_dedup(base_msg, count) -> str:
             """Fold a repeat update into the last row, re-slicing oversized ones."""
-            nonlocal _row_tail, _row_head_len
+            nonlocal _row_tail, _row_head_len, _row_slices
             if not progress_lines:
                 return base_msg
             if _row_tail:
                 # The repeated row is already split across chunk messages.
                 # Slicing is prefix-stable, so the earlier chunks hold an
                 # unchanged prefix — re-render only the editable tail with
-                # the counter instead of duplicating the head.
+                # the counter instead of duplicating the head.  Only the
+                # trailing lines of that row are replaced; earlier pending
+                # rows must stay visible.
                 from gateway.display_config import repeat_row_text
 
                 tail = repeat_row_text(base_msg, count, _codebox_active())[
@@ -6626,9 +6631,11 @@ class TurnRunner:
                         tail, _PROGRESS_TEXT_LIMIT, _progress_len_fn
                     )
                     if len(slices) > 1:
-                        progress_lines[:] = slices
+                        progress_lines[-_row_slices:] = slices
+                        _row_slices = len(slices)
                         return slices[-1]
-                progress_lines[:] = [tail]
+                progress_lines[-_row_slices:] = [tail]
+                _row_slices = 1
                 return tail
             line = f"{base_msg} (×{count + 1})"
             if _codebox_active():
@@ -6639,7 +6646,7 @@ class TurnRunner:
                 )
                 if len(slices) > 1:
                     progress_lines[-1:] = slices
-                    _row_tail, _row_head_len = True, 0
+                    _row_tail, _row_head_len, _row_slices = True, 0, len(slices)
                     return slices[-1]
             progress_lines[-1] = line
             return line
@@ -6685,7 +6692,7 @@ class TurnRunner:
                 intact for a later retry.  In either case the caller should skip
                 the normal send/edit path for this tick.
                 """
-            nonlocal progress_msg_id, progress_lines, can_edit, _row_tail, _row_head_len
+            nonlocal progress_msg_id, progress_lines, can_edit, _row_tail, _row_head_len, _row_slices
             if not progress_lines or not can_edit:
                 return False
             groups = _split_progress_groups(progress_lines)
@@ -6719,9 +6726,17 @@ class TurnRunner:
             # just its lines so subsequent edits update it instead of
             # replaying the full historical transcript into new messages.
             if _row_tail:
+                # Only the current row's slices delivered into earlier
+                # groups count towards its head offset — never unrelated
+                # rows that happened to precede it in the buffer.
+                kept = min(_row_slices, len(groups[-1]))
                 _row_head_len += sum(
-                    len(line) for group in groups[:-1] for line in group
+                    len(line)
+                    for line in progress_lines[
+                        len(progress_lines) - _row_slices : len(progress_lines) - kept
+                    ]
                 )
+                _row_slices = kept
             progress_lines = groups[-1]
             return True
 
@@ -6753,8 +6768,6 @@ class TurnRunner:
                             exc_info=True,
                         )
                 _separate_pending_lines.clear()
-                _row_tail = False
-                _row_head_len = 0
                 _last_edit_ts = time.monotonic()
                 return
             rolled = False
@@ -6817,8 +6830,6 @@ class TurnRunner:
                     progress_msg_id = None
                     progress_lines = []
                     _separate_pending_lines.clear()
-                    _row_tail = False
-                    _row_head_len = 0
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
                     continue
@@ -6839,8 +6850,6 @@ class TurnRunner:
                     progress_msg_id = None
                     progress_lines = []
                     _separate_pending_lines.clear()
-                    _row_tail = False
-                    _row_head_len = 0
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
                     continue
@@ -6947,8 +6956,6 @@ class TurnRunner:
                             # skipped by the throttle (pre-v0.9 "separate"
                             # behavior: one message per row, no catch-up).
                             _separate_pending_lines.clear()
-                            _row_tail = False
-                            _row_head_len = 0
 
                 _last_edit_ts = time.monotonic()
 
@@ -6982,8 +6989,6 @@ class TurnRunner:
                             progress_msg_id = None
                             progress_lines = []
                             _separate_pending_lines.clear()
-                            _row_tail = False
-                            _row_head_len = 0
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         elif _agent_interrupted():
@@ -6996,8 +7001,6 @@ class TurnRunner:
                                 progress_msg_id = None
                                 progress_lines = []
                                 _separate_pending_lines.clear()
-                                _row_tail = False
-                                _row_head_len = 0
                                 ctx.last_progress_msg[0] = None
                                 ctx.repeat_count[0] = 0
                             continue
@@ -7020,8 +7023,6 @@ class TurnRunner:
                             progress_msg_id = None
                             progress_lines = []
                             _separate_pending_lines.clear()
-                            _row_tail = False
-                            _row_head_len = 0
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         else:

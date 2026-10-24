@@ -564,9 +564,12 @@ class TurnRunner:
         _edit_accepts_metadata: bool
         # Oversized-row chunking (codebox only): a boxed row sliced across
         # several messages leaves only its tail slices editable; _row_head_len
-        # counts the escaped chars already visible in the earlier chunks.
+        # counts the escaped chars of the CURRENT row already visible in the
+        # earlier chunks, and _row_slices how many trailing buffer lines belong
+        # to that row — unrelated earlier rows never contribute to either.
         _row_tail: bool = False
         _row_head_len: int = 0
+        _row_slices: int = 0
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -663,7 +666,14 @@ class TurnRunner:
         # The newest continuation is the only mutable bubble: keep just its lines so later
         # edits update it instead of replaying the full transcript into new messages.
         if st._row_tail:
-            st._row_head_len += sum(len(line) for group in groups[:-1] for line in group)
+            # Only the current row's slices delivered into earlier groups count
+            # towards its head offset — never unrelated preceding rows.
+            kept = min(st._row_slices, len(groups[-1]))
+            st._row_head_len += sum(
+                len(line)
+                for line in st.progress_lines[len(st.progress_lines) - st._row_slices : len(st.progress_lines) - kept]
+            )
+            st._row_slices = kept
         st.progress_lines = groups[-1]
         return True
 
@@ -675,7 +685,7 @@ class TurnRunner:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
         st.progress_msg_id, st.progress_lines = None, []
-        st._row_tail, st._row_head_len = False, 0
+        st._row_tail, st._row_head_len, st._row_slices = False, 0, 0
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
     def _codebox_active(self, st) -> bool:
@@ -699,20 +709,24 @@ class TurnRunner:
                 # The repeated row is already split across chunk messages. Slicing is
                 # prefix-stable, so earlier chunks hold an unchanged prefix — re-render
                 # only the editable tail with the counter instead of duplicating the head.
+                # Only the trailing lines of that row are replaced; earlier pending
+                # rows must stay visible.
                 tail = repeat_row_text(base_msg, count, self._codebox_active(st))[st._row_head_len:]
                 if self._codebox_active(st):
                     slices = chunk_oversized_progress_row(tail, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
                     if len(slices) > 1:
-                        st.progress_lines[:] = slices
+                        st.progress_lines[-st._row_slices:] = slices
+                        st._row_slices = len(slices)
                         return slices[-1]
-                st.progress_lines[:] = [tail]
+                st.progress_lines[-st._row_slices:] = [tail]
+                st._row_slices = 1
                 return tail
             line = f"{base_msg} (×{count + 1})"
             if self._codebox_active(st):
                 slices = chunk_oversized_progress_row(line, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
                 if len(slices) > 1:
                     st.progress_lines[-1:] = slices
-                    st._row_tail, st._row_head_len = True, 0
+                    st._row_tail, st._row_head_len, st._row_slices = True, 0, len(slices)
                     return slices[-1]
             st.progress_lines[-1] = line
             return st.progress_lines[-1]
@@ -720,10 +734,10 @@ class TurnRunner:
             slices = chunk_oversized_progress_row(raw, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
             if len(slices) > 1:
                 st.progress_lines.extend(slices)
-                st._row_tail, st._row_head_len = True, 0
+                st._row_tail, st._row_head_len, st._row_slices = True, 0, len(slices)
                 return slices[-1]
         st.progress_lines.append(raw)
-        st._row_tail = False
+        st._row_tail, st._row_slices = False, 0
         return raw
 
     async def _flush_progress_edit(self, st) -> None:
