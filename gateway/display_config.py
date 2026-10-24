@@ -23,6 +23,10 @@ from gateway.runtime_footer import _format_duration
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
+    # Present each accumulated tool-progress group as one unlabelled fenced
+    # code block (rows keep their relative order; embedded ``` are escaped so
+    # they stay inside the box). Opt-in; off = plain multi-line bubble.
+    "tool_progress_codebox": False,
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
@@ -298,6 +302,7 @@ _NORMALISERS: dict[str, Any] = {
     "cleanup_progress": _norm_cleanup_progress,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
+    "tool_progress_codebox": _norm_bool,
     # "compact" (fork): single "💭 thought for Xs" duration line, no CoT text.
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext", "compact")),
     "tool_preview_length": _norm_int,
@@ -368,3 +373,64 @@ def _normalise(setting: str, value: Any) -> Any:
     """Normalise a user-supplied value for *setting*; unknown settings pass through."""
     norm = _NORMALISERS.get(setting)
     return norm(value) if norm else value
+
+
+def format_progress_group(lines: list, codebox: bool) -> str:
+    """Render accumulated tool-progress rows as one bubble's text.
+
+    ``codebox`` wraps the whole group in a single unlabelled fenced code block
+    (``display.tool_progress_codebox``). Inner ``` markers are escaped with the
+    same helper the reasoning renderer uses, so an embedded fence can never
+    break out of the outer box. Plain mode is the historical newline join.
+    """
+    body = "\n".join(str(line) for line in lines)
+    if not codebox:
+        return body
+    from gateway.stream_consumer_fences import escape_code_fences_for_display
+
+    return f"```\n{escape_code_fences_for_display(body)}\n```"
+
+
+# "```\n" + "\n```" around a one-line boxed group.
+CODEBOX_FENCE_COST = 8
+
+
+def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
+    """Slice one boxed tool-progress row into lines that each render within ``limit``.
+
+    Fills the gap ``format_progress_group`` leaves for the gateway's group
+    splitter: it partitions *between* rows, so a single row whose escaped body
+    plus fence overhead alone crossed the platform cap reached the native
+    adapter intact, was split into multiple messages there, and later edits
+    truncated the first message only — losing repeat counters and tail text.
+    Slices are cut from the escaped text (escaping is idempotent) so a later
+    repeat update of the same row re-slices to identical prefixes. Returns
+    ``[line]`` unchanged when it already fits; plain rows never change.
+    """
+    from gateway.stream_consumer_fences import escape_code_fences_for_display
+
+    text = escape_code_fences_for_display(str(line))
+    if len_fn(text) + CODEBOX_FENCE_COST <= limit:
+        return [line]
+    width = max(1, limit - CODEBOX_FENCE_COST)
+    chunks = [text[i : i + width] for i in range(0, len(text), width)]
+    counter_start = text.rfind(" (×")
+    if counter_start > 0 and text.endswith(")") and text[counter_start + 3 : -1].isdigit():
+        boundary = (counter_start // width + 1) * width
+        if counter_start < boundary < len(text):
+            # Never freeze part of a repeat counter: its complete suffix must
+            # remain in the mutable tail when a later repeat re-renders it.
+            index, offset = boundary // width - 1, counter_start % width
+            chunks[index + 1] = chunks[index][offset:] + chunks[index + 1]
+            chunks[index] = chunks[index][:offset]
+    return chunks
+
+
+def repeat_row_text(base_msg, count: int, codebox: bool) -> str:
+    """The repeat-rendered row text for a ``__dedup__`` update (escaped when boxed)."""
+    text = f"{base_msg} (×{count + 1})"
+    if not codebox:
+        return text
+    from gateway.stream_consumer_fences import escape_code_fences_for_display
+
+    return escape_code_fences_for_display(text)

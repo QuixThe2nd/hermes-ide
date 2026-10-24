@@ -26,6 +26,11 @@ class TurnContext:
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
+    # This turn's resolved tool_progress_codebox flag: accumulated progress
+    # groups render as one unlabelled fenced code block when true. Snapshotted
+    # at turn start like progress_grouping — never read from process-global
+    # config mid-turn.
+    progress_codebox: bool = False
     # This turn's resolved tool_preview_length (0 = unlimited), snapshotted at turn
     # start. Rendering reads this turn-owned value, never the process-global
     # agent.display budget: interleaved turns (Discord unlimited vs a capped

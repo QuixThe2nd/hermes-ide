@@ -62,6 +62,8 @@ display:
       tool_progress: compact
 ```
 
+Tool-progress groups can render as one fenced code box per group via `display.tool_progress_codebox` or `display.platforms.<platform>.tool_progress_codebox`; normal commentary, finals, and status notices stay standalone plain messages.
+
 The smaller edges are handled too. Sessions use your stable username instead of a server nickname. `DISCORD_ALLOWED_GUILDS` lets any member of a listed server talk to the bot without changing DM access. Threads rename once after the first reply lands, not halfway through a turn. Progress updates respect each platform's real message limit. Quote-replies in auto-threaded channels get their own thread by default, keeping the parent channel clean; set `discord.auto_thread_replies: false` to answer them inline instead.
 
 Multiplexed profiles use their own `display.reasoning_style`. Compact mode renders `💭 thought for Xs` and can include an `(N tokens)` count for the turn. Streaming previews and interim updates stay standalone, and only the completed final answer reply-pings you. If an auto-threaded root turn cannot attach a reply reference, the final message uses an inline mention instead.

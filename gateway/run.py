@@ -6505,6 +6505,16 @@ class TurnRunner:
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
         _separate_pending_lines = []  # "separate" mode rows appended but not yet sent
+        # Oversized-row chunking (codebox only): when one boxed row alone
+        # exceeds the platform cap it is sliced across several messages; the
+        # buffer then holds only that row's undelivered tail slices and
+        # ``_row_head_len`` counts the escaped chars of the CURRENT row already
+        # visible in the earlier (immutable) chunk messages, and ``_row_slices``
+        # how many trailing buffer lines belong to that row — unrelated earlier
+        # rows never contribute to either.
+        _row_tail = False
+        _row_head_len = 0
+        _row_slices = 0
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -6576,7 +6586,84 @@ class TurnRunner:
             return await ctx.deliver_visible(lambda: adapter.edit_message(**kwargs))
 
         def _progress_text(lines: list) -> str:
-            return "\n".join(str(line) for line in lines)
+            # Code-box presentation (display.tool_progress_codebox): the whole
+            # accumulated group — including every already-fenced command/code
+            # preview row — becomes ONE unlabelled fenced block, with inner ```
+            # escaped so they render inside the box instead of breaking out.
+            # Only the editable (accumulate) lane boxes; "separate"-mode rows
+            # and no-edit fallback bubbles keep their plain per-row text.
+            from gateway.display_config import format_progress_group
+
+            return format_progress_group(
+                lines, bool(ctx.progress_codebox) and can_edit
+            )
+
+        def _codebox_active() -> bool:
+            return bool(ctx.progress_codebox) and can_edit
+
+        def _absorb_row(raw) -> str:
+            """Append a tool row, slicing it when its boxed rendering alone
+            exceeds the platform cap (the group splitter can only partition
+            between rows — without this the native adapter split the row and
+            later edits truncated the tail, losing repeat counters)."""
+            nonlocal _row_tail, _row_head_len, _row_slices
+            if _codebox_active():
+                from gateway.display_config import chunk_oversized_progress_row
+
+                slices = chunk_oversized_progress_row(
+                    raw, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                )
+                if len(slices) > 1:
+                    progress_lines.extend(slices)
+                    _row_tail, _row_head_len, _row_slices = True, 0, len(slices)
+                    return slices[-1]
+            progress_lines.append(raw)
+            _row_tail, _row_slices = False, 0
+            return raw
+
+        def _absorb_dedup(base_msg, count) -> str:
+            """Fold a repeat update into the last row, re-slicing oversized ones."""
+            nonlocal _row_tail, _row_head_len, _row_slices
+            if not progress_lines:
+                return base_msg
+            if _row_tail:
+                # The repeated row is already split across chunk messages.
+                # Slicing is prefix-stable, so the earlier chunks hold an
+                # unchanged prefix — re-render only the editable tail with
+                # the counter instead of duplicating the head.  Only the
+                # trailing lines of that row are replaced; earlier pending
+                # rows must stay visible.
+                from gateway.display_config import repeat_row_text
+
+                tail = repeat_row_text(base_msg, count, _codebox_active())[
+                    _row_head_len:
+                ]
+                if _codebox_active():
+                    from gateway.display_config import chunk_oversized_progress_row
+
+                    slices = chunk_oversized_progress_row(
+                        tail, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                    )
+                    if len(slices) > 1:
+                        progress_lines[-_row_slices:] = slices
+                        _row_slices = len(slices)
+                        return slices[-1]
+                progress_lines[-_row_slices:] = [tail]
+                _row_slices = 1
+                return tail
+            line = f"{base_msg} (×{count + 1})"
+            if _codebox_active():
+                from gateway.display_config import chunk_oversized_progress_row
+
+                slices = chunk_oversized_progress_row(
+                    line, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                )
+                if len(slices) > 1:
+                    progress_lines[-1:] = slices
+                    _row_tail, _row_head_len, _row_slices = True, 0, len(slices)
+                    return slices[-1]
+            progress_lines[-1] = line
+            return line
 
         def _split_progress_groups(lines: list) -> list[list]:
             """Partition progress lines into platform-sized editable bubbles."""
@@ -6619,7 +6706,7 @@ class TurnRunner:
                 intact for a later retry.  In either case the caller should skip
                 the normal send/edit path for this tick.
                 """
-            nonlocal progress_msg_id, progress_lines, can_edit
+            nonlocal progress_msg_id, progress_lines, can_edit, _row_tail, _row_head_len, _row_slices
             if not progress_lines or not can_edit:
                 return False
             groups = _split_progress_groups(progress_lines)
@@ -6652,6 +6739,18 @@ class TurnRunner:
             # The newest continuation is now the only mutable bubble.  Keep
             # just its lines so subsequent edits update it instead of
             # replaying the full historical transcript into new messages.
+            if _row_tail:
+                # Only the current row's slices delivered into earlier
+                # groups count towards its head offset — never unrelated
+                # rows that happened to precede it in the buffer.
+                kept = min(_row_slices, len(groups[-1]))
+                _row_head_len += sum(
+                    len(line)
+                    for line in progress_lines[
+                        len(progress_lines) - _row_slices : len(progress_lines) - kept
+                    ]
+                )
+                _row_slices = kept
             progress_lines = groups[-1]
             return True
 
@@ -6732,9 +6831,7 @@ class TurnRunner:
                 # Handle dedup messages: update last line with repeat counter
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
-                    if progress_lines:
-                        progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                    msg = progress_lines[-1] if progress_lines else base_msg
+                    msg = _absorb_dedup(base_msg, count)
                 elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                     # Content bubble just landed on the platform — close off
                     # the current tool-progress bubble so the next tool
@@ -6771,8 +6868,7 @@ class TurnRunner:
                     ctx.repeat_count[0] = 0
                     continue
                 else:
-                    msg = raw
-                    progress_lines.append(msg)
+                    msg = _absorb_row(raw)
                     if not can_edit:
                         # "separate" mode: this row becomes its own message
                         # later on this tick — remember it until that send
@@ -6805,7 +6901,7 @@ class TurnRunner:
 
                 if can_edit and progress_msg_id is not None:
                     # Try to edit the existing progress message
-                    full_text = "\n".join(progress_lines)
+                    full_text = _progress_text(progress_lines)
                     result = await _edit_progress_message(progress_msg_id, full_text)
                     if not result.success:
                         _err = (getattr(result, "error", "") or "").lower()
@@ -6848,7 +6944,7 @@ class TurnRunner:
                 else:
                     if can_edit:
                         # First tool: send all accumulated text as new message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _progress_text(progress_lines)
                         result = await ctx.deliver_visible(lambda: adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=full_text,
@@ -6925,7 +7021,7 @@ class TurnRunner:
                         elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
                             if progress_lines:
-                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                _absorb_dedup(base_msg, count)
                                 await _roll_progress_overflow_if_needed()
                         elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                             # Content-bubble marker during drain: close off
@@ -6944,7 +7040,7 @@ class TurnRunner:
                             ctx.last_progress_msg[0] = None
                             ctx.repeat_count[0] = 0
                         else:
-                            progress_lines.append(raw)
+                            _absorb_row(raw)
                             if not can_edit:
                                 _separate_pending_lines.append(raw)
                             await _roll_progress_overflow_if_needed()
@@ -35268,6 +35364,10 @@ class GatewayRunner(
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        # Code-box presentation for accumulated groups (opt-in; plain otherwise)
+        _progress_codebox = bool(
+            resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
+        )
         from gateway.status_phrases import (
             choose_status_phrase,
             format_phase_heartbeat,
@@ -35467,6 +35567,7 @@ class GatewayRunner(
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
             progress_grouping=progress_grouping,
+            progress_codebox=_progress_codebox,
             tool_preview_max_len=_tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled,
             progress_queue=progress_queue,
