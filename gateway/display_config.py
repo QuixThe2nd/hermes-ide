@@ -405,17 +405,38 @@ def format_progress_group(lines: list, codebox: bool) -> str:
     any 3+ backtick or tilde run inside the body is neutered with a trailing
     U+200B so an embedded fence can never break out of the outer box.
 
-    UNBOXED EXCEPTION: if ANY row in the group contains its own 3+ fence run,
-    the entire group ships as the plain newline join (no box, no neutering) —
-    Discord cannot nest codeblocks, so a fenced row renders best outside any
-    box. Per-row mixing of boxed/unboxed is deliberately avoided: an edit
-    replaces the whole message and a mixed shape re-flows badly. Plain mode
+    SEGMENTED RENDERING: if ANY row in the group contains its own 3+ fence
+    run, the group is split into contiguous runs of fenced vs plain rows.
+    Each plain run gets its own ``` box (fence-free by construction, so no
+    ZWSP neutering is needed); each fenced row ships RAW between those boxes
+    — Discord cannot nest codeblocks, but it renders multiple non-nested
+    blocks in one message fine. Segments are joined with a blank line, so a
+    pure-fenced group reduces to the plain newline-free raw join and a
+    pure-plain group keeps the single-box behavior above. Plain mode
     (``codebox`` off) is always the historical newline join.
+
+    Oversized GROUPS that contain fenced rows are not pre-chunked here —
+    chunk_oversized_progress_row handles single plain rows only, so a large
+    segmented group reaches the native adapter and is split there.
     """
-    body = "\n".join(str(line) for line in lines)
-    if not codebox or any(_row_contains_fence(line) for line in lines):
-        return body
-    return f"```\n{_neuter_box_fences(body)}\n```"
+    if not codebox or not any(_row_contains_fence(line) for line in lines):
+        body = "\n".join(str(line) for line in lines)
+        if not codebox:
+            return body
+        return f"```\n{_neuter_box_fences(body)}\n```"
+    segments: list[str] = []
+    run: list[str] = []
+    for line in lines:
+        if _row_contains_fence(line):
+            if run:
+                segments.append("```\n" + "\n".join(run) + "\n```")
+                run = []
+            segments.append(str(line))
+        else:
+            run.append(str(line))
+    if run:
+        segments.append("```\n" + "\n".join(run) + "\n```")
+    return "\n\n".join(segments)
 
 
 # "```\n" + "\n```" around a one-line boxed group.
