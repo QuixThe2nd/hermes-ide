@@ -172,6 +172,11 @@ test('batchSignAppTree is a no-op (skipped=true) without the Azure env, and sign
   fs.writeFileSync(exe, 'x')
   fs.writeFileSync(path.join(root, 'tools', 'node.exe'), 'x')
   fs.writeFileSync(path.join(root, 'tools', 'ffmpeg.dll'), 'x')
+  // The shipped uv-cache holds inert sdist/archive artifacts — the arch
+  // audit exempts it and batch-sign must never sign it (wasted Azure
+  // round-trips; locally it can even reference files since removed).
+  fs.mkdirSync(path.join(root, 'uv-cache', 'archive-v0', 'setuptools'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'uv-cache', 'archive-v0', 'setuptools', 'cli.exe'), 'x')
 
   // Unsigned lane: loud no-op, nothing invoked.
   const skipped = await batchSignAppTree(root, exe, { env: {} })

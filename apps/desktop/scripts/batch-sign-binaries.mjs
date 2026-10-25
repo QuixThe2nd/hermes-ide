@@ -460,8 +460,15 @@ export async function batchSignAppTree(appOutDir, productExePath, opts = {}) {
     return { signed: 0, chunks: 0, skipped: true }
   }
   const productExe = productExePath ? path.resolve(productExePath) : null
+  // uv-cache/ is the pm bundle's deliberately-shipped build cache (inert
+  // sdist/archive artifacts, never loaded at runtime — the arch audit
+  // exempts it for the same reason). Signing it wastes Azure round-trips
+  // on dead weight and can FAIL: locally the cache may hold files that
+  // were removed between pm bundle staging and the afterPack walk.
+  const inCache = (file) => /(^|[\\/])uv-cache[\\/]/.test(path.resolve(file))
   const binaries = getBinaries(appOutDir, {
-    skip: (file) => (productExe ? path.resolve(file) === productExe : false)
+    skip: (file) =>
+      inCache(file) || (productExe ? path.resolve(file) === productExe : false)
   })
   if (binaries.length === 0) return { signed: 0, chunks: 0, skipped: false }
   const result = await batchSignBinaries(binaries, opts)
