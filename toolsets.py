@@ -187,6 +187,16 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    # Atomic subset of `skills`: just the model-facing skills_list tool, so
+    # operators can disable it (via `hermes tools` / disabled_toolsets)
+    # independently of skill_view/skill_manage. The `hermes skills list` CLI
+    # command remains available for listing skills outside the model context.
+    "skills_list": {
+        "description": "Model-facing skills_list tool only, separable from skill viewing and management",
+        "tools": ["skills_list"],
+        "includes": []
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
