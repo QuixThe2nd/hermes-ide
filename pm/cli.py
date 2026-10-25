@@ -521,6 +521,22 @@ def _pin_artifacts(package, decision) -> dict:
     return urls_by_target
 
 
+def cmd_status(args) -> int:
+    """Print the latest pm sync receipt — the reader surface for the
+    CLI/TUI/desktop (same schema as update receipts; a failed venv
+    rebuild or a plugin bisect is as reportable as a failed update)."""
+    import json as _json
+
+    from pm import receipt
+
+    data = receipt.latest()
+    if data is None:
+        print("no pm sync receipt yet (no venv operation has run)")
+        return 0
+    print(_json.dumps(data, indent=2))
+    return 0
+
+
 def cmd_bundle(args) -> int:
     """Stage a complete payload for THIS machine's target into --out:
     repo snapshot + store + facts (via the normal install path, redirected)
@@ -729,6 +745,8 @@ def main(argv=None) -> int:
     p.add_argument("--ref", help="git ref for the repo snapshot (default HEAD)")
     p.set_defaults(func=cmd_bundle)
 
+    p = sub.add_parser("status", help="print the latest pm sync receipt (machine-readable)")
+    p.set_defaults(func=cmd_status)
     p = sub.add_parser("update", help="resolve latest versions and re-pin the lockfile")
     p.add_argument("names", nargs="*", help="packages to check/update (default: all with a latest source)")
     p.add_argument("--check", action="store_true",

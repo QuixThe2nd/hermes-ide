@@ -454,6 +454,22 @@ class Venv(StatePackage):
                     decision["plugin"],
                     decision["reason"],
                 )
+            # Receipt: the machine-readable surface for this rebuild
+            # (same schema/dir as update receipts; the updater embeds
+            # these sections via pm.receipt.snapshot()).
+            try:
+                from pm import receipt
+
+                receipt.begin("sync")
+                receipt.record_feature_list(sorted(extras))
+                receipt.record_venv_rebuild(True)
+                if decisions:
+                    receipt.record_bisect(decisions)
+                    receipt.finalize("bisected")
+                else:
+                    receipt.finalize("ok")
+            except Exception:
+                pass
             return
 
         uv_bin, env = pm_uv(venv=self.venv_dir())
