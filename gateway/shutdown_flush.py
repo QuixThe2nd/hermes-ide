@@ -65,13 +65,27 @@ def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> Path:
     return final_path
 
 
-def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **extra: Any) -> bool:
-    """Serialise and write one pending value; return True when a payload was written."""
+def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any,
+                 restart_requested: bool = False, **extra: Any) -> bool:
+    """Serialise and write one pending value; return True when a payload was written.
+
+    ``restart_requested`` (passed explicitly by the shutdown callers, never read from
+    global state) carries the drain-restart lifecycle stamp onto the payload: the same
+    ``run_drain_queue._restart_drain_stamp`` the durable drain snapshot uses, so a
+    message flushed while the process drains for a requested restart can prove — at
+    recovery, in the successor process — that the restart completed.
+    """
     try:
         serialised = _serialise_value(value)
         if serialised is None:
             return False
-        _write_payload(flush_dir, {"session_key": session_key, **extra, "data": serialised})
+        payload: Dict[str, Any] = {"session_key": session_key, **extra, "data": serialised}
+        if restart_requested:
+            from gateway.run_drain_queue import DRAIN_RESTART_STAMP_FIELD, _restart_drain_stamp
+            stamp = _restart_drain_stamp(True)
+            if stamp is not None:
+                payload[DRAIN_RESTART_STAMP_FIELD] = stamp
+        _write_payload(flush_dir, payload)
         return True
     except Exception as exc:
         logger.debug("Failed to flush %s message for %s: %s", kind, session_key, exc)
@@ -79,7 +93,8 @@ def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any, **ext
 
 
 def flush_pending_to_file(pending: Dict[str, Any], *, reason: str = "shutdown",
-                          skip_attrs: Iterable[str] = ()) -> int:
+                          skip_attrs: Iterable[str] = (),
+                          restart_requested: bool = False) -> int:
     """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count.
 
     ``skip_attrs`` names ownership-marker attributes: a slot whose value carries a truthy
@@ -92,13 +107,15 @@ def flush_pending_to_file(pending: Dict[str, Any], *, reason: str = "shutdown",
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
     for session_key, value in list(pending.items()):
         if value is not None and not any(getattr(value, attr, None) for attr in skip_attrs):
-            flushed += _flush_value(flush_dir, "pending", session_key, value, reason=reason, ts=ts)
+            flushed += _flush_value(flush_dir, "pending", session_key, value, reason=reason,
+                                    ts=ts, restart_requested=restart_requested)
     if flushed:
         logger.info("Flushed %d pending message(s) to %s (reason=%s)", flushed, flush_dir, reason)
     return flushed
 
 
-def flush_overflow_to_file(overflow_by_session: Dict[str, Any], *, reason: str = "shutdown") -> int:
+def flush_overflow_to_file(overflow_by_session: Dict[str, Any], *, reason: str = "shutdown",
+                           restart_requested: bool = False) -> int:
     """Serialise the FIFO overflow tails (``queued_events``) to disk; return events flushed.
 
     The adapter slot holds the queue head and ``SessionState.conversation.queued_events`` the
@@ -114,7 +131,7 @@ def flush_overflow_to_file(overflow_by_session: Dict[str, Any], *, reason: str =
         for seq, value in enumerate(list(events)):
             if value is not None:
                 flushed += _flush_value(flush_dir, "overflow", session_key, value, reason=reason,
-                                        ts=ts, seq=seq)
+                                        ts=ts, seq=seq, restart_requested=restart_requested)
     if flushed:
         logger.info("Flushed %d queued overflow message(s) to %s (reason=%s)", flushed, flush_dir,
                     reason)
@@ -328,6 +345,23 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
                        "session_key-to-id resolution found no session for the key. "
                        "The message text is preserved in %s", session_key, path)
         return False
+    # Restart-drain lifecycle receipt: the payload is the only replay vehicle for a
+    # flushed message (recovery appends one stored user row; the later turn reads that
+    # row), so the receipt is applied HERE, exactly once, by baking the note into the
+    # stored content — using the drain queue's own proof/renderer. Everything the proof
+    # cannot establish (no stamp, malformed/oversized pid, same pid, live pid,
+    # unavailable liveness backend) leaves the text unchanged; recovery proceeds
+    # either way. Applying it at the turn seam instead (run.py's
+    # format_drain_restart_receipt) would duplicate: that seam reads an event
+    # attribute the flushed-recovery path never sets, while the note here is already
+    # part of the stored user content the turn replays.
+    from gateway.run_drain_queue import (
+        drain_restart_receipt_for_record,
+        render_drain_restart_receipt,
+    )
+    receipt = drain_restart_receipt_for_record(payload)
+    if receipt is not None:
+        text = f"{render_drain_restart_receipt(receipt)}\n\n{text}"
     target_db.append_message(session_id=session_id, role="user", content=text,
                              timestamp=payload.get("ts", int(time.time())))
     return True

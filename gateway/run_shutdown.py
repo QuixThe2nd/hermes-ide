@@ -1891,6 +1891,7 @@ class GatewayShutdownMixin:
             flush_pending_to_file(
                 dict(self._pending_messages), reason="shutdown",
                 skip_attrs=("_drain_snapshot_owned",),
+                restart_requested=bool(getattr(self, "_restart_requested", False)),
             )
         # The overflow FIFO tail lives in SessionState.conversation.queued_events — flush it too.
         with suppress(Exception):
@@ -1898,6 +1899,7 @@ class GatewayShutdownMixin:
             flush_overflow_to_file(
                 {_k: list(_v) for _k, _v in dict(getattr(self, "_queued_events", None) or {}).items() if _v},
                 reason="shutdown",
+                restart_requested=bool(getattr(self, "_restart_requested", False)),
             )
         # Live SessionState views: clear() resets one field per session (never a wholesale dict swap).
         self._running_agents.clear()

@@ -21375,7 +21375,8 @@ class GatewayRunner(
                 # Snapshot-owned mirrors stay out: the durable drain snapshot already
                 # owns them, and spooling here too would replay them twice after restart.
                 flush_pending_to_file(dict(self._pending_messages), reason="shutdown",
-                                      skip_attrs=("_drain_snapshot_owned",))
+                                      skip_attrs=("_drain_snapshot_owned",),
+                                      restart_requested=bool(getattr(self, "_restart_requested", False)))
             except Exception:
                 pass
             # The FIFO tail lives in SessionState.conversation.queued_events,
@@ -21390,6 +21391,7 @@ class GatewayRunner(
                         if _v
                     },
                     reason="shutdown",
+                    restart_requested=bool(getattr(self, "_restart_requested", False)),
                 )
             except Exception:
                 pass
