@@ -64,6 +64,29 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "update", help="Pull latest changes for an installed plugin")
     plugins_update.add_argument("name", help="Plugin name to update")
 
+    plugins_adopt = plugins_subparsers.add_parser(
+        "adopt",
+        help="Adopt a self-cloned plugin dir into provenance tracking",
+        description=(
+            "For plugin dirs you cloned yourself (no install record): read "
+            "the git origin URL, write the provenance row, and become a "
+            "tracked git install (check-updates + update)."
+        ),
+    )
+    plugins_adopt.add_argument("name", help="Self-cloned plugin directory name")
+
+    plugins_trust = plugins_subparsers.add_parser(
+        "trust-update-url",
+        help="Confirm a changed plugin update_url into the saved tag",
+        description=(
+            "The ONLY path that moves a saved update_url tag. When a "
+            "plugin's manifest changed its update_url (needs-fixing "
+            "mismatch), running this trusts the new url after review. "
+            "Never triggered automatically."
+        ),
+    )
+    plugins_trust.add_argument("name", help="Plugin name")
+
     plugins_remove = plugins_subparsers.add_parser(
         "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin")
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
