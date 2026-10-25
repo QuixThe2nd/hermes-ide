@@ -658,8 +658,9 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
     "description": (
         "The page asks for a one-time / verification / 2FA code after the password: call this. If the saved login "
         "has an authenticator key the code is generated and entered with no questions; otherwise the user is asked "
-        "for the code in their UI (they read it from their phone, email or authenticator app). The code never enters "
-        "the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means "
+        "for the code in their UI (they read it from their phone, email or authenticator app). Prefer this tool over "
+        "typing a code with the browser's input tool; if the user supplies a one-time code directly, typing it is fine. "
+        "no_code_field means "
         "the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait "
         "for the page to move on."
     ),
