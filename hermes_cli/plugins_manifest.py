@@ -35,7 +35,11 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "kind", "hooks", "label", "optional_env", "platforms", "external_dependencies",
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
-    "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
+    "license", "homepage", "tags",
+    # the plugin's update feed address (plugin auto-update plan, 2026-09-03):
+    # read at check time, saved as the sidecar tag at install
+    "update_url",
+    "capabilities", "emits", "listens", "hermes", "depends",
     "requires_hermes", "default_enabled", "disabled_management", "python_runtime",
 }
 
@@ -192,7 +196,12 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
     return {
         "manifest_version": mv, "api_version": api, "requires_plugins": deps, "python_dependencies": pydeps,
         "config_schema": schema, "license": str(data.get("license") or ""),
-        "homepage": str(data.get("homepage") or ""), "tags": tags,
+        "homepage": str(data.get("homepage") or ""),
+        # update_url: the plugin's update feed address (plugin auto-update
+        # plan, 2026-09-03). Claims, not provenance — the sidecar saves its
+        # own copy at install; check time compares the two.
+        "update_url": str(data.get("update_url") or ""),
+        "tags": tags,
         # Fork fields: bundled-only default-on opt-out and disabled-management module stem.
         "default_enabled": data.get("default_enabled", False) is True,
         "disabled_management": _parse_disabled_management_field(data.get("disabled_management"), key),
@@ -404,6 +413,9 @@ class PluginManifest:
     config_schema: Dict[str, Any] = field(default_factory=dict)
     license: str = ""
     homepage: str = ""
+    # the plugin's update feed address (plugin auto-update plan) — claims,
+    # not provenance; the sidecar saves its own copy at install
+    update_url: str = ""
     tags: List[str] = field(default_factory=list)
     # Event-bus declarations, advisory (discoverability only): ``emits`` bare names published under
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
