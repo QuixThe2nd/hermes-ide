@@ -177,6 +177,18 @@ def format_drain_restart_receipt(event: MessageEvent) -> Optional[str]:
     receipt = getattr(event, DRAIN_RESTART_COMPLETED_ATTR, None)
     if not isinstance(receipt, dict):
         return None
+    return render_drain_restart_receipt(receipt)
+
+
+def render_drain_restart_receipt(receipt: Dict[str, Any]) -> str:
+    """Render the bracketed lifecycle-receipt note for a proven receipt.
+
+    Shared by the drain-snapshot replay path (``format_drain_restart_receipt``,
+    which prepends the note to the turn's message text) and the shutdown
+    pending-flush recovery path (``shutdown_flush._recover_one_payload``,
+    which bakes it into the stored user content once): one owning renderer,
+    so both vehicles state the fact in the same words.
+    """
     note = "[Gateway restart completed"
     queued_pid = receipt.get("queued_pid")
     if isinstance(queued_pid, int) and queued_pid > 0:
