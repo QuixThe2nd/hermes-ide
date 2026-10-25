@@ -259,6 +259,64 @@ def lock_and_sync(
         )
 
 
+def resolve_union(
+    plugin_dirs: list[Path],
+    extras: Optional[list[str]] = None,
+    *,
+    venv_dir: Optional[Path] = None,
+) -> tuple[list[Path], list[dict]]:
+    """Try the full union; on failure, bisect the member set.
+
+    Returns (surviving_members, decisions). Every decision is
+    {plugin, action: kept|disabled, reason}. Fail-alone plugins are
+    disabled with the resolver's message; mutually-conflicting plugins
+    are resolved incumbent-wins (the most-recently-enabled member of a
+    conflicting pair is the one disabled — order = plugin_dirs list,
+    LAST wins the tiebreak because the caller passes
+    newest-last). Retries the union until it resolves or every member
+    is disabled; never raises for a resolution failure (a uv binary
+    absence still raises InstallError)."""
+    from pm.package import InstallError
+
+    survivors = list(plugin_dirs)
+    decisions: list[dict] = []
+
+    def _try(members: list[Path]) -> Optional[str]:
+        """None on success, else the failure reason."""
+        try:
+            lock_and_sync(members, extras, venv_dir=venv_dir)
+            return None
+        except InstallError as exc:
+            return str(exc)
+
+    reason = _try(survivors)
+    if reason is None:
+        return survivors, decisions
+
+    # Phase 1: each member alone against core. Fail-alone = disabled.
+    alone_ok: dict[Path, Optional[str]] = {}
+    for member in list(survivors):
+        fail = _try([member])
+        alone_ok[member] = fail
+        if fail is not None:
+            decisions.append(
+                {"plugin": member.name, "action": "disabled", "reason": fail}
+            )
+            survivors.remove(member)
+
+    # Phase 2: retry the reduced union; if it still fails, the remaining
+    # set conflicts mutually — incumbent wins, newest (last) disabled.
+    while survivors:
+        reason = _try(survivors)
+        if reason is None:
+            return survivors, decisions
+        loser = survivors.pop()  # newest-enabled = last in the list
+        decisions.append(
+            {"plugin": loser.name, "action": "disabled", "reason": reason}
+        )
+    return survivors, decisions
+
+
 def _default_venv_dir() -> Path:
     from pm.packages import Venv
 

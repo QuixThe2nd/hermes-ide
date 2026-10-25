@@ -94,6 +94,51 @@ def test_zero_plugins_still_builds_a_root_with_no_members(layout):
     assert "[tool.uv.workspace]" not in text or "members = []" in text
 
 
+def test_resolve_union_passes_through_on_clean_resolve(monkeypatch):
+    a, b = Path("/x/a"), Path("/x/b")
+    calls = []
+    monkeypatch.setattr(
+        ws, "lock_and_sync", lambda members, extras=None, **k: calls.append(members)
+    )
+    survivors, decisions = ws.resolve_union([a, b], ["web"])
+    assert survivors == [a, b]
+    assert decisions == []
+    assert calls == [[a, b]]
+
+
+def test_resolve_union_disables_fail_alone_plugins(monkeypatch):
+    a, b, bad = Path("/x/a"), Path("/x/b"), Path("/x/bad")
+    from pm.package import InstallError
+
+    def fake_lock(members, extras=None, **k):
+        if any(m == bad for m in members):
+            raise InstallError("venv", "bad conflicts with core pin")
+        return None
+
+    monkeypatch.setattr(ws, "lock_and_sync", fake_lock)
+    survivors, decisions = ws.resolve_union([a, bad, b])
+    assert bad not in survivors
+    assert [d["plugin"] for d in decisions] == ["bad"]
+    assert "core pin" in decisions[0]["reason"]
+
+
+def test_resolve_union_incumbent_wins_on_mutual_conflict(monkeypatch):
+    old, new = Path("/x/old-plug"), Path("/x/new-plug")
+    from pm.package import InstallError
+
+    def fake_lock(members, extras=None, **k):
+        if old in members and new in members:
+            raise InstallError("venv", "old-plug and new-plug are incompatible")
+        return None
+
+    monkeypatch.setattr(ws, "lock_and_sync", fake_lock)
+    # newest-enabled LAST (the tiebreak contract)
+    survivors, decisions = ws.resolve_union([old, new])
+    assert survivors == [old]  # incumbent survives
+    assert [d["plugin"] for d in decisions] == ["new-plug"]
+    assert "incompatible" in decisions[0]["reason"]
+
+
 def test_member_stamp_hash_changes_with_plugin_set(layout):
     _, _, plug_a, _ = layout
     stamp_empty = ws.members_stamp([])

@@ -352,8 +352,23 @@ class Venv(StatePackage):
                         "(remove the plugin or enable lazy installs)",
                     )
             # Plugin deps union into the venv through the generated
-            # workspace root (one lock, conflict = loud refusal).
-            lock_and_sync(member_dirs, extras, venv_dir=self.venv_dir())
+            # workspace root (one lock, conflict = loud refusal). On
+            # conflict, resolve_union bisects: fail-alone plugins and
+            # mutual-conflict losers (incumbent wins) are dropped with
+            # their resolver reasons, and the union retries.
+            from pm.workspace import resolve_union
+
+            import logging
+
+            survivors, decisions = resolve_union(
+                member_dirs, extras, venv_dir=self.venv_dir()
+            )
+            for decision in decisions:
+                logging.getLogger(__name__).warning(
+                    "plugin %s disabled by the venv union: %s",
+                    decision["plugin"],
+                    decision["reason"],
+                )
             return
 
         uv_bin, env = pm_uv(venv=self.venv_dir())
