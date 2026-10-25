@@ -77,10 +77,16 @@ def build_root(plugin_dirs: list[Path]) -> Path:
 
 
 def _plugin_dir_roots() -> set[Path]:
-    """All profile plugin dirs + the default home's, machine-wide."""
+    """All profile plugin dirs + the default home's, machine-wide.
+    Profile roots derive from get_default_hermes_root() — the ONE
+    authority (custom HERMES_HOME → that root directly; profile-mode
+    → its parent), so Docker/custom-root profiles join the union the
+    same as standard ones."""
     roots: set[Path] = set()
     try:
-        profiles_root = Path.home() / ".hermes" / "profiles"
+        from hermes_constants import get_default_hermes_root
+
+        profiles_root = get_default_hermes_root() / "profiles"
         if profiles_root.is_dir():
             for profile in profiles_root.iterdir():
                 if profile.is_dir():

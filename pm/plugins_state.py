@@ -14,10 +14,17 @@ from pathlib import Path
 
 
 def _profiles_root() -> Path:
-    # Profile operations are HOME-anchored by design (AGENTS.md rule 6:
-    # _get_profiles_root returns Path.home()/.hermes/profiles so every
-    # profile is visible regardless of which is active).
-    return Path.home() / ".hermes" / "profiles"
+    # Profile roots are derived from get_default_hermes_root() — the ONE
+    # authority for "where do profiles live" (hermes_constants): it
+    # returns HERMES_HOME directly for custom roots (Docker /opt/data,
+    # non-default local roots) and <root> for profile-mode HERMES_HOME,
+    # on both standard and custom layouts. Hardcoding Path.home()/
+    # .hermes/profiles silently omits custom-root profiles — their
+    # enabled dep plugins never join the union and bisect disable
+    # decisions never write back to their config.
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "profiles"
 
 
 def _enabled_list_for_home(home: Path) -> list[str]:
