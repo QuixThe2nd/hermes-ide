@@ -31,6 +31,24 @@ _UTILITY_HANDLER_FACTORIES = {
     "list_resources": _make_list_resources_handler, "read_resource": _make_read_resource_handler,
     "list_prompts": _make_list_prompts_handler, "get_prompt": _make_get_prompt_handler}
 
+# MCP servers whose model-facing schemas are hidden by default: a server keyed exactly "discord"
+# (case-sensitive config key) registers nothing — no native tools, no generated resource/prompt
+# utilities — unless its config carries an explicit valid ``tools.include`` (which keeps the usual
+# whitelist semantics, including [] and ['*']). Exclude-only or unfiltered configs stay denied.
+# This is deliberately narrow: native Discord toolsets (``discord``/``discord_admin`` in
+# toolsets.py) and every other MCP server are unaffected, and the connection itself (discovery,
+# terminal MCP use) is untouched — only model schema registration is gated.
+_DEFAULT_DENIED_SERVER_NAMES = frozenset({"discord"})
+
+
+def _default_denied_server(name: str, config: dict) -> bool:
+    """True when *name* must register no model schemas under this config (default-deny server,
+    no explicit valid ``tools.include`` opt-in)."""
+    if name not in _DEFAULT_DENIED_SERVER_NAMES:
+        return False
+    include_raw = ((config or {}).get("tools") or {}).get("include")
+    return not isinstance(include_raw, (str, list, tuple, set))
+
 
 def _normalize_server_trust(value: Any) -> str:
     """Config ``trust`` -> tier. None -> ``full`` (compat default); unrecognized -> ``untrusted`` (fail closed)."""
@@ -151,6 +169,8 @@ def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: d
     capabilities. ``initialize_result.capabilities`` is the truth (sub-object non-None iff the
     family is served); without it fall back to the legacy session-method check, which never
     filters anything since ClientSession defines all four methods."""
+    if _default_denied_server(server_name, config):
+        return []  # default-deny server: the mcp__<server>__* namespace stays absent entirely
     tools_filter = config.get("tools") or {}
     enabled = {f: _parse_boolish(tools_filter.get(f), default=True) for f in ("resources", "prompts")}
     advertised = getattr(getattr(server, "initialize_result", None), "capabilities", None)
@@ -221,6 +241,8 @@ def _make_tool_filter(name: str, config: dict) -> Callable[[str], bool]:
     exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
     if isinstance(include_raw, (str, list, tuple, set)):
         return lambda tool_name: matches_name_filter(tool_name, include_set)
+    if _default_denied_server(name, config):
+        return lambda tool_name: False
     return lambda tool_name: not (exclude_set and matches_name_filter(tool_name, exclude_set))
 
 
@@ -527,7 +549,8 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
     cached_tools = _cached_tools(tools_from_cache_entry(entry))
     _record_tool_trust_metadata(name, config, cached_tools)
     candidates = _tool_candidates(name, cached_tools, _make_tool_filter(name, config), tool_timeout)
-    candidates += _utility_candidates(name, utility_tools_from_cache_entry(entry), tool_timeout)
+    cached_utility = () if _default_denied_server(name, config) else utility_tools_from_cache_entry(entry)
+    candidates += _utility_candidates(name, cached_utility, tool_timeout)
     registered = _register_candidates(
         name, candidates, check_fn=_make_check_fn(name), scope=_core._mcp_registry_scope, lazy=True)
     if registered:

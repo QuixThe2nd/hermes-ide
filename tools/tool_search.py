@@ -148,8 +148,10 @@ def _core_tool_names() -> frozenset[str]:
 # their schema unless explicitly enabled; once enabled they must stay direct
 # because their availability is itself the session/auth boundary. GUI
 # surfaces stay direct UNLESS the deferral list names them.
+# ``skills_list`` is the same shape: default-off (atomic toolset, not core),
+# and an explicit opt-in must surface the schema itself, not a catalog stub.
 _DIRECT_SURFACE_TOOLSETS = frozenset(
-    {"assistant_handoff", "desktop_ui", "hermes_starts", "project"}
+    {"assistant_handoff", "desktop_ui", "hermes_starts", "project", "skills_list"}
 )
 
 # Event-triggered core tools deferred BY DEFAULT (a catalog stub suffices); the ``defer``

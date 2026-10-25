@@ -64,7 +64,8 @@ CONFIGURABLE_TOOLSETS = [
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (xAI OAuth/XAI_API_KEY or x_search.proxy_provider)"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
-    ("skills",          "📚 Skills",                    "list, view, manage"),
+    ("skills",          "📚 Skills",                    "view, manage"),
+    ("skills_list",     "📚 Skills List (model-facing)", "skills_list tool only (default-off; `hermes skills list` CLI needs no opt-in)"),
     ("todo",            "📋 Task Planning",             "todo_list"),
     ("kanban",          "📌 Kanban",                    "opt-in task board tools for this platform"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
@@ -131,7 +132,12 @@ def gui_toolset_label(label: str) -> str:
 # --read-only`), never something a default session should drift into.
 # "kanban" (from upstream) is opt-in: registered for dispatcher-spawned task
 # workers and profiles that list the toolset explicitly (see toolsets.py).
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly", "kanban"}
+# "skills_list" is default-off as an atomic toolset: skill_view/skill_manage
+# stay core, but the model-facing skills_list tool is only exposed to profiles
+# that explicitly enable it (`hermes tools` → Skills List (model-facing), or
+# listing `skills_list` in platform_toolsets). Listing skills without it is
+# always available via the `hermes skills list` CLI command.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly", "kanban", "skills_list"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.

@@ -158,6 +158,21 @@ Level 2: skill_view(name, path)  → Specific reference file       (varies)
 
 The agent only loads the full skill content when it actually needs it.
 
+> **Opt-in note:** the `skills_list()` model tool ships **off by default** for
+> every platform (it is redundant with the system-prompt skill index).
+> `skill_view` and `skill_manage` are unaffected. To expose `skills_list()` to
+> the model, enable the atomic *Skills List (model-facing)* toolset via
+> `hermes tools` (or list `skills_list` in `platform_toolsets`). Listing skills
+> yourself needs no opt-in: run `hermes skills list` in the terminal.
+>
+> The same default-off posture applies to an MCP server configured under the
+> exact `mcp_servers` key `discord`: its `mcp__discord__*` tools are withheld
+> from the model schema unless explicitly opted in. Set `tools.include: ['*']`
+> (all server tools) or list the raw server tool names in `tools.include` to
+> enable them. An exclude-only configuration (`tools.exclude` without
+> `tools.include`) leaves them off. Native Discord tools, MCP servers under any
+> other key, and terminal access to the Discord MCP server are unchanged.
+
 ## SKILL.md Format
 
 ```markdown

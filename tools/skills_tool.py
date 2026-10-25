@@ -673,7 +673,7 @@ SKILL_VIEW_SCHEMA = {
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
+                "description": "The skill name. For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
             },
             "file_path": {
                 "type": "string",
@@ -685,7 +685,10 @@ SKILL_VIEW_SCHEMA = {
 }
 
 registry.register(
-    name="skills_list", toolset="skills", schema=SKILLS_LIST_SCHEMA,
+    # Registered under the atomic `skills_list` toolset (default-off; see
+    # toolsets.py) — NOT `skills`, so enabling the skills bundle does not
+    # re-expose skills_list through the registry merge in resolve_toolset().
+    name="skills_list", toolset="skills_list", schema=SKILLS_LIST_SCHEMA,
     handler=lambda args, **kw: skills_list(category=args.get("category"), task_id=kw.get("task_id")),
     check_fn=check_skills_requirements, emoji="📚")
 
