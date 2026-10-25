@@ -84,6 +84,16 @@ def record_platform(platform_id: str) -> None:
     _current["platform"] = platform_id
 
 
+def record_plugin_checks(results: list) -> None:
+    """Plugin update-check results (the cadence's receipt section).
+    Each item is a plugins_updates.CheckResult.to_json() dict."""
+    if _current is None:
+        return
+    _current["plugin_checks"] = [
+        r.to_json() if hasattr(r, "to_json") else r for r in results
+    ]
+
+
 def snapshot() -> Optional[dict[str, Any]]:
     """The in-flight receipt data — for the updater to EMBED its sync
     sections into its own receipt (one schema, one directory)."""

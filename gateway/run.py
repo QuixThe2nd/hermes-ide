@@ -38698,6 +38698,66 @@ def main():
 
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a
     # wedged non-daemon worker can't block Py_FinalizeEx's join. SystemExit caught so EVERY path exits.
+
+    # Plugin update-check cadence (read-only, receipt-surfaced): one
+    # background thread at boot; the clock gate makes it a no-op until
+    # plugins.auto_update_check_hours (default 24h) elapses. Never
+    # blocks boot, never installs — apply stays explicit
+    # (plugins.auto_apply opt-in, git rows only, scan-gated).
+    def _kick_plugin_check_cadence() -> None:
+        try:
+            from hermes_cli.plugins_cadence import run_scheduled_check
+            from hermes_cli.plugins_cmd import _plugins_dir
+            from hermes_cli.plugins_updates import run_checks as _run_checks
+
+            run_scheduled_check(
+                run_checks_fn=lambda plugins_dir: _run_checks(
+                    plugins_dir,
+                    fetch=_cadence_fetch,
+                    ls_remote=_cadence_ls_remote,
+                ),
+                plugins_dir=_plugins_dir(),
+            )
+        except Exception:
+            logger.debug("plugin update-check cadence failed", exc_info=True)
+
+    def _cadence_fetch(url: str) -> str:
+        import urllib.request
+
+        with urllib.request.urlopen(url, timeout=10.0) as resp:
+            return resp.read(1024 * 1024).decode("utf-8", errors="replace")
+
+    def _cadence_ls_remote(source: str) -> str:
+        import subprocess as _sp
+
+        proc = _sp.run(
+            ["git", "ls-remote", source, "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+        out = (proc.stdout or "").strip()
+        return out.split("\t")[0] if out else ""
+
+    import threading as _threading
+
+    _threading.Thread(
+        target=_kick_plugin_check_cadence,
+        daemon=True,
+        name="plugin-update-check",
+    ).start()
+    # start_gateway() performs the full graceful teardown (adapters
+    # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,
+    # PID file + runtime lock released) before it returns OR raises SystemExit
+    # with an explicit code. Force-exit afterwards so a wedged non-daemon worker
+    # thread (e.g. a ThreadPoolExecutor tool/LLM call blocked with no timeout)
+    # cannot block interpreter finalization (Py_FinalizeEx joins all non-daemon
+    # threads, incl. concurrent.futures' _python_exit) and strand the gateway
+    # half-shut down with the supervisor unable to restart it (#53107).
+    #
+    # SystemExit is caught explicitly: start_gateway raises it on the
+    # clean-fatal-config (#51228), planned-restart, and service-restart paths,
+    # all of which complete teardown first. Routing those codes through the
+    # same os._exit backstop means EVERY exit path is wedge-proof, not just the
+    # boolean-return ones.
     try:
         # start_gateway() performs the full graceful teardown (adapters disconnected, sessions saved +
         # flushed, SQLite closed, cron/MCP stopped, PID file + runtime lock released) before it returns OR
