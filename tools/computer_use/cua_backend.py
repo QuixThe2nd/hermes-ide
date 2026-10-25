@@ -270,10 +270,11 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
                                + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
                                   if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
         _maybe_nudge_update()
-        # `mcp` is an optional extra: lazy-install on first use (gated by `security.allow_lazy_installs`); failure
-        # raises FeatureUnavailable with the exact `uv pip install` hint.
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.computer_use", prompt=False)
+        # `mcp` is an optional extra (the `computer-use` / `mcp` extras): lazy-install
+        # on first use via pm.extras — gated by `security.allow_lazy_installs`; failure
+        # raises InstallError with the exact `uv pip install` hint.
+        from pm import ensure_import
+        ensure_import("computer-use")
         importlib.invalidate_caches()  # a just-installed package may not be importable yet
         with contextlib.ExitStack() as rollback:  # a failed start stops the private daemon, then re-raises
             if self._embedded_daemon is not None:

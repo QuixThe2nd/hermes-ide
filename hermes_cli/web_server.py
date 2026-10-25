@@ -44,8 +44,8 @@ except ImportError:
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
     # them out of every other install path. After install, re-import.
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.dashboard", prompt=False)
+        from pm import ensure_import
+        ensure_import("web")
         from fastapi import FastAPI, HTTPException, Request
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse

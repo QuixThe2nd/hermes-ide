@@ -57,11 +57,13 @@ def check_wecom_callback_requirements() -> bool:
 def ensure_wecom_callback_requirements() -> bool:
     """ACTIVE lazy-installer (``ensure_deps_fn``): installs ``defusedxml`` and rebinds globals.
 
-    Registered as ``ensure_deps_fn``: the registry's ``create_adapter()`` runs it when the passive probe
-    fails, right before the gateway connects the platform (#79812). Installs ``defusedxml`` (the only
-    non-core dep; aiohttp/httpx ship with every messaging install) and rebinds the module globals. Before
-    this hook existed, the passive ``check_fn`` returned False forever on installs without the ``wecom``
-    extra and the ``platform.wecom_callback`` LAZY_DEPS entry was never exercised.
+    Registered as ``ensure_deps_fn``: the registry's ``create_adapter()``
+    runs it when the passive probe fails, right before the gateway connects
+    the platform (#79812).  Installs ``defusedxml`` (the only non-core dep;
+    aiohttp/httpx ship with every messaging install) and rebinds the module
+    globals.  Before this hook existed, the passive ``check_fn`` returned
+    False forever on installs without the ``wecom`` extra and the
+    lazy-installer entry for wecom_callback was never exercised.
     """
     if check_wecom_callback_requirements():
         return True

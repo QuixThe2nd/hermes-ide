@@ -322,7 +322,12 @@ class _NativeTaskCardStream:
 
 
 def check_slack_requirements() -> bool:
-    """Lazy-install slack-bolt/slack-sdk if missing and rebind module globals on success."""
+    """Check if Slack dependencies are available.
+
+    Lazy-install slack-bolt/slack-sdk if missing: the ``slack`` pyproject extra,
+    via ``pm.extras.ensure_and_bind`` on first call if not present. Rebinds all
+    module-level globals on success.
+    """
     if SLACK_AVAILABLE:
         return True
 
@@ -335,8 +340,9 @@ def check_slack_requirements() -> bool:
             "AsyncApp": AsyncApp, "AsyncSocketModeHandler": AsyncSocketModeHandler,
             "AsyncWebClient": AsyncWebClient, "aiohttp": aiohttp, "SLACK_AVAILABLE": True}
 
-    from tools.lazy_deps import ensure_and_bind
-    return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
+    from pm.extras import ensure_and_bind
+
+    return ensure_and_bind("slack", _import, globals())
 
 
 def _collect_slack_block_mentions(blocks: list) -> list:

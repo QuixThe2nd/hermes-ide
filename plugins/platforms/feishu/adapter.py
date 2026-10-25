@@ -1216,8 +1216,8 @@ def feishu_deps_present() -> bool:
     if FEISHU_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import is_available
-        return is_available("platform.feishu")
+        from pm.extras import available
+        return available("feishu")
     except Exception:  # pragma: no cover — defensive
         return False
 
@@ -1226,9 +1226,11 @@ def check_feishu_requirements() -> bool:
     """Ensure Feishu dependencies are installed without importing the SDK."""
     if FEISHU_AVAILABLE:
         return True
-    from tools.lazy_deps import ensure
+
+    from pm import ensure_import
+
     try:
-        ensure("platform.feishu", prompt=False)
+        ensure_import("feishu")
         return True
     except Exception:
         return False
