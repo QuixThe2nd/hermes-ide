@@ -472,6 +472,21 @@ hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
+# Per-extra platform gates (settled 2026-09-02): an extra listed here is
+# only installable on platforms matching the marker. pm consults this
+# table (pm.extras.extra_supported) — ensure_import/sync_venv refuse a
+# gated-off extra with a clear message instead of resolving it to an
+# empty set. The per-package markers inside the extra stay (uv's
+# resolver needs them for --all-extras); this table is the readable
+# single-authority for WHICH extra is supported WHERE.
+[tool.hermes.extras-platforms]
+# mautrix[encryption] → python-olm: linux-only wheels, no win/darwin build.
+matrix = "sys_platform == 'linux'"
+# grpcio (via google-cloud-pubsub) has no win_arm64 wheel.
+google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
+# qdrant-client → grpcio (via mem0ai) has no win_arm64 wheel.
+mem0 = "platform_machine != 'ARM64' or sys_platform != 'win32'"
+
 [tool.uv]
 override-dependencies = [
   # discord.py's latest published version, 2.7.1, pins pynacl at <1.6. however, pynacl 1.5.0 has known vulnerabilities.

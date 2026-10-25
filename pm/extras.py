@@ -88,15 +88,86 @@ def _importable(anchor: str) -> bool:
 
 
 def available(extra: str) -> bool:
-    """Fast, side-effect-free: are all of this extra's anchors importable?"""
+    """Fast, side-effect-free: are all of this extra's anchors importable?
+    A platform-gated extra whose gate excludes this machine reads as
+    unavailable — the anchors are absent by design, not by accident."""
+    if not extra_supported(extra):
+        return False
     return all(_importable(a) for a in _anchors(extra))
+
+
+def _platform_gates() -> dict[str, str]:
+    """The [tool.hermes.extras-platforms] table from pyproject.toml:
+    extra -> PEP 508 marker string. Cached per process."""
+    global _PLATFORM_GATES
+    if _PLATFORM_GATES is not None:
+        return _PLATFORM_GATES
+    import tomllib
+
+    from pm.paths import repo_root
+
+    gates: dict[str, str] = {}
+    try:
+        with (repo_root() / "pyproject.toml").open("rb") as f:
+            data = tomllib.load(f)
+        table = data.get("tool", {}).get("hermes", {}).get("extras-platforms", {})
+        if isinstance(table, dict):
+            gates = {str(k): str(v) for k, v in table.items()}
+    except (OSError, ValueError):
+        pass
+    _PLATFORM_GATES = gates
+    return gates
+
+
+_PLATFORM_GATES: dict[str, str] | None = None
+
+
+def extra_supported(extra: str) -> bool:
+    """Is this extra installable on THIS platform? True when the extra
+    carries no gate, or its marker matches the running platform. An
+    extra that IS present on this machine (anchors importable) is always
+    supported — an installed override beats the table (dev machines,
+    hand-synced venvs)."""
+    if all(_importable(a) for a in _anchors(extra)):
+        return True
+    marker = _platform_gates().get(extra)
+    if marker is None:
+        return True
+    import os
+    import platform
+    import sys
+
+    from packaging.markers import Marker
+
+    environment = {
+        "sys_platform": sys.platform,
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
+        "os_name": os.name,
+    }
+    try:
+        return bool(Marker(marker).evaluate(environment=environment))
+    except Exception:
+        # A malformed marker must never brick availability — treat as
+        # ungated and let the resolver be the authority.
+        return True
 
 
 def ensure_import(extra: str) -> None:
     """Make an extra available: no-op when the anchor imports, otherwise
-    sync the venv with the extra enabled. Raises InstallError on failure."""
+    sync the venv with the extra enabled. Raises InstallError on failure
+    — including when a platform gate excludes this machine."""
     if available(extra):
         return
+    if not extra_supported(extra):
+        from pm.package import InstallError
+
+        marker = _platform_gates().get(extra, "")
+        raise InstallError(
+            "venv",
+            f"extra {extra!r} is not supported on this platform "
+            f"(gate: {marker!r}); the adapter degrades without it",
+        )
     from pm.ensure import sync_venv
 
     sync_venv([extra])
