@@ -623,6 +623,24 @@ def cmd_bundle(args) -> int:
     write_features(features, out)
     print(f"✓ enabled-features.json ({len(features)} extras recorded)")
 
+    # Ship the uv cache: the staged venv sync just warmed the hermes-owned
+    # cache with every wheel this payload needs. Copying it in makes a
+    # mutable-venv rebuild from the bundle near-free (`uv sync --offline`
+    # from a warm cache probed at 0.4s vs 1.2s cold) — the blow-away-on-
+    # update contract depends on it.
+    from pm.packages import uv_cache_dir as bundle_uv_cache_dir
+
+    payload_cache = out / "uv-cache"
+    if payload_cache.exists():
+        shutil.rmtree(payload_cache, ignore_errors=True)
+    src_cache = bundle_uv_cache_dir()
+    if src_cache.is_dir():
+        print(f"  uv-cache: copying {src_cache} → payload...", flush=True)
+        shutil.copytree(src_cache, payload_cache)
+        print("✓ uv-cache (staged — warm rebuilds for the mutable venv)")
+    else:
+        print("  uv-cache: none warm (first bundle on this machine?)")
+
     bad = _arch_guard(store_dir)
     for line in bad:
         print(f"✗ arch: {line}")

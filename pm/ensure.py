@@ -407,6 +407,21 @@ def adopt() -> bool:
         marker.write_text("", encoding="utf-8")
     except OSError:
         pass
+
+    # Bootstrap the mutable venv (sealed installs): lazy-off copies the
+    # shipped venv out as the seed; lazy-on builds fresh from the shipped
+    # uv cache on first sync. Failure is reported, never fatal — a cold
+    # sync still converges.
+    try:
+        venv_package = get_package("venv")
+    except KeyError:
+        venv_package = None
+    seed = getattr(venv_package, "seed_mutable_venv", None) if venv_package else None
+    if seed is not None:
+        reason = seed()
+        if reason:
+            LOG.info("pm adopt: mutable venv seed skipped: %s", reason)
+
     return True
 
 

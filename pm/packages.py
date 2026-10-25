@@ -245,6 +245,51 @@ def _file_digest(path: Path) -> bytes:
         return b""
 
 
+def uv_cache_dir() -> Path:
+    """The hermes-owned uv cache: machine-scoped and shared (keyed by
+    content — two profiles reuse one cache), anchored to the DEFAULT
+    hermes root like partials_root(). A bundle ships a seeded copy at
+    the payload root (uv-cache/); the first call on a sealed install
+    copies it out to the writable machine cache (the read-only payload
+    can't serve uv's working cache), and a warm `uv sync --offline`
+    from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
+    on-update contract depends on it. uv's default cache location is
+    per-user/platform-opinionated and never used by pm."""
+    from hermes_constants import get_default_hermes_root
+
+    machine_cache = get_default_hermes_root() / "cache" / "uv"
+    marker = machine_cache / ".seeded"
+    if not marker.is_file():
+        # Seed from a shipped bundle cache when present (payload root =
+        # store_root().parent on a sealed install).
+        try:
+            from pm.paths import store_root
+
+            payload_cache = store_root().parent / "uv-cache"
+            if payload_cache.is_dir():
+                machine_cache.mkdir(parents=True, exist_ok=True)
+                import shutil as _shutil
+
+                for entry in payload_cache.iterdir():
+                    if entry.name == ".seeded":
+                        continue
+                    dest = machine_cache / entry.name
+                    if not dest.exists():
+                        (
+                            _shutil.copytree(entry, dest)
+                            if entry.is_dir()
+                            else _shutil.copy2(entry, dest)
+                        )
+        except OSError:
+            pass  # seeding is best-effort; a cold sync still works
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("1", encoding="utf-8")
+        except OSError:
+            pass
+    return machine_cache
+
+
 def uv_env(base_env: Optional[dict] = None) -> dict[str, str]:
     """Sanitized env for pm's internal uv invocations: user-level UV
     overrides and active-venv leakage must not steer which interpreter or
@@ -253,7 +298,9 @@ def uv_env(base_env: Optional[dict] = None) -> dict[str, str]:
     must not reach the subprocess either. User config discovery is
     redirected to an empty dir; HOME is left alone so caches, credentials,
     and git keep working (the #82446 isolation contract, which lived in
-    the installers' run_locked_uv_sync() before the sync moved into pm)."""
+    the installers' run_locked_uv_sync() before the sync moved into pm).
+    UV_CACHE_DIR always points at the hermes-owned cache (shipped with
+    bundles, shared machine-wide) — never the user's ambient cache."""
     env = dict(os.environ if base_env is None else base_env)
     for key in list(env):
         if key.startswith("UV_") or key in (
@@ -268,6 +315,7 @@ def uv_env(base_env: Optional[dict] = None) -> dict[str, str]:
     env["XDG_CONFIG_HOME"] = str(isolated)
     env["XDG_CONFIG_DIRS"] = str(isolated)
     env["UV_NO_CONFIG"] = "1"
+    env["UV_CACHE_DIR"] = str(uv_cache_dir())
     return env
 
 
@@ -305,10 +353,47 @@ class Venv(StatePackage):
         return repo_root()
 
     def venv_dir(self) -> Path:
+        # Sealed installs are read-only: the MUTABLE venv lives in the
+        # writable machine hermes root (get_default_hermes_root()/venv —
+        # per-install, beside the uv cache), seeded on first adopt by
+        # copying the payload's shipped venv out. Dev/source installs
+        # keep the repo-local venv (project_venv_dir) unchanged.
+        from pm.ensure import sealed
+
+        if sealed():
+            from hermes_constants import get_default_hermes_root
+
+            return get_default_hermes_root() / "venv"
         from hermes_constants import project_venv_dir
 
         found = project_venv_dir(self.project_root())
         return found if found else self.project_root() / "venv"
+
+    def seed_mutable_venv(self) -> Optional[str]:
+        """Bootstrap the mutable venv from the shipped payload venv
+        (lazy-off installs). Returns None on success, else why not."""
+        import shutil
+
+        from pm.ensure import lazy_installs_allowed, sealed
+        from pm.paths import store_root
+
+        if not sealed():
+            return None  # dev installs use the repo venv directly
+        dest = self.venv_dir()
+        if dest.exists():
+            return None  # already bootstrapped
+        if lazy_installs_allowed():
+            # Lazy installs ON: build fresh from the shipped uv cache —
+            # no seed copy needed (the sync is near-free from the cache).
+            return None
+        payload_venv = store_root().parent / "venv"
+        if not payload_venv.is_dir():
+            return "payload ships no venv to seed from"
+        try:
+            shutil.copytree(payload_venv, dest)
+        except OSError as exc:
+            return f"seed copy failed: {exc}"
+        return None
 
     def expected_stamp(self, extras: list[str]) -> str:
         import hashlib
