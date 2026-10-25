@@ -44,8 +44,12 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
-    # Skills
-    "skills_list", "skill_view", "skill_manage",
+    # NOTE: skills_list (the model-facing skill catalog tool) is deliberately
+    # NOT here: it is default-off in every standard posture. Operators opt in
+    # via the atomic `skills_list` toolset (`hermes tools` → Skills List
+    # (model-facing)); `hermes skills list` lists skills without it.
+    # skill_view/skill_manage stay core.
+    "skill_view", "skill_manage",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -184,13 +188,14 @@ TOOLSETS = {
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
+        "tools": ["skill_view", "skill_manage"],
         "includes": []
     },
 
-    # Atomic subset of `skills`: just the model-facing skills_list tool, so
-    # operators can disable it (via `hermes tools` / disabled_toolsets)
-    # independently of skill_view/skill_manage. The `hermes skills list` CLI
+    # Standalone default-off model-facing skill catalog: skills_list is no
+    # longer part of the `skills` bundle; it is exposed to the model only when
+    # this atomic `skills_list` toolset is explicitly enabled (via
+    # `hermes tools` / platform_toolsets). The `hermes skills list` CLI
     # command remains available for listing skills outside the model context.
     "skills_list": {
         "description": "Model-facing skills_list tool only, separable from skill viewing and management",
@@ -468,7 +473,7 @@ TOOLSETS = {
             "terminal", "process_manage",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
+            "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
@@ -501,7 +506,7 @@ TOOLSETS = {
             "terminal", "process_manage",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
+            "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
@@ -526,7 +531,7 @@ TOOLSETS = {
             # Vision + image generation
             "vision_analyze", "image_generate",
             # Skills
-            "skills_list", "skill_view", "skill_manage",
+            "skill_view", "skill_manage",
             # Browser automation
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
