@@ -148,9 +148,8 @@ def test_member_stamp_hash_changes_with_plugin_set(layout):
     assert stamp_a == stamp_b
 
 
-def test_enabled_member_dirs_finds_pyproject_and_legacy_plugins(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    plugins = home / "plugins"
+def test_enabled_member_dirs_finds_enabled_dep_plugins(tmp_path, monkeypatch):
+    plugins = tmp_path / "plugins"
     plugins.mkdir(parents=True)
 
     # modern plugin: pyproject.toml
@@ -166,21 +165,69 @@ def test_enabled_member_dirs_finds_pyproject_and_legacy_plugins(tmp_path, monkey
         encoding="utf-8",
     )
 
-    # dep-less plugin: neither — not a member
+    # dep-less plugin: neither — not a member even when enabled
     plain = plugins / "plain-plug"
     plain.mkdir()
     (plain / "plugin.yaml").write_text("name: plain-plug\n", encoding="utf-8")
 
-    # not a plugin dir at all
-    (plugins / "stray.txt").write_text("x", encoding="utf-8")
+    # dep-carrying but NOT-ENABLED plugin — must not join the union
+    orphan = plugins / "orphan-plug"
+    orphan.mkdir()
+    (orphan / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
 
     monkeypatch.setattr(ws, "_plugin_dir_roots", lambda: {plugins})
+    # enabled order = enable recency (legacy enabled first/older, modern
+    # newest LAST) — order must carry through for the bisect tiebreak.
+    monkeypatch.setattr(
+        "pm.plugins_state.enabled_plugins_ordered",
+        lambda: {plugins: ["legacy-plug", "modern-plug", "plain-plug"]},
+    )
     found = ws.enabled_member_dirs()
-    names = {p.name for p in found}
-    assert names == {"modern-plug", "legacy-plug"}
+    names = [p.name for p in found]
+    assert names == ["legacy-plug", "modern-plug"]
+    assert "orphan-plug" not in names
 
 
-def test_materialize_legacy_pyproject_from_pip_dependencies(tmp_path):
+def test_enabled_member_dirs_empty_when_nothing_enabled(tmp_path, monkeypatch):
+    plugins = tmp_path / "plugins"
+    plugins.mkdir(parents=True)
+    member = plugins / "member"
+    member.mkdir()
+    (member / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
+    monkeypatch.setattr(ws, "_plugin_dir_roots", lambda: {plugins})
+    monkeypatch.setattr(
+        "pm.plugins_state.enabled_plugins_ordered", lambda: {}
+    )
+    assert ws.enabled_member_dirs() == []
+
+
+def test_record_disabled_plugins_writes_back(monkeypatch):
+    calls = []
+
+    def fake_disable(names):
+        calls.append(names)
+
+    monkeypatch.setattr("pm.plugins_state.disable_plugins", fake_disable)
+    removed = ws.record_disabled_plugins(
+        [
+            {"plugin": "bad", "action": "disabled", "reason": "conflict"},
+            {"plugin": "good", "action": "kept", "reason": ""},
+        ]
+    )
+    assert removed == ["bad"]
+    assert calls == [["bad"]]
+
+
+@pytest.fixture
+def lazy_on(monkeypatch):
+    import sys
+
+    ensure_mod = sys.modules["pm.ensure"]
+    monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
+
+
+def test_materialize_legacy_pyproject_from_pip_dependencies(tmp_path, lazy_on):
     plug = tmp_path / "legacy-plug"
     plug.mkdir()
     (plug / "plugin.yaml").write_text(
@@ -267,5 +314,24 @@ def test_enabled_member_dirs_survives_unreadable_roots(tmp_path, monkeypatch):
             raise OSError("dangling junction")
 
     monkeypatch.setattr(ws, "_plugin_dir_roots", lambda: {good, _Broken()})
+    monkeypatch.setattr(
+        "pm.plugins_state.enabled_plugins_ordered",
+        lambda: {good: ["member"]},
+    )
     found = ws.enabled_member_dirs()
     assert [p.name for p in found] == ["member"]
+
+
+def test_materialize_never_when_lazy_off(tmp_path, monkeypatch):
+    import sys
+
+    ensure_mod = sys.modules["pm.ensure"]
+    monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: False)
+    plug = tmp_path / "legacy-plug"
+    plug.mkdir()
+    (plug / "plugin.yaml").write_text(
+        "name: legacy-plug\npip_dependencies:\n  - \"requests>=2\"\n",
+        encoding="utf-8",
+    )
+    assert ws.materialize_legacy_pyproject(plug) is None
+    assert not (plug / "pyproject.toml").exists()

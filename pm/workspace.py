@@ -113,9 +113,20 @@ def _is_member_candidate(plugin_dir: Path) -> bool:
 
 
 def enabled_member_dirs() -> list[Path]:
-    """Plugin dirs that carry python deps, machine-wide across profiles.
-    Per-install union: profiles share the venv, so their enabled plugins
-    share the resolution graph (settled)."""
+    """Plugin dirs that carry python deps AND are enabled, machine-wide
+    across profiles. Per-install union: profiles share the venv, so their
+    enabled plugins share the resolution graph (settled).
+
+    ENABLED-STATE FILTER: only plugins in some profile's
+    ``plugins.enabled`` config list are members — a disabled plugin
+    never joins the sync. The result is ordered by ENABLE RECENCY
+    (newest-enabled LAST): profiles' enabled lists preserve config
+    order, and enabling appends — so the bisect's incumbent-wins
+    tiebreak (pop the last) disables the most-recently-enabled."""
+    from pm.plugins_state import enabled_plugins_ordered
+
+    enabled_by_root: dict[Path, set[str]] = enabled_plugins_ordered()
+
     member_dirs: list[Path] = []
     for plugins_dir in sorted(_plugin_dir_roots(), key=str):
         try:
@@ -124,13 +135,42 @@ def enabled_member_dirs() -> list[Path]:
             entries = sorted(plugins_dir.iterdir(), key=str)
         except OSError:
             continue
+        # The profile's enabled list preserves config order (recency).
+        # Iterate the ENABLED names in order so members land recency-
+        # ordered; a name not present on disk is skipped.
+        enabled_names = enabled_by_root.get(plugins_dir, [])
+        by_name = {}
         for plugin_dir in entries:
             try:
-                if plugin_dir.is_dir() and _is_member_candidate(plugin_dir):
+                if plugin_dir.is_dir():
+                    by_name[plugin_dir.name] = plugin_dir
+            except OSError:
+                continue
+        for name in enabled_names:
+            plugin_dir = by_name.get(name)
+            if plugin_dir is None:
+                continue
+            try:
+                if _is_member_candidate(plugin_dir):
                     member_dirs.append(plugin_dir)
             except OSError:
                 continue
     return member_dirs
+
+
+def record_disabled_plugins(decisions: list[dict]) -> list[str]:
+    """Write bisect disable decisions back to the enabled-plugins
+    config so `hermes plugins list` reflects reality and re-enable
+    retries. Returns the plugin names actually disabled."""
+    if not decisions:
+        return []
+    from pm.plugins_state import disable_plugins
+
+    names = [d["plugin"] for d in decisions if d.get("action") == "disabled"]
+    if not names:
+        return []
+    disable_plugins(names)
+    return names
 
 
 def materialize_legacy_pyproject(plugin_dir: Path) -> Optional[Path]:
@@ -141,6 +181,14 @@ def materialize_legacy_pyproject(plugin_dir: Path) -> Optional[Path]:
     separately); idempotent (regenerating is a no-op when specs match)."""
     manifest = plugin_dir / "plugin.yaml"
     if not manifest.is_file():
+        return None
+    # Never when lazy installs are disabled (settled): materializing the
+    # generated pyproject would make the dir a workspace-member candidate
+    # and then hard-fail every sealed/lazy-off sync. The frozen-bundle
+    # posture keeps the dir untouched.
+    from pm.ensure import lazy_installs_allowed
+
+    if not lazy_installs_allowed():
         return None
     generated = plugin_dir / "pyproject.toml"
     if generated.is_file():

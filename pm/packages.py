@@ -441,7 +441,7 @@ class Venv(StatePackage):
             # conflict, resolve_union bisects: fail-alone plugins and
             # mutual-conflict losers (incumbent wins) are dropped with
             # their resolver reasons, and the union retries.
-            from pm.workspace import resolve_union
+            from pm.workspace import record_disabled_plugins, resolve_union
 
             import logging
 
@@ -453,6 +453,16 @@ class Venv(StatePackage):
                     "plugin %s disabled by the venv union: %s",
                     decision["plugin"],
                     decision["reason"],
+                )
+            # Write bisect disables back to the plugins enabled config —
+            # `hermes plugins list` must reflect reality and re-enable
+            # must retry. Best-effort: a config write failure never
+            # breaks the sync.
+            try:
+                record_disabled_plugins(decisions)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "could not persist bisect disable decisions", exc_info=True
                 )
             # Receipt: the machine-readable surface for this rebuild
             # (same schema/dir as update receipts; the updater embeds

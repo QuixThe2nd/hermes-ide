@@ -438,15 +438,37 @@ def _install_plugin_python_deps(
         )
         return False, "dependency install declined"
 
-    from pm.workspace import enabled_member_dirs, lock_and_sync, materialize_legacy_pyproject
-
+    # Route through pm.sync_venv — the ONE sync authority: it owns the
+    # lazy-off gate, the frozen-set refusal, the workspace union (with
+    # bisect + write-back), and the universal receipt. plugins install
+    # never drives uv itself (settled: it only drops the folder; the
+    # sync step does the rest). The plugin is NOT yet in plugins.enabled,
+    # so the resolve runs the WOULD-BE union: enabled members + this
+    # plugin, as a dry check via resolve_union (bisect decisions for
+    # the not-yet-enabled plugin are advisory here — the real sync
+    # after enable re-runs the union through sync_venv).
     try:
-        # Legacy manifest-only plugins need their generated pyproject before
-        # the union can see their deps.
+        from pm.ensure import lazy_installs_allowed
+        from pm.workspace import enabled_member_dirs, materialize_legacy_pyproject, resolve_union
+
+        # Legacy manifest-only plugins need their generated pyproject
+        # before the union can see their deps (no-op when lazy-off).
         materialize_legacy_pyproject(target)
-        # The plugin's own dir is a member candidate already (dropped by
-        # _install_plugin_core); union with the other enabled plugins.
-        lock_and_sync(enabled_member_dirs() or [target])
+        if not lazy_installs_allowed():
+            return False, "lazy installs are disabled — install the deps manually"
+        from pm.packages import Venv
+
+        members = enabled_member_dirs()
+        survivors, decisions = resolve_union(
+            members + ([target] if target not in members else []),
+            venv_dir=Venv().venv_dir(),
+        )
+        if target not in survivors:
+            reason = next(
+                (d["reason"] for d in decisions if d["plugin"] == target.name),
+                "did not resolve",
+            )
+            return False, reason
     except Exception as exc:
         return False, str(exc)
     return True, None

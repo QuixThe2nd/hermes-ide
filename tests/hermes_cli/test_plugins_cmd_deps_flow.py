@@ -26,6 +26,22 @@ class _Console:
             self.lines.append(str(arg))
 
 
+@pytest.fixture
+def resolve_env(monkeypatch):
+    """Lazy installs on + no pre-existing enabled members, so the resolve
+    runs the would-be union with just this plugin."""
+    import importlib
+    import sys
+
+    if "pm.ensure" not in sys.modules:
+        importlib.import_module("pm.ensure")
+    ensure_mod = sys.modules["pm.ensure"]
+    monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(
+        "pm.workspace.enabled_member_dirs", lambda: []
+    )
+
+
 def _legacy_plugin(target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     (target / "plugin.yaml").write_text(
@@ -44,7 +60,7 @@ def test_no_deps_short_circuits_true(tmp_path):
     assert ok is True and reason is None
 
 
-def test_noninteractive_skips_install(tmp_path, monkeypatch):
+def test_noninteractive_skips_install(tmp_path, monkeypatch, resolve_env):
     plug = tmp_path / "dep-plug"
     _legacy_plugin(plug)
     monkeypatch.setattr(pc.sys.stdin, "isatty", lambda: False, raising=False)
@@ -62,7 +78,7 @@ def test_noninteractive_skips_install(tmp_path, monkeypatch):
     assert not called  # nothing installed, nothing enabled
 
 
-def test_decline_skips_install(tmp_path, monkeypatch):
+def test_decline_skips_install(tmp_path, monkeypatch, resolve_env):
     plug = tmp_path / "dep-plug"
     _legacy_plugin(plug)
     monkeypatch.setattr(pc.sys.stdin, "isatty", lambda: True, raising=False)
@@ -82,7 +98,7 @@ def test_decline_skips_install(tmp_path, monkeypatch):
     assert not called
 
 
-def test_conflict_reports_reason_not_crash(tmp_path, monkeypatch):
+def test_conflict_reports_reason_not_crash(tmp_path, monkeypatch, resolve_env):
     plug = tmp_path / "dep-plug"
     _legacy_plugin(plug)
     monkeypatch.setattr(pc.sys.stdin, "isatty", lambda: True, raising=False)
@@ -105,7 +121,7 @@ def test_conflict_reports_reason_not_crash(tmp_path, monkeypatch):
     assert "unsatisfiable" in reason
 
 
-def test_success_installs_and_legacy_bridge_materializes(tmp_path, monkeypatch):
+def test_success_installs_and_legacy_bridge_materializes(tmp_path, monkeypatch, resolve_env):
     plug = tmp_path / "dep-plug"
     _legacy_plugin(plug)
     monkeypatch.setattr(pc.sys.stdin, "isatty", lambda: True, raising=False)
