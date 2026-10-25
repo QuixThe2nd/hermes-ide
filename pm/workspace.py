@@ -297,7 +297,14 @@ def lock_and_sync(
     if lock.returncode != 0:
         raise InstallError("venv", f"uv lock exited {lock.returncode}: {lock.stderr[-600:]}")
 
-    cmd = [uv_bin, "sync", "--frozen"]
+    # --all-packages is REQUIRED: plain `uv sync --frozen` installs only the
+    # ROOT project's deps — workspace-member deps are locked by `uv lock`
+    # but silently never reach site-packages (probed live 2026-09-03: a
+    # member's pyfiglet stayed absent from site-packages under plain
+    # --frozen, present under --all-packages). The union's whole contract
+    # is that plugin deps ride the venv; without this flag every member
+    # install is a silent no-op.
+    cmd = [uv_bin, "sync", "--frozen", "--all-packages"]
     for extra in sorted(set(extras or [])):
         cmd += ["--extra", extra]
     sync = subprocess.run(cmd, cwd=str(root), env=env, capture_output=True, text=True)
@@ -372,7 +379,14 @@ def _default_venv_dir() -> Path:
 
 
 def _uv_binary() -> Optional[str]:
+    """Store uv first (pinned), PATH uv second (dev machines, test envs).
+    A dev machine with uv on PATH but no provisioned store is the normal
+    pre-`pm install` state — 'uv is not installed' there is a lie."""
     from pm.ensure import uv as pm_uv
 
     uv_bin, _env = pm_uv(realize=False)
-    return uv_bin
+    if uv_bin:
+        return uv_bin
+    import shutil
+
+    return shutil.which("uv")
