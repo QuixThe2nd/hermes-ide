@@ -148,6 +148,38 @@ def test_member_stamp_hash_changes_with_plugin_set(layout):
     assert stamp_a == stamp_b
 
 
+def test_member_stamp_changes_when_pyproject_content_changes(tmp_path):
+    """Task 4 contract: a pulled plugin with changed pins must move the
+    stamp — path-only hashing left dep bumps invisible to the venv sync."""
+    plug = tmp_path / "plug"
+    plug.mkdir()
+    (plug / "pyproject.toml").write_text(
+        'dependencies = ["pkg==1.0.0"]\n', encoding="utf-8"
+    )
+    before = ws.members_stamp([plug])
+    # the plugin update: same dir, new pins
+    (plug / "pyproject.toml").write_text(
+        'dependencies = ["pkg==2.0.0"]\n', encoding="utf-8"
+    )
+    after = ws.members_stamp([plug])
+    assert before != after
+    # no pyproject at all: still hashable (the dir identity carries it)
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert ws.members_stamp([bare]) != before
+
+
+def test_member_stamp_missing_pyproject_does_not_crash(tmp_path):
+    """A member dir whose pyproject vanished mid-scan hashes on path only."""
+    plug = tmp_path / "ghost"
+    plug.mkdir()
+    (plug / "pyproject.toml").write_text("x\n", encoding="utf-8")
+    first = ws.members_stamp([plug])
+    (plug / "pyproject.toml").unlink()
+    second = ws.members_stamp([plug])
+    assert first != second  # content term dropped out, stamp moved
+
+
 def test_enabled_member_dirs_finds_enabled_dep_plugins(tmp_path, monkeypatch):
     plugins = tmp_path / "plugins"
     plugins.mkdir(parents=True)

@@ -45,11 +45,23 @@ def _member_rel(root: Path, plugin_dir: Path) -> str:
 
 def members_stamp(plugin_dirs: list[Path]) -> str:
     """Content hash of the member SET — order-independent, so venv stamps
-    compare the set of unioned plugins, not the discovery order."""
-    resolved = sorted({str(p.resolve()) for p in plugin_dirs})
+    compare the set of unioned plugins, not the discovery order.
+
+    Includes each member's pyproject.toml CONTENT: a plugin update that
+    changes its pins must re-sync the union even when the member set is
+    unchanged (Task 4 of the plugin auto-update plan — path-only hashing
+    left pulled-plugin dep bumps invisible to expected_stamp)."""
+    resolved = sorted({p.resolve() for p in plugin_dirs})
     h = hashlib.sha256()
     for entry in resolved:
-        h.update(entry.encode("utf-8"))
+        h.update(str(entry).encode("utf-8"))
+        h.update(b"\0")
+        pyproject = entry / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                h.update(pyproject.read_bytes())
+            except OSError:
+                pass
         h.update(b"\0")
     return h.hexdigest()
 
