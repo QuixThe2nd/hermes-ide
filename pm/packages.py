@@ -337,6 +337,20 @@ class Venv(StatePackage):
 
         member_dirs = enabled_member_dirs()
         if member_dirs:
+            # Lazy installs OFF = the frozen bundle feature set: plugin
+            # members are never installed (the bundle IS the install).
+            from pm.ensure import lazy_installs_allowed
+
+            if not lazy_installs_allowed():
+                from pm.features import read_features
+
+                if read_features() is not None:
+                    raise InstallError(
+                        self.name,
+                        "plugin members present but lazy installs are "
+                        "disabled — this bundle's feature set is frozen "
+                        "(remove the plugin or enable lazy installs)",
+                    )
             # Plugin deps union into the venv through the generated
             # workspace root (one lock, conflict = loud refusal).
             lock_and_sync(member_dirs, extras, venv_dir=self.venv_dir())

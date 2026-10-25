@@ -307,7 +307,24 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False) -> 
     the installed state (one ledger); no-op when the stamp already matches.
     ``explicit`` marks a deliberate install command (`hermes pm install`,
     `hermes update`) — those are the remedy the lazy-install policy points
-    at, so the policy does not apply to them."""
+    at, so the policy does not apply to them.
+
+    Lazy installs OFF = the frozen feature set: when
+    security.allow_lazy_installs is false AND the bundle's
+    enabled-features.json exists, the feature list is FROZEN to that file
+    — requested extras outside it are refused, and plugin members are
+    never installed (the bundle IS the install)."""
+    from pm.features import read_features
+
+    frozen = read_features() if not lazy_installs_allowed() else None
+    if frozen is not None and extras:
+        outside = sorted(set(extras) - set(frozen))
+        if outside:
+            raise _refuse_lazy(
+                "venv",
+                f"extras {outside} are outside this bundle's frozen feature "
+                "set (security.allow_lazy_installs is false)",
+            )
     package = get_package("venv")
     facts = _facts()
     fact = facts.get("venv") or {}

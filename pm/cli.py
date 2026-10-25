@@ -614,6 +614,15 @@ def cmd_bundle(args) -> int:
             return 1
     print("✓ venv (relocatable, all extras, on the staged interpreter)")
 
+    # The frozen feature set: the EXACT extras that installed on this
+    # target (markers gate some off per-platform). This file is the
+    # lazy-off contract — pm sync never deviates from it.
+    from pm.features import installed_extras, write_features
+
+    features = installed_extras(repo_dir, venv_dir)
+    write_features(features, out)
+    print(f"✓ enabled-features.json ({len(features)} extras recorded)")
+
     bad = _arch_guard(store_dir)
     for line in bad:
         print(f"✗ arch: {line}")
