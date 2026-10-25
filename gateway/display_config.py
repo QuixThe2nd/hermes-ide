@@ -376,28 +376,30 @@ def _normalise(setting: str, value: Any) -> Any:
     return norm(value) if norm else value
 
 
+def _neuter_box_fences(body: str) -> str:
+    """Append U+200B after every 3+ backtick/tilde run so it can never open a fence.
+
+    The codebox is always an ordinary ``` pair (Discord clients do not reliably
+    honor longer nested fences), so any run that a client might parse as a
+    fence is made unparseable by a trailing zero-width space. Idempotent: an
+    already-neutered run keeps exactly one ZWSP.
+    """
+    return re.sub(r"(`{3,}|~{3,})(\u200b)?", lambda m: m.group(1) + "\u200b", body)
+
+
 def format_progress_group(lines: list, codebox: bool) -> str:
     """Render accumulated tool-progress rows as one bubble's text.
 
     ``codebox`` wraps the whole group in a single unlabelled fenced code block
-    (``display.tool_progress_codebox``). Inner ``` markers are escaped with the
-    same helper the reasoning renderer uses, so an embedded fence can never
-    break out of the outer box. Plain mode is the historical newline join.
+    (``display.tool_progress_codebox``). The box is always a plain ``` pair; any
+    3+ backtick or tilde run inside the body is neutered with a trailing
+    U+200B so an embedded fence can never break out of the outer box. Plain
+    mode is the historical newline join.
     """
     body = "\n".join(str(line) for line in lines)
     if not codebox:
         return body
-    from gateway.stream_consumer_fences import escape_code_fences_for_display
-
-    # A body that already contains fenced code must nest, not escape: Discord
-    # renders escaped fences as literal \` text. Escalate the outer fence to one
-    # longer than the longest backtick run anywhere in the joined body, so any
-    # inner fence (including a 4+ backtick one) stays a valid nested block.
-    max_run = max((len(run) for run in re.findall(r"`+", body)), default=0)
-    if max_run >= 3:
-        fence = "`" * (max_run + 1)
-        return f"{fence}\n{body}\n{fence}"
-    return f"```\n{escape_code_fences_for_display(body)}\n```"
+    return f"```\n{_neuter_box_fences(body)}\n```"
 
 
 # "```\n" + "\n```" around a one-line boxed group.
@@ -408,33 +410,18 @@ def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
     """Slice one boxed tool-progress row into lines that each render within ``limit``.
 
     Fills the gap ``format_progress_group`` leaves for the gateway's group
-    splitter: it partitions *between* rows, so a single row whose escaped body
+    splitter: it partitions *between* rows, so a single row whose neutered body
     plus fence overhead alone crossed the platform cap reached the native
     adapter intact, was split into multiple messages there, and later edits
     truncated the first message only — losing repeat counters and tail text.
-    Slices are cut from the escaped text (escaping is idempotent) so a later
+    Slices are cut from the neutered text (neutering is idempotent) so a later
     repeat update of the same row re-slices to identical prefixes. Returns
     ``[line]`` unchanged when it already fits; plain rows never change.
     """
-    from gateway.stream_consumer_fences import escape_code_fences_for_display
-
-    raw = str(line)
-    # A row that itself contains fenced code must nest, not escape: slice the
-    # raw body and budget for the escalated outer fence the formatter will use
-    # (one longer than the longest backtick run), so no escaped \` text leaks
-    # and every chunk stays independently boxable within the limit.
-    max_run = max((len(run) for run in re.findall(r"`+", raw)), default=0)
-    fenced = max_run >= 3
-    if fenced:
-        fence_cost = 2 * (max_run + 1) + 2
-        if len_fn(raw) + fence_cost <= limit:
-            return [line]
-        text = raw
-    else:
-        text = escape_code_fences_for_display(raw)
-        fence_cost = CODEBOX_FENCE_COST
-        if len_fn(text) + fence_cost <= limit:
-            return [line]
+    text = _neuter_box_fences(str(line))
+    fence_cost = CODEBOX_FENCE_COST
+    if len_fn(text) + fence_cost <= limit:
+        return [line]
     width = max(1, limit - fence_cost)
     chunks = [text[i : i + width] for i in range(0, len(text), width)]
     counter_start = text.rfind(" (×")
@@ -446,14 +433,23 @@ def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
             index, offset = boundary // width - 1, counter_start % width
             chunks[index + 1] = chunks[index][offset:] + chunks[index + 1]
             chunks[index] = chunks[index][:offset]
+    # Fence runs must stay atomic across the cut: a boundary landing right
+    # after a 3+ run's first ticks would separate the run from its trailing
+    # ZWSP (or leave a bare ``` at a chunk's line start, which a client could
+    # parse as a fence). Walk any such boundary back to before the run.
+    for i in range(len(chunks) - 1):
+        if chunks[i + 1] and chunks[i + 1][0] in "`~":
+            step = 0
+            while step < 16 and chunks[i] and chunks[i][-1] in "`~":
+                chunks[i + 1] = chunks[i][-1] + chunks[i + 1]
+                chunks[i] = chunks[i][:-1]
+                step += 1
     return chunks
 
 
 def repeat_row_text(base_msg, count: int, codebox: bool) -> str:
-    """The repeat-rendered row text for a ``__dedup__`` update (escaped when boxed)."""
+    """The repeat-rendered row text for a ``__dedup__`` update (neutered when boxed)."""
     text = f"{base_msg} (×{count + 1})"
     if not codebox:
         return text
-    from gateway.stream_consumer_fences import escape_code_fences_for_display
-
-    return escape_code_fences_for_display(text)
+    return _neuter_box_fences(text)
