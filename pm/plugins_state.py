@@ -11,6 +11,7 @@ second authority for enabled state.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 
 def _profiles_root() -> Path:
@@ -74,13 +75,44 @@ def _all_homes() -> list[Path]:
 
 def enabled_plugins_ordered() -> dict[Path, list[str]]:
     """plugins_dir → ordered enabled list, per home. Keyed by the
-    PLUGINS DIR (where the member dirs live), not the home itself."""
+    PLUGINS DIR (where the member dirs live), not the home itself.
+
+    The ACTIVE MEMORY PROVIDER joins its home's list: providers install
+    via ``memory.provider`` (mnemosyne's documented path), not via
+    plugins.enabled — without this, a provider's dep plugin never joins
+    the union. The provider rides LAST (newest — the bisect's
+    incumbent-wins tiebreak disables it before older plugins)."""
     out: dict[Path, list[str]] = {}
     for home in _all_homes():
         enabled = _enabled_list_for_home(home)
+        provider = _active_memory_provider(home)
+        if provider and provider not in enabled:
+            enabled = enabled + [provider]
         if enabled:
             out[home / "plugins"] = enabled
     return out
+
+
+def _active_memory_provider(home: Path) -> Optional[str]:
+    """The home's ``memory.provider`` config key, when set and its plugin
+    dir exists (a provider name with no installed dir is not a member)."""
+    try:
+        import yaml
+
+        config_path = home / "config.yaml"
+        if not config_path.is_file():
+            return None
+        with config_path.open(encoding="utf-8-sig") as f:
+            config = yaml.safe_load(f) or {}
+        provider = (config.get("memory") or {}).get("provider")
+        if not isinstance(provider, str) or not provider.strip():
+            return None
+        name = provider.strip()
+        if (home / "plugins" / name).is_dir():
+            return name
+        return None
+    except Exception:
+        return None
 
 
 def disable_plugins(names: list[str]) -> dict[str, list[str]]:

@@ -85,3 +85,48 @@ def test_enabled_read_survives_garbage_config(homes):
     default_home, _ = homes
     (default_home / "config.yaml").write_text("{ not yaml", encoding="utf-8")
     assert pstate.enabled_plugins_ordered() == {}
+
+
+def test_active_memory_provider_joins_union(homes, tmp_path):
+    """The mnemosyne path: a provider installed via memory.provider (not
+    plugins.enabled) must join the union — deps ride the lock either way."""
+    default_home, _ = homes
+    provider_dir = default_home / "plugins" / "mnemosyne-like"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    import yaml
+
+    with (default_home / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            {"plugins": {"enabled": ["regular-plug"]},
+             "memory": {"provider": "mnemosyne-like"}},
+            f,
+        )
+
+    by_root = pstate.enabled_plugins_ordered()
+    assert by_root[default_home / "plugins"] == ["regular-plug", "mnemosyne-like"]
+
+
+def test_memory_provider_without_dir_is_skipped(homes):
+    """memory.provider set but no plugin dir on disk — not a member."""
+    default_home, _ = homes
+    import yaml
+
+    with (default_home / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump({"memory": {"provider": "ghost-provider"}}, f)
+
+    assert pstate.enabled_plugins_ordered() == {}
+
+
+def test_memory_provider_already_enabled_not_duplicated(homes):
+    default_home, _ = homes
+    (default_home / "plugins" / "dual").mkdir(parents=True)
+    import yaml
+
+    with (default_home / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            {"plugins": {"enabled": ["dual"]}, "memory": {"provider": "dual"}}, f
+        )
+
+    by_root = pstate.enabled_plugins_ordered()
+    assert by_root[default_home / "plugins"] == ["dual"]  # once, not twice
