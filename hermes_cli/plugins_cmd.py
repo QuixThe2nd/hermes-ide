@@ -1647,6 +1647,71 @@ def cmd_trust_update_url(name: str) -> None:
     )
 
 
+def cmd_check_updates(args: Any | None = None) -> None:
+    """Read-only: is any installed plugin outdated? NEVER mutates."""
+    import urllib.error
+    import urllib.request
+
+    from rich.console import Console
+    from rich.table import Table
+
+    from hermes_cli.plugins_updates import _default_pypi_latest, run_checks
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+
+    def _fetch(url: str) -> str:
+        with urllib.request.urlopen(url, timeout=10.0) as resp:
+            data = resp.read(1 * 1024 * 1024)
+        return data.decode("utf-8", errors="replace")
+
+    def _ls_remote(source: str) -> str:
+        git_exe = _resolve_git_executable()
+        proc = subprocess.run(
+            [git_exe or "git", "ls-remote", source, "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or "ls-remote failed").strip()[:200])
+        # 'sha\trefs/heads/...' or empty
+        out = (proc.stdout or "").strip()
+        return out.split("\t")[0] if out else ""
+
+    results = run_checks(
+        plugins_dir, fetch=_fetch, ls_remote=_ls_remote,
+        pip_pypi_latest=_default_pypi_latest,
+    )
+
+    if getattr(args, "json", False):
+        print(json.dumps([r.to_json() for r in results], indent=2))
+        return
+
+    table = Table(title="Plugin updates", show_lines=False)
+    table.add_column("Name", style="bold")
+    table.add_column("Class", style="dim")
+    table.add_column("Current")
+    table.add_column("Latest")
+    table.add_column("Status")
+    for r in results:
+        if r.needs_fixing:
+            status = f"[red]needs fixing[/red]\n[dim]{r.needs_fixing}[/dim]"
+        elif r.update_available is True:
+            status = "[green]update available[/green]"
+        elif r.update_available is False:
+            status = "[dim]up to date[/dim]"
+        else:
+            status = f"[yellow]unknown[/yellow]\n[dim]{r.reason}[/dim]"
+        table.add_row(
+            r.name, r.klass, (r.current or "-")[:12], r.latest or "-", status
+        )
+    console.print()
+    console.print(table)
+    console.print()
+    console.print("[dim]Check-only. Apply with: hermes plugins update <name>[/dim]")
+
+
 def cmd_list(args: Any | None = None) -> None:
     """List all plugins (bundled + user) with enabled/disabled state."""
     console = _console()
@@ -2442,6 +2507,8 @@ _PLUGIN_ACTIONS = {
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
+    "check-updates": lambda args: cmd_check_updates(args),
+    "check": lambda args: cmd_check_updates(args),
     None: lambda args: cmd_toggle(),
 }
 

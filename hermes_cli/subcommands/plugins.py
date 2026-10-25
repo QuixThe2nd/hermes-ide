@@ -87,6 +87,24 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     )
     plugins_trust.add_argument("name", help="Plugin name")
 
+    plugins_check = plugins_subparsers.add_parser(
+        "check-updates",
+        aliases=["check"],
+        help="Check whether installed plugins have updates (read-only)",
+        description=(
+            "Standard, read-only update check for every installed plugin: "
+            "saved-tag update_url feeds (with mismatch protection), git "
+            "ls-remote for git installs, and a stateless PyPI probe for "
+            "pip entry-point plugins. NEVER mutates anything — apply with "
+            "`hermes plugins update <name>`."
+        ),
+    )
+    plugins_check.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON (the receipt-section shape)",
+    )
+
     plugins_remove = plugins_subparsers.add_parser(
         "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin")
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
