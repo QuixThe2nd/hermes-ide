@@ -106,6 +106,77 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
             f.issues.extend(r.issues)
 
 
+# ── Plugin Provenance: read-only reconciliation + saved-tag mismatches ──
+# The needs-fixing surface: the receipt/check verb surfaces these live; doctor
+# makes them visible on-demand. Ported from upstream 7338f2faf9 (strings verbatim).
+def _manifest_update_url(plugin_dir) -> str:
+    try:
+        import yaml as _yaml
+
+        with (plugin_dir / "plugin.yaml").open(encoding="utf-8-sig") as f:
+            data = _yaml.safe_load(f) or {}
+        value = data.get("update_url")
+        return value.strip() if isinstance(value, str) else ""
+    except Exception:
+        return ""
+
+
+@doctor_check("Plugin provenance check skipped", "({e})")
+def _check_plugin_provenance(should_fix: bool, f: Finding) -> None:
+    from hermes_cli.plugins_provenance import (
+        ProvenanceClass,
+        plugins_provenance,
+    )
+
+    from hermes_cli.plugins_cmd import _plugins_dir
+
+    _prov_issues = 0
+    for prov in plugins_provenance(_plugins_dir()):
+        if prov.klass is ProvenanceClass.DRIFT:
+            check_warn(
+                f"Plugin '{prov.name}': provenance drift",
+                "the install record names a source but the dir has no "
+                ".git — reinstall from the recorded source",
+            )
+            f.manual_issues.append(
+                f"Plugin '{prov.name}': provenance drift — reinstall from the recorded source"
+            )
+            _prov_issues += 1
+        elif prov.klass is ProvenanceClass.SELF_CLONED:
+            check_info(
+                f"Plugin '{prov.name}': self-cloned (untracked) — "
+                f"run `hermes plugins adopt {prov.name}` to track it"
+            )
+        elif prov.klass is ProvenanceClass.MANUAL:
+            check_info(
+                f"Plugin '{prov.name}': manually installed (no provenance; "
+                "not auto-updatable)"
+            )
+        # needs-fixing: manifest update_url vs the saved tag
+        if prov.klass is ProvenanceClass.GIT and prov.row:
+            saved = (prov.row.get("update_url") or "").strip()
+            claimed = _manifest_update_url(prov.path)
+            if saved != claimed:
+                detail = (
+                    f"manifest declares {claimed!r} but "
+                    f"{saved!r} was saved at install"
+                    if saved
+                    else f"manifest declares {claimed!r} but no url was saved at install"
+                )
+                check_warn(
+                    f"Plugin '{prov.name}': update_url mismatch (needs fixing)",
+                    f"{detail} — run `hermes plugins trust-update-url "
+                    f"{prov.name}` after review, or `hermes plugins "
+                    "check-updates` for the live view",
+                )
+                f.manual_issues.append(
+                    f"Plugin '{prov.name}': update_url mismatch — run `hermes plugins trust-update-url {prov.name}` after review"
+                )
+                _prov_issues += 1
+    if _prov_issues == 0:
+        check_ok("Plugin provenance healthy (no mismatches, no drift)")
+
+
 # Ordered (section title, check). None title = check prints its own header (or none); order is user-visible.
 DOCTOR_CHECKS = (
     ('Security Advisories', _check_security_advisories), ('MCP Server Security', _check_mcp_security),
@@ -115,7 +186,8 @@ DOCTOR_CHECKS = (
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
-    (None, _check_gateway_supervision), (None, _check_command_installation),
+    (None, _check_gateway_supervision), ('Plugin Provenance', _check_plugin_provenance),
+    (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
