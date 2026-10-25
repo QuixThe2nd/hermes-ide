@@ -324,10 +324,23 @@ class Venv(StatePackage):
         h.update(_file_digest(root / "pyproject.toml"))
         h.update(",".join(sorted(extras)).encode())
         h.update(f"{sys.version_info.major}.{sys.version_info.minor}".encode())
+        # Plugin members union into the venv — a changed member set must
+        # re-sync even when extras and core lock are unchanged.
+        from pm.workspace import enabled_member_dirs, members_stamp
+
+        h.update(members_stamp(enabled_member_dirs()).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str]) -> None:
         from pm.ensure import uv as pm_uv
+        from pm.workspace import enabled_member_dirs, lock_and_sync
+
+        member_dirs = enabled_member_dirs()
+        if member_dirs:
+            # Plugin deps union into the venv through the generated
+            # workspace root (one lock, conflict = loud refusal).
+            lock_and_sync(member_dirs, extras, venv_dir=self.venv_dir())
+            return
 
         uv_bin, env = pm_uv(venv=self.venv_dir())
         if uv_bin is None:
