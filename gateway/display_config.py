@@ -387,17 +387,33 @@ def _neuter_box_fences(body: str) -> str:
     return re.sub(r"(`{3,}|~{3,})(\u200b)?", lambda m: m.group(1) + "\u200b", body)
 
 
+def _row_contains_fence(line) -> bool:
+    """True when the row itself carries a 3+ backtick/tilde run (a real fence).
+
+    Discord cannot nest codeblocks: no outer-fence length or zero-width-space
+    neutering survives every client, so such a row must ship UNBOXED and let
+    its own fences render as real blocks.
+    """
+    return bool(re.search(r"(`{3,}|~{3,})", str(line)))
+
+
 def format_progress_group(lines: list, codebox: bool) -> str:
     """Render accumulated tool-progress rows as one bubble's text.
 
     ``codebox`` wraps the whole group in a single unlabelled fenced code block
-    (``display.tool_progress_codebox``). The box is always a plain ``` pair; any
-    3+ backtick or tilde run inside the body is neutered with a trailing
-    U+200B so an embedded fence can never break out of the outer box. Plain
-    mode is the historical newline join.
+    (``display.tool_progress_codebox``). The box is always a plain ``` pair;
+    any 3+ backtick or tilde run inside the body is neutered with a trailing
+    U+200B so an embedded fence can never break out of the outer box.
+
+    UNBOXED EXCEPTION: if ANY row in the group contains its own 3+ fence run,
+    the entire group ships as the plain newline join (no box, no neutering) —
+    Discord cannot nest codeblocks, so a fenced row renders best outside any
+    box. Per-row mixing of boxed/unboxed is deliberately avoided: an edit
+    replaces the whole message and a mixed shape re-flows badly. Plain mode
+    (``codebox`` off) is always the historical newline join.
     """
     body = "\n".join(str(line) for line in lines)
-    if not codebox:
+    if not codebox or any(_row_contains_fence(line) for line in lines):
         return body
     return f"```\n{_neuter_box_fences(body)}\n```"
 
@@ -417,7 +433,15 @@ def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
     Slices are cut from the neutered text (neutering is idempotent) so a later
     repeat update of the same row re-slices to identical prefixes. Returns
     ``[line]`` unchanged when it already fits; plain rows never change.
+
+    A row containing its own 3+ fence run is never chunked here: it ships
+    unboxed (see :func:`format_progress_group`), so native adapter splitting
+    of the plain text is safe. With fenced rows diverted, the remaining plain
+    rows are fence-free by construction — the historic fence-run atomicity
+    post-pass is gone because no run it guarded can reach the slicer.
     """
+    if _row_contains_fence(line):
+        return [line]
     text = _neuter_box_fences(str(line))
     fence_cost = CODEBOX_FENCE_COST
     if len_fn(text) + fence_cost <= limit:
@@ -433,23 +457,16 @@ def chunk_oversized_progress_row(line, limit: int, len_fn=len) -> list:
             index, offset = boundary // width - 1, counter_start % width
             chunks[index + 1] = chunks[index][offset:] + chunks[index + 1]
             chunks[index] = chunks[index][:offset]
-    # Fence runs must stay atomic across the cut: a boundary landing right
-    # after a 3+ run's first ticks would separate the run from its trailing
-    # ZWSP (or leave a bare ``` at a chunk's line start, which a client could
-    # parse as a fence). Walk any such boundary back to before the run.
-    for i in range(len(chunks) - 1):
-        if chunks[i + 1] and chunks[i + 1][0] in "`~":
-            step = 0
-            while step < 16 and chunks[i] and chunks[i][-1] in "`~":
-                chunks[i + 1] = chunks[i][-1] + chunks[i + 1]
-                chunks[i] = chunks[i][:-1]
-                step += 1
     return chunks
 
 
 def repeat_row_text(base_msg, count: int, codebox: bool) -> str:
-    """The repeat-rendered row text for a ``__dedup__`` update (neutered when boxed)."""
+    """The repeat-rendered row text for a ``__dedup__`` update (neutered when boxed).
+
+    A fenced row ships unboxed (its fences render as real blocks), so its
+    repeat text stays raw — no ZWSP neutering.
+    """
     text = f"{base_msg} (×{count + 1})"
-    if not codebox:
+    if not codebox or _row_contains_fence(base_msg):
         return text
     return _neuter_box_fences(text)
