@@ -156,11 +156,13 @@ describe('user sections', () => {
     // local, the members carry only the id. Another desktop cannot rebuild
     // the section from that — so stamp the name here, once per member.
     $botSections.set([{ id: 'sec-clients', name: 'Clients' }])
+
     const meta = {
       nanox: { sectionId: 'sec-clients' },
       scout: { sectionId: 'sec-clients', sectionName: 'Clients' }, // already stamped
       ghost: { sectionId: 'sec-unknown' } // nobody here knows that section: nothing to stamp
     }
+
     $botMeta.set(meta)
 
     expect(backfillBotSectionNames([bot('nanox'), bot('scout'), bot('ghost')], meta).map(b => b.name)).toEqual(['nanox'])

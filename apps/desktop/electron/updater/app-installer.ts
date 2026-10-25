@@ -12,12 +12,12 @@
 // marker) are injected, so vitest covers the arm without a payload.
 
 import {
-  checkAppInstallerUpdate,
   type AppInstallerCheck,
   type PayloadPythonRunner,
   triggerAppInstallerUpdate,
   win32AppInstallerFeedPath
 } from '../app-updater'
+
 import type { UpdaterApplyResultWire, UpdaterStatusWire } from './index'
 
 export interface AppInstallerStrategyDeps {

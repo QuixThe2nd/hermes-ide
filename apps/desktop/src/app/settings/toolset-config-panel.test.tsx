@@ -238,10 +238,12 @@ describe('ToolsetConfigPanel', () => {
 
     fireEvent.change(await screen.findByDisplayValue('alloy'), { target: { value: 'marin' } })
     await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
+
     const [saved, forwarded] = saveHermesConfigRecord.mock.calls.at(-1) as [
       Record<string, Record<string, Record<string, string>>>,
       unknown
     ]
+
     expect(saved.tts.openai.voice).toBe('marin')
     expect(forwarded).toEqual(scope)
   })
