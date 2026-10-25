@@ -148,9 +148,20 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
         "Plugin %s: requires_plugins entry %r must be a plugin id "
         "string or a {id, version_range} mapping; skipping",
     )
-    # python_dependencies — validated and surfaced ONLY; never auto-installed.
+    # python_dependencies — declared pip requirement strings, installed via the pm workspace
+    # union (plugins install / pm sync). pip_dependencies is the legacy key for the same
+    # thing: parsed identically, warned.
+    pydep_data = dict(data)
+    legacy_pydeps = pydep_data.pop("pip_dependencies", None)
+    if legacy_pydeps and not pydep_data.get("python_dependencies"):
+        logger.warning(
+            "Plugin %s: 'pip_dependencies' is deprecated — declare a "
+            "pyproject.toml (or 'python_dependencies') instead; the pm "
+            "bridge materializes it either way", key,
+        )
+        pydep_data["python_dependencies"] = legacy_pydeps
     pydeps = _manifest_list(
-        data, key, "python_dependencies", "a list of requirement strings",
+        pydep_data, key, "python_dependencies", "a list of requirement strings",
         lambda item: item.strip() if isinstance(item, str) and item.strip() else None,
         "Plugin %s: python_dependencies entry %r must be a non-empty requirement string; skipping",
     )

@@ -13,17 +13,31 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 _CANCELLED = -1
 
 
-def _provider_extras(provider_name: str, manifest: dict) -> list[str]:
+def _provider_extras(provider_name: str, manifest: dict, plugin_dir=None) -> list[str]:
     """The pyproject extras a provider needs on THIS install.
 
     ``plugin.yaml``'s ``extra:`` names the baseline. Hindsight's
     ``local_embedded`` mode needs the daemon+embedder wheel on top
     (hindsight-local, #70636) — mode lives in its config file, which the
-    manifest can't express."""
+    manifest can't express.
+
+    A provider manifest with legacy ``pip_dependencies`` (no ``extra:``,
+    no pyproject of its own — the third-party plugin shape, e.g. a
+    directory-installed external provider) is bridged: pm materializes
+    the specs into a generated pyproject.toml, and the provider becomes
+    a workspace member installed by the venv sync. Returns [] either
+    way — no EXTRA to sync, the union carries the deps."""
     extras = []
     declared = manifest.get("extra")
     if isinstance(declared, str) and declared:
         extras.append(declared)
+    elif plugin_dir is not None and manifest.get("pip_dependencies"):
+        try:
+            from pm.workspace import materialize_legacy_pyproject
+
+            materialize_legacy_pyproject(Path(plugin_dir))
+        except Exception:
+            pass
     # hindsight local_embedded needs hindsight-all, whose protobuf floor
     # conflicts with mem0/modal — it cannot be a venv extra. It stays a
     # provider-owned install until plugin side-venvs land (plan step 5).
@@ -95,7 +109,7 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
     except Exception:
         return
 
-    extras = _provider_extras(provider_name, meta)
+    extras = _provider_extras(provider_name, meta, plugin_dir=plugin_dir)
     if not extras:
         return
 

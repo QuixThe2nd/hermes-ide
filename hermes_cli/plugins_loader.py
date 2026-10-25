@@ -220,18 +220,30 @@ class PluginLoaderMixin:
         """Warn about declared pip dependencies missing at load time. Installing happens at
         ``hermes plugins install``/``enable`` and after ``hermes update`` (``hermes_cli.plugin_python_deps``)
         under core constraints; the loader itself never installs — import time is not a consent point.
+        Declared deps (legacy ``pip_dependencies`` parsed identically) are also materialized into a
+        generated pyproject.toml via the pm workspace bridge, so the pm venv-sync step installs
+        them through one lock (idempotent, best-effort, never raises).
         """
         deps = manifest.python_dependencies
         if not deps:
             return
         key = manifest_key(manifest)
+        plugin_dir = manifest.path
+        if plugin_dir:
+            try:
+                from pm.workspace import materialize_legacy_pyproject
+
+                materialize_legacy_pyproject(Path(plugin_dir))
+            except Exception:
+                logger.debug("Plugin %s: legacy pyproject bridge failed", key, exc_info=True)
         missing = [req for req in deps if _dist_installed(req) is False]
         if missing:
-            logger.warning(
+            logger.info(
                 "Plugin %s declares Python dependencies that are not "
-                "installed: %s. Run `hermes plugins enable %s` to install them, "
-                "or install them yourself: pip install %s",
-                key, ", ".join(missing), key, " ".join(f"'{m}'" for m in missing),
+                "installed yet: %s. The pm venv sync installs them "
+                "through the workspace union; to install now, run: "
+                "hermes pm install",
+                key, ", ".join(missing),
             )
         else:
             logger.debug("Plugin %s python_dependencies satisfied: %s", key, ", ".join(deps))
