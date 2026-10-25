@@ -17,6 +17,7 @@ const onAttach = vi.fn(async (_blob: Blob, isCurrent?: () => boolean) => isCurre
 
 function mount(target: string, surfaceId: string, key = 'draft-a') {
   const scope = { ...MAIN_COMPOSER_SCOPE, target, attachments: createComposerAttachmentScope() }
+
   const Wrapper = ({ children }: PropsWithChildren) => (
     <I18nProvider configClient={null}>
       <ComposerScopeProvider value={scope}>
@@ -36,7 +37,9 @@ function bridge() {
   window.hermesDesktop = { ...window.hermesDesktop, screenshot: {
     getSettings: vi.fn(), setEnabled: vi.fn(), openPermissionSettings: vi.fn(), onStatus: () => () => undefined,
     capture,
-    onRequest: callback => { listeners.add(callback); return () => listeners.delete(callback) }
+    onRequest: callback => { listeners.add(callback);
+
+ return () => listeners.delete(callback) }
   } as ScreenshotApi }
 }
 
@@ -75,7 +78,9 @@ describe('screenshot composer routing', () => {
 
     capture.mockResolvedValue({ ok: true, png: new Uint8Array([1]) })
     let isCurrent!: () => boolean
-    onAttach.mockImplementation(async (_blob, guard) => { isCurrent = guard!; return true })
+    onAttach.mockImplementation(async (_blob, guard) => { isCurrent = guard!;
+
+ return true })
     act(() => listeners.forEach(listener => listener('second')))
     await waitFor(() => expect(onAttach).toHaveBeenCalledOnce())
     expect(isCurrent()).toBe(true)

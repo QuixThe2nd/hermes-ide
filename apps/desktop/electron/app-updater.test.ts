@@ -28,12 +28,14 @@ test('win32 App Installer feed paths are per-channel and per-variant', () => {
 
 function fakePayloadRunner(stdout: string, code = 0) {
   const calls: string[] = []
+
   return {
     runner: {
       python: 'C:\\payload\\tools\\cpython\\python.exe',
       script: 'C:\\payload\\scripts\\check-appinstaller-update.py',
       run: async (python: string, script: string) => {
         calls.push(`${python} ${script}`)
+
         return { code, stdout }
       }
     } as any,
@@ -66,6 +68,7 @@ test('win32 check surfaces an unknown verdict (missing winrt) without crashing',
 
 test('win32 trigger opens ms-appinstaller with the channel .appinstaller after teardown', async () => {
   const calls: string[] = []
+
   const shell = {
     openExternal: async (url: string) => void calls.push(`open:${url}`)
   }
@@ -87,6 +90,7 @@ test('win32 trigger opens ms-appinstaller with the channel .appinstaller after t
 
 test('win32 trigger light+canary targets the light canary feed dir', async () => {
   const calls: string[] = []
+
   const shell = {
     openExternal: async (url: string) => void calls.push(url)
   }
