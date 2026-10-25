@@ -212,6 +212,13 @@ const EXEMPT_PATTERNS = [
   // the zips extract in place, so the x64 trees carry a -win64 segment.
   // Scoping to that segment keeps linux/darwin chromium audited.
   /agent-payload[/\\]tools[/\\]chromium(_headless_shell)?-[^/\\]+[/\\](chrome|chrome-headless-shell)-win64[/\\]/i,
+  // The uv wheel/build cache (uv-cache/) is DELIBERATELY shipped with the
+  // payload for warm rebuilds of the mutable venv (pm bundle copies it).
+  // It holds cached sdists/archives that uv may have built for ANY arch
+  // (x64/ia32 PEs on an arm64 payload) — inert cache bytes, never loaded
+  // at runtime. Same class as the fetch-* prune: dead weight, not a
+  // binary. The audit must not fail a payload for shipping its own cache.
+  /agent-payload[/\\]uv-cache[/\\]/i,
 ]
 
 export function isExemptPath(relPath) {

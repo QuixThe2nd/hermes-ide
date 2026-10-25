@@ -175,6 +175,21 @@ test('the emulated x64 chromium trees are exempt in a win32-arm64 payload', () =
   assert.equal(isExemptPath('resources/agent-payload/tools/chromium-1208/chrome-mac-arm64/chrome'), false)
 })
 
+test('the uv wheel/build cache is exempt in the payload', () => {
+  // pm bundle deliberately ships uv-cache/ for warm venv rebuilds; it
+  // holds cached sdists/archives uv may have built for ANY arch (x64/ia32
+  // PEs on an arm64 payload) — inert cache bytes, never loaded at runtime.
+  for (const relPath of [
+    'resources/agent-payload/uv-cache/archive-v0/abc/setuptools/cli.exe',
+    'resources\\agent-payload\\uv-cache\\archive-v0\\abc\\discord\\bin\\libopus-0.x64.dll',
+    'resources/agent-payload/uv-cache/builds-v0/whatever/build.exe'
+  ]) {
+    assert.equal(isExemptPath(relPath), true, relPath)
+  }
+  // Anything outside the cache stays audited.
+  assert.equal(isExemptPath('resources/agent-payload/tools/uv-cache-1.0/tool.exe'), false)
+})
+
 test('a random payload binary is not exempt', () => {
   assert.equal(isExemptPath('resources/agent-payload/hermes-agent/something.exe'), false)
 })
