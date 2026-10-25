@@ -424,7 +424,8 @@ _SKILL_REVIEW_PROMPT = (
     "but only if it is curator-managed. Bundled, hub, pinned, and user-owned skills are off-limits "
     "to you no matter how relevant (see Protected skills below); for those, fall through to the "
     "next option.\n"
-    "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). If no loaded skill fits but "
+    "  2. UPDATE AN EXISTING UMBRELLA (use whatever skill-discovery tools your tool list offers, "
+    "then skill_view). If no loaded skill fits but "
     "an existing class-level skill does, patch it. Add a subsection, a pitfall, or broaden a "
     "trigger.\n"
     "  3. ADD A SUPPORT FILE under an existing umbrella. Skills can be packaged with three kinds "
@@ -504,7 +505,8 @@ _COMBINED_REVIEW_PROMPT = (
     "it with skill_view during this review — see Read-before-write below). It was in play; it's "
     "the right place — provided it is curator-managed. Protected and user-owned skills are "
     "off-limits however relevant; fall through when one of those is the best fit.\n"
-    "  2. UPDATE AN EXISTING UMBRELLA (skills_list + skill_view to find the right one). Patch it.\n"
+    "  2. UPDATE AN EXISTING UMBRELLA (use whatever skill-discovery tools your tool list offers to "
+    "find the right one). Patch it.\n"
     "  3. ADD A SUPPORT FILE under an existing umbrella via skill_manage action=write_file. Three "
     "kinds: `references/<topic>.md` for topical depth (decision tables, recipes, quirks, condensed "
     "domain notes) — extend an existing topical file before creating one, never a per-session file; "
@@ -1062,7 +1064,12 @@ def _review_tool_whitelist(
     # (#105921): a skill-nudge review never gets the memory tool, so an unattended fork cannot
     # act on the memory tool's "consolidate now" hint and delete entries no one reviewed.
     memory_on = review_agent._memory_enabled or review_agent._user_profile_enabled
-    review_toolsets = ["memory", "skills"] if memory_on and review_memory else ["skills"]
+    review_toolsets = (
+        ["memory", "skills", "skills_list"] if memory_on and review_memory else ["skills", "skills_list"])
+    # ``skills_list`` is default-off (atomic toolset, see toolsets.py): whitelisting it here only
+    # ADMITS it, so the fork can dispatch it when — and only when — the parent opted in and the
+    # inherited schema therefore advertises it. A default parent's schema never contains it, so
+    # the whitelist entry is inert there.
     whitelist = {t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=review_toolsets, quiet_mode=True)}
     # Read-only file tools: denying read_file/search_files caused a per-review denial storm that
     # starved the loop (read_file also registers the read with the read-before-write guard).
