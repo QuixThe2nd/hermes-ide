@@ -157,6 +157,8 @@ workspace; absent or empty cwd remains unpinned.
 |--------|-----------|----------|
 | `system_prompt_block()` | System prompt assembly | Static provider info |
 | `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
+| `recall_status()` | After `prefetch()` injects | Indicator line metadata (`RecallStatus`) |
+| `recalled_count()` | After `prefetch()` injects | Discrete count for the counted injection heading |
 | `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
@@ -173,6 +175,18 @@ actually needed. Results at or below the threshold are returned unchanged.
 
 This uses the shared `hooks.output_spill` settings (`10,000` characters by
 default); see [Plugins — oversized-context spill](./plugins/index.md#oversized-context-spill).
+
+## Recall observability
+
+The counted injection heading is display-only — the model receives the injected
+context unchanged.
+
+- The injection-progress card's heading upgrades from `🧠 Injecting Memory` to
+  `🧠 Recalled N memories` (singular for `N == 1`) when the injection event
+  carries a positive integer `recalled_count` — summed across providers from
+  `recalled_count()`, which defaults to `recall_status()`'s count. Providers
+  that suppress their indicator line (Hindsight's `recall_indicator: false`)
+  still contribute: that flag gates only the status text, never the count.
 
 ## Pre-Compress Checkpoints (fail-closed)
 

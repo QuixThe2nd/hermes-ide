@@ -5770,6 +5770,7 @@ def _format_context_injection_progress(
     supports_code_blocks: bool,
     message_len_fn: Callable[[str], int] = len,
     include_content: bool = True,
+    recalled_count: Any = None,
 ) -> list[str]:
     """Render API-bound ephemeral context as tool-style progress cards.
 
@@ -5787,6 +5788,20 @@ def _format_context_injection_progress(
         return []
 
     heading = "🧠 Injecting Memory" if "memory" in (sources or []) else "🧠 Context Injection"
+    # A positive discrete count from the producer upgrades the memory heading
+    # to the counted form. Non-int / zero / None values (plugin-only injections,
+    # providers without a discrete count) keep the existing headings.
+    if (
+        "memory" in (sources or [])
+        and isinstance(recalled_count, int)
+        and not isinstance(recalled_count, bool)
+        and recalled_count > 0
+    ):
+        heading = (
+            f"🧠 Recalled {recalled_count} memory"
+            if recalled_count == 1
+            else f"🧠 Recalled {recalled_count} memories"
+        )
 
     if not include_content:
         return [heading]
@@ -6053,6 +6068,7 @@ class TurnRunner:
                 supports_code_blocks=bool(getattr(adapter, "supports_code_blocks", False)),
                 message_len_fn=message_len_fn,
                 include_content=include_content,
+                recalled_count=args.get("recalled_count"),
             )
             for message in messages:
                 ctx.progress_queue.put(message)
