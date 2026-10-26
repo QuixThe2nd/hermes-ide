@@ -5788,12 +5788,14 @@ def _format_context_injection_progress(
 
     # A timestamp-only injection is the gateway's own clock, not recalled
     # content: render one short line — no heading, body, or fences. The clock
-    # label reveals nothing, so it renders regardless of include_content.
-    from gateway.message_timestamps import render_timestamp_only_injection_line
+    # label reveals nothing, so it renders regardless of include_content —
+    # but never for memory injections, which keep their card heading.
+    if "memory" not in (sources or []):
+        from gateway.message_timestamps import render_timestamp_only_injection_line
 
-    time_line = render_timestamp_only_injection_line(content)
-    if time_line is not None:
-        return [time_line]
+        time_line = render_timestamp_only_injection_line(content)
+        if time_line is not None:
+            return [time_line]
 
     heading = "🧠 Injecting Memory" if "memory" in (sources or []) else "🧠 Context Injection"
 

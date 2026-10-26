@@ -119,6 +119,8 @@ def render_timestamp_only_injection_line(content: str) -> Optional[str]:
     if content.strip() != match.group(0).strip():
         return None  # extra bytes beyond the single timestamp → not time-only
     hour, minute = (int(part) for part in match.group("time").split(":")[:2])
+    if hour > 23 or minute > 59:
+        return None  # out-of-range clock bytes (e.g. 24:00, 15:60) → card
     if minute >= 45:
         hour, minute = (hour + 1) % 24, 0
     elif minute >= 15:
