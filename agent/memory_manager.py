@@ -564,6 +564,20 @@ class MemoryManager:
             segments.append(f"{status.glyph} {status.provider_label} — {detail}")
         return "  ".join(segments)
 
+    def recalled_count(self) -> Optional[int]:
+        """Total discrete memories the last prefetch injected, across providers.
+
+        Sums the same counts :meth:`describe_recall` formats, but as pure
+        display metadata: a provider whose indicator line is suppressed
+        (``recall_indicator=false``) still contributes via its own
+        ``recalled_count()``. ``None`` when no provider reports a discrete
+        count (nothing prefetched, or content without one)."""
+        total: Optional[int] = None
+        for count in self._each_provider("recalled_count failed (non-fatal)", lambda p: p.recalled_count()):
+            if isinstance(count, int):
+                total = count if total is None else total + count
+        return total
+
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn (see ``sync_all``)."""
         providers = list(self._providers)

@@ -2618,6 +2618,16 @@ class HindsightMemoryProvider(MemoryProvider):
             return None
         return RecallStatus(provider_label="Hindsight", count=self._last_recall_count, glyph=_HINDSIGHT_GLYPH)
 
+    def recalled_count(self) -> Optional[int]:
+        """Last prefetch's discrete count, independent of ``recall_indicator``.
+
+        That flag suppresses only the status line (``recall_status``); the
+        counted heading is separate display metadata and must not inherit the
+        suppression."""
+        if not self._last_recall_returned:
+            return None
+        return self._last_recall_count
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         # Sync mode recalls live each turn — nothing to prime in the background.
         if self._recall_sync or self._recall_disabled():

@@ -190,6 +190,14 @@ class MemoryProvider(ABC):
         only the LAST prefetch, never a stale prior count."""
         return None
 
+    def recalled_count(self) -> Optional[int]:
+        """Discrete memory count behind the last :meth:`prefetch` (``None`` = no
+        discrete count). Defaults to :meth:`recall_status`'s count; override to
+        report a count even when the indicator line is suppressed
+        (``recall_indicator=false`` gates only the status text, never the count)."""
+        status = self.recall_status()
+        return status.count if status is not None else None
+
     def sync_turn(
         self, user_content: str, assistant_content: str, *,
         session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,

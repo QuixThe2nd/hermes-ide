@@ -1309,15 +1309,27 @@ def build_turn_context(
                     if not _sources:
                         _sources.append("gateway")
                     _display = _prefix + _suffix
+                    _payload = {
+                        "content": _display,
+                        "injected_chars": len(_api) - len(_clean),
+                        "sources": _sources,
+                    }
+                    # Counted heading metadata: the discrete memory count behind
+                    # the recall the gateway just watched being injected. Key
+                    # rides only memory-sourced injections; None when no
+                    # provider reports a discrete count, so the gateway heading
+                    # falls back to the uncounted label.
+                    if "memory" in _sources:
+                        _recalled_count = None
+                        with suppress(Exception):
+                            _count_fn = getattr(agent._memory_manager, "recalled_count", None)
+                            _recalled_count = _count_fn() if callable(_count_fn) else None
+                        _payload["recalled_count"] = _recalled_count
                     _progress_callback(
                         "context.injected",
                         "context",
                         None,
-                        {
-                            "content": _display,
-                            "injected_chars": len(_api) - len(_clean),
-                            "sources": _sources,
-                        },
+                        _payload,
                     )
         except Exception:
             # Display plumbing must never block the model call.
