@@ -3476,6 +3476,16 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     isinstance-gated readers see real structures; the trigger is conservative."""
     if isinstance(_default_value_for_key(key), str):
         return value
+    # ``mcp_servers.<server>.env.<KEY>`` values are process environment variables: the MCP SDK
+    # passes them to ``StdioServerParameters`` verbatim, so they must stay strings no matter how
+    # numeric/bool/null/JSON-like the CLI text looks (``600000``, ``true``, ``[1, 2]`` …) — a coerced
+    # int/bool/list would either fail validation or reach the child process mangled. ``mcp_servers``
+    # is an open dict (no DEFAULT_CONFIG leaves), so the string-default branch above can't cover it.
+    # Exactly four parsed segments (escaped dots in server/key names count as one) so a whole env
+    # mapping or deeper unrelated paths keep their existing container semantics.
+    parts = _split_key_path(key)
+    if len(parts) == 4 and parts[0] == "mcp_servers" and parts[2] == "env" and parts[1] and parts[3]:
+        return value
     stripped = value.strip()
     lower = stripped.lower()
     if lower in _SCALAR_WORDS:
