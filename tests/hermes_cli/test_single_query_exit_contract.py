@@ -86,3 +86,103 @@ def test_dispatcher_spawned_worker_keeps_a_plain_failure_at_one(monkeypatch):
 )
 def test_a_plain_one_shot_run_reports_its_outcome(monkeypatch, turn_result, expected):
     assert _run_non_quiet(monkeypatch, turn_result) == expected
+
+
+def _run_quiet_oneshot(monkeypatch, capsys, *, run_conversation=None, credentials=True, init_agent=True):
+    """Drive ``_run_single_query_mode(quiet=True, oneshot=True)`` end-to-end through the real
+    ``_run_quiet_single_query`` / ``exit_single_query``; return ``(exit_code, stdout, stderr, finalized, turn_ran)``.
+
+    ``run_conversation=None`` means the turn never started (credentials / agent init rejected).
+    """
+    finalized = []
+    interrupted_emitted = []
+    monkeypatch.setattr(cli, "_should_seed_interactive", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "_collect_query_images", lambda q, i: (q, []))
+    monkeypatch.setattr(cli, "_collect_kanban_task_images", lambda imgs: [])
+    monkeypatch.setattr(cli, "_route_single_query_images", lambda *a, **k: a[2])
+    monkeypatch.setattr(cli, "_configure_quiet_agent", lambda agent: None)
+    monkeypatch.setattr(cli, "_finalize_single_query", lambda c: finalized.append(True))
+    monkeypatch.setattr(cli, "_emit_interrupted_session_end", lambda c, **k: interrupted_emitted.append(k.get("reason")))
+    import hermes_cli.quiet_single_query as _qsq
+    monkeypatch.setattr(_qsq, "quiet_notify_linger_seconds", lambda: 0.0)
+    monkeypatch.setattr(_qsq, "continue_quiet_notify_completions", lambda *a, **k: None)
+    turn_ran = []
+
+    def _run(user_message, conversation_history, **kwargs):
+        turn_ran.append(user_message)
+        return run_conversation(user_message, conversation_history, **kwargs)
+
+    stub = SimpleNamespace(
+        _single_query_mode=False,
+        session_id="s_exit1",
+        conversation_history=[],
+        agent=SimpleNamespace(run_conversation=_run) if run_conversation is not None else None,
+        _claim_active_session=lambda *a, **k: True,
+        _ensure_runtime_credentials=lambda: credentials,
+        _active_agent_route_signature="sig",
+        _resolve_turn_agent_config=lambda q: {"signature": "sig", "model": None, "runtime": None},
+        _init_agent=lambda **k: init_agent,
+    )
+    code = None
+    try:
+        cli._run_single_query_mode(stub, "do the thing", None, True, True)
+    except SystemExit as exc:
+        code = exc.code
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err, finalized, turn_ran
+
+
+@pytest.mark.parametrize(
+    ("case", "run_conversation", "credentials", "init_agent", "expected_code", "stdout_has", "stderr_has"),
+    [
+        pytest.param(
+            "success", lambda *a, **k: {"final_response": "all done", "completed": True}, True, True,
+            0, "all done", "session_id", id="quiet-success-rc0",
+        ),
+        pytest.param(
+            "failed-no-response", lambda *a, **k: {"failed": True, "error": "provider 4xx"}, True, True,
+            1, None, "Error: provider 4xx", id="quiet-failed-rc1-error-stderr",
+        ),
+        pytest.param(
+            "partial", lambda *a, **k: {"final_response": "half an answer", "completed": False, "partial": True}, True, True,
+            1, "half an answer", "session_id", id="quiet-partial-rc1-partial-stdout",
+        ),
+        pytest.param(
+            "returned-interruption", lambda *a, **k: {"completed": False, "interrupted": True}, True, True,
+            130, None, "session_id", id="quiet-returned-interrupt-rc130",
+        ),
+        pytest.param(
+            "keyboard-interrupt", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()), True, True,
+            130, None, "session_id", id="quiet-keyboard-interrupt-rc130",
+        ),
+        pytest.param(
+            "credentials-rejected", None, False, True,
+            1, None, None, id="quiet-credentials-rejected-rc1-no-turn",
+        ),
+        pytest.param(
+            "agent-init-rejected", None, True, False,
+            1, None, None, id="quiet-agent-init-rejected-rc1-no-turn",
+        ),
+    ],
+)
+def test_a_quiet_one_shot_run_exits_through_the_documented_codes(
+    monkeypatch, capsys, case, run_conversation, credentials, init_agent, expected_code, stdout_has, stderr_has
+):
+    """The quiet -Q contract: exit_single_query is the ONLY exit, with the documented rc, and
+    stdout carries just the final answer while errors/session_id go to stderr."""
+    code, out, err, finalized, turn_ran = _run_quiet_oneshot(
+        monkeypatch, capsys, run_conversation=run_conversation, credentials=credentials, init_agent=init_agent,
+    )
+    assert code == expected_code
+    assert finalized == [True]
+    if stdout_has is None:
+        assert out.strip() == ""
+    else:
+        assert stdout_has in out
+    if stderr_has is None:
+        assert err.strip() == ""
+    else:
+        assert stderr_has in err
+    # A turn only runs when credentials AND agent init both succeeded; the rejected
+    # cases must fail before the agent is ever invoked.
+    assert bool(turn_ran) == (credentials and init_agent)
