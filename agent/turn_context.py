@@ -1208,6 +1208,11 @@ def build_turn_context(
                     # already happened).
                     agent._memory_card_state = _mem_sha
                     _remember_session_memory_card_sha(getattr(agent, "session_id", None), _mem_sha)
+                    # Counted heading metadata, resolved like the card below.
+                    _recalled_count = None
+                    with suppress(Exception):
+                        _count_fn = getattr(agent._memory_manager, "recalled_count", None)
+                        _recalled_count = _count_fn() if callable(_count_fn) else None
                     _progress_callback(
                         "context.injected",
                         "context",
@@ -1216,6 +1221,7 @@ def build_turn_context(
                             "content": _mem_content,
                             "injected_chars": len(_mem_content),
                             "sources": ["memory"],
+                            "recalled_count": _recalled_count,
                         },
                     )
         except Exception:
