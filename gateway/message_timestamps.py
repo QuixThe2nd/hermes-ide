@@ -118,9 +118,11 @@ def render_timestamp_only_injection_line(content: str) -> Optional[str]:
         return None
     if content.strip() != match.group(0).strip():
         return None  # extra bytes beyond the single timestamp → not time-only
-    hour, minute = (int(part) for part in match.group("time").split(":")[:2])
-    if hour > 23 or minute > 59:
-        return None  # out-of-range clock bytes (e.g. 24:00, 15:60) → card
+    try:
+        dt = datetime.strptime(f"{match.group('date')} {match.group('time')}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None  # impossible calendar date or clock bytes (e.g. Feb 30, 24:00) → card
+    hour, minute = dt.hour, dt.minute
     if minute >= 45:
         hour, minute = (hour + 1) % 24, 0
     elif minute >= 15:
