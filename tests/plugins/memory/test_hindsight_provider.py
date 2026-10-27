@@ -201,6 +201,7 @@ def provider(tmp_path, monkeypatch):
         "bank_id": "test-bank",
         "budget": "mid",
         "memory_mode": "hybrid",
+        "recall_indicator": True,  # default is off; these tests assert the indicator
     }
     config_path = tmp_path / "hindsight" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,6 +228,7 @@ def provider_with_config(tmp_path, monkeypatch):
             "bank_id": "test-bank",
             "budget": "mid",
             "memory_mode": "hybrid",
+            "recall_indicator": True,  # default is off; these tests assert the indicator
         }
         config.update(overrides)
         config_path = tmp_path / "hindsight" / "config.json"
