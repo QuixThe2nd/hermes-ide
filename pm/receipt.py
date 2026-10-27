@@ -133,6 +133,9 @@ def latest() -> Optional[dict[str, Any]]:
 
 def _write_rotated(data: dict[str, Any]) -> Path:
     d = _receipt_dir()
+    # _write_rotated must not depend on _receipt_dir()'s mkdir side
+    # effect (a patched/injected dir lambda breaks it) — self-sufficient.
+    d.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     kind = data.get("kind") or "sync"
     path = d / f"{stamp}-{kind}.json"

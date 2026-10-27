@@ -233,6 +233,23 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         pending = retain_receipt_manual_serves(read_latest_receipt() or {})
         if pending:
             receipt.data["pending_manual_serves"] = pending
+        # EMBED the pm sync sections (the settled receipts contract): the
+        # update's rebuild/bisect ran through pm's own sync receipt, which
+        # finalizes before this one. Fold the newest sync receipt's
+        # venv_rebuild + plugin_bisect into the update receipt so ONE file
+        # carries the whole story (desktop reads a single latest.json).
+        try:
+            from pm import receipt as pm_receipt
+
+            sync = pm_receipt.latest()
+            if isinstance(sync, dict):
+                for key in ("venv_rebuild", "plugin_bisect", "feature_list"):
+                    if sync.get(key) is not None:
+                        receipt.data[f"pm_{key}"] = sync[key]
+                if sync.get("outcome") is not None:
+                    receipt.data["pm_sync_outcome"] = sync.get("outcome")
+        except Exception as exc:  # pragma: no cover — embedding is additive
+            logger.debug("pm sync-section embed skipped: %s", exc)
         directory = _receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
