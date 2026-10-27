@@ -28087,34 +28087,13 @@ class GatewayRunner(
                         else getattr(self, "_show_reasoning", False)
                     )
                 if _show_reasoning_effective and response and not _intentional_silence:
-                    last_reasoning = agent_result.get("last_reasoning")
-                    if last_reasoning:
-                        # Render style is per-platform: Discord defaults to "-# "
-                        # subtext (native small grey metadata text); "compact"
-                        # shows only a one-line "thought for Xs" duration note
-                        # (plus this turn's "(N tokens)" when the provider
-                        # reported a count); other platforms keep the fenced
-                        # code block.
-                        try:
-                            from gateway.display_config import resolve_display_setting
-                            _reasoning_style = resolve_display_setting(
-                                _load_gateway_config(),
-                                _platform_config_key(source.platform),
-                                "reasoning_style",
-                                "code",
-                            )
-                        except Exception:
-                            _reasoning_style = "code"
-                        from gateway.display_config import format_reasoning_prefix
-                        _reasoning_prefix = format_reasoning_prefix(
-                            _reasoning_style,
-                            last_reasoning,
-                            _turn_seconds,
-                            _platform_config_key(source.platform),
-                            thought_tokens=agent_result.get("thought_tokens"),
-                        )
-                        if _reasoning_prefix:
-                            response = f"{_reasoning_prefix}\n\n{response}"
+                    # Shared with the GatewayTurnMixin turn path
+                    # (_hmwa_prepend_reasoning): Discord sends the rendered
+                    # reasoning as its own fenced interim message (no reply
+                    # anchor); every other platform keeps the legacy prepend.
+                    response = await self._hmwa_prepend_reasoning(
+                        agent_result, response, source, _intentional_silence, _turn_seconds,
+                    )
 
                 # Runtime-metadata footer — only on the FINAL message of the turn.
                 # Off by default (display.runtime_footer.enabled=false).  When
