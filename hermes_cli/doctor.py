@@ -337,3 +337,53 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+def _pm_tool_path(name: str) -> Path | None:
+    """Answer a tool's binary from the pm store (facts.json), not PATH.
+
+    Doctor probes tools (git, rg, ffmpeg, ...) that pinned installs run
+    out of the store; nothing puts the store on an interactive shell's
+    PATH, so a PATH-only probe reports a healthy managed install as
+    "not found". This answers from facts.json + the store: the recorded
+    entry's binary when it exists on disk, None when unstaged or the
+    recorded binary is gone (deleted = report missing, never guess).
+    Contract tests: tests/hermes_cli/test_doctor_pm_store_probe.py.
+    """
+    try:
+        import json
+
+        from pm.paths import store_root
+    except Exception:
+        return None
+    facts_path = store_root() / "facts.json"
+    if not facts_path.is_file():
+        return None
+    try:
+        facts = json.loads(facts_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(facts, dict):
+        return None
+    entry_name = (facts.get("packages") or {}).get(name) or {}
+    if not isinstance(entry_name, dict):
+        return None
+    entry_dir = entry_name.get("entry")
+    if not isinstance(entry_dir, str) or not entry_dir:
+        return None
+    entry = store_root() / entry_dir
+    if not entry.is_dir():
+        return None  # recorded but deleted
+    # resolve the binary: the store entry's package definition knows the
+    # relative binary path; without importing packages, probe common shapes
+    binary_names = {
+        "ripgrep": ("rg.exe", "rg"),
+        "git": ("cmd/git.exe", "bin/git"),
+        "node": ("node.exe", "bin/node"),
+        "gh": ("bin/gh.exe", "bin/gh"),
+    }.get(name, (f"{name}.exe", name))
+    for rel in binary_names:
+        candidate = entry / rel
+        if candidate.is_file():
+            return candidate
+    return None
+
+
