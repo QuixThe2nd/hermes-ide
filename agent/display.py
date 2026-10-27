@@ -539,11 +539,13 @@ def verb_drops_preview(tool_name: str) -> bool:
 
 
 # ── "describe" tool progress: the model's own words, never the payload ──
-# Fixed budget, deliberately independent of tool_preview_length: describe is a
-# one-line human phrase, so an unlimited preview budget (Discord default 0)
-# must not turn it back into a full command/code dump, and a tight per-platform
-# cap must not shrink it to nothing.
-DESCRIBE_TOOL_MAX_LEN = 120
+# Uncapped by default (0 = no limit), deliberately independent of
+# tool_preview_length: describe already renders only a one-line human phrase
+# (the model's description or a curated safe subject), never the command/code
+# payload, so an unlimited preview budget (Discord default 0) stays safe and a
+# long phrase keeps its ending. Callers may still pass a positive max_len for a
+# platform-specific hard cap.
+DESCRIBE_TOOL_MAX_LEN = 0
 
 # Whole-list todo formatting: we only see the requested state per item, not the
 # diff, so label states plainly ("demo pending") instead of claiming an existing
@@ -558,10 +560,13 @@ _TODO_DESCRIBE_STATUS = {
 
 def _describe_cap(text: str, max_len: int) -> str:
     # Single home for normalisation + capping: callers hand raw strings in.
+    # max_len <= 0 means uncapped (normalise/capitalise only).
     text = re.sub(r"\s+", " ", text).strip()
     if text:
         # Uppercase before capping so an expanding initial (e.g. ß→SS) cannot exceed max_len.
         text = text[0].upper() + text[1:]
+    if max_len <= 0:
+        return text
     if len(text) <= max_len:
         return text
     if max_len < 3:  # degenerate cap: no room for an ellipsis
@@ -1281,7 +1286,8 @@ def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIB
     Uses the tool call's own ``description`` argument when it is a usable
     string, else a curated safe subject built from a small set of argument
     fields (file path, search pattern/query, task names) — both whitespace-
-    normalised and length-capped. Never the command/code/content payload;
+    normalised; uncapped by default, capped only when a positive *max_len* is
+    given. Never the command/code/content payload;
     unknown tools fall back to a short verb or the bare tool name.
     """
     if isinstance(args, dict):
