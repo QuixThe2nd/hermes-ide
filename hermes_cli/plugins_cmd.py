@@ -403,8 +403,33 @@ def _install_plugin_python_deps(
         return True, None
     deps = [d.strip() for d in deps if isinstance(d, str) and d.strip()]
     has_pyproject = (target / "pyproject.toml").is_file()
-    if not deps and not has_pyproject:
-        return True, None  # no declared python deps at all
+    has_package_json = (target / "package.json").is_file()
+    if not deps and not has_pyproject and not has_package_json:
+        return True, None  # no declared deps at all
+
+    # Node sidecar (package.json): the npm ci executor — separate consent
+    # question, same try-then-enable posture. Failure never blocks the
+    # python path below.
+    node_reason = None
+    if has_package_json:
+        console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                node_answer = input(
+                    "  Install them into the plugin's own node_modules now? [y/N]: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                node_answer = ""
+        else:
+            node_answer = ""
+        if node_answer in {"y", "yes"}:
+            from pm.workspace import install_node_sidecar
+
+            node_reason = install_node_sidecar(target)
+            if node_reason:
+                console.print(f"[yellow]⚠[/yellow] Node deps: {node_reason}")
+        else:
+            console.print("[dim]Skipped Node deps — run `hermes plugins install` again to retry.[/dim]\n")
 
     plugin_name = manifest.get("name", "this plugin")
     console.print(

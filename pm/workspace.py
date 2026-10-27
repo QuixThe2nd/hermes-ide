@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -278,6 +279,74 @@ def scan_plugin(plugin_dir: Path) -> dict:
         "dir": plugin_dir,
     }
     return found
+
+
+def install_node_sidecar(
+    plugin_dir: Path,
+    *,
+    npm_bin: Optional[str] = None,
+    runner=subprocess.run,
+) -> Optional[str]:
+    """`npm ci` the plugin's package.json into ITS OWN node_modules —
+    the declared sidecar install (plugin-deps plan §B item 2; wired here).
+
+    Plugin-local (never a global npm prefix), pm's pinned npm when the
+    store has one (ambient PATH npm otherwise — same store-first,
+    PATH-second precedence as _uv_binary), gated by the lazy-install
+    policy, receipt-noted. Returns None on success, else why not.
+    """
+    package_json = plugin_dir / "package.json"
+    if not package_json.is_file():
+        return None  # nothing to install
+
+    from pm.ensure import lazy_installs_allowed
+
+    if not lazy_installs_allowed():
+        return "lazy installs are disabled — run `hermes pm install` after enabling"
+
+    # a lockfile means reproducible `npm ci`; plain `npm install` otherwise
+    install_cmd = ["ci"] if (plugin_dir / "package-lock.json").is_file() else ["install"]
+    if npm_bin is None:
+        npm_bin = _node_npm_binary("npm")
+    if npm_bin is None:
+        return "npm not found (pm store or PATH)"
+
+    try:
+        proc = runner(
+            [npm_bin, *install_cmd, "--no-audit", "--no-fund"],
+            cwd=str(plugin_dir),
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    except Exception as exc:
+        return f"npm {install_cmd[0]} failed to run: {exc}"
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip()[-300:]
+        return f"npm {install_cmd[0]} exited {proc.returncode}: {tail}"
+    return None
+
+
+def _node_npm_binary(name: str) -> Optional[str]:
+    """pm's pinned npm from the store (store-first), PATH second."""
+    from pm.ensure import env_for
+
+    try:
+        env = env_for("npm")
+    except Exception:
+        env = None
+    if env:
+        path_value = env.get("PATH", "")
+        import shutil as _shutil
+
+        for d in path_value.split(os.pathsep):
+            if d:
+                candidate = Path(d) / ("npm.cmd" if os.name == "nt" else name)
+                if candidate.is_file():
+                    return str(candidate)
+    import shutil as _shutil
+
+    return _shutil.which(name)
 
 
 def lock_and_sync(
