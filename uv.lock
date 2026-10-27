@@ -12,106 +12,106 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-agent-client-protocol = false
-ai-edge-litert = false
-aiohttp = false
-aiohttp-socks = false
-aiosqlite = false
-alibabacloud-dingtalk = false
-anthropic = false
-asyncpg = false
-azure-identity = false
-boto3 = false
-brotlicffi = false
-certifi = false
-concurrent-log-handler = false
-croniter = false
-cryptography = false
-daytona = false
-debugpy = false
-defusedxml = false
-dingtalk-stream = false
-discord-py = false
-edge-tts = false
 elevenlabs = false
-exa-py = false
-fal-client = false
-fastapi = false
-faster-whisper = false
-fire = false
-firecrawl-anydoc = false
-firecrawl-py = false
-google-api-python-client = false
+setuptools = false
+modal = false
+pyyaml = false
+maturin = false
+numpy = false
+pvporcupine = false
 google-auth = false
-google-auth-httplib2 = false
-google-auth-oauthlib = false
+aiohttp = false
+starlette = false
+mistralai = false
+firecrawl-py = false
+parallel-web = false
+markdown = false
+opentelemetry-sdk = false
+prompt-toolkit = false
+fastapi = false
+anthropic = false
+pathspec = false
+openwakeword = false
+defusedxml = false
+ruff = false
+exa-py = false
+mcp = false
+python-olm = false
+wheel = false
+websockets = false
+pytest = false
+pillow = false
+setuptools-rust = false
+tenacity = false
+pyjwt = false
+slack-bolt = false
+fal-client = false
+asyncpg = false
+boto3 = false
+ruamel-yaml = false
+sherpa-onnx = false
+huggingface-hub = false
+pytest-asyncio = false
 google-cloud-pubsub = false
-h2 = false
-hindsight-client = false
+slack-sdk = false
+discord-py = false
 honcho-ai = false
+faster-whisper = false
+certifi = false
+debugpy = false
+packaging = false
+rich = false
+supermemory = false
+unpaddedbase64 = false
+h2 = false
+youtube-transcript-api = false
+edge-tts = false
+microsoft-teams-apps = false
+aiohttp-socks = false
+ai-edge-litert = false
+onnxruntime = false
+croniter = false
+opentelemetry-exporter-otlp-proto-http = false
+azure-identity = false
+lark-oapi = false
+sentencepiece = false
+firecrawl-anydoc = false
+google-api-python-client = false
+brotlicffi = false
+mem0ai = false
+qrcode = false
+vercel = false
+aiosqlite = false
+tzdata = false
+python-dotenv = false
+daytona = false
+uvicorn = false
+nemo-relay = false
+requests = false
 httplib2 = false
 httpx = false
-httpx2 = false
-huggingface-hub = false
-huggingface_hub = false
-jinja2 = false
-lark-oapi = false
-markdown = false
-maturin = false
-mautrix = false
-mcp = false
-mem0ai = false
-microsoft-teams-apps = false
-mistralai = false
-modal = false
-nemo-relay = false
-numpy = false
-onnxruntime = false
-openai = false
-opentelemetry-exporter-otlp-proto-http = false
-opentelemetry-sdk = false
-openwakeword = false
-packaging = false
-parallel-web = false
-pathspec = false
-pillow = false
-prompt-toolkit = false
-psutil = false
-pvporcupine = false
 pyasn1 = false
-pydantic = false
-pyjwt = false
-pytest = false
-pytest-asyncio = false
-python-dotenv = false
-python-multipart = false
-python-olm = false
-python-telegram-bot = false
-pyyaml = false
-qrcode = false
-requests = false
-rich = false
-ruamel-yaml = false
-ruff = false
-sentencepiece = false
-setuptools = false
-setuptools-rust = false
-sherpa-onnx = false
-slack-bolt = false
-slack-sdk = false
 snowballstemmer = false
-sounddevice = false
-starlette = false
-supermemory = false
-tenacity = false
+concurrent-log-handler = false
+cryptography = false
+pydantic = false
+agent-client-protocol = false
+fire = false
+httpx2 = false
+google-auth-oauthlib = false
+python-multipart = false
 ty = false
-tzdata = false
-unpaddedbase64 = false
-uvicorn = false
-vercel = false
-websockets = false
-wheel = false
-youtube-transcript-api = false
+openai = false
+mautrix = false
+google-auth-httplib2 = false
+python-telegram-bot = false
+psutil = false
+jinja2 = false
+hindsight-client = false
+sounddevice = false
+alibabacloud-dingtalk = false
+dingtalk-stream = false
+
 [manifest]
 overrides = [
     { name = "cryptography", specifier = ">=50,<51" },
@@ -2075,7 +2075,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
-    { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
+    { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.9.2" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.2.0" },
     { name = "httplib2", marker = "extra == 'google'", specifier = "==0.32.0" },
     { name = "httplib2", marker = "extra == 'google-chat'", specifier = "==0.32.0" },
@@ -2187,7 +2187,7 @@ wheels = [
 
 [[package]]
 name = "hindsight-client"
-version = "0.6.1"
+version = "0.9.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2197,9 +2197,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/33/26/8b8efa4be21fc3ba12ade3b1353d87f9837ec0d3ec2607e8adbf85bc9c63/hindsight_client-0.6.1.tar.gz", hash = "sha256:314d0bb9e13622e15586ba1586a799726d405b27bc20d78872474b5d6d96cd51", size = 99833, upload-time = "2026-05-08T13:01:23.537Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/21/18dd524c25d440466fa9377e4754b336cde0cc94bb566619913880198aa3/hindsight_client-0.9.2.tar.gz", hash = "sha256:bf6877da5d423395a4b0ac8ac8fc1836f5f5da271613a76e38903437af136ea1", size = 152096, upload-time = "2026-08-25T10:20:30.731Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/4f/a1d0bc33ef933ecc52e76dc1514163594d25836a5d303c256a61bb61445d/hindsight_client-0.6.1-py3-none-any.whl", hash = "sha256:9fdda176ab50f7cec8d7339c6608c148f0cd9ad7e65d9d76192f2db730bc330a", size = 249379, upload-time = "2026-05-08T13:01:22.035Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/5a/88ef406d96902a8ae6b6ba09afe8ac06bb4d3460eac1a7b741735ba41475/hindsight_client-0.9.2-py3-none-any.whl", hash = "sha256:31d26d116a07da5203bc913c5ed017de95d875edd5e295afad3c05373665ff6b", size = 358546, upload-time = "2026-08-25T10:20:29.257Z" },
 ]
 
 [[package]]
