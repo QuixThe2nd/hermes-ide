@@ -150,6 +150,8 @@ def _form_page() -> "web.Response":
     nonce = secrets.token_urlsafe(16)
     body = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
+<!-- In-band policy survives ingress overwriting the Referrer-Policy response header. -->
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Hermes — save login</title>
