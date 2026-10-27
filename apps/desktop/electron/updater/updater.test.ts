@@ -3,10 +3,11 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { resolveUpdaterMechanism } from './index'
 import { appInstallerCheckToStatus, parseCheckOutput } from './app-installer'
 import { buildManualUpdateCommand } from './checkout'
-import { writePendingRelaunch, consumePendingRelaunch, PENDING_RELAUNCH_FILENAME } from './relaunch'
+import { consumePendingRelaunch, PENDING_RELAUNCH_FILENAME, writePendingRelaunch } from './relaunch'
+
+import { resolveUpdaterMechanism } from './index'
 
 describe('resolveUpdaterMechanism — precedence', () => {
   it('bundled win32 out-of-store → app-installer', () => {
@@ -22,7 +23,9 @@ describe('resolveUpdaterMechanism — precedence', () => {
   })
 
   it('checkout win32 → windows-handoff', () => {
-    expect(resolveUpdaterMechanism({ isBundled: false, isWindows: true, isWindowsStore: false })).toBe('windows-handoff')
+    expect(resolveUpdaterMechanism({ isBundled: false, isWindows: true, isWindowsStore: false })).toBe(
+      'windows-handoff'
+    )
   })
 
   it('checkout posix → posix-handoff', () => {
@@ -65,7 +68,11 @@ describe('parseCheckOutput', () => {
       availability: 'Available',
       error: undefined
     })
-    expect(parseCheckOutput(0, '{"available": false}')).toEqual({ available: false, availability: undefined, error: undefined })
+    expect(parseCheckOutput(0, '{"available": false}')).toEqual({
+      available: false,
+      availability: undefined,
+      error: undefined
+    })
   })
 
   it('available null surfaces the checker error', () => {
@@ -101,19 +108,28 @@ describe('pending relaunch marker', () => {
 
   function fakeFs(files: Record<string, string>) {
     const has = (f: string) => f.replace(/\\/g, '/').endsWith(`/${KEY}`) || f === KEY
+
     return {
       existsSync: (f: string) => has(f),
-      readFileSync: (f: string) => files[Object.keys(files).find(k => k.replace(/\\/g, '/') === f.replace(/\\/g, '/')) ?? f],
+      readFileSync: (f: string) =>
+        files[Object.keys(files).find(k => k.replace(/\\/g, '/') === f.replace(/\\/g, '/')) ?? f],
       unlinkSync: (f: string) => {
         const key = Object.keys(files).find(k => k.replace(/\\/g, '/') === f.replace(/\\/g, '/'))
-        if (key) delete files[key]
+
+        if (key) {
+          delete files[key]
+        }
       }
     }
   }
 
   it('write then consume on a different version = update relaunch', () => {
     const files: Record<string, string> = {}
-    expect(writePendingRelaunch('/home', '0.18.2', (f, c) => { files[f] = c as string })).toBe(true)
+    expect(
+      writePendingRelaunch('/home', '0.18.2', (f, c) => {
+        files[f] = c as string
+      })
+    ).toBe(true)
     expect(JSON.parse(Object.values(files)[0]).fromVersion).toBe('0.18.2')
 
     const r = consumePendingRelaunch('/home', '0.18.3', fakeFs(files))
@@ -125,7 +141,9 @@ describe('pending relaunch marker', () => {
 
   it('same version = update never landed; marker consumed silently', () => {
     const files: Record<string, string> = {}
-    writePendingRelaunch('/home', '0.18.2', (f, c) => { files[f] = c as string })
+    writePendingRelaunch('/home', '0.18.2', (f, c) => {
+      files[f] = c as string
+    })
 
     const r = consumePendingRelaunch('/home', '0.18.2', fakeFs(files))
     expect(r.wasUpdateRelaunch).toBe(false)
@@ -138,9 +156,14 @@ describe('pending relaunch marker', () => {
 
   it('corrupt marker is consumed and treated as unknown', () => {
     const files: Record<string, string> = {}
-    writePendingRelaunch('/home', '0.18.2', (f, c) => { files[f] = c as string })
+    writePendingRelaunch('/home', '0.18.2', (f, c) => {
+      files[f] = c as string
+    })
+
     // corrupt the contents under the same key
-    for (const k of Object.keys(files)) files[k] = 'not json'
+    for (const k of Object.keys(files)) {
+      files[k] = 'not json'
+    }
 
     const r = consumePendingRelaunch('/home', '0.18.3', fakeFs(files))
     expect(r.wasUpdateRelaunch).toBe(false)

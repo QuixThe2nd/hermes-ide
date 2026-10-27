@@ -1,7 +1,6 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
-
   sessionImport: {
     title: 'المتابعة من تطبيق آخر',
     subtitle: 'انقل محادثة إلى Hermes وتابع من حيث توقفت.',
@@ -182,8 +181,7 @@ export const ar = defineLocale({
     updateReadyTitle: 'التحديث جاهز',
     updateReadyMessage: count => `${count} تغيير جديد متاح.`,
     updateReadyMessageUnknown: 'يتوفر تحديث جديد.',
-    updateReadyMessageAppInstaller:
-      'إصدار جديد من Hermes جاهز. حدّث الآن وسيتولى Windows إكمال التحديث.',
+    updateReadyMessageAppInstaller: 'إصدار جديد من Hermes جاهز. حدّث الآن وسيتولى Windows إكمال التحديث.',
     seeWhatsNew: 'عرض الجديد',
     mcp: {
       needsAuthTitle: 'خادم MCP يحتاج إلى إعادة المصادقة',
@@ -663,7 +661,8 @@ export const ar = defineLocale({
     },
     fieldLabels: {
       model: 'النموذج الافتراضي',
-      modelContextLength: 'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بالرموز). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
+      modelContextLength:
+        'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بالرموز). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
       fallbackProviders: 'النماذج الاحتياطية',
       toolsets: 'مجموعات الأدوات المفعلة',
       timezone: 'المنطقة الزمنية',
@@ -778,7 +777,8 @@ export const ar = defineLocale({
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
       'compression.codexGpt55Autoraise': 'يرفع عتبة الضغط إلى 85٪ لنماذج ChatGPT Codex OAuth المدعومة.',
-      'auxiliary.compression.timeout': 'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
+      'auxiliary.compression.timeout':
+        'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
       'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',
       'tts.xai.voiceId': 'معرف صوت xAI مثل eve أو معرف صوت مخصص.',
       'tts.xai.language': 'رمز لغة النطق، مثل en.',
@@ -1194,7 +1194,7 @@ export const ar = defineLocale({
       installBlockedTitle: name => `تعذّر تثبيت ${name}`,
       installBlockedMessage: (findings, unverified) =>
         `أبلغت عملية الفحص الأمني عن ${findings > 0 ? `${findings} ${findings === 1 ? 'عنصر' : 'عناصر'}` : 'أنماط خطرة'} للمراجعة${unverified ? '، والمهارة من مصدر غير موثّق' : ''}. اقرأ نتائج الفحص قبل أن تقرر ما إذا كنت تثق بالمؤلف.`,
-      viewScan: 'عرض الفحص',
+      viewScan: 'عرض الفحص'
     }
   },
   agents: {
@@ -2420,8 +2420,7 @@ export const ar = defineLocale({
     applyingClose: 'ستُغلق هذه النافذة أثناء تشغيل التحديث، ثم يعيد Hermes فتح نفسه تلقائيا.',
     applyingBodyAppInstaller:
       'سيُغلق Hermes ويتولى Windows إكمال التحديث. سيعود Hermes للفتح عند الانتهاء — لا تحتاج إلى فعل أي شيء.',
-    applyingCloseAppInstaller:
-      'ستُغلق هذه النافذة، ويتولى Windows إكمال التحديث، ثم يعيد Hermes فتح نفسه تلقائيًا.',
+    applyingCloseAppInstaller: 'ستُغلق هذه النافذة، ويتولى Windows إكمال التحديث، ثم يعيد Hermes فتح نفسه تلقائيًا.',
     checkUnknownTitleAppInstaller: 'تعذّر التحقق من التحديثات',
     checkUnknownBodyAppInstaller:
       'لم يتمكن Windows من التحقق من التحديثات الآن. كما تُثبَّت التحديثات تلقائيًا عند إعادة تشغيل Hermes.',
@@ -3170,9 +3169,11 @@ export const ar = defineLocale({
     sudoSendFailed: 'فشل إرسال كلمة مرور sudo',
     secretSendFailed: 'فشل إرسال السر',
     sudoTitle: 'مطلوب sudo',
-    sudoDesc: 'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
+    sudoDesc:
+      'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
     sudoCommandUnavailable: 'لم يقدّم هذا الوكيل الأمر. ألغِ الطلب إذا لم تتمكن من التحقق منه في المحادثة.',
-    sudoInstallDesc: 'يحتاج Hermes إلى كلمة مرور sudo لتثبيت حزم Bot Screen (TigerVNC + Xfce) على مضيف البوابة. تُرسل إلى ذلك المضيف فقط.',
+    sudoInstallDesc:
+      'يحتاج Hermes إلى كلمة مرور sudo لتثبيت حزم Bot Screen (TigerVNC + Xfce) على مضيف البوابة. تُرسل إلى ذلك المضيف فقط.',
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',
     secretDesc: 'أدخل القيمة المطلوبة لمتابعة المهمة.',

@@ -41,6 +41,7 @@ import {
   withRetry
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import { PLACEHOLDER_FEED_BASE_URL } from './app-updater'
 import {
   stopBackendChild as stopBackendChildImpl,
   stopBackendTreesForUpdate,
@@ -297,14 +298,15 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
-import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { adoptPayloadVenv, installIdForRoot, isBundledInstall, resolvePayload, type PayloadInfo } from './payload-backend'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
-import { PLACEHOLDER_FEED_BASE_URL } from './app-updater'
-import { AppInstallerStrategy } from './updater/app-installer'
-import { ExternalStrategy } from './updater/external'
-import { resolveUpdaterMechanism } from './updater'
-import { writePendingRelaunch, consumePendingRelaunch } from './updater/relaunch'
+import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
+import {
+  adoptPayloadVenv,
+  installIdForRoot,
+  isBundledInstall,
+  type PayloadInfo,
+  resolvePayload
+} from './payload-backend'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -443,6 +445,7 @@ import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { classifyUpdateRoot } from './update-root-policy'
+import { resolveUpdaterMechanism } from './updater'
 import {
   collectRelaunchArgs,
   observeUpdaterHandoff,
@@ -455,6 +458,9 @@ import {
   windowsUpdatePrerequisiteError,
   wrapHandoffForDetachedConsole
 } from './updater-process'
+import { AppInstallerStrategy } from './updater/app-installer'
+import { ExternalStrategy } from './updater/external'
+import { consumePendingRelaunch, writePendingRelaunch } from './updater/relaunch'
 import {
   formatBlockerMessage,
   formatProbeFailedMessage,
@@ -485,11 +491,7 @@ import {
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
-import {
-  buildPathExtCandidates,
-  chooseUpdaterArgs,
-  resolveVenvHermesCommand
-} from './windows-hermes-path'
+import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
 import {
   connectWindowsRemote,
   detectRemotePlatform,
@@ -1234,7 +1236,8 @@ function getTitleBarOverlayOptions() {
     darwinMajor: DARWIN_MAJOR,
     titlebarHeight: TITLEBAR_HEIGHT,
     color: TITLEBAR_OVERLAY_COLOR,
-    foreground: rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
+    foreground:
+      rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
     dark: nativeTheme.shouldUseDarkColors
   })
 }
@@ -3212,6 +3215,7 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   // newer package is on the registered .appinstaller source; Store installs
   // report unsupported (the steward owns their update loop).
   const bundledPayload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
+
   if (bundledPayload) {
     const strategy = resolveBundledUpdateStrategy(bundledPayload)
 
@@ -3244,10 +3248,12 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   // territory. A steward-owned tree (external / electron-updater) must not be
   // pulled into from the desktop.
   const rootStamp = readCanonicalInstallStamp()
+
   const rootPolicy = classifyUpdateRoot({
     isGitTree: true,
     updateMechanism: (rootStamp?.updateMechanism as any) ?? null
   })
+
   if (!rootPolicy.updatable) {
     return {
       supported: false,
@@ -3539,9 +3545,16 @@ function isWindowsStore(): boolean {
  */
 function resolveDesktopFeedBaseUrl(): string {
   const configured = readUpdatesFeedBaseFromConfig()
-  if (configured) return configured
+
+  if (configured) {
+    return configured
+  }
   const env = process.env.HERMES_DESKTOP_FEED_BASE_URL
-  if (env) return env
+
+  if (env) {
+    return env
+  }
+
   return PLACEHOLDER_FEED_BASE_URL
 }
 
@@ -3549,11 +3562,18 @@ function resolveDesktopFeedBaseUrl(): string {
 function readUpdatesFeedBaseFromConfig(): string {
   try {
     const configPath = path.join(HERMES_HOME, 'config.yaml')
-    if (!fileExists(configPath)) return ''
+
+    if (!fileExists(configPath)) {
+      return ''
+    }
     const raw = fs.readFileSync(configPath, 'utf8')
     const match = raw.match(/^\s*desktop_feed_base_url\s*:\s*(.+)\s*$/m)
-    if (!match) return ''
+
+    if (!match) {
+      return ''
+    }
     const value = match[1].trim().replace(/^['"]|['"]$/g, '')
+
     return value
   } catch {
     return ''
@@ -3580,23 +3600,31 @@ function isLightVariant(): boolean {
 async function runPayloadPython(python: string, script: string): Promise<{ code: number; stdout: string }> {
   const payload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
   const env = { ...process.env }
+
   if (payload?.sitePackages) {
     env.PYTHONPATH = payload.sitePackages
   }
 
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const child = spawn(python, [script], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env
     })
+
     let stdout = ''
     let stderr = ''
-    child.stdout.on('data', chunk => { stdout += chunk.toString() })
-    child.stderr.on('data', chunk => { stderr += chunk.toString() })
-    child.on('error', (error) => resolve({ code: 1, stdout: JSON.stringify({ available: null, error: error.message }) }))
-    child.on('close', (code) => {
-      if (stderr) console.error(`[app-installer] checker stderr: ${stderr.slice(0, 400)}`)
+    child.stdout.on('data', chunk => {
+      stdout += chunk.toString()
+    })
+    child.stderr.on('data', chunk => {
+      stderr += chunk.toString()
+    })
+    child.on('error', error => resolve({ code: 1, stdout: JSON.stringify({ available: null, error: error.message }) }))
+    child.on('close', code => {
+      if (stderr) {
+        console.error(`[app-installer] checker stderr: ${stderr.slice(0, 400)}`)
+      }
       resolve({ code: code ?? 1, stdout })
     })
   })
@@ -3610,6 +3638,7 @@ async function runPayloadPython(python: string, script: string): Promise<{ code:
  */
 async function teardownBundledBackend(): Promise<void> {
   const hermesProcess = backendConnectionState.getProcess()
+
   if (hermesProcess || backendPool.size > 0) {
     stopBackendTreesForUpdate(hermesProcess, {
       forceKillProcessTree,
@@ -3678,9 +3707,7 @@ function repairMacUpdaterHelper(updater) {
 function venvHermesShimPath(updateRoot) {
   const venvDir = resolveVenvDir(updateRoot)
 
-  return IS_WINDOWS
-    ? path.join(venvDir, 'Scripts', 'hermes.exe')
-    : path.join(venvDir, 'bin', 'hermes')
+  return IS_WINDOWS ? path.join(venvDir, 'Scripts', 'hermes.exe') : path.join(venvDir, 'bin', 'hermes')
 }
 
 // Best-effort lock probe mirroring the Rust updater's is_locked(): a running
@@ -4978,7 +5005,11 @@ async function activeRuntimeState() {
   // update`, which moves HEAD legitimately. The marker only attests "a
   // desktop-managed bootstrap ran here at least once"; runtime usability is
   // what decides whether we can actually launch.
-  const state = classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, await isActiveRuntimeUsable())
+  const state = classifyActiveRuntime(
+    readBootstrapMarker(),
+    BOOTSTRAP_MARKER_SCHEMA_VERSION,
+    await isActiveRuntimeUsable()
+  )
 
   // The canonical install stamp (written next to the runtime by the bootstrap)
   // tells the UI where this runtime came from. Prefer it over the marker so
@@ -5345,21 +5376,26 @@ async function createActiveBackend(backendArgs) {
  */
 function provisionPosixCliOnPath(payload: PayloadInfo): void {
   const names = ['hermes', 'hermes-agent', 'hermes-acp']
+
   try {
     const binDir = path.join(os.homedir(), '.local', 'bin')
     fs.mkdirSync(binDir, { recursive: true })
     let linked = 0
+
     for (const name of names) {
       const source = path.join(payload.root, 'bin', name)
       const target = path.join(binDir, name)
+
       // lstat, not exists: a DANGLING symlink from a previous install (the
       // .app moved/uninstalled) is exactly the case we want to replace.
       if (fs.lstatSync(target, { throwIfNoEntry: false })) {
         continue
       }
+
       fs.symlinkSync(source, target)
       linked += 1
     }
+
     if (linked > 0) {
       rememberLog(`[payload] linked ${linked} CLI trampoline(s) into ${binDir}`)
     }
@@ -8768,14 +8804,15 @@ function resolvePortalBaseUrl() {
   return String(raw).trim().replace(/\/+$/, '')
 }
 
-const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow } = createPortalSession({
-  isReady: () => app.isReady(),
-  getOauthSession,
-  resolvePortalBaseUrl,
-  warmOauthCookieStore,
-  createWindow: options => new BrowserWindow(options),
-  rememberLog
-})
+const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow } =
+  createPortalSession({
+    isReady: () => app.isReady(),
+    getOauthSession,
+    resolvePortalBaseUrl,
+    warmOauthCookieStore,
+    createWindow: options => new BrowserWindow(options),
+    rememberLog
+  })
 
 // Discover the hosted (Hermes Cloud) agents the signed-in user can see. Calls
 // the NAS trimmed-summary endpoint over the partition-bound net, so the portal
@@ -8808,10 +8845,13 @@ async function discoverCloudAgents(org?: string) {
   const fetchAgents = () =>
     discoverWithTeamFallback(
       selectedOrg =>
-        fetchJsonViaOauthSession(`${portalBaseUrl}/api/agents${selectedOrg ? `?org=${encodeURIComponent(selectedOrg)}` : ''}`, {
-          method: 'GET',
-          timeoutMs: 15_000
-        }),
+        fetchJsonViaOauthSession(
+          `${portalBaseUrl}/api/agents${selectedOrg ? `?org=${encodeURIComponent(selectedOrg)}` : ''}`,
+          {
+            method: 'GET',
+            timeoutMs: 15_000
+          }
+        ),
       org
     )
 
@@ -10218,9 +10258,11 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
 })
+
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
@@ -12503,9 +12545,8 @@ function startPoolIdleReaper() {
       if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
         // Remote descriptors hold no child/slot. Local children require the
         // same admission authority as foreground and LRU reclamation.
-        const retiring = entry.process
-          ? poolRetirer.retireIdle(profile, poolIdleMs())
-          : stopPoolBackend(profile)
+        const retiring = entry.process ? poolRetirer.retireIdle(profile, poolIdleMs()) : stopPoolBackend(profile)
+
         void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
       }
     }
@@ -12793,6 +12834,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   const startFailed = new Promise((_resolve, reject) => {
     rejectStart = reject
   })
+
   // Exit/error can now arrive while the ownership claim is still pending.
   startFailed.catch(() => {})
 
@@ -12828,6 +12870,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     describeOutputTail: () => outputTail.describe(),
     readyFile
   })
+
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
@@ -12910,10 +12953,12 @@ const poolStopper = createPoolStopper({
 
 function stopPoolBackend(profile: string): Promise<void> {
   const entry = backendPool.get(profile)
+
   const stopping = releaseLocalBackendSlotAfterExit(
     () => releaseLocalBackendSlot(entry),
     () => poolStopper.stop(profile)
   )
+
   // Fire-and-forget callers still need diagnostics; awaiters receive the
   // rejection, while physical ownership and the exit finalizer remain live.
   void stopping.catch(error => {
@@ -12944,6 +12989,7 @@ const poolRetirer = createPoolRetirer({
   onRetiring: broadcastPoolBackendRetiring,
   log: rememberLog
 })
+
 localBackendLifecycle.signal.addEventListener('abort', poolRetirer.dispose, { once: true })
 
 async function teardownPoolBackendAndWait(profile) {
@@ -12993,10 +13039,14 @@ function reapInstallRootedStragglers(excludePids: number[]): void {
   try {
     reapPackageRootedProcesses({
       installRoots: [payloadRoot, managedStore],
-      listProcesses: () => listWindowsProcesses((file, args, options) => execFileSync(file, args, {
-        ...hiddenWindowsChildOptions({ encoding: 'utf8', timeout: options.timeout }),
-        windowsHide: options.windowsHide
-      }) as unknown as string),
+      listProcesses: () =>
+        listWindowsProcesses(
+          (file, args, options) =>
+            execFileSync(file, args, {
+              ...hiddenWindowsChildOptions({ encoding: 'utf8', timeout: options.timeout }),
+              windowsHide: options.windowsHide
+            }) as unknown as string
+        ),
       killProcess: pid => process.kill(pid, 'SIGKILL'),
       selfPid: process.pid,
       excludePids,
@@ -13130,6 +13180,7 @@ function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error =
     if (primaryExitRecovery.isCrashLooping()) {
       const message =
         'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+
       rememberLog(`[supervisor] ${message}`)
       sendBackendExit({ code, signal, error: message })
 
@@ -13977,6 +14028,7 @@ function createInstanceWindow(
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
     { connectionId: null, profile: primaryProfileKey() }
   )
+
   validateDesktopProfileRoute(route)
   const icon = getAppIconPath()
 
@@ -15272,7 +15324,10 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const id = String(connectionId || '').trim() || registry.primary
   const spawnPriority = spawnPriorityFrom(priority)
 
-  return connectDesktopProfileRoute({ connectionId: id, profile: String(profile ?? '').trim() || 'default' }, spawnPriority)
+  return connectDesktopProfileRoute(
+    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
+    spawnPriority
+  )
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -17011,6 +17066,7 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
+
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
@@ -18088,7 +18144,6 @@ ipcMain.handle('hermes:version', async () => {
   }
 })
 
-
 // The About page's "Restart Hermes" button (shown when bundleSwapPending):
 // load the already-swapped bundle without asking the user to quit manually.
 // app.relaunch() re-executes by path, so the fresh process picks up whatever
@@ -18174,6 +18229,7 @@ async function hasNvidiaGpu(): Promise<boolean> {
     return false
   }
 }
+
 /** The latest pm/venv/plugin-operation receipt — the machine-readable
  *  surface every medium reads (CLI: `hermes pm status`). Returned as one
  *  parsed JSON object: { kind, outcome, venv_rebuild, plugin_bisect,
@@ -18182,16 +18238,13 @@ async function hasNvidiaGpu(): Promise<boolean> {
  *  pm syncs (bisect disables, failed rebuilds), plugin update checks,
  *  and (embedded) updates. */
 function readLatestSyncReceipt(): Record<string, unknown> | null {
-  const receiptPath = path.join(
-    HERMES_HOME,
-    'logs',
-    'update_receipts',
-    'latest.json'
-  )
+  const receiptPath = path.join(HERMES_HOME, 'logs', 'update_receipts', 'latest.json')
+
   try {
     const text = fs.readFileSync(receiptPath, 'utf8')
     // tolerate a BOM (hermes writes plain, but editors touch configs)
     const stripped = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+
     return JSON.parse(stripped)
   } catch {
     return null
