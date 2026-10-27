@@ -2325,6 +2325,13 @@ DEFAULT_CONFIG = {
             # (default: the capped text is what the model is replayed on the next turn).
             "history_tool_output_max_chars": 0,
         },
+        "secure_entry": {  # Native secure-login entry (gateway/secure_entry.py).
+            # Public HTTPS origin of this gateway's API listener as reachable from the
+            # requester's browser (operator provides TLS ingress, e.g. Tailscale HTTPS).
+            # Empty (default) = the whole flow stays disabled. Must be an exact
+            # https://host[:port] URL — no path, query, or fragment.
+            "public_base_url": "",
+        },
     },
     # Real-time token streaming to messaging platforms (gateway; restart after enabling). Off by
     # default: costs extra edit/draft API calls per response.
