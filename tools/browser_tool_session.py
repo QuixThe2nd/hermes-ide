@@ -385,6 +385,7 @@ def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any
         bare_task_id = _bt._bare_task_id_for_session_key(task_id)
         if _bt._last_active_session_key.get(bare_task_id) == task_id:
             _bt._last_active_session_key.pop(bare_task_id, None)
+            _bt._task_explicit_native.pop(bare_task_id, None)
 
     session_name = str(session_info.get("session_name") or "")
     if session_name and os.path.isfile(os.path.join(task_socket_dir, f"{session_name}.pid")):

@@ -339,6 +339,19 @@ def _session_info_owned_by_task(session_info: Dict[str, Any], task_id: str, sess
     return (owner is None or owner == task_id) and (key is None or key == session_key)
 
 
+def _normalized_task_id(task_id: Optional[str]) -> str:
+    return task_id if task_id is not None else "default"
+
+
+def _task_native_pinned(task_id: Optional[str]) -> bool:
+    return _task_explicit_native.get(_normalized_task_id(task_id), False)
+
+
+def _should_use_camofox_for_task(task_id: Optional[str]) -> bool:
+    """Camofox is the global engine unless this task pinned local Chromium via ``browser="native"``."""
+    return _is_camofox_mode() and not _task_native_pinned(task_id)
+
+
 def _last_session_key(task_id: str) -> str:
     """Session key a non-nav tool must use: the one that served the task's last navigation.
     If it was cleaned up or ownership no longer matches, fail closed by dropping the stale
@@ -373,6 +386,9 @@ _recording_sessions: set = set()  # session_keys with active recordings
 # Most recent session_key per task_id (set by browser_navigate, read by every non-nav
 # tool) so click/snapshot land in the session that served the last navigation.
 _last_active_session_key: Dict[str, str] = {}
+# Per bare task_id: explicit ``browser_navigate(browser="native")`` succeeded while
+# Camofox is the global engine — follow-up browser tools use local Chromium, not Camofox.
+_task_explicit_native: Dict[str, bool] = {}
 _LOCAL_SUFFIX = "::local"
 _cleanup_done = False
 
@@ -473,6 +489,11 @@ BROWSER_TOOL_SCHEMAS = [
                 "url": {
                     "type": "string",
                     "description": "The URL to navigate to (e.g., 'https://example.com')"
+                },
+                "browser": {
+                    "type": "string",
+                    "enum": ["native"],
+                    "description": "Optional per-call engine override. When the global browser backend is Camofox, set to 'native' to open this task in isolated local Chromium; follow-up browser tools for the same task_id use that session until cleanup. Failed navigation does not pin native routing."
                 }
             },
             "required": ["url"]
@@ -731,7 +752,9 @@ def _attach_auto_snapshot(response: Dict[str, Any], nav_session_key: str) -> Non
         logger.debug("Auto-snapshot after navigate failed: %s", e)
 
 
-def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
+def browser_navigate(
+    url: str, task_id: Optional[str] = None, browser: Optional[str] = None
+) -> str:
     """Navigate to ``url``; JSON with title, compact snapshot and, on first nav, stealth features.
     Hybrid routing decides BEFORE the safety checks whether this URL goes to a local sidecar
     (the cloud provider never sees it then, so the private-address checks are relaxed)."""
@@ -739,7 +762,12 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if safety_error is not None:
         return json.dumps(safety_error)
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _normalized_task_id(task_id)
+    if browser not in (None, "", "native"):
+        return _dumps(_err(
+            f"Unknown browser selector '{browser}'. Use 'native' for local Chromium."
+        ))
+
     nav_session_key = _navigation_session_key(effective_task_id, url)
     auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
 
@@ -747,7 +775,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if safety_error is not None:
         return json.dumps(safety_error)
 
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(effective_task_id):
         return _camofox("camofox_navigate", url, task_id)
 
     if auto_local_this_nav:
@@ -780,6 +808,8 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # Only a successful, non-blocked navigation becomes the task owner: failed opens
     # and blocked redirects must not retarget follow-up clicks to an irrelevant session.
     _last_active_session_key[effective_task_id] = nav_session_key
+    if browser == "native":
+        _task_explicit_native[effective_task_id] = True
     _lp._copy_fallback_warning(response, result)
     _add_navigate_warnings(response, title, session_info if is_first_nav else None)
     _attach_auto_snapshot(response, nav_session_key)
@@ -811,7 +841,7 @@ def browser_snapshot(
 ) -> str:
     """Text snapshot of the page's accessibility tree (compact unless ``full``).
     ``user_task`` is deprecated and unused (oversized snapshots always truncate-and-store)."""
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(task_id):
         return _camofox("camofox_snapshot", full, task_id)
     effective_task_id = _last_session_key(task_id or "default")
     result = _session._run_browser_command(effective_task_id, "snapshot", [] if full else ["-c"])
@@ -879,7 +909,7 @@ def _at_ref(ref: str) -> str:
 
 def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     """Click the element ``ref`` (e.g. "@e5")."""
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(task_id):
         return _camofox("camofox_click", ref, task_id)
     ref = _at_ref(ref)
     return _guarded_action(task_id, "click", "click", [ref], {"clicked": ref}, f"Failed to click {ref}")
@@ -887,7 +917,7 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
 
 def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     """Type ``text`` into the element ``ref`` (fill: clears, then types)."""
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(task_id):
         return _camofox("camofox_type", ref, text, task_id)
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, "type")
@@ -911,7 +941,7 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     if direction not in {"up", "down"}:
         return _dumps(_err(f"Invalid direction '{direction}'. Use 'up' or 'down'."))
     _SCROLL_PIXELS = 500  # ~half a viewport in one call instead of 5x subprocess calls
-    if _is_camofox_mode():  # Camofox REST API has no pixel argument; use repeated calls
+    if _should_use_camofox_for_task(task_id):  # Camofox REST API has no pixel argument; use repeated calls
         return [_camofox("camofox_scroll", direction, task_id) for _ in range(5)][-1]
     effective_task_id = _last_session_key(task_id or "default")
     result = _session._run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
@@ -920,7 +950,7 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
 
 def browser_back(task_id: Optional[str] = None) -> str:
     """Navigate back in browser history."""
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(task_id):
         return _camofox("camofox_back", task_id)
     effective_task_id = _last_session_key(task_id or "default")
     result = _session._run_browser_command(effective_task_id, "back", [])
@@ -935,7 +965,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
 
 def browser_press(key: str, task_id: Optional[str] = None) -> str:
     """Press a keyboard key (e.g. "Enter", "Tab")."""
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(task_id):
         return _camofox("camofox_press", key, task_id)
     return _guarded_action(task_id, "press", "press", [key], {"pressed": key}, f"Failed to press {key}")
 
@@ -977,7 +1007,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
             return _dumps(_err(policy_error))
         return _browser_eval(expression, task_id)
 
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(task_id):
         return _camofox("camofox_console", clear, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
@@ -1091,7 +1121,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
             ))
 
     # Camofox keeps its own raw-task_id-keyed session map, so pass the raw id.
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(task_id):
         return _camofox_eval(expression, task_id)
 
     # The supervisor answers over its own WebSocket and never reaches _run_browser_command, so the Bot
@@ -1179,7 +1209,7 @@ _GET_IMAGES_JS = "JSON.stringify([...document.images].map(img => ({src: img.src,
 
 def browser_get_images(task_id: Optional[str] = None) -> str:
     """List the page's images (src, alt, natural size), excluding data: URIs."""
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(task_id):
         return _camofox("camofox_get_images", task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
@@ -1236,7 +1266,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     """Screenshot the current page for visual inspection. Native-vision models get the image
     attached to the conversation; otherwise the auxiliary vision model returns a text
     analysis. The file is kept and its path returned (MEDIA:<path>)."""
-    if _is_camofox_mode():
+    if _should_use_camofox_for_task(task_id):
         return _camofox("camofox_vision", question, annotate, task_id)
 
     import uuid as uuid_mod
@@ -1313,7 +1343,7 @@ def _fallback_call(fn_name: str, arg_defaults: Dict[str, Any], extra_kw: tuple =
 # function is the module global of the same name. Routed-through-extension tools (gate None)
 # use the per-action gate; get_images/console/vision keep the plain requirement checks.
 _BROWSER_TOOL_TABLE = (
-    ("browser_navigate", "🌐", None, {"url": ""}),
+    ("browser_navigate", "🌐", None, {"url": "", "browser": None}),
     ("browser_snapshot", "📸", None, {"full": False}, ("user_task",)),
     ("browser_click", "👆", None, {"ref": ""}),
     ("browser_type", "⌨️", None, {"ref": "", "text": ""}),
