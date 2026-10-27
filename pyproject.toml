@@ -142,6 +142,12 @@ dependencies = [
   # imports win32security/win32file/etc. directly — declare pywin32 rather than
   # relying on the concurrent-log-handler → portalocker transitive chain.
   "pywin32>=306,<312; sys_platform == 'win32'",
+  # App Installer update checks (apps/desktop/scripts/check-appinstaller-update.py)
+  # use the WinRT Management.Deployment API to ask the OS whether a newer
+  # MSIX package version is registered for the installed package. The payload
+  # python runs it on Windows only — gate the dep so POSIX/macOS don't carry
+  # the Windows-only winrt runtime.
+  "winrt-windows-management-deployment[all]>=3.2.1,<4; sys_platform == 'win32'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
   # (>5 MB or >8000px) at embed time; without it the byte AND pixel-dimension
   # shrink paths no-op, so an oversized image bakes into immutable history and
