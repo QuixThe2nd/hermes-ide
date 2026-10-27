@@ -571,6 +571,29 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str, new
 
 # ── setup wizard ───────────────────────────────────────────────────────────
 
+def _honcho_pin() -> str:
+    """The pinned honcho-ai version from the pyproject extra — the single
+    authority (a hardcoded message string would drift on every bump)."""
+    try:
+        import tomllib
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[3]
+        with (repo / "pyproject.toml").open("rb") as f:
+            data = tomllib.load(f)
+        specs = (
+            data.get("project", {})
+            .get("optional-dependencies", {})
+            .get("honcho", [])
+        )
+        for spec in specs:
+            if isinstance(spec, str) and spec.startswith("honcho-ai=="):
+                return spec.split("==", 1)[1]
+    except Exception:
+        pass
+    return "latest"  # never block the prompt on metadata lookup
+
+
 def _ensure_sdk_installed() -> bool:
     """Check honcho-ai is importable; offer to install if not. Returns True if ready."""
     try:
@@ -578,9 +601,10 @@ def _ensure_sdk_installed() -> bool:
         return True
     except ImportError:
         pass
+    pin = _honcho_pin()
     print("  honcho-ai is not installed.")
-    if not _yes(_prompt("Install it now? (honcho-ai==2.2.0)", default="y")):
-        print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
+    if not _yes(_prompt(f"Install it now? (honcho-ai=={pin})", default="y")):
+        print(f"  Skipping install. Run: pip install 'honcho-ai=={pin}'\n")
         return False
     print("  Installing honcho-ai...", flush=True)
     import pm
