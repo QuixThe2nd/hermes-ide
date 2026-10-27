@@ -6351,6 +6351,17 @@ def _print_runtime_health() -> None:
 
 
 def _cmd_run(args):
+    if getattr(args, "service", False):
+        # The Windows SCM frontend (MSIX HermesGateway service):
+        # translate the SCM protocol onto the payload launcher. The
+        # real gateway runs as this frontend's CHILD (no --service),
+        # so every gateway code path stays the daily one.
+        if sys.platform != "win32":
+            print_error("gateway run --service is Windows-only (SCM frontend).")
+            return 2
+        from gateway.windows_service import run_as_service
+
+        return run_as_service()
     if _maybe_redirect_run_to_s6_supervision(args):
         return  # unreachable; execvp doesn't return
     if getattr(args, "external_supervisor", False):

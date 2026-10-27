@@ -52,6 +52,12 @@ def build_gateway_parser(
             "already supervises this profile. Without --force, the command "
             "refuses because a second dispatcher escapes the service and can "
             "corrupt shared gateway state.")
+    _flag(gateway_run, "--service",
+        help="Windows SCM frontend mode: run as the HermesGateway Windows "
+            "Service (started by the Service Control Manager; spawns the "
+            "real gateway as a child and reports STOP via the graceful "
+            "planned-stop path). Not for interactive use — the SCM invokes "
+            "this, or `hermes gateway service on` does.")
     _flag(gateway_run, "--no-supervise",
         help="Inside the s6-overlay Docker image, normally `gateway run` is "
             "automatically redirected to the supervised s6 service (so the "
