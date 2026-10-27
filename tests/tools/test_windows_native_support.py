@@ -939,6 +939,7 @@ class TestWindowlessGatewayRestartSpec:
     hidden-console respawn spec (normalized interpreter + stable cwd + env
     overlay)."""
 
+    @pytest.mark.linux_only
     def test_noop_on_non_windows(self):
         import hermes_cli.gateway_windows as gw
 

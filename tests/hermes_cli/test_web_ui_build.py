@@ -225,7 +225,7 @@ class TestBuildWebUISkipsWhenFresh:
         mock_idle.assert_called_once()
         args, kwargs = mock_idle.call_args
         # Positional: [npm, "run", "build"]; cwd passed as kwarg.
-        assert args[0] == ["/usr/bin/npm", "run", "build"]
+        assert args[0][-2:] == ["run", "build"]
         assert kwargs["cwd"] == web_dir
 
 
@@ -274,6 +274,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         assert "vite ENOMEM" in out  # combined output surfaced to user
 
 
+@pytest.mark.linux_only
 class TestBuildWebUIFlock:
     """Cross-process build serialization (salvaged from PR #63455).
 

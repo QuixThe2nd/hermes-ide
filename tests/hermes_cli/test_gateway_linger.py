@@ -6,6 +6,8 @@ import pytest
 
 import hermes_cli.gateway as gateway
 
+pytestmark = pytest.mark.linux_only
+
 
 class TestEnsureLingerEnabled:
     def test_linger_already_enabled_via_file(self, monkeypatch, capsys):

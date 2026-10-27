@@ -84,6 +84,7 @@ class TestDetection:
         assert required_npm_range(broken) is None
 
 
+@pytest.mark.require_symlinks
 class TestRepairDecision:
     """`maybe_repair_npm_engine` returns the npm to retry with (truthy) only
     when a repair actually happened, because its return value is what gates

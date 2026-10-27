@@ -512,6 +512,7 @@ class ToolRegistry:
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Local slot state only — no global fallback."""
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             return self._slot(scope).get(name)
 
@@ -558,6 +559,7 @@ class ToolRegistry:
         as a hard boundary: ``toolsets.get_toolset``/``resolve_toolset`` then
         ignore any tools registered into the same name by overlays.
         """
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             target = (
                 self._toolset_definitions
@@ -576,6 +578,7 @@ class ToolRegistry:
         self, name: str, *, scope: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """Return a copy of the active profile's toolset definition, or None."""
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             definition = self._merged_toolset_definitions(scope).get(name)
             if definition is None:
@@ -590,6 +593,7 @@ class ToolRegistry:
         self, name: str, *, scope: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """Return the local slot state without following global fallback."""
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             target = (
                 self._toolset_definitions
@@ -612,6 +616,7 @@ class ToolRegistry:
         by the plugin ownership ledger — mirrors :meth:`restore_registration`
         so unloading one plugin never removes another's newer definition.
         """
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             target = (
                 self._toolset_definitions
@@ -661,6 +666,7 @@ class ToolRegistry:
     ) -> _PluginOverridePolicy:
         """Bind a plugin module namespace to its current operator opt-in. The identity-bearing
         result lets unload/reload revoke a stale authorization without losing attribution."""
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             policy = _PluginOverridePolicy(allowed)
             self._plugin_override_policy[(scope, module_namespace)] = policy
@@ -671,6 +677,7 @@ class ToolRegistry:
         self, module_namespace: str, *, scope: Optional[str] = None,
     ) -> Optional[_PluginOverridePolicy]:
         """Return one local authorization generation without fallback."""
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             return self._plugin_override_policy.get((scope, module_namespace))
 
@@ -678,6 +685,7 @@ class ToolRegistry:
         self, module_namespace: str, current: _PluginOverridePolicy,
         previous: Optional[_PluginOverridePolicy], *, scope: Optional[str] = None) -> bool:
         """CAS-restore policy state while retaining durable scope attribution."""
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             key = (scope, module_namespace)
             if self._plugin_override_policy.get(key) is not current:
@@ -813,6 +821,7 @@ class ToolRegistry:
         owner = caller_owner or handler_owner
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             target = self._slot(scope, create=True)
             existing = (self._tools if scope is None else self._merged_tools(scope)).get(name)
@@ -934,6 +943,7 @@ class ToolRegistry:
         The identity check is deliberate: another plugin (or ``PluginManager`` in a
         multi-profile process) may have registered a newer entry under the same name, and
         unloading this entry must leave that newer one untouched."""
+        scope = hermes_home_key(scope) if scope is not None else None
         with self._lock:
             target = self._slot(scope, create=True)
             if target.get(name) is not current:

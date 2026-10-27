@@ -243,9 +243,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _run_python_snippet(self, snippet: str) -> ExecuteResult:
         """Run ``snippet`` via the backend's ``python3``, retrying with ``python``
         when only that name exists (Windows / older systems)."""
-        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+        result = self._exec_python_snippet(snippet)
         if result.exit_code != 0 and "python3" in (result.stdout or ""):
-            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+            result = self._exec_python_snippet(snippet, py="python")
         return result
 
     def _sample_file_bytes(self, path: str, length: int = 1000):
@@ -362,13 +362,27 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     return expand_result.stdout.strip() + path[1 + len(username):]
         return path
 
-    def _escape_shell_arg(self, arg: str) -> str:
+    def _escape_shell_arg(self, arg: str, translate_path: bool = True) -> str:
         """Single-quote ``arg`` for the shell. On Windows, native drive paths and
         mixed MSYS leftovers are first rewritten to the Git Bash ``/c/Users/x``
         form via the env-layer ``_bash_safe_path`` (bash eats backslashes; MSYS
-        mangles drive paths), so shell file ops and the terminal ``cd`` agree."""
-        from tools.environments.local import _bash_safe_path
-        return "'" + _bash_safe_path(arg).replace("'", "'\"'\"'") + "'"
+        mangles drive paths), so shell file ops and the terminal ``cd`` agree.
+
+        ``translate_path=False`` skips that translation for non-path values
+        (regex patterns) whose backslashes are meaningful. On Windows those
+        backslashes are doubled first: the ``-c`` argument passes through
+        ``subprocess`` list-arg quoting (which wraps it in double quotes) and
+        ``bash`` then collapses ``\\\\`` → ``\\`` inside those double quotes,
+        so one level must survive the round trip.
+        """
+        from tools.environments.local import _IS_WINDOWS, _bash_safe_path
+
+        if translate_path:
+            arg = _bash_safe_path(arg)
+        elif _IS_WINDOWS:
+            arg = arg.replace("\\", "\\\\")
+        # Use single quotes and escape any single quotes in the string
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _escape_native_tool_arg(self, arg: str) -> str:
         """Quote a path for a NATIVE Windows binary (rg, node, git ...): those don't
@@ -512,6 +526,38 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     _UTF16_MAX_BYTES = 10 * 1024 * 1024
     _UTF16_SAMPLE_BYTES = 512
 
+    def _python_interpreter_cmd(self) -> str:
+        """Return a shell-safe Python interpreter for the terminal backend.
+
+        On the local backend ``sys.executable`` is always a working
+        interpreter — and on Windows it dodges the Microsoft Store
+        ``python``/``python3`` alias stub (exit 49, "Python was not
+        found") that otherwise breaks inline ``-c`` snippets. Remote
+        backends (docker/ssh/...) don't have the agent's interpreter, so
+        they fall back to ``python3`` on their own PATH (the ``python``
+        fallback is handled at the call site).
+        """
+        if self._lsp_local_only():
+            return self._escape_shell_arg(sys.executable)
+        return "python3"
+
+    def _exec_python_snippet(self, snippet: str, py: str = None) -> ExecuteResult:
+        """Run a Python ``snippet`` in the terminal backend's interpreter.
+
+        Base64-encodes the snippet so it survives every shell/quoting layer
+        as pure ASCII: Windows ``subprocess`` list-arg quoting and ``bash``
+        double-quote processing both eat backslashes, which otherwise
+        corrupts Windows paths (``C:\\Users\\x``) and byte literals
+        (``b'\\xfe\\xff'``) embedded in a ``-c`` program. ``exec`` decodes
+        and runs it unchanged.
+        """
+        encoded = base64.b64encode(snippet.encode("utf-8")).decode("ascii")
+        if py is None:
+            py = self._python_interpreter_cmd()
+        return self._exec(
+            f"{py} -c \"import base64; exec(base64.b64decode('{encoded}').decode())\""
+        )
+
     def _try_read_utf16(self, path: str, offset: int, limit: int,
                         file_size: int) -> "Optional[ReadResult]":
         """Read ``path`` as UTF-16 transcoded to UTF-8, or None (caller falls back
@@ -521,7 +567,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return None
         snippet = (
             "import sys, json, os\n"
-            f"p = {path!r}\n"
+            f"p = {json.dumps(path)}\n"
             f"offset = {int(offset)}\n"
             f"limit = {int(limit)}\n"
             f"MAX = {self._UTF16_MAX_BYTES}\n"
@@ -1060,7 +1106,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # ``unlink(missing_ok=True)`` (a 3.7 remote interpreter lacks it).
         snippet = (
             "import shutil, pathlib, sys\n"
-            f"p = pathlib.Path({path!r})\n"
+            f"p = pathlib.Path({json.dumps(path)})\n"
             "recursive = False\n"
             "try:\n"
             "    if p.is_dir() and not p.is_symlink():\n"

@@ -166,6 +166,7 @@ def test_install_icon_copy_failure_falls_back_to_absolute(
     assert values["Terminal"] == "false"
 
 
+@pytest.mark.linux_only
 def test_installed_entry_is_executable(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
     monkeypatch.setattr(
@@ -178,6 +179,7 @@ def test_installed_entry_is_executable(tmp_path, xdg_home, monkeypatch):
     assert entry.stat().st_mode & stat.S_IXUSR
 
 
+@pytest.mark.linux_only
 def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
     monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
@@ -200,6 +202,7 @@ def test_exec_falls_back_to_interpreter_module(tmp_path, xdg_home, monkeypatch):
 # interpreter when the DE spawns the .desktop entry → ModuleNotFoundError,
 # silent (Terminal=false). The Exec line must prefix sys.executable for any
 # resolved bin that is a python script escaping the running venv.
+@pytest.mark.linux_only
 def test_exec_prefixes_interpreter_for_env_shebang_python_script(
     tmp_path, xdg_home, monkeypatch
 ):
@@ -229,6 +232,7 @@ def test_exec_prefixes_interpreter_for_env_shebang_python_script(
     assert exec_line.endswith("desktop")
 
 
+@pytest.mark.linux_only
 def test_exec_leaves_shell_wrapper_launchers_alone(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
     hermes_bin = tmp_path / "bin" / "hermes"
@@ -776,6 +780,7 @@ def test_run_quiet_swallows_missing_binary(tmp_path):
     assert lde._run_quiet([str(tmp_path / "definitely-not-a-binary")]) is False
 
 
+@pytest.mark.linux_only
 def test_exec_arg_quoting_handles_spaces(tmp_path, xdg_home, monkeypatch):
     root = _make_project(tmp_path)
     spaced = tmp_path / "my apps" / "hermes"

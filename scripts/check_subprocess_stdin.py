@@ -222,8 +222,9 @@ def main() -> int:
         for py_file in dirpath.rglob("*.py"):
             rel = str(py_file.relative_to(repo_root))
 
-            # Skip known-safe files.
-            if rel in KNOWN_SAFE:
+            # Skip known-safe files.  ``relative_to`` returns a host-separated
+            # path (backslashes on Windows) while KNOWN_SAFE is forward-slash.
+            if py_file.relative_to(repo_root).as_posix() in KNOWN_SAFE:
                 continue
 
             # Skip test files inside tools/ etc.

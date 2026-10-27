@@ -1351,7 +1351,7 @@ def run_slash(rest: str) -> str:
     stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical."""
     import io
 
-    tokens = shlex.split(rest) if rest and rest.strip() else []
+    tokens = shlex.split(rest, posix=os.name == "posix") if rest and rest.strip() else []
     # Bare ``/kanban`` / ``help`` / ``-h``: curated short block, not argparse's full tree (garbage
     # in a chat bubble). ``/kanban foo -h`` still works.
     if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:

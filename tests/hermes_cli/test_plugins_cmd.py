@@ -103,6 +103,7 @@ class TestResolveSubdirWithin:
 
 
 
+    @pytest.mark.require_symlinks
     def test_rejects_symlink_escape(self, tmp_path):
         clone = tmp_path / "clone"
         clone.mkdir()

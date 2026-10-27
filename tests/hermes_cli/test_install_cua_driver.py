@@ -144,6 +144,7 @@ class TestInstallCuaDriverUpgrade:
             assert tools_config.install_cua_driver(upgrade=False) is False
             warn.assert_called()
 
+    @pytest.mark.linux_only
     def test_upgrade_with_binary_present_runs_installer(self):
         from hermes_cli import tools_config_cua as tools_config
 
@@ -163,6 +164,7 @@ class TestInstallCuaDriverUpgrade:
             kwargs = runner.call_args.kwargs
             assert kwargs.get("verbose") is False
 
+    @pytest.mark.linux_only
     def test_upgrade_without_binary_runs_installer(self):
         from hermes_cli import tools_config_cua as tools_config
 
@@ -279,6 +281,7 @@ class TestInstallCuaDriverUpgrade:
         assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
         fake_proc.communicate.assert_called_once_with(timeout=120)
 
+    @pytest.mark.linux_only
     def test_upgrade_can_suppress_installer_progress(self):
         from hermes_cli import tools_config_cua as tools_config
 
@@ -456,6 +459,7 @@ class TestInstallCuaDriverUpgrade:
 
         runner.assert_not_called()
 
+    @pytest.mark.linux_only
     def test_non_upgrade_without_binary_runs_installer(self):
         from hermes_cli import tools_config_cua as tools_config
 
@@ -714,6 +718,7 @@ class TestUpdateCheckTimeoutDefaults:
         """
         assert self._captured_timeout() == 25.0
 
+    @pytest.mark.linux_only
     def test_posix_default_unchanged(self):
         # Unmarked: the POSIX default is what this (Linux) host already picks,
         # so no platform faking is involved.

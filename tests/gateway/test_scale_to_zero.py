@@ -291,6 +291,7 @@ def test_suspend_self_non_2xx_is_false_not_raise(short_sock_dir):
     t.join(timeout=5)
 
 
+@pytest.mark.linux_only
 def test_suspend_self_missing_socket_is_false_not_raise(tmp_path):
     # Fail-awake: a dead/absent flaps socket must never raise out of the watcher.
     assert suspend_self(_FLY_ENV, socket_path=str(tmp_path / "nope.sock")) is False

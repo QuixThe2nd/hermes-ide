@@ -694,6 +694,7 @@ class TestPathCanonicalization:
             "Absolute and relative paths pointing to the same file must overlap"
         )
 
+    @pytest.mark.require_symlinks
     def test_symlink_aliases_are_not_parallelized(self, tmp_path):
         """A symlink alias and the real path must be detected as overlapping
         so they are never placed in the same parallel segment."""

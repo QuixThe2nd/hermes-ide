@@ -703,6 +703,7 @@ markers = [
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
     "linux_only: exercises Linux-specific behaviour; skipped on other hosts",
+    "require_symlinks: test needs symlink creation (unsupported on Windows hosts)",
     "macos_only: exercises macOS-specific behaviour; skipped on other hosts",
     "windows_only: exercises native-Windows behaviour; skipped on other hosts",
 ]

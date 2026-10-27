@@ -1251,7 +1251,7 @@ def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str
     """rmtree ``child``, crediting bytes + ``result[key]``; failures count as ``errors`` when tracked."""
     try:
         size = _dir_size_bytes(child)
-        shutil.rmtree(child)
+        _rmtree_force(child)
         result["bytes_freed"] += size
         result[key] += 1
     except OSError as exc:
@@ -1468,6 +1468,25 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     return out
 
 
+def _rmtree_force(path: Path) -> None:
+    """``shutil.rmtree`` that clears read-only bits before deleting.
+
+    Windows refuses to delete a tree containing read-only files (git objects
+    are commonly read-only), raising ``PermissionError`` where POSIX unlinks
+    them fine. The ``onerror`` hook chmods the file writable and retries.
+    """
+    import stat
+
+    def _onerror(func, p, _exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+        except OSError:
+            pass
+        func(p)
+
+    shutil.rmtree(path, onerror=_onerror)
+
+
 def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
     Returns ``{"bytes_freed": N, "deleted": bool}``."""
@@ -1477,7 +1496,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        _rmtree_force(base)
         out.update(bytes_freed=size, deleted=True)
     except OSError as exc:
         logger.warning("Could not clear checkpoint base %s: %s", base, exc)

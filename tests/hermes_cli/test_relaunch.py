@@ -99,6 +99,7 @@ class TestBuildRelaunchArgv:
 
 
 class TestRelaunch:
+    @pytest.mark.linux_only
     def test_calls_execvp(self, monkeypatch):
         calls = []
 

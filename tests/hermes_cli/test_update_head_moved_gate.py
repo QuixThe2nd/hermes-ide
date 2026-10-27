@@ -11,12 +11,22 @@ and fails loudly when the update was a no-op.
 
 from types import SimpleNamespace
 
+import os
+
 import pytest
 
 from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
+
+
+@pytest.fixture(autouse=True)
+def _isolate_venv_holders(monkeypatch):
+    """The update flow's venv-holder guard sees the live gateway processes on
+    a dev machine and aborts with SystemExit 2 before reaching the HEAD-move
+    gate under test.  Isolate it so the test exercises the intended path."""
+    monkeypatch.setattr(hermes_main, "_detect_venv_python_processes", lambda: [])
 
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
@@ -198,6 +208,14 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
+    # _restart_gateways_after_update purges and re-imports hermes_cli.gateway,
+    # which undoes the discovery mocks above (the fresh import finds the live
+    # gateways on this dev machine).  Neutralize the kill itself so the phase
+    # is a no-op regardless of what the re-imported discovery returns.
+    monkeypatch.setattr(os, "kill", lambda *a, **k: None)
+    # ...and stop the purge from evicting the mocked module in the first place,
+    # so find_gateway_pids stays [] and the fleet-restart phase is a clean no-op.
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
 
 def test_update_success_when_head_moves(monkeypatch, tmp_path, capsys):

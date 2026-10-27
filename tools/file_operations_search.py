@@ -598,7 +598,7 @@ class SearchMixin:
             return None
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
-        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        glob_expr = f" --glob {self._escape_shell_arg(file_glob, translate_path=False)}" if file_glob else ""
         for flags, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
@@ -609,7 +609,7 @@ class SearchMixin:
             else:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
-                           self._escape_shell_arg(pattern), self._escape_native_tool_arg(path)]
+                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
@@ -879,10 +879,10 @@ class SearchMixin:
             cmd_parts.extend(["-C", str(context)])
         cmd_parts.extend(self._rg_exclusion_globs(path))
         if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob, translate_path=False)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
         cmd_parts.append(self._escape_native_tool_arg(path))
         ml_note = (
@@ -898,10 +898,10 @@ class SearchMixin:
         if context > 0:
             parts.extend(["-C", str(context)])
         if file_glob:
-            parts.extend(["--include", self._escape_shell_arg(file_glob)])
+            parts.extend(["--include", self._escape_shell_arg(file_glob, translate_path=False)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        parts.append(self._escape_shell_arg(pattern))
+        parts.append(self._escape_shell_arg(pattern, translate_path=False))
         return parts
 
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],

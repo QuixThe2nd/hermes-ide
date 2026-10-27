@@ -17,6 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.linux_only
+
 from tools.environments.local import LocalEnvironment
 
 

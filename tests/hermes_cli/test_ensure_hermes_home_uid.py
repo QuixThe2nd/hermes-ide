@@ -27,6 +27,7 @@ import pytest
 
 
 class TestResolveHermesUidGid:
+    @pytest.mark.linux_only
     def test_returns_parsed_values_when_both_set(self, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")
         monkeypatch.setenv("HERMES_GID", "911")
@@ -55,6 +56,7 @@ class TestResolveHermesUidGid:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.linux_only
 class TestChownToHermesUid:
     def test_calls_os_chown_when_both_set(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")

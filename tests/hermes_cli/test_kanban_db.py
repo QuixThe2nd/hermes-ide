@@ -324,6 +324,7 @@ def _exited_status(code: int) -> int:
 
 
 
+@pytest.mark.linux_only
 def test_rate_limit_exit_requeues_without_counting_failure(
     kanban_home, monkeypatch,
 ):
@@ -722,7 +723,7 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
+    assert f"worktree {target.as_posix()}" in listed
     assert f"branch refs/heads/{branch}" in listed
 
 
@@ -1552,6 +1553,9 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    # On Windows _resolve_hermes_argv() uses _safe_which_no_cwd() instead of
+    # shutil.which — mock that too so the "no shim" path is the one tested.
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: None)
     argv = kbd._resolve_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]
 

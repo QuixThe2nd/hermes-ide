@@ -35,6 +35,7 @@ def _pid_alive(pid: int) -> bool:
 class TestFindShellPrefersUserShell:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 
+    @pytest.mark.linux_only
     def test_returns_shell_env_when_set_and_exists(self, tmp_path):
         """When $SHELL points to an existing allowlisted executable, _find_shell returns it."""
         fake_zsh = tmp_path / "zsh"
@@ -63,6 +64,7 @@ class TestFindShellPrefersUserShell:
             assert _find_shell() == _find_bash()
 
 
+    @pytest.mark.linux_only
     def test_honours_allowlisted_bash_and_dash(self, tmp_path):
         """Every allowlisted POSIX-sh-family shell is honoured."""
         for name in ("bash", "dash", "sh", "ksh"):

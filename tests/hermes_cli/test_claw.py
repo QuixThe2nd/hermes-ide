@@ -350,6 +350,7 @@ class TestPrintMigrationReport:
 
 
 class TestDetectOpenclawProcesses:
+    @pytest.mark.linux_only
     def test_reports_union_of_exact_and_node_matches(self):
         with patch.object(claw_mod, "subprocess") as mock_subprocess:
             mock_subprocess.run.side_effect = [

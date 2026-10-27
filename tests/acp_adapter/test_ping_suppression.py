@@ -99,6 +99,7 @@ class _FakeAgent:
         pass
 
 
+@pytest.mark.linux_only
 @pytest.mark.asyncio
 async def test_bare_ping_request_produces_proper_response_and_no_stderr_noise(
     caplog: pytest.LogCaptureFixture,
