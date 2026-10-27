@@ -4220,8 +4220,6 @@ def _run_quiet_single_query(cli, effective_query):
             )
         except KeyboardInterrupt:
             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
-            if emitter is not None:
-                exit_single_query(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
             exit_single_query(130)
         # The exit line below reports session_id to stderr for automation wrappers;
@@ -4287,8 +4285,6 @@ def _run_quiet_single_query(cli, effective_query):
     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
     _exit_code = _single_query_exit_code(result)
-    if emitter is not None:
-        _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
     exit_single_query(_exit_code)
 
 
@@ -4611,9 +4607,6 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
                     _configure_quiet_agent(cli.agent)
                     _run_quiet_single_query(cli, effective_query)
 
-            if emitter is not None:
-                emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
-                                    session_id=cli.session_id or "", exit_code=1)
             exit_single_query(1)  # credentials or agent init failed
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
