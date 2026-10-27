@@ -289,10 +289,7 @@ export function runningDownloadFor(jobs: readonly LocalRuntimeJob[], modelId: st
   // progress and shows Resume instead of Pause.
   return (
     jobs.find(
-      j =>
-        j.kind === 'model-download' &&
-        (j.status === 'running' || j.status === 'paused') &&
-        j.model_id === modelId
+      j => j.kind === 'model-download' && (j.status === 'running' || j.status === 'paused') && j.model_id === modelId
     ) ?? null
   )
 }

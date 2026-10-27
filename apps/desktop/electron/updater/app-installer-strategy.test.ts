@@ -9,6 +9,7 @@ import type { AppInstallerStrategyDeps } from './app-installer'
 
 function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}) {
   const calls: string[] = []
+
   const deps: AppInstallerStrategyDeps = {
     python: 'python.exe',
     script: 'check.py',
@@ -16,14 +17,27 @@ function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}) {
     channel: 'stable',
     light: false,
     feedBaseUrl: 'https://updates.example/hermes-desktop',
-    shell: { openExternal: async () => { calls.push('openExternal') } },
-    teardownBundledBackend: async () => { calls.push('teardown') },
+    shell: {
+      openExternal: async () => {
+        calls.push('openExternal')
+      }
+    },
+    teardownBundledBackend: async () => {
+      calls.push('teardown')
+    },
     emitUpdateProgress: () => {},
     appVersion: '0.18.2',
-    quit: () => { calls.push('quit') },
-    registerPendingRelaunch: () => { calls.push('relaunch-marker'); return true },
+    quit: () => {
+      calls.push('quit')
+    },
+    registerPendingRelaunch: () => {
+      calls.push('relaunch-marker')
+
+      return true
+    },
     ...over
   }
+
   return { deps, calls }
 }
 
@@ -62,7 +76,9 @@ describe('AppInstallerStrategy.check', () => {
   })
 
   it('unknown availability is an error on the wire, never "no update"', async () => {
-    const { deps } = makeDeps({ run: async () => ({ code: 1, stdout: '{"available": null, "error": "winrt missing"}' }) })
+    const { deps } = makeDeps({
+      run: async () => ({ code: 1, stdout: '{"available": null, "error": "winrt missing"}' })
+    })
     const status = await new AppInstallerStrategy(deps).check()
     expect(status.updateAvailable).toBe(false)
     expect(status.error).toBe('winrt missing')
