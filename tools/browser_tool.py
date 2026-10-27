@@ -775,7 +775,7 @@ def browser_navigate(
     if safety_error is not None:
         return json.dumps(safety_error)
 
-    if _should_use_camofox_for_task(effective_task_id):
+    if _should_use_camofox_for_task(effective_task_id) and browser != "native":
         return _camofox("camofox_navigate", url, task_id)
 
     if auto_local_this_nav:
