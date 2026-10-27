@@ -102,10 +102,51 @@ function writeMsixExtensions() {
     </uap3:Properties>
   </uap3:AppExtension>
 </uap3:Extension>
-${aliases}`
+${aliases}${serviceExtensions()}`
 
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, copilot)
+}
+
+/**
+ * The desktop6:Service fragment registering HermesGateway as a Windows
+ * Service (plan: gateway-msix-windows-service; Task 2).
+ *
+ * The service Executable is the payload's own launcher (hermes.exe —
+ * the distlib-minted PE that already serves the AppExecutionAliases):
+ * its `gateway run --service` mode is the SCM frontend
+ * (gateway/windows_service.py). NO separate shim binary.
+ *
+ * Settled decisions baked here (2026-09-03, ethie): user-context
+ * service (StartAccount omitted — desktop6 defaults to the installing
+ * user's context; localSystem explicitly rejected), demand StartupType
+ * (config-only posture: the service arrives STOPPED; `hermes gateway
+ * service on` flips it to automatic-at-logon).
+ *
+ * Content rules (the 0x80080204 playbook): xmlns:desktop6 rides the
+ * fragment root; ONE extension block; Executable must name a real in-
+ * package exe. Requires Win10 1903+ — the minVersion bump in
+ * gen-msix-manifest.mjs matches. Exported pure for tests.
+ */
+export function serviceExtensions({
+  name = 'HermesGateway',
+  executable = ['app', 'resources', 'agent-payload', 'bin', 'hermes.exe'].join(String.fromCharCode(92)),
+  variant = 'bundled',
+} = {}) {
+  // light variant ships no payload → no service; the store variant is
+  // decided by Store policy separately (plan risk item) — both render
+  // service-less for now.
+  if (variant === 'light' || variant === 'store') return ''
+  return `<desktop6:Extension
+    xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+    Category="windows.service"
+    Executable="${executable}"
+    EntryPoint="Windows.FullTrustApplication">
+  <desktop6:Service
+      Name="${name}"
+      StartupType="demand" />
+</desktop6:Extension>
+`
 }
 
 /**

@@ -105,8 +105,11 @@ const manifest = substituteManifestMacros(template, (m) => {
     case "resourceLanguages": return resourceLanguageTag(options.languages)
     case "capabilities": return `<Capabilities>\n${buildCapabilitiesXml(options.capabilities)}\n</Capabilities>`
     case "extensions": return extensions
-    case "minVersion": return options.minVersion || "10.0.17763.0"
-    case "maxVersionTested": return options.maxVersionTested || options.minVersion || "10.0.17763.0"
+    // Win10 1903 (build 18362) floor: desktop6:Service — the MSIX-shipped
+    // HermesGateway Windows Service — requires 1903+; settled 2026-09-03.
+    // 1809 is a 2018 OS; the bump rides the release notes.
+    case "minVersion": return options.minVersion || "10.0.18362.0"
+    case "maxVersionTested": return options.maxVersionTested || options.minVersion || "10.0.18362.0"
     case "packageIntegrity": return ""
     default: throw new Error(`Macro ${m} is not defined`)
   }

@@ -115,3 +115,46 @@ test('light variant emits no alias fragments', () => {
   assert.ok(appExecutionAliasExtensions(['hermes']).includes('windows.appExecutionAlias'))
   assert.ok(scriptDir.length > 0)
 })
+
+// ── HermesGateway Windows Service fragment (Task 2, plan:
+//    gateway-msix-windows-service) ────────────────────────────────────────
+import { serviceExtensions } from './before-build.mjs'
+
+test('bundled variant registers HermesGateway, demand-start, launcher exe', () => {
+  const frag = serviceExtensions()
+  assert.ok(frag.includes('Category="windows.service"'), 'service category')
+  assert.ok(frag.includes('Name="HermesGateway"'), 'the service name the CLI verbs key off')
+  assert.ok(frag.includes('StartupType="demand"'), 'config-only posture: arrives stopped')
+  // Compose the expected path the same way the source does — no escaping
+  // ambiguity (the appExecutionAliasExtensions precedent).
+  const bs = String.fromCharCode(92)
+  const launcherPath = ['app', 'resources', 'agent-payload', 'bin', 'hermes.exe'].join(bs)
+  assert.ok(
+    frag.includes(`Executable="${launcherPath}"`),
+    'the service Executable is the payload launcher (no shim binary)'
+  )
+  assert.ok(!frag.includes('StartAccount'), 'user-context by default — localSystem rejected')
+})
+
+test('light and store variants render service-less', () => {
+  assert.equal(serviceExtensions({ variant: 'light' }), '')
+  assert.equal(serviceExtensions({ variant: 'store' }), '')
+})
+
+test('one desktop6 extension block with xmlns on the fragment root', () => {
+  const frag = serviceExtensions()
+  assert.equal(
+    (frag.match(/<desktop6:Extension/g) || []).length,
+    1,
+    'the 0x80080204 playbook: ONE extension block'
+  )
+  assert.ok(
+    frag.includes('xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"'),
+    'namespace rides the fragment root (the copilot-fragment precedent)'
+  )
+})
+
+test('custom name propagates (per-install namespacing)', () => {
+  const frag = serviceExtensions({ name: 'HermesGateway_Tag1' })
+  assert.ok(frag.includes('Name="HermesGateway_Tag1"'))
+})
