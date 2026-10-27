@@ -941,13 +941,31 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     exit back to their manager (a detached watcher would race its replacement); otherwise arm the
     profile-derived detached watcher, falling back to replaying the captured command line.
 
-    When the profile-derived relaunch cannot be armed -- typically because ``_gateway_run_args_for_profile``
-    cannot rebuild a run argv for this profile -- fall back to replaying the process's own captured command
-    line, which is what ``launch_detached_gateway_restart_by_cmdline`` exists for and what the Windows
-    post-update path already does for its unmapped gateways. Without this the caller has no way to relaunch
-    the process and (before #88654) silently left it running pre-update modules against post-update code on
-    disk. ``argv`` is already captured above, so the fallback costs nothing extra.
+    A gateway started with ``--external-supervisor`` must exit back to that
+    manager. Starting Hermes's detached watcher as well would escape the
+    manager and race its replacement process. Ordinary foreground gateways
+    retain the existing detached-watcher behavior.
+
+    A sealed MSIX install whose HermesGateway Windows Service is running
+    has a service manager for this: the SCM restarts the service
+    (graceful-stop → respawn — drain-first by construction, the frontend's
+    STOP writes the planned-stop marker). Restart-Service is the whole
+    dance; arming a detached watcher beside it would double-spawn.
+
+    When the profile-derived relaunch cannot be armed -- typically because
+    ``_gateway_run_args_for_profile`` cannot rebuild a run argv for this
+    profile -- fall back to replaying the process's own captured command
+    line, which is what ``launch_detached_gateway_restart_by_cmdline``
+    exists for and what the Windows post-update path already does for its
+    unmapped gateways.  Without this the caller has no way to relaunch the
+    process and (before #88654) silently left it running pre-update modules
+    against post-update code on disk.  ``argv`` is already captured above,
+    so the fallback costs nothing.
     """
+    # The SCM owns restarts on a service-managed sealed install (#D6b
+    # windows half): Restart-Service, no watcher, no scan.
+    if _try_scm_service_restart():
+        return "scm-service"
     argv = _capture_gateway_argv(pid)
     if argv and "--external-supervisor" in argv:
         return "external-supervisor"
@@ -958,9 +976,53 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     return None
 
 
-def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]) -> bool:
-    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit."""
-    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+def _try_scm_service_restart() -> bool:
+    """Restart the HermesGateway Windows Service when it's the running
+    gateway's manager: sealed MSIX install + service present + running.
+
+    Returns True when the SCM restart was issued (the caller must NOT arm
+    a detached watcher); False on any other machine shape (source
+    installs, service absent or stopped — the normal paths apply).
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import win32serviceutil
+    except ImportError:
+        return False
+    try:
+        from gateway.windows_service import SERVICE_NAME
+        from pm.ensure import sealed
+
+        if not sealed():
+            return False
+        status = win32serviceutil.QueryServiceStatus(SERVICE_NAME)
+        running = bool(status and status[1] == 4)  # SERVICE_RUNNING
+        if not running:
+            return False
+        win32serviceutil.RestartService(SERVICE_NAME)
+        print(f"  ⏻ Restarting {SERVICE_NAME} service (graceful drain → respawn)")
+        return True
+    except Exception:
+        # Not service-managed (most installs): the ordinary restart paths
+        # own it. Never fail the update over a service lookup.
+        return False
+
+
+def launch_detached_gateway_restart_by_cmdline(
+    old_pid: int, run_argv: list[str]
+) -> bool:
+    """Relaunch a gateway by replaying its captured command line after exit.
+
+    Companion to ``launch_detached_profile_gateway_restart`` for gateways that
+    have no profile→PID-file mapping (Scheduled-Task / manually-launched
+    ``gateway run`` whose HERMES_HOME or argv doesn't match a known profile).
+    Uses the identical detached-watcher mechanism; only the respawn argv
+    differs (the process's own argv instead of a profile-derived one).
+    """
+    if old_pid <= 0 or not run_argv:
+        return False
+    return _spawn_gateway_restart_watcher(old_pid, list(run_argv))
 
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
@@ -3349,6 +3411,206 @@ def _ensure_system_service_linger(username: str) -> None:
     if _systemd_unit_is_active(system=True):
         print("  The running gateway was started without a user D-Bus; restart it to pick one up:")
         print(f"    sudo systemctl restart {get_service_name()}.service")
+
+
+def _windows_scm_service_command(action: str | None) -> None:
+    """`hermes gateway service on|off|status` — the MSIX HermesGateway
+    Windows Service (SCM-registered at MSIX install, demand-start;
+    plan: gateway-msix-windows-service, Task 5; config-only posture).
+
+    "on"  = automatic-at-logon + start now (persisted via gateway.service).
+    "off" = demand-start + stop now.
+    "status" = SCM state + the config key.
+    """
+    if sys.platform != "win32":
+        print_error("`hermes gateway service` manages the MSIX HermesGateway "
+                    "Windows Service — not available on this platform.")
+        return
+    try:
+        import win32service
+        import win32serviceutil
+    except ImportError:
+        print_error("pywin32 is required for service management.")
+        return
+
+    from gateway.windows_service import SERVICE_NAME
+
+    def _config_get() -> bool:
+        try:
+            from hermes_cli.config import get_config_value
+
+            return bool(get_config_value("gateway.service", False))
+        except Exception:
+            return False
+
+    def _scm_status() -> tuple[bool, str]:
+        """(installed, state-name) — service absent = (False, 'not installed')."""
+        try:
+            status = win32serviceutil.QueryServiceStatus(SERVICE_NAME)
+            states = {
+                1: "stopped",
+                2: "start pending",
+                3: "stop pending",
+                4: "running",
+                5: "continue pending",
+                6: "pause pending",
+                7: "paused",
+            }
+            return True, states.get(status[1], f"unknown ({status[1]})")
+        except Exception:
+            return False, "not installed"
+
+    if action in (None, "status"):
+        installed, state = _scm_status()
+        enabled = _config_get()
+        print(f"HermesGateway service: {state}" if installed else
+              "HermesGateway service: not installed (MSIX bundles only)")
+        print(f"  config gateway.service: {'on' if enabled else 'off'}")
+        if installed and state == "running" and not enabled:
+            print_warning("service is running but the config key is off — "
+                         "run `hermes gateway service on` to persist")
+        return
+
+    if action == "on":
+        installed, _ = _scm_status()
+        if not installed:
+            print_error("HermesGateway service is not installed — it ships "
+                        "with the MSIX bundle (desktop app install).")
+            return
+        try:
+            # Automatic at logon + start now, gracefully.
+            win32serviceutil.ChangeServiceConfig(
+                SERVICE_NAME, starttype=win32service.SERVICE_AUTO_START
+            )
+            win32serviceutil.StartService(SERVICE_NAME)
+            from cli import save_config_value
+
+            save_config_value("gateway.service", True)
+            print(f"✓ {SERVICE_NAME}: automatic at logon + starting now")
+            print("  Bots keep running without the desktop app.")
+        except Exception as exc:
+            print_error(f"Could not enable service: {exc}")
+        return
+
+    if action == "off":
+        installed, _ = _scm_status()
+        if not installed:
+            print_error("HermesGateway service is not installed.")
+            return
+        try:
+            win32serviceutil.ChangeServiceConfig(
+                SERVICE_NAME, starttype=win32service.SERVICE_DEMAND_START
+            )
+            win32serviceutil.StopService(SERVICE_NAME)  # graceful: frontend marker path
+            from cli import save_config_value
+
+            save_config_value("gateway.service", False)
+            print(f"✓ {SERVICE_NAME}: demand-start + stopping (graceful drain)")
+        except Exception as exc:
+            print_error(f"Could not disable service: {exc}")
+        return
+
+    print_error(f"Unknown service action: {action!r} (on|off|status)")
+
+
+def _windows_scm_service_command(action: str | None) -> None:
+    """`hermes gateway service on|off|status` — the MSIX HermesGateway
+    Windows Service (SCM-registered at MSIX install, demand-start;
+    plan: gateway-msix-windows-service, Task 5; config-only posture).
+
+    "on"  = automatic-at-logon + start now (persisted via gateway.service).
+    "off" = demand-start + stop now.
+    "status" = SCM state + the config key.
+    """
+    if sys.platform != "win32":
+        print_error("`hermes gateway service` manages the MSIX HermesGateway "
+                    "Windows Service — not available on this platform.")
+        return
+    try:
+        import win32service
+        import win32serviceutil
+    except ImportError:
+        print_error("pywin32 is required for service management.")
+        return
+
+    from gateway.windows_service import SERVICE_NAME
+
+    def _config_get() -> bool:
+        try:
+            from hermes_cli.config import get_config_value
+
+            return bool(get_config_value("gateway.service", False))
+        except Exception:
+            return False
+
+    def _scm_status() -> tuple[bool, str]:
+        """(installed, state-name) — service absent = (False, 'not installed')."""
+        try:
+            status = win32serviceutil.QueryServiceStatus(SERVICE_NAME)
+            states = {
+                1: "stopped",
+                2: "start pending",
+                3: "stop pending",
+                4: "running",
+                5: "continue pending",
+                6: "pause pending",
+                7: "paused",
+            }
+            return True, states.get(status[1], f"unknown ({status[1]})")
+        except Exception:
+            return False, "not installed"
+
+    if action in (None, "status"):
+        installed, state = _scm_status()
+        enabled = _config_get()
+        print(f"HermesGateway service: {state}" if installed else
+              "HermesGateway service: not installed (MSIX bundles only)")
+        print(f"  config gateway.service: {'on' if enabled else 'off'}")
+        if installed and state == "running" and not enabled:
+            print_warning("service is running but the config key is off — "
+                         "run `hermes gateway service on` to persist")
+        return
+
+    if action == "on":
+        installed, _ = _scm_status()
+        if not installed:
+            print_error("HermesGateway service is not installed — it ships "
+                        "with the MSIX bundle (desktop app install).")
+            return
+        try:
+            # Automatic at logon + start now, gracefully.
+            win32serviceutil.ChangeServiceConfig(
+                SERVICE_NAME, starttype=win32service.SERVICE_AUTO_START
+            )
+            win32serviceutil.StartService(SERVICE_NAME)
+            from cli import save_config_value
+
+            save_config_value("gateway.service", True)
+            print(f"✓ {SERVICE_NAME}: automatic at logon + starting now")
+            print("  Bots keep running without the desktop app.")
+        except Exception as exc:
+            print_error(f"Could not enable service: {exc}")
+        return
+
+    if action == "off":
+        installed, _ = _scm_status()
+        if not installed:
+            print_error("HermesGateway service is not installed.")
+            return
+        try:
+            win32serviceutil.ChangeServiceConfig(
+                SERVICE_NAME, starttype=win32service.SERVICE_DEMAND_START
+            )
+            win32serviceutil.StopService(SERVICE_NAME)  # graceful: frontend marker path
+            from cli import save_config_value
+
+            save_config_value("gateway.service", False)
+            print(f"✓ {SERVICE_NAME}: demand-start + stopping (graceful drain)")
+        except Exception as exc:
+            print_error(f"Could not disable service: {exc}")
+        return
+
+    print_error(f"Unknown service action: {action!r} (on|off|status)")
 
 
 def _select_systemd_scope(system: bool = False) -> bool:
@@ -6776,8 +7038,12 @@ def _cmd_migrate(args):
     cmd_migrate(args)
 
 
+def _cmd_service(args):
+    _windows_scm_service_command(getattr(args, "gateway_service_action", None))
+
+
 _GATEWAY_SUBCOMMANDS = {
-    None: _cmd_run, "run": _cmd_run, "setup": _cmd_setup, "install": _cmd_install,
+    None: _cmd_run, "run": _cmd_run, "setup": _cmd_setup, "service": _cmd_service, "install": _cmd_install,
     "uninstall": _cmd_uninstall, "start": _cmd_start, "stop": _cmd_stop, "restart": _cmd_restart,
     "status": _cmd_status, "list": _cmd_list, "migrate-legacy": _cmd_migrate_legacy, "migrate": _cmd_migrate,
 }

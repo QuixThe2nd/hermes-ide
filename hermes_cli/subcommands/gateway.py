@@ -100,6 +100,22 @@ def build_gateway_parser(
     _add_system_flag(gateway_status)
     _add_compat_platform_flag(gateway_status)
 
+    # gateway service (MSIX HermesGateway Windows Service — the SCM one)
+    gateway_service = gateway_subparsers.add_parser(
+        "service",
+        help="Manage the HermesGateway Windows Service (MSIX installs)",
+        description=(
+            "The bundled MSIX installs a HermesGateway Windows Service "
+            "(demand-start, stopped). 'on' = automatic at logon + start "
+            "now; 'off' = demand + stop; 'status' = SCM state + config."
+        ),
+    )
+    gateway_service_sub = gateway_service.add_subparsers(dest="gateway_service_action")
+    gateway_service_sub.add_parser("on", help="Enable: automatic at logon + start now")
+    gateway_service_sub.add_parser("off", help="Disable: demand-start + stop now")
+    gateway_service_sub.add_parser("status", help="Show SCM state + config key")
+
+    # gateway install
     gateway_install = gateway_subparsers.add_parser(
         "install", help="Install gateway as a systemd/launchd background service")
     _flag(gateway_install, "--force",
