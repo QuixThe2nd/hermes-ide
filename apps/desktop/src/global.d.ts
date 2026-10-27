@@ -577,6 +577,10 @@ openPreviewInBrowser?: (url: string) => Promise<void>
       getMachineProfile?: () => Promise<DesktopMachineProfile>
       /** Restart the app in place — loads the swapped bundle when bundleSwapPending. */
       relaunchApp?: () => Promise<void>
+      /** The latest pm/venv/plugin-operation receipt (machine-readable):
+       *  bisect disables, failed rebuilds, update-check results. null when
+       *  no venv operation has run yet. */
+      getSyncStatus: () => Promise<DesktopSyncReceipt | null>
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
@@ -644,6 +648,32 @@ export interface HermesTerminalSession {
 export interface HermesTerminalExit {
   code: number | null
   signal: string | null
+}
+
+/** The pm receipt shape (pm/receipt.py schema 1) — one machine-readable
+ *  surface for venv rebuilds, plugin bisects, and update checks. Fields
+ *  are optional-typed: older/newer receipts may lack sections; readers
+ *  must degrade gracefully (the derive-* module does). */
+export interface DesktopSyncReceipt {
+  schema?: number
+  kind?: string
+  outcome?: string
+  exit_code?: number
+  started_at?: string
+  finished_at?: string
+  steps?: Array<{ name: string; ok: boolean; detail?: string; at?: string }>
+  venv_rebuild?: { ok: boolean; reason?: string } | null
+  plugin_bisect?: Array<{ plugin: string; action: string; reason: string }>
+  plugin_checks?: Array<{
+    name: string
+    class?: string
+    current?: string | null
+    latest?: string | null
+    update_available?: boolean | null
+    needs_fixing?: string | null
+    reason?: string
+  }>
+  feature_list?: string[] | null
 }
 
 export interface DesktopVersionInfo {
