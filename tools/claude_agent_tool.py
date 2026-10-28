@@ -97,6 +97,18 @@ DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep,Bash"
 DEFAULT_PERMISSION_MODE = "acceptEdits"
 _ALLOWED_PERMISSION_MODES = ("acceptEdits", "plan")
 
+SANDBOX_BOUNDARY_PROMPT = (
+    "Sandbox boundary: you are running headless with permission_mode=acceptEdits. "
+    "File edits are auto-approved; shell commands are NOT. Anything the command "
+    "safety analyzer routes to explicit approval is auto-denied in this mode: "
+    "compound commands it cannot statically verify, paths outside the session "
+    "workdir (including ../ and /tmp redirects), and multi-directory cd chains. "
+    "Keep every Bash command inside the session workdir, avoid compound commands "
+    "the analyzer cannot parse, and prefer the dedicated file tools (Read/Write/Edit) "
+    "over shell redirection. A denied command burns a turn with no human available "
+    "to approve it — never retry a denied command as written; restructure it instead."
+)
+
 # Claude Code refuses /goal conditions longer than this many characters, so
 # an over-limit task is spilled to a brief file in workdir before spawn.
 GOAL_CONDITION_MAX_CHARS = 4000
@@ -613,9 +625,11 @@ def delegate_claude_agent(
             "--output-format",
             "stream-json",
             "--verbose",
-            prompt,
         ]
     )
+    if mode == "acceptEdits":
+        cmd.extend(["--append-system-prompt", SANDBOX_BOUNDARY_PROMPT])
+    cmd.append(prompt)
 
     on_spawn = _spawn_on_spawn(session_id, tool_call_id,
                                str(workdir_path))

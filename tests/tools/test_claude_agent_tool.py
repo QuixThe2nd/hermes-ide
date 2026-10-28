@@ -614,6 +614,65 @@ def test_plan_permission_mode_passed_through(monkeypatch, repo, fake_binary, tmp
 
 
 @_REAL_SUBPROC
+def test_accept_edits_appends_sandbox_boundary_prompt(
+    monkeypatch, repo, fake_binary, tmp_path
+):
+    from tools import claude_agent_tool
+    from tools.claude_agent_tool import SANDBOX_BOUNDARY_PROMPT
+
+    _patch_binary(monkeypatch, fake_binary)
+    argv_out = tmp_path / "argv.json"
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_OUT", str(argv_out))
+
+    claude_agent_tool.delegate_claude_agent(
+        task="implement feature",
+        workdir=str(repo),
+    )
+    argv = json.loads(argv_out.read_text(encoding="utf-8"))
+    assert "--append-system-prompt" in argv
+    idx = argv.index("--append-system-prompt")
+    assert argv[idx + 1] == SANDBOX_BOUNDARY_PROMPT
+    assert argv[-1] == "implement feature"
+
+
+def test_plan_mode_omits_sandbox_boundary_prompt(monkeypatch, repo, fake_binary):
+    from tools import claude_agent_tool
+
+    captured: dict = {}
+    _patch_spawn(monkeypatch, captured)
+    _patch_binary(monkeypatch, fake_binary)
+
+    claude_agent_tool.delegate_claude_agent(
+        task="plan something",
+        workdir=str(repo),
+        permission_mode="plan",
+    )
+    cmd = captured["cmd"]
+    assert "--append-system-prompt" not in cmd
+    assert cmd[-1] == "plan something"
+
+
+@_REAL_SUBPROC
+def test_explicit_plan_mode_omits_sandbox_boundary_prompt(
+    monkeypatch, repo, fake_binary, tmp_path
+):
+    from tools import claude_agent_tool
+
+    _patch_binary(monkeypatch, fake_binary)
+    argv_out = tmp_path / "argv.json"
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_OUT", str(argv_out))
+
+    claude_agent_tool.delegate_claude_agent(
+        task="plan something",
+        workdir=str(repo),
+        permission_mode="plan",
+    )
+    argv = json.loads(argv_out.read_text(encoding="utf-8"))
+    assert "--append-system-prompt" not in argv
+    assert argv[-1] == "plan something"
+
+
+@_REAL_SUBPROC
 def test_is_error_path(monkeypatch, repo, fake_binary):
     from tools import claude_agent_tool
 
