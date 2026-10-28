@@ -380,7 +380,16 @@ def _gh_authenticated() -> bool:
     try:
         result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+        PermissionError,
+        OSError,
+    ):
+        # Unspawnable gh (Windows Store/MSIX reparse-point shims raise
+        # WinError 5; PATH lookups can also land on broken wrappers) is
+        # the same outcome for this check as no gh at all — a diagnostic
+        # command must never crash the whole doctor run.
         return False
 
 

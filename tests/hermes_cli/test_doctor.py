@@ -372,6 +372,20 @@ class TestDoctorMemoryProviderSection:
         except Exception:
             pass
 
+        # Keep doctor from probing the AMBIENT gh CLI. A PATH lookup that
+        # resolves (any dev box has gh) makes doctor shell out to
+        # `gh auth status`, which both leaks the runner's real auth state
+        # into the assertion surface and -- on Windows -- dies with WinError 5
+        # when gh resolves to a Store/MSIX reparse-point shim. The gh-
+        # specific doctor behaviors have their own dedicated tests below,
+        # which mock gh explicitly.
+        real_which = doctor_mod.shutil.which
+        monkeypatch.setattr(
+            doctor_mod.shutil,
+            "which",
+            lambda cmd: None if cmd == "gh" else real_which(cmd),
+        )
+
         import io, contextlib
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
