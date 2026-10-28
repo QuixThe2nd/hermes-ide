@@ -151,25 +151,38 @@ jobs:
         run: uv cache prune --ci
 
       - name: Run tests
-        # Two shapes, selected by whether this lane carries a marker:
+        # Three shapes:
         #
-        #   * No marker (Linux + Windows): the full suite via
-        #     scripts/run_tests.sh — per-file isolation, bounded parallelism,
-        #     and the conftest OS-marker skip does the platform gating.
-        #   * Marker (macOS for now): plain pytest over the files that carry
-        #     the marker. Two-step selection: list_os_marked_tests.py narrows
-        #     WHICH FILES are imported (collection otherwise drags ~900
-        #     unrelated modules through import on the macOS host, where a
-        #     single unrelated ImportError fails a lane whose own subject
-        #     is fine), and `-m` stays the authoritative selector. Passing
-        #     `-m` REPLACES pyproject's ``-m 'not integration'`` addopts, so
-        #     ``not integration`` is repeated here or the integration suite
-        #     returns through the side door.
-        #   Each marked lane FAILS on pytest exit 5 (zero tests selected) so a
-        #   renamed/broken marker can never report green while running nothing.
+        #   * Windows (EXPERIMENT, PR #96458): xdist with --dist loadfile.
+        #     The per-file subprocess model pays a spawn+import wall of
+        #     ~0.5-1.5s per file x ~3400 files there — a ~6-minute floor
+        #     before any test runs. xdist pays that wall once per worker.
+        #     loadfile keeps each file's tests on ONE worker, so the
+        #     remaining hazard is state shared by files co-scheduled on a
+        #     worker. Failures from that are stateful-test bugs to fix, not
+        #     runner bugs.
+        #   * Linux: the full suite via scripts/run_tests.sh — per-file
+        #     isolation, bounded parallelism. The spawn floor is ~15ms per
+        #     file there, so isolation is nearly free; keep the stronger
+        #     guarantee.
+        #   * macOS (marker set): plain pytest over the files that carry the
+        #     marker. list_os_marked_tests.py narrows WHICH FILES are
+        #     imported (collection otherwise drags ~900 unrelated modules
+        #     through import on the macOS host), and `-m` stays the
+        #     authoritative selector. Passing `-m` REPLACES pyproject's
+        #     ``-m 'not integration'`` addopts, so ``not integration`` is
+        #     repeated or the integration suite returns through the side
+        #     door. The lane FAILS on pytest exit 5 (zero tests selected) so
+        #     a renamed/broken marker can never report green while running
+        #     nothing.
         shell: bash
         run: |
           set -uo pipefail
+
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            bash scripts/run_xdist.sh 32 tests/
+            exit $?
+          fi
 
           if [ -n "${{ matrix.marker }}" ]; then
             LIST="${RUNNER_TEMP:-.}/selected-tests.txt"
@@ -206,8 +219,9 @@ jobs:
             exit "$status"
           fi
 
-          # Full suite. run_tests.sh locates the venv itself (both the POSIX
-          # bin/ and the Windows Scripts/ layout), so no per-OS activation.
+          # Linux full suite. run_tests.sh locates the venv itself (both the
+          # POSIX bin/ and the Windows Scripts/ layout), so no per-OS
+          # activation.
           scripts/run_tests.sh
         env:
           # The maximum number of test FILES that run together. Linux pins
