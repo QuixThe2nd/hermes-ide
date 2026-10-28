@@ -8,20 +8,20 @@ this module instead:
     python -m hermes_cli.llm_proxy_oauth <provider-id>
 
 Resolution goes through the *existing* runtime credential resolvers
-(``resolve_codex_runtime_credentials`` / ``resolve_xai_oauth_runtime_credentials``),
-which read — and, when the access token is expiring, refresh under the
-canonical cross-process store locks — the profile's own ``auth.json``. Nothing
-here keeps a separate token copy: a single-use refresh token is only ever
-consumed inside those locked resolvers, and a peer process that already
-rotated the grant is adopted by them.
+(``resolve_codex_runtime_credentials`` / ``resolve_xai_oauth_runtime_credentials`` /
+``resolve_anthropic_oauth_runtime_credentials``), which read — and, when the
+access token is expiring, refresh under the canonical cross-process store
+locks — the profile's own ``auth.json``. Nothing here keeps a separate token
+copy: a single-use refresh token is only ever consumed inside those locked
+resolvers, and a peer process that already rotated the grant is adopted by them.
 
 Wire contract (stdout, exactly one JSON object — the access token is never
 logged by either side):
 
 * success: ``{"access_token": str, "expires_at": float|None, "headers": {str: str}}``
   — ``headers`` carries the account/workspace headers the upstream derives
-  from the token (e.g. ``ChatGPT-Account-ID`` for Codex) so the proxy can
-  inject them alongside the credential;
+  from the token (e.g. ``ChatGPT-Account-ID`` for Codex, ``anthropic-beta``
+  for Anthropic OAuth) so the proxy can inject them alongside the credential;
 * failure (exit status 1): ``{"error": str}`` — auth-layer error text only,
   which never contains token material.
 
@@ -39,7 +39,13 @@ import sys
 from typing import Any, Dict, Optional
 
 # Provider ids the proxy's key store may name in its "oauth" section.
-OAUTH_PROVIDERS = ("openai-codex", "xai-oauth")
+OAUTH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
+
+# Required for OAuth/subscription auth on Anthropic Messages; matches
+# agent/anthropic_adapter.py ``_OAUTH_ONLY_BETAS`` (LiteLLM uses the same
+# value when forwarding Claude Pro/Max tokens — not verified against an
+# installed litellm package here).
+_ANTHROPIC_OAUTH_BETA = "oauth-2025-04-20"
 
 _TOKEN_URL_OVERRIDE_ENV = "HERMES_LLM_PROXY_OAUTH_TOKEN_URL"
 
@@ -92,9 +98,33 @@ def _resolve_xai_oauth() -> Dict[str, Any]:
     return {"access_token": token, "expires_at": _jwt_exp(token), "headers": {}}
 
 
+def _resolve_anthropic() -> Dict[str, Any]:
+    from hermes_cli.auth_anthropic import resolve_anthropic_oauth_runtime_credentials
+
+    creds = resolve_anthropic_oauth_runtime_credentials()
+    token = str(creds.get("api_key") or "").strip()
+    if not token:
+        raise RuntimeError("Anthropic OAuth credential resolution returned no access token")
+    expires_at = 0.0
+    raw_ms = creds.get("expires_at_ms")
+    if raw_ms is not None:
+        try:
+            ms = float(raw_ms)
+            if ms:
+                expires_at = ms / 1000.0
+        except (TypeError, ValueError):
+            pass
+    return {
+        "access_token": token,
+        "expires_at": expires_at,
+        "headers": {"anthropic-beta": _ANTHROPIC_OAUTH_BETA},
+    }
+
+
 _RESOLVERS = {
     "openai-codex": _resolve_codex,
     "xai-oauth": _resolve_xai_oauth,
+    "anthropic": _resolve_anthropic,
 }
 
 

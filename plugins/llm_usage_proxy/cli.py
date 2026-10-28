@@ -879,7 +879,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     keys_set_oauth.add_argument(
         "--provider",
         required=True,
-        help="OAuth provider, e.g. openai-codex or xai-oauth",
+        help="OAuth provider, e.g. openai-codex, xai-oauth, or anthropic",
     )
     keys_remove_oauth = keys_subs.add_parser(
         "remove-oauth", help="Stop OAuth-managing a route"
