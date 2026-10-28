@@ -52,6 +52,23 @@ jobs:
             file_timeout: ""
             timeout_min: 30
     steps:
+      - name: Disable Windows Defender real-time scanning
+        # Process-spawn-heavy test files pay Defender's real-time scan on
+        # every python.exe spawn / temp write, which inflated the lane's tail
+        # to minutes-per-file (seconds on an idle dev box). The runner is
+        # ephemeral and single-purpose; scanning it protects nothing. Best
+        # effort — some runner images may refuse, and the lane still passes,
+        # just slower.
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          try {
+            Set-MpPreference -DisableRealtimeMonitoring $true
+            Write-Host "Defender real-time monitoring disabled."
+          } catch {
+            Write-Host "Could not disable windows defender"
+          }
+
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
