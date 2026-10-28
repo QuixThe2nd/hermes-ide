@@ -102,7 +102,7 @@ class ProviderRegistry(Generic[P]):
             merged = dict(self._providers)
             merged.update(
                 self._scoped_providers.get(
-                    hermes_home_key(scope) if scope is not None else hermes_home_key(),
+                    hermes_home_key(scope),
                     {},
                 )
             )
@@ -120,7 +120,7 @@ class ProviderRegistry(Generic[P]):
         with self._lock:
             return (
                 self._scoped_providers.get(
-                    hermes_home_key(scope) if scope is not None else hermes_home_key(),
+                    hermes_home_key(scope),
                     {},
                 ).get(key)
                 or self._providers.get(key)
@@ -128,7 +128,7 @@ class ProviderRegistry(Generic[P]):
 
     def registry_generation(self, *, scope: Optional[str] = None) -> tuple:
         """Cache fingerprint ``(global_generation, scoped_generation)``."""
-        active_scope = hermes_home_key(scope) if scope is not None else hermes_home_key()
+        active_scope = hermes_home_key(scope)
         with self._lock:
             return self._generation, self._scoped_generations.get(active_scope, 0)
 

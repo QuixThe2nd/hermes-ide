@@ -126,12 +126,13 @@ def hermes_home_key(path: str | Path | None = None) -> str:
     """Stable registry key for a Hermes home/profile dir.
 
     ``strict=False`` so profiles whose directories don't exist yet still get a key.
+    A falsy path (``None`` or empty) resolves to the active default home.
 
     The resolved value is remembered per input path. A directory that does
     not exist yet is resolved without touching the cache, because the answer
     can change once it is created (e.g. part of the path turns out to be a symlink).
     """
-    candidate = Path(path) if path is not None else get_hermes_home()
+    candidate = Path(path) if path else get_hermes_home()
     raw = str(candidate)
     cached = _HOME_KEY_CACHE.get(raw)
     if cached is not None:
