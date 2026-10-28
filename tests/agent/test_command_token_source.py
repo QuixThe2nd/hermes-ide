@@ -91,12 +91,14 @@ class TestNoCredentialLeak:
 
 
 class TestCaching:
+    @pytest.mark.linux_only
     def test_token_is_cached_between_calls(self):
         """Without caching the command would run on every request."""
         # A command whose output changes each run: equal results prove caching.
         source = CommandTokenSource("date +%s%N", "dbx")
         assert source() == source()
 
+    @pytest.mark.linux_only
     def test_expired_token_is_reminted(self):
         # date +%s%N changes every run; $RANDOM would be bash-only (empty
         # under dash, which is what /bin/sh is on Debian-family CI).
@@ -109,6 +111,7 @@ class TestCaching:
         source._expires_at = 0.0
         assert source() != first
 
+    @pytest.mark.linux_only
     def test_no_advertised_ttl_caches_on_a_bounded_window(self):
         """No TTL means a bounded cache, not a process-lifetime one.
 
@@ -279,6 +282,7 @@ class TestAbsoluteExpiry:
         )
         assert ttl is None
 
+    @pytest.mark.linux_only
     def test_the_token_actually_gets_re_minted(self, tmp_path):
         """The regression that mattered: a deadline must expire the cache."""
         counter = tmp_path / "calls"

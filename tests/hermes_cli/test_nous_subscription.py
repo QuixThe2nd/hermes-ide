@@ -3,6 +3,8 @@
 import shutil
 import sys
 
+import pytest
+
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
 from tools import tool_backend_helpers
@@ -539,6 +541,7 @@ def test_has_agent_browser_import_failure_falls_back_to_path_check(monkeypatch):
     assert ns._has_agent_browser() is True
 
 
+@pytest.mark.linux_only
 def test_has_agent_browser_import_failure_falls_back_to_hermes_managed_node_path(
     monkeypatch, tmp_path
 ):

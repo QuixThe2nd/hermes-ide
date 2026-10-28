@@ -1182,6 +1182,10 @@ _OS_MARKS = {
         lambda: sys.platform == "win32",
         "native Windows",
     ),
+    "require_symlinks": (
+        lambda: os.name == "posix" and _check_symlink_support(),
+        "symlink-capable POSIX",
+    ),
 }
 
 

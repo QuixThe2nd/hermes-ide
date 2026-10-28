@@ -61,6 +61,7 @@ class TestReadFileHandler:
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.linux_only
     def test_writes_content(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -149,6 +150,7 @@ class TestWriteFileHandler:
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.linux_only
     def test_replace_mode_calls_patch_replace(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -242,6 +244,7 @@ class TestPatchSensitivePathExtraction:
     """
 
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.linux_only
     def test_patch_move_to_hermes_config_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr(
             "tools.file_tools._hermes_config_resolved", "/tmp/hermes/config.yaml"
@@ -260,6 +263,7 @@ class TestPatchSensitivePathExtraction:
 
 
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.linux_only
     def test_patch_update_no_space_after_asterisks_blocked(self, mock_get, monkeypatch):
         """``***Update File:`` (no space after asterisks) must also be caught.
 
@@ -539,6 +543,7 @@ class TestSensitivePathCheck:
 
 
     @patch("tools.file_tools._get_file_ops")
+    @pytest.mark.linux_only
     def test_system_path_allowed(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
@@ -560,6 +565,7 @@ class TestSensitivePathCheck:
         ))
         assert result["status"] == "ok"
 
+    @pytest.mark.linux_only
     def test_macos_system_paths_allowed(self):
         from tools.file_tools import _check_sensitive_path
 

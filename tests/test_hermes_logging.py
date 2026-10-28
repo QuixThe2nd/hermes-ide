@@ -491,6 +491,7 @@ class TestAddRotatingHandler:
         assert "[factory_test]" in content
 
         # Clean up
+    @pytest.mark.linux_only
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         formatter = logging.Formatter("%(message)s")

@@ -232,14 +232,17 @@ class TestSafeRootDenialMessageIntegration:
 class TestCheckSensitivePathSystemPaths:
     """Verify system paths are no longer blocked by the file-tool wrapper."""
 
+    @pytest.mark.linux_only
     def test_etc_hosts_allowed(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/etc/hosts") is None
 
+    @pytest.mark.linux_only
     def test_private_etc_hosts_allowed(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/hosts") is None
 
+    @pytest.mark.linux_only
     def test_private_etc_ssh_config_allowed(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is None
@@ -291,6 +294,7 @@ class TestAtomicWrite:
         assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
 
 
+    @pytest.mark.linux_only
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
@@ -509,6 +513,7 @@ class TestProtectedInstructionFiles:
 
     # ---- adversarial path shapes ----------------------------------------
 
+    @pytest.mark.require_symlinks
     def test_symlink_to_protected_file_is_gated(self, tmp_path, approvals):
         """#41351 lesson: realpath first — innocent name, protected target."""
         real = tmp_path / "AGENTS.md"

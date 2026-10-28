@@ -11,6 +11,7 @@ asserting on a copy of it, so the shim cannot drift away from the test.
 """
 
 import re
+import pytest
 import stat
 import subprocess
 from pathlib import Path
@@ -84,6 +85,7 @@ def test_non_venv_install_writes_acp_launcher(tmp_path):
     assert re.search(r'exec .*\bacp\b', text), text
 
 
+@pytest.mark.linux_only
 def test_acp_launcher_does_not_follow_a_symlink_into_the_venv(tmp_path):
     """Guards the #21454 failure mode for the new launcher.
 
@@ -185,6 +187,7 @@ def _run_hermes_agent_block(tmp_path: Path, use_venv: str) -> Path | None:
     return command_link_dir / "hermes-agent"
 
 
+@pytest.mark.linux_only
 def test_venv_install_writes_executable_hermes_agent_launcher(tmp_path):
     """venv install must write a user-executable hermes-agent launcher."""
     shim = _run_hermes_agent_block(tmp_path, "true")

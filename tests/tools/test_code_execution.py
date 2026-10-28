@@ -930,6 +930,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
             t.join(timeout=5)
         return responses
 
+    @pytest.mark.linux_only
     def test_missing_token_rejected(self):
         """A request with no token is rejected as Unauthorized."""
         resp = self._drive_server(

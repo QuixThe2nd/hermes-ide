@@ -234,7 +234,10 @@ def _supporting_files(loaded_skill: dict[str, Any], skill_dir: Path | None) -> l
     if not supporting and skill_dir:
         for subdir in ("references", "templates", "scripts", "assets"):
             files = sorted((skill_dir / subdir).rglob("*"))
-            supporting += [str(f.relative_to(skill_dir)) for f in files if f.is_file() and not f.is_symlink()]
+            # as_posix so the listed path matches the footer's
+            # examples (scripts/foo.js) on every OS —
+            # str(relative_to) emits backslashes on Windows.
+            supporting += [f.relative_to(skill_dir).as_posix() for f in files if f.is_file() and not f.is_symlink()]
     return supporting
 
 

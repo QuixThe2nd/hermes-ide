@@ -139,7 +139,10 @@ def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
     return _run
 
 
+@pytest.mark.linux_only
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
+    # Exercises the npm-pack → packaged-exe launch path; Windows desktop is
+    # MSIX-only (Electron autoUpdater) and takes a different launch route.
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -1276,6 +1279,7 @@ def test_desktop_launch_options_ozone_hint_defaults_auto():
         assert main_desktop._desktop_launch_options()[3] == "auto"
 
 
+@pytest.mark.linux_only
 def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
     """COSMIC HUD: ``desktop.ozone_platform_hint: x11`` sets
     ``ELECTRON_OZONE_PLATFORM_HINT`` on the launched Electron process."""

@@ -9,6 +9,10 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.macos_only
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"

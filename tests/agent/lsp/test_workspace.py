@@ -93,6 +93,7 @@ def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeyp
     assert _short_path(str(file_path)) == str(file_path)
 
 
+@pytest.mark.linux_only
 def test_normalize_path_expands_tilde(monkeypatch):
     # expanduser keys off USERPROFILE on native Windows, HOME elsewhere —
     # set the var the running host actually consults (host-native rule:

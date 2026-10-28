@@ -18,6 +18,8 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
 from tools.browser_tool_install import warm_agent_browser_npx_cache
 from tools.browser_tool_lifecycle import _legacy_kill_process_tree
@@ -121,6 +123,7 @@ def test_merges_extended_path_so_managed_only_npx_can_find_sibling_node():
     assert kwargs["env"]["PATH"] == "/opt/hermes/node/bin:/usr/bin"
 
 
+@pytest.mark.linux_only
 def test_runs_in_its_own_process_group_on_posix(monkeypatch):
     monkeypatch.setattr("os.name", "posix")
     with patch("tools.browser_tool_install._resolve_npx_bin", return_value="/usr/bin/npx"), \
@@ -214,6 +217,7 @@ def test_returns_false_instead_of_raising_on_unexpected_communicate_exception():
     mock_kill.assert_called_once_with(proc)
 
 
+@pytest.mark.linux_only
 class TestLegacyKillProcessTree:
     """Contract of the pre-#85125 local fallback (used when agent.deadline
     delegation fails); the delegating wrapper is covered in

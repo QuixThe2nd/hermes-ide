@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shlex
+import sys
 import tempfile
 import unicodedata
 
@@ -982,7 +983,7 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
             kind, j = "comment", text.find("\n", i, n)
             if j < 0:
                 j = n
-        elif quote != "'" and ch == "\\" and i + 1 < n:
+        elif quote != "'" and ch == "\\" and not _IS_WINDOWS and i + 1 < n:
             kind, j = "esc", i + 2
         elif ch == quote or (quote is None and ch in "'\""):
             kind = "quote"
@@ -1072,6 +1073,9 @@ def _replace_simple_shell_expansions(word: str) -> str:
     word = _replace_simple_command_substitutions(word)
     word = _PARAM_REPLACEMENT_RE.sub(lambda match: match.group("replacement"), word)
     return _PARAM_DEFAULT_RE.sub(lambda match: match.group("default"), word)
+
+
+_IS_WINDOWS = sys.platform == "win32"
 
 
 def _strip_shell_word_syntax(word: str) -> str:

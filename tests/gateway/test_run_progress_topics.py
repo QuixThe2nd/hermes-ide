@@ -6,6 +6,7 @@ import sys
 import time
 import types
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 
@@ -1495,7 +1496,7 @@ async def test_run_agent_queued_message_delivers_first_response_media(monkeypatc
         "image_batches": [
             {
                 "chat_id": "discord-thread",
-                "images": [(media_path.as_uri(), "")],
+                "images": [(f"file://{quote(str(media_path))}", "")],
                 "metadata": {"thread_id": "discord-thread"},
             }
         ],
@@ -1536,7 +1537,7 @@ async def test_run_agent_queued_message_delivers_streamed_first_response_media(
     assert adapter.image_batches == [
         {
             "chat_id": "discord-thread",
-            "images": [(media_path.as_uri(), "")],
+            "images": [(f"file://{quote(str(media_path))}", "")],
             "metadata": {"thread_id": "discord-thread"},
         }
     ]

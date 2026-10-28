@@ -192,6 +192,7 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 # tests/docker/test_s6_profile_gateway_integration.py.
 
 
+@pytest.mark.linux_only
 def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     """Verifies the dirs + FIFO the helper lays down."""
     import stat
@@ -371,6 +372,7 @@ def _log_run_setup_fragment(rendered: str) -> str:
     return "#!/bin/sh\n" + "".join(keep)
 
 
+@pytest.mark.linux_only
 def test_s6_log_run_creates_leaf_as_hermes_without_chown(
     s6_scandir, fake_subprocess_run,
 ) -> None:

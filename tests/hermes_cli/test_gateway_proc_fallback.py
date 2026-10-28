@@ -13,6 +13,8 @@ import pytest
 
 import hermes_cli.gateway as gateway_mod
 
+pytestmark = pytest.mark.linux_only
+
 
 # ---------------------------------------------------------------------------
 # Helpers
