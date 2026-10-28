@@ -3196,6 +3196,11 @@ def _run_conversation_inlined(
                         # provider client.  New consumers should read the
                         # sanitised view from ``request["body"]["messages"]``.
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
+                        # Raw-kwargs fingerprints BEFORE the ``request=`` preview
+                        # truncation above; see agent/api_request_fingerprints.py.
+                        from agent.api_request_fingerprints import fingerprint_api_request
+
+                        _request_metadata = fingerprint_api_request(api_kwargs)
                         # Anthropic (``system``) and Responses/Codex
                         # (``instructions``) move the system prompt out of
                         # messages; pass it explicitly for observability
@@ -3229,6 +3234,7 @@ def _run_conversation_inlined(
                             max_tokens=agent.max_tokens,
                             started_at=api_start_time,
                             middleware_trace=list(_llm_middleware_trace),
+                            request_metadata=_request_metadata,
                             request=_request_payload,
                         )
                 except Exception:
@@ -7207,6 +7213,11 @@ def _run_conversation_inlined(
                         finish_reason=finish_reason,
                         message_count=len(api_messages),
                         response_model=getattr(response, "model", None),
+                        # Observed provider response id when the client exposed one.
+                        response_id=getattr(response, "id", None),
+                        # Raw client-usage cache-field presence, BEFORE Hermes
+                        # normalization (absent ≠ null ≠ zero ≠ positive).
+                        usage_cache_presence=agent._usage_cache_presence_for_hook(response),
                         response=agent._api_response_payload_for_hook(
                             response,
                             assistant_message,

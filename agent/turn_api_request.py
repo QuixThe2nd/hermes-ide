@@ -59,6 +59,11 @@ def _fire_pre_api_request_hook(
             # ``request_messages``/``conversation_history`` are raw langfuse passthroughs.
             # Anthropic (``system``) and Responses/Codex (``instructions``) move the system
             # prompt out of messages; pass it for observability.
+            # ``request_metadata`` hashes the RAW api_kwargs (before ``request=`` preview
+            # truncation) so subscribers get complete-component fingerprints, never a hash
+            # of truncated data.
+            from agent.api_request_fingerprints import fingerprint_api_request
+
             _invoke_hook(
                 "pre_api_request",
                 task_id=effective_task_id,
@@ -83,6 +88,7 @@ def _fire_pre_api_request_hook(
                 max_tokens=agent.max_tokens,
                 started_at=api_start_time,
                 middleware_trace=list(_llm_middleware_trace),
+                request_metadata=fingerprint_api_request(api_kwargs),
                 request=agent._api_request_payload_for_hook(api_kwargs),
             )
     except Exception:
