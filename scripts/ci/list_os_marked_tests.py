@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """List the test files that carry a given OS marker.
 
-Used by ``.github/workflows/tests-os.yml`` to scope what the macOS and
-Windows lanes import.
+Used by the marked-OS lane of ``.github/workflows/tests.yml`` to scope what
+the macOS lane imports.
 
 Why scope at all, when ``pytest -m macos_only`` already selects correctly?
 Because ``-m`` filters AFTER collection, and collection IMPORTS every test

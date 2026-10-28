@@ -74,20 +74,10 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
-
-  # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
-  # the OS-marked tests it collects are skipped there by design (see the
-  # `_OS_MARKS` comment in tests/conftest.py) — this is where they run.
-  # Same `python` lane gate: if no Python changed, neither runs.
-  tests-os:
-    name: OS-specific tests
-    needs: detect
-    if: needs.detect.outputs.python == 'true'
-    uses: ./.github/workflows/tests-os.yml
     with:
       # The Windows lane spawns the real desktop-update hand-off script
-      # (tests/test_desktop_update_windows_*.py) only when that surface
-      # changed; unit-level windows_only tests always run.
+      # (tests/scripts/desktop_update/test_desktop_update_windows_*.py) only
+      # when that surface changed; unit-level windows_only tests always run.
       desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
 
   lint:
@@ -243,7 +233,6 @@ jobs:
     needs:
       - detect
       - tests
-      - tests-os
       - lint
       - js-tests
       - installer-tests

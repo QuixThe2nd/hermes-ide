@@ -164,8 +164,8 @@ def _split_pathspec(value: str) -> List[str]:
 # behaviour, and names the CI lane where those tests actually execute.
 _OS_MARKERS = {
     "linux_only": ("linux", "the main Linux CI lane"),
-    "macos_only": ("darwin", "the tests-os CI lane (macos-latest)"),
-    "windows_only": ("win32", "the tests-os CI lane (windows-latest)"),
+    "macos_only": ("darwin", "the macOS Python-tests lane"),
+    "windows_only": ("win32", "the Windows Python-tests lane"),
 }
 
 
