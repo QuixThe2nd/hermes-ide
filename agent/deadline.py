@@ -47,7 +47,10 @@ __all__ = [
 # is the semantic "unbounded" on platforms that can express it; Windows
 # takes the DWORD-ms cap, which is still semantically "unbounded" for
 # every wait in this codebase.
-_WINDOWS_MAX_WAIT_S = (0xFFFFFFFF - 1000) / 1000.0  # DWORD ms, minus a 1s rounding guard
+# Windows: leave headroom for consumers that add a small margin on top (e.g. the 60s
+# human-wait margin): MAX + margin must stay under the DWORD-millisecond ceiling
+# (4294967.295s), so 4_294_907 + 60 rounds to exactly 4_294_967s (#83220, upstream 082f89ce).
+_WINDOWS_MAX_WAIT_S = 4_294_907.0
 MAX_SAFE_TIMEOUT_S = (
     _WINDOWS_MAX_WAIT_S if sys.platform == "win32" else 31_536_000.0
 )  # 365 days off-Windows

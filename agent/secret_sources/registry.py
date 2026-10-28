@@ -24,7 +24,7 @@ from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ def restore_registration(name: str, current: SecretSource, previous: Optional[Se
                          scope: Optional[str] = None) -> bool:
     """Restore a host-owned source registration if it is still current."""
     _ensure_builtin_sources()
-    scope = hermes_home_key(scope) if scope is not None else None
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         target = _SOURCES if scope is None else _SCOPED_SOURCES.setdefault(scope, {})
         if target.get(name) is not current:

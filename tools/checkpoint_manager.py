@@ -1469,22 +1469,9 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
 
 
 def _rmtree_force(path: Path) -> None:
-    """``shutil.rmtree`` that clears read-only bits before deleting.
+    from hermes_cli.fs_utils import rmtree_force
 
-    Windows refuses to delete a tree containing read-only files (git objects
-    are commonly read-only), raising ``PermissionError`` where POSIX unlinks
-    them fine. The ``onerror`` hook chmods the file writable and retries.
-    """
-    import stat
-
-    def _onerror(func, p, _exc_info):
-        try:
-            os.chmod(p, stat.S_IWRITE)
-        except OSError:
-            pass
-        func(p)
-
-    shutil.rmtree(path, onerror=_onerror)
+    rmtree_force(path)
 
 
 def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:

@@ -251,7 +251,7 @@ def _get_approval_timeout() -> int:
         from agent.deadline import MAX_SAFE_TIMEOUT_S
         safe_cap = int(MAX_SAFE_TIMEOUT_S)
     except Exception:
-        safe_cap = 365 * 24 * 3600  # fail CLOSED: the raw value would re-open the overflow
+        safe_cap = 4_294_907  # fail CLOSED below the narrowest platform ceiling (Windows DWORD-ms) even on POSIX; the raw value would re-open the overflow
     if raw > safe_cap:
         logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", raw, safe_cap)
     return min(raw, safe_cap)

@@ -55,8 +55,11 @@ def human_wait_ceiling() -> float:
     holding ``_human_wait_lock`` — it reads the config cache.
     ``_get_approval_timeout`` caps at ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so the
     value is always safe for ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``."""
+    from agent.deadline import MAX_SAFE_TIMEOUT_S as agent_deadline_max
     from tools import approval_context
-    return float(approval_context._get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
+    # Fold the margin INSIDE the platform-safe cap so ceiling <= MAX_SAFE_TIMEOUT_S always
+    # (Windows DWORD-ms headroom: the cap already reserves the margin; see agent/deadline.py).
+    return float(min(approval_context._get_approval_timeout() + HUMAN_WAIT_MARGIN_S, agent_deadline_max))
 
 
 def _clamped_window_seconds(started: float, now: float, ceiling: float) -> float:

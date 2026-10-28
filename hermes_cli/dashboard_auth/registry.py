@@ -7,7 +7,7 @@ import logging
 import threading
 from typing import List, Optional
 
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 from hermes_cli.dashboard_auth.base import DashboardAuthProvider, assert_protocol_compliance
 
 _log = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ _scoped_providers: dict[str, dict[str, DashboardAuthProvider]] = {}
 
 def _merged(scope: Optional[str] = None) -> dict[str, DashboardAuthProvider]:
     providers = dict(_providers)
-    providers.update(_scoped_providers.get(hermes_home_key(scope), {}))
+    providers.update(_scoped_providers.get(normalize_scope(scope), {}))
     return providers
 
 
