@@ -178,9 +178,9 @@ jobs:
           NOUS_API_KEY: ""
         run: |
           # Each of these tests drives a container, so the docker daemon sets
-          # the limit and not the processor. This caps the workers. The
-          # default from run_tests.sh is cpu_count*2, which starts 64
-          # containers together on the 32-core amd64 runner.
+          # the limit and not the processor. This pins the workers explicitly
+          # (nproc) so the comment and behavior stay coupled if the runner's
+          # core count or the default ever changes.
           HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/ --file-timeout 600
 
   # ---------------------------------------------------------------------------

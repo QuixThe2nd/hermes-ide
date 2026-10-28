@@ -155,11 +155,21 @@ def reset_hermes_home_key_cache() -> None:
 
 
 def normalize_scope(scope: str | Path | None) -> str | None:
-    """Normalize a registry scope key, preserving ``None``.
+    """Normalize a WRITE-side registry scope key, preserving ``None``.
 
-    ``None`` means the process-global layer and must stay ``None``; any other
-    value is normalized through :func:`hermes_home_key` so writes and reads
-    agree on the key (normcase on Windows, resolved absolute path).
+    Two different contracts live on the same registries — do not unify them:
+
+    * **Write / slot paths** (``register_*``, ``snapshot_registration``,
+      ``restore_registration``, tool-registry slot lookup): ``None`` means
+      the process-global layer and must stay ``None``. Use this function.
+    * **Read paths** (``list_providers``, ``get_provider``): ``None`` means
+      "the active home's scope" and must go through :func:`hermes_home_key`
+      (falsy input resolves to the active default home). Using this
+      function there hides every scoped registration — the exact bug
+      fixed after e66a627aa5.
+
+    Both normalize non-None values identically (resolved absolute path,
+    normcase on Windows) so writes and reads agree on the key.
     """
     return hermes_home_key(scope) if scope is not None else None
 

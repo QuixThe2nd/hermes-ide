@@ -31,14 +31,17 @@ jobs:
             runner: ubuntu-latest-96-core
             marker: ""
             workers: "96"
+            file_timeout: ""
           - os: windows
             runner: windows-latest-32-core
             marker: ""
             workers: ""
+            file_timeout: "900"
           - os: macos
             runner: macos-latest
             marker: macos_only
             workers: ""
+            file_timeout: ""
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -164,12 +167,19 @@ jobs:
           # bin/ and the Windows Scripts/ layout), so no per-OS activation.
           scripts/run_tests.sh
         env:
-          # The maximum number of test FILES that run together (Linux, from
-          # the measured whole-suite sweep — one worker per core is fastest on
-          # the 96-core runner, and the curve is shallow). Windows and macOS
-          # leave this unset so run_tests_parallel.py falls back to
-          # cpu_count*2.
+          # The maximum number of test FILES that run together. Linux pins
+          # 96 (the measured whole-suite sweep — one worker per core is
+          # fastest on the 96-core runner, and the curve is shallow).
+          # Windows and macOS leave this unset so run_tests_parallel.py's
+          # default (cpu_count) applies.
           HERMES_TEST_WORKERS: ${{ matrix.workers }}
+          # Windows CI-only: the full-suite lane showed ~160 files at or
+          # past the 300s default under runner contention (they pass in
+          # seconds on an idle box); each kill also burns a retry, so the
+          # churn — not test time — dominated the lane's wall clock. Give
+          # the per-file cap real headroom there. Empty on other lanes
+          # (run_tests.sh drops empty vars before the runner sees them).
+          HERMES_TEST_FILE_TIMEOUT: ${{ matrix.file_timeout }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

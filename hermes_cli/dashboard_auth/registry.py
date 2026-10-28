@@ -18,7 +18,7 @@ _scoped_providers: dict[str, dict[str, DashboardAuthProvider]] = {}
 
 def _merged(scope: Optional[str] = None) -> dict[str, DashboardAuthProvider]:
     providers = dict(_providers)
-    providers.update(_scoped_providers.get(normalize_scope(scope), {}))
+    providers.update(_scoped_providers.get(hermes_home_key(scope), {}))
     return providers
 
 
