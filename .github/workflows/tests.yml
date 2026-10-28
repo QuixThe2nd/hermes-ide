@@ -42,9 +42,9 @@ jobs:
           - os: windows
             runner: windows-latest-32-core
             marker: ""
-            workers: ""
-            file_timeout: "900"
-            timeout_min: 120
+            workers: "32"
+            file_timeout: "2400"
+            timeout_min: 150
           - os: macos
             runner: macos-latest
             marker: macos_only
@@ -67,6 +67,23 @@ jobs:
             Write-Host "Defender real-time monitoring disabled."
           } catch {
             Write-Host "Could not disable windows defender"
+          }
+
+      - name: Put Git bash ahead of the WSL stub on PATH
+        # windows-2025 ships C:\Windows\System32\bash.exe — the WSL launcher
+        # stub with no distro installed. PATH puts System32 before Git, so
+        # every test that resolves "bash" spawns the stub and gets its UTF-16
+        # "Windows Subsystem for Linux" banner with exit 1. Prepend Git's bin
+        # so "bash" resolves to the real MSYS bash the harnesses expect.
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $gitBin = "C:\Program Files\Git\bin"
+          if (Test-Path "$gitBin\bash.exe") {
+            Add-Content $env:GITHUB_PATH $gitBin
+            Write-Host "Prepended $gitBin to PATH"
+          } else {
+            Write-Host "::warning::Git bash not found at $gitBin"
           }
 
       - name: Checkout code
