@@ -22,7 +22,13 @@ jobs:
     # whole discoverable suite and lets the markers do the gating.
     name: Python tests (${{ matrix.os }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    # The windows lane needs a bigger budget than the others: the full suite
+    # there has a long tail of files that spawn servers/sockets/subprocesses
+    # and run minutes-per-file on the CI runner (they pass in seconds on an
+    # idle dev box) — measured 88.6% completion at 60 minutes on run
+    # 33338310764. The per-file cap (HERMES_TEST_FILE_TIMEOUT) bounds any
+    # single hung file; this bounds the whole lane.
+    timeout-minutes: ${{ matrix.timeout_min }}
     strategy:
       fail-fast: false
       matrix:
@@ -32,16 +38,19 @@ jobs:
             marker: ""
             workers: "96"
             file_timeout: ""
+            timeout_min: 30
           - os: windows
             runner: windows-latest-32-core
             marker: ""
             workers: ""
             file_timeout: "900"
+            timeout_min: 120
           - os: macos
             runner: macos-latest
             marker: macos_only
             workers: ""
             file_timeout: ""
+            timeout_min: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
