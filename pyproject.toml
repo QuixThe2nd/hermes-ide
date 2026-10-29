@@ -631,6 +631,7 @@ pydantic = false
 pyjwt = false
 pytest = false
 pytest-asyncio = false
+pytest-xdist = false
 python-dotenv = false
 python-multipart = false
 python-olm = false
