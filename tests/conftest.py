@@ -122,14 +122,15 @@ HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
 
 
 # ── File-level scheduling isolation ──────────────────────────────────────────
-# Tests run via ``scripts/run_tests.sh`` — pytest-xdist with ``--dist
-# loadfile``, which pins every test of a FILE to ONE worker. Cross-file
-# state leakage is bounded to files co-scheduled on the same worker; the
-# historic per-file-subprocess model gave full process isolation but paid
-# a spawn+import wall per file that dominated Windows runtimes. Intra-file
-# ordering is the test author's responsibility — if test A in foo.py
-# mutates state that test B in foo.py reads, that's a real bug to fix in
-# the file (it would also bite anyone running ``pytest tests/foo.py``
+# Tests run via ``scripts/run_tests.sh``, which dispatches on host. POSIX:
+# every file in its own freshly-spawned ``python -m pytest <file>`` subprocess
+# (``scripts/run_tests_parallel.py``) — cross-file state leakage is
+# impossible. Windows: pytest-xdist with ``--dist loadfile``, which pins every
+# test of a FILE to ONE worker — leakage is bounded to co-scheduled files, and
+# any such leak is a stateful-test bug to fix at the tests. Intra-file
+# ordering is the test author's responsibility on every host — if test A in
+# foo.py mutates state that test B in foo.py reads, that's a real bug to fix
+# in the file (it would also bite anyone running ``pytest tests/foo.py``
 # directly).
 #
 # See ``scripts/run_tests.sh`` for the runner.

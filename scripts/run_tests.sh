@@ -2,42 +2,54 @@
 # Canonical test runner for hermes-agent. Run this instead of calling
 # `pytest` directly to guarantee your local run matches CI behavior.
 #
-# What this script enforces:
-#   * pytest-xdist with --dist loadfile — each test FILE's tests all run on
-#     ONE worker, so file-internal ordering is preserved and cross-file
-#     pollution is bounded to files co-scheduled on a worker. Persistent
-#     workers also pay the interpreter+import wall (~0.5-1.5s on Windows)
-#     once per worker instead of once per file.
-#   * TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0 (deterministic)
-#   * Env vars blanked (conftest.py also does this, but this
-#     is belt-and-suspenders for anyone running pytest outside our
-#     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+# The runner dispatches on host, because the two cost profiles are opposites:
+#
+#   * POSIX — per-file subprocess isolation (scripts/run_tests_parallel.py):
+#     each test FILE runs in its own freshly-spawned `python -m pytest <file>`
+#     process. The spawn floor is ~15ms there, so process isolation is nearly
+#     free; in exchange there is no cross-file state pollution and each file
+#     is collected exactly once (pytest's per-item fixture-closure machinery —
+#     tens of millions of dict walks over ~42k items against the conftest's
+#     autouse fixtures — is paid once, not once per xdist worker; measured
+#     37-65s of pure collection that a persistent-worker model multiplies by
+#     the worker count).
+#   * Windows — pytest-xdist with --dist loadfile. The per-file model pays a
+#     0.5-1.5s spawn+import wall per file (~3400 files ≈ a 6-minute floor that
+#     dominated the lane); persistent workers pay the interpreter+import wall
+#     once per worker. loadfile pins each file's tests to ONE worker, so the
+#     remaining hazard is state shared by files co-scheduled on a worker —
+#     which is a stateful-test bug to fix, not a runner bug.
+#
+# Both paths enforce the same hermetic environment: TZ=UTC, LANG=C.UTF-8,
+# PYTHONHASHSEED=0, `env -i` scrubbing (credential vars can't leak), and
+# proper venv activation (probes .venv, venv, then ~/.hermes/...).
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
-#   scripts/run_tests.sh -j 4                       # cap worker count
+#   scripts/run_tests.sh -j 4                       # cap workers/parallelism
 #   scripts/run_tests.sh tests/agent/               # discover only here
-#   scripts/run_tests.sh tests/agent/ tests/acp_adapter/    # multiple roots
 #   scripts/run_tests.sh tests/foo.py               # single file
 #   scripts/run_tests.sh tests/foo.py -q            # path + bare pytest flag
-#   scripts/run_tests.sh tests/foo.py -v --tb=long  # bare flags "just work"
-#   scripts/run_tests.sh -k 'pattern'              # value flags pass through too
-#
-# Bare pytest flags (anything starting with '-' that isn't -j/--jobs) are
-# forwarded to pytest. Positional path arguments override the default
-# discovery root (tests/).
+#   scripts/run_tests.sh -k 'pattern'               # value flags pass through too
 
-set -uo pipefail
+set -euo pipefail
 
 # ── Locate repo root ────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ── Host model ───────────────────────────────────────────────────────────────
+# Git-bash / MSYS on Windows reports uname -s like MINGW64_NT-10.0-... or
+# MSYS_NT-...; POSIX hosts report Linux / Darwin.
+case "$(uname -s)" in
+  Linux|Darwin) IS_WINDOWS=0 ;;
+  *)            IS_WINDOWS=1 ;;
+esac
+
 # ── Locate python ───────────────────────────────────────────────────────────
 # Probe local venvs first; fall back to the Nix devShell's editable venv
 # (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
-# pytest, pytest-asyncio, pytest-xdist).
+# pytest, pytest-asyncio, pytest-timeout, ruff, ty).
 #
 # A candidate must have pytest INSTALLED, not merely exist. The release venv
 # at ~/.hermes/hermes-agent/venv has bin/activate but no pytest, so an
@@ -79,22 +91,6 @@ if [ -z "$VENV_PYTHON" ]; then
 fi
 PYTHON="$VENV_PYTHON"
 
-# ── Split args: our -j/--jobs vs pytest passthrough ─────────────────────────
-N="${HERMES_TEST_WORKERS:-auto}"
-PYTEST_ARGS=()
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -j|--jobs)
-      N="$2"; shift 2 ;;
-    -j*)
-      N="${1#-j}"; shift ;;
-    --jobs=*)
-      N="${1#--jobs=}"; shift ;;
-    *)
-      PYTEST_ARGS+=("$1"); shift ;;
-  esac
-done
-
 # ── Windows location variables (computed before we drop env) ───────────────
 # `env -i` forwards HOME, which is enough on POSIX. Native Windows CPython
 # resolves Path.home() from USERPROFILE (or HOMEDRIVE+HOMEPATH), stdlib
@@ -118,20 +114,48 @@ if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
   EXTRA_PYTEST_PLUGINS="pytest_live_guard"
 fi
 
+# ── Our -j/--jobs flag: consumed here, forwarded via HERMES_TEST_WORKERS ────
+# (both backends read that env knob: run_tests_parallel.py as its worker cap,
+# the xdist path as -n).
+JOBS="${HERMES_TEST_WORKERS:-}"
+PASS_THROUGH=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -j|--jobs)
+      JOBS="$2"; shift 2 ;;
+    -j*)
+      JOBS="${1#-j}"; shift ;;
+    --jobs=*)
+      JOBS="${1#--jobs=}"; shift ;;
+    *)
+      PASS_THROUGH+=("$1"); shift ;;
+  esac
+done
+set -- ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}
+if [ -n "$JOBS" ]; then
+  export HERMES_TEST_WORKERS="$JOBS"
+  TEST_ENV_KNOB="HERMES_TEST_WORKERS"
+fi
+
 # ── Test-runner knobs (computed before we drop env) ──────────────────────────
 #   * HERMES_TEST_IMAGE is read by tests/docker/conftest.py to skip its
-#     session-scoped `docker build`. CI's docker.yml sets it to the image
+#     session-scoped `docker build`.
+#     CI's docker.yml sets it to the image
 #     the build step just loaded; stripping it made every pytest subprocess
 #     rebuild the 5GB image from a cold builder cache instead (~4 min per
 #     worker per run, and the rebuilt image lacked the
 #     install stamp the workflow bakes in).
+#   * POSIX per-file path: HERMES_TEST_WORKERS / PATHS / FILE_TIMEOUT /
+#     FILE_RETRIES / SLICE are read by run_tests_parallel.py at argparse-
+#     default time — inside the stripped environment.
 #
 # These are test-infrastructure knobs, not credentials — same class as the
 # HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER opt-ins already forwarded.
 # Keep this an explicit allowlist (no HERMES_TEST_* glob) so the "no
 # credential can leak" property stays auditable at a glance.
 TEST_ENV=()
-for _test_var in HERMES_TEST_IMAGE; do
+for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
+  HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")
   fi
@@ -151,34 +175,37 @@ done
 # venv's editable finder reads it at runtime to locate first-party modules.
 # Stripping it breaks "import tools" in every test subprocess whose cwd is
 # not the repo root (the import-guard probe runs from a tempdir).
-echo "▶ running pytest-xdist (-n $N --dist loadfile)"
-echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
-
 cd "$REPO_ROOT"
 
-# ── Pre-compile .pyc bytecode cache ─────────────────────────────────────────
-# xdist workers import the same modules; pre-building the bytecode cache once
-# here avoids every worker compiling on first import.
 echo "▶ pre-compiling bytecode cache"
 "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
 
-echo "▶ pytest -n $N --dist loadfile"
-exec env -i \
-  PATH="$PATH" \
-  HOME="$HOME" \
-  ${WIN_ENV[@]+"${WIN_ENV[@]}"} \
-  ${TEST_ENV[@]+"${TEST_ENV[@]}"} \
-  TZ=UTC \
-  LANG=C.UTF-8 \
-  LC_ALL=C.UTF-8 \
-  PYTHONHASHSEED=0 \
-  PYTHONUTF8=1 \
-  ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
-  ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
-  ${__NIXOS_SET_ENVIRONMENT_DONE:+__NIXOS_SET_ENVIRONMENT_DONE="$__NIXOS_SET_ENVIRONMENT_DONE"} \
-  ${HERMES_PYTHON_SRC_ROOT:+HERMES_PYTHON_SRC_ROOT="$HERMES_PYTHON_SRC_ROOT"} \
-  ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
-  ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
-  "$PYTHON" -m pytest -n "$N" --dist loadfile -p no:cacheprovider \
-  -m "not integration" -q --tb=line \
-  ${PYTEST_ARGS[@]+"${PYTEST_ARGS[@]}"}
+HERMETIC_ENV=(
+  PATH="$PATH"
+  HOME="$HOME"
+  ${WIN_ENV[@]+"${WIN_ENV[@]}"}
+  ${TEST_ENV[@]+"${TEST_ENV[@]}"}
+  TZ=UTC
+  LANG=C.UTF-8
+  LC_ALL=C.UTF-8
+  PYTHONHASHSEED=0
+  PYTHONUTF8=1
+  ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"}
+  ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"}
+  ${__NIXOS_SET_ENVIRONMENT_DONE:+__NIXOS_SET_ENVIRONMENT_DONE="$__NIXOS_SET_ENVIRONMENT_DONE"}
+  ${HERMES_PYTHON_SRC_ROOT:+HERMES_PYTHON_SRC_ROOT="$HERMES_PYTHON_SRC_ROOT"}
+  ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"}
+  ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"}
+)
+
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  echo "▶ windows: pytest-xdist (-n ${HERMES_TEST_WORKERS:-auto} --dist loadfile)"
+  exec env -i "${HERMETIC_ENV[@]}" \
+    "$PYTHON" -m pytest -n "${HERMES_TEST_WORKERS:-auto}" --dist loadfile \
+    -p no:cacheprovider -m "not integration" -q --tb=line "$@"
+fi
+
+echo "▶ posix: per-file parallel suite via run_tests_parallel.py"
+echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
+exec env -i "${HERMETIC_ENV[@]}" \
+  "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

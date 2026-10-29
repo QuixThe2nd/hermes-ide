@@ -225,12 +225,12 @@ CASES = {
         _lanes(python=True, scan=True),
     ),
     # Runner infrastructure is NOT tests-only — a bad runner edit can mask
-    # real failures, so it keeps the conservative full lane set. (scan is
-    # off for the .sh form: the supply-chain lanes scan executable .py/.pth
-    # payloads, and a shell script isn't one.)
+    # real failures, so it keeps the conservative full lane set. The .py
+    # runner additionally trips the supply-chain scan lane (executable
+    # .py/.pth payloads are what it scans for).
     "test runner script → python_prod stays on": (
-        ["scripts/run_tests.sh"],
-        _lanes(python=True),
+        ["scripts/run_tests_parallel.py"],
+        _lanes(python=True, scan=True),
     ),
     # Supply-chain lanes
     ".pth file → scan": (["evil.pth"], _lanes(python=True, scan=True)),

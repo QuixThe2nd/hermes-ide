@@ -183,7 +183,7 @@ def _py_test_only(p: str) -> bool:
 
     Product jobs (Desktop E2E's ``hermes serve`` backend, the Docker image)
     run installed code — nothing under ``tests/`` is packaged or importable
-    there. scripts/run_tests.sh is deliberately
+    there. scripts/run_tests.sh and scripts/run_tests_parallel.py are deliberately
     NOT test-only: they are runner infrastructure, and a bad edit there can
     mask real failures, so they stay conservative (python_prod=true).
     """

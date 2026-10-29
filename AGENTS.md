@@ -1592,8 +1592,10 @@ def profile_env(tmp_path, monkeypatch):
 ### Python
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-pytest-xdist with `--dist loadfile` so every test of a file runs on ONE worker —
-worker count defaults to the CPU count). Direct `pytest`
+and a host-dispatched runner: per-file subprocess isolation on POSIX — spawn is
+~15ms there, so each file gets a clean interpreter and is collected exactly
+once — and pytest-xdist `--dist loadfile` on Windows, where per-file spawn
+costs 0.5-1.5s and persistent workers amortize it). Direct `pytest`
 on a 16+ core developer machine with API keys set diverges from CI in ways
 that have caused multiple "works locally, fails in CI" incidents (and the reverse).
 
@@ -1604,10 +1606,13 @@ scripts/run_tests.sh tests/agent/test_foo.py -k test_x  # one test (file + -k)
 scripts/run_tests.sh -v --tb=long                       # pass-through pytest flags
 ```
 
-- **Flake policy:** the runner is xdist, so a file may pass or fail depending
-  on which siblings share its worker — any order-dependent failure is a bug to
-  fix, not noise. Timing tests must not assume a quiet runner: wall-clock bounds
-  ≥ 2s, event-based sync, no `assert not _wait_until(...)` negative-timing races.
+**Flake policy:** on POSIX every file runs in its own subprocess (a failure
+is the file's own bug). On Windows, xdist `loadfile` co-schedules files on
+workers — an order-dependent failure there is a stateful-test bug to fix, not
+noise; fix it at the test, don't reach for runner changes. Timing-sensitive
+tests must not assume a quiet runner (loose wall-clock bounds ≥ 2s,
+event-based sync, no `assert not _wait_until(...)` negative-timing races).
+
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
   `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
   under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,
@@ -1617,26 +1622,14 @@ scripts/run_tests.sh -v --tb=long                       # pass-through pytest fl
   asserting about `package.json`, `package-lock.json`, `tsconfig.json`, or `.ts/.tsx/.js/
   .mjs/.cjs` sources will not run on a JS-only PR (green on PR, red on `main` where the
   classifier fails open). Such tests belong in the vitest suite, not `tests/*.py`.
-- **Tests must not write to `~/.hermes/`.** The autouse `_isolate_hermes_home` fixture in
-  `tests/conftest.py` redirects `HERMES_HOME`; never hardcode `~/.hermes/` in tests. Profile
-  tests also mock `Path.home()` so `_get_profiles_root()` / `_get_default_hermes_home()` stay
-  in the temp dir (pattern: `tests/hermes_cli/test_profiles.py`):
-  ```python
-  @pytest.fixture
-  def profile_env(tmp_path, monkeypatch):
-      home = tmp_path / ".hermes"; home.mkdir()
-      monkeypatch.setattr(Path, "home", lambda: tmp_path)
-      monkeypatch.setenv("HERMES_HOME", str(home))
-      return home
-  ```
-  Tests that `patch.object(Path, "home", ...)` must ALSO set `HERMES_HOME` — code reads the
-  env var, not `Path.home()/.hermes`.
 
-#### File-pinned xdist workers
+#### Host-dispatched isolation
 
-Every test file runs pinned to ONE xdist worker (`--dist loadfile` via `scripts/run_tests.sh`), so module-level
-state pollution is bounded to files co-scheduled on the same worker; files that need true isolation should reset
-state in fixtures.
+On POSIX, each test file runs in a freshly-spawned `python -m pytest <file>`
+subprocess (via `scripts/run_tests_parallel.py`), so module-level state cannot
+leak between files at all. On Windows, `--dist loadfile` pins each file to ONE
+xdist worker, bounding pollution to co-scheduled files — state shared across
+files is a bug to fix at the tests.
 
 ### Don't fake the host OS
 
