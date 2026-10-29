@@ -1889,6 +1889,9 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     if new_extra_body:
         overrides["extra_body"] = dict(new_extra_body)
     agent.request_overrides = overrides
+    from agent.claude_code_plan_identity import apply_claude_code_plan_identity_flag
+
+    apply_claude_code_plan_identity_flag(agent, custom_providers or [])
 
 
 # Pool reload is part of the switch and must be reversible on rollback, hence the pool fields.
@@ -1896,7 +1899,7 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
-    "_credential_pool", "_credential_pool_entry_id",
+    "_credential_pool", "_credential_pool_entry_id", "_claude_code_plan_identity",
 )
 _MISSING = object()
 

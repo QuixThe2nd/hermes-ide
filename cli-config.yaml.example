@@ -226,6 +226,20 @@ model:
 #   dbx-gpt:                         # OpenAI Responses route
 #     base_url: "https://<workspace>.cloud.databricks.com/ai-gateway/openai/v1"
 #     api_mode: codex_responses
+#
+# Anthropic OAuth plan tokens routed through a LiteLLM (or other) OpenAI Responses proxy
+# need the Claude Code system prefix on ``instructions`` for plan billing. Opt in per model
+# (or for every model on the provider entry) — only applies when ``transport``/``api_mode``
+# is ``codex_responses``:
+#
+# providers:
+#   litellm:
+#     api: http://litellm.internal:4000/v1
+#     transport: codex_responses
+#     key_env: LITELLM_API_KEY
+#     models:
+#       claude-opus-5-5:
+#         claude_code_plan_identity: true
 #     model: databricks-gpt-5-5
 #     key_cmd: "databricks auth token -p MY-PROFILE"
 #   dbx-claude:                      # Anthropic Messages route
