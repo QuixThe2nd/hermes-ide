@@ -100,6 +100,27 @@ def strip_leading_message_timestamps(content: str, tz=None) -> Tuple[str, Option
     return text, embedded_epoch
 
 
+def split_leading_timestamp_prefix(content: str) -> Tuple[Optional[str], str]:
+    """Peel exactly one leading gateway timestamp prefix from display content.
+
+    Returns ``(prefix_text, remainder)`` when the head is a parseable timestamp,
+    otherwise ``(None, content)`` with ``content`` unchanged.
+    """
+    if not isinstance(content, str) or not content:
+        return None, content
+    stripped = content.lstrip()
+    if not stripped:
+        return None, content
+    match = _TIMESTAMP_PREFIX_RE.match(stripped)
+    if match is None:
+        return None, content
+    if _parse_timestamp_match(match) is None:
+        return None, content
+    prefix = match.group(0).strip()
+    remainder = stripped[match.end() :]
+    return prefix, remainder
+
+
 def render_timestamp_only_injection_line(content: str) -> Optional[str]:
     """One clock-face line for an injection that is nothing but the gateway's
     timestamp prefix (``[Mon 2026-10-26 15:32:18 AEDT]``).

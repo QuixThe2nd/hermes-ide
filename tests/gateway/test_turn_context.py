@@ -931,6 +931,82 @@ class TestTurnRunner:
         assert messages
         assert all(len(message) <= message_limit for message in messages)
 
+    def test_context_injection_mixed_timestamp_and_memory_splits_standalone_time_line(self):
+        from gateway.run import _format_context_injection_progress
+
+        ts = "[Tue 2026-04-28 13:40:53 CEST]"
+        content = f"{ts}\n\n<memory-context>observed fact</memory-context>"
+        messages = _format_context_injection_progress(
+            content=content,
+            injected_chars=len(content),
+            sources=["gateway", "memory"],
+            message_limit=2000,
+            supports_code_blocks=True,
+        )
+        assert messages[0].find("Injecting time") != -1
+        memory_heading_idx = next(
+            i for i, message in enumerate(messages) if "🧠 Injecting Memory" in message
+        )
+        assert memory_heading_idx > 0
+        fenced_with_memory = next(
+            message for message in messages if "```" in message and "<memory-context>" in message
+        )
+        assert fenced_with_memory
+        for message in messages:
+            if "```" in message:
+                assert ts not in message
+
+    def test_context_injection_iso_timestamp_with_memory_splits_standalone_time_line(self):
+        from gateway.run import _format_context_injection_progress
+
+        ts = "[2026-04-13T17:02:06+0200]"
+        content = f"{ts}\n\n<memory-context>observed fact</memory-context>"
+        messages = _format_context_injection_progress(
+            content=content,
+            injected_chars=len(content),
+            sources=["gateway", "memory"],
+            message_limit=2000,
+            supports_code_blocks=True,
+        )
+        assert "Injecting time" in messages[0]
+        assert any("🧠 Injecting Memory" in message for message in messages)
+        fenced_with_memory = next(
+            message for message in messages if "```" in message and "<memory-context>" in message
+        )
+        assert fenced_with_memory
+        for message in messages:
+            if "```" in message:
+                assert ts not in message
+
+    def test_context_injection_mixed_timestamp_include_content_false_returns_time_and_heading(self):
+        from gateway.run import _format_context_injection_progress
+
+        content = "[Tue 2026-04-28 13:40:53 CEST]\n\n<memory-context>observed fact</memory-context>"
+        messages = _format_context_injection_progress(
+            content=content,
+            injected_chars=len(content),
+            sources=["gateway", "memory"],
+            message_limit=2000,
+            supports_code_blocks=True,
+            include_content=False,
+        )
+        assert len(messages) == 2
+        assert "Injecting time" in messages[0]
+        assert messages[1] == "🧠 Injecting Memory"
+
+    def test_context_injection_pure_timestamp_with_memory_source_returns_time_line_only(self):
+        from gateway.run import _format_context_injection_progress
+
+        messages = _format_context_injection_progress(
+            content="[Tue 2026-04-28 13:40:53 CEST]",
+            injected_chars=32,
+            sources=["memory"],
+            message_limit=2000,
+            supports_code_blocks=True,
+        )
+        assert len(messages) == 1
+        assert "Injecting time" in messages[0]
+
     def test_context_injection_follows_tool_progress_visibility(self):
         progress_queue = queue_mod.Queue()
         ctx = TurnContext(
