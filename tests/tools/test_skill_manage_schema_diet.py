@@ -27,9 +27,10 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
         """Maintainer-directed: operations[] IS the interface — each op
         names its skill; a single edit is a list of one. Flat fields are
         handler-only compat. Every per-action branch is a flat op object
-        (memory-tool pattern), not a nested sub-object."""
+        (memory-tool pattern), not a nested sub-object.
+        Optional top-level ``description`` is the LLM progress reason (display only, never part of the operations contract)."""
         props = SKILL_MANAGE_SCHEMA["parameters"]["properties"]
-        self.assertEqual(sorted(props), ["operations"])
+        self.assertEqual(sorted(props), ["description", "operations"])
         self.assertEqual(SKILL_MANAGE_SCHEMA["parameters"]["required"], ["operations"])
         for branch in self._branches():
             self.assertEqual(branch["required"][:2], ["name", "action"])
