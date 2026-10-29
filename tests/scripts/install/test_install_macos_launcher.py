@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.macos_only
+pytestmark = pytest.mark.platforms("macos")
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent

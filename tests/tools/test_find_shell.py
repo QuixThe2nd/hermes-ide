@@ -35,7 +35,7 @@ def _pid_alive(pid: int) -> bool:
 class TestFindShellPrefersUserShell:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_returns_shell_env_when_set_and_exists(self, tmp_path):
         """When $SHELL points to an existing allowlisted executable, _find_shell returns it."""
         fake_zsh = tmp_path / "zsh"
@@ -64,7 +64,7 @@ class TestFindShellPrefersUserShell:
             assert _find_shell() == _find_bash()
 
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_honours_allowlisted_bash_and_dash(self, tmp_path):
         """Every allowlisted POSIX-sh-family shell is honoured."""
         for name in ("bash", "dash", "sh", "ksh"):
@@ -84,7 +84,7 @@ class TestFindShellPrefersUserShell:
 class TestFindShellWindowsBehavior:
     """On Windows, _find_shell always delegates to _find_bash."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_ignores_shell_env(self):
         """On Windows, $SHELL is ignored — _find_shell delegates to _find_bash.
 
@@ -124,7 +124,7 @@ class TestFindBashUnchanged:
 class TestFindBashSkipsBrokenCustomPath:
     """Stale HERMES_GIT_BASH_PATH must not brick Windows terminal startup."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_falls_through_to_portable_when_custom_fails_probe(self, tmp_path, monkeypatch):
         """Windows-only: the candidate ladder (HERMES_GIT_BASH_PATH →
         %LOCALAPPDATA%\\hermes\\git → Program Files) only exists in
@@ -208,7 +208,7 @@ class TestGitBashExternalProgramProbe:
             time.sleep(0.05)
         assert not _pid_alive(grandchild), "grandchild survived the probe's tree-kill"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_aslr_failure_surfaces_targeted_windows_command(
         self, tmp_path, monkeypatch
     ):

@@ -280,7 +280,7 @@ class TestLiveConnectionSafety:
 
 
 class TestUnreadableReason:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_missing_file_keeps_the_os_error_text(self, tmp_path):
         reason = doctor_platform._unreadable_reason(tmp_path / "gone.db")
 

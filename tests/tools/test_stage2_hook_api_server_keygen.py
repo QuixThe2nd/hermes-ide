@@ -74,7 +74,7 @@ def _run_keygen(
     )
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_keygen_creates_env_when_missing(stage2_text: str, tmp_path: Path) -> None:
     """No .env at all (failed/absent first-boot seed) must still yield a key."""
     home = tmp_path / "home"
@@ -200,7 +200,7 @@ def _sed_is_gnu() -> bool:
     return probe.returncode == 0 and "GNU sed" in probe.stdout
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_keygen_readonly_env_degrades_to_warning_not_boot_abort(
     stage2_text: str, tmp_path: Path
 ) -> None:

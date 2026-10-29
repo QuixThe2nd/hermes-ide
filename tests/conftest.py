@@ -1140,12 +1140,12 @@ _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 # So: a test whose subject is genuinely OS-specific declares the OS it
 # belongs to and runs there for real —
 #
-#   @pytest.mark.windows_only   → only on native Windows (``sys.platform == "win32"``)
-#   @pytest.mark.macos_only     → only on macOS (``sys.platform == "darwin"``)
-#   @pytest.mark.linux_only     → only on Linux (``sys.platform.startswith("linux")``)
+#   @pytest.mark.platforms("windows")   → only on native Windows (``sys.platform == "win32"``)
+#   @pytest.mark.platforms("macos")     → only on macOS (``sys.platform == "darwin"``)
+#   @pytest.mark.platforms("linux")     → only on Linux (``sys.platform.startswith("linux")``)
 #
 # Elsewhere the test is skipped, not faked. CI runs a dedicated macOS job
-# (``-m macos_only``) and a dedicated Windows job (``-m windows_only``) so
+# (``-m platforms("macos")``) and a dedicated Windows job (``-m platforms("windows")``) so
 # those markers are actually exercised on their own host rather than
 # quietly skipped everywhere.
 #
@@ -1407,7 +1407,7 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "dispatcher's memory guard to 'no data' — only for tests that "
         "exercise the guard itself with their own patched samples.",
     )
-    # NOTE: linux_only / macos_only / windows_only are declared in
+    # NOTE: platforms("linux") / platforms("macos") / platforms("windows") are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the
     # project's public marker vocabulary (``pytest --markers``, and the CI
     # lanes select on them), whereas the marks above are conftest-internal
@@ -1476,19 +1476,43 @@ def _reject_multiple_os_marks(items):
         )
 
 
+def _reject_contradictory_platform_marks(items):
+    """Fail collection when one test carries two platforms() markers.
+
+    Two markers are ANDed by the gate, so a stacked pair is not always wrong
+    in principle — but the historic failure this guard exists for (a
+    module-level gate stacking with a per-test gate so the test is skipped
+    on every host while both lanes report green) is only diagnosable at
+    collection time. A test that needs a compound condition writes ONE
+    marker: platforms("linux", arch="arm64").
+    """
+    offenders = []
+    for item in items:
+        marks = list(item.iter_markers("platforms"))
+        if len(marks) > 1:
+            offenders.append(f"  {item.nodeid}: {len(marks)} platforms() marks")
+    if offenders:
+        raise pytest.UsageError(
+            "a test may carry at most one platforms() marker — combine the "
+            'specs into one call (platforms("linux", arch="arm64") instead '
+            "of stacking two markers); these carry several:\n"
+            + "\n".join(offenders)
+        )
+
+
 def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
 
-    OS gating: a test marked ``linux_only`` / ``macos_only`` /
-    ``windows_only`` runs only on that host. See the ``_OS_MARKS`` block
-    comment above for why these tests are skipped rather than run against a
-    patched ``sys.platform``.
+    OS gating: a test marked ``platforms(...)`` runs only on hosts its
+    specs match. See the platform-gating block comment above for why these
+    tests are skipped rather than run against a patched ``sys.platform``.
 
     WAL gating is cheaper and more honest than each test hand-rolling a
     version check: the reason string names the actual linked version so the
     skip is diagnosable rather than mysterious.
     """
     _reject_multiple_os_marks(items)
+    _reject_contradictory_platform_marks(items)
 
     # Composable platforms() gating: skip items whose specs exclude this host.
     for item in items:

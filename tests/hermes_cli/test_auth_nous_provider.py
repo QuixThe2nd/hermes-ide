@@ -906,7 +906,7 @@ def test_shared_store_seat_belt_refuses_real_home_under_pytest(monkeypatch):
         _nous_shared_store_path()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_shared_store_write_and_read_roundtrip(shared_store_env):
     """Write → read must preserve refresh_token + OAuth URLs."""
     from hermes_cli.auth import (

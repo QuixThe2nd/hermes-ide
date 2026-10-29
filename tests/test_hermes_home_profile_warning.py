@@ -30,7 +30,7 @@ def fresh_constants(monkeypatch, tmp_path):
 
 
 class TestGetHermesHomeProfileWarning:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_classic_mode_no_active_profile_no_warning(
         self, fresh_constants, tmp_path, capsys
     ):
@@ -40,7 +40,7 @@ class TestGetHermesHomeProfileWarning:
         assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_named_profile_unset_home_warns_once(
         self, fresh_constants, tmp_path, capsys
     ):
@@ -79,7 +79,7 @@ class TestGetHermesHomeProfileWarning:
         assert result == profile_dir
         assert "HERMES_HOME fallback" not in capsys.readouterr().err
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_unreadable_active_profile_no_crash(
         self, fresh_constants, tmp_path, capsys
     ):

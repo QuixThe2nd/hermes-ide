@@ -350,7 +350,7 @@ class TestRefreshActiveFeatures:
         assert result["platform.matrix"].startswith("skipped:")
         assert "unsupported on Windows" in result["platform.matrix"]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_matrix_probe_reports_unsupported_on_real_windows(self):
         # The probe itself keys off the real host: patching sys.platform only
         # proved the string, never that Windows actually hits this gate.

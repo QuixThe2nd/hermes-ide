@@ -164,7 +164,7 @@ class TestSnapshotRealProfile:
         assert dst is None
         assert err and "was not found" in err
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_snapshot_files_are_owner_only(self, tmp_path, monkeypatch):
         """Every copied file must be 0600 and every dir 0700 (#96729).
 
@@ -196,7 +196,7 @@ class TestSnapshotRealProfile:
                     offenders.append((os.path.join(root, f), oct(mode)))
         assert not offenders, f"group/world-accessible snapshot entries: {offenders}"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_existing_lax_snapshot_heals_on_refresh(self, tmp_path, monkeypatch):
         """A snapshot left 0644 by an older build tightens on the next pass."""
         import stat

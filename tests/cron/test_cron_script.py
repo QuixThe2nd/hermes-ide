@@ -143,7 +143,7 @@ class TestRunJobScript:
         assert success is True
         assert output == "ABSENT"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
         # Windows-only: the real ``Scripts/python.exe`` launcher layout and
         # CREATE_NO_WINDOW creationflags this branch exists for cannot be

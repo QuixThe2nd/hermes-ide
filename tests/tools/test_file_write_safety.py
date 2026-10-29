@@ -232,25 +232,27 @@ class TestSafeRootDenialMessageIntegration:
 class TestCheckSensitivePathSystemPaths:
     """Verify system paths are no longer blocked by the file-tool wrapper."""
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_etc_hosts_allowed(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/etc/hosts") is None
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_private_etc_hosts_allowed(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/hosts") is None
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_private_etc_ssh_config_allowed(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is None
 
+    @pytest.mark.platforms("linux")
     def test_private_var_allowed(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is None
 
+    @pytest.mark.platforms("linux")
     def test_boot_allowed(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is None
@@ -294,7 +296,7 @@ class TestAtomicWrite:
         assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
 
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")

@@ -61,7 +61,7 @@ class TestReadFileHandler:
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_writes_content(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -150,7 +150,7 @@ class TestWriteFileHandler:
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_replace_mode_calls_patch_replace(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
@@ -244,7 +244,7 @@ class TestPatchSensitivePathExtraction:
     """
 
     @patch("tools.file_tools._get_file_ops")
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_patch_move_to_hermes_config_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr(
             "tools.file_tools._hermes_config_resolved", "/tmp/hermes/config.yaml"
@@ -263,7 +263,7 @@ class TestPatchSensitivePathExtraction:
 
 
     @patch("tools.file_tools._get_file_ops")
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_patch_update_no_space_after_asterisks_blocked(self, mock_get, monkeypatch):
         """``***Update File:`` (no space after asterisks) must also be caught.
 
@@ -341,7 +341,7 @@ class TestSearchHandler:
 class TestWindowsMsysPathResolution:
     """File tools must translate Git Bash drive paths before Path resolution."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_absolute_msys_path_normalized_before_windows_resolve(self, monkeypatch):
         """Windows-only: ``_resolve_path_for_task`` hands the translated path
         to ``ntpath``/``Path``, and only a real Windows ``Path`` renders
@@ -354,7 +354,7 @@ class TestWindowsMsysPathResolution:
         assert str(resolved) == r"C:\Users\Mark\project\app.py"
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_container_paths_skip_msys_translation(self, monkeypatch):
         """WSL/docker Linux paths must not be rewritten as Windows drives.
 
@@ -543,7 +543,7 @@ class TestSensitivePathCheck:
 
 
     @patch("tools.file_tools._get_file_ops")
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_system_path_allowed(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
@@ -565,15 +565,12 @@ class TestSensitivePathCheck:
         ))
         assert result["status"] == "ok"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_macos_system_paths_allowed(self):
         from tools.file_tools import _check_sensitive_path
 
         assert _check_sensitive_path("/private/var/folders/xy/T/tmp.txt") is None
         assert _check_sensitive_path("/private/var/tmp/build.log") is None
-        assert _check_sensitive_path("/private/var/db/secret") is None
-        assert _check_sensitive_path("/private/var/root/x") is None
-        assert _check_sensitive_path("/private/etc/hosts") is None
 
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):

@@ -435,7 +435,7 @@ class TestHasClipboardImage:
         import hermes_cli.clipboard as cb
         cb._wsl_detected = None
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_macos_dispatch(self):
         """Faking darwin selected the branch but left `_macos_has_image`'s real
         facility (osascript) absent — only a real macOS host has it."""
@@ -443,7 +443,7 @@ class TestHasClipboardImage:
             assert has_clipboard_image() is True
             m.assert_called_once()
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_wsl_falls_through_to_wayland_when_windows_path_empty(self):
         """WSLg often bridges images to wl-paste even when powershell.exe check fails.
 

@@ -59,7 +59,7 @@ def test_setup_path_shim_block_removes_old_link_before_writing() -> None:
     )
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -> None:
     """Behavioral repro: simulate prior-install symlink + new-install heredoc.
 

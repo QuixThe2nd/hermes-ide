@@ -706,6 +706,7 @@ markers = [
     "require_symlinks: test needs symlink creation (unsupported on Windows hosts)",
     "macos_only: exercises macOS-specific behaviour; skipped on other hosts",
     "windows_only: exercises native-Windows behaviour; skipped on other hosts",
+    "platforms(*specs, arch=None, arch_negate=False): run only on hosts matching at least one spec — linux/macos/windows/posix/any, 'not X' negation, optional arch filter",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"

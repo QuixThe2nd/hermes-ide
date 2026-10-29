@@ -420,7 +420,7 @@ class TestGeneratedSystemdUnits:
 
 
 class TestGatewayStopCleanup:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call
         the global kill_gateway_processes().
@@ -1251,7 +1251,7 @@ class TestGatewaySystemServiceRouting:
         assert "did not revive" in out
         assert "✓ Service restarted" in out
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
         """macOS-gated: the branch under test is ``elif is_macos() and
         get_launchd_plist_path().exists()``. Faking the platform flags on Linux

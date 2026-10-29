@@ -491,7 +491,7 @@ class TestAddRotatingHandler:
         assert "[factory_test]" in content
 
         # Clean up
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         formatter = logging.Formatter("%(message)s")
@@ -528,7 +528,7 @@ class TestWindowsConcurrentLogLockTimeout:
         logger.addHandler(handler)
         return logger, handler
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_helper_only_matches_windows_concurrent_lock_timeout(self):
         # Windows-only: concurrent-log-handler (and therefore its cross-process
         # lock timeout) is only installed on Windows — faking sys.platform
@@ -540,7 +540,7 @@ class TestWindowsConcurrentLogLockTimeout:
             RuntimeError("some other logging failure")
         )
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_helper_never_matches_off_windows(self):
         # On POSIX the suppression must stay inert: stdlib RotatingFileHandler
         # is in use, so this RuntimeError text is never a CLH lock timeout.
@@ -548,7 +548,7 @@ class TestWindowsConcurrentLogLockTimeout:
             RuntimeError("Cannot acquire lock after 20 attempts")
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_lock_timeout_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
         """Mirror CLH's real control flow.
 

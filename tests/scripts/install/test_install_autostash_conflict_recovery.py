@@ -79,7 +79,7 @@ def _assert_conflict_was_recovered(repo: Path, output: str) -> None:
 
 
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.skipif(
     shutil.which("git") is None or shutil.which("bash") is None,
     reason="needs git and bash",
@@ -138,7 +138,7 @@ def test_install_ps1_repository_stage_recovers_from_autostash_conflict(
 
 
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.skipif(
     shutil.which("git") is None or shutil.which("bash") is None,
     reason="needs git and bash",

@@ -28,7 +28,6 @@ def _read_json_line(out: queue.Queue[dict], timeout: float = 2.0) -> dict:
         raise AssertionError("timed out waiting for compute host JSON") from exc
 
 
-@pytest.mark.linux_only
 def test_compute_host_line_json_hello_and_shutdown():
     repo = Path(__file__).resolve().parents[2]
     env = dict(os.environ)

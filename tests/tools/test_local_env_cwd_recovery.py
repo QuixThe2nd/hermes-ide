@@ -28,7 +28,7 @@ class TestResolveSafeCwd:
         assert _resolve_safe_cwd(path) == path
 
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_returns_root_when_only_root_exists(self, monkeypatch):
         """If every ancestor except the filesystem root is gone, the root
         itself is still a valid recovery target — don't skip it just because

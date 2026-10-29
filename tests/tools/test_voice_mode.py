@@ -120,7 +120,7 @@ def fake_clock(monkeypatch):
 # detect_audio_environment — WSL / SSH / Docker detection
 # ============================================================================
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestPulseSocketReachable:
     def test_stale_socket_file_not_reachable(self, monkeypatch, tmp_path):
         """A socket file with no listener should not count as reachable."""
@@ -564,7 +564,7 @@ class TestWhisperHallucinationFilter:
 # ============================================================================
 
 class TestPlayAudioFile:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
         np = pytest.importorskip("numpy")
         # Linux-gated rather than faking a non-macOS platform: on macOS WAV
@@ -600,7 +600,7 @@ class TestMacOSAudioOutputPolicy:
     a TCC media-library prompt, which no faked platform on Linux reproduces —
     and `afplay` only resolves on a real macOS host."""
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_play_audio_file_skips_sounddevice_on_macos(self, monkeypatch, sample_wav):
         """On macOS, WAV playback must not import sounddevice; it routes to afplay."""
 
@@ -636,7 +636,7 @@ class TestMacOSAudioOutputPolicy:
         assert popen_cmds, "expected a system player to be invoked"
         assert popen_cmds[0][0] == "afplay"
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_play_beep_routes_through_afplay_on_macos(self, monkeypatch):
         """On macOS, beeps synthesize with numpy but play via the tempfile/afplay path."""
         pytest.importorskip("numpy")
@@ -1424,7 +1424,7 @@ class TestWSL2PowerShellFallback:
             return next(it)
         return _side_effect
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_powershell_pipeline_preserves_real_exit_status(self, sample_wav):
         """Regression (review of #63768): the shell pipeline must preserve
         the (ffmpeg && powershell) exit status past the unconditional
@@ -1474,7 +1474,7 @@ class TestWSL2PowerShellFallback:
             "Shell pipeline must preserve the real exit status past cleanup: " + sh_script
         )
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_wsl2_unique_temp_filename(self, monkeypatch, tmp_path, sample_wav):
         """Two concurrent calls must use different temp WAV filenames."""
         from unittest.mock import patch, MagicMock

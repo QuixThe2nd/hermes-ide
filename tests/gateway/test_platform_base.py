@@ -846,7 +846,7 @@ class TestMediaDeliveryDefaultMode:
         assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestDockerContainerMediaPathTranslation:
     """MEDIA:/workspace (and configured mounts) must resolve to host paths."""
 
@@ -1393,7 +1393,7 @@ class TestMediaFallbackDoesNotLeakHostPath:
         assert self.SENSITIVE_PATH not in sent_text
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestDockerProfileSandboxMediaTranslation:
     """MEDIA from persistent Docker sandboxes must resolve to the host
     directory the profile's container actually bind-mounts (#93950).

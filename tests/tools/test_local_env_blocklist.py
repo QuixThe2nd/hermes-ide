@@ -759,7 +759,7 @@ class TestPythonpathSelectiveStrip:
         assert hermes_win in entries
         assert user_win in entries
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_hermes_owned_paths_stripped(self):
         """On Windows, a Hermes venv site-packages entry written with
         backslashes is stripped by the same Hermes-owned check, while a
@@ -1541,7 +1541,7 @@ class TestSanePathIncludesHomebrew:
                 assert entry in path_entries
 
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_make_run_env_real_launchd_path_gains_homebrew(self):
         """The literal macOS launchd PATH is the production trigger for #35613.
 
@@ -1559,7 +1559,7 @@ class TestSanePathIncludesHomebrew:
         assert path_entries[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_make_run_env_preserves_windows_mixed_case_path_key(self, monkeypatch):
         """Windows-only: ``_path_env_key`` looks for a case-insensitive PATH
         key only on Windows, so the mixed-case ``Path`` preservation this

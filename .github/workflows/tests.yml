@@ -197,7 +197,7 @@ jobs:
             status=0
             uv run --no-sync python -m pytest \
               "$@" \
-              -m "${{ matrix.marker }} and not integration" \
+              -m "platforms and not integration" \
               -v --tb=short || status=$?
             if [ "$status" -eq 5 ]; then
               echo "::error::No tests matched -m ${{ matrix.marker }}. Either the" \

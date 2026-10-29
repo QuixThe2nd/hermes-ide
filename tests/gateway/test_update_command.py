@@ -155,7 +155,7 @@ class TestHandleUpdateCommand:
 
 
     @pytest.mark.asyncio
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     async def test_fallback_when_no_setsid(self, tmp_path):
         """Falls back to start_new_session=True when setsid is not available."""
         runner = _make_runner()

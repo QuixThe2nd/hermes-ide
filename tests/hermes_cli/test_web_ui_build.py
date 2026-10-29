@@ -274,7 +274,7 @@ class TestBuildWebUIRetryAndStaleFallback:
         assert "vite ENOMEM" in out  # combined output surfaced to user
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestBuildWebUIFlock:
     """Cross-process build serialization (salvaged from PR #63455).
 

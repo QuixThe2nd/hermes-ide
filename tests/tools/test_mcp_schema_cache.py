@@ -70,7 +70,7 @@ class TestCacheRoundTrip:
 
 
 class TestCacheFileLocation:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_cache_lives_under_hermes_home_cache_dir_with_0600(
         self, monkeypatch, tmp_path
     ):

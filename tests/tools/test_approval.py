@@ -114,7 +114,7 @@ class TestDetectDangerousRm:
             assert "delete" in desc.lower()
 
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):

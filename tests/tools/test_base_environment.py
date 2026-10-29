@@ -230,7 +230,7 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         import subprocess
         return subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True)
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_concurrent_writes_never_tear_the_snapshot(self, tmp_path):
         import shutil
         if not shutil.which("bash"):
@@ -268,7 +268,7 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         final = self._run(f"source {_q(snap)} >/dev/null 2>&1 && echo OK || echo BROKEN")
         assert "OK" in final.stdout, f"final snapshot not sourceable: {final.stdout} {final.stderr}"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_failed_export_does_not_destroy_good_snapshot(self, tmp_path):
         """If ``export -p`` fails, the ``&&``-chained mv must NOT clobber the
         existing good snapshot."""
@@ -296,7 +296,7 @@ class TestAtomicSnapshotConcurrencyBehavioral:
 class TestSnapshotFileModes:
     """Snapshot metadata files are private without changing user command umask."""
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_snapshot_and_cwd_files_are_0600(self, tmp_path):
         import os
         from pathlib import Path

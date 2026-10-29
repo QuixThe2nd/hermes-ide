@@ -16,7 +16,7 @@ import pytest
 
 import hermes_cli.gateway as gateway_cli
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
 def _eacces(self):

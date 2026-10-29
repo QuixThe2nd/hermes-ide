@@ -6,7 +6,7 @@ import pytest
 
 import hermes_cli.gateway as gateway
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
 class TestEnsureLingerEnabled:

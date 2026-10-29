@@ -168,7 +168,8 @@ class TestShellFileOpsCwdTracking:
         assert "/workspace" not in local.error
         assert "/workspace" in docker.error
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
+
     def test_patch_returns_success_only_when_file_actually_written(self, tmp_path):
         """Safety rail: patch_replace success must reflect the real file state.
 

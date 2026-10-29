@@ -7,7 +7,7 @@ import socket
 
 import pytest
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
 @pytest.mark.linux_only  # abstract (NUL-prefixed) AF_UNIX names are a Linux kernel feature

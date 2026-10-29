@@ -256,7 +256,7 @@ def test_default_framework_tracks_the_macos_arm64_probe():
     assert ww.default_inference_framework() == expected
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_macos_arm64_prefers_tflite_on_this_host():
     """On a real ARM64 Mac the default must be tflite (upstream #336).
 
@@ -528,7 +528,7 @@ def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch)
         det.stop()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_silent_hint_names_selected_device():
     hint = ww.silent_audio_hint(
         {
@@ -542,7 +542,7 @@ def test_windows_silent_hint_names_selected_device():
     assert "macOS" not in hint
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_macos_silent_hint_points_at_privacy_settings():
     """On macOS a silent stream is almost always the TCC mic permission, so the
     hint names System Settings rather than the device."""
@@ -553,7 +553,7 @@ def test_macos_silent_hint_points_at_privacy_settings():
     assert "Microphone" in hint
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_linux_silent_hint_names_selected_device():
     hint = ww.silent_audio_hint(
         {"selector": 2, "name": "HD Audio Capture", "hostapi": "ALSA"}

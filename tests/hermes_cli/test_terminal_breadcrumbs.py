@@ -16,7 +16,7 @@ import pytest
 from hermes_cli import terminal_breadcrumbs as tb
 
 
-pytestmark = pytest.mark.linux_only  # os.ttyname is POSIX-only
+pytestmark = pytest.mark.platforms("linux")  # os.ttyname is POSIX-only
 
 
 TERMINAL_ENV_VARS = (

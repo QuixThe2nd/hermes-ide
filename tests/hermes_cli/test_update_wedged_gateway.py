@@ -487,7 +487,7 @@ class TestLaunchdRestartWedgedIntegration:
         assert ("drain", 4242, 195.0) in events
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestLoopTickWitness:
     """Two-witness liveness (#90502 review).
 

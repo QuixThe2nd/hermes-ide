@@ -34,7 +34,7 @@ def _pid_alive(pid: int) -> bool:
 class TestZombieReproduction:
     """Demonstrate that subprocesses survive when cleanup is not called."""
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_orphaned_processes_survive_without_cleanup(self):
         """REPRODUCTION: processes spawned directly survive if no one kills
         them — this models the gap that causes zombie accumulation when

@@ -752,10 +752,10 @@ class TestPathCanonicalization:
         )
 
 
-    # ``windows_only`` rather than ``skipif(sys.platform != "win32")``: the
+    # ``platforms("windows")`` rather than ``skipif(sys.platform != "win32")``: the
     # Windows CI job greps for the marker to decide which files to import, so
     # a bare skipif leaves this running on no host at all.
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_case_insensitive_paths_overlap_windows(self, tmp_path):
         """On Windows, FILE.txt and file.txt are the same file — they must
         be detected as overlapping after normcase() canonicalisation."""

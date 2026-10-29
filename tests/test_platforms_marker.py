@@ -1,7 +1,7 @@
 """The composable ``platforms`` marker: spec evaluation + collection gating.
 
 Behavior-contract tests for the gate introduced alongside the fixed
-linux_only/macos_only/windows_only trio: any-of semantics, negation,
+platforms("linux")/platforms("macos")/platforms("windows") trio: any-of semantics, negation,
 POSIX grouping, arch filters, and the hard errors on unknown specs and
 stray keyword arguments.
 """
