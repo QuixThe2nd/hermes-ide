@@ -806,10 +806,6 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["extra_body"].setdefault("prompt_cache_key", kwargs.get("prompt_cache_key", cache_key))
 
         _bound_prompt_cache_key_field(kwargs.get("extra_body"))
-        import os as _os, json as _json
-        if _os.getenv("PLANID_DEBUG_DUMP"):
-            with open(_os.getenv("PLANID_DEBUG_DUMP"), "w") as f:
-                _json.dump({k: v for k, v in kwargs.items() if k != "api_key"}, f, default=str, indent=1)
         if params.get("claude_code_plan_identity"):
             # Anthropic OAuth plan routes via LiteLLM Responses reject OpenAI cache knobs.
             kwargs.pop("prompt_cache_key", None)
