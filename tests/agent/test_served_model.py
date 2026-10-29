@@ -5,7 +5,12 @@ from __future__ import annotations
 import httpx
 import openai
 
-from agent.served_model import install_served_model_capture, result_model_fields
+from agent.served_model import (
+    is_displayable_served_model,
+    install_served_model_capture,
+    result_model_fields,
+    served_model_from_headers,
+)
 
 
 class _Agent:
@@ -43,3 +48,33 @@ def test_httpx_hook_captures_litellm_header_and_clears_when_absent():
     agent._primary_runtime = {"model": "gpt-5.6-sol"}
     agent.model = "qwen/qwen3.8-max"
     assert result_model_fields(agent) == {"requested_model": "gpt-5.6-sol", "served_model": "qwen/qwen3.8-max"}
+
+
+def test_served_model_from_headers_model_name_wins_over_model_id():
+    assert served_model_from_headers({
+        "x-litellm-model-name": "xai/grok-4.6",
+        "x-litellm-model-id": "gpt-4o-2024-11-20",
+    }) == "xai/grok-4.6"
+
+
+def test_served_model_from_headers_skips_undisplayable_name_for_displayable_id():
+    assert served_model_from_headers({
+        "x-litellm-model-name": "3132475889042",
+        "x-litellm-model-id": "gpt-4o-2024-11-20",
+    }) == "gpt-4o-2024-11-20"
+
+
+def test_is_displayable_served_model():
+    assert is_displayable_served_model("3132475889042") is False
+    assert is_displayable_served_model("http://192.168.30.20:8792/p/xai") is False
+    assert is_displayable_served_model("https://example.com/model") is False
+    assert is_displayable_served_model("xai/grok-4.6") is True
+    assert is_displayable_served_model("gpt-4o-2024-11-20") is True
+    assert is_displayable_served_model("31324f758efb073636feda516865fd641caf2eb384a3e86bd0fe7e5d80aca6c4") is False
+
+
+def test_served_model_from_headers_raw_fallback_when_all_undisplayable():
+    assert served_model_from_headers({
+        "x-litellm-model-id": "3132475889042",
+        "x-litellm-model-api-base": "http://192.168.30.20:8792/p/xai",
+    }) == "3132475889042"

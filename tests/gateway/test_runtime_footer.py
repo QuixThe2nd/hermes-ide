@@ -328,6 +328,57 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     assert with_timing == baseline
 
 
+# ---------------------------------------------------------------------------
+# Default `model` field — shows short served model when proxy differs from request
+# ---------------------------------------------------------------------------
+
+
+def test_default_model_field_shows_served_when_differs(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    out = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model="xai/grok-4.6",
+    )
+    assert out.startswith("grok-4.6")
+    assert not out.startswith("hermes")
+
+
+def test_default_model_field_unchanged_without_served_model(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    out = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model=None,
+    )
+    assert out.startswith("hermes")
+
+
+def test_default_model_field_unchanged_when_served_equals_request(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    out = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model="hermes",
+    )
+    assert out.startswith("hermes")
+
+    out2 = format_runtime_footer(
+        model="grok-4.6",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model="xai/grok-4.6",
+    )
+    assert out2.startswith("grok-4.6")
+
+
 def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     """#54864: `served_model` renders `alias → served` only when listed AND the served model
     differs from the requested one; the default field set never shows it."""
@@ -348,3 +399,27 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+def test_default_model_field_ignores_undisplayable_served_hash(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    hash_served = "31324f758efb073636feda516865fd641caf2eb384a3e86bd0fe7e5d80aca6c4"
+    out = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model=hash_served,
+    )
+    assert out.startswith("hermes")
+    assert hash_served not in out
+
+    out_served_field = format_runtime_footer(
+        model="hermes",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        served_model=hash_served,
+        fields=["served_model"],
+    )
+    assert out_served_field == ""

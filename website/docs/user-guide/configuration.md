@@ -2299,10 +2299,10 @@ Supported fields:
 
 | Field | Renders | Example |
 | --- | --- | --- |
-| `model` | Bare model id, vendor prefix dropped | `gpt-5.4` |
+| `model` | Bare model id, vendor prefix dropped; behind a routing proxy that reports a served model, the short served model name instead | `grok-4.6` |
 | `context_pct` | Last-call context occupancy as a percent | `5%` |
 | `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
-| `served_model` | The model that actually answered, when it differs from the one you configured: the deployment a routing proxy reported in its `x-litellm-model-id` (or `x-litellm-model-api-base`) response header, or the fallback model Hermes switched to for the turn | `hermes-router → gpt-4o-2024-11-20` |
+| `served_model` | The model that actually answered, when it differs from the one you configured: the deployment a routing proxy reported in its `x-litellm-model-name` (or `x-litellm-model-id` / `x-litellm-model-api-base`) response header, or the fallback model Hermes switched to for the turn | `hermes-router → gpt-4o-2024-11-20` |
 | `cwd` | Home-relative working directory | `~` |
 
 The default field set is `["model", "context_pct", "cwd"]`. `latency` and `served_model` are opt-in — add them to `fields` to use them. `served_model` renders nothing when the served model is the configured one (or when the proxy sends no such header), so behind a routing proxy or an active fallback it is the field that makes the switch visible. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
