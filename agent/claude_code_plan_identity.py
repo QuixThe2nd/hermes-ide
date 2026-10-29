@@ -82,6 +82,54 @@ def prepend_claude_code_plan_identity_to_instructions(instructions: str) -> str:
     return wire
 
 
+def neutralize_plan_identity_text(text: str) -> str:
+    """OAuth billing-classifier neutralization for relocated Hermes system text (Responses routes)."""
+    from agent.anthropic_adapter import (
+        _OAUTH_SLUG_PATTERN,
+        _OAUTH_SYSTEM_REPLACEMENTS,
+        _apply_oauth_prose_aliases,
+    )
+
+    for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
+        text = text.replace(old, new)
+    text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
+    return _apply_oauth_prose_aliases(text)
+
+
+def alias_plan_identity_tools(response_tools: list) -> tuple[list, dict[str, str]]:
+    """Rename OAuth-sensitive wire tool names; returns ``(tools, {wire_alias: original})``."""
+    from agent.anthropic_adapter import _OAUTH_TOOL_NAME_ALIASES, _apply_oauth_prose_aliases
+
+    if not response_tools:
+        return response_tools, {}
+
+    claimed = {
+        tool["name"]
+        for tool in response_tools
+        if isinstance(tool, dict)
+        and isinstance(tool.get("name"), str)
+        and tool["name"] not in _OAUTH_TOOL_NAME_ALIASES
+    }
+
+    wire_aliases: dict[str, str] = {}
+    new_tools: list = []
+    for tool in response_tools:
+        if not isinstance(tool, dict):
+            new_tools.append(tool)
+            continue
+        out = dict(tool)
+        name = out.get("name")
+        if isinstance(name, str):
+            aliased = _OAUTH_TOOL_NAME_ALIASES.get(name)
+            if aliased and aliased not in claimed:
+                wire_aliases[aliased] = name
+                out["name"] = aliased
+        if isinstance(out.get("description"), str):
+            out["description"] = _apply_oauth_prose_aliases(out["description"])
+        new_tools.append(out)
+    return new_tools, wire_aliases
+
+
 def apply_claude_code_plan_identity_flag(agent, custom_providers: Optional[List[Any]] = None) -> None:
     providers = custom_providers
     if providers is None:

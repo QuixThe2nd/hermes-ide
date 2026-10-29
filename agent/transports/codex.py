@@ -650,6 +650,9 @@ class ResponsesApiTransport(ProviderTransport):
 
             instructions, _relocated_system = split_claude_code_plan_identity_instructions(instructions)
             if _relocated_system:
+                from agent.claude_code_plan_identity import neutralize_plan_identity_text
+
+                _relocated_system = neutralize_plan_identity_text(_relocated_system)
                 if payload_messages and payload_messages[0].get("role") == "user":
                     first = dict(payload_messages[0])
                     prior = str(first.get("content") or "").strip()
@@ -675,6 +678,32 @@ class ResponsesApiTransport(ProviderTransport):
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
         response_tools, self._last_wire_aliases = _alias_wire_tools(self.convert_tools(tools), params, is_xai_responses)
+        plan_identity_aliases: dict[str, str] = {}
+        if params.get("claude_code_plan_identity") and response_tools:
+            from agent.claude_code_plan_identity import alias_plan_identity_tools
+
+            response_tools, plan_identity_aliases = alias_plan_identity_tools(response_tools)
+            self._last_wire_aliases = {**(self._last_wire_aliases or {}), **plan_identity_aliases}
+        if params.get("claude_code_plan_identity") and plan_identity_aliases:
+            original_to_wire = {original: wire for wire, original in plan_identity_aliases.items()}
+            renamed_messages: list = []
+            for msg in payload_messages:
+                if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                    renamed_messages.append(msg)
+                    continue
+                new_msg = dict(msg)
+                new_calls = []
+                for tc in msg.get("tool_calls") or []:
+                    tc_copy = dict(tc)
+                    fn = dict(tc_copy.get("function") or {})
+                    orig_name = fn.get("name")
+                    if isinstance(orig_name, str) and orig_name in original_to_wire:
+                        fn["name"] = original_to_wire[orig_name]
+                    tc_copy["function"] = fn
+                    new_calls.append(tc_copy)
+                new_msg["tool_calls"] = new_calls
+                renamed_messages.append(new_msg)
+            payload_messages = renamed_messages
 
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
