@@ -705,6 +705,12 @@ DELEGATE_TASK_SCHEMA = {
                 "string",
                 "backend=claude/cursor only: absolute path to the target git repo / workspace directory.",
             ),
+            "description": _p(
+                "string",
+                "backend=claude/cursor only: one short phrase (max ~80 chars) saying WHAT the agent is doing, "
+                "e.g. 'implementing the retry gate'. Shown to the user as progress: "
+                "'Delegated to Claude agent: <description>'. Optional.",
+            ),
             "model": _p(
                 "string",
                 "backend=claude/cursor only: model for the run. claude: names containing 'kimi' route to "

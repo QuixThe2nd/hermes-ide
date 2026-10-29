@@ -697,11 +697,15 @@ def _describe_action_key(args: dict) -> str | None:
 
 
 def _describe_skill_phrase(_tool_name: str, args: dict) -> str | None:
+    """Skill name/path only — never SKILL.md contents; optional ``description`` is the LLM progress phrase."""
     name = _describe_arg(args, "name")
     file_path = _describe_arg(args, "file_path")
-    if name is None and file_path is None:
+    reason = _describe_arg(args, "description")
+    if name is None and file_path is None and reason is None:
         return None
     subject = f"{name} → {file_path}" if name and file_path else (name or file_path)
+    if reason:
+        return f"Reading skill {subject}: {reason}" if subject else f"Reading skill: {reason}"
     return f"Reading skill {subject}"
 
 
@@ -736,16 +740,20 @@ def _describe_skill_manage_op(op: object) -> str:
 
 
 def _describe_skill_manage_phrase(_tool_name: str, args: dict) -> str | None:
+    reason = _describe_arg(args, "description")
     operations = args.get("operations")
     if operations is not None:
         # Current interface: every operation lives in ``operations``; there is
         # no top-level ``action``. Empty/malformed arrays stay safe and content-free.
         if not isinstance(operations, list) or not operations:
-            return "Updating skills"
+            summary = "Updating skills"
+            return f"{summary}: {reason}" if reason else summary
         phrases = [_describe_skill_manage_op(op) for op in operations[:3]]
         extra = len(operations) - 3
         summary = ", ".join(phrases)
-        return f"{summary}, +{extra} more" if extra > 0 else summary
+        if extra > 0:
+            summary = f"{summary}, +{extra} more"
+        return f"{summary}: {reason}" if reason else summary
     action = _describe_action_key(args)
     label = _describe_enum_label(_SKILL_MANAGE_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
@@ -758,7 +766,7 @@ def _describe_skill_manage_phrase(_tool_name: str, args: dict) -> str | None:
         label = f"{label} {name}"
     if file_path is not None and action in ("write_file", "remove_file"):
         label = f"{label}: {file_path}"
-    return label
+    return f"{label}: {reason}" if reason else label
 
 
 _CRON_DESCRIBE_ACTIONS = {
@@ -853,9 +861,14 @@ def _describe_delegate_agent_phrase(tool_name: str, args: dict) -> str | None:
     # progress phrase follows it (the hidden legacy aliases keep their own
     # entries below and never carry `backend`).
     backend = str(args.get("backend") or "").strip().lower()
+    reason = _describe_arg(args, "description")
     if backend == "claude":
+        if reason:
+            return f"Delegated to Claude agent: {reason}"
         return _describe_delegate_child_phrase("Delegating to a Claude agent")(tool_name, args)
     if backend == "cursor":
+        if reason:
+            return f"Delegated to Cursor agent: {reason}"
         return _describe_delegate_child_phrase("Delegating to a Cursor agent")(tool_name, args)
     return _describe_delegate_phrase(tool_name, args)
 
@@ -1280,6 +1293,10 @@ def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
     return _describe_mcp_discord_phrase(tool_name, args)
 
 
+# Builders here fold ``description`` into verb+reason; raw ``description`` alone must not win.
+_DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({"skill_view", "skill_manage", "delegate_agent"})
+
+
 def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIBE_TOOL_MAX_LEN) -> str:
     """One-line human phrase for the ``describe`` tool-progress mode.
 
@@ -1291,12 +1308,19 @@ def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIB
     unknown tools fall back to a short verb or the bare tool name.
     """
     if isinstance(args, dict):
-        desc = args.get("description")
-        if isinstance(desc, str) and desc.strip():
-            return _describe_cap(desc, max_len)
         derived = _describe_subject_phrase(tool_name, args)
-        if derived:
-            return _describe_cap(derived, max_len)
+        desc = args.get("description")
+        has_desc = isinstance(desc, str) and desc.strip()
+        if tool_name in _DESCRIBE_COMPOSES_TOOL_DESCRIPTION:
+            if derived:
+                return _describe_cap(derived, max_len)
+            if has_desc:
+                return _describe_cap(desc, max_len)
+        else:
+            if has_desc:
+                return _describe_cap(desc, max_len)
+            if derived:
+                return _describe_cap(derived, max_len)
     else:
         # describe-only neutral fallback: non-dict args (None/list/string/number) for cron tools
         neutral = _CRON_NEUTRAL_TOOL_PHRASES.get(tool_name)

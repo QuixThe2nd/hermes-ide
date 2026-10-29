@@ -158,6 +158,63 @@ class TestDescribeToolCallBrowserInteractions:
             set_tool_preview_max_len(0)
 
 
+class TestDescribeToolCallSkillAndDelegateDescription:
+    """describe_tool_call — optional description on skill_view, skill_manage, delegate_agent."""
+
+    def test_skill_view_composes_name_and_reason(self):
+        phrase = describe_tool_call(
+            "skill_view", {"name": "fork", "description": "checking ship rules"}
+        )
+        assert phrase == "Reading skill fork: checking ship rules"
+
+    def test_skill_view_name_only_unchanged(self):
+        assert describe_tool_call("skill_view", {"name": "fork"}) == "Reading skill fork"
+
+    def test_skill_view_reason_only(self):
+        assert describe_tool_call(
+            "skill_view", {"name": "x", "description": "why load"}
+        ) == "Reading skill x: why load"
+        assert describe_tool_call("skill_view", {"description": "why only"}) == "Reading skill: why only"
+
+    def test_skill_manage_operations_with_reason(self):
+        phrase = describe_tool_call(
+            "skill_manage",
+            {"operations": [{"action": "patch", "name": "x"}], "description": "fixing deploy rule"},
+        )
+        assert phrase == "Editing skill x: fixing deploy rule"
+
+    def test_skill_manage_without_reason_unchanged(self):
+        assert describe_tool_call(
+            "skill_manage", {"operations": [{"action": "patch", "name": "x"}]}
+        ) == "Editing skill x"
+        assert describe_tool_call("skill_manage", {"operations": [], "description": ""}) == "Updating skills"
+
+    def test_delegate_agent_claude_with_reason(self):
+        phrase = describe_tool_call(
+            "delegate_agent",
+            {
+                "backend": "claude",
+                "goal": "/goal tests pass",
+                "description": "implementing retry gate",
+                "workdir": "/w",
+            },
+        )
+        assert phrase == "Delegated to Claude agent: implementing retry gate"
+
+    def test_delegate_agent_claude_without_reason_unchanged(self):
+        phrase = describe_tool_call(
+            "delegate_agent", {"backend": "claude", "goal": "g", "workdir": "/w"}
+        )
+        assert phrase == "Delegating to a Claude agent in /w"
+
+    def test_delegate_agent_cursor_with_reason(self):
+        phrase = describe_tool_call(
+            "delegate_agent",
+            {"backend": "cursor", "goal": "g", "description": "cloud fix"},
+        )
+        assert phrase == "Delegated to Cursor agent: cloud fix"
+
+
 class TestPrepareToolPreview:
     def test_recovers_and_describes_truncated_url(self):
         url = "https://example.com/a/very/long/path/to/a/page"

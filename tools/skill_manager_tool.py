@@ -860,6 +860,10 @@ SKILL_MANAGE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "description": {
+                "type": "string",
+                "description": "One short phrase (max ~80 chars) saying WHY skills are being changed, e.g. 'saving the deploy rule to the fork skill'. Shown to the user as progress: '<emoji> Editing skill <description>'. Optional.",
+            },
             "operations": {
                 "type": "array",
                 "description": (

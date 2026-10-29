@@ -679,6 +679,10 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "description": {
+                "type": "string",
+                "description": "One short phrase (max ~80 chars) saying WHY this skill is being loaded, e.g. 'checking fork ship rules'. Shown to the user as progress: '<emoji> Reading skill <description>'. Optional.",
+            },
         },
         "required": ["name"],
     },
