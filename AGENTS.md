@@ -1649,11 +1649,29 @@ is_windows=True)`) and declaration/packaging invariants ("pyproject declares `tz
 is on another OS to pass, it belongs on that OS.** A test that walks several platforms in
 sequence is split — host-native arm on Linux, other arms as their own marked tests.
 
+The `platforms` marker generalizes the trio: any number of spec strings with
+any-of semantics, plus optional architecture filters.
+
+```python
+@pytest.mark.platforms("linux")                  # only on Linux
+@pytest.mark.platforms("not macos")              # anywhere except macOS
+@pytest.mark.platforms("windows", arch="arm64")  # native Windows on arm64
+@pytest.mark.platforms("posix")                  # linux or macOS
+```
+
+Specs: `linux`, `macos`, `windows`, `posix`, `any`, and `not <spec>`.
+`platforms` is the canonical form; the legacy `linux_only` / `macos_only` /
+`windows_only` markers remain accepted as aliases routing through the same
+conftest gate. New tests should prefer `platforms`.
+
 **Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py` finds files for
 the macOS/Windows lanes by grepping the marker *name*, then filters with `-m <marker>`. A
 `skipif(sys.platform != "win32")` test skips on Linux AND is never imported on Windows — it runs
 nowhere, silently. A file-local alias (`windows_only = pytest.mark.skipif(...)`) is listed but
-`-m windows_only` deselects everything: green over zero coverage. Don't `pytest.skip()` non-host
+`-m windows_only` deselects everything: green over zero coverage. And don't stack a module-level `platforms`/`_only` gate on a
+file whose tests carry their own host marker — the conftest hard-rejects
+tests carrying two host-OS markers (a test skipped on every host, reported
+green everywhere). Don't `pytest.skip()` non-host
 rows of a platform `@parametrize` — split into one marked test per OS.
 
 **Live Windows process-topology E2E (`wine2e` lane):** `windows-venv-e2e.yml` runs

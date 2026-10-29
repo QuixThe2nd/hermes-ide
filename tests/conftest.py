@@ -1252,6 +1252,105 @@ def require_mcp_2_sdk():
         pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
 
 
+# ── Composable platform gating ──────────────────────────────────────────────
+# The fixed trio above can only say "one OS, no qualifiers". Real host-gating
+# needs more: "anything except macOS", "Windows but only arm64", "POSIX-family
+# behaviour". The ``platforms`` marker takes any number of spec strings plus
+# optional arch filters, and runs the test only where at least one spec
+# matches the host:
+#
+#   @pytest.mark.platforms("linux")                  only on Linux
+#   @pytest.mark.platforms("not macos")              anywhere except macOS
+#   @pytest.mark.platforms("windows", arch="arm64")  native Windows on arm64
+#   @pytest.mark.platforms("posix")                  linux or macOS
+#
+# Spec grammar (one per marker argument, case-insensitive):
+#   "linux" | "macos" | "windows"  — exact OS
+#   "posix"                         — linux or macOS
+#   "not <spec>"                    — negation of a single spec
+#   "any"                           — always true (documentation form)
+# ``arch`` narrows by machine architecture ("arm64", "x86_64", ...) matched
+# case-insensitively against platform.machine() aliases (amd64 → x86_64,
+# aarch64 → arm64). ``arch_negate=True`` inverts the arch filter.
+#
+# The old trio remains accepted as aliases routing through the same skip
+# machinery; new tests should prefer ``platforms``. A mechanical rewrite of
+# the ~500 legacy call sites is a separate sweep.
+
+_PLATFORM_ALIASES = {
+    "linux": ("linux",),
+    "macos": ("darwin", "macos"),
+    "windows": ("win32", "windows"),
+    "posix": ("linux", "darwin"),
+    "any": (),
+}
+
+
+def _platform_machine() -> str:
+    import platform as _platform
+
+    machine = (_platform.machine() or "").lower()
+    return {"amd64": "x86_64", "x86": "x86_64", "aarch64": "arm64"}.get(machine, machine)
+
+
+def _host_matches_platforms(conditions, arch=None, arch_negate=False):
+    """Evaluate a platforms() marker payload against the running host.
+
+    Returns ``(ok, skip_reason)``.
+    """
+    host = sys.platform.lower()
+    machine = _platform_machine()
+    specs = [str(c).strip().lower() for c in conditions if str(c).strip()]
+    if not specs:
+        return True, "platforms() with no specs matches every host"
+    for spec in specs:
+        negate = spec.startswith("not ")
+        leaf = spec[4:].strip() if negate else spec
+        if leaf not in _PLATFORM_ALIASES:
+            return False, f"platforms(): unknown spec {spec!r}"
+        wanted = _PLATFORM_ALIASES[leaf]
+        matched = (not wanted) or host in wanted
+        if negate:
+            matched = not matched
+        if matched:
+            break
+    else:
+        return False, f"platforms({', '.join(specs)}); host is {sys.platform}"
+    if arch is not None:
+        arch_l = str(arch).lower()
+        arch_hit = machine == arch_l or (
+            arch_l in {"arm64", "aarch64"} and machine == "arm64"
+        )
+        if arch_negate:
+            arch_hit = not arch_hit
+        if not arch_hit:
+            return False, (
+                f"platforms(arch={'not ' if arch_negate else ''}{arch}); "
+                f"host machine is {machine or 'unknown'}"
+            )
+    return True, ""
+
+
+def _platforms_gate_reason(item):
+    """Skip reason when the item's platforms() gating excludes this host."""
+    for mark in item.iter_markers("platforms"):
+        kwargs = dict(mark.kwargs)
+        conds = list(mark.args)
+        ok, reason = _host_matches_platforms(
+            conds,
+            arch=kwargs.pop("arch", None),
+            arch_negate=kwargs.pop("arch_negate", False),
+        )
+        if kwargs:
+            raise pytest.UsageError(
+                f"{item.nodeid}: platforms() got unexpected keyword(s) "
+                f"{sorted(kwargs)} — valid: arch, arch_negate"
+            )
+        if not ok:
+            return reason
+    return None
+
+
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
@@ -1261,6 +1360,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "
         "(only for tests that genuinely need real os.kill / subprocess "
         "behaviour — e.g. PTY tests that signal their own child).",
+    )
+    config.addinivalue_line(
+        "markers",
+        "platforms(*specs, arch=None, arch_negate=False): run only on hosts "
+        "matching at least one spec — linux/macos/windows/posix/any, "
+        "'not X' negation, optional arch filter (e.g. arch='arm64')",
     )
     config.addinivalue_line(
         "markers",
@@ -1384,6 +1489,12 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     skip is diagnosable rather than mysterious.
     """
     _reject_multiple_os_marks(items)
+
+    # Composable platforms() gating: skip items whose specs exclude this host.
+    for item in items:
+        reason = _platforms_gate_reason(item)
+        if reason is not None:
+            item.add_marker(pytest.mark.skip(reason=reason))
 
     for mark_name, (is_host, label) in _OS_MARKS.items():
         if is_host():

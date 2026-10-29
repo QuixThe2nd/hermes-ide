@@ -14,7 +14,7 @@ concurrency:
 jobs:
   test:
     # One matrix covers three host OSes. Linux and Windows run the full suite.
-    # macOS runs only its ``macos_only`` tests for now (the suite is not yet
+    # macOS runs only its platform-gated macOS tests for now (the suite is not yet
     # macOS-clean). tests/conftest.py's ``pytest_collection_modifyitems`` hook
     # skips foreign-OS markers on each host, so an un-gated full run selects
     # "generic + this host's own marker" — no ``-m`` filter is needed for the
@@ -44,7 +44,7 @@ jobs:
             timeout_min: 150
           - os: macos
             runner: macos-latest
-            marker: macos_only
+            marker: macos
             workers: ""
             timeout_min: 30
     steps:
