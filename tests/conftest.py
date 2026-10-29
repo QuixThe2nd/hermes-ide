@@ -121,20 +121,18 @@ os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
 
 
-# ── Per-file process isolation ──────────────────────────────────────────────
-# Tests run via ``scripts/run_tests_parallel.py``, which spawns a fresh
-# ``python -m pytest <file>`` subprocess per test file. Cross-file state
-# leakage (module-level dicts, ContextVars, caches) is impossible: each
-# file gets a clean Python interpreter. Intra-file ordering is the test
-# author's responsibility — if test A in foo.py mutates state that test B
-# in foo.py reads, that's a real bug to fix in the file (it would also
-# bite anyone running ``pytest tests/foo.py`` directly).
+# ── File-level scheduling isolation ──────────────────────────────────────────
+# Tests run via ``scripts/run_tests.sh`` — pytest-xdist with ``--dist
+# loadfile``, which pins every test of a FILE to ONE worker. Cross-file
+# state leakage is bounded to files co-scheduled on the same worker; the
+# historic per-file-subprocess model gave full process isolation but paid
+# a spawn+import wall per file that dominated Windows runtimes. Intra-file
+# ordering is the test author's responsibility — if test A in foo.py
+# mutates state that test B in foo.py reads, that's a real bug to fix in
+# the file (it would also bite anyone running ``pytest tests/foo.py``
+# directly).
 #
-# This replaces the historic _reset_module_state autouse fixture (manual
-# state clearing) and the brief experiment with subprocess-per-test
-# isolation (too slow at ~17k tests).
-#
-# See ``scripts/run_tests_parallel.py`` for the runner.
+# See ``scripts/run_tests.sh`` for the runner.
 
 
 # ── Credential env-var filter ──────────────────────────────────────────────
@@ -819,16 +817,14 @@ def _state_db_write_guard(request, monkeypatch):
     yield
 
 
-# ── Module-level state reset — replaced by per-file process isolation ──────
+# ── Module-level state reset — replaced by file-pinned xdist workers ────────
 #
-# Each test FILE runs in a freshly-spawned ``python -m pytest <file>``
-# subprocess via ``scripts/run_tests_parallel.py``, so module-level dicts /
-# sets / ContextVars from tests in one file cannot leak into tests in
-# another file. No manual per-module clearing needed.
-#
-# Within a single file, ordering is the author's responsibility. If your
-# tests in the same file share mutable state, either reset it explicitly
-# in a fixture or split them across files.
+# ``--dist loadfile`` pins each test FILE to ONE worker, so heavy
+# co-scheduling pollution (module-level dicts / sets / ContextVars shared
+# by many files) is bounded to files that land on the same worker. Within
+# a single file, ordering is the author's responsibility. If your tests
+# in the same file share mutable state, either reset it explicitly in a
+# fixture or split them across files.
 #
 # The skill ``test-suite-cascade-diagnosis`` documents the cascade patterns
 # this replaces; the running example was ``test_command_guards`` failing

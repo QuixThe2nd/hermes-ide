@@ -26,8 +26,7 @@ jobs:
     # there has a long tail of files that spawn servers/sockets/subprocesses
     # and run minutes-per-file on the CI runner (they pass in seconds on an
     # idle dev box) — measured 88.6% completion at 60 minutes on run
-    # 33338310764. The per-file cap (HERMES_TEST_FILE_TIMEOUT) bounds any
-    # single hung file; this bounds the whole lane.
+    # 33338310764.
     timeout-minutes: ${{ matrix.timeout_min }}
     strategy:
       fail-fast: false
@@ -37,19 +36,16 @@ jobs:
             runner: ubuntu-latest-96-core
             marker: ""
             workers: "96"
-            file_timeout: ""
             timeout_min: 30
           - os: windows
             runner: windows-latest-32-core
             marker: ""
             workers: "32"
-            file_timeout: "2400"
             timeout_min: 150
           - os: macos
             runner: macos-latest
             marker: macos_only
             workers: ""
-            file_timeout: ""
             timeout_min: 30
     steps:
       - name: Disable Windows Defender real-time scanning
@@ -151,20 +147,17 @@ jobs:
         run: uv cache prune --ci
 
       - name: Run tests
-        # Three shapes:
+        # Two shapes:
         #
-        #   * Windows (EXPERIMENT, PR #96458): xdist with --dist loadfile.
-        #     The per-file subprocess model pays a spawn+import wall of
-        #     ~0.5-1.5s per file x ~3400 files there — a ~6-minute floor
-        #     before any test runs. xdist pays that wall once per worker.
-        #     loadfile keeps each file's tests on ONE worker, so the
-        #     remaining hazard is state shared by files co-scheduled on a
-        #     worker. Failures from that are stateful-test bugs to fix, not
-        #     runner bugs.
-        #   * Linux: the full suite via scripts/run_tests.sh — per-file
-        #     isolation, bounded parallelism. The spawn floor is ~15ms per
-        #     file there, so isolation is nearly free; keep the stronger
-        #     guarantee.
+        #   * Full-suite lanes (Linux + Windows): scripts/run_tests.sh —
+        #     pytest-xdist with --dist loadfile behind a hermetic env.
+        #     Persistent workers pay the interpreter+import wall once per
+        #     worker instead of once per file (a ~6-minute floor on
+        #     Windows under the old per-file subprocess model). loadfile
+        #     keeps each file's tests on ONE worker, so the remaining
+        #     hazard is state shared by files co-scheduled on a worker.
+        #     Failures from that are stateful-test bugs to fix, not runner
+        #     bugs.
         #   * macOS (marker set): plain pytest over the files that carry the
         #     marker. list_os_marked_tests.py narrows WHICH FILES are
         #     imported (collection otherwise drags ~900 unrelated modules
@@ -179,10 +172,6 @@ jobs:
         run: |
           set -uo pipefail
 
-          if [ "${{ matrix.os }}" = "windows" ]; then
-            bash scripts/run_xdist.sh 32 tests/
-            exit $?
-          fi
 
           if [ -n "${{ matrix.marker }}" ]; then
             LIST="${RUNNER_TEMP:-.}/selected-tests.txt"
@@ -224,19 +213,11 @@ jobs:
           # activation.
           scripts/run_tests.sh
         env:
-          # The maximum number of test FILES that run together. Linux pins
-          # 96 (the measured whole-suite sweep — one worker per core is
-          # fastest on the 96-core runner, and the curve is shallow).
-          # Windows and macOS leave this unset so run_tests_parallel.py's
-          # default (cpu_count) applies.
+          # xdist worker count (-n). Linux pins 96 (the measured whole-suite
+          # sweep — one worker per core is fastest on the 96-core runner,
+          # and the curve is shallow); Windows pins 32. macOS leaves this
+          # unset (it runs the marked-file lane, not the full suite).
           HERMES_TEST_WORKERS: ${{ matrix.workers }}
-          # Windows CI-only: the full-suite lane showed ~160 files at or
-          # past the 300s default under runner contention (they pass in
-          # seconds on an idle box); each kill also burns a retry, so the
-          # churn — not test time — dominated the lane's wall clock. Give
-          # the per-file cap real headroom there. Empty on other lanes
-          # (run_tests.sh drops empty vars before the runner sees them).
-          HERMES_TEST_FILE_TIMEOUT: ${{ matrix.file_timeout }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

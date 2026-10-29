@@ -211,8 +211,8 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 ### Run tests
 
 ```bash
-# Preferred — matches CI (hermetic `env -i`, per-file subprocess isolation
-# via run_tests_parallel.py, worker count auto-scaled); see AGENTS.md
+# Preferred — matches CI (hermetic `env -i`, pytest-xdist with --dist
+# loadfile, worker count defaults to the CPU count); see AGENTS.md
 scripts/run_tests.sh
 
 # Alternative (activate the venv first). The wrapper is still recommended
