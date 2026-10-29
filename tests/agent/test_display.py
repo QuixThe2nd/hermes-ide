@@ -8,6 +8,7 @@ import agent.display as display_module
 from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
+    describe_tool_call,
     extract_edit_diff,
     get_cute_tool_message,
     prepare_tool_preview,
@@ -78,7 +79,42 @@ class TestBuildToolPreview:
         assert safe_args["text"].startswith("ghp_AB")
 
 
+class TestDescribeToolCallBrowserInteractions:
+    """describe_tool_call — optional description arg on browser interaction tools."""
 
+    def test_browser_click_uses_model_description_for_progress(self):
+        phrase = describe_tool_call(
+            "browser_click",
+            {"ref": "@e5", "description": "clicking the submit button"},
+        )
+        assert phrase == "Clicking the submit button"
+
+    def test_browser_click_fallback_without_description(self):
+        phrase = describe_tool_call("browser_click", {"ref": "@e5"})
+        assert phrase == "Clicking page element @e5"
+
+    def test_browser_type_fallback_hides_typed_text(self):
+        phrase = describe_tool_call(
+            "browser_type", {"ref": "@e3", "text": "hunter2"}
+        )
+        assert phrase == "Typing into page element @e3"
+        assert "hunter2" not in phrase
+
+    def test_browser_press_fallback_without_description(self):
+        phrase = describe_tool_call("browser_press", {"key": "Enter"})
+        assert phrase == "Pressing a key"
+
+    def test_browser_type_uses_description_without_leaking_text(self):
+        phrase = describe_tool_call(
+            "browser_type",
+            {
+                "ref": "@e3",
+                "text": "hunter2",
+                "description": "entering the login password",
+            },
+        )
+        assert phrase == "Entering the login password"
+        assert "hunter2" not in phrase
 
 
 
