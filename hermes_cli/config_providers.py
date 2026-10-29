@@ -118,7 +118,7 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
-    "catalog_provider"}
+    "catalog_provider", "claude_code_plan_identity"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:

@@ -645,6 +645,18 @@ class ResponsesApiTransport(ProviderTransport):
             instructions = str(messages[0].get("content") or "").strip()
             payload_messages = messages[1:]
         instructions = instructions or DEFAULT_AGENT_IDENTITY
+        if params.get("claude_code_plan_identity"):
+            from agent.claude_code_plan_identity import split_claude_code_plan_identity_instructions
+
+            instructions, _relocated_system = split_claude_code_plan_identity_instructions(instructions)
+            if _relocated_system:
+                if payload_messages and payload_messages[0].get("role") == "user":
+                    first = dict(payload_messages[0])
+                    prior = str(first.get("content") or "").strip()
+                    first["content"] = f"{_relocated_system}\n\n{prior}" if prior else _relocated_system
+                    payload_messages = [first, *payload_messages[1:]]
+                else:
+                    payload_messages = [{"role": "user", "content": _relocated_system}, *payload_messages]
 
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
@@ -765,6 +777,13 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["extra_body"].setdefault("prompt_cache_key", kwargs.get("prompt_cache_key", cache_key))
 
         _bound_prompt_cache_key_field(kwargs.get("extra_body"))
+        if params.get("claude_code_plan_identity"):
+            # Anthropic OAuth plan routes via LiteLLM Responses reject OpenAI cache knobs.
+            kwargs.pop("prompt_cache_key", None)
+            kwargs.pop("prompt_cache_retention", None)
+            extra_body = kwargs.get("extra_body")
+            if isinstance(extra_body, dict):
+                extra_body.pop("prompt_cache_key", None)
         return kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:

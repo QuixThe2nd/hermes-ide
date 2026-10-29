@@ -1767,6 +1767,9 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     # Reused by _check_compression_model_feasibility (aux compression model detection).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    from agent.claude_code_plan_identity import apply_claude_code_plan_identity_flag
+
+    apply_claude_code_plan_identity_flag(agent, _custom_providers)
 
     if _config_context_length is None and _custom_providers:
         with suppress(Exception):
