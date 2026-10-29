@@ -4,11 +4,12 @@ JSON-safe coercion, secret-key redaction, size caps, and the ``api_request_error
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import json
+import math
 import os
 import time
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from agent.usage_pricing import normalize_usage
 
@@ -47,6 +48,85 @@ class ApiRequestHooksMixin:
         summary["prompt_tokens"] = cu.prompt_tokens
         summary["total_tokens"] = cu.total_tokens
         return summary
+
+    @staticmethod
+    def _usage_cache_presence_for_hook(response: Any) -> Dict[str, Any]:
+        """Raw client-usage cache-field presence for ``post_api_request`` plugins.
+
+        Preserves what the CLIENT reported BEFORE Hermes normalization so
+        subscribers can tell absent (unknown — the client never sent the
+        field) apart from null / explicit zero / positive / invalid. Proxy
+        normalization upstream of the client stays unobservable; absence is
+        never reported as zero.
+        """
+        if response is None:
+            raw_usage = None
+        elif isinstance(response, dict):
+            raw_usage = response.get("usage")
+        else:
+            raw_usage = getattr(response, "usage", None)
+        if raw_usage is None:
+            return {"raw_usage_present": False, "cache_fields": {}}
+        # Cache-field candidates across client shapes (OpenAI cached_tokens,
+        # Anthropic cache_read/creation_input_tokens, DeepSeek/Kimi
+        # prompt_cache_hit/miss_tokens, nested prompt_tokens_details for
+        # Chat Completions and input_tokens_details for Responses).
+        top_level = (
+            "cached_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+            "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+        )
+        nested = ("prompt_tokens_details", "input_tokens_details")
+        fields: Dict[str, Any] = {}
+
+        def _field(container: Any, name: str) -> Tuple[bool, Any]:
+            """Presence + value of one field on a dict, pydantic model, or plain object.
+
+            Presence must distinguish ABSENT (the client never sent the field)
+            from an EXPLICIT null/zero sent by the server. Dicts answer by key
+            membership; pydantic models answer via ``model_fields_set`` — an
+            unset default is absent even when the attribute exists; anything
+            else (SimpleNamespace et al.) falls back to ``hasattr``.
+            """
+            if isinstance(container, dict):
+                return (name in container), container.get(name)
+            fields_set = getattr(container, "model_fields_set", None)
+            if not hasattr(container, name):
+                return False, None
+            if isinstance(fields_set, (set, frozenset, tuple, list)) and name not in fields_set:
+                return False, None  # pydantic default, not server-sent: absent
+            return True, getattr(container, name)
+
+        def _classify(name: str, value: Any) -> None:
+            # Invalid values NEVER carry their content: cache fields come from
+            # untrusted provider responses, so an arbitrary string/dict (or a
+            # NaN/Infinity float) is reported as a fixed reason only — persisting
+            # the raw value would leak untrusted content and emit nonfinite JSON.
+            if value is None:
+                fields[name] = {"state": "null"}
+            elif isinstance(value, bool) or not isinstance(value, (int, float)):
+                fields[name] = {"state": "invalid", "reason": "non_numeric"}
+            elif isinstance(value, float) and not math.isfinite(value):
+                fields[name] = {"state": "invalid", "reason": "non_finite"}
+            elif value < 0:
+                # A negative count is unusable but finite: keep the number
+                # (still strict JSON) yet classify invalid, never as zero.
+                fields[name] = {"state": "invalid", "reason": "negative", "value": value}
+            else:
+                state = "zero" if value == 0 else "positive"
+                fields[name] = {"state": state, "value": value}
+
+        for name in top_level:
+            present, value = _field(raw_usage, name)
+            if present:
+                _classify(name, value)
+        for details_name in nested:
+            present, details = _field(raw_usage, details_name)
+            if not present or details is None:
+                continue
+            cached_present, cached = _field(details, "cached_tokens")
+            if cached_present:
+                _classify(f"{details_name}.cached_tokens", cached)
+        return {"raw_usage_present": True, "cache_fields": fields}
 
     @staticmethod
     def _hook_payload_max_chars() -> int:
