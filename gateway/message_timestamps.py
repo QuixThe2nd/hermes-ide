@@ -100,6 +100,40 @@ def strip_leading_message_timestamps(content: str, tz=None) -> Tuple[str, Option
     return text, embedded_epoch
 
 
+def render_timestamp_only_injection_line(content: str) -> Optional[str]:
+    """One clock-face line for an injection that is nothing but the gateway's
+    timestamp prefix (``[Mon 2026-10-26 15:32:18 AEDT]``).
+
+    The label is derived from the injected bytes themselves — never a fresh
+    sample of machine time. Unicode clock faces only exist for whole and half
+    hours, so minutes round to the nearest half hour (>=45 wraps to the next
+    hour, carrying the 12-hour clock face around midnight/noon). Anything that
+    is not exactly a timestamp (mixed content, legacy shapes) returns None and
+    falls through to the ordinary card.
+    """
+    if not isinstance(content, str):
+        return None
+    match = _TIMESTAMP_PREFIX_RE.match(content.strip())
+    if match is None or not match.group("time"):
+        return None
+    if content.strip() != match.group(0).strip():
+        return None  # extra bytes beyond the single timestamp → not time-only
+    try:
+        dt = datetime.strptime(f"{match.group('date')} {match.group('time')}", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None  # impossible calendar date or clock bytes (e.g. Feb 30, 24:00) → card
+    hour, minute = dt.hour, dt.minute
+    if minute >= 45:
+        hour, minute = (hour + 1) % 24, 0
+    elif minute >= 15:
+        minute = 30
+    else:
+        minute = 0
+    face = (hour + 11) % 12  # 0 → twelve o'clock face index
+    emoji = chr(0x1F550 + face) if minute == 0 else chr(0x1F55C + face)
+    return f"{emoji} Injecting time"
+
+
 def render_user_content_with_timestamp(content: str, ts_value: Any = None, tz=None) -> str:
     """Render a user message for LLM context with exactly one timestamp prefix; an
     existing prefix is stripped and its parsed time wins over ``ts_value``."""
