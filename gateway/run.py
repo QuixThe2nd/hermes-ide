@@ -32146,6 +32146,138 @@ class GatewayRunner(
 
         return True
 
+    @staticmethod
+    def _source_from_restart_notify_payload(data: dict) -> Optional["SessionSource"]:
+        """Rebuild a SessionSource from a persisted ``.restart_notify.json`` row."""
+        platform_str = data.get("platform")
+        chat_id = data.get("chat_id")
+        if not platform_str or not chat_id:
+            return None
+        try:
+            platform = Platform(platform_str)
+        except (ValueError, TypeError):
+            return None
+        kwargs: dict = {
+            "platform": platform,
+            "chat_id": str(chat_id),
+            "chat_type": data.get("chat_type") or "dm",
+        }
+        if data.get("thread_id"):
+            kwargs["thread_id"] = str(data["thread_id"])
+        if data.get("delivered_via_upstream_relay") is True:
+            kwargs["delivered_via_upstream_relay"] = True
+            if data.get("user_id"):
+                kwargs["user_id"] = str(data["user_id"])
+            if data.get("scope_id"):
+                kwargs["scope_id"] = str(data["scope_id"])
+        from gateway.session import SessionSource
+
+        return SessionSource(**kwargs)
+
+    def _mark_and_schedule_restart_requester_resume(self, notify_data: dict) -> None:
+        """Resume an idle /restart requester after the comeback notice delivers.
+
+        Reuses ``cooperative_restart`` only for resume-note routing (interactive
+        guidance), not because the session accepted a wind-down steer. Scheduled
+        directly here so the wind-down allowlist cannot exclude the requester and
+        so a slow boot-path send still resumes after ``_schedule_resume_pending_sessions``.
+        No restart-loop guard: user-requested restart of an idle chat is expected.
+        """
+        source = self._source_from_restart_notify_payload(notify_data)
+        if source is None:
+            return
+
+        session_key = self._session_key_for_source(source)
+        try:
+            with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
+                self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                entry = self.session_store._entries.get(session_key)  # noqa: SLF001
+        except Exception as exc:
+            logger.debug(
+                "Restart requester auto-resume lookup failed for %s: %s",
+                session_key,
+                exc,
+            )
+            return
+
+        if entry is None or entry.suspended or entry.resume_pending:
+            return
+        if self._is_session_running(session_key):
+            return
+
+        restored = self._restored_source(entry) or source
+        try:
+            if not self._is_user_authorized(restored):
+                logger.warning(
+                    "Skipping restart requester auto-resume for %s: session owner is no "
+                    "longer authorized under the current allowlist",
+                    session_key,
+                )
+                return
+        except Exception as exc:
+            logger.warning(
+                "Skipping restart requester auto-resume for %s: authorization check failed: %s",
+                session_key,
+                exc,
+            )
+            return
+
+        adapter = self._adapter_for_source(restored)
+        if adapter is None:
+            logger.debug(
+                "Skipping restart requester auto-resume for %s: adapter not ready",
+                session_key,
+            )
+            return
+
+        from gateway.restart_wind_down import COOPERATIVE_RESTART_REASON
+
+        if not self.session_store.mark_resume_pending(
+            session_key, COOPERATIVE_RESTART_REASON
+        ):
+            return
+
+        logger.info(
+            "Marked restart requester session %s for startup auto-resume",
+            session_key,
+        )
+
+        _resume_state = self._session_state(session_key)
+        _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
+        _resume_state.turn.started_ts = time.time()
+        self._persist_active_agents()
+
+        inbound_id = self._resume_inbound_platform_message_id(session_key)
+        if inbound_id:
+            claim_fn = getattr(adapter, "claim_startup_resume_inbound", None)
+            if callable(claim_fn):
+                try:
+                    claim_fn(inbound_id, restored)
+                except Exception:
+                    logger.debug(
+                        "Discord resume ledger claim failed for %s",
+                        inbound_id,
+                        exc_info=True,
+                    )
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=restored,
+            internal=True,
+            ledger_message_id=inbound_id,
+        )
+        task = asyncio.create_task(
+            self._run_startup_resume_event(adapter, event, session_key)
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        if getattr(self, "_startup_restore_in_progress", False):
+            tasks = getattr(self, "_startup_restore_tasks", None)
+            if tasks is None:
+                tasks = []
+                self._startup_restore_tasks = tasks
+            tasks.append(task)
+
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         notify_path = _hermes_home / ".restart_notify.json"
@@ -32218,6 +32350,7 @@ class GatewayRunner(
                 platform_str,
                 chat_id,
             )
+            self._mark_and_schedule_restart_requester_resume(data)
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)

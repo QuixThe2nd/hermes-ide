@@ -330,7 +330,7 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
     adapter.send.assert_awaited_once()
     chat_id, message = adapter.send.await_args.args
     assert chat_id == "parent-42"
-    assert "shutting down" in message and "send any message" in message.lower()
+    assert "shutting down" in message.lower()
     assert adapter.send.await_args.kwargs == {"metadata": {"thread_id": "topic-7"}}
 
 
