@@ -1,8 +1,10 @@
 """Per-response *served model* capture for routing proxies (#54864).
 
 A LiteLLM-style proxy answers with the configured alias in the body's ``model`` field and puts
-the deployment it really routed to in a response header (``x-litellm-model-id``, else the
-upstream ``x-litellm-model-api-base``). The OpenAI SDK's parsed objects drop headers, so the
+the deployment it really routed to in response headers (``x-litellm-model-name`` first, then
+``x-litellm-model-id``, else ``x-litellm-model-api-base``). Values that are not human-displayable
+(purely numeric hashes, URLs) are skipped in favor of the next header; if every non-empty value
+is un-displayable, the first non-empty raw value is kept. The OpenAI SDK's parsed objects drop headers, so the
 capture rides an ``httpx`` response hook on the client Hermes builds for the agent; it stores
 the header onto ``agent.last_served_model`` (``None`` when the response carried none, so a
 value never outlives the request that produced it). Consumers: ``agent/turn_finalizer.py``
@@ -13,22 +15,42 @@ value never outlives the request that produced it). Consumers: ``agent/turn_fina
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-SERVED_MODEL_HEADERS: tuple[str, ...] = ("x-litellm-model-id", "x-litellm-model-api-base")
+SERVED_MODEL_HEADERS: tuple[str, ...] = (
+    "x-litellm-model-name",
+    "x-litellm-model-id",
+    "x-litellm-model-api-base",
+)
 _HOOK_MARK = "_hermes_served_model_hook"
 
 
+def is_displayable_served_model(value: str) -> bool:
+    lower = value.lower()
+    if lower.startswith("http://") or lower.startswith("https://"):
+        return False
+    if re.fullmatch(r"[0-9a-fA-F]{32,}", value):
+        return False
+    return any(c.isalpha() for c in value)
+
+
 def served_model_from_headers(headers: Any) -> Optional[str]:
-    """First non-empty served-model header, or ``None``."""
+    """First displayable non-empty served-model header, or the first non-empty raw value."""
     if headers is None or not hasattr(headers, "get"):
         return None
+    non_empty: list[str] = []
     for name in SERVED_MODEL_HEADERS:
         value = headers.get(name)
         if value not in (None, ""):
-            return str(value).strip()
+            stripped = str(value).strip()
+            non_empty.append(stripped)
+            if is_displayable_served_model(stripped):
+                return stripped
+    if non_empty:
+        return non_empty[0]
     return None
 
 

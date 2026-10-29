@@ -13,7 +13,10 @@ Config (``~/.hermes/config.yaml``)::
         fields: [model, context_pct, cwd, turn_time, api_time, tool_time, overhead_time, api_calls]
 
 Available fields:
-    model        — bare model id, vendor prefix dropped (``gpt-5.4``)
+    model        — bare model id, vendor prefix dropped (``gpt-5.4``); when a routing
+                   proxy reported a served model that differs from the request, shows the
+                   short served model instead; un-displayable served values (hashes, URLs)
+                   are ignored
     context_pct  — last-call context occupancy as a percent (``5%``)
     latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
     cwd          — home-relative working dir (``~``)
@@ -126,6 +129,12 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
+    try:
+        from agent.served_model import is_displayable_served_model
+    except ImportError:
+        def is_displayable_served_model(_value: str) -> bool:
+            return True
+
     def context_pct() -> str:
         if context_length and context_length > 0 and context_tokens >= 0:
             return f"{max(0, min(100, round((context_tokens / context_length) * 100)))}%"
@@ -148,12 +157,19 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
     def served() -> str:
         requested = requested_model or model
         alias = _model_short(requested)
-        if served_model and served_model not in (alias, requested):
+        if served_model and is_displayable_served_model(served_model) and served_model not in (alias, requested):
             return f"{alias} → {served_model}"
         return ""
 
+    def model_field() -> str:
+        if served_model and is_displayable_served_model(served_model):
+            req = requested_model or model
+            if _model_short(served_model) != _model_short(req):
+                return _model_short(served_model)
+        return _model_short(model)
+
     renderers = {
-        "model": lambda: _model_short(model),
+        "model": model_field,
         "served_model": served,
         "context_pct": context_pct,
         # Skipped when the caller did not measure (None) or the value is negative.
