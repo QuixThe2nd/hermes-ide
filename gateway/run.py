@@ -5782,21 +5782,44 @@ def _format_context_injection_progress(
     fail merely because Honcho returned a healthy amount of autobiography.
 
     When ``include_content`` is False, return only the heading line with
-    no char count, fences, body, or continuation chunks.
+    no char count, fences, body, or continuation chunks — unless a leading
+    gateway timestamp prefix was peeled, in which case a standalone clock
+    line is returned first as ``[time_line, heading]``. When content is
+    included, that same clock line is prepended before the card messages
+    (heading, fenced chunks, continuations).
     """
     if not isinstance(content, str) or not content:
         return []
 
+    from gateway.message_timestamps import (
+        coerce_message_timestamp,
+        format_message_timestamp,
+        render_timestamp_only_injection_line,
+        split_leading_timestamp_prefix,
+    )
+
     # A timestamp-only injection is the gateway's own clock, not recalled
     # content: render one short line — no heading, body, or fences. The clock
-    # label reveals nothing, so it renders regardless of include_content —
-    # but never for memory injections, which keep their card heading.
+    # label reveals nothing, so it renders regardless of include_content.
     if "memory" not in (sources or []):
-        from gateway.message_timestamps import render_timestamp_only_injection_line
-
         time_line = render_timestamp_only_injection_line(content)
         if time_line is not None:
             return [time_line]
+
+    # Mixed prefix+body injections (e.g. gateway clock + memory block) peel the
+    # leading timestamp into the same standalone line above the card body.
+    time_line = None
+    card_content = content
+    peeled_prefix, remainder = split_leading_timestamp_prefix(content)
+    if peeled_prefix is not None:
+        card_content = remainder
+        time_line = render_timestamp_only_injection_line(peeled_prefix)
+        if time_line is None:
+            formatted = format_message_timestamp(coerce_message_timestamp(peeled_prefix))
+            if formatted:
+                time_line = render_timestamp_only_injection_line(formatted)
+        if time_line is None:
+            time_line = f"{chr(0x1F550)} Injecting time"
 
     heading = "🧠 Injecting Memory" if "memory" in (sources or []) else "🧠 Context Injection"
     # A positive discrete count from the producer upgrades the memory heading
@@ -5815,12 +5838,17 @@ def _format_context_injection_progress(
         )
 
     if not include_content:
+        if time_line is not None:
+            return [time_line, heading]
         return [heading]
+
+    if time_line is not None and (not card_content or not card_content.strip()):
+        return [time_line]
 
     from agent.redact import redact_sensitive_text
 
     visible = redact_sensitive_text(
-        content,
+        card_content,
         force=True,
         file_read=True,
         redact_url_credentials=True,
@@ -5847,10 +5875,11 @@ def _format_context_injection_progress(
     # much larger limits, but the helper's cap contract should still be true.
     rich_overhead = measure("\n```\n\n```") if supports_code_blocks else measure("\n")
     if max(measure(header), measure(continuation)) + rich_overhead >= limit:
-        return (
+        card_messages = (
             _split_context_progress_text(header, limit, measure)
             + _split_context_progress_text(visible, limit, measure)
         )
+        return ([time_line] + card_messages) if time_line is not None else card_messages
 
     if supports_code_blocks:
         from gateway.stream_consumer import escape_code_fences_for_display
@@ -5859,18 +5888,22 @@ def _format_context_injection_progress(
         overhead = max(measure(header), measure(continuation)) + measure("\n```\n\n```")
         budget = max(1, limit - overhead)
         chunks = _split_context_progress_text(visible, budget, measure)
-        return [
+        card_messages = [
             f"{header if index == 0 else continuation}\n```\n{chunk}\n```"
             for index, chunk in enumerate(chunks)
         ]
+        return ([time_line] + card_messages) if time_line is not None else card_messages
 
     overhead = max(measure(header), measure(continuation)) + measure("\n")
     budget = max(1, limit - overhead)
     chunks = _split_context_progress_text(visible, budget, measure)
-    return [
+    card_messages = [
         f"{header if index == 0 else continuation}\n{chunk}"
         for index, chunk in enumerate(chunks)
     ]
+    return ([time_line] + card_messages) if time_line is not None else card_messages
+
+
 def _reconnect_needs_attention(info: dict, now: float) -> bool:
     """Return True when a reconnect-queue entry has been continuously queued
     long enough to warrant a NEEDS_ATTENTION signal.
