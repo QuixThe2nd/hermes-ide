@@ -502,6 +502,10 @@ BROWSER_TOOL_SCHEMAS = [
                 "ref": {
                     "type": "string",
                     "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "One short phrase (max ~80 chars) saying WHAT this interaction is for, e.g. 'clicking the submit button'. Shown to the user as progress instead of the generic label. Never put secrets, passwords, or the typed text itself here."
                 }
             },
             "required": ["ref"]
@@ -519,6 +523,10 @@ BROWSER_TOOL_SCHEMAS = [
                 },
                 "text": {
                     "type": "string", "description": "The text to type into the field"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "One short phrase (max ~80 chars) saying WHAT this interaction is for, e.g. 'typing the search query'. Shown to the user as progress instead of the generic label. Never put secrets, passwords, or the typed text itself here."
                 }
             },
             "required": ["ref", "text"]
@@ -553,6 +561,10 @@ BROWSER_TOOL_SCHEMAS = [
                 "key": {
                     "type": "string",
                     "description": "Key to press (e.g., 'Enter', 'Tab', 'Escape', 'ArrowDown')"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "One short phrase (max ~80 chars) saying WHAT this interaction is for, e.g. 'pressing Enter to submit the form'. Shown to the user as progress instead of the generic label. Never put secrets, passwords, or the typed text itself here."
                 }
             },
             "required": ["key"]
