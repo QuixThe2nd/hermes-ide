@@ -958,6 +958,21 @@ def _skip_shell_whitespace(command: str, pos: int) -> int:
     return pos
 
 
+def _is_windows_drive_relative_backslash(word: str, i: int) -> bool:
+    """True when ``word[i] == '\\'`` is a path separator, not a shell escape.
+
+    On Windows drive-relative paths (``C:\\Users\\x``, ``C:Users`` forms), a
+    backslash between word characters is a separator the shell leaves alone.
+    The codebase's Windows shell is still bash, so ``r\\m`` spells ``rm``
+    exactly as on POSIX — the escape must keep being stripped everywhere
+    EXCEPT inside a drive-anchored path, where stripping would corrupt the
+    path (``C:\\Users`` → ``C:Users``) and open false-positive approvals.
+    """
+    if i <= 0 or not word[i - 1].isalnum():
+        return False
+    return bool(re.match(r"^[A-Za-z]:", word))
+
+
 def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str = "",
                 brace: bool = False, stop_unterminated: bool = False, naive_backtick: bool = False,
                 comments: bool = False):
@@ -983,7 +998,7 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
             kind, j = "comment", text.find("\n", i, n)
             if j < 0:
                 j = n
-        elif quote != "'" and ch == "\\" and not _IS_WINDOWS and i + 1 < n:
+        elif quote != "'" and ch == "\\" and not _IS_WINDOWS and i + 1 < n and not _is_windows_drive_relative_backslash(text, i):
             kind, j = "esc", i + 2
         elif ch == quote or (quote is None and ch in "'\""):
             kind = "quote"
