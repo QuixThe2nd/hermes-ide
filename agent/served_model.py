@@ -6,8 +6,9 @@ the deployment it really routed to in response headers (``x-litellm-model-name``
 (purely numeric hashes, URLs) are skipped in favor of the next header; if every non-empty value
 is un-displayable, the first non-empty raw value is kept. The OpenAI SDK's parsed objects drop headers, so the
 capture rides an ``httpx`` response hook on the client Hermes builds for the agent; it stores
-the header onto ``agent.last_served_model`` (``None`` when the response carried none, so a
-value never outlives the request that produced it). Consumers: ``agent/turn_finalizer.py``
+the header onto ``agent.last_served_model`` (a previously captured value is preserved when the
+response carries no served-model headers, so stream-event capture is not cleared by a bare 200).
+Consumers: ``agent/turn_finalizer.py``
 (result ``served_model`` / ``requested_model``) and the opt-in gateway footer field
 ``served_model`` (``gateway/runtime_footer.py``). Fail-open everywhere.
 """
@@ -66,7 +67,9 @@ def install_served_model_capture(agent: Any, client: Any) -> None:
     def _on_response(response: Any) -> None:
         try:
             if 200 <= int(getattr(response, "status_code", 0)) < 300:
-                agent.last_served_model = served_model_from_headers(getattr(response, "headers", None))
+                served_model = served_model_from_headers(getattr(response, "headers", None))
+                if served_model is not None:
+                    agent.last_served_model = served_model
         except Exception:
             logger.debug("served-model header capture skipped", exc_info=True)
 

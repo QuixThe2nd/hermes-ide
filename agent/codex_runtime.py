@@ -971,6 +971,17 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()
+        try:
+            from agent.served_model import is_displayable_served_model
+            served_model = _event_field(event, "model")
+            if not isinstance(served_model, str):
+                served_model = _event_field(_event_field(event, "response"), "model")
+            if isinstance(served_model, str):
+                served_model = served_model.strip()
+                if served_model and is_displayable_served_model(served_model):
+                    agent.last_served_model = served_model
+        except Exception:
+            logger.debug("Codex stream served-model capture skipped", exc_info=True)
         # Lifecycle frames can precede text, so the first accepted parsed event is the Responses
         # equivalent of Chat Completions' first chunk. Preserve the per-attempt reset; the ``_fenced``
         # wrapper around this callback already keeps a retired worker from overwriting a newer request.
