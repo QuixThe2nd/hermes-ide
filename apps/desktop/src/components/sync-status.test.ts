@@ -23,6 +23,7 @@ describe('deriveSyncStatusSummary', () => {
       outcome: 'failed',
       venv_rebuild: { ok: false, reason: 'uv sync exited 1: unsatisfiable' }
     }
+
     const summary = deriveSyncStatusSummary(receipt)
     expect(summary.level).toBe('error')
     expect(summary.headline).toContain('rebuild failed')
@@ -37,11 +38,10 @@ describe('deriveSyncStatusSummary', () => {
         { plugin: 'kept-plug', action: 'kept', reason: '' }
       ]
     }
+
     const summary = deriveSyncStatusSummary(receipt)
     expect(summary.level).toBe('warn')
-    expect(summary.disabledPlugins).toEqual([
-      { plugin: 'bad-plug', reason: 'conflicts with core pin' }
-    ])
+    expect(summary.disabledPlugins).toEqual([{ plugin: 'bad-plug', reason: 'conflicts with core pin' }])
     expect(summary.headline).toContain('disabled')
   })
 
@@ -57,13 +57,12 @@ describe('deriveSyncStatusSummary', () => {
         { name: 'other', update_available: true, current: '1.0', latest: '2.0' }
       ]
     }
+
     const summary = deriveSyncStatusSummary(receipt)
     expect(summary.level).toBe('warn')
     expect(summary.headline).toContain('update-url')
     expect(summary.needsFixing).toHaveLength(1)
-    expect(summary.updatesAvailable).toEqual([
-      { name: 'other', current: '1.0', latest: '2.0' }
-    ])
+    expect(summary.updatesAvailable).toEqual([{ name: 'other', current: '1.0', latest: '2.0' }])
   })
 
   test('plain updates-available is info, not warn', () => {
@@ -72,6 +71,7 @@ describe('deriveSyncStatusSummary', () => {
       outcome: 'updates-available',
       plugin_checks: [{ name: 'plug', update_available: true, current: '1.0', latest: '1.1' }]
     }
+
     const summary = deriveSyncStatusSummary(receipt)
     expect(summary.level).toBe('info')
     expect(summary.headline).toContain('updates available')
@@ -82,6 +82,7 @@ describe('deriveSyncStatusSummary', () => {
       kind: 'plugin-check',
       plugin_checks: [{ name: 'mystery', update_available: null, reason: 'not on PyPI' }]
     }
+
     const summary = deriveSyncStatusSummary(receipt)
     expect(summary.updatesAvailable).toEqual([])
     expect(summary.headline).toBeNull()
