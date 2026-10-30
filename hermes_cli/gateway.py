@@ -37,6 +37,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
+    GATEWAY_OVERLAP_RESTART_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     detached_restart_spawn_blocked,
     is_gateway_supervisor_process,
@@ -3201,8 +3202,8 @@ Environment="HERMES_SUPERVISED_CHILD=1"
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
-SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
-RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
+SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE} {GATEWAY_OVERLAP_RESTART_EXIT_CODE}
+RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE} {GATEWAY_OVERLAP_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
@@ -3214,6 +3215,99 @@ StandardError=journal
 [Install]
 WantedBy={wanted_by}
 """
+
+
+def get_discord_hub_service_name() -> str:
+    """The single Discord transport unit shared by this installation's profiles."""
+    return "hermes-discord-hub"
+
+
+def get_discord_hub_systemd_unit_path(system: bool = False) -> Path:
+    if system:
+        return _SYSTEM_UNIT_DIR / f"{get_discord_hub_service_name()}.service"
+    return Path.home() / ".config" / "systemd" / "user" / f"{get_discord_hub_service_name()}.service"
+
+
+def generate_discord_hub_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+    """Generate an independent hub unit; gateway stops never enter its cgroup."""
+    from hermes_constants import get_default_hermes_root
+
+    python_path = get_python_path()
+    project_root = PROJECT_ROOT
+    venv_dir = _service_venv_dir()
+    hermes_home = get_default_hermes_root().resolve()
+    path_entries = _build_service_path_dirs()
+    identity_lines = env_lines = ordering_lines = ""
+    wanted_by = "default.target"
+    user_home = Path.home()
+    if not system:
+        _append_node_dir_for_service(path_entries)
+    if system:
+        username, group_name, home_dir, uid = _system_service_identity(run_as_user)
+        python_path = _remap_path_for_user(python_path, home_dir)
+        project_root = Path(_remap_path_for_user(str(project_root), home_dir))
+        venv_dir = _remap_path_for_user(venv_dir, home_dir)
+        hermes_home = Path(home_dir) / ".hermes"
+        path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
+        target_node_entries: list[str] = []
+        _append_node_dir_for_service(target_node_entries, hermes_home)
+        path_entries = [e for e in target_node_entries if e not in path_entries] + path_entries
+        identity_lines = f"User={username}\nGroup={group_name}\n"
+        ordering_lines = f"After=user@{uid}.service\nWants=user@{uid}.service\n"
+        env_lines = (
+            f'Environment="HOME={home_dir}"\n'
+            f'Environment="USER={username}"\n'
+            f'Environment="LOGNAME={username}"\n'
+        )
+        user_home = Path(home_dir)
+        wanted_by = "multi-user.target"
+    path_entries.extend(_build_user_local_paths(user_home, path_entries))
+    path_entries.extend(_build_wsl_interop_paths(path_entries))
+    path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
+    sane_path = ":".join(dict.fromkeys(path_entries))
+    return f"""[Unit]
+Description=Hermes Discord transport hub
+After=network-online.target
+Wants=network-online.target
+{ordering_lines}StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+{identity_lines}ExecStart={python_path} -m plugins.platforms.discord.hub
+WorkingDirectory={project_root}
+{env_lines}Environment="PATH={sane_path}"
+Environment="PYTHONPATH={project_root}"
+Environment="VIRTUAL_ENV={venv_dir}"
+Environment="HERMES_HOME={hermes_home}"
+Restart=always
+RestartSec=5
+# The hub may spawn an overlapping gateway successor. Only an explicit hub
+# stop may signal the hub itself; it must never tear down that successor.
+KillMode=process
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy={wanted_by}
+"""
+
+
+def _ensure_discord_hub_systemd_unit(
+    *, system: bool, run_as_user: str | None, enable_on_startup: bool,
+) -> None:
+    if detached_restart_spawn_blocked():
+        return
+    unit_path = get_discord_hub_systemd_unit_path(system=system)
+    new_unit = generate_discord_hub_systemd_unit(system=system, run_as_user=run_as_user)
+    if _refuse_temp_home_service_write(new_unit, "Discord hub systemd unit"):
+        return
+    if not unit_path.exists() or unit_path.read_text(encoding="utf-8-sig") != new_unit:
+        unit_path.parent.mkdir(parents=True, exist_ok=True)
+        unit_path.write_text(new_unit, encoding="utf-8")
+        _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+    if enable_on_startup:
+        _run_systemctl(
+            ["enable", get_discord_hub_service_name()], system=system, check=True, timeout=30)
 
 
 def _normalize_service_definition(text: str) -> str:
@@ -3708,6 +3802,9 @@ def systemd_install(
     if unit_path.exists():
         _sync_hermes_home_from_systemd_unit(system=system)
 
+    _ensure_discord_hub_systemd_unit(
+        system=system, run_as_user=run_as_user, enable_on_startup=enable_on_startup)
+
     if unit_path.exists() and not force:
         if not systemd_unit_is_current(system=system):
             print(f"↻ Repairing outdated {scope_label} systemd service at: {unit_path}")
@@ -3820,6 +3917,11 @@ def systemd_start(system: bool = False):
     system = _systemd_scope_preamble("start", system, preflight_user=True)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; the unit is guaranteed to exist here.
     refresh_systemd_unit_if_needed(system=system)
+    if (
+        get_discord_hub_systemd_unit_path(system=system).exists()
+        and not detached_restart_spawn_blocked()
+    ):
+        _run_systemctl(["start", get_discord_hub_service_name()], system=system, check=True, timeout=30)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
 

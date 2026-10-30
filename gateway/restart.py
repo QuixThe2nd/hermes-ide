@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 # EX_TEMPFAIL (sysexits.h): ask the service manager to restart after a graceful drain/reload.
 GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
+# A hub-started successor already owns new work; systemd must not start a third.
+GATEWAY_OVERLAP_RESTART_EXIT_CODE = 76
 # EX_CONFIG (sysexits.h): fatal configuration error (token collision, no platforms);
 # the s6 finish script maps it to exit 125 so the supervisor stops restarting.
 # See #51228.
