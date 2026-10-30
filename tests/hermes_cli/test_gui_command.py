@@ -139,7 +139,6 @@ def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
     return _run
 
 
-@pytest.mark.platforms("linux")
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     # Exercises the npm-pack → packaged-exe launch path; Windows desktop is
     # MSIX-only (Electron autoUpdater) and takes a different launch route.

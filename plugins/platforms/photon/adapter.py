@@ -255,7 +255,7 @@ def check_requirements() -> bool:
         return False
     node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or _node_command("node")
     if not node_bin:
-        logger.warning("photon: node binary not found on PATH or in the pm store")
+        logger.warning("photon: node binary not found on PATH, in the pm store, or via PHOTON_NODE_BIN")
         return False
     if not sidecar_deps_installed():
         # Self-install is possible at connect time (npm on PATH + writable sidecar dir):

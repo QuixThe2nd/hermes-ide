@@ -876,7 +876,6 @@ async def delete_profile_endpoint(name: str):
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-
     def _run():
         # Probe and read in one hop (two round-trips would widen the check/read window).
         if not soul_path.exists():

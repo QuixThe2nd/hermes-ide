@@ -18069,12 +18069,7 @@ ipcMain.handle('hermes:version', async () => {
     hermesRoot: resolveUpdateRoot(),
     bundleOutOfSync: skew.outOfSync,
     bundleCommitsBehind: skew.desktopCommitsBehind,
-    // True when the bundle on disk is not the one this process loaded — a
-    // plain app restart (no rebuild, no installer) clears the skew above.
-    // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
-    // under a running `npm start`, which is a rebuild the developer asked for,
-    // not a torn install to offer a restart for.
-    bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, loadInstallStamp()),
+
     // The install id: sha16 of the canonical install-root path — the key of
     // this install's per-install channel record and its installs/<sha16>/ state
     // folder. Same value `hermes update --install-id` prints; About renders it
@@ -18084,7 +18079,13 @@ ipcMain.handle('hermes:version', async () => {
     // Bundled artifacts always run their payload; light artifacts have no
     // runtime and only reach remote backends. External builds classify from
     // the install stamp (git/docker/nix), 'unknown' when it can't be told.
-    hermesRuntime: await resolveHermesRuntime()
+    hermesRuntime: await resolveHermesRuntime(),
+    // True when the bundle on disk is not the one this process loaded — a
+    // plain app restart (no rebuild, no installer) clears the skew above.
+    // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
+    // under a running `npm start`, which is a rebuild the developer asked for,
+    // not a torn install to offer a restart for.
+    bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, loadInstallStamp())
   }
 })
 
@@ -18098,7 +18099,6 @@ ipcMain.handle('hermes:app:relaunch', async () => {
   app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
   void exitAfterBackendShutdown(0)
 })
-
 // Host facts the guided first run asks for once, to decide whether "set this
 // machine up" is the likeliest first task or just one option among several.
 // Age is the birthtime of the user's home directory — when the OS created this

@@ -217,7 +217,7 @@ export function reportInstallMethodWarning(message: string | undefined): void {
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
   // Either signal means "update ready": behind > 0 (git checkout) or
   // updateAvailable (app-installer, shallow clone).
-  if (!status || status.supported === false || status.error) {
+  if (!status || status.supported === false || status.error || !status.targetSha) {
     return
   }
 

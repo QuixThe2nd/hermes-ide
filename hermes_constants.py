@@ -132,7 +132,7 @@ def hermes_home_key(path: str | Path | None = None) -> str:
     not exist yet is resolved without touching the cache, because the answer
     can change once it is created (e.g. part of the path turns out to be a symlink).
     """
-    candidate = Path(path) if path else get_hermes_home()
+    candidate = Path(path) if path is not None else get_hermes_home()
     raw = str(candidate)
     cached = _HOME_KEY_CACHE.get(raw)
     if cached is not None:

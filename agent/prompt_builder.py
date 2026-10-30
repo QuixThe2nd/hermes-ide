@@ -49,7 +49,9 @@ def _get_context_file_read_timeout() -> float:
     return _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 
-def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Optional[str]:
+def _read_text_with_timeout(
+    path: Path, timeout: Optional[float] = None, encoding: str = "utf-8-sig"
+) -> Optional[str]:
     """``path.read_text()`` on a daemon thread so a slow file can't stall startup.
 
     Returns the text, or ``None`` after *timeout* seconds (logged at WARNING;
@@ -63,7 +65,7 @@ def _read_text_with_timeout(path: Path, timeout: Optional[float] = None) -> Opti
 
     def _reader() -> None:
         try:
-            result.put((True, path.read_text(encoding="utf-8-sig")))
+            result.put((True, path.read_text(encoding=encoding)))
         except Exception as exc:  # re-raised on the caller thread
             result.put((False, exc))
 
