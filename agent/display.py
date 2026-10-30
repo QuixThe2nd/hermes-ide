@@ -637,9 +637,20 @@ def _describe_todo_list_phrase(args: dict) -> str | None:
     return f"Updating tasks: {summary}"
 
 
+def _describe_purpose(reason: str) -> str:
+    """Infinitive purpose clause for progress copy, without doubling an explicit ``to``."""
+    return reason if reason.lower().startswith("to ") else f"to {reason}"
+
+
 def _describe_file_tool_phrase(tool_name: str, args: dict) -> str | None:
-    path = _describe_file_path(args)
     verb = get_tool_verb(tool_name)
+    reason = _describe_safe_str(args.get("description"))
+    if tool_name in ("write_file", "patch") and reason and verb:
+        purpose = _describe_purpose(reason)
+        path = _describe_safe_str(args.get("path"))
+        basename = Path(path).name if path else ""
+        return f"{verb} {basename} {purpose}" if basename else f"{verb} {purpose}"
+    path = _describe_file_path(args)
     return f"{verb} {path}" if verb and path else None
 
 
@@ -703,9 +714,9 @@ def _describe_skill_phrase(_tool_name: str, args: dict) -> str | None:
     reason = _describe_arg(args, "description")
     if name is None and file_path is None and reason is None:
         return None
-    subject = f"{name} → {file_path}" if name and file_path else (name or file_path)
     if reason:
-        return f"Reading skill {subject}: {reason}" if subject else f"Reading skill: {reason}"
+        return f"Reading skill {_describe_purpose(reason)}"
+    subject = f"{name} → {file_path}" if name and file_path else (name or file_path)
     return f"Reading skill {subject}"
 
 
@@ -747,13 +758,13 @@ def _describe_skill_manage_phrase(_tool_name: str, args: dict) -> str | None:
         # no top-level ``action``. Empty/malformed arrays stay safe and content-free.
         if not isinstance(operations, list) or not operations:
             summary = "Updating skills"
-            return f"{summary}: {reason}" if reason else summary
+            return f"{summary} {_describe_purpose(reason)}" if reason else summary
         phrases = [_describe_skill_manage_op(op) for op in operations[:3]]
         extra = len(operations) - 3
         summary = ", ".join(phrases)
         if extra > 0:
             summary = f"{summary}, +{extra} more"
-        return f"{summary}: {reason}" if reason else summary
+        return f"{summary} {_describe_purpose(reason)}" if reason else summary
     action = _describe_action_key(args)
     label = _describe_enum_label(_SKILL_MANAGE_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
@@ -766,7 +777,7 @@ def _describe_skill_manage_phrase(_tool_name: str, args: dict) -> str | None:
         label = f"{label} {name}"
     if file_path is not None and action in ("write_file", "remove_file"):
         label = f"{label}: {file_path}"
-    return f"{label}: {reason}" if reason else label
+    return f"{label} {_describe_purpose(reason)}" if reason else label
 
 
 _CRON_DESCRIBE_ACTIONS = {
@@ -1294,7 +1305,7 @@ def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
 
 
 # Builders here fold ``description`` into verb+reason; raw ``description`` alone must not win.
-_DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({"skill_view", "skill_manage", "delegate_agent"})
+_DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({"write_file", "patch", "skill_view", "skill_manage", "delegate_agent"})
 
 
 def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIBE_TOOL_MAX_LEN) -> str:

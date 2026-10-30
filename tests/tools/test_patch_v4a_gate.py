@@ -50,7 +50,9 @@ class TestPatchV4AGate(unittest.TestCase):
         self.assertNotIn("mode", props)
         self.assertNotIn("patch", props)
         self.assertEqual(ft.PATCH_SCHEMA["parameters"]["required"],
-                         ["path", "old_string", "new_string"])
+                         ["path", "old_string", "new_string", "description"])
+        self.assertIn("update the GPU mapping note",
+                      props["description"]["description"])
         self.assertNotIn("V4A", ft.PATCH_SCHEMA["description"])
 
     def test_openai_family_gets_v4a_layer(self):
@@ -58,6 +60,7 @@ class TestPatchV4AGate(unittest.TestCase):
         self.assertIn("V4A", o["description"])
         self.assertIn("mode", o["parameters"]["properties"])
         self.assertIn("patch", o["parameters"]["properties"])
+        self.assertIn("description", o["parameters"]["properties"])
         self.assertEqual(o["parameters"]["required"], ["mode"])
 
     def test_non_openai_gets_no_override(self):
@@ -66,7 +69,7 @@ class TestPatchV4AGate(unittest.TestCase):
     def test_handler_accepts_both_shapes_regardless(self):
         """Wire compat: replace works without mode; V4A applies even from
         sessions whose schema never advertised it."""
-        work = tempfile.mkdtemp(prefix="v4a_t_")
+        work = tempfile.mkdtemp(prefix="v4a_t_", dir=os.environ["HERMES_HOME"])
         f1 = os.path.join(work, "a.txt")
         open(f1, "w").write("alpha beta\n")
         r = json.loads(ft.patch_tool(path=f1, old_string="beta", new_string="B"))

@@ -1169,13 +1169,14 @@ WRITE_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
             "content": {"type": "string", "description": "Complete content to write to the file"},
+            "description": {"type": "string", "description": "One short phrase (max ~80 chars) saying WHAT this edit is for, e.g. 'update the GPU mapping note'. Shown to the user as progress instead of the file path. Never put the path or file contents here."},
             # NOTE: the handler still accepts `cross_profile` (bool) — it now
             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
             # rejection error teaches it. Unadvertised: the cross-PROFILE
             # guard it was named for was removed (profiles are not isolated,
             # maintainer decision), and mirror hits are rare + self-teaching.
         },
-        "required": ["path", "content"]
+        "required": ["path", "content", "description"]
     }
 }
 
@@ -1219,12 +1220,16 @@ PATCH_SCHEMA = {
                 "description": "Replace all occurrences instead of requiring a unique match (default: false)",
                 "default": False,
             },
+            "description": {
+                "type": "string",
+                "description": "One short phrase (max ~80 chars) saying WHAT this edit is for, e.g. 'update the GPU mapping note'. Shown to the user as progress instead of the file path. Never put the path or file contents here.",
+            },
             # NOTE: handler still accepts `cross_profile` — see write_file's
             # NOTE (mirror-guard bypass only; unadvertised by design).
             # NOTE: handler still accepts `mode` + `patch` (V4A) from ANY
             # model — the schema just doesn't advertise them off-family.
         },
-        "required": ["path", "old_string", "new_string"],
+        "required": ["path", "old_string", "new_string", "description"],
     },
 }
 

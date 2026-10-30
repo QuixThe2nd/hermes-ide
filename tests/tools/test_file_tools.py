@@ -12,6 +12,7 @@ import pytest
 
 from tools.file_tools import (
     PATCH_SCHEMA,
+    WRITE_FILE_SCHEMA,
     read_file_tool,
 )
 
@@ -247,9 +248,9 @@ class TestPatchSensitivePathExtraction:
     @pytest.mark.platforms("linux")
     def test_patch_move_to_hermes_config_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr(
-            "tools.file_tools._hermes_config_resolved", "/tmp/hermes/config.yaml"
+            "tools.file_tools_write_guards._hermes_config_resolved", "/tmp/hermes/config.yaml"
         )
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
         from tools.file_tools import patch_tool
         patch_text = (
             "*** Begin Patch\n"
@@ -272,9 +273,9 @@ class TestPatchSensitivePathExtraction:
         is bypassed.
         """
         monkeypatch.setattr(
-            "tools.file_tools._hermes_config_resolved", "/tmp/hermes/config.yaml"
+            "tools.file_tools_write_guards._hermes_config_resolved", "/tmp/hermes/config.yaml"
         )
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
         from tools.file_tools import patch_tool
         patch_text = (
             "*** Begin Patch\n"
@@ -587,6 +588,33 @@ class TestSensitivePathCheck:
         assert result["status"] == "ok"
 
 
+class TestFileEditDescriptionSchema:
+    """Progress descriptions are advertised as required but remain display-only."""
+
+    def test_write_file_schema_requires_description(self):
+        props = WRITE_FILE_SCHEMA["parameters"]["properties"]
+        assert WRITE_FILE_SCHEMA["parameters"]["required"] == ["path", "content", "description"]
+        assert "update the GPU mapping note" in props["description"]["description"]
+
+    def test_write_file_handler_ignores_description(self):
+        from tools.file_tools import _handle_write_file
+
+        with patch("tools.file_tools._get_file_ops") as mock_get:
+            mock_ops = MagicMock()
+            result_obj = MagicMock()
+            result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/out.txt", "bytes": 5}
+            mock_ops.write_file.return_value = result_obj
+            mock_get.return_value = mock_ops
+
+            result = json.loads(_handle_write_file({
+                "path": "/tmp/out.txt",
+                "content": "hello",
+                "description": "update the GPU mapping note",
+            }))
+            assert result["status"] == "ok"
+            mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello")
+
+
 class TestPatchSchemaShape:
     """The BASE schema is replace-only (V4A layers on for OpenAI-family
     mains via _patch_schema_overrides — see test_patch_v4a_gate.py). The
@@ -600,8 +628,9 @@ class TestPatchSchemaShape:
         assert "mode" not in props and "patch" not in props
         # replace-only means required can finally be the REAL contract —
         # no per-mode description hedging needed on the base.
-        assert PATCH_SCHEMA["parameters"]["required"] == ["path", "old_string", "new_string"]
+        assert PATCH_SCHEMA["parameters"]["required"] == ["path", "old_string", "new_string", "description"]
         assert "must differ from old_string" in props["new_string"]["description"]
+        assert "update the GPU mapping note" in props["description"]["description"]
 
     def test_v4a_layer_keeps_per_mode_documentation(self):
         """When the V4A layer IS rendered (OpenAI-family), the strict-model
