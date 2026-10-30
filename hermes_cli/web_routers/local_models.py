@@ -48,9 +48,6 @@ _JOBS_LOCK = threading.Lock()
 _QUICKSTART_LOCK = threading.Lock()
 _LLAMACPP_PROVIDERS = ("llamacpp", "llama.cpp", "llama-cpp")
 _SPLIT_PART_RE = r"-\d{5}-of-\d{5}"
-# One TCP stream to a CDN rarely fills a fast line; 8 ranged connections into a preallocated file saturate gigabit.
-_DOWNLOAD_CONNECTIONS = 8
-_CHUNK = 4 << 20
 _SERVER_START_FAILED = "The local server could not start — check the runtime is installed"
 
 
@@ -319,94 +316,6 @@ def _variant_files_on_disk(model_id: str) -> "list[Path]":
     files += [bootstrap.assets_dir() / a.local_name for a in assets
               if a is not None and (bootstrap.assets_dir() / a.local_name).exists()]
     return files
-
-
-def _probe_range_support(url: str) -> int:
-    """Total size when the server honors Range requests, else 0. 401/403 = gated repo or wrong catalog
-    repo — raise a plain-language message, not a bare status."""
-    req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            content_range = r.headers.get("Content-Range", "") if r.status == 206 else ""
-            if "/" in content_range:
-                return int(content_range.rsplit("/", 1)[1])
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            raise RuntimeError("The model host refused the download (gated or moved). "
-                               "This is a catalog problem, not yours — please report it.") from exc
-        raise
-    except Exception:  # noqa: BLE001
-        pass
-    return 0
-
-
-def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int = 0, keep_totals: bool = False) -> None:
-    """Download url -> dest with byte progress on ``job``; ranged-parallel when the server supports it,
-    single-stream otherwise. Never leaves a .part. Completeness is checked only against what the SERVER
-    declared (range-probe total / Content-Length), never the CATALOG (its sizes may lag a re-upload), so a
-    dropped connection still errors instead of staging a truncated file. Multi-file variants: ``base_done``
-    offsets progress onto earlier files; ``keep_totals=True`` keeps the per-file size from overwriting the
-    variant's total."""
-    tmp = dest.with_suffix(".part")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    file_done = [0]
-    progress_lock = threading.Lock()
-    errors: list[Exception] = []
-
-    def pump(r, f) -> None:
-        for chunk in iter(lambda: r.read(_CHUNK), b""):
-            f.write(chunk)
-            with progress_lock:
-                file_done[0] += len(chunk)
-                job["done_bytes"] = base_done + file_done[0]
-
-    def fetch_range(start: int, end: int) -> None:
-        try:
-            req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
-            with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "r+b") as f:
-                f.seek(start)
-                pump(r, f)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    try:
-        # Probe and preallocation take real seconds on a 20+ GB file — narrate them, or the pane shows a dead '— of X GB'.
-        job["detail"] = "Connecting"
-        total = _probe_range_support(url)
-        if total:
-            if not keep_totals:
-                job["total_bytes"] = total
-            # Preallocate so each worker writes at its own offset.
-            job["detail"] = f"Reserving {_human_gb(total)} of disk space"
-            with open(tmp, "wb") as f:
-                f.truncate(total)
-            job["detail"] = ""
-            n = _DOWNLOAD_CONNECTIONS
-            threads = [threading.Thread(target=fetch_range, daemon=True, name=f"lm-dl-{i}",
-                                        args=(i * total // n, (i + 1) * total // n - 1)) for i in range(n)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-            if errors:
-                raise errors[0]
-            if file_done[0] != total:
-                raise RuntimeError(f"download incomplete ({file_done[0]} of {total} bytes)")
-        else:
-            # No range support: single stream; completeness judged by the server's
-            # own Content-Length when it sent one — never the catalog.
-            with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-                length = int(r.headers.get("Content-Length") or 0)
-                if length and not keep_totals:
-                    job["total_bytes"] = length
-                pump(r, f)
-            if length and file_done[0] != length:
-                raise RuntimeError(f"Download ended at {file_done[0]:,} bytes but the server "
-                                   f"said {length:,} — connection dropped? Removed; try again")
-        shutil.move(str(tmp), str(dest))
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def _download_plan(entry, variant) -> list:
@@ -1040,14 +949,12 @@ async def local_models_download_browsed(body: BrowsedDownloadBody):
     job = _job("model-download", f"{model_id} (from {body.repo})", model_id=model_id)
 
     def _fetch():
+        _RUNNING.setdefault(job["job_id"], {})["resume"] = _fetch
         job["phase"] = "downloading"
-        for p in paths:
-            dest = bootstrap.models_dir() / p.rsplit("/", 1)[-1]
-            if dest.exists():
-                continue
-            download_file(_hf_url(body.repo, urllib.parse.quote(p)), dest, job,
-                          base_done=int(job.get("done_bytes") or 0), keep_totals=bool(job.get("total_bytes")))
-            job["phase"] = "downloading"
+        plan = [(_hf_url(body.repo, urllib.parse.quote(p)),
+                 bootstrap.models_dir() / p.rsplit("/", 1)[-1], 0)
+                for p in paths]
+        _download_job(job, plan)
 
     _spawn_job(job, "lm-download-browsed", _fetch, download_label=model_id)
     return {"job_id": job["job_id"], "model_id": model_id}
