@@ -28179,6 +28179,8 @@ class GatewayRunner(
                         api_time=agent_result.get("api_time"),
                         tool_time=agent_result.get("tool_time"),
                         api_calls=_api_calls,
+                        requested_model=agent_result.get("requested_model"),
+                        served_model=agent_result.get("served_model"),
                     )
                 except Exception as _footer_err:
                     logger.debug("runtime_footer build failed: %s", _footer_err)
