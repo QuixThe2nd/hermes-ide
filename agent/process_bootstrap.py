@@ -320,8 +320,11 @@ def build_keepalive_http_client(
     connection pool + SSL context. Async clients are never shared: an httpcore async pool is
     bound to the event loop that first used it. Proxy-backed clients keep httpx's own transport.
 
-    See #12952, #54049.
-    See #10933.
+    ``verify`` is forwarded to httpx so auxiliary-client calls (compression,
+    vision, web_extract, title generation, etc.) honor the same per-provider
+    ``ssl_ca_cert`` / ``ssl_verify`` settings the main client uses. It is
+    passed on the client AND on the plain no-proxy mounts
+    (a mounted transport owns the SSL context for its scheme).
     """
     try:
         import httpx

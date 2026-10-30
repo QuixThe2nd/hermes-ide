@@ -3424,8 +3424,20 @@ def main():
     except Exception:
         pass
 
-    # Sweep stale ``hermes.exe.old.*`` quarantine files from previous Windows
-    # updates (see ``_quarantine_running_hermes_exe``). No-op elsewhere.
+    # One TLS authority: trust the OS store process-wide before any outbound
+    # call resolves a CA bundle (see agent/ssl_verify.py). Covers the CLI
+    # entrypoint, which agent_init's own install_truststore() call does not
+    # reach when the CLI never constructs an AIAgent (subcommands, help).
+    try:
+        from agent.ssl_verify import install_truststore
+
+        install_truststore()
+    except Exception:
+        pass
+
+    # Sweep stale ``hermes.exe.old.*`` quarantine files left by previous
+    # ``hermes update`` runs on Windows. Silent no-op on non-Windows or when
+    # there's nothing to clean. See ``_quarantine_running_hermes_exe``.
     try:
         _cleanup_quarantined_exes()
     except Exception:

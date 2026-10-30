@@ -23,8 +23,6 @@ from pathlib import Path
 import pytest
 
 import hermes_cli._early_recovery as er
-import subprocess
-from hermes_cli import doctor_platform
 from hermes_cli import main_install_repair
 
 
@@ -122,92 +120,3 @@ class TestUpdateProbeScriptChecksBundle:
             monkeypatch, tmp_path, Path(real_certifi.where())
         )
         assert "certifi" not in out.splitlines()
-
-
-# =========================================================================
-# 2. hermes doctor: detection and --fix repair
-# =========================================================================
-
-
-class TestDoctorCertificates:
-    def test_broken_bundle_fails_without_fix(self, monkeypatch, capsys, tmp_path):
-        from hermes_cli import doctor as doctor_mod
-
-        monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
-        issues = []
-        doctor_platform.check_certificates(should_fix=False, issues=issues)
-        out = capsys.readouterr().out
-        assert "broken" in out.lower()
-        assert issues, "a broken bundle must be funneled into the action list"
-        assert any("doctor --fix" in i for i in issues)
-
-    def test_fix_reinstalls_certifi_and_reverifies(self, monkeypatch, capsys, tmp_path):
-        from hermes_cli import doctor as doctor_mod
-
-        # First verification fails, post-reinstall verification succeeds.
-        calls = {"verify": 0, "pip": []}
-
-        def fake_verify():
-            calls["verify"] += 1
-            if calls["verify"] == 1:
-                from agent.errors import SSLConfigurationError
-
-                raise SSLConfigurationError("certifi points to a missing CA bundle")
-
-        def fake_run(cmd, **kwargs):
-            calls["pip"].append(cmd)
-
-            class _R:
-                returncode = 0
-                stdout = ""
-                stderr = ""
-
-            return _R()
-
-        monkeypatch.setattr(
-            "agent.ssl_guard.verify_ca_bundle", fake_verify
-        )
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        issues = []
-        doctor_platform.check_certificates(should_fix=True, issues=issues)
-        out = capsys.readouterr().out
-
-        assert calls["pip"], "--fix must run a pip force-reinstall of certifi"
-        pip_cmd = calls["pip"][0]
-        assert "--force-reinstall" in pip_cmd and "certifi" in pip_cmd
-        assert calls["verify"] == 2, "must re-verify after the reinstall"
-        assert "repaired" in out.lower()
-        assert not issues
-
-
-    def test_healthy_bundle_never_touches_pip(self, monkeypatch, capsys):
-        from hermes_cli import doctor as doctor_mod
-
-        def _fail_run(*a, **k):
-            raise AssertionError("healthy bundle must not trigger a reinstall")
-
-        monkeypatch.setattr(subprocess, "run", _fail_run)
-        doctor_platform.check_certificates(should_fix=True, issues=[])
-        out = capsys.readouterr().out
-        assert "valid" in out.lower()
-
-
-# =========================================================================
-# 3. Startup error message stays actionable
-# =========================================================================
-
-
-class TestSslGuardRepairHint:
-    def test_missing_bundle_error_mentions_doctor_fix(self, monkeypatch, tmp_path):
-        import certifi
-
-        from agent.errors import SSLConfigurationError
-        from agent.ssl_guard import verify_ca_bundle
-
-        monkeypatch.setattr(certifi, "where", lambda: str(tmp_path / "gone.pem"))
-        with pytest.raises(SSLConfigurationError) as excinfo:
-            verify_ca_bundle()
-        message = str(excinfo.value)
-        assert "hermes doctor --fix" in message
-        assert "certifi" in message

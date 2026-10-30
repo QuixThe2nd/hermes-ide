@@ -1554,9 +1554,9 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         _save_model_choice, _sync_nous_pool_from_auth_store, _update_config_for_provider,
         _write_shared_nous_state, format_auth_error)
     timeout_seconds = getattr(args, "timeout", None) or 15.0
-    ca_bundle = (
-        getattr(args, "ca_bundle", None) or os.getenv("HERMES_CA_BUNDLE")
-        or os.getenv("SSL_CERT_FILE"))
+    # --ca-bundle only: trust otherwise comes from the OS certificate store,
+    # so there is no env var to consult.
+    ca_bundle = getattr(args, "ca_bundle", None)
     try:
         auth_state = _offer_shared_nous_import(timeout_seconds)
         if auth_state is None:

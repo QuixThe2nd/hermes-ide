@@ -235,51 +235,25 @@ def _check_s6_supervision(issues: list[str]) -> None:
 
 
 def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
-    """Verify the certifi CA bundle is loadable before the first HTTPS call tracebacks.
+    """Report where TLS trust comes from.
 
-    ``--fix`` repairs a broken bundle (e.g. a brew Python upgrade rebuilt the venv) by force-reinstalling
-    certifi into THIS interpreter's environment and re-verifying.
+    Trust is the OS store via truststore, so there is no bundle to repair: a machine whose certificate
+    store is broken is broken for every app on it, and fixing that is the OS's job, not ours.
+    ``should_fix`` is accepted for signature parity with the other checks.
     """
     try:
-        from agent.ssl_guard import verify_ca_bundle
-        from agent.errors import SSLConfigurationError
+        from agent.ssl_verify import install_truststore
     except Exception as e:
         return check_warn("SSL certificate check skipped", str(e))
     if issues is None:
         issues = []
-    try:
-        verify_ca_bundle()
-        return check_ok("SSL CA certificate bundle is valid")
-    except SSLConfigurationError as e:
-        first_error = str(e)
-    except Exception as e:
-        return check_warn("SSL certificate check skipped", str(e))
-    check_fail("SSL CA certificate bundle is broken", first_error)
-    pip_cmd = f"{sys.executable} -m pip install --force-reinstall certifi"
-    if not should_fix:
-        issues.append(f"Repair the CA bundle: run `hermes doctor --fix`, or `{pip_cmd}`")
-        return
-    print("    → Repairing: force-reinstalling certifi...")
-    try:
-        result = subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "certifi"],
-                                capture_output=True, text=True, timeout=300)
-        failure = ("certifi reinstall failed", (result.stderr or result.stdout or "")[-500:]) if result.returncode != 0 else None
-    except Exception as exc:
-        failure = ("certifi repair could not run pip", str(exc))
-    if failure:
-        return _fail_and_issue(*failure, f"Reinstall certifi manually: {pip_cmd}", issues)
-    # Drop cached certifi modules so where() resolves the fresh install without a restart.
-    import importlib
-    for mod_name in [m for m in sys.modules if m == "certifi" or m.startswith("certifi.")]:
-        sys.modules.pop(mod_name, None)
-    importlib.invalidate_caches()
-    try:
-        verify_ca_bundle()
-        check_ok("SSL CA certificate bundle repaired (certifi reinstalled)")
-    except SSLConfigurationError as e:
-        _fail_and_issue("SSL CA certificate bundle still broken after reinstall", str(e),
-                        "certifi reinstall did not restore the CA bundle — check for a custom CA env var "
-                        "(SSL_CERT_FILE/REQUESTS_CA_BUNDLE) pointing at a missing file, or recreate the venv.", issues)
+    if install_truststore():
+        return check_ok("TLS trust: operating system certificate store")
+    return _fail_and_issue(
+        "TLS trust: OpenSSL defaults (truststore unavailable)",
+        "Certificates trusted only by the OS store — a corporate root, for instance — will not verify.",
+        f"truststore could not load; reinstall it: {sys.executable} -m pip install --force-reinstall truststore",
+        issues)
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:

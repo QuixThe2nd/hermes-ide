@@ -212,43 +212,31 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 
 
 def _default_verify() -> bool | ssl.SSLContext:
-    """Platform-aware default SSL verify for httpx clients.
+    """TLS trust for auth-portal clients: the OS certificate store (see agent/ssl_verify.py)."""
+    from agent.ssl_verify import install_truststore
 
-    On macOS with Homebrew Python the system OpenSSL cannot find the system trust store, so pin
-    certifi's bundle when importable; elsewhere defer to httpx's built-in default.
-    """
-    if sys.platform == "darwin":
-        try:
-            import certifi
-            return ssl.create_default_context(cafile=certifi.where())
-        except ImportError:
-            pass
+    install_truststore()
     return True
 
 
 def _resolve_verify(
     *, insecure: Optional[bool] = None, ca_bundle: Optional[str] = None,
     auth_state: Optional[Dict[str, Any]] = None) -> bool | ssl.SSLContext:
-    from hermes_cli.auth import _default_verify
+    """TLS verify for auth-portal clients — the one resolver, given this call's explicit inputs
+    (per-connection ``tls`` state or an argument)."""
+    from agent.ssl_verify import resolve_httpx_verify
+
     tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
     tls_state = tls_state if isinstance(tls_state, dict) else {}
+
     effective_insecure = (
         is_truthy_value(insecure, default=False) if insecure is not None
         else is_truthy_value(tls_state.get("insecure", False), default=False))
-    effective_ca = (
-        ca_bundle or tls_state.get("ca_bundle") or os.getenv("HERMES_CA_BUNDLE")
-        or os.getenv("SSL_CERT_FILE") or os.getenv("REQUESTS_CA_BUNDLE"))
-    if effective_insecure:
-        return False
-    if effective_ca:
-        ca_path = str(effective_ca)
-        if not os.path.isfile(ca_path):
-            logger.warning(
-                "CA bundle path does not exist: %s — falling back to default certificates",
-                ca_path)
-            return _default_verify()
-        return ssl.create_default_context(cafile=ca_path)
-    return _default_verify()
+
+    return resolve_httpx_verify(
+        ca_bundle=ca_bundle or tls_state.get("ca_bundle"),
+        ssl_verify=False if effective_insecure else None,
+    )
 
 
 def _request_device_code(
