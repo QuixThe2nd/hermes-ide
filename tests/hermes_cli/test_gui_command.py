@@ -113,6 +113,7 @@ def _staging_dir_from(cmd) -> Path:
     raise AssertionError(f"no staging output override in {cmd!r}")
 
 
+
 def _packaged_exe_rel() -> Path:
     """Packaged-exe path relative to electron-builder's output dir on THIS host."""
     if sys.platform == "darwin":
@@ -120,6 +121,7 @@ def _packaged_exe_rel() -> Path:
     if sys.platform == "win32":
         return Path("win-unpacked") / "Hermes.exe"
     return Path("linux-unpacked") / "hermes"
+
 
 
 def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
@@ -139,9 +141,8 @@ def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
     return _run
 
 
+
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
-    # Exercises the npm-pack → packaged-exe launch path; Windows desktop is
-    # MSIX-only (Electron autoUpdater) and takes a different launch route.
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
