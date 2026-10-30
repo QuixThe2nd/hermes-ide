@@ -1,8 +1,9 @@
 #!/bin/bash
-# Smoke-test a staged payload the way the DESKTOP spawns it (the self-
-# relative CLI trampoline, which sets its own PYTHONPATH) plus the raw store
-# python with an explicit PYTHONPATH (the legacy spawn). cwd at the staged
-# repo, no network, lazy installs off. Usage: smoke-payload.sh <payload-dir>
+# Smoke-test a staged pm payload (`pm bundle --out`): the raw store python
+# boots hermes_cli/pm out of the staged repo snapshot (cwd at the staged
+# repo, no network, lazy installs off). The desktop's self-relative CLI
+# trampoline is minted only by the desktop release workflow, not by
+# `pm bundle`, so it is not exercised here. Usage: smoke-payload.sh <payload-dir>
 set -e
 PAYLOAD="${1:?usage: smoke-payload.sh <payload-dir>}"
 cd "$PAYLOAD"
@@ -39,12 +40,6 @@ env -u PYTHONPATH -u PYTHONHOME \
   HERMES_RUNTIME_DIR="$TOOLS" HERMES_DISABLE_LAZY_INSTALLS=1 \
   PYTHONPATH="$SP" \
   "$PY" -m hermes_cli.main --version
-
-echo "— the self-relative CLI trampoline boots with NO PYTHONPATH (it sets its own) —"
-SHIM="../bin/hermes$(case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) echo .exe ;; esac)"
-env -u PYTHONPATH -u PYTHONHOME \
-  HERMES_RUNTIME_DIR="$TOOLS" HERMES_DISABLE_LAZY_INSTALLS=1 \
-  "$SHIM" --version
 
 echo "— pm sees the staged tools —"
 env -u PYTHONPATH -u PYTHONHOME \
