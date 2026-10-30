@@ -69,7 +69,7 @@ def test_stop_marker_failure_falls_back_to_terminate(monkeypatch):
     assert terminated == {"pid": 99, "sig": 15}
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_no_pywin32_means_friendly_error(tmp_path, capfd):
     """A user running --service BY HAND (not via SCM): pywin32 is present
     but Initialize/dispatcher refuse without the SCM — the frontend must

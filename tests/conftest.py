@@ -98,6 +98,19 @@ if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
     os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
     atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
 
+# PYTHONPYCACHEPREFIX is a bytecode-mirror escape hatch: when set (the
+# bundled desktop app exports it as %LOCALAPPDATA%\hermes\pycache),
+# importlib/pytest write .pyc files to <prefix>/<absolute source path>
+# instead of next to the sources. Un-scrubbed, that mirror lands under
+# the REAL hermes home and trips the real-home tripwire on any module
+# imported after sandboxing (test_find_shell was the first to bite).
+# Clear it so bytecode goes back beside the (already sandboxed) sources.
+os.environ.pop("PYTHONPYCACHEPREFIX", None)
+try:
+    sys.pycache_prefix = None
+except AttributeError:
+    pass
+
 # Subprocess-surviving isolation marker (#82770). PYTEST_CURRENT_TEST /
 # PYTEST_VERSION are pytest's own vars, and tests that spawn children
 # routinely rebuild the child env and strip them ("the subprocess must look
