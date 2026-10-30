@@ -10467,10 +10467,12 @@ _is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from plugins.platforms.discord.hub_client import DiscordHubClientAdapter
+
     ctx.register_platform(
         name="discord",
         label="Discord",
-        adapter_factory=DiscordAdapter,
+        adapter_factory=DiscordHubClientAdapter,
         check_fn=discord_deps_present,
         ensure_deps_fn=check_discord_requirements,
         is_connected=_is_connected,

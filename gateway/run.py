@@ -4044,6 +4044,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
+    GATEWAY_OVERLAP_RESTART_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     detached_restart_spawn_blocked,
     is_global_startup_conflict,
@@ -14852,7 +14853,8 @@ class GatewayRunner(
         effective_mode = self._effective_busy_input_mode(event.source)
 
         # --- Draining case (gateway restarting/stopping) ---
-        if self._draining:
+        from gateway.overlap_restart import admits_owned_work
+        if self._draining and not admits_owned_work(self, event.source):
             adapter = self._adapter_for_source(event.source)
             if not adapter:
                 return True
@@ -16333,7 +16335,7 @@ class GatewayRunner(
                 wedged += 1
         return wedged
 
-    def _slash_drain_gate_notice(self, canonical: Optional[str]) -> Optional[str]:
+    def _slash_drain_gate_notice(self, canonical: Optional[str], source: Optional[SessionSource] = None) -> Optional[str]:
         """Admission verdict for a slash command while ``_draining`` is set.
 
         The AUTHORITATIVE drain gate: ``_handle_message`` consults this
@@ -16355,6 +16357,10 @@ class GatewayRunner(
         """
         if not self._draining:
             return None
+        if source is not None:
+            from gateway.overlap_restart import admits_owned_work
+            if admits_owned_work(self, source):
+                return None
         if canonical is not None and canonical in _DRAIN_ALLOWED_COMMANDS:
             return None
         return (
@@ -16453,7 +16459,7 @@ class GatewayRunner(
         await self._finalize_restart_wind_down_offer(WIND_DOWN_TERMINAL_DRAINED)
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(self, *, detached: bool = False, via_service: bool = False, overlap: bool = True) -> bool:
         if self._restart_task_started:
             return False
         # One provisional setup transaction: every flag and partial cycle
@@ -16481,6 +16487,15 @@ class GatewayRunner(
         # exception out of it must hit the rollback, not strand the latch.
 
         async def _run_restart() -> None:
+            # A transport with multi-generation support starts the successor
+            # before waiting. Its hub moves new keys immediately while this
+            # predecessor continues only sessions it already owns.
+            try:
+                if overlap:
+                    from gateway.overlap_restart import spawn_successor
+                    await spawn_successor(self, via_service=via_service)
+            except Exception:
+                logger.exception("Overlapping restart successor could not start; using the legacy drain path")
             # ── Destructive boundary ────────────────────────────────────
             # stop() may run only once the real active-work count is zero
             # while admission (_draining) is still closed — with NOTHING
@@ -21350,7 +21365,9 @@ class GatewayRunner(
                     _phase_elapsed(),
                 )
 
-            if self._restart_requested and self._restart_detached:
+            if self._restart_requested and self._restart_detached and not getattr(
+                self, "_overlap_restart_successor_started", False
+            ):
                 # stop() is the sole owner of the standalone watcher: it
                 # launches exactly once per process (latch-guarded inside),
                 # only now that the drain proved active work finished, and
@@ -21658,7 +21675,11 @@ class GatewayRunner(
                 # unit's stop/start job.  The generated launchd plist's
                 # unconditional ``KeepAlive`` likewise replaces the process
                 # after this planned exit.
-                self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
+                self._exit_code = (
+                    GATEWAY_OVERLAP_RESTART_EXIT_CODE
+                    if getattr(self, "_overlap_restart_successor_started", False)
+                    else GATEWAY_SERVICE_RESTART_EXIT_CODE
+                )
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
@@ -24157,7 +24178,7 @@ class GatewayRunner(
             # already waiting for in-flight work to finish (#77184).
             if _evt_cmd and _cmd_def_inner is not None:
                 _drain_notice = self._slash_drain_gate_notice(
-                    _cmd_def_inner.name
+                    _cmd_def_inner.name, source
                 )
                 if _drain_notice is not None:
                     return _drain_notice
@@ -24171,9 +24192,11 @@ class GatewayRunner(
                     event, _cmd_def_inner, _quick_key, source,
                 )
 
+            from gateway.overlap_restart import admits_owned_work as _admits_overlap_work
+            _overlap_owned = _admits_overlap_work(self, source)
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-                if self._draining:
+                if self._draining and not _overlap_owned:
                     # Drain window: an in-memory-only merge would die with the
                     # process bounce. Route through the durable drain queue
                     # when the busy policy allows it (the photo merge happens
@@ -24236,7 +24259,7 @@ class GatewayRunner(
                     self._release_running_agent_state(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
-                if self._draining:
+                if self._draining and not _overlap_owned:
                     # The sentinel window's in-memory merge dies with the
                     # process bounce — same durable admission as every other
                     # busy follow-up. (/stop above stays reachable: it is the
@@ -24255,7 +24278,7 @@ class GatewayRunner(
                         merge_text=True,
                     )
                 return None
-            if self._draining:
+            if self._draining and not _overlap_owned:
                 return self._busy_drain_admission(
                     event, _quick_key, effective_busy_input_mode
                 )
@@ -24442,7 +24465,7 @@ class GatewayRunner(
         # work before the old _draining check ever ran (#77184). Hook
         # rewrites above have already re-resolved ``canonical``, so a
         # rewritten command is gated under its FINAL name.
-        _cold_drain_notice = self._slash_drain_gate_notice(canonical)
+        _cold_drain_notice = self._slash_drain_gate_notice(canonical, source)
         if _cold_drain_notice is not None:
             # Plain text / media the gate refused is no longer dropped: the
             # idle session has no in-memory queue to join, so queue it
@@ -38531,7 +38554,7 @@ async def _start_gateway_start_control_socket(runner):
 
             def _request() -> None:
                 try:
-                    accepted_box.append(runner.request_restart(detached=False, via_service=True))
+                    accepted_box.append(runner.request_restart(detached=False, via_service=True, overlap=False))
                 finally:
                     _done.set()
 
@@ -38727,7 +38750,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         runner, _signal_initiated_shutdown)
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+        runner.request_restart(detached=False, via_service=True, overlap=False)
 
     loop = asyncio.get_running_loop()
 
