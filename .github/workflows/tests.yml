@@ -13,80 +13,21 @@ concurrency:
 
 jobs:
   test:
-    # One matrix covers three host OSes. Linux and Windows run the full suite.
-    # macOS runs only its platform-gated macOS tests for now (the suite is not yet
-    # macOS-clean). tests/conftest.py's ``pytest_collection_modifyitems`` hook
-    # skips foreign-OS markers on each host, so an un-gated full run selects
-    # "generic + this host's own marker" — no ``-m`` filter is needed for the
-    # full-suite lanes. Nothing slices by platform now: every lane runs the
-    # whole discoverable suite and lets the markers do the gating.
-    name: Python tests (${{ matrix.os }})
-    runs-on: ${{ matrix.runner }}
-    # The windows lane needs a bigger budget than the others: the full suite
-    # there has a long tail of files that spawn servers/sockets/subprocesses
-    # and run minutes-per-file on the CI runner (they pass in seconds on an
-    # idle dev box) — measured 88.6% completion at 60 minutes on run
-    # 33338310764.
-    timeout-minutes: ${{ matrix.timeout_min }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: linux
-            runner: ubuntu-latest-96-core
-            marker: ""
-            workers: "96"
-            timeout_min: 30
-          - os: windows
-            runner: windows-latest-32-core
-            marker: ""
-            workers: "32"
-            timeout_min: 150
-          - os: macos
-            runner: macos-latest
-            marker: macos
-            workers: ""
-            timeout_min: 30
+    name: Run tests
+    # One 96-core runner for the whole suite. There is no slicing. Slicing
+    # existed to spread the suite over 4-core runners. It cost a matrix job, a
+    # duration cache, a per-slice artifact and a merge job to do it.
+    #
+    # 96 cores clear the floor that the slowest single test file sets (about
+    # 82s). A second slice divides work that is already at that floor, and
+    # adds a second setup.
+    runs-on: ubuntu-latest-96-core
+    timeout-minutes: 30
     steps:
-      - name: Disable Windows Defender real-time scanning
-        # Process-spawn-heavy test files pay Defender's real-time scan on
-        # every python.exe spawn / temp write, which inflated the lane's tail
-        # to minutes-per-file (seconds on an idle dev box). The runner is
-        # ephemeral and single-purpose; scanning it protects nothing. Best
-        # effort — some runner images may refuse, and the lane still passes,
-        # just slower.
-        if: matrix.os == 'windows'
-        shell: pwsh
-        run: |
-          try {
-            Set-MpPreference -DisableRealtimeMonitoring $true
-            Write-Host "Defender real-time monitoring disabled."
-          } catch {
-            Write-Host "Could not disable windows defender"
-          }
-
-      - name: Put Git bash ahead of the WSL stub on PATH
-        # windows-2025 ships C:\Windows\System32\bash.exe — the WSL launcher
-        # stub with no distro installed. PATH puts System32 before Git, so
-        # every test that resolves "bash" spawns the stub and gets its UTF-16
-        # "Windows Subsystem for Linux" banner with exit 1. Prepend Git's bin
-        # so "bash" resolves to the real MSYS bash the harnesses expect.
-        if: matrix.os == 'windows'
-        shell: pwsh
-        run: |
-          $gitBin = "C:\Program Files\Git\bin"
-          if (Test-Path "$gitBin\bash.exe") {
-            Add-Content $env:GITHUB_PATH $gitBin
-            Write-Host "Prepended $gitBin to PATH"
-          } else {
-            Write-Host "::warning::Git bash not found at $gitBin"
-          }
-
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install ripgrep (prebuilt binary)
-        if: matrix.os == 'linux'
         run: |
           set -euo pipefail
           RG_VERSION=15.1.0
@@ -147,79 +88,38 @@ jobs:
         run: uv cache prune --ci
 
       - name: Run tests
-        # Two shapes:
+        # Per-file isolation via scripts/run_tests.sh: each test file runs
+        # in its own freshly-spawned `python -m pytest <file>` subprocess
+        # with bounded parallelism. No xdist, no shared workers, no
+        # module-level state leakage between files.
         #
-        #   * Full-suite lanes (Linux + Windows): scripts/run_tests.sh,
-        #     which dispatches on host because the cost profiles are
-        #     opposites. Linux: per-file subprocess isolation (spawn is
-        #     ~15ms there, each file collected exactly once, zero
-        #     cross-file state pollution). Windows: pytest-xdist
-        #     --dist loadfile (per-file spawn is 0.5-1.5s there, a ~6-min
-        #     floor the old model paid; persistent workers amortize the
-        #     interpreter+import wall, and loadfile pins a file's tests to
-        #     ONE worker so remaining hazards are stateful-test bugs to
-        #     fix, not runner bugs).
-        #   * macOS (marker set): plain pytest over the files that carry the
-        #     marker. list_os_marked_tests.py narrows WHICH FILES are
-        #     imported (collection otherwise drags ~900 unrelated modules
-        #     through import on the macOS host), and `-m` stays the
-        #     authoritative selector. Passing `-m` REPLACES pyproject's
-        #     ``-m 'not integration'`` addopts, so ``not integration`` is
-        #     repeated or the integration suite returns through the side
-        #     door. The lane FAILS on pytest exit 5 (zero tests selected) so
-        #     a renamed/broken marker can never report green while running
-        #     nothing.
-        shell: bash
+        # No --files: the runner discovers the suite itself. The discovered
+        # set is identical to the list the removed matrix job used to pass in.
         run: |
-          set -uo pipefail
-
-
-          if [ -n "${{ matrix.marker }}" ]; then
-            LIST="${RUNNER_TEMP:-.}/selected-tests.txt"
-
-            if ! uv run --no-sync python scripts/ci/list_os_marked_tests.py \
-                   "${{ matrix.marker }}" > "$LIST"; then
-              echo "::error::could not enumerate ${{ matrix.marker }} test files"
-              exit 1
-            fi
-            if [ ! -s "$LIST" ]; then
-              echo "::error::empty ${{ matrix.marker }} file list"
-              exit 1
-            fi
-
-            # Deliberately NOT `mapfile`: that is a bash 4 builtin and the
-            # macOS runner's /bin/bash is 3.2. Word-splitting is safe here
-            # because the helper emits repo-relative paths with no spaces.
-            # shellcheck disable=SC2046
-            set -- $(cat "$LIST")
-            echo "selected $# file(s) for ${{ matrix.marker }}:"
-            cat "$LIST"
-
-            status=0
-            uv run --no-sync python -m pytest \
-              "$@" \
-              -m "platforms and not integration" \
-              -v --tb=short || status=$?
-            if [ "$status" -eq 5 ]; then
-              echo "::error::No tests matched -m ${{ matrix.marker }}. Either the" \
-                   "marker was renamed/dropped or selection is broken — this job" \
-                   "must never pass without running its OS's tests."
-              exit 1
-            fi
-            exit "$status"
-          fi
-
-          # Linux full suite. run_tests.sh locates the venv itself (both the
-          # POSIX bin/ and the Windows Scripts/ layout), so no per-OS
-          # activation.
+          source .venv/bin/activate
           scripts/run_tests.sh
         env:
-          # Parallelism. Linux pins 96 (the measured whole-suite sweep —
-          # one worker per core is fastest on the 96-core runner, and the
-          # curve is shallow; the per-file runner reads this as its
-          # subprocess cap). Windows pins 32 (xdist -n). macOS leaves this
-          # unset (it runs the marked-file lane, not the full suite).
-          HERMES_TEST_WORKERS: ${{ matrix.workers }}
+          # This is the maximum number of test FILES that run together.
+          # run_tests_parallel.py starts one pytest subprocess for each file
+          # from a single ThreadPoolExecutor, so this value IS the limit. The
+          # default is cpu_count*2, which is 192 here.
+          #
+          # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
+          # two repetitions for each value. See run 32549672063:
+          #
+          #     workers   x cores   mean
+          #        48       0.5x    138s
+          #        96       1.0x    126s   <- fastest
+          #       144       1.5x    132s
+          #       192       2.0x    132s
+          #       240       2.5x    140s
+          #       288       3.0x    142s
+          #
+          # One worker for each core wins. The curve is shallow: 126s to 142s
+          # across a 6x range. The suite has sufficient concurrency at this
+          # size. The remaining time is the slowest files plus the setup.
+          # Workers above the core count only add contention.
+          HERMES_TEST_WORKERS: 96
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
@@ -249,7 +149,16 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
+          # Pin the uv version: unpinned, setup-uv resolves "latest" by
+          # fetching a manifest from raw.githubusercontent.com on EVERY job —
+          # a transient fetch failure fails the whole job (2026-07-28 slice-5
+          # incident). Pinned, the binary downloads directly; no manifest hop.
           version: "0.9.28"
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
           enable-cache: true
           cache-dependency-glob: |
             pyproject.toml
@@ -259,11 +168,22 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        #
+        # Same extras as the test job's sync above: the hermetic test env
+        # forbids mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
+        # tests/conftest.py), so lazy-install SDKs exercised by tests must be
+        # in the venv up front.
         uses: ./.github/actions/retry
         with:
           command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
       - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
       - name: Run e2e tests
