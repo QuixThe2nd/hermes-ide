@@ -1029,6 +1029,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
         writer_token["value"] = claim_stream_writer(agent)
         writer_token["raw_stream"] = _raw_stream
+        try:
+            from agent.served_model import capture_served_model_from_stream
+            capture_served_model_from_stream(agent, _raw_stream)
+        except Exception:
+            logger.debug("Codex stream served-model header capture skipped", exc_info=True)
 
     def _accept_codex_chunk(_chunk: Any) -> bool:
         token = writer_token["value"]

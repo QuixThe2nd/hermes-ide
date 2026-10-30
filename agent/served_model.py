@@ -4,9 +4,11 @@ A LiteLLM-style proxy answers with the configured alias in the body's ``model`` 
 the deployment it really routed to in response headers (``x-litellm-model-name`` first, then
 ``x-litellm-model-id``, else ``x-litellm-model-api-base``). Values that are not human-displayable
 (purely numeric hashes, URLs) are skipped in favor of the next header; if every non-empty value
-is un-displayable, the first non-empty raw value is kept. The OpenAI SDK's parsed objects drop headers, so the
-capture rides an ``httpx`` response hook on the client Hermes builds for the agent; it stores
-the header onto ``agent.last_served_model`` (a previously captured value is preserved when the
+is un-displayable, the first non-empty raw value is kept by the shared response hook. The OpenAI SDK's
+parsed objects drop headers, so capture has two sources: an ``httpx`` response hook on the client Hermes
+builds for the agent, and ``capture_served_model_from_stream`` for Codex streams that retain their opening
+``httpx`` response. The stream capture stores only displayable values; both sources write to
+``agent.last_served_model`` (a previously captured value is preserved when the
 response carries no served-model headers, so stream-event capture is not cleared by a bare 200).
 Consumers: ``agent/turn_finalizer.py``
 (result ``served_model`` / ``requested_model``) and the opt-in gateway footer field
@@ -53,6 +55,17 @@ def served_model_from_headers(headers: Any) -> Optional[str]:
     if non_empty:
         return non_empty[0]
     return None
+
+
+def capture_served_model_from_stream(agent: Any, stream: Any) -> None:
+    """Capture the served model from a stream's retained opening ``httpx`` response."""
+    try:
+        response = getattr(stream, "response", None)
+        served_model = served_model_from_headers(getattr(response, "headers", None))
+        if isinstance(served_model, str) and served_model and is_displayable_served_model(served_model):
+            agent.last_served_model = served_model
+    except Exception:
+        logger.debug("served-model stream header capture skipped", exc_info=True)
 
 
 def install_served_model_capture(agent: Any, client: Any) -> None:
