@@ -129,7 +129,10 @@ START_CONVERSATION_SCHEMA = {
                 "type": "string",
                 "description": (
                     "The actual opening, in Hermes's own voice — free-form and conversational "
-                    "(start action)."
+                    "(start action). The first sentence must use plain words a tired human can "
+                    "read on a phone and lead with what changed in the human's world, never "
+                    "internal machinery such as tool names, permission modes, PR numbers, wake "
+                    "counts, or file paths."
                 ),
             },
             "next_move": {
