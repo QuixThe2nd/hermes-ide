@@ -138,8 +138,12 @@ jobs:
           # Deliberately NOT `mapfile`: that is a bash 4 builtin and the macOS
           # runner's /bin/bash is 3.2. Word-splitting is safe here because the
           # helper emits repo-relative test paths, which contain no spaces.
+          # `tr -d '\r'`: on Windows, the helper's stdout is redirected and
+          # Python emits CRLF line endings — a bare `$(cat "$LIST")` would
+          # leave the `\r` attached to every path ("file or directory not
+          # found: tests/.../test_foo.py\r").
           # shellcheck disable=SC2046
-          set -- $(cat "$LIST")
+          set -- $(tr -d '\r' < "$LIST")
           echo "selected $# file(s) for ${{ matrix.marker }}:"
           cat "$LIST"
 
