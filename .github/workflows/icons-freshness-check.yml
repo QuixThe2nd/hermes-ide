@@ -43,23 +43,3 @@ jobs:
 
       - name: Verify generated icons are in sync with the master
         run: uv run python scripts/generate_icons.py --check
-        continue-on-error: true
-
-      # TEMP: upload linux-truth regeneration so the committed set can be
-      # refreshed from the host CI actually checks against.
-      - name: Regenerate + upload (temp artifact harvest)
-        if: always()
-        shell: bash
-        run: |
-          uv run python scripts/generate_icons.py
-          tar czf icons-linux.tgz \
-            apps/bootstrap-installer/public/nous-girl.jpg \
-            apps/bootstrap-installer/src-tauri/icons/ \
-            apps/desktop/assets/ \
-            apps/desktop/public/ \
-            web/public/favicon.ico website/static/img/
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: icons-linux
-          path: icons-linux.tgz
