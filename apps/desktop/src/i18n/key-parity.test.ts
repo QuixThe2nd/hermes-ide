@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
+import { ar } from './ar'
 import { en } from './en'
+import { ja } from './ja'
+import { ru } from './ru'
 import { zh } from './zh'
 import { zhHant } from './zh-hant'
-import { ja } from './ja'
-import { ar } from './ar'
-import { ru } from './ru'
 
 /**
  * Locale key-parity guard — the class-fix for the recurring "missed locale"
@@ -39,14 +39,18 @@ function asObj(value: unknown): Obj | null {
 
 function leafEntries(value: unknown, prefix = ''): LeafKey[] {
   const obj = asObj(value)
+
   if (obj === null) {
     return prefix ? [prefix] : []
   }
+
   const out: LeafKey[] = []
+
   for (const [key, child] of Object.entries(obj)) {
     const path = prefix ? `${prefix}.${key}` : key
     out.push(...leafEntries(child, path))
   }
+
   return out
 }
 
@@ -57,12 +61,16 @@ function keySet(obj: unknown): Set<LeafKey> {
 /** Value at a dot-path in the en tree, or undefined. */
 function enAt(path: string): unknown {
   let node: unknown = en
+
   for (const part of path.split('.')) {
     const obj = asObj(node)
-    if (obj === null) return undefined
+
+    if (obj === null) {return undefined}
     node = obj[part]
-    if (node === undefined) return undefined
+
+    if (node === undefined) {return undefined}
   }
+
   return node
 }
 
@@ -80,19 +88,25 @@ function enAt(path: string): unknown {
  */
 function staleUnderLiveParents(locale: unknown): LeafKey[] {
   const enKeys = keySet(en)
+
   return [...keySet(locale)].filter((k) => {
-    if (enKeys.has(k)) return false
+    if (enKeys.has(k)) {return false}
     const parts = k.split('.')
+
     for (let i = parts.length - 1; i >= 1; i -= 1) {
       const parent = parts.slice(0, i).join('.')
       const enValue = enAt(parent)
-      if (enValue === undefined) continue // keep walking up
+
+      if (enValue === undefined) {continue} // keep walking up
       const obj = asObj(enValue)
+
       if (obj !== null && Object.keys(obj).length === 0) {
         return false // en emptied this whole section → locale extras are legit
       }
+
       return true // live section (or scalar) → leaf should still exist in en
     }
+
     return false
   }).sort()
 }
@@ -121,13 +135,16 @@ describe('desktop i18n key parity with en', () => {
     // counts into CI output so a locale quietly losing coverage shows up.
     const enKeys = keySet(en)
     const missing: string[] = []
+
     for (const [name, locale] of LOCALES) {
       const localeSet = keySet(locale)
       const absent = [...enKeys].filter((k) => !localeSet.has(k))
+
       if (absent.length > 0) {
         missing.push(`${name}: ${absent.length} keys fall back to English (${absent.slice(0, 3).join(', ')}…)`)
       }
     }
+
     if (missing.length > 0) {
       console.info(`[i18n key-parity] partial-locale coverage:\n${missing.join('\n')}`)
     }

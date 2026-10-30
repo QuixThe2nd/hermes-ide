@@ -54,6 +54,7 @@ export function win32AppInstallerFeedPath(
   light: boolean
 ): string {
   const variant = light ? 'light/' : ''
+
   return `win32/${variant}${channel}/`
 }
 
@@ -93,6 +94,7 @@ export async function checkAppInstallerUpdate(
   const { code, stdout } = await runner.run(runner.python, runner.script)
   const text = stdout.trim()
   let parsed: { available?: boolean | null; availability?: string; error?: string; reason?: string } | null = null
+
   try {
     parsed = text ? JSON.parse(text) : null
   } catch {
@@ -102,12 +104,15 @@ export async function checkAppInstallerUpdate(
   if (parsed && typeof parsed.available === 'boolean') {
     return { available: parsed.available, availability: parsed.availability, error: parsed.error }
   }
+
   if (parsed && parsed.available === null) {
     return { available: null, error: parsed.error || 'checker returned unknown' }
   }
+
   if (code !== 0) {
     return { available: null, error: parsed?.error || `checker exited ${code}` }
   }
+
   return { available: null, error: 'checker returned no availability' }
 }
 
@@ -131,6 +136,7 @@ export async function triggerAppInstallerUpdate(
 
   const appinstallerUrl =
     `${feedBaseUrl.replace(/\/+$/, '')}/${win32AppInstallerFeedPath(channel, light)}${channel}.appinstaller`
+
   await shell.openExternal(`ms-appinstaller:?source=${encodeURIComponent(appinstallerUrl)}`)
 
   return { ok: true }

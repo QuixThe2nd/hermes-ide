@@ -30,16 +30,19 @@ export function deriveSyncStatusSummary(
     needsFixing: [],
     updatesAvailable: []
   }
-  if (!receipt) return empty
+
+  if (!receipt) {return empty}
 
   const disabledPlugins = (receipt.plugin_bisect ?? [])
     .filter(d => d.action === 'disabled')
     .map(d => ({ plugin: d.plugin, reason: d.reason }))
 
   const checks = receipt.plugin_checks ?? []
+
   const needsFixing = checks
     .filter(c => c.needs_fixing)
     .map(c => ({ plugin: c.name, reason: c.needs_fixing as string }))
+
   const updatesAvailable = checks
     .filter(c => c.update_available === true)
     .map(c => ({ name: c.name, current: c.current ?? null, latest: c.latest ?? null }))
@@ -49,6 +52,7 @@ export function deriveSyncStatusSummary(
 
   let headline: string | null = null
   let level: SyncStatusSummary['level'] = 'ok'
+
   if (rebuildFailed) {
     headline = 'Dependency rebuild failed — some plugins may be missing packages'
     level = 'error'
