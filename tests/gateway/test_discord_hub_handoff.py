@@ -391,3 +391,200 @@ def test_hub_startup_and_unit_install_respect_test_isolation(monkeypatch, tmp_pa
     monkeypatch.setattr("plugins.platforms.discord.hub_client.subprocess.Popen", popen)
     assert not run(client._start_hub())
     popen.assert_not_called()
+
+
+def test_hub_client_exposes_the_gateway_discord_adapter_surface():
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    async_methods = (
+        "send_clarify", "send_tool_stage_embed", "edit_tool_stage_embed",
+        "send_slash_confirm", "send_update_prompt", "refresh_skill_group",
+        "cancel_background_tasks", "play_tts", "play_ack_in_voice",
+        "join_voice_channel", "leave_voice_channel", "play_in_voice_channel",
+        "get_user_voice_channel", "send_model_picker", "send_choice_picker",
+    )
+    sync_methods = (
+        "get_bot_display_name", "resolved_allowlist_user_ids",
+        "prefers_fresh_final_streaming", "format_tool_preview",
+        "claim_startup_resume_inbound", "voice_mixer_active",
+        "is_in_voice_channel", "get_voice_channel_info", "get_voice_channel_context",
+    )
+    for name in async_methods:
+        assert asyncio.iscoroutinefunction(getattr(DiscordAdapter, name))
+        assert asyncio.iscoroutinefunction(getattr(DiscordHubClientAdapter, name))
+    for name in sync_methods:
+        assert callable(getattr(DiscordAdapter, name))
+        assert not asyncio.iscoroutinefunction(getattr(DiscordHubClientAdapter, name))
+
+
+@pytest.mark.platforms("posix")
+def test_picker_callbacks_round_trip_to_the_attached_gateway(tmp_path):
+    async def scenario():
+        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+
+        class FakeDiscordConnection:
+            def __init__(self):
+                self.callbacks = {}
+
+            async def disconnect(self):
+                pass
+
+            async def send_model_picker(self, chat_id, providers, current_model, current_provider,
+                                        session_key, on_model_selected, metadata=None):
+                self.callbacks["model"] = on_model_selected
+                return SendResult(success=True, message_id="model-message")
+
+            async def send_choice_picker(self, chat_id, title, choices, session_key,
+                                         on_choice_selected, metadata=None):
+                self.callbacks["choice"] = on_choice_selected
+                return SendResult(success=True, message_id="choice-message")
+
+        connection = FakeDiscordConnection()
+
+        async def fake_attach(generation_id, config_data, profile, profile_routes):
+            server._adapters[_token_key(config_data["token"])] = connection
+
+        server._attach_adapter = fake_attach
+        await server.start()
+        client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+        client._socket_path = server.socket_path
+        try:
+            assert await client.connect()
+            model_calls = []
+            choice_calls = []
+
+            async def model_selected(chat_id, model_id, provider):
+                model_calls.append((chat_id, model_id, provider))
+                return "model changed"
+
+            async def choice_selected(chat_id, value):
+                choice_calls.append((chat_id, value))
+                return "choice changed"
+
+            assert (await client.send_model_picker(
+                "42", [{"slug": "provider", "models": ["model"]}], "old", "old-provider",
+                "session", model_selected,
+            )).success
+            assert (await client.send_choice_picker(
+                "42", "Reasoning", [{"value": "high", "label": "High"}], "session", choice_selected,
+            )).success
+
+            assert await connection.callbacks["model"]("42", "model", "provider") == "model changed"
+            assert await connection.callbacks["choice"]("42", "high") == "choice changed"
+            assert model_calls == [("42", "model", "provider")]
+            assert choice_calls == [("42", "high")]
+        finally:
+            await client.disconnect()
+            await server.stop()
+
+    run(scenario())
+
+
+def test_send_multiple_images_forwards_reply_to():
+    client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    client._rpc = AsyncMock(return_value={"success": True, "message_id": "image-message"})
+
+    result = run(client.send_multiple_images(
+        "42", ["/tmp/image.png"], metadata={"thread_id": "43"},
+        human_delay=0.25, reply_to="root-message",
+    ))
+
+    assert result.success
+    client._rpc.assert_awaited_once_with(
+        "send_multiple_images", "42", ["/tmp/image.png"],
+        metadata={"thread_id": "43"}, human_delay=0.25, reply_to="root-message",
+    )
+
+
+@pytest.mark.platforms("posix")
+def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
+    async def scenario():
+        from agent.display import ToolPreview
+
+        server = DiscordHubServer(tmp_path / "discord-hub.sock")
+        voice_channel = SimpleNamespace(id=99, name="stage", guild=SimpleNamespace(id=77))
+
+        class FakeDiscordConnection:
+            def __init__(self):
+                self._client = SimpleNamespace(get_channel=lambda channel_id: (
+                    voice_channel if channel_id == voice_channel.id else None
+                ))
+                self.claims = []
+                self.joins = []
+
+            async def disconnect(self):
+                pass
+
+            def get_bot_display_name(self, *, chat_id=None, guild_id=None):
+                return "Hub nickname"
+
+            def resolved_allowlist_user_ids(self):
+                return {"7", "8"}
+
+            def prefers_fresh_final_streaming(self, content, metadata=None):
+                return True
+
+            def format_tool_preview(self, preview):
+                assert isinstance(preview, ToolPreview)
+                return f"linked:{preview.text}"
+
+            def claim_startup_resume_inbound(self, message_id, source):
+                self.claims.append((message_id, source.chat_id))
+
+            def voice_mixer_active(self, guild_id):
+                return guild_id == 77
+
+            def is_in_voice_channel(self, guild_id):
+                return guild_id == 77
+
+            def get_voice_channel_info(self, guild_id):
+                return {"channel_name": "stage", "member_count": 1}
+
+            def get_voice_channel_context(self, guild_id):
+                return "[Voice channel: #stage — 1 participant(s)]"
+
+            async def get_user_voice_channel(self, guild_id, user_id):
+                return voice_channel
+
+            async def join_voice_channel(self, channel, *, text_channel_id=None, source=None):
+                self.joins.append((channel, text_channel_id, source))
+                return True
+
+        connection = FakeDiscordConnection()
+
+        async def fake_attach(generation_id, config_data, profile, profile_routes):
+            server._adapters[_token_key(config_data["token"])] = connection
+
+        server._attach_adapter = fake_attach
+        await server.start()
+        client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+        client._socket_path = server.socket_path
+        source = SessionSource(platform=Platform.DISCORD, chat_id="42", chat_type="channel", user_id="7")
+        try:
+            assert await client.connect()
+
+            def check_sync_surface():
+                assert client.get_bot_display_name(chat_id="42", guild_id="77") == "Hub nickname"
+                assert client.resolved_allowlist_user_ids() == {"7", "8"}
+                assert client.prefers_fresh_final_streaming("answer")
+                assert client.format_tool_preview(ToolPreview(text="docs", url="https://example.com")) == "linked:docs"
+                client.claim_startup_resume_inbound("message-1", source)
+                assert client.voice_mixer_active(77)
+                assert client.is_in_voice_channel(77)
+                assert client.get_voice_channel_info(77)["channel_name"] == "stage"
+                assert "stage" in client.get_voice_channel_context(77)
+
+            # The test hub shares this loop; production hub queries block only the caller,
+            # never the separate hub process's event loop.
+            await asyncio.to_thread(check_sync_surface)
+            assert connection.claims == [("message-1", "42")]
+
+            handle = await client.get_user_voice_channel(77, "7")
+            assert handle.id == 99 and handle.name == "stage" and handle.guild_id == 77
+            assert await client.join_voice_channel(handle, text_channel_id=42, source=source.to_dict())
+            assert connection.joins == [(voice_channel, 42, source.to_dict())]
+        finally:
+            await client.disconnect()
+            await server.stop()
+
+    run(scenario())

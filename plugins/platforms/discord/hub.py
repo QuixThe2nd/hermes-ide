@@ -123,11 +123,30 @@ def _token_key(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+_SYNC_RPC_METHODS = frozenset({
+    "get_bot_display_name",
+    "resolved_allowlist_user_ids",
+    "prefers_fresh_final_streaming",
+    "format_tool_preview",
+    "claim_startup_resume_inbound",
+    "voice_mixer_active",
+    "is_in_voice_channel",
+    "get_voice_channel_info",
+    "get_voice_channel_context",
+})
+_PICKER_CALLBACK_KWARGS = {
+    "send_model_picker": "on_model_selected",
+    "send_choice_picker": "on_choice_selected",
+}
+
+
 def _send_result_dict(result: Any) -> Dict[str, Any]:
     if isinstance(result, dict):
         return result
     if result is None or isinstance(result, (bool, str, int, float)):
         return {"value": result}
+    if isinstance(result, (set, frozenset)):
+        return {"value": list(result)}
     if hasattr(result, "__dataclass_fields__"):
         from dataclasses import asdict
         return asdict(result)
@@ -302,10 +321,13 @@ class DiscordHubServer:
                         }})
                         await client.router.replay_undelivered()
                         continue
-                    if client is None:
+                    if client is None and method != "sync_rpc":
                         raise RuntimeError("attach is required before Discord RPC")
                     result = await self._dispatch(client, str(request.get("method") or ""), params)
-                    await client.send({"id": request_id, "result": result})
+                    if client is None:
+                        await self._write_response(writer, {"id": request_id, "result": result})
+                    else:
+                        await client.send({"id": request_id, "result": result})
                 except Exception as exc:
                     logger.exception("Discord hub RPC failed")
                     await self._write_response(writer, {"id": request_id, "error": str(exc)})
@@ -347,6 +369,11 @@ class DiscordHubServer:
             return await self._spawn_gateway(params)
         if method == "rpc":
             return await self._adapter_rpc(client, params)
+        if method == "sync_rpc":
+            requested = str(params.get("method") or "")
+            if requested not in _SYNC_RPC_METHODS:
+                raise ValueError(f"Discord adapter method is not synchronous: {requested}")
+            return await self._adapter_rpc(client, params)
         raise ValueError(f"unknown Discord hub method: {method}")
 
     async def _adapter_rpc(self, client: _Client, params: Dict[str, Any]) -> Any:
@@ -371,35 +398,79 @@ class DiscordHubServer:
         if not callable(fn):
             raise ValueError(f"Discord adapter has no RPC method {method}")
         args = list(params.get("args") or [])
+        kwargs = dict(params.get("kwargs") or {})
         if method in {"begin_restart_pending_thread_title", "end_restart_pending_thread_title"} and args:
             from plugins.platforms.discord.adapter import RestartPendingThreadTitle
             if isinstance(args[0], dict):
                 args[0] = RestartPendingThreadTitle(**args[0])
-        result = fn(*args, **dict(params.get("kwargs") or {}))
+        elif method == "format_tool_preview" and args and isinstance(args[0], dict):
+            from agent.display import ToolPreview
+            args[0] = ToolPreview(**args[0])
+        elif method == "claim_startup_resume_inbound" and len(args) > 1 and isinstance(args[1], dict):
+            from gateway.session import SessionSource
+            args[1] = SessionSource.from_dict(args[1])
+        elif method == "join_voice_channel" and args and isinstance(args[0], dict):
+            channel_id = int(args[0]["id"])
+            channel = adapter._client.get_channel(channel_id)
+            if channel is None:
+                channel = await adapter._client.fetch_channel(channel_id)
+            if channel is None:
+                raise RuntimeError(f"Discord voice channel {channel_id} is unavailable")
+            args[0] = channel
+        callback_keyword = _PICKER_CALLBACK_KWARGS.get(method)
+        if callback_keyword is not None:
+            if client is None:
+                raise ValueError("Discord pickers require an attached gateway")
+            marker = kwargs.get(callback_keyword) or {}
+            picker_id = str(marker.get("picker_id") or "")
+            if not picker_id:
+                raise ValueError("Discord picker callback id is required")
+
+            async def invoke_picker(*callback_args: Any) -> Any:
+                return await self._request_generation_control(
+                    client.generation_id, "invoke_picker_callback",
+                    {"picker_id": picker_id, "args": list(callback_args)}, timeout=120)
+
+            kwargs[callback_keyword] = invoke_picker
+        result = fn(*args, **kwargs)
         if inspect.isawaitable(result):
             result = await result
+        if method == "get_user_voice_channel":
+            if result is None:
+                return {"value": None}
+            return {"value": {
+                "id": result.id, "name": result.name, "guild_id": result.guild.id,
+            }}
         if method == "send_restart_wind_down_offer" and result:
             self._prompt_owners[f"{token_key}:{result}"] = client.generation_id
         elif method == "finalize_restart_wind_down_offer":
             self._prompt_owners.pop(f"{token_key}:{params.get('kwargs', {}).get('message_id')}", None)
         return _send_result_dict(result)
 
+    async def _request_generation_control(self, generation_id: str, method: str,
+                                          params: Dict[str, Any], *, timeout: float = 15) -> Any:
+        client = self._clients.get(generation_id)
+        if client is None:
+            raise RuntimeError("Discord picker owner detached")
+        return await self._request_client_control(client, method, params, timeout=timeout)
+
+    async def _request_client_control(self, client: _Client, method: str,
+                                      params: Dict[str, Any], *, timeout: float = 15) -> Any:
+        control_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        client.controls[control_id] = future
+        try:
+            await client.send({"type": "control", "id": control_id, "method": method, "params": params})
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            client.controls.pop(control_id, None)
+
     async def request_control(self, token_key: str, message_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         owner = self._prompt_owners.pop(f"{token_key}:{message_id}", None)
         client = self._clients.get(owner or "")
         if client is None:
             return {"accepted": False, "reason": "owner_detached"}
-        control_id = uuid.uuid4().hex
-        future = asyncio.get_running_loop().create_future()
-        client.controls[control_id] = future
-        try:
-            await client.send({
-                "type": "control", "id": control_id,
-                "method": "accept_restart_wind_down_opt_in", "params": params,
-            })
-            return await asyncio.wait_for(future, timeout=15)
-        finally:
-            client.controls.pop(control_id, None)
+        return await self._request_client_control(client, "accept_restart_wind_down_opt_in", params)
 
     async def _spawn_gateway(self, params: Dict[str, Any]) -> Dict[str, Any]:
         from gateway.restart import detached_restart_spawn_blocked, spawn_replacement_gateway

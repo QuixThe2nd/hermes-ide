@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -20,6 +23,15 @@ from hermes_constants import get_default_hermes_root, get_hermes_home
 from plugins.platforms.discord.hub import default_socket_path
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DiscordHubVoiceChannel:
+    """JSON-safe voice channel handle returned by the hub."""
+
+    id: int
+    name: str
+    guild_id: int
 
 
 class DiscordHubClientAdapter(BasePlatformAdapter):
@@ -48,6 +60,7 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
         self._inbound_tasks: set[asyncio.Task] = set()
         self._overlap_successor_ready = False
         self._session_versions: Dict[str, int] = {}
+        self._picker_callbacks: Dict[str, Any] = {}
 
     def format_message(self, content: str) -> str:
         from gateway.platforms.helpers import convert_table_to_bullets
@@ -215,6 +228,7 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             unexpected = self._running
             self._running = False
             self._overlap_successor_ready = False
+            self._picker_callbacks.clear()
             if unexpected:
                 self._set_fatal_error(
                     "discord_hub_disconnected", "Discord hub connection closed", retryable=True)
@@ -243,12 +257,23 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
 
     async def _receive_control(self, message: Dict[str, Any]) -> None:
         try:
-            if message.get("method") != "accept_restart_wind_down_opt_in":
+            method = message.get("method")
+            params = message.get("params") or {}
+            if method == "accept_restart_wind_down_opt_in":
+                accept = getattr(self.gateway_runner, "accept_restart_wind_down_opt_in", None)
+                if not callable(accept):
+                    raise RuntimeError("gateway runner is not ready for Discord control events")
+                result = await accept(**params)
+            elif method == "invoke_picker_callback":
+                picker_id = str(params.get("picker_id") or "")
+                callback = self._picker_callbacks.pop(picker_id, None)
+                if not callable(callback):
+                    raise RuntimeError("Discord picker is no longer available")
+                result = callback(*(params.get("args") or []))
+                if inspect.isawaitable(result):
+                    result = await result
+            else:
                 raise ValueError("unknown Discord hub control method")
-            accept = getattr(self.gateway_runner, "accept_restart_wind_down_opt_in", None)
-            if not callable(accept):
-                raise RuntimeError("gateway runner is not ready for Discord control events")
-            result = await accept(**(message.get("params") or {}))
             response = {"type": "control_result", "id": message.get("id"), "result": result}
         except Exception as exc:
             response = {"type": "control_result", "id": message.get("id"), "error": str(exc)}
@@ -317,6 +342,70 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
     @staticmethod
     def _value(data: Any) -> Any:
         return data.get("value") if isinstance(data, dict) and set(data) == {"value"} else data
+
+    def _sync_rpc(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        """Answer a synchronous adapter query without driving the attached event loop reentrantly."""
+        payload = {
+            "id": uuid.uuid4().hex,
+            "method": "sync_rpc",
+            "params": {
+                "token_key": self._token_key,
+                "method": method,
+                "args": list(args),
+                "kwargs": kwargs,
+            },
+        }
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(5.0)
+            connection.connect(str(self._socket_path))
+            connection.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode())
+            with connection.makefile("rb") as reader:
+                line = reader.readline()
+        if not line:
+            raise ConnectionError("Discord hub closed the synchronous RPC connection")
+        response = json.loads(line)
+        if response.get("error"):
+            raise RuntimeError(response["error"])
+        return response.get("result")
+
+    def get_bot_display_name(self, *, chat_id: Optional[str] = None,
+                             guild_id: Optional[str] = None) -> Optional[str]:
+        try:
+            return self._value(self._sync_rpc(
+                "get_bot_display_name", chat_id=chat_id, guild_id=guild_id))
+        except Exception:
+            # BasePlatformAdapter's identity contract is deliberately non-raising.
+            return None
+
+    def resolved_allowlist_user_ids(self) -> set:
+        return set(self._value(self._sync_rpc("resolved_allowlist_user_ids")) or ())
+
+    def prefers_fresh_final_streaming(self, content: str,
+                                      metadata: Optional[Dict[str, Any]] = None) -> bool:
+        return bool(self._value(self._sync_rpc(
+            "prefers_fresh_final_streaming", content, metadata=metadata)))
+
+    def format_tool_preview(self, preview) -> str:
+        value = self._value(self._sync_rpc("format_tool_preview", {
+            "text": preview.text, "truncated": preview.truncated, "url": preview.url,
+        }))
+        return str(value) if value is not None else ""
+
+    def claim_startup_resume_inbound(self, message_id: str, source) -> None:
+        source_data = source.to_dict() if hasattr(source, "to_dict") else source
+        self._sync_rpc("claim_startup_resume_inbound", str(message_id), source_data)
+
+    def voice_mixer_active(self, guild_id: int) -> bool:
+        return bool(self._value(self._sync_rpc("voice_mixer_active", guild_id)))
+
+    def is_in_voice_channel(self, guild_id: int) -> bool:
+        return bool(self._value(self._sync_rpc("is_in_voice_channel", guild_id)))
+
+    def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        return self._value(self._sync_rpc("get_voice_channel_info", guild_id))
+
+    def get_voice_channel_context(self, guild_id: int) -> str:
+        return self._value(self._sync_rpc("get_voice_channel_context", guild_id)) or ""
 
     @staticmethod
     def _send_result(data: Dict[str, Any]) -> SendResult:
@@ -400,10 +489,99 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
     async def end_restart_pending_thread_title(self, restore) -> None:
         await self._rpc("end_restart_pending_thread_title", restore._asdict() if restore is not None else None)
 
+    async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
+                           session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_clarify", chat_id, question, choices, clarify_id, session_key, metadata=metadata))
+
+    async def send_tool_stage_embed(self, chat_id: str, stage: Dict[str, Any],
+                                    metadata: Optional[Dict[str, Any]] = None,
+                                    reply_to: Optional[str] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_tool_stage_embed", chat_id, stage, metadata=metadata, reply_to=reply_to))
+
+    async def edit_tool_stage_embed(self, chat_id: str, message_id: str, stage: Dict[str, Any],
+                                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "edit_tool_stage_embed", chat_id, message_id, stage, metadata=metadata))
+
+    async def send_slash_confirm(self, chat_id: str, title: str, message: str, session_key: str,
+                                 confirm_id: str, metadata: Optional[dict] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_slash_confirm", chat_id, title, message, session_key, confirm_id, metadata=metadata))
+
+    async def send_update_prompt(self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
+                                 metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return self._send_result(await self._rpc(
+            "send_update_prompt", chat_id, prompt, default=default,
+            session_key=session_key, metadata=metadata))
+
+    async def refresh_skill_group(self) -> tuple[int, int]:
+        return tuple(self._value(await self._rpc("refresh_skill_group")) or (0, 0))
+
+    async def cancel_background_tasks(self) -> None:
+        await self._rpc("cancel_background_tasks")
+
+    async def _send_picker(self, method: str, callback_keyword: str, callback,
+                           *args: Any, **kwargs: Any) -> SendResult:
+        picker_id = uuid.uuid4().hex
+        self._picker_callbacks[picker_id] = callback
+        kwargs[callback_keyword] = {"picker_id": picker_id}
+        try:
+            result = self._send_result(await self._rpc(method, *args, **kwargs))
+        except Exception:
+            self._picker_callbacks.pop(picker_id, None)
+            raise
+        if not result.success:
+            self._picker_callbacks.pop(picker_id, None)
+        return result
+
+    async def send_model_picker(self, chat_id: str, providers: list, current_model: str,
+                                current_provider: str, session_key: str, on_model_selected,
+                                metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return await self._send_picker(
+            "send_model_picker", "on_model_selected", on_model_selected,
+            chat_id, providers, current_model, current_provider, session_key, metadata=metadata)
+
+    async def send_choice_picker(self, chat_id: str, title: str, choices: list, session_key: str,
+                                 on_choice_selected, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return await self._send_picker(
+            "send_choice_picker", "on_choice_selected", on_choice_selected,
+            chat_id, title, choices, session_key, metadata=metadata)
+
+    async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
+        return self._send_result(await self._rpc("play_tts", chat_id, audio_path, **kwargs))
+
+    async def play_ack_in_voice(self, guild_id: int, phrase: Optional[str] = None) -> bool:
+        return bool(self._value(await self._rpc("play_ack_in_voice", guild_id, phrase=phrase)))
+
+    async def get_user_voice_channel(self, guild_id: int, user_id: str) -> Optional[DiscordHubVoiceChannel]:
+        value = self._value(await self._rpc("get_user_voice_channel", guild_id, user_id))
+        return DiscordHubVoiceChannel(**value) if value else None
+
+    async def join_voice_channel(self, channel, *, text_channel_id: int = None,
+                                 source: dict = None) -> bool:
+        if isinstance(channel, dict):
+            channel_data = channel
+        else:
+            guild_id = getattr(channel, "guild_id", None)
+            if guild_id is None:
+                guild_id = channel.guild.id
+            channel_data = {"id": channel.id, "name": channel.name, "guild_id": guild_id}
+        return bool(self._value(await self._rpc(
+            "join_voice_channel", channel_data, text_channel_id=text_channel_id, source=source)))
+
+    async def leave_voice_channel(self, guild_id: int) -> None:
+        await self._rpc("leave_voice_channel", guild_id)
+
+    async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
+        return bool(self._value(await self._rpc("play_in_voice_channel", guild_id, audio_path)))
+
     async def send_multiple_images(self, chat_id: str, images: list, metadata: Optional[dict] = None,
                                    human_delay: float = 0.0, reply_to: Optional[str] = None) -> SendResult:
         return self._send_result(await self._rpc(
-            "send_multiple_images", chat_id, images, metadata=metadata, human_delay=human_delay))
+            "send_multiple_images", chat_id, images,
+            metadata=metadata, human_delay=human_delay, reply_to=reply_to))
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict] = None, **kwargs) -> SendResult:
