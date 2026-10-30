@@ -230,7 +230,15 @@ def get_version_info() -> VersionInfo:
         return _cached_version_info
 
     # 1. Install stamp (packaged builds: Docker, Nix)
-    info = _stamp_version_info()
+    # A malformed stamp (missing/illegal updateMechanism, mispackaged "light"
+    # payload) raises RuntimeError — the build lane that wrote it must be
+    # fixed, but a crashing CLI is the wrong failure mode for every uncached
+    # caller. Degrade to "unknown" and let the authoring lane's own tests
+    # surface the malformed stamp.
+    try:
+        info = _stamp_version_info()
+    except RuntimeError:
+        info = None
 
     # 2. Live git (source/dev installs)
     if info is None:
