@@ -136,7 +136,9 @@ def open_credentialed_url(
 
     Preserves an application-installed opener's proxy/TLS/cookies/handlers while replacing its
     redirect handler. ``opener_factory`` is an explicit test seam (security is never disabled
-    based on global ``urlopen`` identity); ``ssl_context`` overrides TLS for this request only.
+    based on global ``urlopen`` identity); ``ssl_context`` overrides TLS for this request only —
+    otherwise TLS falls back to the process-wide platform trust store
+    (``agent.ssl_verify.install_truststore``).
     """
     if opener_factory is None:
         opener = _secure_opener_from_installed_policy(request.full_url, ssl_context=ssl_context)

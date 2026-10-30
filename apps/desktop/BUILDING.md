@@ -104,9 +104,10 @@ in sync with app-builder-lib when electron-builder bumps.
 
 The macOS build signs and notarizes with electron-builder's builtin
 notarization when the `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` /
-`APPLE_TEAM_ID` secrets are present. The `sign-nested-chromium` path is dead
-(the browser ships in the payload; nested signing is handled by the
-electron-builder signing pass).
+`APPLE_TEAM_ID` secrets are present. The `sign-nested-chromium` path signs
+the payload's nested Chromium Mach-O binaries (see `sign-nested-chromium.mjs`,
+wired from `after-pack.mjs`); the outer app bundle is signed by the
+electron-builder signing pass.
 
 ## Local build
 

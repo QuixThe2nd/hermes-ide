@@ -121,7 +121,8 @@ def _merge_unique(primary: list[str], secondary: list[str], key=lambda m: str(m)
 
 def _custom_provider_ssl_context(base_url: str):
     """``ssl.SSLContext`` honoring a custom provider's ``ssl_ca_cert`` / ``ssl_verify`` (mirrors the
-    httpx TLS resolution), or None so the urllib ``/models`` probe keeps the default policy."""
+    httpx TLS resolution), or None so the urllib ``/models`` probe falls back to the process-wide
+    platform trust store (``agent.ssl_verify.install_truststore``)."""
     if not base_url:
         return None
     try:
