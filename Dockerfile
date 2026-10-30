@@ -199,6 +199,11 @@ WORKDIR /opt/hermes
 # and never hunted at boot.
 ENV HERMES_RUNTIME_DIR=/opt/hermes/tools
 COPY pm/ pm/
+# pm's lazy imports resolve get_default_hermes_root()/project_venv_dir()
+# from hermes_constants (stdlib-only) at install time — a sealed-stage
+# `python3 -m pm.cli install` fails with "No module named
+# 'hermes_constants'" without it on the path. Copy the module next to pm.
+COPY hermes_constants.py hermes_constants.py
 RUN set -eu; \
     python3 -m pm.cli install uv chromium chromium-headless-shell; \
     ln -sf /opt/hermes/tools/uv-*/uv /usr/local/bin/uv; \
