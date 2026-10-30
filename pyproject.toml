@@ -151,8 +151,12 @@ dependencies = [
   # use the WinRT Management.Deployment API to ask the OS whether a newer
   # MSIX package version is registered for the installed package. The payload
   # python runs it on Windows only — gate the dep so POSIX/macOS don't carry
-  # the Windows-only winrt runtime.
-  "winrt-windows-management-deployment[all]>=3.2.1,<4; sys_platform == 'win32'",
+  # the Windows-only winrt runtime. The script imports BOTH the applicationmodel
+  # (Package/PackageUpdateAvailability) and management.deployment (PackageManager)
+  # namespaces — these are separate winrt-windows-* distributions; the `[all]`
+  # extra on a single member does not exist (uv warns + desyncs the lock).
+  "winrt-windows-applicationmodel>=3.2.1,<4; sys_platform == 'win32'",
+  "winrt-windows-management-deployment>=3.2.1,<4; sys_platform == 'win32'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
   # (>5 MB or >8000px) at embed time; without it the byte AND pixel-dimension
   # shrink paths no-op, so an oversized image bakes into immutable history and
