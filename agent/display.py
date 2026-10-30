@@ -646,7 +646,10 @@ def _describe_file_tool_phrase(tool_name: str, args: dict) -> str | None:
     verb = get_tool_verb(tool_name)
     reason = _describe_safe_str(args.get("description"))
     if tool_name in ("write_file", "patch") and reason and verb:
-        return f"{verb} {_describe_purpose(reason)}"
+        purpose = _describe_purpose(reason)
+        path = _describe_safe_str(args.get("path"))
+        basename = Path(path).name if path else ""
+        return f"{verb} {basename} {purpose}" if basename else f"{verb} {purpose}"
     path = _describe_file_path(args)
     return f"{verb} {path}" if verb and path else None
 
