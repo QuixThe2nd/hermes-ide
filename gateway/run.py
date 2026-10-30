@@ -32235,22 +32235,36 @@ class GatewayRunner(
             )
             return
 
-        if entry is None or entry.suspended or entry.resume_pending:
+        if entry is None:
+            logger.info(
+                "Skipping restart requester auto-resume for %s: session entry missing",
+                session_key,
+            )
+            return
+        if entry.suspended:
+            logger.info(
+                "Skipping restart requester auto-resume for %s: session suspended",
+                session_key,
+            )
             return
         if self._is_session_running(session_key):
+            logger.info(
+                "Skipping restart requester auto-resume for %s: session already running",
+                session_key,
+            )
             return
 
         restored = self._restored_source(entry) or source
         try:
             if not self._is_user_authorized(restored):
-                logger.warning(
+                logger.info(
                     "Skipping restart requester auto-resume for %s: session owner is no "
                     "longer authorized under the current allowlist",
                     session_key,
                 )
                 return
         except Exception as exc:
-            logger.warning(
+            logger.info(
                 "Skipping restart requester auto-resume for %s: authorization check failed: %s",
                 session_key,
                 exc,
@@ -32259,7 +32273,7 @@ class GatewayRunner(
 
         adapter = self._adapter_for_source(restored)
         if adapter is None:
-            logger.debug(
+            logger.info(
                 "Skipping restart requester auto-resume for %s: adapter not ready",
                 session_key,
             )
