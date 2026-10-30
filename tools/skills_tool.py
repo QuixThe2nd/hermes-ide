@@ -681,7 +681,7 @@ SKILL_VIEW_SCHEMA = {
             },
             "description": {
                 "type": "string",
-                "description": "One short phrase (max ~80 chars) saying WHY this skill is being loaded, e.g. 'checking fork ship rules'. Shown to the user as progress: '<emoji> Reading skill <description>'. Optional.",
+                "description": "One short phrase (max ~80 chars) saying WHY this skill is being loaded, e.g. 'check fork ship rules'. Shown to the user as progress: '<emoji> Reading skill to <description>'. Optional.",
             },
         },
         "required": ["name"],

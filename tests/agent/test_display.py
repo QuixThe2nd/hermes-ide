@@ -163,9 +163,9 @@ class TestDescribeToolCallSkillAndDelegateDescription:
 
     def test_skill_view_composes_name_and_reason(self):
         phrase = describe_tool_call(
-            "skill_view", {"name": "fork", "description": "checking ship rules"}
+            "skill_view", {"name": "fork", "description": "check ship rules"}
         )
-        assert phrase == "Reading skill fork: checking ship rules"
+        assert phrase == "Reading skill to check ship rules"
 
     def test_skill_view_name_only_unchanged(self):
         assert describe_tool_call("skill_view", {"name": "fork"}) == "Reading skill fork"
@@ -173,15 +173,15 @@ class TestDescribeToolCallSkillAndDelegateDescription:
     def test_skill_view_reason_only(self):
         assert describe_tool_call(
             "skill_view", {"name": "x", "description": "why load"}
-        ) == "Reading skill x: why load"
-        assert describe_tool_call("skill_view", {"description": "why only"}) == "Reading skill: why only"
+        ) == "Reading skill to why load"
+        assert describe_tool_call("skill_view", {"description": "why only"}) == "Reading skill to why only"
 
     def test_skill_manage_operations_with_reason(self):
         phrase = describe_tool_call(
             "skill_manage",
-            {"operations": [{"action": "patch", "name": "x"}], "description": "fixing deploy rule"},
+            {"operations": [{"action": "patch", "name": "x"}], "description": "fix the deploy rule"},
         )
-        assert phrase == "Editing skill x: fixing deploy rule"
+        assert phrase == "Editing skill x to fix the deploy rule"
 
     def test_skill_manage_without_reason_unchanged(self):
         assert describe_tool_call(
@@ -213,6 +213,43 @@ class TestDescribeToolCallSkillAndDelegateDescription:
             {"backend": "cursor", "goal": "g", "description": "cloud fix"},
         )
         assert phrase == "Delegated to Cursor agent: cloud fix"
+
+
+class TestDescribeToolCallFileDescriptions:
+    """patch/write_file compose the model's purpose phrase instead of exposing the path."""
+
+    @pytest.mark.parametrize(
+        ("tool_name", "args", "expected"),
+        [
+            ("patch", {"path": "/tmp/gpu.yaml", "description": "update the GPU mapping"}, "Editing to update the GPU mapping"),
+            ("write_file", {"path": "/tmp/gpu.yaml", "content": "x", "description": "update the GPU mapping"}, "Writing to update the GPU mapping"),
+        ],
+    )
+    def test_edit_description_wins_over_path(self, tool_name, args, expected):
+        assert describe_tool_call(tool_name, args) == expected
+        assert "/tmp/gpu.yaml" not in describe_tool_call(tool_name, args)
+
+    @pytest.mark.parametrize(
+        ("tool_name", "args", "expected"),
+        [
+            ("patch", {"path": "/tmp/gpu.yaml"}, "Editing /tmp/gpu.yaml"),
+            ("patch", {"path": "/tmp/gpu.yaml", "description": "  "}, "Editing /tmp/gpu.yaml"),
+            ("write_file", {"path": "/tmp/gpu.yaml", "content": "x"}, "Writing /tmp/gpu.yaml"),
+        ],
+    )
+    def test_edit_path_fallback_without_description(self, tool_name, args, expected):
+        assert describe_tool_call(tool_name, args) == expected
+
+    @pytest.mark.parametrize(
+        ("tool_name", "description", "expected"),
+        [
+            ("patch", "to update the GPU mapping", "Editing to update the GPU mapping"),
+            ("write_file", "To update the GPU mapping", "Writing To update the GPU mapping"),
+        ],
+    )
+    def test_edit_description_does_not_double_to(self, tool_name, description, expected):
+        phrase = describe_tool_call(tool_name, {"path": "/tmp/gpu.yaml", "description": description})
+        assert phrase == expected
 
 
 class TestPrepareToolPreview:
