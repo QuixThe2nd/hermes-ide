@@ -165,8 +165,7 @@ export const zh = defineLocale({
       back: '返回',
       openLogs: '打开日志',
       repairHint: '修复会重新运行安装器，在新机器上可能需要几分钟。',
-      bundledReinstallHint:
-        '捆绑安装无法从应用内部自修复——重新安装 Hermes Desktop 以恢复其后端。',
+      bundledReinstallHint: '捆绑安装无法从应用内部自修复——重新安装 Hermes Desktop 以恢复其后端。',
       reinstallApp: '重新安装 Hermes Desktop',
       remoteSignInHint: signInLabel =>
         `先退出已保存的远程浏览器会话，然后打开${signInLabel}。也可以使用本地网关切换到随应用提供的后端。`,
@@ -825,7 +824,8 @@ export const zh = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
-      modelContextLength: '仅覆盖主聊天模型检测到的上下文窗口（以 token 计）。保持为 0 则使用所选模型检测到的值。不影响辅助模型/MoA 模型。',
+      modelContextLength:
+        '仅覆盖主聊天模型检测到的上下文窗口（以 token 计）。保持为 0 则使用所选模型检测到的值。不影响辅助模型/MoA 模型。',
       fallbackProviders: '备用模型',
       toolsets: '启用的工具集',
       timezone: '时区',
@@ -1156,7 +1156,7 @@ export const zh = defineLocale({
       minAgo: count => `${count} 分钟前`,
       hoursAgo: count => `${count} 小时前`,
       daysAgo: count => `${count} 天前`,
-      availableBodyRelease: (tag: string) => `版本 ${tag} 已可安装。`,
+      availableBodyRelease: (tag: string) => `版本 ${tag} 已可安装。`
     },
     config: {
       none: '无',
@@ -1854,7 +1854,8 @@ export const zh = defineLocale({
         needsSetupHint: '此后端已选中但尚未完成设置——在设置完成前命令将会失败。',
         needsSetupConfirmTitle: backend => `仍要选择 ${backend} 吗？`,
         needsSetupConfirmDescription: detail => `${detail} 此更改生效后启动的会话在设置完成前将没有终端或文件工具。`,
-        needsSetupConfirmDescriptionGeneric: '此后端尚未完成设置。此更改生效后启动的会话在设置完成前将没有终端或文件工具。',
+        needsSetupConfirmDescriptionGeneric:
+          '此后端尚未完成设置。此更改生效后启动的会话在设置完成前将没有终端或文件工具。',
         needsSetupConfirmAction: '仍然选择'
       },
       browserRealProfile: {
@@ -1956,7 +1957,8 @@ export const zh = defineLocale({
       desktopHalfPending: '复制中…',
       desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
       desktopHalfRemote: '不可用（远程后端）',
-      desktopHalfRemoteTip: '此包的桌面部分位于远程后端的磁盘上，本应用无法读取。要在此使用，请通过“从 Git 安装”输入该包的仓库地址并勾选桌面目标，即可将桌面部分克隆到本机。',
+      desktopHalfRemoteTip:
+        '此包的桌面部分位于远程后端的磁盘上，本应用无法读取。要在此使用，请通过“从 Git 安装”输入该包的仓库地址并勾选桌面目标，即可将桌面部分克隆到本机。',
       emptyAll: '还没有插件。',
       empty: '此配置尚未安装任何 agent 插件。',
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
@@ -3484,8 +3486,7 @@ export const zh = defineLocale({
       notAvailable: '此后端无法更新。',
       failed: '后端更新失败。',
       noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
-    }
-    ,
+    },
     // Update-status overlay + version-details (mechanism-aware update UI).
     appName: 'Hermes',
     version: value => `版本 ${value}`,
@@ -3508,14 +3509,12 @@ export const zh = defineLocale({
     daysAgo: count => `${count} 天前`,
     justNowSuffix: ' · 刚刚',
     bundleOutOfSync: '应用版本过旧',
-    bundleOutOfSyncDesc:
-      'Hermes 运行时已更新，但桌面应用仍是较旧的构建。请更新以获取最新修复。',
+    bundleOutOfSyncDesc: 'Hermes 运行时已更新，但桌面应用仍是较旧的构建。请更新以获取最新修复。',
     bundleOutOfSyncAction: '获取安装程序',
     checkingShort: '检查中…',
     releaseAvailable: tag => `版本 ${tag} 可用。`,
     versionDetailsTitle: '版本详情',
-    versionDetailsBody:
-      '此安装在应用外部管理。请使用与安装时相同的方式更新。',
+    versionDetailsBody: '此安装在应用外部管理。请使用与安装时相同的方式更新。',
     versionDetailsVersion: '版本',
     versionDetailsCommit: '提交',
     versionDetailsBuildOrigin: '构建来源',
@@ -3553,8 +3552,7 @@ export const zh = defineLocale({
     connectExistingTitle: '连接到现有 Hermes',
     connectExistingShort: '连接现有环境',
     connectExistingDesc: '使用会话令牌或浏览器登录连接远程后端。不会启动本地安装。',
-    setupChoiceDescLocal:
-      '在这台电脑上安装 Hermes，或连接到已在运行的 Hermes 网关。',
+    setupChoiceDescLocal: '在这台电脑上安装 Hermes，或连接到已在运行的 Hermes 网关。',
 
     installLocalTitle: '本地安装 Hermes',
     installLocalDesc: '下载 Hermes，创建 Python 环境，并在这台电脑上运行后端。',
@@ -3562,8 +3560,7 @@ export const zh = defineLocale({
     useLocalDesc: '此电脑已安装 Hermes 运行时——一键启动，无需下载。',
     bundledLocalDesc: '此应用自带 Hermes 运行时——捆绑后端即本地安装。',
     bundledDamagedTitle: '捆绑后端不可用',
-    bundledDamagedDesc:
-      '此应用捆绑的 Hermes 运行时未能加载。重新安装 Hermes Desktop 以恢复。',
+    bundledDamagedDesc: '此应用捆绑的 Hermes 运行时未能加载。重新安装 Hermes Desktop 以恢复。',
     reinstallApp: '重新安装 Hermes Desktop',
     localStartUnavailable: '无法启动本地安装。请重启 Hermes Desktop 后重试。',
     remoteSetupTitle: '连接到现有 Hermes',
@@ -4344,7 +4341,8 @@ export const zh = defineLocale({
     sudoTitle: '管理员密码',
     sudoDesc: '输入 sudo 密码前，请先检查命令。密码会发送给执行命令的 agent，并在本次会话中缓存。',
     sudoCommandUnavailable: '此 agent 未提供命令。如果无法在对话中确认，请取消。',
-    sudoInstallDesc: 'Hermes 需要你的 sudo 密码，以在网关主机上安装 Bot Screen 软件包（TigerVNC + Xfce）。它只会发送到该主机。',
+    sudoInstallDesc:
+      'Hermes 需要你的 sudo 密码，以在网关主机上安装 Bot Screen 软件包（TigerVNC + Xfce）。它只会发送到该主机。',
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',

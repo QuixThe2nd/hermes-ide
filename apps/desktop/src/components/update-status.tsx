@@ -257,11 +257,7 @@ export function UpdateStatusCard({
           </Button>
 
           {view.tone === 'error' && isBackend && (
-            <Button
-              onClick={() => requestRoute(`${SETTINGS_ROUTE}?tab=gateway`)}
-              size="sm"
-              variant="outline"
-            >
+            <Button onClick={() => requestRoute(`${SETTINGS_ROUTE}?tab=gateway`)} size="sm" variant="outline">
               {u.connectionSettings}
             </Button>
           )}

@@ -185,7 +185,9 @@ it('captions a suppressed thumbnail as hidden-while-controlled and never ages it
 })
 
 it('settles on an older backend without display.*: portal tone is unavailable and the hero renders nothing', async () => {
-  vi.mocked(host.requestProfile).mockRejectedValue(Object.assign(new Error('Method not found: display.status'), { code: -32601 }))
+  vi.mocked(host.requestProfile).mockRejectedValue(
+    Object.assign(new Error('Method not found: display.status'), { code: -32601 })
+  )
   const hook = renderHook(() => useScreenPortalState(botA))
   await act(async () => {})
   expect(hook.result.current.tone).toBe('unavailable')

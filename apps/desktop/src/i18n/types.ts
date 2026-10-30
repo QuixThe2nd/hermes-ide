@@ -64,7 +64,7 @@ export interface Translations {
     message: string
     copyUrl: string
     close: string
-  },
+  }
   connectors: {
     title: string
     connect: string
@@ -805,7 +805,7 @@ export interface Translations {
       tapCheck: string
       updateReady: (count: number) => string
       updateReadyUnknown: string
-    availableBodyRelease: (tag: string) => string
+      availableBodyRelease: (tag: string) => string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
