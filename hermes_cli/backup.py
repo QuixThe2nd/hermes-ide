@@ -3301,7 +3301,7 @@ def _read_raw_yaml_dict(path: Path) -> Optional[Dict[str, Any]]:
     try:
         import yaml
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = yaml.safe_load(f)
     except Exception:
         return None

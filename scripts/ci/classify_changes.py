@@ -293,7 +293,7 @@ def _pull_request_number() -> str | None:
     if not event_path:
         return None
     try:
-        with open(event_path, encoding="utf-8") as fh:
+        with open(event_path, encoding="utf-8-sig") as fh:
             payload = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return None

@@ -586,7 +586,7 @@ def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
     if not os.path.isfile(pid_file):
         return False
     try:
-        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8-sig").strip())
         if not _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
             _bt.logger.debug("Skipped daemon kill for %s: pid %s failed identity verification", session_name, daemon_pid)
             return False

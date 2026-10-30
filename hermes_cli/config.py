@@ -505,7 +505,7 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
     config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             data = fast_safe_load(f)
     except FileNotFoundError:
         return

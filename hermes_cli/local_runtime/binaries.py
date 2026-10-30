@@ -66,7 +66,7 @@ def runtimes_root() -> Path:
 def manifest_verified(manifest: Path) -> bool:
     """True when an install manifest records a verified_version (missing/damaged -> False)."""
     try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data = json.loads(manifest.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError):
         return False
     return isinstance(data, dict) and bool(data.get("verified_version"))
