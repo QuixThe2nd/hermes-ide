@@ -294,7 +294,7 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
     prompt = get_save_login_prompt_callback()
-    if prompt is None or not can_prompt_here():
+    if prompt is None or not can_prompt_here("save_login"):
         return json.dumps({"success": False, "error_type": "prompt_unavailable",
                            "error": (f"This session cannot ask the user for a login (headless/cron/API). Tell them to run "
                                      f"`hermes vault add` or use Desktop → Settings → Passwords & Logins for {origin}.")})

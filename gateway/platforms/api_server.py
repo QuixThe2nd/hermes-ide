@@ -829,8 +829,21 @@ if AIOHTTP_AVAILABLE:
         cors_headers = None
         if adapter is not None:
             if not adapter._origin_allowed(origin):
-                return web.Response(status=403)
-            cors_headers = adapter._cors_headers_for_origin(origin)
+                # Narrow same-origin carve-out: the secure-entry form (served on
+                # this listener under the operator's configured HTTPS origin)
+                # POSTs to its own origin. That is not a CORS request, but the
+                # browser still sends Origin — allow it ONLY on the exact
+                # secure-entry route paths, never on API routes generally.
+                from gateway import secure_entry as _secure_entry
+                if not (origin and origin == _secure_entry.configured_origin()
+                        and request.path in (_secure_entry.FORM_PATH,
+                                             _secure_entry.SUBMIT_PATH,
+                                             _secure_entry.SITE_PATH,
+                                             _secure_entry.CANCEL_PATH)):
+                    return web.Response(status=403)
+                cors_headers = None
+            else:
+                cors_headers = adapter._cors_headers_for_origin(origin)
         if request.method == "OPTIONS":
             if cors_headers is None:
                 return web.Response(status=403)
@@ -1623,6 +1636,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
+        # Secure-login entry form: capability-authenticated (fragment), never
+        # API_SERVER_KEY; inert unless gateway.secure_entry.public_base_url is set.
+        from gateway.platforms import api_server_secure_entry as _secure_entry_routes
+        routes.extend(_secure_entry_routes._http_routes(self))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))

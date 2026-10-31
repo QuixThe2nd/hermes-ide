@@ -72,6 +72,8 @@ Multiplexed profiles use their own `display.reasoning_style`. Compact mode rende
 
 Clarify prompts mention the requesting user by default; set `discord.clarify_mentions: false` to stop that. The questions are numbered plain text rather than buttons, because Discord component views time out. A `resolve_ticket` proposal is terminal: the confirmation embed is the reply, and Hermes does not add another message underneath it.
 
+Website logins can be entered from Discord without putting passwords in chat. When Hermes needs a new login, only the requesting user can open a private, single-use link to a masked form. The form shows the exact website before accepting input; the existing encrypted vault saves the login and fills it only on its bound origin. Enable this with `gateway.secure_entry.public_base_url` set to an exact HTTPS origin and route `/hermes-secure-entry/` to the gateway API listener. Links expire after five minutes, and cancelling or stopping the owning turn retires pending entries. The feature stays disabled without HTTPS ingress; Desktop and CLI login entry keep their existing behavior.
+
 The typing indicator stays on while a background delegated task is still running. MoA consult and debate progress uses one self-editing embed per call that names every configured advisor model and shows each one waiting, responded, failed, or skipped as results arrive — round by round for debates — with live N/T advisor counts on `moa_ask`. Cursor runs post a Cursor-branded progress embed with a "Watch live session" link instead of dumping a URL, and Claude runs post a Claude-branded embed that links into the local viewer after the delegation tool-progress message, in the same order as Cursor.
 
 ## Coding delegated from chat

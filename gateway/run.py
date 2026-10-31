@@ -9772,6 +9772,15 @@ class TurnRunner:
         # windows observe the identical value).
         _approval_session_token = set_current_session_key(_approval_session_key)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
+        # Native secure-login entry (Discord): bind this turn's SaveLoginPrompt to
+        # the in-gateway broker. Installs nothing (tool keeps its precise
+        # prompt_unavailable refusal) for unattended/unsupported surfaces or an
+        # unconfigured/malformed public HTTPS origin.
+        try:
+            from gateway import secure_entry as _secure_entry
+            _secure_entry_restore = _secure_entry.install_turn_prompt(self._runner, ctx)
+        except Exception:
+            _secure_entry_restore = None
         # Compact thought-line token count: the gateway caches agents across
         # turns, so session_*_tokens are cumulative. Snapshot them here and
         # diff after run_conversation() to get THIS turn's counts.
@@ -9891,6 +9900,20 @@ class TurnRunner:
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
         finally:
             unregister_gateway_notify(_approval_session_key)
+            # Secure-entry broker: restore the callback slot and cancel any
+            # still-pending request of THIS turn (/stop, timeout, disconnect,
+            # completion). _restore() puts back the PREVIOUS callback and
+            # retires only this turn's own requests (scoped by the owner token
+            # captured at install time) — no broader home/session cancel here:
+            # a session-key-wide sweep would also kill a newer sibling turn's
+            # correctly scoped live request. Every request this turn can mint
+            # carries its owner token, so the scoped restore is complete.
+            try:
+                from gateway import secure_entry as _secure_entry
+                if _secure_entry_restore is not None:
+                    _secure_entry_restore()
+            except Exception:
+                pass
             # Cancel any pending clarify entries so blocked agent
             # threads don't hang past the end of the run (interrupt,
             # completion, gateway shutdown).  Idempotent.
