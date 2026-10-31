@@ -59,7 +59,7 @@ UPDATE_PREPARE_ARGV = ("update", "--yes", "--defer-restart")
 ACTIVATE_ARGV = ("auto_update", "activate")
 
 UP_TO_DATE_MARKERS = ("already up to date", "✓ already up to date")
-UPDATE_AVAILABLE_MARKER = "⚕ update available"
+UPDATE_AVAILABLE_MARKER = "update available"
 
 # Prepare outcomes after which Phase B must NOT run: whatever is on disk is
 # not a completed update, so restarting the fleet onto it is exactly the
