@@ -131,12 +131,20 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             await self._open_socket()
             self._read_task = asyncio.create_task(self._read_loop())
             from hermes_cli.config_effective import load_user_config_effective
+            from gateway.platforms._shared import platform_gate_env
             profile_routes = (load_user_config_effective().get("gateway") or {}).get("profile_routes") or []
+            # connect() runs inside the owning profile's runtime scope, so this is
+            # the one place THIS profile's judge key can be resolved. The hub-side
+            # adapter has no profile scope (and must not trust the hub process's
+            # env), so the resolved value travels in the attach payload — over the
+            # same-user socket only, never logged or persisted.
+            gate_credential = platform_gate_env("OPENROUTER_API_KEY") or None
             result = await self._call("attach", {
                 "generation_id": self._generation_id,
                 "profile": self._owner_profile or "default",
                 "profile_routes": profile_routes,
                 "config": self.config.to_dict(),
+                "gate_credential": gate_credential,
             })
             self.hub_pid = int(result["pid"])
             self._token_key = str(result.get("token_key") or "")

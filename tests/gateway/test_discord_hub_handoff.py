@@ -1,6 +1,7 @@
 """Focused ownership tests for the multi-generation Discord hub."""
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import pytest
@@ -151,7 +152,7 @@ def test_unix_hub_supports_two_clients_rpc_and_detach(tmp_path):
 
         connection = FakeDiscordConnection()
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes):
+        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
@@ -212,7 +213,7 @@ def test_overlap_admission_opens_only_after_successor_attaches(tmp_path):
             async def disconnect(self):
                 pass
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes):
+        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
             server._adapters[_token_key(config_data["token"])] = FakeDiscordConnection()
 
         server._attach_adapter = fake_attach
@@ -272,7 +273,7 @@ def test_restart_control_and_pending_title_stay_on_prompt_owner(tmp_path):
 
         connection = FakeDiscordConnection()
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes):
+        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
@@ -441,7 +442,7 @@ def test_picker_callbacks_round_trip_to_the_attached_gateway(tmp_path):
 
         connection = FakeDiscordConnection()
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes):
+        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
@@ -552,7 +553,7 @@ def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
 
         connection = FakeDiscordConnection()
 
-        async def fake_attach(generation_id, config_data, profile, profile_routes):
+        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
             server._adapters[_token_key(config_data["token"])] = connection
 
         server._attach_adapter = fake_attach
@@ -588,3 +589,161 @@ def test_sync_queries_and_voice_channel_handles_use_the_hub(tmp_path):
             await server.stop()
 
     run(scenario())
+
+
+class TestHubGateCredentialHandoff:
+    """The owning profile's judge credential travels in the attach payload.
+
+    Regression (#508): the hub-side adapter runs with no profile secret scope, so
+    its own scoped capture returned None and the enforce-mode response/reaction
+    gates failed closed with error=missing_credential for every attached profile.
+    """
+
+    def test_client_resolves_and_sends_the_scoped_credential(self, monkeypatch):
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-profile-key")
+        captured = {}
+
+        async def fake_call(method, params=None):
+            captured["method"] = method
+            captured["params"] = params
+            return {"pid": 1, "token_key": "k"}
+
+        client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+        client._open_socket = AsyncMock()
+        client._call = fake_call
+        assert run(client.connect())
+        assert captured["method"] == "attach"
+        assert captured["params"]["gate_credential"] == "sk-profile-key"
+
+    def test_client_sends_none_without_a_key(self, monkeypatch):
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        captured = {}
+
+        async def fake_call(method, params=None):
+            captured["params"] = params
+            return {"pid": 1, "token_key": "k"}
+
+        client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+        client._open_socket = AsyncMock()
+        client._call = fake_call
+        assert run(client.connect())
+        assert captured["params"]["gate_credential"] is None
+
+    def test_attach_adapter_pins_the_credential_before_connect(self, monkeypatch):
+        import plugins.platforms.discord.adapter as adapter_module
+
+        pinned = []
+
+        class StubAdapter:
+            def __init__(self, config):
+                self._hub_gate_credential = None
+                self._owner_profile = None
+
+            async def connect(self):
+                # connect() must already see the pinned credential.
+                pinned.append(self._hub_gate_credential)
+                return True
+
+        monkeypatch.setattr(adapter_module, "DiscordAdapter", StubAdapter)
+        server = DiscordHubServer(None)
+        config = {"token": "fake-token"}
+
+        run(server._attach_adapter("gen-1", config, "profile-a", [], "sk-hub-key"))
+        assert pinned == ["sk-hub-key"]
+        assert server._adapters[_token_key("fake-token")]._hub_gate_credential == "sk-hub-key"
+
+        # No key for the profile pins "" (fail closed), never an env fallback.
+        server2 = DiscordHubServer(None)
+        run(server2._attach_adapter("gen-2", config, "profile-b", [], None))
+        assert pinned == ["sk-hub-key", ""]
+
+
+@pytest.mark.platforms("posix")
+def test_unix_attach_round_trips_the_gate_credential(tmp_path, monkeypatch):
+    """End to end over the socket: scoped key → attach payload → hub-side adapter."""
+    import plugins.platforms.discord.adapter as adapter_module
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-roundtrip-key")
+
+    class StubAdapter:
+        def __init__(self, config):
+            self._hub_gate_credential = None
+            self._owner_profile = None
+
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            pass
+
+    async def scenario():
+        server = DiscordHubServer(tmp_path / "hub.sock")
+        monkeypatch.setattr(adapter_module, "DiscordAdapter", StubAdapter)
+        await server.start()
+        client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+        client._socket_path = server.socket_path
+        try:
+            assert await client.connect()
+            adapter = server._adapters[_token_key("fake-token")]
+            assert adapter._hub_gate_credential == "sk-roundtrip-key"
+        finally:
+            await client.disconnect()
+            await server.stop()
+
+    run(scenario())
+
+
+class TestHubAdapterCredentialCapture:
+    """The hub pin wins over both the profile scope and the hub process's env."""
+
+    def setup_method(self):
+        pytest.importorskip("discord")
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        config = PlatformConfig(enabled=True, token="x")
+        self.adapter = DiscordAdapter(config)
+
+    def test_hub_pin_is_used_verbatim(self, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        self.adapter._hub_gate_credential = "sk-hub-key"
+        self.adapter._capture_response_gate_credential()
+        assert self.adapter._response_gate_credential == "sk-hub-key"
+
+    def test_hub_pin_empty_fails_closed_even_with_env_key(self, monkeypatch):
+        # The hub process env may hold the default profile's first-writer-wins key;
+        # a profile with no key must stay credential-less, not borrow it.
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-default-profile-leak")
+        self.adapter._hub_gate_credential = ""
+        self.adapter._capture_response_gate_credential()
+        assert self.adapter._response_gate_credential is None
+
+    def test_in_process_adapter_reads_the_scope(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-scoped-key")
+        self.adapter._capture_response_gate_credential()
+        assert self.adapter._response_gate_credential == "sk-scoped-key"
+
+    def test_response_gate_init_builds_client_with_credential(self, caplog):
+        from gateway.config import ResponseGateConfig
+
+        self.adapter.config.response_gate = ResponseGateConfig.from_dict(
+            {"enabled": True, "channels": ["555"], "mode": "enforce"})
+        self.adapter._response_gate_credential = "sk-hub-key"
+        self.adapter._response_gate_init()
+        assert self.adapter._response_gate is not None
+        assert self.adapter._response_gate.client is not None
+
+    def test_response_gate_init_stays_silent_client_without_credential(self, caplog):
+        from gateway.config import ResponseGateConfig
+
+        self.adapter.config.response_gate = ResponseGateConfig.from_dict(
+            {"enabled": True, "channels": ["555"], "mode": "enforce"})
+        self.adapter._response_gate_credential = None
+        self.adapter._response_gate_init()
+        assert self.adapter._response_gate is not None
+        assert self.adapter._response_gate.client is None
+        assert any(
+            "no OPENROUTER_API_KEY" in record.message and record.levelno == logging.ERROR
+            for record in caplog.records
+        )

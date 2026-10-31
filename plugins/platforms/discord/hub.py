@@ -228,7 +228,8 @@ class DiscordHubServer:
         self.socket_path.unlink(missing_ok=True)
 
     async def _attach_adapter(self, generation_id: str, config_data: Dict[str, Any], profile: str,
-                              profile_routes: Optional[list] = None) -> None:
+                              profile_routes: Optional[list] = None,
+                              gate_credential: Optional[str] = None) -> None:
         from gateway.config import PlatformConfig
         from gateway.profile_routing import parse_profile_routes
         from plugins.platforms.discord.adapter import DiscordAdapter
@@ -248,6 +249,11 @@ class DiscordHubServer:
             return
         adapter = DiscordAdapter(config)
         adapter._owner_profile = None
+        # The attaching gateway resolved the owning profile's judge credential under
+        # that profile's secret scope; pin it before connect() so the hub-side
+        # adapter never falls back to this hub process's (unscoped, possibly
+        # default-profile) env. "" pins "no key" — fail closed, not env fallback.
+        adapter._hub_gate_credential = str(gate_credential or "")
         adapter.gateway_runner = _HubProfileResolver(self, key)
         adapter.handle_message = self._make_inbound_handler(adapter, key)
         try:
@@ -310,7 +316,8 @@ class DiscordHubServer:
                         token_key = _token_key(str(config_data.get("token") or ""))
                         await self._attach_adapter(
                             generation, config_data, str(params.get("profile") or "default"),
-                            params.get("profile_routes") or [])
+                            params.get("profile_routes") or [],
+                            params.get("gate_credential"))
                         client.token_key = token_key
                         client.router = self._router_for(token_key)
                         self._clients[generation] = client
