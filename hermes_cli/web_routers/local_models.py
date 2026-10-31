@@ -160,6 +160,7 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
     def _run():
         _spawn_body(job, body, fail_msg=fail_msg, on_exit=on_exit, download_label=download_label)
 
+    _RUNNING.setdefault(job["job_id"], {}).setdefault("resume", body)
     threading.Thread(target=_run, daemon=True, name=name).start()
 
 
@@ -683,6 +684,7 @@ async def local_models_download(body: ModelDownloadBody):
 
     def _body():
         _RUNNING.setdefault(job["job_id"], {})["resume"] = _body
+        _RUNNING[job["job_id"]]["dl"] = None
         _run_download_plan(job, plan, entry.display_name)
         _finish(job, f"{entry.display_name} ready")
         _refresh_runtime("post-download runtime refresh skipped")
