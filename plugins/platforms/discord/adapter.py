@@ -1553,6 +1553,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # other-profile) callback context. None ⇒ the gate is off and never consulted.
         self._response_gate: Optional[Dict[str, Any]] = None
         self._response_gate_credential: Optional[str] = None
+        # Set by the Discord hub before connect() when this adapter is hub-attached:
+        # the owning gateway resolved that profile's OPENROUTER_API_KEY under its own
+        # secret scope and passed it in the attach payload. None ⇒ in-process adapter
+        # (capture from the live profile scope in connect()); "" ⇒ hub attach with no
+        # key — fail closed instead of trusting the hub process's env.
+        self._hub_gate_credential: Optional[str] = None
         self._response_gate_buffer: Optional[ChannelContextBuffer] = None
         # Message ids this adapter's gate enforce-approved, waiting for _handle_message's own
         # mention check. One-shot entries, bounded: approval never outlives the dispatch.
@@ -1812,7 +1818,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # scope (same discipline as the gate-env snapshot): event callbacks later run outside
             # any scope we can trust, so they use the captured value and can never fall back to
             # another profile's (first-writer-wins) key.
-            self._response_gate_credential = _scoped_gate_env("OPENROUTER_API_KEY") or None
+            self._capture_response_gate_credential()
             self._response_gate_init()
             # The reaction gate shares that captured judge credential (same profile scope,
             # same capture discipline); it never re-reads any secret at event time.
@@ -2024,6 +2030,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # opted-in channels. Mentions, replies to this bot, configured mention patterns,
     # commands, DMs, the bot policy and the ignored/allowed-channel and allowed-user gates
     # all keep their prior behavior and never reach the judge.
+
+    def _capture_response_gate_credential(self) -> None:
+        """Resolve the judge credential at connect() time, per attach topology.
+
+        In-process adapter: read the owning profile's secret scope (the connect()
+        caller bound it). Hub-attached adapter: use the credential the attaching
+        gateway resolved under ITS profile scope — the hub process has no profile
+        scope, and its env may hold another profile's first-writer-wins key.
+        """
+        if self._hub_gate_credential is not None:
+            self._response_gate_credential = self._hub_gate_credential or None
+        else:
+            self._response_gate_credential = _scoped_gate_env("OPENROUTER_API_KEY") or None
 
     def _response_gate_init(self) -> None:
         """Build the gate from validated config plus the credential captured at startup."""
