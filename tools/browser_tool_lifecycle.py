@@ -266,7 +266,7 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
 def _read_pid_file(path: str) -> Optional[int]:
     """Integer PID from ``path``; None when missing or corrupt."""
     try:
-        return int(Path(path).read_text(encoding="utf-8").strip())
+        return int(Path(path).read_text(encoding="utf-8-sig").strip())
     except (ValueError, OSError):
         return None
 

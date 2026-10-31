@@ -41,7 +41,7 @@ def apparmor_restricts_unprivileged_userns() -> bool:
     """Ubuntu 23.10+ default: unprivileged user namespaces are denied, so a Chromium whose
     ``chrome_sandbox`` helper is not setuid (Playwright's bundle) dies with 'No usable sandbox'."""
     try:
-        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8-sig") as f:
             return f.read().strip() == "1"
     except OSError:
         return False
@@ -69,7 +69,7 @@ def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str,
     out = []
     for path in (stdout_path, stderr_path):
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 out.append(f.read().strip())
         except OSError:
             out.append("")
@@ -410,7 +410,7 @@ def _read_browser_daemon_pid(task_socket_dir: str, session_name: str) -> Optiona
     """Read the agent-browser daemon PID for a session (best-effort)."""
     pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
     try:
-        return int(Path(pid_file).read_text(encoding="utf-8").strip())
+        return int(Path(pid_file).read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return None
 
@@ -595,9 +595,9 @@ def _spawn_and_collect(
         _bt.logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
                        command, timeout, task_id, task_socket_dir)
         return {"success": False, "error": _format_browser_timeout_error(command, timeout, stdout, stderr)}
-    with open(stdout_path, "r", encoding="utf-8") as f:
+    with open(stdout_path, "r", encoding="utf-8-sig") as f:
         stdout = f.read()
-    with open(stderr_path, "r", encoding="utf-8") as f:
+    with open(stderr_path, "r", encoding="utf-8-sig") as f:
         stderr = f.read()
     _unlink_command_output_files(stdout_path, stderr_path)
     return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)

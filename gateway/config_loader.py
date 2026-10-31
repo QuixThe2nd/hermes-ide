@@ -402,7 +402,7 @@ def read_yaml_layers(home: Path) -> dict:
     config_yaml_path = home / "config.yaml"
     yaml_cfg: dict = {}
     if config_yaml_path.exists():
-        with open(config_yaml_path, encoding="utf-8") as f:
+        with open(config_yaml_path, encoding="utf-8-sig") as f:
             yaml_cfg = yaml.safe_load(f) or {}
 
     # Managed scope: overlay administrator-pinned values (this loader bypasses
