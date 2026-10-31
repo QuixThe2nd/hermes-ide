@@ -478,7 +478,7 @@ def _scan_profile_flag(argv: list) -> tuple:
     resolve_profile_env never sys.exits on it; the rejection is explained (exit 2)
     only when the flag comes BEFORE the first subcommand token under a real
     ``hermes`` run — after a subcommand, ``-p`` may belong to that subcommand or a
-    plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:xdist``,
+    plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:cacheprovider``,
     ``--flag``) are always a silent skip.
     """
     from hermes_cli._parser import top_level_value_flag_sets
