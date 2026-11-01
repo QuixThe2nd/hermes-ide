@@ -1605,7 +1605,7 @@ class GatewayTurnMixin:
             display_reasoning = "\n".join(lines[:15]) + f"\n_... ({len(lines) - 15} more lines)_"
         else:
             display_reasoning = last_reasoning.strip()
-        # Per-platform render style: Discord defaults to "-# " subtext, others keep the code block.
+        # Per-platform render style from config (default fenced code block; "-# " subtext when configured).
         try:
             from gateway.display_config import resolve_display_setting
             _reasoning_style = resolve_display_setting(

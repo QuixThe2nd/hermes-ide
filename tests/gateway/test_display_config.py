@@ -359,10 +359,10 @@ class TestToolProgressGrouping:
 class TestReasoningStyle:
     """Per-platform reasoning render style (code | blockquote | subtext | compact)."""
 
-    def test_discord_defaults_to_subtext(self):
+    def test_discord_defaults_to_code(self):
         from gateway.display_config import resolve_display_setting
 
-        assert resolve_display_setting({}, "discord", "reasoning_style") == "subtext"
+        assert resolve_display_setting({}, "discord", "reasoning_style") == "code"
 
     def test_other_platforms_default_to_code(self):
         from gateway.display_config import resolve_display_setting
