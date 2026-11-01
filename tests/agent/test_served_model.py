@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 import openai
+import pytest
 
 from agent.served_model import (
     is_displayable_served_model,
@@ -19,7 +20,7 @@ class _Agent:
     _primary_runtime: dict = {}
 
 
-def test_httpx_hook_captures_litellm_header_and_clears_when_absent():
+def test_httpx_hook_captures_litellm_header_and_preserves_when_absent():
     served = {"value": "gpt-4o-2024-11-20"}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -39,11 +40,15 @@ def test_httpx_hook_captures_litellm_header_and_clears_when_absent():
     client.chat.completions.create(model="hermes-router", messages=[{"role": "user", "content": "hi"}])
     assert result_model_fields(agent) == {"requested_model": "hermes-router", "served_model": "gpt-4o-2024-11-20"}
 
-    served["value"] = ""  # next response has no routing header: the stale value must not survive
+    served["value"] = ""  # no routing header: the previously captured displayable value survives
     client.chat.completions.create(model="hermes-router", messages=[{"role": "user", "content": "hi"}])
-    assert result_model_fields(agent) == {"requested_model": "hermes-router", "served_model": None}
+    assert result_model_fields(agent) == {
+        "requested_model": "hermes-router",
+        "served_model": "gpt-4o-2024-11-20",
+    }
 
-    # Hermes' own fallback route surfaces the same way when no proxy header is present.
+    # Hermes' own fallback route surfaces when no proxy value has been captured.
+    agent.last_served_model = None
     agent._fallback_activated = True
     agent._primary_runtime = {"model": "gpt-5.6-sol"}
     agent.model = "qwen/qwen3.8-max"
@@ -73,8 +78,25 @@ def test_is_displayable_served_model():
     assert is_displayable_served_model("31324f758efb073636feda516865fd641caf2eb384a3e86bd0fe7e5d80aca6c4") is False
 
 
-def test_served_model_from_headers_raw_fallback_when_all_undisplayable():
-    assert served_model_from_headers({
-        "x-litellm-model-id": "3132475889042",
-        "x-litellm-model-api-base": "http://192.168.30.20:8792/p/xai",
-    }) == "3132475889042"
+@pytest.mark.parametrize("headers", [
+    {"x-litellm-model-id": "31324f758efb073636feda516865fd641caf2eb384a3e86bd0fe7e5d80aca6c4"},
+    {"x-litellm-model-api-base": "http://192.168.30.20:8792/p/xai"},
+    {"x-litellm-model-id": "3132475889042"},
+], ids=["hex-id", "api-base-url", "numeric-id"])
+def test_undisplayable_only_headers_do_not_capture_or_overwrite(headers):
+    assert served_model_from_headers(headers) is None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "id": "c", "object": "chat.completion", "created": 0, "model": "hermes-router",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        }, headers=headers)
+
+    client = openai.OpenAI(api_key="x", base_url="http://proxy.test/v1",
+                           http_client=httpx.Client(transport=httpx.MockTransport(handler)), max_retries=0)
+    agent = _Agent()
+    agent.last_served_model = "xai/grok-4.6"
+    install_served_model_capture(agent, client)
+
+    client.chat.completions.create(model="hermes-router", messages=[{"role": "user", "content": "hi"}])
+    assert agent.last_served_model == "xai/grok-4.6"
