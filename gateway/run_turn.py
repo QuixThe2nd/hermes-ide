@@ -3006,15 +3006,11 @@ class GatewayTurnMixin:
         _live_status_adapter_snapshot = (
             adapter if getattr(adapter, "supports_status_text", False) and _live_status_mode != "off" else None
         )
-        _live_status_adapter_provider = lambda: (
-            None
-            if _live_status_mode == "off"
-            else (
-                (a := self._delivery_adapter_for(source))
-                if getattr(a, "supports_status_text", False)
-                else None
-            )
-        )
+        def _live_status_adapter_provider():
+            if _live_status_mode == "off":
+                return None
+            a = self._delivery_adapter_for(source)
+            return a if getattr(a, "supports_status_text", False) else None
         # "log" mode: tool calls go to ~/.hermes/logs/tool_calls.log instead of the chat. Gateway-only.
         log_mode_enabled = progress_mode == "log" and not is_webhook
         # Interim assistant messages and thinking_progress are independent of tool progress (same

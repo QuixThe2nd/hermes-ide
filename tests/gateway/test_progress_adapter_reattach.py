@@ -54,6 +54,59 @@ class _StubRunner:
         return self.current_adapter
 
 
+class _StatusCapableAdapter:
+    def __init__(self, token: object, *, supports_status_text: bool = True):
+        self.token = token
+        self.supports_status_text = supports_status_text
+
+
+def _fixed_live_status_adapter_provider(runner, source, mode, lookup_attr):
+    """Same closure shape as gateway/run.py and gateway/run_turn.py after the walrus fix."""
+
+    def _live_status_adapter_provider():
+        if mode == "off":
+            return None
+        a = getattr(runner, lookup_attr)(source)
+        return a if getattr(a, "supports_status_text", False) else None
+
+    return _live_status_adapter_provider
+
+
+@pytest.mark.parametrize("lookup_attr", ["_adapter_for_source", "_delivery_adapter_for"])
+def test_live_status_adapter_provider_resolves_live_adapter(lookup_attr):
+    source = object()
+    live_a = _StatusCapableAdapter("first")
+    live_b = _StatusCapableAdapter("second")
+    runner = _StubRunner(live_a)
+    provider = _fixed_live_status_adapter_provider(runner, source, "full", lookup_attr)
+
+    result = provider()
+    assert result is not None
+    assert result is live_a
+
+    runner.current_adapter = live_b
+    reattached = provider()
+    assert reattached is not None
+    assert reattached is live_b
+    assert reattached is not live_a
+
+
+@pytest.mark.parametrize("lookup_attr", ["_adapter_for_source", "_delivery_adapter_for"])
+def test_live_status_adapter_provider_off_mode_returns_none(lookup_attr):
+    source = object()
+    runner = _StubRunner(_StatusCapableAdapter("ignored"))
+    provider = _fixed_live_status_adapter_provider(runner, source, "off", lookup_attr)
+    assert provider() is None
+
+
+@pytest.mark.parametrize("lookup_attr", ["_adapter_for_source", "_delivery_adapter_for"])
+def test_live_status_adapter_provider_without_capability_returns_none(lookup_attr):
+    source = object()
+    runner = _StubRunner(_StatusCapableAdapter("no-status", supports_status_text=False))
+    provider = _fixed_live_status_adapter_provider(runner, source, "full", lookup_attr)
+    assert provider() is None
+
+
 async def _wait_until(predicate, *, timeout: float = 5.0, interval: float = 0.05):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

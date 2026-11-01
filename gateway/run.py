@@ -36008,19 +36008,17 @@ class GatewayRunner(
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
 
+        def _live_status_adapter_provider():
+            if _live_status_mode == "off":
+                return None
+            a = self._adapter_for_source(source)
+            return a if getattr(a, "supports_status_text", False) else None
+
         turn_ctx = TurnContext(
             source=source,
             _run_still_current=_run_still_current,
             _live_status_adapter_snapshot=_live_status_adapter,
-            _live_status_adapter_provider=lambda: (
-                None
-                if _live_status_mode == "off"
-                else (
-                    (a := self._adapter_for_source(source))
-                    if getattr(a, "supports_status_text", False)
-                    else None
-                )
-            ),
+            _live_status_adapter_provider=_live_status_adapter_provider,
             _live_status_mode=_live_status_mode,
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
