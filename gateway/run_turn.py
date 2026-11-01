@@ -1576,14 +1576,15 @@ class GatewayTurnMixin:
                 )
         return response, _intentional_silence, agent_messages
 
-    # reasoning_style → (header line, per-line quote prefix for blank / non-blank lines)
-    _REASONING_QUOTE_STYLES = {
-        "subtext": ("-# 💭 Reasoning", "-# ", "-#"), "blockquote": ("> 💭 **Reasoning:**", "> ", ">")
-    }
+    async def _hmwa_prepend_reasoning(self, agent_result, response, source, _intentional_silence, _turn_seconds=None):
+        """Surface the last reasoning block when show_reasoning is on for this platform. Mattermost
+        requires an explicit per-platform opt-in (scratch text, not final-answer content).
 
-    def _hmwa_prepend_reasoning(self, agent_result, response, source, _intentional_silence):
-        """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
-        requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
+        Discord ships the rendered reasoning as its own fenced interim message
+        (correct thread, no reply anchor/mention) so the final answer stays
+        clean; every other platform keeps the legacy prepend to the final
+        response. A failed separate send is logged and never touches the
+        final answer."""
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
             _show_reasoning_effective = _resolve_gateway_display_bool(
@@ -1596,16 +1597,14 @@ class GatewayTurnMixin:
                 False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
             )
         last_reasoning = agent_result.get("last_reasoning")
-        if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
+        # Blank/whitespace-only reasoning is "nothing to show": no prepend AND
+        # no separate Discord send (an empty fenced block would be noise).
+        if not (
+            _show_reasoning_effective and response and not _intentional_silence
+            and isinstance(last_reasoning, str) and last_reasoning.strip()
+        ):
             return response
-        from gateway.stream_consumer_fences import escape_code_fences_for_display
-        # Collapse long reasoning to keep messages readable
-        lines = last_reasoning.strip().splitlines()
-        if len(lines) > 15:
-            display_reasoning = "\n".join(lines[:15]) + f"\n_... ({len(lines) - 15} more lines)_"
-        else:
-            display_reasoning = last_reasoning.strip()
-        # Per-platform render style: Discord defaults to "-# " subtext, others keep the code block.
+        # Per-platform render style ("code" fenced block everywhere by default).
         try:
             from gateway.display_config import resolve_display_setting
             _reasoning_style = resolve_display_setting(
@@ -1613,14 +1612,33 @@ class GatewayTurnMixin:
             )
         except Exception:
             _reasoning_style = "code"
-        _quote = self._REASONING_QUOTE_STYLES.get(_reasoning_style)
-        if _quote:
-            header, prefix, empty = _quote
-            _quoted = "\n".join(f"{prefix}{ln}" if ln else empty for ln in display_reasoning.splitlines())
-            return f"{header}\n{_quoted}\n\n{response}"
-        # Escape ``` inside reasoning so inner fences don't break the outer code block.
-        display_reasoning = escape_code_fences_for_display(display_reasoning)
-        return f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+        from gateway.display_config import format_reasoning_prefix
+        _reasoning_prefix = format_reasoning_prefix(
+            _reasoning_style,
+            last_reasoning,
+            _turn_seconds,
+            _platform_config_key(source.platform),
+            thought_tokens=agent_result.get("thought_tokens"),
+        )
+        if not _reasoning_prefix:
+            return response
+        if _platform_config_key(source.platform) == "discord":
+            # Separate interim send: thread-routed, no reply anchor/mention, never
+            # the turn-final (the `_interim_send` marker keeps stream-sealing
+            # adapters from closing the live answer stream with it).
+            try:
+                from gateway.run import _interim_metadata
+                _reasoning_adapter = self._delivery_adapter_for(source)
+                if _reasoning_adapter:
+                    await _reasoning_adapter.send(
+                        source.chat_id,
+                        _reasoning_prefix,
+                        metadata=_interim_metadata(self._thread_metadata_for_source(source)),
+                    )
+            except Exception as _reasoning_err:
+                logger.debug("separate reasoning send failed: %s", _reasoning_err)
+            return response
+        return f"{_reasoning_prefix}\n\n{response}"
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
@@ -2208,7 +2226,9 @@ class GatewayTurnMixin:
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
             )
-            response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
+            response = await self._hmwa_prepend_reasoning(
+                agent_result, response, source, _intentional_silence, _turn_seconds,
+            )
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
