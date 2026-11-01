@@ -102,6 +102,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     after the agent finishes ``consumer.finish()`` then ``await task`` for the final edit."""
 
     _MAX_FLOOD_STRIKES = 3  # consecutive flood failures before edits are disabled
+    _adapter_provider = None  # instances built via __new__ without __init__ keep snapshot-only behavior
 
     # Class-wide monotonic draft-id counter (Telegram animates a draft only when the
     # same non-zero draft_id is reused).  RANDOM seed: draft_id keys the relay
