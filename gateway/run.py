@@ -38944,6 +38944,15 @@ def main():
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a
     # wedged non-daemon worker can't block Py_FinalizeEx's join. SystemExit caught so EVERY path exits.
 
+    # Match CLI dispatch: activate a healthy store, or repair it off the boot
+    # path so a slow artifact fetch never delays gateway readiness.
+    try:
+        from hermes_cli.pm_startup import run_pm_startup
+
+        run_pm_startup()
+    except Exception:
+        logger.debug("pm startup check failed", exc_info=True)
+
     # start_gateway() performs the full graceful teardown (adapters
     # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,
     # PID file + runtime lock released) before it returns OR raises SystemExit
