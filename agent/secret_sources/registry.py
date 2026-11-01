@@ -135,7 +135,7 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
 def _merged(scope: Optional[str]) -> Dict[str, SecretSource]:
     """Global sources overlaid with the scope's (default: current home) registrations."""
     merged = dict(_SOURCES)
-    merged.update(_SCOPED_SOURCES.get(scope or hermes_home_key(), {}))
+    merged.update(_SCOPED_SOURCES.get(hermes_home_key(scope), {}))
     return merged
 
 

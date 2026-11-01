@@ -52,20 +52,6 @@ def build_gateway_parser(
             "already supervises this profile. Without --force, the command "
             "refuses because a second dispatcher escapes the service and can "
             "corrupt shared gateway state.")
-    _flag(gateway_run, "--service",
-        help="Windows SCM frontend mode: run as the HermesGateway Windows "
-            "Service (started by the Service Control Manager; spawns the "
-            "real gateway as a child and reports STOP via the graceful "
-            "planned-stop path). Not for interactive use — the SCM invokes "
-            "this, or `hermes gateway service on` does.")
-    _flag(gateway_run, "--no-supervise",
-        help="Inside the s6-overlay Docker image, normally `gateway run` is "
-            "automatically redirected to the supervised s6 service (so the "
-            "gateway gets auto-restart on crash, plus a supervised dashboard "
-            "if HERMES_DASHBOARD is set). Pass --no-supervise to opt out and "
-            "get the historical pre-s6 foreground behavior: the gateway is "
-            "the container's main process and the container exits with the "
-            "gateway's exit code. No effect outside an s6 container.")
     _flag(gateway_run, "--external-supervisor",
         help="Declare that an external process manager owns this foreground "
             "gateway. In-chat restarts and updates exit back to that manager "
@@ -99,21 +85,6 @@ def build_gateway_parser(
         help="Show full, untruncated service/log output where supported")
     _add_system_flag(gateway_status)
     _add_compat_platform_flag(gateway_status)
-
-    # gateway service (MSIX HermesGateway Windows Service — the SCM one)
-    gateway_service = gateway_subparsers.add_parser(
-        "service",
-        help="Manage the HermesGateway Windows Service (MSIX installs)",
-        description=(
-            "The bundled MSIX installs a HermesGateway Windows Service "
-            "(demand-start, stopped). 'on' = automatic at logon + start "
-            "now; 'off' = demand + stop; 'status' = SCM state + config."
-        ),
-    )
-    gateway_service_sub = gateway_service.add_subparsers(dest="gateway_service_action")
-    gateway_service_sub.add_parser("on", help="Enable: automatic at logon + start now")
-    gateway_service_sub.add_parser("off", help="Disable: demand-start + stop now")
-    gateway_service_sub.add_parser("status", help="Show SCM state + config key")
 
     # gateway install
     gateway_install = gateway_subparsers.add_parser(

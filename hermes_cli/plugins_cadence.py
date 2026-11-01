@@ -12,6 +12,7 @@ Pure, injectable clock/check/update seams for hermetic tests.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -20,11 +21,18 @@ _MARKERS_DIR = "plugin-update-checks"
 _DEFAULT_INTERVAL_HOURS = 24
 
 
-def _markers_dir() -> Path:
-    # resolved per call (tests monkeypatch get_hermes_home)
+def _marker_path() -> Path:
+    """The last-run marker, resolved per call (tests monkeypatch
+    get_hermes_home). Derivation only — NO mkdir: a due-check or any
+    read path must not create user state."""
     from hermes_constants import get_hermes_home
 
-    d = get_hermes_home() / _MARKERS_DIR
+    return get_hermes_home() / _MARKERS_DIR / "last-run"
+
+
+def _markers_dir() -> Path:
+    """The markers dir, created on demand — WRITE paths only."""
+    d = _marker_path().parent
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -72,12 +80,18 @@ def check_due(now: Optional[float] = None, interval_hours: Optional[float] = Non
     if interval_hours <= 0:
         return False
     now = time.time() if now is None else now
-    marker = _markers_dir() / "last-run"
+    marker = _marker_path()
     try:
         last = marker.stat().st_mtime
     except OSError:
         return True
     return (now - last) >= interval_hours * 3600
+
+
+#: Minimal singleflight for one home: two gateway ticks overlapping in
+#: this process (boot pass + periodic tick) must not double-fetch or
+#: double-write receipts. A plain non-blocking lock — not a manager.
+_tick_lock = threading.Lock()
 
 
 def run_scheduled_check(
@@ -91,8 +105,9 @@ def run_scheduled_check(
 ) -> Optional[list]:
     """One cadence tick: gate → check → receipt → (opt-in) apply.
 
-    Returns the check results, or None when not due / disabled. NEVER
-    raises — a cadence failure is logged, never fatal.
+    Returns the check results, or None when not due / disabled / another
+    tick is already in flight. NEVER raises — a cadence failure is
+    logged, never fatal.
     """
     import logging
 
@@ -100,24 +115,43 @@ def run_scheduled_check(
         log = logging.getLogger(__name__)
     if not check_due(now=now, config_get=config_get):
         return None
+    if not _tick_lock.acquire(blocking=False):
+        log.debug("plugin update check already in flight — skipping tick")
+        return None
+    try:
+        return _run_check_locked(
+            run_checks_fn=run_checks_fn,
+            plugins_dir=plugins_dir,
+            apply_updates_fn=apply_updates_fn,
+            log=log,
+            config_get=config_get,
+        )
+    finally:
+        _tick_lock.release()
 
+
+def _run_check_locked(
+    *,
+    run_checks_fn: Callable[..., list],
+    plugins_dir: Path,
+    apply_updates_fn: Optional[Callable[[str], None]],
+    log,
+    config_get: Callable = None,
+) -> list:
+    check_ok = True
     try:
         results = run_checks_fn(plugins_dir)
     except Exception:
         log.warning("plugin update check failed", exc_info=True)
         results = []
+        check_ok = False
 
-    # the receipt — the surface every medium reads
     try:
         from pm import receipt
-
-        receipt.begin("plugin-check")
+        token = receipt.begin("plugin-check")
         receipt.record_plugin_checks(results)
-        updates = [
-            r for r in results
-            if getattr(r, "update_available", None) is True
-        ]
-        receipt.finalize("ok" if not updates else "updates-available")
+        updates = [r for r in results if getattr(r, "update_available", None) is True]
+        receipt.finalize("failed" if not check_ok else "updates-available" if updates else "ok", token=token)
     except Exception:
         log.debug("plugin-check receipt write failed", exc_info=True)
 
@@ -147,7 +181,7 @@ def run_scheduled_check(
             if getattr(r, "klass", "") == "git":
                 try:
                     apply_updates_fn(r.name)
-                except Exception:
+                except (Exception, SystemExit):
                     log.warning("auto-apply of %s failed", r.name, exc_info=True)
 
     # stamp the marker AFTER a completed run (even a failed one — a
@@ -158,3 +192,54 @@ def run_scheduled_check(
     except OSError:
         pass
     return results
+
+
+# ---------------------------------------------------------------------------
+# the production caller: real seams for the gateway boot/housekeeping tick
+# ---------------------------------------------------------------------------
+
+def maybe_run_gateway_check(
+    *,
+    run_checks_fn: Optional[Callable[..., list]] = None,
+    apply_updates_fn: Optional[Callable[[str], None]] = None,
+    plugins_dir: Optional[Path] = None,
+    log=None,
+    now: Optional[float] = None,
+) -> Optional[list]:
+    """The tick every gateway boot / housekeeping pass calls.
+
+    Fills in the REAL seams ``run_scheduled_check`` leaves injectable:
+    the same read-only ``plugins_updates.run_checks`` the manual
+    ``hermes plugins check-updates`` uses (urllib feed fetch, git
+    ls-remote, PyPI latest), the real plugins dir, and the manual
+    ``hermes plugins update <name>`` flow as the opt-in apply path —
+    auto-apply rides the identical security/consent/scan pipeline.
+
+    Returns the check results, or None when not due / disabled. Due-gated
+    by ``plugins.auto_update_check_hours`` (0 disables); a network error
+    costs one warning and a stamped marker — never an apply.
+    """
+    if plugins_dir is None:
+        from hermes_cli import plugins_cmd
+
+        plugins_dir = plugins_cmd._plugins_dir()
+    if run_checks_fn is None:
+        # ONE shared network-default implementation — plugins_updates
+        # owns default_fetch / default_ls_remote / _default_pypi_latest;
+        # the manual `hermes plugins check-updates` passes the same
+        # defaults. No boilerplate re-derivation here.
+        from hermes_cli.plugins_updates import run_checks
+
+        run_checks_fn = run_checks
+    if apply_updates_fn is None:
+        from hermes_cli import plugins_cmd
+
+        from functools import partial
+        apply_updates_fn = partial(plugins_cmd.cmd_update, interactive=False)
+    return run_scheduled_check(
+        run_checks_fn=run_checks_fn,
+        plugins_dir=plugins_dir,
+        apply_updates_fn=apply_updates_fn,
+        log=log,
+        now=now,
+    )

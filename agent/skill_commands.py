@@ -230,7 +230,7 @@ def _setup_note(loaded_skill: dict[str, Any]) -> Optional[str]:
 def _supporting_files(loaded_skill: dict[str, Any], skill_dir: Path | None) -> list[str]:
     """Skill-relative support file paths: from ``linked_files`` or a disk walk."""
     linked = (loaded_skill.get("linked_files") or {}).values()
-    supporting = [entry for entries in linked if isinstance(entries, list) for entry in entries]
+    supporting = [Path(entry).as_posix() for entries in linked if isinstance(entries, list) for entry in entries]
     if not supporting and skill_dir:
         for subdir in ("references", "templates", "scripts", "assets"):
             files = sorted((skill_dir / subdir).rglob("*"))

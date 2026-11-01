@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -261,26 +262,8 @@ def fake_steps(monkeypatch):
 
     from hermes_cli import post_update
 
-    monkeypatch.setattr(post_update, "HOME_STEPS", (("h", home_step),))
-    monkeypatch.setattr(post_update, "MACHINE_STEPS", (("m", machine_step),))
-    # Machine steps run on a thread; make THOSE synchronous for the test.
-    # boot_bootstrap does `import threading` inside the function, so patching
-    # the stdlib module's Thread attribute is what reaches it — but only the
-    # bootstrap's own threads may be faked: subprocess.communicate creates
-    # reader Threads on Windows and needs the real class.
-    import threading
-
-    real_thread = threading.Thread
-
-    class _SyncThread(real_thread):
-        def start(self):
-            if str(getattr(self, "name", "")).startswith("hermes-bootstrap"):
-                if self._target is not None:
-                    self._target(*self._args, **self._kwargs)
-                return
-            real_thread.start(self)
-
-    monkeypatch.setattr(threading, "Thread", _SyncThread)
+    monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("h", home_step),))
+    monkeypatch.setattr(post_update, "BOOT_MACHINE_STEPS", (("m", machine_step),))
     return calls
 
 
@@ -291,7 +274,7 @@ def test_run_boot_bootstrap_runs_then_noops(repo, tmp_path, monkeypatch, fake_st
     first = run_boot_bootstrap(repo)
     assert fake_steps == {"home": 1, "machine": 1}
     assert first["home"] == {"h": {"ok": True}}
-    assert first["machine"] == "deferred"
+    assert first["machine"] == {"m": {"ok": True}}
 
     second = run_boot_bootstrap(repo)
     assert fake_steps == {"home": 1, "machine": 1}  # no re-run
@@ -320,8 +303,8 @@ def test_step_failure_still_writes_record(repo, tmp_path, monkeypatch):
     def boom():
         raise RuntimeError("step exploded")
 
-    monkeypatch.setattr(post_update, "HOME_STEPS", (("boom", boom),))
-    monkeypatch.setattr(post_update, "MACHINE_STEPS", ())
+    monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("boom", boom),))
+    monkeypatch.setattr(post_update, "BOOT_MACHINE_STEPS", ())
 
     run_boot_bootstrap(repo)
     record = read_last_known(record_path(repo, "home"))
@@ -361,34 +344,58 @@ def test_maybe_run_never_raises(monkeypatch, tmp_path):
     boot_bootstrap.maybe_run_boot_bootstrap(tmp_path)  # must not raise
 
 
-def test_deferred_machine_steps_execute(repo, tmp_path, monkeypatch):
-    """The machine scope defers to a REAL thread — the record is written
-    first (boot readiness must not wait on network installers), and the
-    steps still actually run. No synchronous-thread fake here on purpose:
-    the claim under test is that the deferred work happens."""
-    import threading
+def test_boot_machine_scope_is_check_only(repo, tmp_path, monkeypatch):
+    """Automatic boot NEVER installs: a drifted machine must get a drift
+    report (and a written record), while pm's ensure/sync_venv stay
+    reserved for the explicit update pass (MACHINE_STEPS)."""
+    import pm
 
     from hermes_cli import post_update
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-    ran = threading.Event()
-    monkeypatch.setattr(post_update, "HOME_STEPS", ())
-    monkeypatch.setattr(
-        post_update,
-        "MACHINE_STEPS",
-        (("probe", lambda: (ran.set(), {"ok": True})[1]),),
-    )
+    installed: list[str] = []
+    monkeypatch.setattr(pm, "check", lambda: ["node: not installed or outdated"])
+
+    class _Boom:
+        @staticmethod
+        def ensure(*_a, **_kw):
+            installed.append("ensure")
+
+        @staticmethod
+        def sync_venv(*_a, **_kw):
+            installed.append("sync_venv")
+
+    monkeypatch.setitem(sys.modules, "pm.ensure", _Boom)
 
     result = run_boot_bootstrap(repo)
 
-    assert result["machine"] == "deferred"
-    # The record was written BEFORE the steps finished (that ordering is
-    # the design: a crash mid-step must not retrigger every boot).
-    record = boot_bootstrap.record_path(repo, "machine")
-    assert json.loads(record.read_text())["results"]["deferred"] is True
-    assert ran.wait(timeout=10), "deferred machine steps never executed"
+    assert result["machine"]["report_runtime_drift"]["drift"] == [
+        "node: not installed or outdated"
+    ]
+    assert installed == [], "boot must not install anything"
+    record = read_last_known(record_path(repo, "machine"))
+    assert record["results"]["report_runtime_drift"]["ok"] is True
+    # the installing registry is untouched for the explicit update owner
+    assert ("provision_runtimes", post_update.step_provision_runtimes) in (
+        post_update.MACHINE_STEPS
+    )
+    assert ("report_runtime_drift", post_update.step_report_runtime_drift) in (
+        post_update.BOOT_MACHINE_STEPS
+    )
+
+
+def test_boot_machine_scope_current_is_skipped(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    import pm
+
+    monkeypatch.setattr(pm, "check", lambda: [])
+    result = run_boot_bootstrap(repo)
+    assert result["machine"] == {
+        "report_runtime_drift": {"ok": True, "skipped": "current"}
+    }
 
 
 def test_sealed_tree_bootstrap_end_to_end(tmp_path, monkeypatch):
@@ -419,8 +426,8 @@ def test_sealed_tree_bootstrap_end_to_end(tmp_path, monkeypatch):
         calls["n"] += 1
         return {"ok": True}
 
-    monkeypatch.setattr(post_update, "HOME_STEPS", (("h", count),))
-    monkeypatch.setattr(post_update, "MACHINE_STEPS", ())
+    monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", (("h", count),))
+    monkeypatch.setattr(post_update, "BOOT_MACHINE_STEPS", ())
 
     assert run_boot_bootstrap(sealed)["home"] != "skipped"
     assert calls["n"] == 1
@@ -564,8 +571,8 @@ class TestSealedDriftBackstop:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         monkeypatch.setattr(pm, "check", lambda: ["uv: not installed or outdated"])
-        monkeypatch.setattr(post_update, "HOME_STEPS", ())
-        monkeypatch.setattr(post_update, "MACHINE_STEPS", ())
+        monkeypatch.setattr(post_update, "BOOT_HOME_STEPS", ())
+        monkeypatch.setattr(post_update, "BOOT_MACHINE_STEPS", ())
         summary = run_boot_bootstrap(root)
         assert "uv" in summary.get("sealed_runtime_drift", "")
 

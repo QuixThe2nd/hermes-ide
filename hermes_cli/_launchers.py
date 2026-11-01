@@ -15,11 +15,9 @@ Two consumers:
 - ``hermes_cli/_install_repair.py`` calls the same machinery per-name when
   a launcher is missing or still boots through the venv.
 
-Store-root resolution mirrors ``pm/paths.py`` (HERMES_RUNTIME_DIR →
-install-stamp.json ``runtimeDir`` → the pm default root); it is re-implemented
-here because this module must stay importable from a bare interpreter
-(stdlib + distlib only) during repair/bootstrap where ``pm`` imports are not
-guaranteed. If pm's layout changes, keep the two in lockstep.
+Store paths come from the stdlib-only runtime_paths owner, shared with PM.
+Launchers import hermes_bootstrap before the entry point: the dependency
+selection is read at boot, not frozen when the launcher is minted.
 
 The exe form uses distlib's ScriptMaker with a customized script template
 that inserts the repo root and the venv's site-packages into ``sys.path``
@@ -35,6 +33,9 @@ import json
 import os
 from pathlib import Path
 
+from hermes_constants import project_venv_dir
+from hermes_cli.runtime_paths import site_packages, store_root
+
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Stage-Path and hermes_cli/_install_repair.py.
 WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
@@ -49,36 +50,6 @@ ENTRY_POINTS = {
 
 def _is_windows() -> bool:
     return os.name == "nt"
-
-
-def project_venv_dir(repo_root: Path) -> Path | None:
-    """The uv-sync target venv of the install (``venv`` preferred, ``.venv``
-    for dev checkouts)."""
-    for name in ("venv", ".venv"):
-        candidate = Path(repo_root) / name
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
-def store_root(repo_root: Path) -> Path:
-    """The pm byte store, resolved exactly like pm/paths.store_root()."""
-    env = os.environ.get("HERMES_RUNTIME_DIR")
-    if env:
-        return Path(env)
-    stamp = Path(repo_root) / "install-stamp.json"
-    if stamp.is_file():
-        try:
-            runtime_dir = json.loads(stamp.read_text(encoding="utf-8-sig")).get(
-                "runtimeDir"
-            )
-        except (OSError, ValueError):
-            runtime_dir = None
-        if runtime_dir:
-            return Path(runtime_dir)
-    from hermes_constants import get_default_hermes_root
-
-    return Path(get_default_hermes_root()) / "tools"
 
 
 def resolve_store_python(repo_root: Path) -> Path | None:
@@ -105,19 +76,6 @@ def resolve_store_python(repo_root: Path) -> Path | None:
     for entry_dir in sorted(runtime.glob("python-*"), key=lambda p: p.name):
         candidate = entry_dir / rel
         if candidate.is_file():
-            return candidate
-    return None
-
-
-def venv_site_packages(venv_dir: Path) -> Path | None:
-    """The venv directory uv sync fills (Windows ``Lib\\site-packages``;
-    POSIX ``lib/python3.X/site-packages``)."""
-    venv_dir = Path(venv_dir)
-    if _is_windows():
-        candidate = venv_dir / "Lib" / "site-packages"
-        return candidate if candidate.is_dir() else None
-    for candidate in sorted(venv_dir.glob("lib/python3.*/site-packages")):
-        if candidate.is_dir():
             return candidate
     return None
 
@@ -216,6 +174,7 @@ def mint_launcher(
                 "import sys\n"
                 f"sys.path.insert(0, {esc(repo_root)!r})\n"
                 f"{site_line}"
+                "import hermes_bootstrap\n"
                 "if __name__ == '__main__':\n"
                 "    from %(module)s import %(import_name)s\n"
                 "    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
@@ -236,7 +195,7 @@ def mint_launcher(
         # distlib ran but produced no exe (unexpected) — fall through to cmd.
 
     site = f";{site_packages}" if site_packages else ""
-    code = f"import sys; from {module} import {func}; sys.exit({func}())"
+    code = f"import sys; import hermes_bootstrap; from {module} import {func}; sys.exit({func}())"
     body = (
         "@echo off\r\n"
         "chcp 65001 >nul\r\n"
@@ -260,13 +219,13 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     Never raises; returns the written path or None."""
     repo_root = Path(repo_root)
     venv_dir = project_venv_dir(repo_root)
-    site_packages = venv_site_packages(venv_dir) if venv_dir else None
+    dependencies = site_packages(venv_dir) if venv_dir else None
     store_python = resolve_store_python(repo_root)
     if store_python is not None:
-        path = mint_launcher(name, repo_root, out_dir, store_python, site_packages)
+        path = mint_launcher(name, repo_root, out_dir, store_python, dependencies)
         if path is not None:
             return path
-    return _write_runtime_cmd(name, repo_root, site_packages, out_dir)
+    return _write_runtime_cmd(name, repo_root, dependencies, out_dir)
 
 
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
@@ -316,7 +275,7 @@ def _write_runtime_cmd(
         ")\r\n"
         f'endlocal & set "PYTHONPATH=%HERMES_REPO%{site}" & set "PM_PY=%PM_PY%"\r\n'
         'set "PYTHONHOME="\r\n'
-        f'set "PM_ENTRY=import sys; from {module} import {func}; sys.exit({func}())"\r\n'
+        f'set "PM_ENTRY=import sys; import hermes_bootstrap; from {module} import {func}; sys.exit({func}())"\r\n'
         '"%PM_PY%" -c "%PM_ENTRY%" %*\r\n'
     )
     return _write_atomic(

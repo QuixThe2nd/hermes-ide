@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
@@ -21,6 +22,71 @@ def _safe_which(cmd: str) -> str | None:
         return shutil.which(cmd)
     except Exception:
         return None
+
+
+def _pm_tool_path(name: str) -> Path | None:
+    """Answer a tool's binary from the pm store (facts.json), not PATH.
+
+    Doctor probes tools (git, rg, ...) that pinned installs run out of
+    the store; nothing puts the store on an interactive shell's PATH, so
+    a PATH-only probe reports a healthy managed install as "not found".
+    This answers from pm's registry/store/package authority: the recorded
+    entry's binary when it exists on disk, None when unstaged or the
+    recorded binary is gone (deleted = report missing, never guess).
+    Contract tests: tests/hermes_cli/test_doctor_pm_store_probe.py.
+    """
+    try:
+        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        from pm import paths, registry, store
+        from pm.lock import Facts
+
+        fact = Facts(paths.facts_path()).get(name) or {}
+        entry_name = fact.get("entry")
+        if not entry_name:
+            return None
+        package = registry.get_package(name)
+        binary = package.binary(store.Store(paths.store_root()).entry(entry_name), store.current_target())
+    except Exception:
+        return None
+    if binary is None or not binary.is_file():
+        return None
+    return binary
+
+
+def _pm_package_for_command(command: str) -> str | None:
+    """The pm package that provisions *command*, derived from pm's own
+    package definitions (binary_rel → executable basename) — no restated
+    name table, so new pm packages are covered without doctor changes."""
+    try:
+        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        from pm import registry, store
+        from pm.packages import BinaryPackage
+
+        target = store.current_target()
+        for package_name in registry.all_packages():
+            package = registry.get_package(package_name)
+            if isinstance(package, BinaryPackage):
+                rel = package._rel(target)
+                if rel and Path(rel).name.removesuffix(".exe").removesuffix(".cmd") == command:
+                    return package_name
+    except Exception:
+        return None
+    return None
+
+
+def _doctor_tool(name: str) -> tuple[str | None, str]:
+    """Resolve the tool Hermes would actually run: the pm store first
+    (pinned installs run tools out of the store, which nothing puts on
+    PATH), then PATH. *name* is the command ("rg"); its pm package
+    ("ripgrep") is resolved from pm's own definitions. Returns
+    ``(path, ok-row detail)``."""
+    for package_name in (name, _pm_package_for_command(name)):
+        if not package_name:
+            continue
+        staged = _pm_tool_path(package_name)
+        if staged:
+            return str(staged), "(pm store)"
+    return _safe_which(name), ""
 
 
 def _run_ok(cmd: list[str], timeout: int, **kw) -> bool:
@@ -137,8 +203,10 @@ def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]
 
 @doctor_check()
 def _check_git_and_rg(should_fix: bool, f: Finding) -> None:
-    check_bool(_safe_which("git"), "git", ("git not found", "(optional)"))
-    if not check_bool(_safe_which("rg"), ("ripgrep (rg)", "(faster file search)"),
+    git, git_detail = _doctor_tool("git")
+    rg, rg_detail = _doctor_tool("rg")
+    check_bool(git, ("git", git_detail), ("git not found", "(optional)"))
+    if not check_bool(rg, ("ripgrep (rg)", f"{rg_detail} (faster file search)".strip()),
                       ("ripgrep (rg) not found", "(file search uses grep fallback)")):
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
 

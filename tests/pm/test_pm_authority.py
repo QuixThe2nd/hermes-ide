@@ -73,7 +73,6 @@ def pm_env(tmp_path, served, monkeypatch):
 
     ensure_mod = importlib.import_module("pm.ensure")
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
-    paths._stamp.cache_clear()
 
     saved = dict(registry._packages)
     registry._packages.clear()
@@ -150,6 +149,150 @@ def test_same_version_different_sha_is_not_installed_and_repaired(pm_env):
     fact = Facts(paths.facts_path()).get("faketool")
     assert fact["target"] == current_target()
     assert fact["artifacts"] == [digest_b]
+
+
+@pytest.mark.parametrize("matching_fact", [False, True])
+@pytest.mark.parametrize("damage", ["missing-binary", "changed-bytes", "entry-is-file"])
+def test_install_repairs_corrupt_entry_from_verified_archive(pm_env, matching_fact, damage):
+    from pm.cli import cmd_doctor
+    from pm.ensure import ensure
+
+    ensure("faketool", base_env={})
+    facts_path = paths.facts_path()
+    fact = Facts(facts_path).get("faketool")
+    entry = paths.store_root() / fact["entry"]
+    binary = entry / "bin" / "faketool"
+    if damage == "missing-binary":
+        binary.unlink()
+    elif damage == "changed-bytes":
+        binary.write_bytes(b"corrupted")
+    else:
+        shutil.rmtree(entry)
+        entry.write_bytes(b"not a directory")
+    if not matching_fact:
+        data = json.loads(facts_path.read_text())
+        data["packages"]["faketool"].pop("artifacts")
+        facts_path.write_text(json.dumps(data))
+
+    ensure("faketool", explicit=True, base_env={})
+
+    assert binary.read_bytes() == b"#!x"
+    assert cmd_doctor(None) == 0
+    assert Facts(facts_path).get("faketool")["digest"] == tree_digest(binary.parent.parent)
+
+
+@pytest.mark.parametrize("replacement", ["invalid", "publish-failure", "interrupted", "facts-failure"])
+def test_failed_replacement_preserves_entry_and_facts(pm_env, monkeypatch, replacement):
+    from pm.ensure import ensure
+    from pm.package import InstallError
+
+    env = pm_env
+    ensure("faketool", base_env={})
+    facts_path = paths.facts_path()
+    old_facts = facts_path.read_bytes()
+    old = Facts(facts_path).get("faketool")
+    binary = paths.store_root() / old["entry"] / "bin" / "faketool"
+    files = {"bin/unrelated": "bad layout"} if replacement == "invalid" else {"bin/faketool": "#!new"}
+    _, digest = make_tar(env["docroot"], "replacement.tar.gz", files)
+    lockfile = Lockfile(env["lockfile_path"])
+    lockfile.set_pin("faketool", "1.0", {"any": {
+        "url": f"{env['base_url']}/replacement.tar.gz", "sha256": digest,
+    }})
+    lockfile.save()
+    if replacement in ("publish-failure", "interrupted"):
+        original = Store.publish
+
+        def fail_package_publish(self, staged, name):
+            if name == old["entry"]:
+                if replacement == "interrupted":
+                    raise KeyboardInterrupt()
+                raise OSError("replacement publication failed")
+            return original(self, staged, name)
+
+        monkeypatch.setattr(Store, "publish", fail_package_publish)
+    elif replacement == "facts-failure":
+        def fail_record(*args, **kwargs):
+            raise OSError("facts write failed")
+        monkeypatch.setattr(Facts, "record", fail_record)
+
+    expected_error = KeyboardInterrupt if replacement == "interrupted" else InstallError
+    with pytest.raises(expected_error):
+        ensure("faketool", explicit=True, base_env={})
+
+    assert binary.read_bytes() == b"#!x"
+    assert facts_path.read_bytes() == old_facts
+
+
+def test_killed_replacement_recovers_on_next_install(pm_env):
+    """A process exit between moving old bytes and publishing new bytes is recoverable."""
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    from pm.ensure import ensure
+
+    env = pm_env
+    ensure("faketool", base_env={})
+    old_fact = Facts(paths.facts_path()).get("faketool")
+    _, digest = make_tar(env["docroot"], "replacement.tar.gz", {"bin/faketool": "#!new"})
+    lockfile = Lockfile(env["lockfile_path"])
+    lockfile.set_pin("faketool", "1.0", {"any": {
+        "url": f"{env['base_url']}/replacement.tar.gz", "sha256": digest,
+    }})
+    lockfile.save()
+    code = textwrap.dedent("""
+        import os, sys
+        from pathlib import Path
+        import pm.paths as paths
+        import pm.registry as registry
+        from pm.store import Store
+        from tests.pm.test_pm_authority import FakeTool
+        from pm.ensure import ensure
+        paths.lockfile_path = lambda: Path(sys.argv[1])
+        registry._packages[FakeTool.name] = FakeTool()
+        publish = Store.publish
+        def crash(self, staged, name):
+            if name.startswith('faketool-'):
+                os._exit(17)
+            return publish(self, staged, name)
+        Store.publish = crash
+        ensure('faketool', explicit=True, base_env={})
+    """)
+    child = subprocess.run(
+        [sys.executable, "-c", code, str(env["lockfile_path"])],
+        env=dict(os.environ), capture_output=True, text=True, timeout=30,
+    )
+    assert child.returncode == 17, child.stderr
+    assert Facts(paths.facts_path()).get("faketool") == old_fact
+    ensure("faketool", explicit=True, base_env={})
+    fact = Facts(paths.facts_path()).get("faketool")
+    entry = paths.store_root() / fact["entry"]
+    assert (entry / "bin" / "faketool").read_bytes() == b"#!new"
+    assert fact["digest"] == tree_digest(entry)
+
+
+def test_failed_restore_preserves_both_interrupted_versions(pm_env, monkeypatch):
+    from pm.ensure import ensure
+    from pm.package import InstallError
+
+    ensure("faketool", base_env={})
+    fact = Facts(paths.facts_path()).get("faketool")
+    entry = paths.store_root() / fact["entry"]
+    previous = entry.with_name(".previous-" + entry.name)
+    previous.mkdir()
+    (previous / "saved").write_text("previous")
+    (entry / "bin" / "faketool").write_text("uncommitted replacement")
+    real_rename = Path.rename
+    def fail_restore(self, target):
+        if self == previous:
+            raise PermissionError("restore refused")
+        return real_rename(self, target)
+    monkeypatch.setattr(Path, "rename", fail_restore)
+    with pytest.raises((PermissionError, InstallError), match="restore refused"):
+        ensure("faketool", explicit=True, base_env={})
+    assert (entry / "bin" / "faketool").read_text() == "uncommitted replacement"
+    assert (previous / "saved").read_text() == "previous"
 
 
 def test_poisoned_fetch_cache_is_redownloaded(pm_env):
@@ -297,7 +440,7 @@ def test_adopt_adopts_intact_payload(pm_env):
     from pm.ensure import adopt
 
     _bundle_payload(pm_env)
-    marker = paths.store_root().parent / ".adopted"
+    marker = paths.runtime_facts_path().parent / ".adopted"
     assert not marker.is_file()
     assert adopt() is True
     assert marker.is_file()
@@ -313,7 +456,7 @@ def test_adopt_refuses_on_missing_staged_binary(pm_env):
     binary = paths.store_root() / fact["entry"] / "bin" / "faketool"
     binary.unlink()
 
-    marker = paths.store_root().parent / ".adopted"
+    marker = paths.runtime_facts_path().parent / ".adopted"
     assert adopt() is False
     assert not marker.is_file()
 
@@ -329,7 +472,7 @@ def test_adopt_refuses_on_tampered_staged_binary(pm_env):
     binary = paths.store_root() / fact["entry"] / "bin" / "faketool"
     binary.write_bytes(b"#!substituted")
 
-    marker = paths.store_root().parent / ".adopted"
+    marker = paths.runtime_facts_path().parent / ".adopted"
     assert adopt() is False
     assert not marker.is_file()
 

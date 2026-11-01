@@ -1,23 +1,7 @@
-"""The generated uv-workspace root that unions plugin deps into the venv.
+"""Resolve core plus plugin requirements in a writable build snapshot.
 
-Design (settled 2026-09-02, .hermes/plans/2026-09-02_164500-plugin-deps-
-workspace-union.md):
-
-- The workspace root is pm-GENERATED, never the committed pyproject.toml.
-  Sealed installs are read-only, and the member list is machine-specific
-  (which plugins the user enabled). Generated root lives beside the byte
-  store: ``<store_root()>/.pm-workspace`` — per-install, writable on every
-  install kind.
-- Its pyproject = core's pyproject verbatim + a ``[tool.uv.workspace]``
-  members block of relative ``../``-escaping paths to each enabled plugin
-  dir. Relative members can escape the workspace root (probed live).
-- ``uv lock`` resolves core + plugin deps as ONE graph: existing core pins
-  are preserved (a plugin's range spec does not move them) and a conflict
-  fails loudly, so the plugin simply does not install.
-- ``uv sync --frozen --extra ...`` at the root installs the union into the
-  project venv; ``UV_PROJECT_ENVIRONMENT`` pins WHICH venv that is.
-- Plugin-member extras are banned/ignored for now (settled): uv selects
-  only ROOT extras, and the root mirrors core's extras.
+Shipped source and locks are inputs, never mutation targets. Candidate
+failure propagates without changing plugin configuration or the live venv.
 """
 
 from __future__ import annotations
@@ -29,13 +13,45 @@ from pathlib import Path
 from typing import Optional
 
 from pm import paths
+from pm.package import InstallError
 
 WORKSPACE_DIRNAME = ".pm-workspace"
 
 
+class ResolutionConflict(InstallError):
+    """uv's resolver proved the union has no valid solution."""
+
+
+# Markers uv prints ONLY when the resolver itself proves no solution
+# exists (its conflict report: "Because ...", "no solution found").
+# Deliberately narrow: a fetch timeout or index outage must not be
+# misread as a conflict — and regardless of classification, nothing
+# here ever disables a plugin; the caller decides.
+_RESOLVER_MARKERS = (
+    "no solution found",
+    "conflicting requirements",
+    "because only the following versions",
+    "and your pyproject depends on",
+)
+
+
+def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
+    """Turn a failed `uv <stage>` into the right classified error.
+
+    Resolver-conflict output → ResolutionConflict; anything else (fetch,
+    build, tooling) → plain InstallError with the tail of the output.
+    """
+    cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
+    lowered = output.lower()
+    if any(marker in lowered for marker in _RESOLVER_MARKERS):
+        return ResolutionConflict("venv", cause)
+    return InstallError("venv", cause)
+
+
 def workspace_root() -> Path:
-    """The generated workspace root — per-install, beside the byte store."""
-    return paths.store_root() / WORKSPACE_DIRNAME
+    """Default preparation root; callers can supply a fresh transaction root."""
+    from hermes_cli.runtime_paths import install_state_dir
+    return install_state_dir(paths.repo_root()) / WORKSPACE_DIRNAME
 
 
 def _member_rel(root: Path, plugin_dir: Path) -> str:
@@ -57,27 +73,78 @@ def members_stamp(plugin_dirs: list[Path]) -> str:
     for entry in resolved:
         h.update(str(entry).encode("utf-8"))
         h.update(b"\0")
-        pyproject = entry / "pyproject.toml"
-        if pyproject.is_file():
-            try:
-                h.update(pyproject.read_bytes())
-            except OSError:
-                pass
-        h.update(b"\0")
+        for name in ("pyproject.toml", "plugin.yaml"):
+            source = entry / name
+            if source.is_file():
+                h.update(source.read_bytes())
+            h.update(b"\0")
     return h.hexdigest()
 
 
-def build_root(plugin_dirs: list[Path]) -> Path:
+def _copy_core_inputs(source: Path, destination: Path) -> None:
+    """Build from a writable snapshot, never from signed/read-only source."""
+    import shutil
+
+    import fnmatch
+    import tomllib
+
+    metadata = tomllib.loads((source / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    project = metadata.get("project", {})
+    setuptools = metadata.get("tool", {}).get("setuptools", {})
+    patterns = setuptools.get("packages", {}).get("find", {}).get("include", ["*"])
+    package_roots = {pattern.split(".", 1)[0] for pattern in patterns}
+    files = {"pyproject.toml", "setup.py", "setup.cfg"}
+    readme = project.get("readme")
+    if isinstance(readme, str):
+        files.add(readme)
+    elif isinstance(readme, dict) and "file" in readme:
+        files.add(readme["file"])
+    for pattern in project.get("license-files", []):
+        files.update(str(p.relative_to(source)) for p in source.glob(pattern))
+    files.update(p.name for p in source.glob("*.py"))
+
+    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release", "uv.lock"}
+    def ignore(directory, names):
+        return [name for name in names if name in excluded or name.startswith(".")
+                or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+
+    for entry in source.iterdir():
+        if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
+                and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
+                and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
+            target = destination / entry.name
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(entry, target, ignore=ignore)
+    for name in files:
+        entry = source / name
+        if not entry.is_file() or entry.is_symlink():
+            continue
+        if not entry.resolve().is_relative_to(source.resolve()):
+            raise InstallError("venv", f"build input escapes the core project: {name}")
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(entry, target)
+
+
+def _generate_pyproject(plugin_dirs: list[Path], root: Optional[Path] = None) -> tuple[Path, bool]:
     """(Re)generate the workspace root's pyproject.toml from core's
     pyproject + the enabled plugin members. Idempotent — same inputs,
-    same bytes."""
-    root = workspace_root()
+    same bytes. Returns (root, changed): changed is True when the member
+    surface moved (member set or a member's pyproject content), which is
+    the signal to re-seed the resolution from the committed lock."""
+    if root is None:
+        root = workspace_root()
+    source = paths.repo_root().resolve()
+    if root.resolve() == source or source.is_relative_to(root.resolve()):
+        raise InstallError("venv", "workspace must not replace the core source")
     root.mkdir(parents=True, exist_ok=True)
 
     core_pyproject = paths.repo_root() / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_member_rel(root, Path(p)) for p in {str(Path(p).resolve()) for p in plugin_dirs}]
+    members = [_member_rel(root, _workspace_member(Path(p), root))
+               for p in {str(Path(p).resolve()) for p in plugin_dirs}]
 
     lines = [core_text.rstrip("\n")]
     if members:
@@ -85,8 +152,50 @@ def build_root(plugin_dirs: list[Path]) -> Path:
         lines.append("[tool.uv.workspace]")
         lines.append("members = [" + ", ".join(f'"{m}"' for m in sorted(members)) + "]")
 
-    (root / "pyproject.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return root
+    text = "\n".join(lines) + "\n"
+    target = root / "pyproject.toml"
+    try:
+        changed = target.read_text(encoding="utf-8") != text
+    except OSError:
+        changed = True
+    _copy_core_inputs(paths.repo_root(), root)
+    target.write_text(text, encoding="utf-8")
+    return root, changed
+
+
+def build_root(plugin_dirs: list[Path], root: Optional[Path] = None) -> Path:
+    """(Re)generate the workspace root's pyproject.toml. ``root`` pins a
+    parent-supplied STAGING workspace (tests, staged syncs); default is
+    the per-install generated root beside the byte store."""
+    generated, _changed = _generate_pyproject(plugin_dirs, root)
+    return generated
+
+
+def _seed_lock(root: Path, seed_lock: Optional[Path] = None) -> None:
+    """Seed the generated root's uv.lock with the CURRENT resolution.
+
+    Seed precedence: the parent-supplied ``seed_lock`` path first, then
+    the root's own existing uv.lock (the current EXTENDED resolution from
+    the previous sync), then the committed core lock — so a plugin-driven
+    extension keeps every compatible selection it already made, and a
+    fresh root extends the committed resolution. uv preserves compatible
+    selections from the seed (a plugin's range spec does not move core
+    pins); explicit exact requirements stay binding as declared
+    constraints. The lock is COPIED — shipped/extended source bytes are
+    never rewritten; only the staging root receives the copy.
+
+    Called only when the member surface changed; an unchanged root keeps
+    its lock untouched, so repeated syncs are stable. Seed failures
+    SURFACE (they would silently degrade the resolution otherwise)."""
+    if seed_lock is None:
+        existing = root / "uv.lock"
+        if existing.is_file():
+            seed_lock = existing
+        else:
+            seed_lock = paths.repo_root() / "uv.lock"
+    if not seed_lock.is_file():
+        return  # nothing committed to seed from; uv resolves from scratch
+    (root / "uv.lock").write_bytes(seed_lock.read_bytes())
 
 
 def _plugin_dir_roots() -> set[Path]:
@@ -131,139 +240,63 @@ def _is_member_candidate(plugin_dir: Path) -> bool:
     return False
 
 
-def enabled_member_dirs() -> list[Path]:
-    """Plugin dirs that carry python deps AND are enabled, machine-wide
-    across profiles. Per-install union: profiles share the venv, so their
-    enabled plugins share the resolution graph (settled).
-
-    ENABLED-STATE FILTER: only plugins in some profile's
-    ``plugins.enabled`` config list are members — a disabled plugin
-    never joins the sync. The result is ordered by ENABLE RECENCY
-    (newest-enabled LAST): profiles' enabled lists preserve config
-    order, and enabling appends — so the bisect's incumbent-wins
-    tiebreak (pop the last) disables the most-recently-enabled."""
+def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
+    """Dependency members from the same effective plugin selection on every path."""
     from pm.plugins_state import enabled_plugins_ordered
 
-    enabled_by_root: dict[Path, set[str]] = enabled_plugins_ordered()
-
-    member_dirs: list[Path] = []
-    for plugins_dir in sorted(_plugin_dir_roots(), key=str):
-        try:
-            if not plugins_dir.is_dir():
-                continue
-            entries = sorted(plugins_dir.iterdir(), key=str)
-        except OSError:
-            continue
-        # The profile's enabled list preserves config order (recency).
-        # Iterate the ENABLED names in order so members land recency-
-        # ordered; a name not present on disk is skipped.
-        enabled_names = enabled_by_root.get(plugins_dir, [])
-        by_name = {}
-        for plugin_dir in entries:
-            try:
-                if plugin_dir.is_dir():
-                    by_name[plugin_dir.name] = plugin_dir
-            except OSError:
-                continue
-        for name in enabled_names:
-            plugin_dir = by_name.get(name)
-            if plugin_dir is None:
-                continue
-            try:
-                if _is_member_candidate(plugin_dir):
-                    member_dirs.append(plugin_dir)
-            except OSError:
-                continue
-    return member_dirs
+    selection = enabled_plugins_ordered() if proposed_home is None else enabled_plugins_ordered(
+        proposed_home=proposed_home, enabled=enabled, disabled=disabled,
+    )
+    members = []
+    for plugins_dir, names in selection.items():
+        for name in names:
+            relative = Path(name)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise InstallError("venv", f"invalid plugin key: {name}")
+            plugin_dir = plugins_dir / relative
+            if not plugin_dir.is_dir():
+                plugin_dir = paths.repo_root() / "plugins" / relative
+            if plugin_dir.is_dir() and _is_member_candidate(plugin_dir):
+                members.append(plugin_dir)
+    return list(dict.fromkeys(members))
 
 
-def record_disabled_plugins(decisions: list[dict]) -> list[str]:
-    """Write bisect disable decisions back to the enabled-plugins
-    config so `hermes plugins list` reflects reality and re-enable
-    retries. Returns the plugin names actually disabled."""
-    if not decisions:
-        return []
-    from pm.plugins_state import disable_plugins
+def _legacy_requirements(plugin_dir: Path) -> list[str]:
+    from utils import fast_safe_load
 
-    names = [d["plugin"] for d in decisions if d.get("action") == "disabled"]
-    if not names:
-        return []
-    disable_plugins(names)
-    return names
-
-
-def materialize_legacy_pyproject(plugin_dir: Path) -> Optional[Path]:
-    """Bridge: a plugin declaring legacy ``pip_dependencies`` /
-    ``python_dependencies`` in plugin.yaml, with no pyproject.toml of its
-    own, gets one MATERIALIZED — the same specs, same workspace-union
-    install path. Never when lazy installs are off (the sync refuses
-    separately); idempotent (regenerating is a no-op when specs match)."""
     manifest = plugin_dir / "plugin.yaml"
     if not manifest.is_file():
-        return None
-    # Never when lazy installs are disabled (settled): materializing the
-    # generated pyproject would make the dir a workspace-member candidate
-    # and then hard-fail every sealed/lazy-off sync. The frozen-bundle
-    # posture keeps the dir untouched.
-    from pm.ensure import lazy_installs_allowed
-
-    if not lazy_installs_allowed():
-        return None
-    generated = plugin_dir / "pyproject.toml"
-    if generated.is_file():
-        # A USER-owned pyproject is the modern plugin shape — nothing to
-        # bridge. One WE generated earlier is still bridgeable (spec
-        # changes must rewrite it); the GENERATED header marks ours.
-        try:
-            existing = generated.read_text(encoding="utf-8-sig")
-        except OSError:
-            return None
-        if "GENERATED by pm" not in existing:
-            return None
-
-    try:
-        import re
-
-        text = manifest.read_text(encoding="utf-8-sig")
-    except OSError:
-        return None
-
-    specs: list[str] = []
+        return []
+    data = fast_safe_load(manifest.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict):
+        raise InstallError("venv", f"invalid plugin manifest: {manifest}")
+    specs = []
     for key in ("pip_dependencies", "python_dependencies"):
-        block = re.search(
-            rf"^\s*{key}:\s*\n((?:[ \t]+- [^\n]+\n?)*)", text, re.MULTILINE
-        )
-        if not block:
-            continue
-        for line in block.group(1).splitlines():
-            item = line.strip()
-            if item.startswith("- "):
-                spec = item[2:].strip().strip("'\"")
-                if spec:
-                    specs.append(spec)
+        values = data.get(key, [])
+        if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
+            raise InstallError("venv", f"invalid {key}: {manifest}")
+        specs.extend(values)
+    return list(dict.fromkeys(specs))
 
-    if not specs:
-        return None
 
-    name = plugin_dir.name
-    body = (
-        "# GENERATED by pm from plugin.yaml pip_dependencies — the legacy\n"
-        "# bridge (settled 2026-09-02). Migrate to a real pyproject.toml +\n"
-        "# uv.lock; this file is rewritten when the manifest changes.\n"
-        "[project]\n"
-        f'name = "{name}"\n'
-        'version = "0.0.0"\n'
+def _workspace_member(plugin_dir: Path, root: Path) -> Path:
+    """Legacy dependency declarations become virtual members in staging only."""
+    import json
+
+    pyproject = plugin_dir / "pyproject.toml"
+    if pyproject.is_file() and "GENERATED by pm" not in pyproject.read_text(encoding="utf-8-sig"):
+        return plugin_dir
+    specs = _legacy_requirements(plugin_dir)
+    identity = hashlib.sha256(str(plugin_dir.resolve()).encode()).hexdigest()[:16]
+    member = root / "plugin-deps" / identity
+    member.mkdir(parents=True, exist_ok=True)
+    (member / "pyproject.toml").write_text(
+        f'[project]\nname = "hermes-plugin-{identity}"\nversion = "0.0.0"\n'
         'requires-python = ">=3.11"\n'
-        f'dependencies = [{", ".join(repr(s) for s in specs)}]\n'
+        f'dependencies = {json.dumps(specs)}\n[tool.uv]\npackage = false\n',
+        encoding="utf-8",
     )
-    if generated.is_file():
-        try:
-            if generated.read_text(encoding="utf-8-sig") == body:
-                return generated  # already current
-        except OSError:
-            pass
-    generated.write_text(body, encoding="utf-8")
-    return generated
+    return member
 
 
 def scan_plugin(plugin_dir: Path) -> dict:
@@ -353,36 +386,55 @@ def lock_and_sync(
     plugin_dirs: list[Path],
     extras: Optional[list[str]] = None,
     *,
-    venv_dir: Optional[Path] = None,
+    venv_dir: Path,
+    root: Optional[Path] = None,
+    env: Optional[dict] = None,
+    seed_lock: Optional[Path] = None,
+    frozen: bool = False,
 ) -> None:
     """Build the root, then `uv lock` + `uv sync --frozen --extra ...`.
 
-    Raises InstallError on any failure (the caller surfaces the resolver's
-    message — that IS the plugin-conflict UX). ``venv_dir`` pins
-    UV_PROJECT_ENVIRONMENT; default is the core project venv.
+    Everything resolves into a parent-supplied STAGING surface: ``root``
+    pins the generated workspace dir, ``venv_dir`` pins
+    UV_PROJECT_ENVIRONMENT and ``seed_lock`` (optional) pins which
+    existing lock seeds the extension (default: the root's current
+    extended lock, else the committed core lock). ``env`` replaces the
+    ambient base environment when supplied; either way the subprocess
+    gets a COPY — the live process environment is never mutated.
+
+    Raises a CLASSIFIED InstallError on failure: ResolutionConflict only
+    for a confirmed resolver conflict; network, build and tool failures
+    stay generic InstallError — they are not evidence of a dependency
+    conflict and must not disable plugins.
     """
-    from pm.package import InstallError
     from pm.packages import uv_env
 
-    root = build_root(plugin_dirs)
-
-    if venv_dir is None:
-        venv_dir = _default_venv_dir()
+    generated, changed = _generate_pyproject(plugin_dirs, root)
+    if changed:
+        _seed_lock(generated, seed_lock)
 
     uv_bin = _uv_binary()
     if uv_bin is None:
         raise InstallError("venv", "uv is not installed (pm ensure uv)")
 
-    env = uv_env()
-    env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
+    # uv_env SANITIZES the base: when the parent staged an env it is the
+    # base (ambient VIRTUAL_ENV/UV_* leakage stripped); otherwise the live
+    # environment is sanitized. Either way this is a fresh COPY — the live
+    # process environment is never mutated.
+    run_env = uv_env(env)
+    run_env.pop("UV_NO_CONFIG", None)
+    run_env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
+    import sys
+    run_env["UV_PYTHON"] = sys.executable
 
     import subprocess
 
-    lock = subprocess.run(
-        [uv_bin, "lock"], cwd=str(root), env=env, capture_output=True, text=True
-    )
-    if lock.returncode != 0:
-        raise InstallError("venv", f"uv lock exited {lock.returncode}: {lock.stderr[-600:]}")
+    if not frozen:
+        lock = subprocess.run(
+            [uv_bin, "lock"], cwd=str(generated), env=run_env, capture_output=True, text=True, timeout=1800
+        )
+        if lock.returncode != 0:
+            raise classify_uv_failure("lock", lock.returncode, lock.stderr or lock.stdout)
 
     # --all-packages is REQUIRED: plain `uv sync --frozen` installs only the
     # ROOT project's deps — workspace-member deps are locked by `uv lock`
@@ -394,75 +446,13 @@ def lock_and_sync(
     cmd = [uv_bin, "sync", "--frozen", "--all-packages"]
     for extra in sorted(set(extras or [])):
         cmd += ["--extra", extra]
-    sync = subprocess.run(cmd, cwd=str(root), env=env, capture_output=True, text=True)
+    sync = subprocess.run(cmd, cwd=str(generated), env=run_env, capture_output=True, text=True, timeout=1800)
     if sync.returncode != 0:
-        raise InstallError(
-            "venv", f"uv sync exited {sync.returncode}: {sync.stderr[-600:]}"
+        # --frozen means the lock already resolved; a sync failure here is
+        # install/download/tooling, never a NEW resolution conflict.
+        raise classify_uv_failure(
+            "sync", sync.returncode, sync.stderr or sync.stdout
         )
-
-
-def resolve_union(
-    plugin_dirs: list[Path],
-    extras: Optional[list[str]] = None,
-    *,
-    venv_dir: Optional[Path] = None,
-) -> tuple[list[Path], list[dict]]:
-    """Try the full union; on failure, bisect the member set.
-
-    Returns (surviving_members, decisions). Every decision is
-    {plugin, action: kept|disabled, reason}. Fail-alone plugins are
-    disabled with the resolver's message; mutually-conflicting plugins
-    are resolved incumbent-wins (the most-recently-enabled member of a
-    conflicting pair is the one disabled — order = plugin_dirs list,
-    LAST wins the tiebreak because the caller passes
-    newest-last). Retries the union until it resolves or every member
-    is disabled; never raises for a resolution failure (a uv binary
-    absence still raises InstallError)."""
-    from pm.package import InstallError
-
-    survivors = list(plugin_dirs)
-    decisions: list[dict] = []
-
-    def _try(members: list[Path]) -> Optional[str]:
-        """None on success, else the failure reason."""
-        try:
-            lock_and_sync(members, extras, venv_dir=venv_dir)
-            return None
-        except InstallError as exc:
-            return str(exc)
-
-    reason = _try(survivors)
-    if reason is None:
-        return survivors, decisions
-
-    # Phase 1: each member alone against core. Fail-alone = disabled.
-    alone_ok: dict[Path, Optional[str]] = {}
-    for member in list(survivors):
-        fail = _try([member])
-        alone_ok[member] = fail
-        if fail is not None:
-            decisions.append(
-                {"plugin": member.name, "action": "disabled", "reason": fail}
-            )
-            survivors.remove(member)
-
-    # Phase 2: retry the reduced union; if it still fails, the remaining
-    # set conflicts mutually — incumbent wins, newest (last) disabled.
-    while survivors:
-        reason = _try(survivors)
-        if reason is None:
-            return survivors, decisions
-        loser = survivors.pop()  # newest-enabled = last in the list
-        decisions.append(
-            {"plugin": loser.name, "action": "disabled", "reason": reason}
-        )
-    return survivors, decisions
-
-
-def _default_venv_dir() -> Path:
-    from pm.packages import Venv
-
-    return Venv().venv_dir()
 
 
 def _uv_binary() -> Optional[str]:

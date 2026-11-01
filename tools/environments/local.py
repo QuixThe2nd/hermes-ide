@@ -818,6 +818,10 @@ class LocalEnvironment(BaseEnvironment):
         overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,
         so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid)."""
         if _IS_WINDOWS:
+            for key in ("TERMINAL_TEMP_DIR", "TMPDIR"):
+                candidate = self.env.get(key) or os.environ.get(key)
+                if candidate and os.path.isabs(candidate) and os.path.isdir(candidate):
+                    return Path(candidate).as_posix()
             cache_dir = (_default_terminal_temp_dir()
                          or Path(tempfile.gettempdir()) / "hermes_terminal")
             cache_dir.mkdir(parents=True, exist_ok=True)

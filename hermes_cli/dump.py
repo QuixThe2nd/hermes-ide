@@ -53,47 +53,43 @@ def _git_output(project_root: Path, *args: str) -> str:
 def _get_git_commit(project_root: Path) -> str:
     """Short git commit hash, or '(unknown)'.
 
-    Prefers ``version_info.get_version_info()`` which reads the install stamp first
-    (Docker/Nix), then falls back to live ``git rev-parse`` for source installs.
-    Docker images exclude ``.git``, so the final fallback is the build SHA the
-    Dockerfile bakes into ``<project_root>/.hermes_build_sha``.
+    The requested *project_root* is authoritative: when it has no git,
+    the install-stamp fallback is only valid for the RUNNING install
+    (``hermes_cli.version_info`` has no per-root API — it reads
+    HERMES_INSTALL_ROOT / the running code root, never an arbitrary
+    directory). For any other root the provenance is unknown.
     """
-    try:
-        from hermes_cli.version_info import get_version_info
-
-        info = get_version_info()
-        if info.commit:
-            return info.commit[:8]
-    except Exception:
-        pass
     value = _git_output(project_root, "rev-parse", "--short=8", "HEAD")
     if value:
         return value
+    if project_root.resolve() != get_project_root():
+        return "(unknown)"
     try:
-        from hermes_cli.build_info import get_build_sha  # deferred: keeps dump cheap on non-dump paths
-        return get_build_sha(short=8) or "(unknown)"
+        from hermes_cli.version_info import get_code_identity  # deferred: keeps dump cheap on non-dump paths
+        return get_code_identity().get("short_sha") or "(unknown)"
     except Exception:
         return "(unknown)"
 
 
 def _get_git_commit_date(project_root: Path) -> str:
-    """Return the date the HEAD commit was authored (YYYY-MM-DD), or '' (Docker images have no .git).
+    """Return the date the HEAD commit was authored (YYYY-MM-DD), or ''.
 
-    Uses ``version_info.get_version_info()`` which carries the commit date as a Unix
-    timestamp from the install stamp (Docker/Nix) or live git (source installs);
-    falls back to live ``git log`` for source checkouts without an install stamp.
+    Same authority rule as :func:`_get_git_commit`: the stamp fallback
+    describes the running install only.
     """
+    value = _git_output(project_root, "log", "-1", "--format=%cd", "--date=short", "HEAD")
+    if value:
+        return value
+    if project_root.resolve() != get_project_root():
+        return ""
     try:
-        from hermes_cli.version_info import get_version_info
+        from datetime import datetime, timezone
 
-        info = get_version_info()
-        if info.commit_date:
-            from datetime import datetime, timezone
-
-            return datetime.fromtimestamp(info.commit_date, tz=timezone.utc).strftime("%Y-%m-%d")
+        from hermes_cli.version_info import get_version_info  # deferred: keeps dump cheap on non-dump paths
+        commit_date = get_version_info().commit_date
+        return datetime.fromtimestamp(commit_date, tz=timezone.utc).strftime("%Y-%m-%d") if commit_date else ""
     except Exception:
-        pass
-    return _git_output(project_root, "log", "-1", "--format=%cd", "--date=short", "HEAD")
+        return ""
 
 
 def _redact(value: str) -> str:

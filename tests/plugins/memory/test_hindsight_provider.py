@@ -376,16 +376,26 @@ class TestConfig:
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
 
 
-    def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
+    def test_get_client_connects_http_client_to_sideenv_daemon(self, monkeypatch):
         captured = {}
 
-        class FakeHindsightEmbedded:
+        class FakeHindsight:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
-        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setitem(sys.modules, "hindsight_client", SimpleNamespace(Hindsight=FakeHindsight))
+        # The daemon URL comes from the side env; no port is hardcoded here.
+        side_calls = []
 
+        def fake_start(cfg, **kwargs):
+            side_calls.append(cfg)
+            return "http://127.0.0.1:9157"
+
+        monkeypatch.setattr("plugins.memory.hindsight._start_sideenv_daemon", fake_start)
+        # The lazy client install is the pm boundary, not what this test exercises.
+        monkeypatch.setattr("plugins.memory.hindsight._ensure_client_dependency", lambda: None)
+
+        monkeypatch.setattr("plugins.memory.hindsight._materialize_embedded_profile_env", lambda *a: None)
         p = HindsightMemoryProvider()
         p._mode = "local_embedded"
         p._config = {
@@ -399,8 +409,11 @@ class TestConfig:
 
         p._get_client()
 
-        assert captured["idle_timeout"] == 0
-        assert captured["llm_provider"] == "openai"
+        # The side-env daemon manager receives the config (LLM keys ride the
+        # materialized profile .env, not the client); Hermes talks HTTP.
+        assert side_calls == [p._config]
+        assert captured["base_url"] == "http://127.0.0.1:9157"
+        assert p._api_url == "http://127.0.0.1:9157"
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +606,8 @@ class TestPostSetup:
         user_home.mkdir()
         monkeypatch.setenv("HOME", str(user_home))
 
+        monkeypatch.setattr("plugins.memory.hindsight.setup._sync_client_dependency", lambda: True)
+        monkeypatch.setattr("plugins.memory.hindsight.setup._install_embedded_runtime", lambda: True)
         selections = iter([1, 0])  # local_embedded, openai
         monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
         monkeypatch.setattr("shutil.which", lambda name: None)
@@ -1767,20 +1782,16 @@ class TestSharedEventLoopLifecycle:
 
 
 class TestShutdown:
-    def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
-        inner_client = _make_mock_client()
-        embedded = MagicMock()
-        embedded._client = inner_client
-        embedded.close = MagicMock()
-
+    def test_local_embedded_shutdown_closes_client_on_shared_loop(self, provider):
+        """The embedded client is hindsight_client.Hindsight (HTTP to the side-env
+        daemon): same aclose-on-shared-loop path as cloud."""
+        client = _make_mock_client()
         provider._mode = "local_embedded"
-        provider._client = embedded
+        provider._client = client
 
         provider.shutdown()
 
-        inner_client.aclose.assert_awaited_once()
-        embedded.close.assert_called_once()
-        assert embedded._client is None
+        client.aclose.assert_awaited_once()
         assert provider._client is None
 
 
@@ -1931,17 +1942,14 @@ class TestMultiplexBackgroundScope:
 
         created = []
 
-        class FakeHindsightEmbedded:
-            def __init__(self, **kwargs):
-                created.append(kwargs["llm_api_key"])
-                self._manager = SimpleNamespace(is_running=lambda profile: False, stop=lambda profile: None)
-                self._ensure_started = lambda: None
-
-        dem = SimpleNamespace(console=None)
-        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
-        monkeypatch.setitem(sys.modules, "hindsight_embed", SimpleNamespace(daemon_embed_manager=dem))
-        monkeypatch.setitem(sys.modules, "hindsight_embed.daemon_embed_manager", dem)
+        from plugins.memory.hindsight.embedded import _embedded_profile_env_path, _load_simple_env
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "user-home"))
+        def start(cfg, **kwargs):
+            created.append(_load_simple_env(_embedded_profile_env_path(cfg))["HINDSIGHT_API_LLM_API_KEY"])
+            return "http://127.0.0.1:9158"
+        monkeypatch.setattr("plugins.memory.hindsight._start_sideenv_daemon", start)
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setattr("plugins.memory.hindsight._ensure_client_dependency", lambda: None)
 
         home = tmp_path / "profiles" / "p1"
         (home / "hindsight").mkdir(parents=True)
@@ -1978,7 +1986,7 @@ class TestMultiplexBackgroundScope:
             if t.name == "hindsight-daemon-start":
                 t.join(timeout=5)
         assert created == ["p1-secret"]
-        assert "Daemon started successfully" in (home / "logs" / "hindsight-embed.log").read_text()
+        p.shutdown()
 
 
 def test_append_mode_trims_retained_turns_without_dropping_any(provider, monkeypatch):

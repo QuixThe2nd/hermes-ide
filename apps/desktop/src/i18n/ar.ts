@@ -788,40 +788,7 @@ export const ar = defineLocale({
         'عندما يحدّث Hermes نفسه من التطبيق دون موجه طرفية، احتفظ بتعديلات المصدر المحلية أو تجاهلها.'
     },
     about: {
-      heading: 'حول Hermes',
-      version: value => `الإصدار ${value}`,
-      versionUnavailable: 'الإصدار غير متاح',
-      bundleOutOfSync: 'إصدار التطبيق قديم',
-      bundleOutOfSyncDesc:
-        'تم تحديث وقت تشغيل Hermes، لكن تطبيق سطح المكتب نفسه لا يزال إصدارًا قديمًا — لن تظهر ميزات الواجهة الجديدة (مثل Bot Mode) حتى يتم تحديث التطبيق. شغّل التحديث أدناه لإعادة بناء التطبيق. إذا لم يختفِ هذا التحذير، فأعد التثبيت من أحدث مثبّت لسطح المكتب.',
-      bundleOutOfSyncAction: 'الحصول على المثبّت',
-      bundleSwapPending: 'أعد التشغيل لإكمال التحديث',
-      bundleSwapPendingDesc:
-        'تم تثبيت التطبيق المحدَّث بالفعل — يكفي إعادة تشغيل Hermes لتحميله. لن تتأثر المحادثات أو الإعدادات.',
-      bundleSwapPendingAction: 'إعادة تشغيل Hermes',
       updates: 'التحديثات',
-      checkNow: 'التحقق الآن',
-      checking: 'جار التحقق...',
-      seeWhatsNew: 'عرض الجديد',
-      updateNow: 'تحديث الآن',
-      releaseNotes: 'ملاحظات الإصدار',
-      onLatest: 'أنت على أحدث إصدار',
-      installing: 'جار التثبيت...',
-      cantUpdate: 'تعذر التحديث',
-      cantReach: 'تعذر الوصول لخدمة التحديث',
-      tapCheck: 'اضغط للتحقق من التحديثات.',
-      updateReady: count => `${count} تحديث متاح`,
-      updateReadyUnknown: 'تحديث جديد جاهز.',
-      lastChecked: age => `آخر تحقق ${age}`,
-      justNowSuffix: 'الآن',
-      automaticUpdates: 'التحديثات التلقائية',
-      automaticUpdatesDesc: 'اسمح لـ Hermes بالتحقق من التحديثات وتثبيتها.',
-      branchCommit: (branch, commit) => `${branch} عند ${commit}`,
-      never: 'أبدا',
-      justNow: 'الآن',
-      minAgo: count => `قبل ${count} دقيقة`,
-      hoursAgo: count => `قبل ${count} ساعة`,
-      daysAgo: count => `قبل ${count} يوم`
     },
     config: {
       none: 'لا شيء',
@@ -2330,6 +2297,9 @@ export const ar = defineLocale({
     }
   },
   updates: {
+    bundleSwapPending: 'أعد التشغيل لإكمال التحديث',
+    bundleSwapPendingDesc: 'تم تثبيت التطبيق المحدَّث بالفعل — يكفي إعادة تشغيل Hermes لتحميله. لن تتأثر المحادثات أو الإعدادات.',
+    bundleSwapPendingAction: 'إعادة تشغيل Hermes',
     stages: {
       idle: 'جار التحضير...',
       prepare: 'جار التحضير...',

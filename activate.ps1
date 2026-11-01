@@ -1,73 +1,53 @@
-# ============================================================================
-# venv-style activation for the Hermes dev environment (pm-managed tools).
-#
-#   .\activate.ps1          (repo root; if script execution is disabled:
-#   powershell -ExecutionPolicy Bypass -File .\activate.ps1, or set
-#   Set-ExecutionPolicy RemoteSigned -Scope CurrentUser once)
-#
-# Emits the composed pm env (PATH + tool vars) into the CURRENT session, with
-# save/restore: `deactivate` undoes exactly what activation changed.
-#
-# Requires a completed .\setup-hermes.ps1 — it never invokes uv. It runs the
-# pm store's pinned python (fallback: the repo venv) to emit the env JSON.
-# ============================================================================
+# Source this file to apply the installed PM environment; deactivate restores it.
 $ErrorActionPreference = 'Stop'
-
-# Guard against double-sourcing: re-activating deactivates first.
 if (Test-Path function:deactivate) { deactivate }
-
 $repo = $PSScriptRoot
-$machineArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
-$arch = if ($machineArch -eq 'ARM64') { 'arm64' } else { 'x64' }
-$target = "win32-$arch"
-
-$store = if ($env:HERMES_RUNTIME_DIR) { $env:HERMES_RUNTIME_DIR } else { Join-Path $HOME '.hermes/tools' }
-
 $py = $null
-$entry = Get-ChildItem -Path $store -Directory -Filter "python-*-$target" -ErrorAction SilentlyContinue |
-    Sort-Object Name | Select-Object -Last 1
-if ($entry -and (Test-Path (Join-Path $entry.FullName 'bin/python.exe'))) {
-    $py = Join-Path $entry.FullName 'bin/python.exe'
+foreach ($candidate in @("$repo\.venv\Scripts\python.exe", "$repo\venv\Scripts\python.exe")) {
+    if (Test-Path -LiteralPath $candidate) { $py = $candidate; break }
 }
 if (-not $py) {
-    foreach ($candidate in @(
-        (Join-Path $repo 'venv/Scripts/python.exe'),
-        (Join-Path $repo 'venv/bin/python.exe'))) {
-        if (Test-Path $candidate) { $py = $candidate; break }
+    $roots = @($env:HERMES_RUNTIME_DIR, "$repo\..\tools")
+    $homeRoot = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
+    $roots += (Join-Path $homeRoot 'tools')
+    foreach ($root in $roots) {
+        if (-not $root) { continue }
+        foreach ($entry in @(Get-ChildItem -LiteralPath $root -Directory -Filter 'python-*' -ErrorAction SilentlyContinue)) {
+            $candidate = Join-Path $entry.FullName 'python.exe'
+            if (Test-Path -LiteralPath $candidate) { $py = $candidate; break }
+        }
+        if ($py) { break }
     }
 }
-if (-not $py) {
-    Write-Error 'activate: no pm python found - run .\setup-hermes.ps1 first'
+if (-not $py) { throw 'activate: no bootstrap Python found; run setup-hermes.ps1' }
+$priorPath = $env:PYTHONPATH
+$priorHome = $env:PYTHONHOME
+try {
+    $env:PYTHONPATH = $repo
+    Remove-Item env:PYTHONHOME -ErrorAction SilentlyContinue
+    $json = (& $py -m hermes_cli.runtime_paths) -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw 'activate: could not read the installed environment' }
+    $composed = $json | ConvertFrom-Json
+} finally {
+    if ($null -eq $priorPath) { Remove-Item env:PYTHONPATH -ErrorAction SilentlyContinue } else { $env:PYTHONPATH = $priorPath }
+    if ($null -eq $priorHome) { Remove-Item env:PYTHONHOME -ErrorAction SilentlyContinue } else { $env:PYTHONHOME = $priorHome }
 }
-
-$envJSON = (& $py -m pm.cli env 2>$null) -join "`n"
-if (-not $envJSON) {
-    Write-Error 'activate: could not read pm env - run .\setup-hermes.ps1 first'
-}
-$composed = $envJSON | ConvertFrom-Json
-
-# --- snapshot what we are about to change (deactivate restores this) ---
 $global:_hermesKeys = @($composed.PSObject.Properties.Name)
 $global:_hermesSaved = @{}
-foreach ($k in $global:_hermesKeys) {
-    $global:_hermesSaved[$k] = [pscustomobject]@{
-        WasSet = (Test-Path "env:$k")
-        Value  = [Environment]::GetEnvironmentVariable($k)
+foreach ($key in $global:_hermesKeys) {
+    $global:_hermesSaved[$key] = [pscustomobject]@{
+        WasSet = (Test-Path "env:$key")
+        Value = [Environment]::GetEnvironmentVariable($key)
     }
 }
-
-foreach ($prop in $composed.PSObject.Properties) {
-    Set-Item -Path "env:$($prop.Name)" -Value ([string]$prop.Value)
+foreach ($property in $composed.PSObject.Properties) {
+    Set-Item -Path "env:$($property.Name)" -Value ([string]$property.Value)
 }
-
 function global:deactivate {
-    foreach ($k in $global:_hermesKeys) {
-        $saved = $global:_hermesSaved[$k]
-        if ($saved.WasSet) {
-            Set-Item -Path "env:$k" -Value $saved.Value
-        } else {
-            Remove-Item -Path "env:$k" -ErrorAction SilentlyContinue
-        }
+    foreach ($key in $global:_hermesKeys) {
+        $saved = $global:_hermesSaved[$key]
+        if ($saved.WasSet) { Set-Item -Path "env:$key" -Value $saved.Value }
+        else { Remove-Item -Path "env:$key" -ErrorAction SilentlyContinue }
     }
     $global:_hermesKeys = $null
     $global:_hermesSaved = $null

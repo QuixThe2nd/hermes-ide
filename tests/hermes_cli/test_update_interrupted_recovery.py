@@ -45,7 +45,12 @@ def _stub_install_env(monkeypatch, m, seen):
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
     monkeypatch.setattr(m, "_is_termux_env", lambda *a, **k: False)
     monkeypatch.setattr(hermes_cli_main_install_repair, "_is_termux_env", lambda *a, **k: False)
-    monkeypatch.setattr("pm.uv", lambda **kw: (None, {}))
+    # Recovery resolves uv through the pm.ensure.uv bridge (the defining seam);
+    # patching the pm package re-export would not intercept it.
+    import importlib
+
+    pm_ensure = importlib.import_module("pm.ensure")
+    monkeypatch.setattr(pm_ensure, "uv", lambda **kw: (None, {}))
     # The install executor moved to hermes_cli._install_repair (shared between
     # the pre-import early pass and this late recovery path) — stub WHERE it
     # is executed, not the legacy main.py wrapper it replaced.
@@ -103,5 +108,31 @@ def sys_executable_path():
     import sys
 
     return sys.executable
+
+
+def test_default_venv_install_target_follows_pm_uv_seam(tmp_path, monkeypatch):
+    """``_default_venv_install_target`` resolves uv through ``pm.ensure.uv`` (the
+    defining seam, not the ``pm.uv`` re-export) and keeps the pre-existing pip
+    fallback — ``[sys.executable, -m pip]`` with no env — when pm cannot supply
+    one. Contract, not source shape: both arms run the real function."""
+    import importlib
+    import sys
+
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    pm_ensure = importlib.import_module("pm.ensure")
+
+    stub_uv = tmp_path / "uv-stub.exe"
+    stub_uv.write_text("")
+    monkeypatch.setattr(pm_ensure, "uv", lambda **kw: (str(stub_uv), {}))
+    prefix, env = main_install_repair._default_venv_install_target()
+    assert prefix == [str(stub_uv), "pip"]
+    # project_venv_dir(tmp_path) is None (no venv/ or .venv/), so the pre-existing
+    # fallback layout names tmp_path/venv; VIRTUAL_ENV stays the seam's own env job.
+    assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
+
+    monkeypatch.setattr(pm_ensure, "uv", lambda **kw: (None, {}))
+    prefix, env = main_install_repair._default_venv_install_target()
+    assert prefix == [sys.executable, "-m", "pip"]
+    assert env is None
 
 

@@ -25,7 +25,7 @@ def _patch_managed_uv(request, patch_pm_uv_to_shutil_which):
 
 
 @pytest.fixture(autouse=True)
-def _patch_gateway_discovery():
+def _patch_gateway_discovery(monkeypatch):
     """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
 
     Tests in this file that reach the full success path (e.g. the #87694
@@ -39,6 +39,10 @@ def _patch_gateway_discovery():
     derives labels from the profile layout, so a default profile alone hands
     it ``ai.hermes.gateway`` and the verify step exits 1 (#111866, #110701).
     """
+    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(hermes_main, "_resume_windows_gateways_after_update", lambda *a: None)
+    monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._run_post_update_maintenance", lambda *a, **k: None)
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.update_cmd_fleet._restart_macos_launchd_gateways", lambda *a, **k: None), \

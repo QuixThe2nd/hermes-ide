@@ -21,13 +21,19 @@ def _ww():
 
 
 def _ensure_dep(feature: str) -> None:
-    from tools import lazy_deps
-    lazy_deps.ensure(feature, prompt=False)
+    # The old lazy-deps specs bundled sounddevice + numpy with every engine;
+    # the wake-* sub-extras deliberately don't (audio-io composes [voice]),
+    # so ensure capture deps alongside the engine's own extra.
+    import pm
+
+    pm.ensure_import(feature)
+    if not pm.available("audio-io"):
+        pm.ensure_import("audio-io")
 
 
 class _Engine:
     """Minimal hotword-engine contract: feed int16 frames, get a bool. Subclasses set ``feature``
-    (lazy_deps name, ensured before ``_build``) and their own ``cfg`` sub-section ``section``."""
+    (the pm extra ensured before ``_build``) and their own ``cfg`` sub-section ``section``."""
 
     feature: str = ""
     section: str = ""
@@ -68,7 +74,7 @@ class _OpenWakeWordEngine(_Engine):
     ``sensitivity`` IS the raw 0..1 threshold (higher = stricter). A real utterance holds the score
     high across frames while a stray phoneme spikes one, so ``confirmation_frames`` hits are required."""
 
-    feature, section = "wake.openwakeword", "openwakeword"
+    feature, section = "wake-openwakeword", "openwakeword"
     frame_length = 1280  # openWakeWord recommends 80 ms frames.
 
     def _build(self, cfg, sub, ww) -> None:
@@ -100,7 +106,7 @@ class _OpenWakeWordEngine(_Engine):
         if framework != "tflite" or ww.ensure_tflite_runtime():
             return framework
         try:
-            _ensure_dep("wake.openwakeword.tflite")
+            _ensure_dep("wake-tflite")
         except Exception as e:
             logger.debug("wake word: tflite runtime install failed: %s", e)
         if ww.ensure_tflite_runtime():
@@ -168,7 +174,7 @@ class _SherpaKwsEngine(_Engine):
     """sherpa-onnx open-vocabulary keyword spotting — any typed phrase, zero training. ``wake_word.phrase``
     is BPE-tokenized at runtime against the model's vocabulary: DETECTION config, not a cosmetic label."""
 
-    feature, section = "wake.sherpa", "sherpa"
+    feature, section = "wake-sherpa", "sherpa"
     frame_length = 1280  # streaming zipformer accepts any chunk; match capture path.
 
     def _build(self, cfg, sub, ww) -> None:
@@ -247,7 +253,7 @@ class _SherpaKwsEngine(_Engine):
 class _PorcupineEngine(_Engine):
     """Picovoice Porcupine — premium, on-device, needs an access key."""
 
-    feature, section = "wake.porcupine", "porcupine"
+    feature, section = "wake-porcupine", "porcupine"
 
     def _build(self, cfg, sub, ww) -> None:
         import pvporcupine

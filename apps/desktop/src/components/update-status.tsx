@@ -158,27 +158,41 @@ export function VersionHero({
           {version?.appVersion ? u.version(version.appVersion) : u.versionUnavailable}
         </p>
       </div>
-      {version?.bundleOutOfSync && (
+      {(version?.bundleSwapPending || version?.bundleOutOfSync) && (
         <div className="mx-auto w-full max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-left text-sm">
           <div className="flex items-start gap-2">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
             <div className="min-w-0">
-              <p className="font-medium">{u.bundleOutOfSync}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{u.bundleOutOfSyncDesc}</p>
-              <Button asChild className="mt-2" size="sm" variant="textStrong">
-                <a
-                  href={INSTALLER_URL}
-                  onClick={event => {
-                    event.preventDefault()
-                    void window.hermesDesktop?.openExternal?.(INSTALLER_URL)
-                  }}
-                  rel="noreferrer"
-                  target="_blank"
+              <p className="font-medium">{version.bundleSwapPending ? u.bundleSwapPending : u.bundleOutOfSync}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {version.bundleSwapPending ? u.bundleSwapPendingDesc : u.bundleOutOfSyncDesc}
+              </p>
+              {version.bundleSwapPending ? (
+                <Button
+                  className="mt-2"
+                  onClick={() => void window.hermesDesktop?.relaunchApp?.()}
+                  size="sm"
+                  variant="textStrong"
                 >
-                  <ExternalLink className="size-3" />
-                  {u.bundleOutOfSyncAction}
-                </a>
-              </Button>
+                  <RefreshCw className="size-3" />
+                  {u.bundleSwapPendingAction}
+                </Button>
+              ) : (
+                <Button asChild className="mt-2" size="sm" variant="textStrong">
+                  <a
+                    href={INSTALLER_URL}
+                    onClick={event => {
+                      event.preventDefault()
+                      void window.hermesDesktop?.openExternal?.(INSTALLER_URL)
+                    }}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    <ExternalLink className="size-3" />
+                    {u.bundleOutOfSyncAction}
+                  </a>
+                </Button>
+              )}
             </div>
           </div>
         </div>

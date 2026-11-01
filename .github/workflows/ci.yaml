@@ -185,6 +185,11 @@ jobs:
     needs: detect
     uses: ./.github/workflows/case-collision-check.yml
 
+  lazy-deps-guard:
+    name: No imports of deleted tools.lazy_deps
+    needs: detect
+    uses: ./.github/workflows/lazy-deps-guard.yml
+
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
@@ -244,6 +249,7 @@ jobs:
       - contributor-check
       - uv-lockfile
       - case-collision-check
+      - lazy-deps-guard
       - lockfile-diff
       - docker-lint
       - profile-artifact-check

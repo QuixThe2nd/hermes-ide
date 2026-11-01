@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
-import { CLI_LAUNCHER_SPECS, posixTrampolineScripts, renderWinWrapper } from '../../../scripts/desktop-cli/cli-entrypoints.mjs'
+import {
+  CLI_LAUNCHER_SPECS,
+  posixTrampolineScripts,
+  renderWinWrapper
+} from '../../../scripts/desktop-cli/cli-entrypoints.mjs'
 import { appExecutionAliasExtensions } from './before-build.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -18,18 +23,23 @@ const RELS = {
 }
 
 test('three launcher specs mirror [project.scripts] in pyproject.toml', () => {
-  assert.deepEqual(CLI_LAUNCHER_SPECS.map((s) => s.name), ['hermes', 'hermes-agent', 'hermes-acp'])
-  assert.deepEqual(CLI_LAUNCHER_SPECS.map((s) => `${s.module}:${s.func}`), [
-    'hermes_cli.main:main',
-    'run_agent:main',
-    'acp_adapter.entry:main'
-  ])
+  assert.deepEqual(
+    CLI_LAUNCHER_SPECS.map(s => s.name),
+    ['hermes', 'hermes-agent', 'hermes-acp']
+  )
+  assert.deepEqual(
+    CLI_LAUNCHER_SPECS.map(s => `${s.module}:${s.func}`),
+    ['hermes_cli.main:main', 'run_agent:main', 'acp_adapter.entry:main']
+  )
 })
 
 const scripts = posixTrampolineScripts(RELS)
 
 test('one POSIX trampoline per entry, named plainly (no suffix)', () => {
-  assert.deepEqual(scripts.map((s) => s.name), ['hermes', 'hermes-agent', 'hermes-acp'])
+  assert.deepEqual(
+    scripts.map(s => s.name),
+    ['hermes', 'hermes-agent', 'hermes-acp']
+  )
 })
 
 test('trampoline is $0-relative: shebang, symlink-chain resolution, own-dir cd', () => {
@@ -70,7 +80,7 @@ test('trampoline fails loudly (exit 2) when the bundled interpreter is missing',
 })
 
 test('each trampoline execs its own entry module', () => {
-  const modules = scripts.map((s) => /exec "\$PYTHON" -m (\S+) "\$@"/.exec(s.text)?.[1])
+  const modules = scripts.map(s => /exec "\$PYTHON" -m (\S+) "\$@"/.exec(s.text)?.[1])
   assert.deepEqual(modules, ['hermes_cli.main', 'run_agent', 'acp_adapter.entry'])
 })
 
@@ -116,45 +126,18 @@ test('light variant emits no alias fragments', () => {
   assert.ok(scriptDir.length > 0)
 })
 
-// ── HermesGateway Windows Service fragment (Task 2, plan:
-//    gateway-msix-windows-service) ────────────────────────────────────────
-import { serviceExtensions } from './before-build.mjs'
+// ── HermesGateway Windows Service fragment (removed) ──────────────────────
+// The MSIX SCM service feature was removed (settled 2026-09-03: the existing
+// user-logon Scheduled Task supervises the gateway; a desktop6:Service
+// cannot run as the installing user — the desktop6 schema requires
+// StartAccount in localSystem|localService|networkService). This pins the
+// removal so the invalid fragment cannot silently come back.
 
-test('bundled variant registers HermesGateway, demand-start, launcher exe', () => {
-  const frag = serviceExtensions()
-  assert.ok(frag.includes('Category="windows.service"'), 'service category')
-  assert.ok(frag.includes('Name="HermesGateway"'), 'the service name the CLI verbs key off')
-  assert.ok(frag.includes('StartupType="demand"'), 'config-only posture: arrives stopped')
-  // Compose the expected path the same way the source does — no escaping
-  // ambiguity (the appExecutionAliasExtensions precedent).
-  const bs = String.fromCharCode(92)
-  const launcherPath = ['app', 'resources', 'agent-payload', 'bin', 'hermes.exe'].join(bs)
-  assert.ok(
-    frag.includes(`Executable="${launcherPath}"`),
-    'the service Executable is the payload launcher (no shim binary)'
-  )
-  assert.ok(!frag.includes('StartAccount'), 'user-context by default — localSystem rejected')
-})
-
-test('light and store variants render service-less', () => {
-  assert.equal(serviceExtensions({ variant: 'light' }), '')
-  assert.equal(serviceExtensions({ variant: 'store' }), '')
-})
-
-test('one desktop6 extension block with xmlns on the fragment root', () => {
-  const frag = serviceExtensions()
-  assert.equal(
-    (frag.match(/<desktop6:Extension/g) || []).length,
-    1,
-    'the 0x80080204 playbook: ONE extension block'
-  )
-  assert.ok(
-    frag.includes('xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"'),
-    'namespace rides the fragment root (the copilot-fragment precedent)'
-  )
-})
-
-test('custom name propagates (per-install namespacing)', () => {
-  const frag = serviceExtensions({ name: 'HermesGateway_Tag1' })
-  assert.ok(frag.includes('Name="HermesGateway_Tag1"'))
+test('the manifest extension writer registers no windows.service', () => {
+  // writeMsixExtensions is the one writer; its source must carry no
+  // desktop6:Service emission (this is a removal pin, not a shape snapshot:
+  // any NEW extension fragments may be added freely).
+  const source = fs.readFileSync(new URL('./before-build.mjs', import.meta.url), 'utf8')
+  assert.ok(!source.includes('windows.service'), 'no windows.service Category emitted')
+  assert.ok(!source.includes('desktop6:Service'), 'no desktop6:Service fragment emitted')
 })

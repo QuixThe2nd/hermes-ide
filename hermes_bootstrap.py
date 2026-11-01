@@ -340,3 +340,16 @@ suppress_platform_ver_console()
 activate_durable_lazy_target()
 install_happy_eyeballs_socket_connect()
 export_scratch_tmp_env()
+
+# Every entry point imports this module before its dependency graph.
+from pathlib import Path
+from hermes_cli.runtime_paths import activate_dependencies
+
+try:
+    activate_dependencies(Path(__file__).resolve().parent)
+except RuntimeError as exc:
+    # The repair command must remain usable even when the committed tree
+    # disappeared. Other commands must not silently run the wrong libraries.
+    if sys.argv[1:3] not in (["pm", "install"], ["pm", "doctor"]):
+        print(f"hermes: {exc}; run `hermes pm install` to repair", file=sys.stderr)
+        raise SystemExit(1) from None

@@ -189,13 +189,14 @@ def ensure_windows_bin_launchers(
         mint_launcher,
         resolve_store_python,
         stage_launcher,
-        venv_site_packages,
     )
 
     from hermes_constants import project_venv_dir
 
     venv_dir = project_venv_dir(root)
-    site_packages = venv_site_packages(venv_dir) if venv_dir else None
+    from hermes_cli.runtime_paths import site_packages as dependency_site
+
+    site_packages = dependency_site(venv_dir) if venv_dir else None
 
     store_python = resolve_store_python(root)
 
@@ -244,6 +245,11 @@ def ensure_windows_bin_launchers(
             else:
                 final = stage_launcher(name, root, target)
             if final is not None:
+                # Windows resolves .exe before .cmd. A surviving venv-bound
+                # launcher would shadow the successfully staged fallback.
+                obsolete = target / f"{name}.exe"
+                if final.suffix == ".cmd" and exe_is_venv_bound(obsolete, venv_dir):
+                    obsolete.unlink()
                 restored.append(str(final))
     if restored:
         # A closed/broken stderr must not turn a successful heal into a crash.

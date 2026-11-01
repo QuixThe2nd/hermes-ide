@@ -35,7 +35,7 @@ def _read(path: Path) -> dict:
         return {"schema": SCHEMA, "packages": {}}
     try:
         data = json.loads(text)
-        if data.get("schema") == SCHEMA and isinstance(data.get("packages"), dict):
+        if isinstance(data, dict) and data.get("schema") == SCHEMA and isinstance(data.get("packages"), dict):
             return data
     except ValueError:
         pass
@@ -44,7 +44,12 @@ def _read(path: Path) -> dict:
         # the next _write would silently discard every installed-state
         # record. Keep the bytes for post-mortem.
         try:
-            path.with_suffix(".corrupt").write_text(text, encoding="utf-8")
+            from pm.paths import store_root
+            if path.parent == store_root() and (store_root().parent / "manifest.json").is_file():
+                import logging
+                logging.getLogger(__name__).warning("invalid shipped state file: %s", path)
+            else:
+                path.with_suffix(".corrupt").write_text(text, encoding="utf-8")
         except OSError:
             pass
     return {"schema": SCHEMA, "packages": {}}
@@ -171,9 +176,17 @@ class Facts:
             fact["digest"] = digest
         self._merge_and_write(name, fact)
 
-    def record_state(self, name: str, stamp: str, extras: list[str]) -> None:
-        """State packages (the venv) have a stamp and extras, no entry."""
-        self._merge_and_write(name, {"stamp": stamp, "extras": extras})
+    def record_state(
+        self, name: str, stamp: str, extras: list[str], *,
+        environment: Path | None = None, resolved_lock: Path | None = None,
+    ) -> None:
+        """Commit a verified state package and its selected environment atomically."""
+        fact = {"stamp": stamp, "extras": extras}
+        if environment is not None:
+            fact["environment"] = str(environment.resolve())
+        if resolved_lock is not None:
+            fact["resolved_lock"] = str(resolved_lock.resolve())
+        self._merge_and_write(name, fact)
 
     def entries_in_use(self) -> set[str]:
         return {f["entry"] for f in self._packages.values() if "entry" in f}

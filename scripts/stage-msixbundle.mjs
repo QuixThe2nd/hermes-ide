@@ -6,7 +6,9 @@
 //
 //  1. OUT-OF-STORE FEED: bundle the x64 + arm64 per-arch .msix into one
 //     universal .msixbundle, sign the bundle envelope, write the per-channel
-//     .appinstaller, and upload both to the win32 feed dirs:
+//     .appinstaller, and upload both to the win32 feed dirs — bundle FIRST,
+//     .appinstaller pointer LAST (a failed bundle upload leaves the previous
+//     feed intact):
 //         releases/win32/<stable|canary>/<name>-<ver>.win.msixbundle
 //         releases/win32/<stable|canary>/stable.appinstaller (or canary.*)
 //     The .appinstaller is the install + auto-update entry point; the bundle
@@ -28,6 +30,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { appIdentity, buildAppInstaller, resolveWinSdkTools } from './msix-shared.mjs'
+import { publishFeedUploads } from './r2-release.mjs'
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -243,7 +246,7 @@ const appinstaller = buildAppInstaller({
 const appinstallerName = `${channel}.appinstaller`
 fs.writeFileSync(path.join(releaseDir, appinstallerName), appinstaller)
 
-const upload = (key, file, keyIsFull = false) => {
+const upload = (key, file, keyIsFull = true) => {
   // NOTE: no fs.readFileSync here — the msixbundle can exceed Node's 2GiB
   // buffer limit (ERR_FS_FILE_TOO_LARGE). r2-release.mjs put reads + hashes
   // the file itself; log the size via stat instead.
@@ -258,10 +261,19 @@ const upload = (key, file, keyIsFull = false) => {
   })
 }
 
-// Feed dir manifests (the install + update source). Content-Types matter:
-// .appinstaller / .msixbundle must reach the OS App Installer, not download.
-upload(`${channelDir}/${appinstallerName}`, path.join(releaseDir, appinstallerName), true)
-upload(`${channelDir}/${name}-${version}-win.msixbundle`, bundle, true)
+// C22 ordering: bundle FIRST, pointer LAST. r2-release.mjs PUTs then
+// HEAD-verifies the remote content-length — a failed/short upload throws
+// and aborts this job before the pointer is written.
+publishFeedUploads(
+  {
+    channelDir,
+    appinstallerName,
+    bundleFilename: `${name}-${version}-win.msixbundle`,
+    bundleFile: bundle,
+    appinstallerFile: path.join(releaseDir, appinstallerName),
+  },
+  upload,
+)
 
 // The Store-submission .msix files were already uploaded to the tag archive
 // by the win legs (Store- prefix); nothing for this job to re-upload.

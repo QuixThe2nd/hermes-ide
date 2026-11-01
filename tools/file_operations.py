@@ -369,11 +369,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         mangles drive paths), so shell file ops and the terminal ``cd`` agree.
 
         ``translate_path=False`` skips that translation for non-path values
-        (regex patterns) whose backslashes are meaningful. On Windows those
-        backslashes are doubled first: the ``-c`` argument passes through
-        ``subprocess`` list-arg quoting (which wraps it in double quotes) and
-        ``bash`` then collapses ``\\\\`` → ``\\`` inside those double quotes,
-        so one level must survive the round trip.
+        (regex patterns) whose backslashes are meaningful. Bash single
+        quotes preserve those bytes; only path arguments are translated.
         """
         from tools.environments.local import _IS_WINDOWS, _bash_safe_path
 

@@ -1,10 +1,31 @@
-import { describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopUpdateStatus } from '@/global'
+import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { en } from '@/i18n/en'
 import type { UpdateApplyState } from '@/store/updates'
 
-import { deriveUpdateStatus } from './update-status'
+import { deriveUpdateStatus, VersionHero } from './update-status'
+
+// VersionHero is the shared About/overlay hero. Its module imports the real
+// updates store graph; mock it shallowly — these tests exercise the hero's
+// own rendering, not the store.
+vi.mock('@/store/updates', async () => {
+  const { atom } = await import('nanostores')
+
+  return {
+    $backendUpdateApply: atom<UpdateApplyState | null>(null),
+    $backendUpdateChecking: atom<boolean>(false),
+    $backendUpdateStatus: atom<DesktopUpdateStatus | null>(null),
+    $updateApply: atom<UpdateApplyState | null>(null),
+    $updateChecking: atom<boolean>(false),
+    $updateStatus: atom<DesktopUpdateStatus | null>(null),
+    checkBackendUpdates: vi.fn(),
+    checkUpdates: vi.fn(),
+    openUpdateOverlayFor: vi.fn(),
+    startActiveUpdate: vi.fn()
+  }
+})
 
 const IDLE_APPLY: UpdateApplyState = {
   applying: false,
@@ -87,5 +108,68 @@ describe('deriveUpdateStatus', () => {
     })
 
     expect(view.line).toBe(en.updates.latestBodyBackend)
+  })
+})
+
+describe('VersionHero bundle banners', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  const version = (over: Partial<DesktopVersionInfo>): DesktopVersionInfo =>
+    ({ appVersion: '0.19.0', ...over }) as DesktopVersionInfo
+
+  const stubRelaunch = () => {
+    const relaunchApp = vi.fn().mockResolvedValue(undefined)
+    const original = window.hermesDesktop
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { ...original, openExternal: vi.fn(), relaunchApp }
+    })
+
+    return relaunchApp
+  }
+
+  // FAIL-BEFORE (C19): the shared About extraction dropped the swap-pending
+  // restart affordance even though main still produces bundleSwapPending and
+  // exposes the relaunchApp IPC — users could no longer finish an applied
+  // update from the UI.
+  it('swap-pending: restart banner wired to relaunchApp, not the installer link', () => {
+    const relaunchApp = stubRelaunch()
+
+    render(<VersionHero version={version({ bundleSwapPending: true })} />)
+
+    expect(screen.getByText(en.updates.bundleSwapPending)).toBeTruthy()
+    expect(screen.queryByText(en.updates.bundleOutOfSync)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: en.updates.bundleSwapPendingAction }))
+    expect(relaunchApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('out-of-sync without a pending swap: keeps the get-installer banner', () => {
+    stubRelaunch()
+
+    render(<VersionHero version={version({ bundleOutOfSync: true })} />)
+
+    expect(screen.getByText(en.updates.bundleOutOfSync)).toBeTruthy()
+    expect(screen.queryByText(en.updates.bundleSwapPending)).toBeNull()
+    expect(screen.queryByRole('button', { name: en.updates.bundleSwapPendingAction })).toBeNull()
+  })
+
+  it('a pending swap wins over the out-of-sync banner — restart, not reinstall', () => {
+    stubRelaunch()
+
+    render(<VersionHero version={version({ bundleOutOfSync: true, bundleSwapPending: true })} />)
+
+    expect(screen.getByText(en.updates.bundleSwapPending)).toBeTruthy()
+    expect(screen.queryByText(en.updates.bundleOutOfSync)).toBeNull()
+  })
+
+  it('no flags: no banner at all', () => {
+    render(<VersionHero version={version({})} />)
+
+    expect(screen.queryByText(en.updates.bundleOutOfSync)).toBeNull()
+    expect(screen.queryByText(en.updates.bundleSwapPending)).toBeNull()
   })
 })

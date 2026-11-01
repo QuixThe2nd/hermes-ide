@@ -244,28 +244,17 @@ class TestCmdGuiOnABundle:
             launches.append([str(a) for a in argv])
             return SimpleNamespace(pid=4242)
 
+        from hermes_cli import main_desktop, main_install_repair, main_web_build
         monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
-        monkeypatch.setattr(cli_main, "_resolve_node_runtime_npm", lambda: "/usr/bin/npm")
-        monkeypatch.setattr(cli_main, "_desktop_build_needed", lambda *a, **k: True)
-        monkeypatch.setattr(cli_main, "_write_desktop_build_stamp", lambda *a, **k: None)
-        monkeypatch.setattr(
-            cli_main, "_run_npm_install_deterministic", record_npm_install
-        )
-        monkeypatch.setattr(
-            cli_main, "_stop_desktop_processes_locking_build", lambda *a, **k: []
-        )
-        monkeypatch.setattr(
-            cli_main, "_desktop_linux_sandbox_fixup", lambda *a, **k: launcher_ok
-        )
-        monkeypatch.setattr(
-            cli_main, "_desktop_linux_needs_no_sandbox", lambda: not launcher_ok
-        )
-        monkeypatch.setattr(
-            cli_main,
-            "_desktop_linux_sandbox_helper_is_regular_file",
-            lambda *a, **k: True,
-        )
-        monkeypatch.setattr(cli_main, "_detect_linux_password_store", lambda: None)
+        monkeypatch.setattr(main_install_repair, "_resolve_node_runtime_npm", lambda: "/usr/bin/npm")
+        monkeypatch.setattr(main_desktop, "_desktop_build_needed", lambda *a, **k: True)
+        monkeypatch.setattr(main_desktop, "_write_desktop_build_stamp", lambda *a, **k: None)
+        monkeypatch.setattr(main_web_build, "_run_npm_install_deterministic", record_npm_install)
+        monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda *a, **k: [])
+        monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_fixup", lambda *a, **k: launcher_ok)
+        monkeypatch.setattr(main_desktop, "_desktop_linux_needs_no_sandbox", lambda: not launcher_ok)
+        monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_helper_is_regular_file", lambda *a, **k: True)
+        monkeypatch.setattr(main_desktop, "_detect_linux_password_store", lambda: None)
 
         with patch("hermes_cli.bundled_app.subprocess.Popen", side_effect=record_popen), \
              patch.object(cli_main.subprocess, "run", side_effect=record_run), \

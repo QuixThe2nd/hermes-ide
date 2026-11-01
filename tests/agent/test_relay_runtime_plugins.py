@@ -1082,7 +1082,7 @@ enabled = true
 
 [[components.config.atof.sinks]]
 type = "file"
-output_directory = "{project_atof_dir}"
+output_directory = "{project_atof_dir.as_posix()}"
 filename = "events.jsonl"
 mode = "overwrite"
 """.strip(),
@@ -1105,7 +1105,7 @@ enabled = true
 
 [[components.config.atof.sinks]]
 type = "file"
-output_directory = "{selected_atof_dir}"
+output_directory = "{selected_atof_dir.as_posix()}"
 filename = "events.jsonl"
 mode = "overwrite"
 """.strip(),

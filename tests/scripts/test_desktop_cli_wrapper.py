@@ -163,7 +163,7 @@ def _render(tmp_path: Path) -> Path:
     return out
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="minted launchers only exist on win32 payloads")
+@pytest.mark.platforms("windows")
 def test_rendered_wrapper_dispatches_to_the_entry_module(tmp_path):
     """The full wrapper contract without distlib: a rendered copy placed in
     bin/ next to a stub repo + venv resolves its own dir from sys.argv[0],
@@ -173,8 +173,10 @@ def test_rendered_wrapper_dispatches_to_the_entry_module(tmp_path):
     (bin_dir / ".." / "repo" / "hermes_cli").mkdir(parents=True, exist_ok=True)
     (bin_dir / ".." / "venv" / "Lib" / "site-packages").mkdir(parents=True, exist_ok=True)
     (bin_dir / ".." / "repo" / "hermes_cli" / "__init__.py").write_text("")
+    (bin_dir / ".." / "repo" / "hermes_bootstrap.py").write_text("READY = True\n")
     (bin_dir / ".." / "repo" / "hermes_cli" / "main.py").write_text(
         "import sys\n"
+        "assert sys.modules['hermes_bootstrap'].READY\n"
         "def main():\n"
         "    assert sys.argv[0].endswith('hermes.exe'), sys.argv[0]\n"
         "    assert sys.argv[1:] == ['--version']\n"

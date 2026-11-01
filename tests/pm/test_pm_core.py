@@ -100,7 +100,6 @@ def pm_env(tmp_path, served, monkeypatch):
 
     ensure_mod = importlib.import_module("pm.ensure")
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
-    paths._stamp.cache_clear()
 
     saved = dict(registry._packages)
     registry._packages.clear()
@@ -351,15 +350,14 @@ def test_corrupt_facts_degrades_to_empty(pm_env):
     assert (runtime / "facts.corrupt").is_file()
 
 
-def test_sealed_install_refuses_even_explicit(pm_env, monkeypatch):
-    from pm.ensure import ensure
+def test_sealed_install_explicit_addition_leaves_payload_unchanged(pm_env, monkeypatch):
+    from pm.ensure import ensure, is_installed
 
     _, runtime, *_ = pm_env
-    (runtime.parent / "manifest.json").write_text(
-        '{"schema": 1}', encoding="utf-8"
-    )
-    with pytest.raises(InstallError, match="sealed"):
-        ensure("faketool", base_env={}, explicit=True)
+    (runtime.parent / "manifest.json").write_text('{"schema": 1}', encoding="utf-8")
+    ensure("faketool", base_env={}, explicit=True)
+    assert is_installed("faketool")
+    assert not (runtime / "facts.json").exists()
 
 
 def test_concurrent_installs_do_not_clobber(pm_env):
@@ -590,7 +588,6 @@ def test_adopt_noop_without_facts(pm_env, monkeypatch):
     from pm import paths
 
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(paths.store_root() / "nowhere"))
-    paths._stamp.cache_clear()
     assert pm.adopt() is False
 
 

@@ -105,8 +105,10 @@ const manifest = substituteManifestMacros(template, (m) => {
     case "resourceLanguages": return resourceLanguageTag(options.languages)
     case "capabilities": return `<Capabilities>\n${buildCapabilitiesXml(options.capabilities)}\n</Capabilities>`
     case "extensions": return extensions
-    // Win10 1903 (build 18362) floor: desktop6:Service — the MSIX-shipped
-    // HermesGateway Windows Service — requires 1903+; settled 2026-09-03.
+    // Win10 1903 (build 18362) floor, settled 2026-09-03. (An earlier
+    // desktop6:Service fragment rode this floor; the service feature was
+    // removed — the Scheduled Task supervises the gateway instead — but the
+    // shipped floor stays put rather than churning the release minimum.)
     // 1809 is a 2018 OS; the bump rides the release notes.
     case "minVersion": return options.minVersion || "10.0.18362.0"
     case "maxVersionTested": return options.maxVersionTested || options.minVersion || "10.0.18362.0"

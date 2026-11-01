@@ -216,8 +216,19 @@ export function reportInstallMethodWarning(message: string | undefined): void {
  */
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
   // Either signal means "update ready": behind > 0 (git checkout) or
-  // updateAvailable (app-installer, shallow clone).
-  if (!status || status.supported === false || status.error || !status.targetSha) {
+  // updateAvailable (shallow clone, App Installer feed).
+  if (!status || status.supported === false || status.error) {
+    return
+  }
+
+  // Eligibility is mechanism-specific: a git-style check proves an update is
+  // waiting by naming the target commit (targetSha). An App Installer check
+  // legitimately has no commit identity — the OS reports availability against
+  // the .appinstaller feed — so its eligibility signal is updateAvailable
+  // itself. Never fabricate a SHA to satisfy the key.
+  const hasTargetIdentity = Boolean(status.targetSha) || status.mechanism === 'app-installer'
+
+  if (!hasTargetIdentity) {
     return
   }
 

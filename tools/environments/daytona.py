@@ -34,7 +34,7 @@ class DaytonaEnvironment(BaseEnvironment):
                  memory: int = 5120, disk: int = 10240, persistent_filesystem: bool = True,
                  task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
-        ensure_lazy_dep("terminal.daytona")
+        ensure_lazy_dep("daytona")
         from daytona import Daytona, CreateSandboxFromImageParams, DaytonaError, Resources, SandboxState
 
         self._persistent, self._task_id, self._SandboxState = persistent_filesystem, task_id, SandboxState

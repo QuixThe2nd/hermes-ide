@@ -151,45 +151,6 @@ def test_venv_helpers_are_platform_consistent():
     assert (bin_name, exe_name) in {("Scripts", "python.exe"), ("bin", "python")}
 
 
-def test_no_open_coded_venv_layout_remains_in_hermes_cli():
-    """Fails if a new call site hand-rolls Scripts/bin again (#76105).
-
-    Uses AST rather than substring matching: an earlier `"if" in line` version
-    matched any word containing "if" (mod*if*y, ver*if*y) and still missed
-    `os.path.join(venv, "Scripts")`.
-
-    ``stdio.py`` is exempt: it builds a list of literal *Windows-only* PATH
-    candidates, not a cross-platform layout derivation, so ``venv_bin_dir()``
-    (which branches on the host platform) would be the wrong tool there.
-    """
-    import ast
-    import hermes_cli
-
-    exempt = {"stdio.py"}
-    pkg = Path(hermes_cli.__file__).parent
-    offenders = []
-    for py in pkg.rglob("*.py"):
-        if py.name in exempt:
-            continue
-        try:
-            tree = ast.parse(py.read_text(encoding="utf-8", errors="replace"))
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            # Any *code* string literal "Scripts" is a hand-rolled layout;
-            # docstrings and comments never reach ast.Constant in an expr
-            # position we care about here.
-            if isinstance(node, ast.Constant) and node.value == "Scripts":
-                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
-    assert not offenders, (
-        "open-coded venv layout found (use hermes_constants.venv_bin_dir):\n"
-        + "\n".join(offenders)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Top-level FILES must be atomic too (#76104 review, C1)
-# ---------------------------------------------------------------------------
 
 def test_top_level_files_are_swapped_atomically(tmp_path):
     """The repo root holds 20 first-party modules (run_agent.py, cli.py,

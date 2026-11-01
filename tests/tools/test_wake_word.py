@@ -173,6 +173,23 @@ def test_requirements_fresh_install_lazy_allowed(monkeypatch):
     assert r["hint"] == ""
 
 
+def test_requirements_lazy_disabled_returns_remedy_not_nameerror(monkeypatch):
+    """Deps missing + lazy installs disabled → unavailable WITH a remedy hint.
+
+    Regression (C29): a competing legacy hint ladder also ran on this path and
+    referenced the deleted lazy-deps module by bare name — a NameError crashed
+    the status probe instead of returning ``hint``.
+    """
+    _voice_loop_ready(monkeypatch)
+    monkeypatch.setattr(ww, "_audio_available", lambda: True)
+    monkeypatch.setattr(pm, "available", lambda f: False)
+    monkeypatch.setattr(pm_ensure, "lazy_installs_allowed", lambda: False)
+    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
+    assert r["available"] is False
+    assert r["deps_available"] is False
+    assert "uv sync --frozen --extra wake-openwakeword" in r["hint"]
+
+
 def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
     """Once deps ARE installed, a failing audio probe blocks with a mic hint
     (lazy installs can't fix a missing audio device)."""

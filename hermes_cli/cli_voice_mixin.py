@@ -224,7 +224,8 @@ class CLIVoiceMixin:
                     f"(first use may download it from Hugging Face)...{_RST}")
             else:
                 _cprint(f"{_DIM}Transcribing...{_RST}")
-            from tools.voice_mode import is_voice_stop_phrase, transcribe_recording
+            from tools.voice_mode_transcript import is_voice_stop_phrase
+            from tools.voice_mode import transcribe_recording
             result = transcribe_recording(wav_path, model=stt_model)
             if result.get("success") and result.get("transcript", "").strip():
                 transcript = result["transcript"].strip()
@@ -446,7 +447,7 @@ class CLIVoiceMixin:
             result = transcribe_recording(wav_path, model=self._voice_stt_model())
             transcript = (result.get("transcript") or "").strip() if result.get("success") else ""
             if transcript:
-                from tools.voice_mode import is_voice_stop_phrase
+                from tools.voice_mode_transcript import is_voice_stop_phrase
                 if is_voice_stop_phrase(transcript):
                     _cprint(f"\n{_DIM}Stop phrase detected — ending voice chat.{_RST}")
                     self._disable_voice_mode()
@@ -554,7 +555,7 @@ class CLIVoiceMixin:
         if not voice_on:
             return False
         try:
-            from tools.voice_mode import is_voice_stop_phrase
+            from tools.voice_mode_transcript import is_voice_stop_phrase
             if not is_voice_stop_phrase(user_input):
                 return False
         except Exception:

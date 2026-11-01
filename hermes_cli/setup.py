@@ -435,7 +435,6 @@ def _print_banner(*lines: str) -> None:
 
 # ── Section 1: Model & Provider Configuration ──
 
-
 def setup_model_provider(config: dict, *, quick: bool = False):
     """Configure the inference provider and default model via the ``hermes model`` flow (one code
     path — any provider added there is available here). *quick* is accepted for the first-time

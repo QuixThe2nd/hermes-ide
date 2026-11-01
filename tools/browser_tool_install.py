@@ -227,7 +227,7 @@ def _has_chromium_build(root: str) -> bool:
 def _chromium_installed() -> bool:
     """True when a usable Chromium (or headless-shell) build is on disk; cached.
 
-    Checks ``AGENT_BROWSER_EXECUTABLE_PATH``, then system Chrome/Chromium on PATH, then Playwright's cache.
+    Checks ``AGENT_BROWSER_EXECUTABLE_PATH``, then the provisioned Playwright cache.
     Without a binary the CLI hangs on first use until the command timeout fires, so the tool must not be advertised.
     """
     _bt = _origin()
@@ -236,7 +236,6 @@ def _chromium_installed() -> bool:
     ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
     _bt._cached_chromium_installed = bool(
         (ab_path and (os.path.isfile(ab_path) or shutil.which(ab_path)))
-        or any(shutil.which(name) for name in ("google-chrome", "chromium", "chromium-browser", "chrome"))
         or any(root and os.path.isdir(root) and _has_chromium_build(root) for root in _chromium_search_roots())
     )
     return _bt._cached_chromium_installed
@@ -254,8 +253,8 @@ def _maybe_autoinstall_chromium() -> bool:
     _bt._chromium_autoinstall_attempted = True
     if _running_in_docker():
         return False
-    from tools.lazy_deps import _allow_lazy_installs
-    if not _allow_lazy_installs():
+    from pm import lazy_installs_allowed
+    if not lazy_installs_allowed():
         return False
     try:
         browser_cmd = _find_agent_browser()

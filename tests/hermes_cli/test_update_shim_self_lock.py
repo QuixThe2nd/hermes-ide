@@ -225,55 +225,6 @@ def test_up_to_date_run_never_hands_off(venv, monkeypatch, capsys):
     assert calls == [], "an up-to-date run must not spawn a detached child"
 
 
-def test_sync_guard_hands_off_when_only_the_shim_is_held(venv, monkeypatch):
-    """No native module mapped, but we ARE the shim: hand off and exit 0 WITHOUT resuming the
-    paused fleet here — the child owns the token (#101600)."""
-    from hermes_cli import update_cmd
-
-    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
-    monkeypatch.setattr(cli_main, "_detect_self_loaded_native_modules", lambda: [])
-    resumed = []
-    monkeypatch.setattr(cli_main, "_resume_windows_gateways_after_update", resumed.append)
-    calls = _capture_popen(monkeypatch)
-
-    with pytest.raises(SystemExit) as excinfo:
-        update_cmd._abort_dependency_sync_if_self_locked({"resume_needed": True, "profiles": {}})
-
-    assert excinfo.value.code == 0
-    assert calls, "expected the dependency sync to be handed to the venv python"
-    assert resumed == [], "the shim parent must exit at once, not relaunch gateways"
-
-
-def test_sync_guard_defers_native_lock_before_considering_the_shim(venv, monkeypatch):
-    """A mapped .pyd still exits 2 — the marker recovery owns that case."""
-    from hermes_cli import update_cmd
-
-    monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
-    monkeypatch.setattr(
-        cli_main, "_detect_self_loaded_native_modules", lambda: ["PyYAML (_yaml.pyd)"]
-    )
-    monkeypatch.setattr(cli_main, "_defer_update_for_self_lock", lambda loaded: None)
-    calls = _capture_popen(monkeypatch)
-
-    with pytest.raises(SystemExit) as excinfo:
-        update_cmd._abort_dependency_sync_if_self_locked()
-
-    assert excinfo.value.code == 2
-    assert calls == [], "a native-module deferral must not also spawn a child"
-
-
-def test_sync_guard_is_a_noop_when_nothing_is_held(venv, monkeypatch):
-    """Off the shim with nothing mapped, the sync just proceeds in-process."""
-    from hermes_cli import update_cmd
-
-    monkeypatch.setattr(cli_main, "_detect_self_loaded_native_modules", lambda: [])
-    calls = _capture_popen(monkeypatch)
-
-    update_cmd._abort_dependency_sync_if_self_locked()
-    assert calls == []
-
-
-# ---------------------------------------------------------------------------
 # Reboot-deferred renames
 # ---------------------------------------------------------------------------
 

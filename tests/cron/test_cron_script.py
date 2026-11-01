@@ -234,7 +234,7 @@ class TestRunJobScript:
         )
         assert captured["kwargs"]["creationflags"] == expected_flags
         env = captured["kwargs"]["env"]
-        assert env["VIRTUAL_ENV"] == str(venv)
+        assert "VIRTUAL_ENV" not in env  # store-python boot uses explicit import paths
         assert str(site_packages) in env["PYTHONPATH"]
 
     def test_bootstrap_argv_makes_pth_editable_installs_importable(self, cron_env, tmp_path):

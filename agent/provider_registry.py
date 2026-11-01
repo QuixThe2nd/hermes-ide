@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import Any, Callable, Dict, FrozenSet, Generic, List, Optional, TypeVar
 
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 P = TypeVar("P")
 
@@ -54,6 +54,7 @@ class ProviderRegistry(Generic[P]):
         self._log_label = label if label.isupper() else label[0].lower() + label[1:]
 
     def _target(self, scope: Optional[str], *, create: bool) -> Dict[str, P]:
+        scope = normalize_scope(scope)
         if scope is None:
             return self._providers
         if create:
@@ -61,6 +62,7 @@ class ProviderRegistry(Generic[P]):
         return self._scoped_providers.get(scope, {})
 
     def _bump(self, scope: Optional[str]) -> None:
+        scope = normalize_scope(scope)
         if scope is None:
             self._generation += 1
         else:
@@ -142,6 +144,7 @@ class ProviderRegistry(Generic[P]):
     ) -> bool:
         """Restore *previous* only when *current* is still installed under *name*."""
         key = self.normalize(name)
+        scope = normalize_scope(scope)
         with self._lock:
             target = self._target(scope, create=True)
             if target.get(key) is not current:

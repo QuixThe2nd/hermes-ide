@@ -460,6 +460,9 @@ def _run_one_file_once(
         # runner over one suite.
         shutil.rmtree(temproot, ignore_errors=True)
 
+    if rc not in (0, 5) and not output.strip():
+        output = f"pytest child exited {rc} (0x{rc & 0xffffffff:08x}) with no output: {file}\n"
+
     if rc == 5:
         # No tests collected in THIS file — legitimate per-file: a
         # platform-gated or fully-marker-filtered file (e.g. a win32-only

@@ -2920,6 +2920,29 @@ os.environ["_HERMES_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
 
+# pm startup: same contract as the CLI dispatch path (hermes_cli/main.py)
+# — the gateway daemon never passes through the CLI fast-launch checks, so
+# the store's tools (git/bash/ffmpeg/...) must be on PATH here. O(1) stamp
+# checks, no network, no installs; warns, never blocks. Runs from main(),
+# not import time: importers of this module (relay runtime, platform
+# actions, enrollment) need helpers, not PATH provisioning or a pm verdict
+# on their behalf.
+def _run_pm_startup() -> None:
+    try:
+        import pm
+
+        pm.adopt()
+        problems = pm.check()
+        if problems:
+            logging.getLogger("gateway.run").warning(
+                f"install out of sync ({'; '.join(problems)}) — run `hermes pm install`"
+            )
+        else:
+            pm.activate()
+    except Exception:
+        logging.getLogger("gateway.run").debug("pm startup check failed", exc_info=True)
+
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -37940,6 +37963,16 @@ def _housekeeping_org_skill_sync() -> None:
     maybe_pull_org_skills()
 
 
+def _housekeeping_plugin_update_check() -> None:
+    """Plugin update-check cadence (plugins_cadence): due-gated by
+    plugins.auto_update_check_hours, read-only, receipt-surfaced; the
+    opt-in auto-apply rides the manual update pipeline. A network error
+    costs one warning and a stamped marker — never an apply."""
+    from hermes_cli.plugins_cadence import maybe_run_gateway_check
+
+    maybe_run_gateway_check(log=logger)
+
+
 def _housekeeping_auto_archive() -> None:
     """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
     is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
@@ -38045,6 +38078,7 @@ def _start_gateway_housekeeping(
         (60, "Sync pull tick", _housekeeping_skill_sync),
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
+        (60, "Plugin update check", _housekeeping_plugin_update_check),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
@@ -38876,6 +38910,21 @@ def main():
     for _step in (_register_identity, _arm_watchdog, _utf8_stdio):
         _best_effort(_step)
 
+    # pm startup contract (PATH provisioning for the store's tools), then
+    # the post-update bootstrap: the same one-pass record-gated maintenance
+    # registry the CLI dispatch path runs (hermes_cli/main.py) — this
+    # entrypoint bypasses that dispatch, so run it here too. Never raises.
+    _best_effort(_run_pm_startup)
+    try:
+        from hermes_cli.boot_bootstrap import (
+            default_project_root,
+            maybe_run_boot_bootstrap,
+        )
+
+        maybe_run_boot_bootstrap(default_project_root())
+    except Exception:
+        logger.debug("boot bootstrap failed", exc_info=True)
+
     import argparse
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
     parser.add_argument("--config", "-c", help="Path to gateway config file")
@@ -38895,51 +38944,6 @@ def main():
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a
     # wedged non-daemon worker can't block Py_FinalizeEx's join. SystemExit caught so EVERY path exits.
 
-    # Plugin update-check cadence (read-only, receipt-surfaced): one
-    # background thread at boot; the clock gate makes it a no-op until
-    # plugins.auto_update_check_hours (default 24h) elapses. Never
-    # blocks boot, never installs — apply stays explicit
-    # (plugins.auto_apply opt-in, git rows only, scan-gated).
-    def _kick_plugin_check_cadence() -> None:
-        try:
-            from hermes_cli.plugins_cadence import run_scheduled_check
-            from hermes_cli.plugins_cmd import _plugins_dir
-            from hermes_cli.plugins_updates import run_checks as _run_checks
-
-            run_scheduled_check(
-                run_checks_fn=lambda plugins_dir: _run_checks(
-                    plugins_dir,
-                    fetch=_cadence_fetch,
-                    ls_remote=_cadence_ls_remote,
-                ),
-                plugins_dir=_plugins_dir(),
-            )
-        except Exception:
-            logger.debug("plugin update-check cadence failed", exc_info=True)
-
-    def _cadence_fetch(url: str) -> str:
-        import urllib.request
-
-        with urllib.request.urlopen(url, timeout=10.0) as resp:
-            return resp.read(1024 * 1024).decode("utf-8", errors="replace")
-
-    def _cadence_ls_remote(source: str) -> str:
-        import subprocess as _sp
-
-        proc = _sp.run(
-            ["git", "ls-remote", source, "HEAD"],
-            capture_output=True, text=True, timeout=30,
-        )
-        out = (proc.stdout or "").strip()
-        return out.split("\t")[0] if out else ""
-
-    import threading as _threading
-
-    _threading.Thread(
-        target=_kick_plugin_check_cadence,
-        daemon=True,
-        name="plugin-update-check",
-    ).start()
     # start_gateway() performs the full graceful teardown (adapters
     # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,
     # PID file + runtime lock released) before it returns OR raises SystemExit

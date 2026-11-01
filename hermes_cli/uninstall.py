@@ -155,7 +155,10 @@ def remove_node_symlinks(hermes_home: Path) -> list:
         # os.readlink + manual join handles dangling links too (Path.resolve() on a dangling
         # link still returns the target path); the link must point into OUR node dir.
         target = (link.parent / os.readlink(link)).resolve()
-        return _unlink_if(target == node_dir or node_dir in target.parents, link)
+        if target != node_dir and node_dir not in target.parents:
+            return False
+        link.unlink()
+        return True
 
     candidates = (bin_dir / name for name in ("node", "npm", "npx") for bin_dir in _node_symlink_candidate_dirs())
     return _remove_each(candidates, _unlink_ours)
@@ -737,29 +740,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def find_shell_configs() -> list:
-    """Find shell configuration files that might have PATH entries."""
-    home = Path.home()
-    configs = []
-
-    candidates = [
-        home / ".bashrc",
-        home / ".bash_profile",
-        home / ".profile",
-        home / ".zshrc",
-        home / ".zprofile",
-    ]
-
-    for config in candidates:
-        if config.exists():
-            configs.append(config)
-
-    return configs
-# ---- END PLUGIN-COMPAT ----

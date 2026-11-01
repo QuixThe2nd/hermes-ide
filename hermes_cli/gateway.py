@@ -2896,14 +2896,10 @@ def get_python_path() -> str:
         try:
             from hermes_constants import venv_python_path
         except ImportError:
-            # Update-boundary: a gateway restarted mid-update can hold a
-            # hermes_constants cached from before this symbol existed.
-            # Reload picks up the definitions actually on disk.
-            import importlib
-
-            import hermes_constants
-
-            venv_python_path = importlib.reload(hermes_constants).venv_python_path
+            # Update-boundary: a gateway restarted mid-update can hold a stale hermes_constants
+            # without this symbol; reload through the runtime repair owner.
+            from hermes_cli.runtime_repair import _reload_hermes_constants
+            venv_python_path = _reload_hermes_constants().venv_python_path
 
         venv_python = venv_python_path(venv, windows=is_windows())
         if venv_python.exists():
@@ -7140,12 +7136,8 @@ def _cmd_migrate(args):
     cmd_migrate(args)
 
 
-def _cmd_service(args):
-    _windows_scm_service_command(getattr(args, "gateway_service_action", None))
-
-
 _GATEWAY_SUBCOMMANDS = {
-    None: _cmd_run, "run": _cmd_run, "setup": _cmd_setup, "service": _cmd_service, "install": _cmd_install,
+    None: _cmd_run, "run": _cmd_run, "setup": _cmd_setup, "install": _cmd_install,
     "uninstall": _cmd_uninstall, "start": _cmd_start, "stop": _cmd_stop, "restart": _cmd_restart,
     "status": _cmd_status, "list": _cmd_list, "migrate-legacy": _cmd_migrate_legacy, "migrate": _cmd_migrate,
 }

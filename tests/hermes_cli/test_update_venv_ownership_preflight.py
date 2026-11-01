@@ -46,6 +46,7 @@ def test_all_owned_preflight_proceeds(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.platforms("posix")
 def test_foreign_owned_dist_info_child_detected(tmp_path, monkeypatch):
     venv = _make_fake_venv(tmp_path)
     installer = str(
@@ -65,6 +66,7 @@ def test_foreign_owned_dist_info_child_detected(tmp_path, monkeypatch):
     assert foreign == [(installer, 0)]
 
 
+@pytest.mark.platforms("posix")
 def test_foreign_owned_refuses_with_chown_hint(tmp_path, monkeypatch, capsys):
     venv = _make_fake_venv(tmp_path)
     hermes_bin = str(venv / "bin" / "hermes")

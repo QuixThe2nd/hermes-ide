@@ -33,7 +33,7 @@ branch's vocabulary: stamps via ``hermes_cli.steward``, managed tools via
 """
 from __future__ import annotations
 
-import hashlib
+from hermes_cli.runtime_paths import install_state_dir, installs_root
 import json
 import logging
 import os
@@ -142,36 +142,6 @@ def current_install_identity(project_root: Path) -> str | None:
 # ---------------------------------------------------------------------------
 # the per-install state folder: installs/<SHA16>/ under the DEFAULT home
 # ---------------------------------------------------------------------------
-
-def _install_key(project_root: Path) -> str:
-    try:
-        canonical = str(Path(project_root).resolve())
-    except OSError:
-        canonical = str(project_root)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-
-
-INSTALLS_DIR_NAME = "installs"
-
-
-def installs_root() -> Path:
-    """The parent of every per-install state folder.
-
-    Anchored to the DEFAULT home, not the active profile home: profiles
-    share one folder per install, with per-profile bootstrap records as
-    files INSIDE it (bootstrap/<profile>.json) rather than per-profile
-    folders. That keeps profile semantics while collapsing the anchor
-    count to one.
-    """
-    from hermes_cli.profiles import _get_default_hermes_home
-
-    return _get_default_hermes_home() / INSTALLS_DIR_NAME
-
-
-def install_state_dir(project_root: Path) -> Path:
-    """``installs/<SHA16>/`` for this install. Derivation only — no I/O."""
-    return installs_root() / _install_key(project_root)
-
 
 def ensure_install_dir(project_root: Path) -> Path:
     """The state folder, created with its identity record on first touch.
@@ -482,9 +452,9 @@ def run_boot_bootstrap(project_root: Path) -> dict:
     if drift_message:
         summary["sealed_runtime_drift"] = drift_message
 
-    for scope, steps, deferred in (
-        ("home", post_update.HOME_STEPS, False),
-        ("machine", post_update.MACHINE_STEPS, True),
+    for scope, steps in (
+        ("home", post_update.BOOT_HOME_STEPS),
+        ("machine", post_update.BOOT_MACHINE_STEPS),
     ):
         identity = needs_bootstrap(project_root, scope)
         if not identity:
@@ -504,26 +474,9 @@ def run_boot_bootstrap(project_root: Path) -> dict:
                 "post-update bootstrap (%s scope): code changed to %s, running steps",
                 scope, identity[:12],
             )
-            if deferred:
-                # Slow machine steps (network installers) must not block
-                # boot readiness: record first, then run detached. A crash
-                # mid-step leaves the record written — intended: the record
-                # gates "did we trigger for this identity", and the steps
-                # re-gate themselves (pm.check stamp comparisons) next change.
-                _write_record(record, identity, {"deferred": True})
-                import threading
-
-                threading.Thread(
-                    target=post_update.run_steps,
-                    args=(steps,),
-                    name=f"hermes-bootstrap-{scope}",
-                    daemon=True,
-                ).start()
-                summary[scope] = "deferred"
-            else:
-                results = post_update.run_steps(steps)
-                _write_record(record, identity, results)
-                summary[scope] = results
+            results = post_update.run_steps(steps)
+            _write_record(record, identity, results)
+            summary[scope] = results
         finally:
             lock.release()
     return summary

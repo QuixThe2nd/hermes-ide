@@ -51,6 +51,20 @@ from tools.code_execution_tool import (
 from tools.registry import registry
 
 
+@pytest.fixture(autouse=True)
+def _fresh_kernel_registry():
+    """Session kernels are always on: dispose them per-test so one test's
+    kernel child can't outlive the run (hangs pytest at exit) or leak its
+    interpreter state / task key into the next test. Per-file process
+    isolation does not replace per-test kernel ownership.
+    """
+    from tools.code_kernel import shutdown_all_kernels
+
+    shutdown_all_kernels()
+    yield
+    shutdown_all_kernels()
+
+
 def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
     """Mock dispatcher that returns canned responses for each tool."""
     if function_name == "terminal":

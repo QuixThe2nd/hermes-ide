@@ -7,7 +7,9 @@ on the tool being present.
 """
 from __future__ import annotations
 
-from hermes_cli import doctor
+import sys
+
+from hermes_cli import doctor_tools
 
 
 class TestPmToolPath:
@@ -25,8 +27,6 @@ class TestPmToolPath:
         return store
 
     def test_staged_tool_resolves_to_its_store_binary(self, tmp_path, monkeypatch):
-        import sys
-
         store = self._store(
             tmp_path, monkeypatch,
             {"ripgrep": {"entry": "ripgrep-15.0.0-test", "version": "15.0.0", "env": {}}},
@@ -36,15 +36,41 @@ class TestPmToolPath:
         binary = entry / ("rg.exe" if sys.platform == "win32" else "rg")
         binary.write_text("", encoding="utf-8")
 
-        assert doctor._pm_tool_path("ripgrep") == binary
+        assert doctor_tools._pm_tool_path("ripgrep") == binary
 
     def test_unstaged_tool_resolves_to_none(self, tmp_path, monkeypatch):
         self._store(tmp_path, monkeypatch, {})
-        assert doctor._pm_tool_path("ripgrep") is None
+        assert doctor_tools._pm_tool_path("ripgrep") is None
 
     def test_recorded_but_deleted_binary_resolves_to_none(self, tmp_path, monkeypatch):
         self._store(
             tmp_path, monkeypatch,
             {"ripgrep": {"entry": "ripgrep-15.0.0-test", "version": "15.0.0", "env": {}}},
         )
-        assert doctor._pm_tool_path("ripgrep") is None
+        assert doctor_tools._pm_tool_path("ripgrep") is None
+
+
+class TestGitAndRgWiring:
+    """_check_git_and_rg probes the store first, so a managed install is
+    never reported as "not found" just because the store is off PATH."""
+
+    def test_staged_rg_is_found_and_labeled_pm_store(self, tmp_path, monkeypatch, capsys):
+        store = tmp_path / "tools"
+        store.mkdir()
+        (store / "facts.json").write_text(
+            '{"schema": 1, "packages": {"ripgrep": {"entry": "ripgrep-15.0.0-test"}}}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        entry = store / "ripgrep-15.0.0-test"
+        entry.mkdir()
+        (entry / ("rg.exe" if sys.platform == "win32" else "rg")).write_text("", encoding="utf-8")
+        # Nothing on PATH: the old probe alone reported "not found". Patched at
+        # the real shutil.which boundary, not a doctor wrapper.
+        monkeypatch.setattr(doctor_tools.shutil, "which", lambda _cmd: None)
+
+        doctor_tools._check_git_and_rg(False)
+
+        out = capsys.readouterr().out
+        assert "✓ ripgrep (rg) (pm store)" in out
+        assert "ripgrep (rg) not found" not in out

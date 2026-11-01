@@ -933,8 +933,11 @@ class TestWebServerEndpoints:
         import hermes_cli.web_server as web_server
         from tools import lazy_deps as ld
 
-        # honcho declares pip_dependencies: [honcho-ai]; force it missing.
-        monkeypatch.setattr(_web_server_memory, "_dependency_importable", lambda dep: False)
+        # Force a provider with declared legacy dependencies and an owned extra.
+        manifest = {"pip_dependencies": ["honcho-ai"], "extra": "honcho"}
+        monkeypatch.setattr("hermes_cli.web_server_memory._memory_provider_manifest", lambda name: manifest)
+        monkeypatch.setattr("hermes_cli.web_routers.memory_providers._memory_provider_manifest", lambda name: manifest)
+        monkeypatch.setattr("hermes_cli.web_routers.memory_providers._dependency_importable", lambda dep: False)
 
         installed = []
 
@@ -964,9 +967,9 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
-        assert pip_rows and pip_rows[0]["status"] == "installed"
-        assert "--target /opt/data/lazy-packages" in pip_rows[0]["command"]
-        assert installed == [("honcho-ai",)]
+        assert pip_rows and pip_rows[0]["status"] == "restart_required"
+        assert pip_rows[0]["command"] == "hermes pm install"
+        assert installed == [("honcho",)]
 
 
 
@@ -1340,6 +1343,23 @@ class TestWebServerEndpoints:
         assert check_data["can_apply"] is False
         assert check_data["update_command"] == "pkg upgrade hermes-agent"
         assert "Termux APT" in check_data["message"]
+
+    def test_update_check_legacy_apt_stamp_resolves_to_unknown(self, monkeypatch):
+        # The Termux 'apt' install-method lane was removed. A legacy
+        # .install_method stamp of 'apt' now resolves to 'unknown' (see
+        # detect_install_method) and gets the generic "hermes update"
+        # guidance instead of Termux-specific refusal.
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr("hermes_cli.web_server_files._dashboard_local_update_managed_externally", lambda: False)
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda _root: "unknown")
+
+        check = self.client.get("/api/hermes/update/check")
+        assert check.status_code == 200
+        check_data = check.json()
+        assert check_data["install_method"] == "unknown"
+        assert check_data["update_command"] == "hermes update"
+        assert "Termux" not in (check_data["message"] or "")
 
     def test_update_status_recovers_completed_result_after_dashboard_restart(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server

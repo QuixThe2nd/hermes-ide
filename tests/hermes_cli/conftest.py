@@ -102,7 +102,6 @@ def isolated_update_runtime(monkeypatch, tmp_path, request):
     monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
     monkeypatch.setattr(main, "_resume_windows_gateways_after_update", lambda *a, **k: None)
     monkeypatch.setattr(main, "_detect_venv_python_processes", lambda: [])
-    monkeypatch.setattr(main, "_restore_active_tool_dependencies", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_apply_pending_fleet_restart_catchup", lambda *a, **k: None)

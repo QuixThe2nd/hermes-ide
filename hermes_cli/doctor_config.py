@@ -429,6 +429,37 @@ _CONFIG_DRIFT_STEPS = (
 )
 
 
+def _check_channel_record_hygiene() -> None:
+    """Stale per-install channel records (``update.installs.<sha16>``).
+
+    Same report-don't-delete posture as the state sweep. Three shapes
+    (hermes_cli.update_channel.stale_channel_records): a record whose path
+    holds a DIFFERENT install now (``replaced``), a record whose path is
+    gone (``missing``), and a record no live install-state folder claims
+    (``unclaimed``). Keep-on-doubt: doctor names the config key, the user
+    removes it.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.update_channel import stale_channel_records
+
+        stale = stale_channel_records(load_config() or {})
+    except Exception as exc:
+        check_warn("Channel-record hygiene unreadable", f"({exc})")
+        return
+    if not stale:
+        return
+    for sha16, record, reason in stale:
+        recorded = record.get("path") or "<no path>"
+        if reason == "replaced":
+            detail = f"(the install at {recorded} is a different install now — stale channel entry)"
+        elif reason == "missing":
+            detail = f"(nothing at {recorded} — safe to remove update.installs.{sha16})"
+        else:  # unclaimed
+            detail = f"(no live install claims {sha16} — safe to remove update.installs.{sha16})"
+        check_warn(f"Stale channel record: {sha16}", detail)
+
+
 @doctor_check()
 def _check_config_drift(should_fix: bool, f: Finding) -> None:
     """Config version, stale root keys, HERMES_MAX_ITERATIONS ghost, deprecations, structure.
@@ -442,6 +473,9 @@ def _check_config_drift(should_fix: bool, f: Finding) -> None:
     for step in _CONFIG_DRIFT_STEPS if config_path else (_drift_deprecations,):
         with warn_on_error(""):
             step(f, should_fix, config_path)
+    # Stale per-install update-channel records (update.installs.<sha16>):
+    # report-don't-delete, same posture as the state sweep.
+    _check_channel_record_hygiene()
 
 
 @doctor_check("xAI retirement check skipped", "({e})")

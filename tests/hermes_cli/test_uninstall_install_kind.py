@@ -214,6 +214,23 @@ def test_gui_summary_reports_steward_and_gate(monkeypatch, tmp_path):
     assert summary["code_removal_allowed"] is True
 
 
+def test_gui_summary_classifies_the_agent_root(tmp_path, monkeypatch):
+    """The steward facts classify the home's ``hermes-agent`` checkout — the
+    tree the code-removal modes would delete — not some unrelated root."""
+    import hermes_cli.gui_uninstall as gu
+    from hermes_cli import steward as st
+
+    seen = []
+    monkeypatch.setattr(st, "classify_install", lambda root: seen.append(root) or ("git", True))
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
+
+    home = tmp_path / ".hermes"
+    gu.gui_install_summary(home)
+
+    assert seen == [home / "hermes-agent"]
+
+
 # ---------------------------------------------------------------------------
 # module entrypoint routing
 # ---------------------------------------------------------------------------

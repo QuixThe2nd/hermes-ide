@@ -297,6 +297,27 @@ def step_provision_runtimes() -> dict:
     return {"ok": True, "refreshed": refreshed}
 
 
+def step_report_runtime_drift() -> dict:
+    """CHECK-ONLY machine step for automatic boot.
+
+    ``pm.check()`` is O(1) stamp comparisons against the installed-state
+    ledger — no network, no installs. Drift is reported loudly (the same
+    verdict the CLI startup block prints) so the user knows to run
+    ``hermes pm install``; boot itself never installs anything. The
+    installing pass is MACHINE_STEPS below, owned by the explicit update
+    flow — automatic boot must not run network installers.
+    """
+    import pm
+
+    problems = pm.check()
+    if not problems:
+        return {"ok": True, "skipped": "current"}
+    logger.warning(
+        "install out of sync (%s) — run `hermes pm install`", "; ".join(problems)
+    )
+    return {"ok": True, "drift": problems}
+
+
 def step_expose_cli() -> dict:
     """Keep the user-facing ``hermes`` launchers alive across updates.
 
@@ -340,6 +361,21 @@ def step_expose_cli() -> dict:
         if sys.platform == "darwin":
             return _symlink_sealed_launchers(root.parent / "bin")
         return {"ok": True, "skipped": "bundle-owns-launchers"}
+
+    # pm-store-managed install: the launchers are owned by
+    # hermes_cli._launchers (staged by install.ps1 / _install_repair —
+    # boot the STORE python with a repo-first PYTHONPATH, never
+    # venv/Scripts|bin python). This step's venv-wrapper shape is NOT
+    # that shape; writing it here would rewrite a store launcher into a
+    # venv boot. No alternate writer: the existing owner maintains
+    # these (per-name, at install and at process-start repair).
+    try:
+        from hermes_cli._launchers import resolve_store_python
+
+        if resolve_store_python(root) is not None:
+            return {"ok": True, "skipped": "store-launchers-owned"}
+    except Exception as exc:  # noqa: BLE001 — never kill boot over a probe
+        logger.debug("store-python probe failed: %s", exc)
 
     # Capability probe for the checkout shape: the wrapper bodies bake
     # these two paths into text, so both must exist to have anything to
@@ -473,13 +509,33 @@ HOME_STEPS: tuple = (
     ("expose_cli", step_expose_cli),
 )
 
-# Machine steps may be slow (network installers); boot bootstrap runs them
-# AFTER writing the machine record, detached from boot readiness.
+# What AUTOMATIC boot runs for the home scope: HOME_STEPS minus the
+# bundled-skills sync — startup skill syncing already has exactly one
+# owner per entrypoint (main.py's _sync_bundled_skills_for_startup for
+# the CLI, gateway/run.py's configure-logging sync for the gateway), and
+# `hermes update`'s explicit pass keeps the full HOME_STEPS. Adding the
+# sync here made boot a third writer racing those two.
+BOOT_HOME_STEPS: tuple = tuple(
+    step for step in HOME_STEPS if step[0] != "sync_skills"
+)
+
+# Machine steps may be slow (network installers); they run ONLY in the
+# explicit update phase (``python -m hermes_cli.post_update --update-phase``,
+# i.e. `hermes update`'s fresh-interpreter step pass) — never on automatic
+# boot.
 #
 # There is no separate cua-driver refresh step: pinned managed tools ride
 # provision_runtimes' pm sweep — one authority on every tool's version.
 MACHINE_STEPS: tuple = (
     ("provision_runtimes", step_provision_runtimes),
+)
+
+# What AUTOMATIC boot runs for the machine scope: the same pm.check()
+# verdict, reported instead of installed (boot must not block on, or
+# trigger, network installs — the user runs `hermes pm install` or the
+# explicit update pass when they want the repair).
+BOOT_MACHINE_STEPS: tuple = (
+    ("report_runtime_drift", step_report_runtime_drift),
 )
 
 

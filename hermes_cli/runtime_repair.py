@@ -845,12 +845,9 @@ def _release_repair_lock(lock: _RepairLock) -> None:
 def _windows_runtime_holders() -> tuple[bool, str]:
     if platform.system() != "Windows":
         return False, ""
-    main_module = sys.modules.get("hermes_cli.main")
-    detector = getattr(main_module, "_detect_venv_python_processes", None)
-    if detector is None:
-        return True, "cannot verify Windows venv holders from this update context"
     try:
-        holders = detector()
+        from hermes_cli.update_cmd_windows import _detect_venv_python_processes
+        holders = _detect_venv_python_processes()
     except Exception as exc:
         return True, f"could not verify Windows venv holders: {exc}"
     if holders:

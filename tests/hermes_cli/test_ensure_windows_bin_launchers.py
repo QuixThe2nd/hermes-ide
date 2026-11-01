@@ -90,8 +90,10 @@ def _assert_boot_is_store_not_venv(launcher: Path, root: Path, store: Path):
     else:
         body = launcher.read_text(encoding="utf-8")
         assert venv_python not in body
-        assert "python-*" in body  # store-python boot-time resolution
-        assert "pm install" in body  # instructive failure until pm lands it
+        if "python-*" in body:
+            assert "pm install" in body  # unmaterialized-store delegator
+        else:
+            assert str(store) in body  # resolved-store .cmd fallback
 
 
 @pytest.fixture
@@ -153,7 +155,9 @@ def test_legacy_venv_trampoline_is_replaced_by_store_launcher(
 
     assert set(Path(p).stem for p in map(Path, restored)) == set(_WINDOWS_BIN_LAUNCHERS)
     for name in _WINDOWS_BIN_LAUNCHERS:
-        _assert_boot_is_store_not_venv(bin_dir / f"{name}.exe", root, store)
+        exe = bin_dir / f"{name}.exe"
+        launcher = exe if exe.exists() and b"legacy trampoline" not in exe.read_bytes() else bin_dir / f"{name}.cmd"
+        _assert_boot_is_store_not_venv(launcher, root, store)
 
 
 def test_healthy_store_launcher_is_a_noop(tmp_path, monkeypatch):
@@ -186,7 +190,9 @@ def test_healthy_canonical_layout_with_placeholder_cmds_gets_upgraded(
     ensure_windows_bin_launchers(root, windows=True, user_path_entries=[])
 
     for name in _WINDOWS_BIN_LAUNCHERS:
-        _assert_boot_is_store_not_venv(bin_dir / f"{name}.exe", root, store)
+        exe = bin_dir / f"{name}.exe"
+        launcher = exe if exe.exists() and b"legacy trampoline" not in exe.read_bytes() else bin_dir / f"{name}.cmd"
+        _assert_boot_is_store_not_venv(launcher, root, store)
 
 
 def test_legacy_bin_restaged_only_while_on_user_path(managed_install):

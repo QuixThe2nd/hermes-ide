@@ -231,12 +231,14 @@ def default_downgrade_notice() -> Optional[str]:
         if get_browser_backend() or _camofox_active() or _find_cli() is not None:
             return None  # explicit choice / Camofox / CLI present — nothing downgraded
         stamp = Path(get_hermes_home()) / "cache" / ".browser_use_default_notice"
+        now = time.time()
         with contextlib.suppress(OSError):
-            if 0 <= time.time() - stamp.stat().st_mtime < 24 * 3600:
+            if 0 <= now - stamp.stat().st_mtime < 24 * 3600:
                 return None
         with contextlib.suppress(OSError):
             stamp.parent.mkdir(parents=True, exist_ok=True)
             stamp.touch()
+            os.utime(stamp, (now, now))
         return ("Browser Use CLI not found — using the built-in browser tools. Run `hermes tools` "
                 "(Browser Automation → Browser Use) to install it, or `browser.backend: off` in config.yaml to silence this.")
     except Exception as e:  # pragma: no cover — a notice must never break startup

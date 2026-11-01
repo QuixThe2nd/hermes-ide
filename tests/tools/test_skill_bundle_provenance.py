@@ -62,7 +62,7 @@ def served_repo(tmp_path, monkeypatch):
         if isinstance(content, bytes):
             path.write_bytes(content)
         else:
-            path.write_text(content)
+            path.write_text(content, newline="\n")
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(
@@ -120,8 +120,8 @@ def test_same_dir_linked_siblings_are_fetched(served_repo, monkeypatch):
     """#96310: explicitly linked same-skill-directory files must ship in the
     bundle — dropping them made installs "succeed" with unresolved links."""
     repo, url = served_repo
-    (repo / "CONTEXT-FORMAT.md").write_text("format\n")
-    (repo / "DEEPENING.md").write_text("deepening\n")
+    (repo / "CONTEXT-FORMAT.md").write_text("format\n", newline="\n")
+    (repo / "DEEPENING.md").write_text("deepening\n", newline="\n")
     (repo / "SKILL.md").write_text(SKILL_MD + "See [the format](./CONTEXT-FORMAT.md) and [deepening](DEEPENING.md).\n")
     monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
     monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
@@ -451,7 +451,7 @@ def served_repo_missing_support(tmp_path, monkeypatch):
     }.items():
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        path.write_text(content, newline="\n")
 
     server = ThreadingHTTPServer(
         ("127.0.0.1", 0), partial(_QuietHandler, directory=str(repo))

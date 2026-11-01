@@ -87,6 +87,35 @@ def test_npm_failure_returns_reason_not_raise(tmp_path, lazy_on):
     assert "exited 1" in reason and "ERESOLVE" in reason
 
 
+def test_real_npm_installs_locked_sidecar_and_keeps_parent_unchanged(tmp_path, lazy_on):
+    import json
+    import os
+    import shutil
+    import subprocess
+
+    npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    node = shutil.which("node")
+    if not npm or not node:
+        pytest.skip("npm and node are required")
+    dependency = tmp_path / "side-dep"
+    dependency.mkdir()
+    (dependency / "package.json").write_text(json.dumps({"name": "side-dep", "version": "1.0.0", "main": "index.js"}))
+    (dependency / "index.js").write_text("module.exports = 'isolated';")
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "package.json").write_text(json.dumps({"name": "plugin", "version": "1.0.0", "dependencies": {"side-dep": "file:../side-dep"}}))
+    ambient = dict(os.environ)
+    assert ws.install_node_sidecar(plugin, npm_bin=npm) is None
+    lock = (plugin / "package-lock.json").read_bytes()
+    assert ws.install_node_sidecar(plugin, npm_bin=npm) is None
+    assert (plugin / "package-lock.json").read_bytes() == lock
+    assert dict(os.environ) == ambient
+    result = subprocess.run([node, "-e", "console.log(require('side-dep'))"], cwd=plugin, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "isolated"
+    assert not (tmp_path / "node_modules").exists()
+
+
 def test_runner_explosion_is_a_reason(tmp_path, lazy_on):
     plug = _plug(tmp_path)
 

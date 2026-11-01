@@ -25,6 +25,7 @@ def _isolate_venv_holders(monkeypatch):
     import hermes_cli.main as cli_main
 
     monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
 
 
 @pytest.fixture(autouse=True)

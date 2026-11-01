@@ -66,6 +66,23 @@ def test_member_plugin_triggers_post_pull_sync(plugin_env, monkeypatch):
     assert synced == [None]  # explicit sync with recorded extras
 
 
+def test_update_scans_once_after_pull(plugin_env, monkeypatch):
+    """C04: exactly ONE post-pull security scan — the rescan pipeline's, not a
+    duplicated inline copy (which crashed with NameError on an undefined name)."""
+    import tools.plugin_guard as guard
+
+    scans = []
+    monkeypatch.setattr(
+        guard, "scan_plugin", lambda target, source: scans.append(source)
+    )
+    monkeypatch.setattr(
+        guard, "should_allow_plugin_install", lambda result, **k: (True, "")
+    )
+    monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: True)
+    pc.cmd_update("plug")
+    assert scans == ["plug"]
+
+
 def test_plain_plugin_skips_sync(plugin_env, monkeypatch):
     # no pyproject.toml — nothing to union
     import pm

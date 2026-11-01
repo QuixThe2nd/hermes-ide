@@ -40,6 +40,19 @@ def _store() -> Store:
     return Store(paths.store_root())
 
 
+def _installed_location(package: Package, lockfile: Lockfile, target: str, *, verify: bool = False):
+    """Select matching shipped bytes first, then an added pinned store entry."""
+    roots = dict.fromkeys([paths.store_root(), paths.writable_store_root()])
+    for root in roots:
+        store = Store(root)
+        facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
+        if facts.installed(package.name, lockfile.version(package.name), root,
+                           _identity(lockfile, package.name, target)):
+            if not verify or _entry_verified(package, facts.get(package.name), store, target):
+                return facts, store
+    return None
+
+
 def _identity(lockfile: Lockfile, name: str, target: str):
     """The identity the lock currently pins for `name` on `target`:
     (target, tuple(artifact sha256s)) — or None when the lock pins no
@@ -79,18 +92,12 @@ def lazy_installs_allowed() -> bool:
 
 def enabled_extras() -> list[str]:
     """The venv extras recorded in the installed state."""
-    return list((_facts().get("venv") or {}).get("extras", []))
+    fact = Facts(paths.runtime_facts_path()).get("venv") or _facts().get("venv") or {}
+    return list(fact.get("extras", []))
 
 
 def is_installed(name: str) -> bool:
-    lockfile = _lockfile()
-    facts = _facts()
-    return facts.installed(
-        name,
-        lockfile.version(name),
-        _store().root,
-        _identity(lockfile, name, current_target()),
-    )
+    return _installed_location(get_package(name), _lockfile(), current_target()) is not None
 
 
 def sealed() -> bool:
@@ -101,12 +108,6 @@ def sealed() -> bool:
 
 
 def _refuse_lazy(name: str, what: str) -> InstallError:
-    if sealed():
-        return InstallError(
-            name,
-            f"this install is sealed and does not ship: {what}",
-            "the bundle bakes its entire tree at build time; rebuild the bundle",
-        )
     return InstallError(
         name,
         f"not installed and lazy installs are disabled: {what}",
@@ -115,18 +116,20 @@ def _refuse_lazy(name: str, what: str) -> InstallError:
 
 
 def _remove_entry(store: Store, entry_name: str) -> None:
-    """Remove a published store entry before re-realizing it. NOT
-    fire-and-forget: a silent failure here would leave the stale entry in
-    place and publish() would then keep it (a concurrent-winner guard),
-    re-recording facts over bytes the new lock never produced. Defender /
-    indexer handles on Windows make removal transiently fail, so retry —
-    then fail loudly."""
+    """Remove a replaced or failed entry, retrying transient Windows holds.
+
+    Corruption may leave a file where the directory belonged. Failure
+    must propagate so recovery never claims to have removed surviving bytes.
+    """
     import time
 
     entry = store.entry(entry_name)
     for attempt in range(5):
         try:
-            shutil.rmtree(entry)
+            if entry.is_symlink() or not entry.is_dir():
+                entry.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(entry)
             return
         except FileNotFoundError:
             return
@@ -134,6 +137,33 @@ def _remove_entry(store: Store, entry_name: str) -> None:
             if attempt == 4:
                 raise
             time.sleep(0.2 * (attempt + 1))
+
+
+def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
+    """Explicit installs re-check realized bytes; startup keeps its cheap facts check."""
+    entry = store.entry(fact["entry"])
+    try:
+        return not package.verify(entry, target) and fact.get("digest") == tree_digest(entry)
+    except OSError:
+        return False
+
+
+def _restore_previous_entry(store: Store, entry, previous) -> None:
+    """Keep both versions recoverable until the restore rename succeeds."""
+    import uuid
+
+    displaced = store.entry(f".displaced-{uuid.uuid4().hex}")
+    had_entry = entry.exists() or entry.is_symlink()
+    if had_entry:
+        entry.rename(displaced)
+    try:
+        previous.rename(entry)
+    except BaseException:
+        if had_entry:
+            displaced.rename(entry)
+        raise
+    if had_entry:
+        _remove_entry(store, displaced.name)
 
 
 def _install(
@@ -159,55 +189,73 @@ def _install(
 
     with store.install_lock():
         facts.reload()
+        entry = store.entry(entry_name)
+        previous_entry = store.entry(f".previous-{entry_name}")
+        if previous_entry.exists():
+            # An interrupted replacement keeps its old bytes outside scratch.
+            # Facts commit last; only a verified committed replacement wins.
+            fact = facts.get(package.name)
+            if fact and fact.get("entry") == entry_name and _entry_verified(package, fact, store, target):
+                _remove_entry(store, previous_entry.name)
+            else:
+                _restore_previous_entry(store, entry, previous_entry)
         if facts.installed(
             package.name, version, store.root, _identity(lockfile, package.name, target)
-        ):
+        ) and _entry_verified(package, facts.get(package.name), store, target):
             return
-        entry = store.entry(entry_name)
-        _cond = store.published(entry_name) and package.verify(entry, target) == ""
-        if _cond:
-            _remove_entry(store, entry_name)
-        if not store.published(entry_name):
-            if not artifacts:
-                raise InstallError(
-                    package.name,
-                    f"no artifact for {target} in the lockfile",
-                    "run `hermes pm lock --bump` for this package",
-                )
-            with store.scratch() as scratch:
-                staged = scratch / "tree"
+        if not artifacts:
+            raise InstallError(
+                package.name,
+                f"no artifact for {target} in the lockfile",
+                "run `hermes pm lock --bump` for this package",
+            )
+        with store.scratch() as scratch:
+            staged = scratch / "tree"
+            previous = facts.get(package.name)
+            try:
+                for index, artifact in enumerate(artifacts):
+                    label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
+                    archive = store.fetch(
+                        artifact["url"], artifact["sha256"], scratch,
+                        progress=_artifact_progress(progress, index, len(artifacts)),
+                    )
+                    if progress is not None:
+                        progress("unpack", 0, 0, label)
+                    if index == 0:
+                        package.unpack(archive, staged, target)
+                        continue
+                    # unpack() empties its destination; merge additional
+                    # archives only after extracting them separately.
+                    extra = scratch / f"extra-{index}"
+                    package.unpack(archive, extra, target)
+                    merge_tree(extra, staged)
+                package.stage(store, staged, version, target)
+                reason = package.verify(staged, target)
+                if reason:
+                    raise InstallError(package.name, f"staged entry failed verification: {reason}")
+                if entry.exists():
+                    entry.rename(previous_entry)
                 try:
-                    for index, artifact in enumerate(artifacts):
-                        label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
-                        archive = store.fetch(
-                            artifact["url"], artifact["sha256"], scratch,
-                            progress=_artifact_progress(
-                                progress, index, len(artifacts)),
-                        )
-                        if progress is not None:
-                            progress("unpack", 0, 0, label)
-                        if index == 0:
-                            package.unpack(archive, staged, target)
-                            continue
-                        # unpack() empties its destination by contract, so
-                        # a second archive must be unpacked apart and moved
-                        # in — extracting over `staged` would delete the
-                        # first archive's files.
-                        extra = scratch / f"extra-{index}"
-                        package.unpack(archive, extra, target)
-                        merge_tree(extra, staged)
-                    package.stage(store, staged, version, target)
                     store.publish(staged, entry_name)
-                except InstallError:
+                    reason = package.verify(entry, target)
+                    if reason:
+                        raise InstallError(package.name, f"published entry failed verification: {reason}")
+                    facts.record(
+                        package.name, version, entry_name, package.env(entry, target), store.root,
+                        target=target, artifacts=[a["sha256"] for a in artifacts],
+                        digest=tree_digest(entry),
+                    )
+                except BaseException:
+                    if previous_entry.exists():
+                        _restore_previous_entry(store, entry, previous_entry)
                     raise
-                except Exception as e:
-                    raise InstallError(package.name, f"install failed: {e}") from e
+                if previous_entry.exists():
+                    _remove_entry(store, previous_entry.name)
+            except InstallError:
+                raise
+            except Exception as e:
+                raise InstallError(package.name, f"install failed: {e}") from e
 
-        reason = package.verify(entry, target)
-        if reason:
-            raise InstallError(package.name, f"published entry failed verification: {reason}")
-
-        previous = facts.get(package.name)
         if previous and "entry" in previous:
             # Work item 6: replacing an ESTABLISHED fact is a repair —
             # log it, no transaction system, no receipt file.
@@ -219,17 +267,6 @@ def _install(
                 else version
             )
             LOG.info("repair: %s re-realized %s -> %s", package.name, old, new)
-        env = package.env(entry, target)
-        facts.record(
-            package.name,
-            version,
-            entry_name,
-            env,
-            store.root,
-            target=target,
-            artifacts=[a["sha256"] for a in artifacts],
-            digest=tree_digest(entry),
-        )
         if previous and previous.get("version") != version:
             package.migrate(previous["version"], version)
 
@@ -253,36 +290,22 @@ def ensure(
         return Runner(name, compose_env([], base=base_env))
 
     lockfile = _lockfile()
-    facts = _facts()
-    store = _store()
     target = current_target()
-
     chain = walk([name])
-    missing = [
-        p
-        for p in chain
-        if not facts.installed(
-            p.name, lockfile.version(p.name), store.root, _identity(lockfile, p.name, target)
-        )
-    ]
-
-    if missing and (sealed() or (not explicit and not lazy_installs_allowed())):
+    missing = [p for p in chain if _installed_location(p, lockfile, target, verify=explicit) is None]
+    if missing and not explicit and not lazy_installs_allowed():
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))
-
-    for package in missing:
-        _install(package, lockfile, facts, store, target, progress=progress)
     if missing:
-        facts.reload()
-
-    diffs = [facts.env_for(p.name, store.root) for p in chain]
-    return Runner(name, compose_env(diffs, base=base_env))
+        store = Store(paths.writable_store_root())
+        facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
+        for package in missing:
+            _install(package, lockfile, facts, store, target, progress=progress)
+    return Runner(name, env_for(name, base_env=base_env))
 
 
 def env_for(*names: str, base_env: Optional[dict] = None) -> dict[str, str]:
     """Composed env of already-installed packages only. Never installs,
     never raises on missing packages — they contribute nothing."""
-    facts = _facts()
-    store = _store()
     lockfile = _lockfile()
     target = current_target()
     diffs: list[dict] = []
@@ -292,17 +315,24 @@ def env_for(*names: str, base_env: Optional[dict] = None) -> dict[str, str]:
         except KeyError:
             continue
         for package in chain:
-            if facts.installed(
-                package.name,
-                lockfile.version(package.name),
-                store.root,
-                _identity(lockfile, package.name, target),
-            ):
+            location = _installed_location(package, lockfile, target)
+            if location:
+                facts, store = location
                 diffs.append(facts.env_for(package.name, store.root))
     return compose_env(diffs, base=base_env)
 
 
-def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False) -> None:
+def _runtime_state_matches(fact: dict, stamp: str) -> bool:
+    if fact.get("stamp") != stamp:
+        return False
+    environment = fact.get("environment")
+    if environment is None:
+        return True  # shipped/pre-generation state
+    from pathlib import Path
+    return isinstance(environment, str) and (Path(environment) / "pyvenv.cfg").is_file()
+
+
+def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plugin_dirs=None, before_publish=None) -> None:
     """Make the venv match uv.lock + the enabled extras. Extras union into
     the installed state (one ledger); no-op when the stamp already matches.
     ``explicit`` marks a deliberate install command (`hermes pm install`,
@@ -313,36 +343,76 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False) -> 
     security.allow_lazy_installs is false AND the bundle's
     enabled-features.json exists, the feature list is FROZEN to that file
     — requested extras outside it are refused, and plugin members are
-    never installed (the bundle IS the install)."""
+    never installed (the bundle IS the install).
+
+    Receipt contract: EVERY outcome writes a receipt. ``begin`` fires
+    BEFORE the frozen/lazy refusals (a refusal is a recorded ``failed``
+    outcome, not a silent raise); finalize runs in FINALLY — no-op syncs
+    ("ok" with ``venv_rebuild`` false) and refusals ("failed") both get
+    a receipt. ``before_publish`` is the concrete selection hook: called
+    while the install lock is held, AFTER the environment staged and
+    BEFORE the facts write — it returns an undo callable that runs if
+    the facts write then fails, so a selection committed here is rolled
+    back atomically instead of drifting from the surviving environment.
+    No module globals, no callback framework — one hook, one consumer."""
+    from pm import receipt
     from pm.features import read_features
 
-    frozen = read_features() if not lazy_installs_allowed() else None
-    if frozen is not None and extras:
-        outside = sorted(set(extras) - set(frozen))
-        if outside:
-            raise _refuse_lazy(
-                "venv",
-                f"extras {outside} are outside this bundle's frozen feature "
-                "set (security.allow_lazy_installs is false)",
-            )
-    package = get_package("venv")
-    facts = _facts()
-    fact = facts.get("venv") or {}
-    enabled = sorted(set(fact.get("extras", [])) | set(extras or []))
-    stamp = package.expected_stamp(enabled)
-    if fact.get("stamp") == stamp:
-        return
-    if sealed() or (not explicit and not lazy_installs_allowed()):
-        raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
-    with _store().install_lock():
-        facts.reload()
-        fact = facts.get("venv") or {}
+    token = receipt.begin("sync")
+    outcome = "failed"
+    try:
+        frozen = read_features() if not lazy_installs_allowed() else None
+        if frozen is not None and extras:
+            outside = sorted(set(extras) - set(frozen))
+            if outside:
+                raise _refuse_lazy(
+                    "venv",
+                    f"extras {outside} are outside this bundle's frozen feature "
+                    "set (security.allow_lazy_installs is false)",
+                )
+
+        package = get_package("venv")
+        inputs = {} if plugin_dirs is None else {"plugin_dirs": plugin_dirs}
+        facts = Facts(paths.runtime_facts_path())
+        baseline = _facts().get("venv") or {}
+        fact = facts.get("venv") or baseline
         enabled = sorted(set(fact.get("extras", [])) | set(extras or []))
-        stamp = package.expected_stamp(enabled)
-        if fact.get("stamp") == stamp:
+        stamp = package.expected_stamp(enabled, **inputs)
+        if before_publish is None and _runtime_state_matches(fact, stamp):
+            receipt.record_venv_rebuild(False, "already in sync")
+            outcome = "ok"
             return
-        package.apply(enabled)
-        facts.record_state("venv", stamp, enabled)
+        if not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
+            raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
+        with Store(facts.path.parent).install_lock():
+            facts.reload()
+            fact = facts.get("venv") or baseline
+            enabled = sorted(set(fact.get("extras", [])) | set(extras or []))
+            stamp = package.expected_stamp(enabled, **inputs)
+            if _runtime_state_matches(fact, stamp):
+                if before_publish is not None:
+                    before_publish()
+                receipt.record_venv_rebuild(False, "already in sync")
+                outcome = "ok"
+                return
+            receipt.record_feature_list(enabled)
+            undo = None
+            try:
+                result = package.apply(enabled, **inputs) or {}
+                if before_publish is not None:
+                    undo = before_publish()
+                facts.record_state("venv", stamp, enabled, **result)
+                receipt.record_venv_rebuild(True)
+            except BaseException:
+                if undo is not None:
+                    try:
+                        undo()
+                    except Exception:
+                        LOG.exception("pm sync: publish undo failed; config may drift")
+                raise
+        outcome = "ok"
+    finally:
+        receipt.finalize(outcome, 0 if outcome == "ok" else 1, token=token)
 
 
 def adopt() -> bool:
@@ -362,7 +432,8 @@ def adopt() -> bool:
     if not paths.facts_path().is_file():
         return False
 
-    marker = store.root.parent / ".adopted"
+    from hermes_cli.runtime_paths import install_state_dir
+    marker = install_state_dir(paths.repo_root()) / ".adopted"
     if marker.is_file():
         return False
 
@@ -404,23 +475,11 @@ def adopt() -> bool:
                 return False
 
     try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("", encoding="utf-8")
     except OSError:
-        pass
-
-    # Bootstrap the mutable venv (sealed installs): lazy-off copies the
-    # shipped venv out as the seed; lazy-on builds fresh from the shipped
-    # uv cache on first sync. Failure is reported, never fatal — a cold
-    # sync still converges.
-    try:
-        venv_package = get_package("venv")
-    except KeyError:
-        venv_package = None
-    seed = getattr(venv_package, "seed_mutable_venv", None) if venv_package else None
-    if seed is not None:
-        reason = seed()
-        if reason:
-            LOG.info("pm adopt: mutable venv seed skipped: %s", reason)
+        LOG.warning("could not record payload verification", exc_info=True)
+        return False
 
     return True
 
@@ -432,7 +491,7 @@ def check() -> list[str]:
     (no installed-state file) reports nothing — pm only vouches for what
     it installed. Lockfile packages this build doesn't know (version skew
     during a partial update) are skipped, not fatal."""
-    if not paths.facts_path().is_file():
+    if not paths.facts_path().is_file() and not paths.runtime_facts_path().is_file():
         return []
 
     problems: list[str] = []
@@ -449,18 +508,16 @@ def check() -> list[str]:
             continue
         if package.missing_reason(target) is not None:
             continue
-        if not facts.installed(
-            name, lockfile.version(name), store.root, _identity(lockfile, name, target)
-        ):
+        if _installed_location(package, lockfile, target) is None:
             problems.append(f"{name}: not installed or outdated")
     try:
         venv = get_package("venv")
     except KeyError:
         venv = None
-    fact = facts.get("venv")
+    fact = Facts(paths.runtime_facts_path()).get("venv") or facts.get("venv")
     if venv is not None and fact is not None:
         expected = venv.expected_stamp(fact.get("extras", []))
-        if fact.get("stamp") != expected:
+        if not _runtime_state_matches(fact, expected):
             problems.append("venv: out of sync with uv.lock")
     return problems
 
@@ -472,10 +529,6 @@ def _store_path_dirs() -> list[str]:
     though it's not in the root closure. Never installs."""
     import os
 
-    if not paths.facts_path().is_file():
-        return []
-    facts = _facts()
-    store = _store()
     lockfile = _lockfile()
     target = current_target()
     dirs: list[str] = []
@@ -490,10 +543,10 @@ def _store_path_dirs() -> list[str]:
             continue
         if package.missing_reason(target) is not None:
             continue
-        if not facts.installed(
-            name, lockfile.version(name), store.root, _identity(lockfile, name, target)
-        ):
+        location = _installed_location(package, lockfile, target)
+        if location is None:
             continue
+        facts, store = location
         env = facts.env_for(name, store.root)
         path_dirs = env.get("PATH") or []
         if isinstance(path_dirs, str):
@@ -551,22 +604,21 @@ def uv(*, venv=None, realize: bool = True):
         env.pop("UV_NO_CONFIG", None)
 
     lockfile = _lockfile()
-    facts = _facts()
-    store = _store()
     package = get_package("uv")
-    if not facts.installed(
-        "uv", lockfile.version("uv"), store.root, _identity(lockfile, "uv", current_target())
-    ):
+    location = _installed_location(package, lockfile, current_target())
+    if location is None:
         if not realize or not lazy_installs_allowed():
             return None, env
+        store = Store(paths.writable_store_root())
+        facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
         try:
             _install(package, lockfile, facts, store, current_target())
             facts.reload()
         except Exception:
-            import logging
-
-            logging.getLogger(__name__).debug("pm.uv: install failed", exc_info=True)
+            LOG.debug("pm.uv: install failed", exc_info=True)
             return None, env
+    else:
+        facts, store = location
     fact = facts.get("uv")
     if fact is None:
         return None, env

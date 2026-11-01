@@ -171,6 +171,18 @@ def ensure_import(extra: str) -> None:
     from pm.ensure import sync_venv
 
     sync_venv([extra])
+    # Activation is a process-boot operation. Never mix a newly resolved
+    # dependency tree with libraries already imported by this process.
+    from hermes_cli.runtime_paths import selected_venv, site_packages
+    from pm.paths import repo_root, runtime_facts_path
+    import sys
+    from pathlib import Path
+
+    if runtime_facts_path().is_file():
+        selected = site_packages(selected_venv(repo_root())).resolve()
+        if selected not in {Path(entry).resolve() for entry in sys.path}:
+            from pm.package import InstallError
+            raise InstallError("venv", f"{extra} installed; restart Hermes to activate the new dependency environment")
 
 
 def ensure_and_bind(extra, importer, target_globals) -> bool:

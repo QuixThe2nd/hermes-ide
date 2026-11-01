@@ -109,8 +109,10 @@ def _bundle_package_names() -> list[str]:
 
 
 def cmd_install(args) -> int:
+    # Source-install launchers require the store interpreter, even though
+    # Python remains optional when provisioning individual tools.
     names = args.names or [
-        n for n in _lockfile().names() if not get_package(n).optional
+        n for n in _lockfile().names() if not get_package(n).optional or n == "python"
     ]
     failed = _install_names(names)
     if not args.names:
@@ -139,7 +141,7 @@ def cmd_env(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    from pm.ensure import _identity
+    from pm.ensure import _identity, _installed_location
     from pm.store import tree_digest
 
     lockfile = _lockfile()
@@ -153,6 +155,7 @@ def cmd_doctor(args) -> int:
         if reason is not None:
             print(f"- {name}: n/a on {target} ({reason})")
             continue
+        facts, store = _installed_location(package, lockfile, target) or (_facts(), _store())
         fact = facts.get(name)
         soft = package.optional or package.internal
         identity = _identity(lockfile, name, target)
@@ -564,7 +567,6 @@ def cmd_bundle(args) -> int:
     print(f"✓ repo ({ref})")
 
     os.environ["HERMES_RUNTIME_DIR"] = str(store_dir)
-    paths._stamp.cache_clear()
 
     names = _bundle_package_names()
     failed = _install_names(

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 from pathlib import Path
@@ -235,25 +236,33 @@ def _check_s6_supervision(issues: list[str]) -> None:
 
 
 def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
-    """Report where TLS trust comes from.
+    """Verify the actual TLS policy is usable before the first HTTPS call tracebacks.
 
-    Trust is the OS store via truststore, so there is no bundle to repair: a machine whose certificate
-    store is broken is broken for every app on it, and fixing that is the OS's job, not ours.
-    ``should_fix`` is accepted for signature parity with the other checks.
+    The policy is ``agent.ssl_verify``: the platform verifier (truststore) is
+    installed process-wide and every stack builds SSL contexts through it. There
+    is no certifi bundle to validate anymore; the check is that the platform
+    store is in force and a default context constructs.
     """
     try:
         from agent.ssl_verify import install_truststore
     except Exception as e:
-        return check_warn("SSL certificate check skipped", str(e))
+        return check_warn("TLS trust check skipped", str(e))
     if issues is None:
         issues = []
-    if install_truststore():
-        return check_ok("TLS trust: operating system certificate store")
-    return _fail_and_issue(
-        "TLS trust: OpenSSL defaults (truststore unavailable)",
-        "Certificates trusted only by the OS store — a corporate root, for instance — will not verify.",
-        f"truststore could not load; reinstall it: {sys.executable} -m pip install --force-reinstall truststore",
-        issues)
+    platform_store = install_truststore()
+    if not platform_store:
+        check_warn("TLS platform trust store unavailable",
+                   "OpenSSL default trust paths are in use; certificates trusted only by the OS store (a corporate root) will not verify")
+    try:
+        ssl.create_default_context()
+    except Exception as e:
+        _fail_and_issue("TLS default SSL context cannot be constructed", str(e),
+                        "Recreate the venv or reinstall Hermes — the TLS stack is broken.", issues)
+        return
+    if platform_store:
+        check_ok("TLS platform trust store configured; default SSL context available")
+    else:
+        check_ok("TLS default SSL context available (OpenSSL trust paths)")
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
@@ -400,6 +409,28 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
             check_warn(f"{h.package}=={h.installed_version} still installed (advisory {h.advisory.id} acknowledged)")
 
 
+def _staged_venv_dir() -> "Path | None":
+    """pm's provisioned runtime venv, or None when nothing is staged.
+
+    ``pm.packages.Venv().venv_dir()`` is pm's public authority for where
+    the runtime venv lives (sealed installs: the mutable venv in the
+    writable hermes root, seeded from the payload; dev installs: the repo
+    venv). A resolved path without a venv marker is not a provisioned
+    venv — pm also returns the intended location before first sync, and
+    doctor must not read an empty directory as staged dependencies.
+    """
+    try:
+        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        from pm.packages import Venv
+
+        venv_dir = Venv().venv_dir()
+    except Exception:
+        return None
+    if venv_dir is not None and (Path(venv_dir) / "pyvenv.cfg").is_file():
+        return Path(venv_dir)
+    return None
+
+
 @doctor_check()
 def _check_python_environment(should_fix: bool, f: Finding) -> None:
     """Interpreter, linked SQLite, venv, macOS TCC anchors/FDA/grants, version-file drift."""
@@ -420,7 +451,21 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
         if src:
             check_info(f"SQLite source id: {(src[:48] + '…') if len(src) > 48 else src}")
         _report_database_journal_modes()
-    check_bool(sys.prefix != sys.base_prefix, "Virtual environment active", ("Not in virtual environment", "(recommended)"))
+    # Staged dependencies vs the running interpreter, reported as two
+    # distinct facts. When pm has provisioned the runtime venv, its
+    # resolved location IS the answer ("dependencies staged"); whether
+    # THIS process runs inside THAT venv is a separate comparison of
+    # resolved prefixes (sys.prefix != base_prefix alone would also be
+    # true for an unrelated venv). Only when nothing is staged does the
+    # legacy interpreter probe stand alone.
+    staged = _staged_venv_dir()
+    if staged is not None:
+        running_here = Path(sys.prefix).resolve() == staged.resolve()
+        check_ok(f"Runtime venv staged ({staged})",
+                 "(active in this process)" if running_here else "(this process runs outside it)")
+    else:
+        check_bool(sys.prefix != sys.base_prefix, "Virtual environment active",
+                   ("Not in virtual environment", "(recommended)"))
     # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the mechanism reverted in #95563.
     # Silent on non-macOS.
     check_macos_tcc_anchor(should_fix=should_fix)

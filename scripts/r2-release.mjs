@@ -434,14 +434,27 @@ async function cmdFinalize({ tag, dir }) {
   console.log(`✓ r2: finalized ${tag} → ${channel} feed manifests`)
 }
 
-/** Parse a ListObjectsV2 XML body into { keys: string[], truncated, nextToken }. */
+/** Parse a ListObjectsV2 XML body into { keys, lastModified, truncated, nextToken }. */
 export function parseListXml(xml) {
   const unescape = (s) =>
     s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&')
   const keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map((m) => unescape(m[1]))
+  const lastModified = {}
+  for (const m of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+    const key = m[1].match(/<Key>([^<]+)<\/Key>/)
+    const lm = m[1].match(/<LastModified>([^<]+)<\/LastModified>/)
+    if (key && lm) lastModified[unescape(key[1])] = Date.parse(lm[1])
+  }
   const truncated = /<IsTruncated>true<\/IsTruncated>/.test(xml)
   const tokenMatch = xml.match(/<NextContinuationToken>([^<]+)<\/NextContinuationToken>/)
-  return { keys, truncated, nextToken: tokenMatch ? unescape(tokenMatch[1]) : null }
+  return { keys, lastModified, truncated, nextToken: tokenMatch ? unescape(tokenMatch[1]) : null }
+}
+
+/** GET one object's body, or null when it does not exist / cannot be read. */
+async function getObject(creds, base, bucket, key, now) {
+  const url = `${base}/${bucket}/${encodeKeyPath(key)}`
+  const { res, text } = await signedFetch('GET', url, { bodyHash: EMPTY_SHA, creds, now })
+  return res.ok ? text : null
 }
 
 async function listObjects(prefix = '') {
@@ -453,6 +466,7 @@ async function listObjects(prefix = '') {
   const base = s3Endpoint(accountId)
 
   const keys = []
+  const lastModified = {}
   let token = null
   for (;;) {
     const params = { 'list-type': '2', 'max-keys': '1000' }
@@ -465,14 +479,16 @@ async function listObjects(prefix = '') {
     if (!res.ok) process.exit(1)
     const parsed = parseListXml(text)
     keys.push(...parsed.keys)
+    Object.assign(lastModified, parsed.lastModified)
     if (!parsed.truncated || !parsed.nextToken) break
     token = parsed.nextToken
   }
-  return keys
+  return { keys, lastModified }
 }
 
 async function cmdList({ prefix }) {
-  for (const key of await listObjects(prefix)) console.log(key)
+  const { keys } = await listObjects(prefix)
+  for (const key of keys) console.log(key)
 }
 
 /** Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`. */
@@ -481,6 +497,94 @@ export function canaryDoomedKeys(keys, cutoff) {
     const m = key.match(/-canary\.(\d{8})/)
     return m && m[1] < cutoff
   })
+}
+
+/** Feed publish order: the immutable .msixbundle FIRST, the pointer LAST. */
+export function publishFeedUploads(plan, upload) {
+  upload(`${plan.channelDir}/${plan.bundleFilename}`, plan.bundleFile)
+  upload(`${plan.channelDir}/${plan.appinstallerName}`, plan.appinstallerFile)
+}
+
+/**
+ * Bundle basenames a .appinstaller manifest still references, parsed from the
+ * KNOWN generated shape (MainPackage/MainBundle Uri attributes only — never
+ * any Uri=" in the document). An unrecognized/empty manifest returns [], and
+ * the pruner treats [] as "block this directory" (fail closed).
+ */
+function feedBundleUris(appinstallerXml) {
+  const xml = String(appinstallerXml || '').trim()
+  // Only our complete generated shape is eligible for destructive retention.
+  if (!/^(?:<\?xml[^?]*\?>\s*)?<AppInstaller\b[^>]*>[\s\S]*<\/AppInstaller>$/.test(xml)) return []
+  const elements = [...xml.matchAll(/<(?:MainPackage|MainBundle)\b[^>]*\/>/g)]
+  if (elements.length !== 1) return []
+  const uri = elements[0][0].match(/\bUri="([^"]+)"/)
+  return uri && /\.(?:msixbundle|msix)$/i.test(uri[1]) ? [uri[1]] : []
+}
+
+export function referencedFeedBundleFilenames(appinstallerXml) {
+  return feedBundleUris(appinstallerXml).map(uri => uri.split('/').pop())
+}
+
+/**
+ * Full bucket keys a manifest references: each referenced bundle inside its
+ * feed dir, plus any MainPackage/MainBundle Uri carrying an absolute path
+ * (e.g. /releases/tag/<tag>/… — tag-archive targets), protected by exact key.
+ */
+export function feedReferencedKeys(dir, appinstallerXml) {
+  const keys = []
+  for (const uri of feedBundleUris(appinstallerXml)) {
+    keys.push(`${dir}/${uri.split('/').pop()}`)
+    try {
+      const p = new URL(uri, 'https://placeholder.invalid').pathname
+      if (p.startsWith('/releases/')) keys.push(decodeURIComponent(p.slice(1)))
+    } catch { /* relative Uri — already covered by the basename key */ }
+  }
+  return keys
+}
+
+/**
+ * Canary feed-dir retention: the `-canary.YYYYMMDD` matcher cannot see feed
+ * bundles (numeric 4-part MSIX version names). A bundle is doomed when its
+ * feed dir's manifests were ALL readable AND it is referenced by none of
+ * them AND its actual list LastModified predates cutoffMs. Fail-closed on
+ * every unknown: unreadable/unrecognized manifest (zero references) blocks
+ * the whole dir; stable dirs and unknown dirs are never pruned; a missing
+ * LastModified keeps the object.
+ *
+ * @param {string[]} keys all bucket keys
+ * @param {Record<string, (string|null)[]>} feedXmlByDir dir → manifest texts (null = unreadable)
+ * @param {Record<string, number>} lastModifiedMs key → epoch ms from listObjects
+ * @param {number} cutoffMs
+ * @returns {string[]} doomed feed-dir bundle keys
+ */
+export function staleFeedBundleKeys(keys, feedXmlByDir, lastModifiedMs = {}, cutoffMs = -Infinity) {
+  const doomed = []
+  for (const [dir, manifests] of Object.entries(feedXmlByDir || {})) {
+    if (!/\/canary$/.test(dir.replace(/\/+$/, ''))) continue // canaries only
+    const referenced = new Set()
+    let blocked = false
+    for (const xml of manifests || []) {
+      const names = referencedFeedBundleFilenames(xml)
+      if (names.length === 0) {
+        // Unreadable or unrecognized manifest in this dir → prune nothing here.
+        blocked = true
+        console.warn(`::warning::feed manifest unreadable/unrecognized, skipping feed retention for ${dir}/`)
+        break
+      }
+      for (const name of names) referenced.add(name)
+    }
+    if (blocked || referenced.size === 0) continue
+    const prefix = `${dir.replace(/\/+$/, '')}/`
+    for (const key of keys) {
+      if (!key.startsWith(prefix)) continue
+      if (!/\.(?:msixbundle|msix)$/i.test(key)) continue // pointers + metadata stay
+      if (referenced.has(key.slice(prefix.length))) continue
+      const lm = lastModifiedMs[key]
+      if (!Number.isFinite(lm) || lm >= cutoffMs) continue // keep-days grace (fail-closed)
+      doomed.push(key)
+    }
+  }
+  return doomed
 }
 
 async function cmdPrune({ keepDays, dryRun }) {
@@ -494,13 +598,35 @@ async function cmdPrune({ keepDays, dryRun }) {
   // Cutoff dated by the canary suffix in the KEY (like release.py's
   // --prune-canaries: a re-uploaded old tag never resets its clock).
   const cutoff = new Date(Date.now() - keepDays * 86400_000).toISOString().slice(0, 10).replace(/-/g, '')
-  const keys = await listObjects()
-  const doomed = canaryDoomedKeys(keys, cutoff)
+  const cutoffMs = Date.now() - keepDays * 86400_000
+  const { keys, lastModified } = await listObjects()
+  const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+
+  // Read EVERY .appinstaller per feed dir (union of references protects the
+  // dir; any unreadable/unrecognized one blocks retention for that dir —
+  // handled inside staleFeedBundleKeys, null = unreadable).
+  const feedXmlByDir = {}
+  const protectedKeys = new Set()
+  for (const key of keys.filter((k) => k.endsWith('.appinstaller'))) {
+    const dir = key.slice(0, key.lastIndexOf('/'))
+    const xml = await getObject(creds, base, bucket, key, now)
+    if (feedBundleUris(xml).length === 0) {
+      throw new Error(`Cannot establish live references from ${key}; refusing to prune`)
+    }
+    ;(feedXmlByDir[dir] ??= []).push(xml)
+    for (const k of feedReferencedKeys(dir, xml)) protectedKeys.add(k)
+  }
+
+  const doomed = [
+    ...canaryDoomedKeys(keys, cutoff),
+    ...staleFeedBundleKeys(keys, feedXmlByDir, lastModified, cutoffMs),
+    // Live referenced objects (incl. tag-archive targets) are never deleted.
+  ].filter((key) => !protectedKeys.has(key))
+
   if (doomed.length === 0) {
     console.log(`✓ r2: no canary objects older than ${keepDays} days`)
     return
   }
-  const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
   for (const key of doomed.sort()) {
     if (dryRun) {
       console.log(`(dry-run) would delete r2:${key}`)
@@ -558,7 +684,8 @@ export async function main(argv = process.argv.slice(2)) {
   } else if (cmd === 'prune-canaries') {
     const keepDays = Number(args['keep-days'])
     if (!Number.isFinite(keepDays) || keepDays <= 0) usage()
-    await cmdPrune({ keepDays, dryRun: Boolean(args.dryRun) })
+    // '--dry-run' parses to args['dry-run'] (flag.slice(2) keeps the dash).
+    await cmdPrune({ keepDays, dryRun: Boolean(args['dry-run']) })
   } else {
     usage()
   }

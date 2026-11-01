@@ -65,7 +65,7 @@ def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> Non
 def _resolve_modal_image(image_spec: Any) -> Any:
     """Convert registry references or snapshot ids into Modal image objects. Registry images
     get pip repaired (ensurepip) before Modal's bootstrap; ubuntu/debian also get python3."""
-    ensure_lazy_dep("terminal.modal")
+    ensure_lazy_dep("modal")
     import modal as _modal
 
     if not isinstance(image_spec, str):

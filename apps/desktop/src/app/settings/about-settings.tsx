@@ -15,7 +15,6 @@ import { UninstallSection } from './uninstall-section'
 export function AboutSettings() {
   const { t } = useI18n()
   const u = t.updates
-  const a = t.settings.about
   const version = useStore($desktopVersion)
   const connection = useStore($connection)
   const remote = connection?.mode === 'remote'
@@ -48,8 +47,8 @@ export function AboutSettings() {
                   already reports the runtime as current. Upstream's VersionHero
                   owns the bundleOutOfSync case, so only the fork's
                   bundleSwapPending branch is rendered here. */}
-              <p className="font-medium">{a.bundleSwapPending}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{a.bundleSwapPendingDesc}</p>
+              <p className="font-medium">{u.bundleSwapPending}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{u.bundleSwapPendingDesc}</p>
               <Button
                 className="mt-2"
                 onClick={() => void window.hermesDesktop?.relaunchApp?.()}
@@ -57,7 +56,7 @@ export function AboutSettings() {
                 variant="textStrong"
               >
                 <RefreshCw className="size-3" />
-                {a.bundleSwapPendingAction}
+                {u.bundleSwapPendingAction}
               </Button>
             </div>
           </div>

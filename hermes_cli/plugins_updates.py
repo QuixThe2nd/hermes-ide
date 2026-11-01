@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,7 @@ from hermes_cli.plugins_provenance import (
 
 _FETCH_TIMEOUT = 10.0
 _MAX_FEED_BYTES = 1 * 1024 * 1024
+_FULL_GIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 
 
 @dataclass
@@ -135,9 +137,39 @@ def check_provenanced(
             return result
         result.latest = feed.get("version")
         result.min_hermes = feed.get("min_hermes")
-        result.update_available = (
-            result.latest is not None and result.latest != result.current
-        )
+        # Like-for-like identity only (audit C17): a feed that ships a full
+        # git SHA compares SHA vs recorded revision; otherwise the feed's
+        # semantic version compares against the installed manifest's
+        # version. A SHA is never compared to a semantic version, and an
+        # uncomparable pair reads as unknown — not as an update.
+        feed_git = (feed.get("artifacts") or {}).get("git")
+        if feed_git and _FULL_GIT_SHA_RE.fullmatch(feed_git):
+            if not result.current or not _FULL_GIT_SHA_RE.fullmatch(
+                str(result.current)
+            ):
+                result.update_available = None
+                result.reason = (
+                    "feed declares a git sha but the install records no "
+                    "full revision sha to compare"
+                )
+                return result
+            # Case-equivalent hex only after format validation.
+            result.latest = feed_git.lower()
+            result.update_available = feed_git.lower() != result.current.lower()
+            return result
+        installed_version = _read_manifest_field(prov.path, "version")
+        if installed_version is None:
+            result.update_available = None
+            result.reason = (
+                f"feed declares version {result.latest!r} but the installed "
+                "plugin.yaml records no version to compare"
+            )
+            return result
+        # Like-for-like fields: the semantic branch compares version vs
+        # version, so `current` reports the installed version, not the
+        # recorded revision sha.
+        result.current = installed_version
+        result.update_available = result.latest != installed_version
         return result
 
     # ── 3. no update_url anywhere + git row → ls-remote ────────────
@@ -160,7 +192,10 @@ def parse_feed_yml(text: str) -> dict:
     min_hermes, artifacts{git,bundle,bundle_sha256}, notes_url."""
     import yaml
 
-    data = yaml.safe_load(text)
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid feed YAML: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError("feed must be a YAML mapping")
     version = data.get("version")
@@ -173,10 +208,25 @@ def parse_feed_yml(text: str) -> dict:
             out[key] = value.strip()
     artifacts = data.get("artifacts")
     if isinstance(artifacts, dict):
+        git = artifacts.get("git")
+        if git is not None and not isinstance(git, str):
+            raise ValueError("feed artifacts.git must be a string")
         out["artifacts"] = {
             k: v for k, v in artifacts.items() if isinstance(v, str)
         }
     return out
+
+
+def _owning_distribution(ep) -> Optional[str]:
+    """The name of the distribution the entry point belongs to — metadata,
+    never a guess derived from the import module (audit C17)."""
+    dist = getattr(ep, "dist", None)
+    if dist is None:
+        return None
+    try:
+        return dist.metadata.get("Name") or None
+    except Exception:
+        return None
 
 
 def check_pip_plugins(
@@ -193,9 +243,19 @@ def check_pip_plugins(
         )
     results: list[CheckResult] = []
     for ep in entry_points:
-        dist_name = getattr(ep, "dist_name", None) or (
-            ep.value.split(":")[0].split(".")[0] if ep.value else ep.name
-        )
+        dist_name = getattr(ep, "dist_name", None) or _owning_distribution(ep)
+        if not dist_name:
+            results.append(
+                CheckResult(
+                    name=ep.name,
+                    klass="pip",
+                    reason=(
+                        "entry point has no owning distribution metadata; "
+                        "cannot determine what to check"
+                    ),
+                )
+            )
+            continue
         try:
             current = installed_version(dist_name)
         except importlib.metadata.PackageNotFoundError:
@@ -233,17 +293,61 @@ def check_pip_plugins(
     return results
 
 
+def default_fetch(url: str) -> str:
+    """The real feed fetcher: url -> text (raises on failure).
+
+    ONE implementation shared by the manual ``hermes plugins
+    check-updates`` and the cadence tick — callers never re-derive it.
+    """
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=_FETCH_TIMEOUT) as resp:
+        data = resp.read(_MAX_FEED_BYTES)
+    return data.decode("utf-8", errors="replace")
+
+
+def default_ls_remote(source: str) -> str:
+    """The real git probe: source -> HEAD sha (raises on failure).
+
+    Uses the same resolved git executable the CLI path resolves. Lazily
+    imports plugins_cmd (which lazily imports this module) — no import
+    cycle at module load.
+    """
+    from hermes_cli.plugins_cmd import _resolve_git_executable
+
+    proc = subprocess.run(
+        [_resolve_git_executable() or "git", "ls-remote", source, "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or "ls-remote failed").strip()[:200])
+    # 'sha\trefs/heads/...' or empty
+    out = (proc.stdout or "").strip()
+    return out.split("\t")[0] if out else ""
+
+
 def run_checks(
     plugins_dir: Path,
     *,
-    fetch: Callable[[str], str],
-    ls_remote: Callable[[str], str],
+    fetch: Optional[Callable[[str], str]] = None,
+    ls_remote: Optional[Callable[[str], str]] = None,
     include_pip: bool = True,
     pip_installed_version: Callable[[str], str] = importlib.metadata.version,
     pip_pypi_latest: Optional[Callable[[str], Optional[str]]] = None,
     pip_entry_points: Optional[list] = None,
 ) -> list[CheckResult]:
-    """All checks for one plugins dir. NEVER mutates anything."""
+    """All checks for one plugins dir. NEVER mutates anything.
+
+    ``fetch``/``ls_remote`` default to :func:`default_fetch` /
+    :func:`default_ls_remote` — the single shared network implementation
+    the manual command and the cadence tick both ride.
+    """
+    if fetch is None:
+        fetch = default_fetch
+    if ls_remote is None:
+        ls_remote = default_ls_remote
     results = [
         check_provenanced(p, fetch=fetch, ls_remote=ls_remote)
         for p in plugins_provenance(plugins_dir)

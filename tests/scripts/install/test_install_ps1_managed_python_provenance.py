@@ -1,4 +1,7 @@
-"""Behavioral regression for Hermes-managed Python provenance on Windows."""
+"""Installer delegates dependency selection to the pinned PM bootstrap.
+
+Also covers Hermes-managed Python provenance and venv recovery on Windows.
+"""
 
 from __future__ import annotations
 
@@ -267,3 +270,85 @@ def test_venv_failure_fails_stage_and_restores_existing_environment(
     assert old_python.read_text(encoding="ascii") == "previous environment"
     frames = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
     assert frames[-1]["ok"] is False
+
+
+@pytest.mark.parametrize("exit_code", [0, 17])
+def test_dependency_stage_delegates_to_pinned_pm_without_touching_existing_env(
+    tmp_path: Path, exit_code: int
+) -> None:
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("Windows PowerShell is required")
+
+    install_dir = tmp_path / "install"
+    (install_dir / "pm").mkdir(parents=True)
+    (install_dir / "pm" / "lock.json").write_text(
+        json.dumps({"packages": {"python": {"version": "3.12.8+fixture"}}})
+    )
+    (install_dir / "uv.lock").write_text("fixture lock\n")
+    existing = install_dir / "venv" / "sentinel"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("previous generation")
+    venv_python = install_dir / "venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir()
+    compile_fake_uv(powershell, venv_python)
+
+    log = tmp_path / "uv-calls.jsonl"
+    wrapper = tmp_path / "boundary.ps1"
+    wrapper.write_text(
+        r'''
+param([string]$Installer, [string]$InstallDir, [string]$HomeDir, [string]$Log)
+$ErrorActionPreference = 'Stop'
+function uv {
+    ConvertTo-Json -Compress -InputObject @($args) | Add-Content -Encoding UTF8 $Log
+    $global:LASTEXITCODE = [int]$env:PROBE_EXIT
+}
+function Invoke-WebRequest { throw 'network access outside test boundary' }
+& $Installer -Stage dependencies -Json -InstallDir $InstallDir -HermesHome $HomeDir
+''',
+        encoding="utf-8-sig",
+    )
+    run = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(wrapper),
+            "-Installer",
+            str(_INSTALL_PS1),
+            "-InstallDir",
+            str(install_dir),
+            "-HomeDir",
+            str(tmp_path / "home"),
+            "-Log",
+            str(log),
+        ],
+        cwd=tmp_path,
+        env=dict(os.environ, PROBE_EXIT=str(exit_code)),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert (run.returncode == 0) == (exit_code == 0), run.stdout + run.stderr
+    commands = [
+        json.loads(line)
+        for line in log.read_text(encoding="utf-8-sig").splitlines()
+    ]
+    assert commands[0] == [
+        "run",
+        "--no-project",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pm.cli",
+        "install",
+    ]
+    if exit_code:
+        assert len(commands) > 1, "fork fallback tiers should remain available"
+    assert existing.read_text() == "previous generation"

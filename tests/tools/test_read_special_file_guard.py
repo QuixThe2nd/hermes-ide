@@ -50,6 +50,7 @@ class TestSpecialFileKind:
         link.symlink_to(fifo)
         assert "FIFO" in (_special_file_kind(link) or "")
 
+    @pytest.mark.platforms("posix")
     def test_char_device(self):
         if not os.path.exists("/dev/null"):
             pytest.skip("no /dev/null")

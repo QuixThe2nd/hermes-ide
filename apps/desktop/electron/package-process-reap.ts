@@ -1,101 +1,38 @@
-/**
- * package-process-reap.ts
- *
- * Reap every process still running out of our MSIX package root at shutdown.
- *
- * Why this exists. A Desktop-Bridge (Centennial) MSIX package activates inside
- * a Desktop AppX container: Windows creates a Job Object for the package family
- * and converts it to a silo. One live process rooted in the family pins that
- * silo. While it is pinned, EVERY later activation of the family fails at the
- * conversion step:
- *
- *   AppModel-Runtime/Admin
- *   [215] 0x80070020: Cannot create the Desktop AppX container for package
- *         <full name> because an error was encountered converting the job.
- *   [208] 0x80070020: Cannot create the process for package <full name>
- *         because an error was encountered while configuring runtime.
- *         [LaunchProcess]
- *
- * 0x80070020 is ERROR_SHARING_VIOLATION, which Windows surfaces to the user as
- * "The process cannot access the file because it is being used by another
- * process" — a file-lock message for what is really a container-layer failure.
- *
- * Observed live on windows-11-arm: the payload's own bundled-git gpg-agent.exe
- * (under tools/git-<version>/usr/bin/) had daemonized, outlived its package by
- * a week, and pinned the family. Killing that ONE pid turned [215]/[208] into
- * [210] Created / [211] Added on the very next activation, with nothing else
- * changed.
- *
- * Why the platform does not save us. Deployment already asks for the shutdown
- * (ForceApplicationShutdownOption + ForceTargetApplicationShutdownOption) and
- * it still missed the daemon; the old package folder then failed to move with
- * `0x80070005` and Windows logged `[503] The file system entries ... could not
- * be cleaned up after reboot. The package is removed from the purge list.`
- * Once that happens not even a reboot clears it. Our daemon defeated the
- * platform's own mechanism, so the reap is ours to do.
- *
- * Why not a process-TREE kill. `taskkill /T` walks parentage, and a daemon that
- * detaches is by construction no longer in our tree — that is what daemonizing
- * means. Tree scoping is the actual bug. Install-root scoping is what matches
- * the silo: the pin is "a process whose image lives under this package", so
- * that is exactly the predicate to kill on.
- *
- * Why not a gpg-specific kill. `gpgconf --kill all` is scoped by GNUPGHOME, not
- * by install root, so it can reach the user's OWN gpg-agent outside our package
- * — real collateral harm for a case the generic path reap already covers. One
- * mechanism, no per-daemon special cases: any future payload tool that
- * daemonizes is caught with no new code.
- *
- * Scoping. Two roots hold binaries this install owns, and either can hold the
- * straggler:
- *
- *   1. The artifact itself — resources/ on a bundled/MSIX install, which
- *      contains agent-payload (repo + venv + its own tool store).
- *   2. The per-install managed tool store — where pm stages node, git, uv,
- *      ripgrep and friends for a MUTABLE install (an install.ps1 / install.sh
- *      checkout). That is HERMES_RUNTIME_DIR when set, else <hermes root>/tools.
- *      A bundled payload sets HERMES_RUNTIME_DIR at its own store, so the two
- *      roots coincide there and the overlap is harmless.
- *
- * A mutable install has exactly the same daemon problem with none of the MSIX
- * framing: node tooling, a language server, or bundled git's gpg-agent under
- * <hermes root>/tools keeps running and holds an open handle on the very files
- * the next `hermes update` wants to replace. On Windows a running image cannot
- * be overwritten, which is the same 0x80070020 the user reads as "used by
- * another process". Reaping both roots covers both install shapes with one
- * predicate.
- *
- * The roots are deliberately the CURRENT install's, not the package family or
- * every Hermes on the box: once this ships, each shutdown reaps its own
- * processes, so no install leaves a daemon behind. Cleaning up a straggler
- * that a PREVIOUS version already leaked needs a repair path outside the
- * install (the app cannot launch to clean up after itself) and is tracked
- * separately.
- *
- * Live-verified on windows-11-arm at Medium Mandatory Level (admin=False, the
- * integrity level the app actually runs at): all 6 package-rooted processes
- * enumerated, all killed, 0 remaining, 0 with an unreadable path — then the
- * next activation logged [210]/[211] and the app came up clean.
- *
- * Pure module: no electron import, no process globals reached directly, every
- * dependency injected — so the predicate and the ordering are asserted against
- * the real function rather than by grepping main.ts.
+/** Clean up detached package tools without touching shared runtimes.
+ * Package-owned gpg-agent can outlive its parent and pin an MSIX silo,
+ * preventing subsequent activation. A root claim never includes the shared
+ * tool store. Interpreters, launchers, unidentified processes and their
+ * descendants belong to other lifecycle owners and are protected.
  */
 
 /** One running process, reduced to what the reap decision needs. */
 export interface RunningProcess {
   pid: number
   /**
+   * Parent pid (Win32_Process.ParentProcessId), or null when unavailable.
+   * Descendants of a live Hermes runtime process are protected too — see
+   * reapPackageRootedProcesses.
+   */
+  parentPid: number | null
+  /**
    * Absolute path of the process image, or null when it cannot be read.
    * A path we cannot read is never a match — see reapPackageRootedProcesses.
    */
   path: string | null
+  /**
+   * Full command line, or null when it cannot be read. A live Hermes runtime
+   * process is identified by its command line and never reaped — see
+   * protectedRuntimePids. An UNREADABLE command line is conservatively
+   * skipped as well: the cost of missing one pinner is the bug we already
+   * have; killing a process we could not identify is unbounded damage.
+   */
+  commandLine: string | null
 }
 
 export interface ReapPackageRootedProcessesDeps {
   /**
-   * Absolute roots to scope on: the artifact resources dir and/or the managed
-   * tool store. Empty/nullish entries are ignored, and an empty list disables
+   * Absolute roots to scope on: the artifact resources dir (never the shared
+   * tool store). Empty/nullish entries are ignored, and an empty list disables
    * the reap entirely.
    */
   installRoots: ReadonlyArray<string | null | undefined>
@@ -127,15 +64,24 @@ export interface ReapOutcome {
   skipped: boolean
 }
 
+/** Shared interpreters and entry points are not owned by a desktop window.
+ * Do not parse argv to decide which Python flags or launcher forms qualify.
+ * The updater owns their lifecycle; quit only sweeps detached tools.
+ */
+function isSharedRuntime(imagePath: string): boolean {
+  const image = imagePath.replace(/^.*[\\/]/, '').toLowerCase()
+  return /^(?:pythonw?(?:[0-9.]+)?|node|hermes(?:-agent|-acp)?)(?:\.exe|\.cmd)?$/.test(image)
+}
+
 /**
- * Enumerate running processes with their image paths, via PowerShell's
- * Get-Process.
+ * Enumerate running processes with image path, parent pid and command line,
+ * via PowerShell's Win32_Process query (Get-Process does not carry the
+ * command line, and the ownership decision needs it).
  *
- * Live-verified at Medium Mandatory Level (admin=False): all package-rooted
- * processes were enumerated with readable paths and killed, so this needs no
- * elevation and no WMI. `.Path` throws for processes the caller cannot open,
- * which is why each read is guarded and reported as a null path rather than
- * aborting the sweep.
+ * Probed READ-ONLY on windows-11-arm at Medium Mandatory Level (admin=False,
+ * the integrity level the app actually runs at): all processes enumerated
+ * with readable pids/parents and ~45% null ExecutablePath/CommandLine —
+ * each null is reported as such rather than aborting the sweep.
  *
  * Bounded and best effort: this runs on the quit path, so it takes a hard
  * timeout and returns an empty list rather than delaying shutdown.
@@ -145,9 +91,8 @@ export function listWindowsProcesses(
 ): RunningProcess[] {
   const script =
     '$ErrorActionPreference = "SilentlyContinue"; ' +
-    'Get-Process | ForEach-Object { ' +
-    '$p = $null; try { $p = $_.Path } catch { $p = $null }; ' +
-    '"{0}|{1}" -f $_.Id, $p }'
+    'Get-CimInstance Win32_Process | ForEach-Object { ' +
+    '"{0}|{1}|{2}|{3}" -f $_.ProcessId, $_.ParentProcessId, $_.ExecutablePath, $_.CommandLine }'
 
   const stdout = execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
     timeout: 10_000,
@@ -157,20 +102,29 @@ export function listWindowsProcesses(
   const processes: RunningProcess[] = []
 
   for (const line of String(stdout).split(/\r?\n/)) {
-    const separator = line.indexOf('|')
+    const first = line.indexOf('|')
+    const second = first >= 0 ? line.indexOf('|', first + 1) : -1
+    const third = second >= 0 ? line.indexOf('|', second + 1) : -1
 
-    if (separator <= 0) {
+    if (first <= 0 || second < 0 || third < 0) {
       continue
     }
 
-    const pid = Number.parseInt(line.slice(0, separator), 10)
+    const pid = Number.parseInt(line.slice(0, first), 10)
+    const parentPid = Number.parseInt(line.slice(first + 1, second), 10)
 
     if (!Number.isInteger(pid)) {
       continue
     }
 
-    const imagePath = line.slice(separator + 1).trim()
-    processes.push({ pid, path: imagePath === '' ? null : imagePath })
+    const imagePath = line.slice(second + 1, third).trim()
+
+    processes.push({
+      pid,
+      parentPid: Number.isInteger(parentPid) ? parentPid : null,
+      path: imagePath === '' ? null : imagePath,
+      commandLine: line.slice(third + 1)
+    })
   }
 
   return processes
@@ -217,13 +171,63 @@ export function isUnderInstallRoot(
 }
 
 /**
- * Kill every process whose image lives under the install root.
+ * The set of pids the reap must never touch: every shared runtime or unidentified
+ * process plus ALL of its descendants (Win32_Process parentage). The virtualenv
+ * launcher/worker chain — the gateway's python spawning venv shims, workers,
+ * and in-flight tools like git — is exactly how a live runtime's children come
+ * to be rooted in the payload, so parentage, not just the launcher argv, is
+ * the ownership boundary. A stale ParentProcessId that happens to point at a
+ * runtime pid errs on the protected side: conservative by design.
+ */
+export function protectedRuntimePids(running: RunningProcess[]): Set<number> {
+  const children = new Map<number, number[]>()
+
+  for (const entry of running) {
+    if (entry.parentPid == null) {
+      continue
+    }
+
+    const siblings = children.get(entry.parentPid)
+
+    if (siblings) {
+      siblings.push(entry.pid)
+    } else {
+      children.set(entry.parentPid, [entry.pid])
+    }
+  }
+
+  const protectedPids = new Set<number>()
+
+  for (const entry of running) {
+    if (!entry.path || !entry.commandLine?.trim() || isSharedRuntime(entry.path)) {
+      protectedPids.add(entry.pid)
+    }
+  }
+
+  const queue = [...protectedPids]
+
+  while (queue.length > 0) {
+    const parent = queue.pop() as number
+
+    for (const child of children.get(parent) ?? []) {
+      if (!protectedPids.has(child)) {
+        protectedPids.add(child)
+        queue.push(child)
+      }
+    }
+  }
+
+  return protectedPids
+}
+
+/**
+ * Reap package-rooted tools outside the protected runtime trees.
  *
  * Best effort by construction: this runs on the quit path, so a failure to
  * enumerate or to kill is logged and swallowed rather than allowed to hang or
- * crash the shutdown. A process whose path cannot be read is left alone — the
- * cost of missing one pinner is the bug we already have, while killing a
- * process we could not identify is unbounded damage.
+ * crash the shutdown. A process whose path OR command line cannot be read is
+ * left alone — the cost of missing one pinner is the bug we already have,
+ * while killing a process we could not identify is unbounded damage.
  */
 export function reapPackageRootedProcesses(deps: ReapPackageRootedProcessesDeps): ReapOutcome {
   const isWindows = deps.isWindows ?? process.platform === 'win32'
@@ -246,12 +250,24 @@ export function reapPackageRootedProcesses(deps: ReapPackageRootedProcessesDeps)
   }
 
   const excluded = new Set<number>(deps.excludePids ?? [])
+  const runtimeProtected = protectedRuntimePids(running)
   const killed: number[] = []
   const failed: number[] = []
   let matched = 0
 
   for (const candidate of running) {
-    if (!Number.isInteger(candidate.pid) || candidate.pid === deps.selfPid || excluded.has(candidate.pid)) {
+    if (
+      !Number.isInteger(candidate.pid) ||
+      candidate.pid === deps.selfPid ||
+      excluded.has(candidate.pid) ||
+      runtimeProtected.has(candidate.pid)
+    ) {
+      continue
+    }
+
+    // Conservative skip: an unreadable command line cannot prove the process
+    // is not a live Hermes runtime, so it is never a candidate.
+    if (typeof candidate.commandLine !== 'string' || candidate.commandLine.trim() === '') {
       continue
     }
 

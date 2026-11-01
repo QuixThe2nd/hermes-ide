@@ -37,6 +37,21 @@ def _make_hermes_node(hermes_home: Path) -> Path:
 
 
 
+@pytest.mark.parametrize("owned", [False, True])
+def test_node_link_cleanup_respects_resolved_owner(fake_home, monkeypatch, owned):
+    home = fake_home / ".hermes"
+    link = fake_home / ".local" / "bin" / "node"
+    link.write_text("link stand-in", encoding="utf-8")
+    target = home / "node" / "bin" / "node" if owned else fake_home / "other" / "node"
+    monkeypatch.setattr(uninstall, "_node_symlink_candidate_dirs", lambda: [link.parent])
+    # Exercise the owner decision on hosts that cannot create symlinks.
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path == link)
+    monkeypatch.setattr(os, "readlink", lambda path: str(target))
+    removed = uninstall.remove_node_symlinks(home)
+    assert removed == ([link] if owned else [])
+    assert link.exists() is (not owned)
+
+
 @pytest.mark.require_symlinks
 def test_leaves_unrelated_symlinks_untouched(fake_home):
     """A node symlink the user repointed at nvm must survive uninstall."""

@@ -332,30 +332,58 @@ def _command_result(
     }
 
 
-def _install_memory_provider_pip_dependencies(dependencies: List[str]) -> List[Dict[str, Any]]:
+def _install_memory_provider_pip_dependencies(name: str, dependencies: List[str]) -> List[Dict[str, Any]]:
     if not dependencies:
         return []
     missing = [dep for dep in dependencies if not _dependency_importable(dep)]
     if not missing:
         return [_command_result(kind="pip", name=", ".join(dependencies), status="already_installed")]
-    # Route through the lazy-install pipeline rather than pip against
-    # sys.executable: on hosted/immutable images the agent venv is sealed
-    # read-only and installs must go to HERMES_LAZY_INSTALL_TARGET, which
-    # install_specs also activates on sys.path so the recheck sees the packages.
-    name = ", ".join(missing)
+    # Route through pm's venv sync — the ONE install authority (uv.lock owns the
+    # pins; no pip against sys.executable, and tools.lazy_deps is deleted).
+    # Extras come from the existing ``_provider_extras`` owner: the declared
+    # plugin.yaml ``extra:`` — or, for legacy third-party declared python
+    # dependencies, it materializes the specs into a generated pyproject and
+    # admits the provider dir into the workspace union BEFORE the post-config
+    # selection; one sync then carries the deps.
+    target = ", ".join(missing)
+    manifest = _memory_provider_manifest(name)
+    command = "hermes pm install"
     try:
-        from tools.lazy_deps import install_specs
-        outcome = install_specs(missing, timeout=240)
+        import pm
+
+        from hermes_cli.memory_setup import _provider_extras
+        from plugins.memory import find_provider_dir
+
+        plugin_dir = find_provider_dir(name)
+        extras = _provider_extras(name, manifest, plugin_dir=plugin_dir)
+        if extras:
+            pm.sync_venv(extras, explicit=True)
+        elif plugin_dir is not None and any(
+            manifest.get(k) for k in ("pip_dependencies", "python_dependencies")
+        ):
+            # Legacy declared deps with no own extra: admit the provider dir
+            # into the workspace union (materialize is idempotent; it also
+            # covers the python_dependencies key _provider_extras doesn't
+            # read), then one sync carries the deps.
+            from pm.workspace import enabled_member_dirs
+
+            members = enabled_member_dirs()
+            candidate = Path(plugin_dir)
+            pm.sync_venv(explicit=True, plugin_dirs=members + ([candidate] if candidate not in members else []))
+        else:
+            return [_command_result(
+                kind="pip", name=target, status="failed", command=command,
+                error="no declared extra and no plugin directory to materialize declared dependencies from",
+            )]
     except Exception as exc:
-        return [_command_result(kind="pip", name=name, status="failed", error=str(exc))]
-    if outcome.blocked:
-        return [_command_result(kind="pip", name=name, status="failed", command=outcome.command, error=outcome.reason)]
-    return [_command_result(
-        kind="pip", name=name, status="installed" if outcome.ok else "failed", command=outcome.command,
-        completed=subprocess.CompletedProcess(
-            args=outcome.command, returncode=0 if outcome.ok else 1, stdout=outcome.stdout, stderr=outcome.stderr,
-        ),
-    )]
+        return [_command_result(kind="pip", name=target, status="failed", command=command, error=str(exc))]
+    still_missing = [dep for dep in missing if not _dependency_importable(dep)]
+    if still_missing:
+        # The environment is selected at boot: a sync that succeeded outside
+        # this interpreter's sight is NOT immediate import success — report
+        # the truth instead of stamping installed without the deps visible.
+        return [_command_result(kind="pip", name=target, status="restart_required", command=command)]
+    return [_command_result(kind="pip", name=target, status="installed", command=command)]
 
 
 def _run_setup_step(results: list, kind: str, name: str, command: str, status_of, **kwargs) -> Optional[int]:
@@ -399,7 +427,7 @@ def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
     if provider is None and not manifest:
         raise _unknown_provider(name)
     setup = _memory_provider_setup_manifest(name)
-    results = _install_memory_provider_pip_dependencies(setup["pip_dependencies"])
+    results = _install_memory_provider_pip_dependencies(name, setup["pip_dependencies"])
     results.extend(_install_memory_provider_external_dependencies(setup["external_dependencies"]))
     if not results:
         results.append(_command_result(kind="setup", name=name, status="no_declared_steps"))

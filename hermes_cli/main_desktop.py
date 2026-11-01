@@ -1430,7 +1430,8 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     # (e.g. electron-winstaller's select-7z-arch.js) resolve it even when the
     # desktop updater chain lost shell PATH customizations. Wrapping the NixOS
     # env keeps its PYTHON hint while restoring managed Node ahead of PATH.
-    nixos_env = with_hermes_node_path(_nixos_build_env())
+    from pm import env_for
+    nixos_env = env_for("npm", base_env=with_hermes_node_path(_nixos_build_env()))
     install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
     if install_result.returncode == 0:
         return

@@ -107,9 +107,84 @@ def _memory_store_flags(hermes_home: Path) -> tuple:
     return get_builtin_memory_store_flags({"memory": _doctor_memory_config(hermes_home)})
 
 
+def check_legacy_desktop_checkout() -> None:
+    """Report the unused legacy checkout under an embedded desktop install.
+
+    Before the embedded runtime existed, the desktop app installed a git
+    checkout at $HERMES_HOME/hermes-agent. An embedded app never uses it,
+    so it sits on disk (1-2 GB of tree + venv). Doctor only REPORTS the
+    checkout and its size — it never suggests a deletion command, and
+    never deletes anything itself: a pristineness probe cannot prove no
+    other client uses the tree or that every local commit is published,
+    so the review-and-decide step belongs to the user.
+    """
+    from hermes_cli.steward import STEWARD_DESKTOP, sealed_steward
+
+    try:
+        from hermes_cli.main import PROJECT_ROOT
+    except Exception:
+        return
+
+    if sealed_steward(Path(PROJECT_ROOT)) != STEWARD_DESKTOP:
+        return
+
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+
+    checkout = HERMES_HOME / "hermes-agent"
+    if not (checkout / ".git").exists():
+        return
+
+    _section("Legacy Desktop Checkout")
+
+    def _git(*args: str):
+        try:
+            return subprocess.run(
+                ["git", "-C", str(checkout), *args],
+                capture_output=True, text=True, encoding="utf-8", timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    status = _git("status", "--porcelain")
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    stashes = _git("stash", "list")
+
+    # Conservative pristineness: every probe must succeed AND come back
+    # clean. Any probe failure counts as "has local work".
+    pristine = (
+        status is not None and status.returncode == 0 and status.stdout.strip() == ""
+        and branch is not None and branch.returncode == 0 and branch.stdout.strip() == "main"
+        and stashes is not None and stashes.returncode == 0 and stashes.stdout.strip() == ""
+    )
+
+    size_note = ""
+    try:
+        total = sum(f.stat().st_size for f in checkout.rglob("*") if f.is_file())
+        size_note = f" (~{total / 1_000_000_000:.1f} GB)"
+    except OSError:
+        pass
+
+    if pristine:
+        check_warn(
+            f"Unused checkout at {_DHH}/hermes-agent{size_note}",
+            "(the desktop app runs embedded and does not use it; the tree is clean)",
+        )
+        print("    Review it and decide whether to keep or remove it — doctor does not delete anything.")
+    else:
+        check_info(
+            f"A checkout exists at {_DHH}/hermes-agent but holds local work "
+            "(changes, a branch, or stashes). The desktop app does not use "
+            "it; review it before you remove anything."
+        )
+
+
 @doctor_check()
 def _check_directory_structure(should_fix: bool, f: Finding) -> None:
     """HERMES_HOME, expected subdirs, SOUL.md, and the enabled built-in memory files."""
+    try:
+        check_legacy_desktop_checkout()
+    except Exception:
+        pass  # best-effort report; must never break the directory check
     from hermes_cli.doctor import HERMES_HOME, _DHH
     hermes_home = HERMES_HOME
     ensure_dir(f, should_fix, hermes_home, f"{_DHH} directory exists", f"Created {_DHH} directory", f"{_DHH} not found")
@@ -376,20 +451,19 @@ def _gh_authenticated() -> bool:
     Plain ``gh auth status`` (exit code only): gh 2.98+ dropped the
     ``authenticated`` JSON field, so ``--json authenticated`` exits 1 even
     when logged in, and the doctor falsely reported "No GITHUB_TOKEN".
+    Availability is resolved through shutil.which (the same probe every
+    other doctor tool check uses); the spawn itself treats any OS-level
+    launch failure (a Store/MSIX shim, a deleted binary) as "not
+    authenticated" rather than crashing the Skills Hub check.
     """
+    from hermes_cli.doctor_tools import _safe_which
+
+    if not _safe_which("gh"):
+        return False
     try:
         result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
         return result.returncode == 0
-    except (
-        FileNotFoundError,
-        subprocess.TimeoutExpired,
-        PermissionError,
-        OSError,
-    ):
-        # Unspawnable gh (Windows Store/MSIX reparse-point shims raise
-        # WinError 5; PATH lookups can also land on broken wrappers) is
-        # the same outcome for this check as no gh at all — a diagnostic
-        # command must never crash the whole doctor run.
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 

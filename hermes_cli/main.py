@@ -2093,11 +2093,9 @@ def select_provider_and_model(args=None):
 # added here — internal import paths are not a stable API.
 _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
     "hermes_cli.update_cmd": (
-        "_abort_dependency_sync_if_self_locked", "_assess_parked_branch_switch",
+        "_assess_parked_branch_switch",
         "_capture_active_lazy_features", "_capture_active_tool_dependencies",
-        "_cold_start_windows_gateway_after_update", "_defer_update_for_self_lock",
-        "_dependency_sync_would_rewrite", "_detect_self_loaded_native_modules",
-        "_detect_venv_python_processes", "_discard_stashed_changes",
+        "_cold_start_windows_gateway_after_update", "_detect_venv_python_processes", "_discard_stashed_changes",
         "_filter_non_gateway_concurrent_instances", "_fleet_probe_expected_runtimes",
         "_finish_dashboard_update_cleanup",
         "_get_origin_url", "_handoff_reapable_backend_pids", "_ledger_manual_serve_holders",
@@ -2108,11 +2106,10 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_print_parked_branch_skip_warning", "_reapply_plugin_python_dependencies",
         "_refresh_active_lazy_features", "_refresh_active_memory_provider_dependencies",
         "_refresh_bootstrap_cache_scripts", "_refresh_windows_gateway_launchers",
-        "_relaunch_stopped_serves",
-        "_restore_active_tool_dependencies", "_restore_stashed_changes",
+        "_relaunch_stopped_serves", "_restore_stashed_changes",
         "_resume_windows_gateways_after_update", "_run_logged_subprocess", "_run_pre_update_backup",
         "_stash_local_changes_if_needed", "_stop_process_trees", "_sync_with_upstream_if_needed",
-        "_upgrade_pip_before_lazy_refresh", "_venv_launcher_ancestors",
+        "_venv_launcher_ancestors",
         "_wait_for_windows_update_gateway_exit", "_warn_orphaned_update_autostashes",
         "_write_update_incomplete_marker",
     ),
@@ -2270,6 +2267,17 @@ def _update_preflight_handled(args) -> bool:
 
     if is_managed():
         managed_error("update Hermes Agent")
+        return True
+
+    # Informational flags never enter the updater: --install-id prints the
+    # identifier and --set-channel atomically persists a valid channel
+    # record; both exit here, before the update lock, git, network,
+    # backups, or process pause. Implementation lives in the channel topic
+    # module, not this file.
+    if getattr(args, "install_id", False) or getattr(args, "set_channel", None):
+        from hermes_cli.update_channel import handle_channel_flags
+
+        handle_channel_flags(args)
         return True
 
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
@@ -3466,6 +3474,10 @@ def main():
             _warn_pending_fleet_restart_on_startup()
         except Exception:
             pass
+
+    if _first_positional_argv() != "update":
+        from hermes_cli.boot_bootstrap import default_project_root, maybe_run_boot_bootstrap
+        maybe_run_boot_bootstrap(default_project_root())
 
     if _try_termux_fast_tui_launch():
         return

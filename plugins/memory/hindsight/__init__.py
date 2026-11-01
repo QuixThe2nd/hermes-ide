@@ -37,10 +37,11 @@ from utils import read_json_or_empty
 
 from .embedded import (
     _RETRIABLE_CONNECTION_MARKERS, _build_embedded_profile_env,
-    _check_local_runtime, _embedded_llm_api_key, _embedded_profile_env_path,
-    _export_port_health_grace_timeout, _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
+    _check_local_runtime, _embedded_profile_env_path,
+    _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
     _may_rewrite_profile_env,
 )
+from .embedded_runtime import ensure_daemon_and_url as _start_sideenv_daemon
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
     _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
@@ -979,25 +980,38 @@ class HindsightMemoryProvider(MemoryProvider):
         return _parse_int_setting(os.environ.get(env_var, env_default) if value is None else value, default)
 
     def _new_embedded_client(self):
-        available, reason = _check_local_runtime()
-        if not available:
-            raise RuntimeError("Hindsight local runtime is unavailable" + (f": {reason}" if reason else ""))
-        _ensure_client_dependency()
-        from hindsight import HindsightEmbedded
-        HindsightEmbedded.__del__ = lambda self: None
+        """HTTP client against the side-env daemon. The daemon manager runs in the
+        isolated side env (its own interpreter → its own hindsight-api binary and
+        ProfileManager port allocation); Hermes talks to it over HTTP with the
+        pinned main-env hindsight-client — no in-process HindsightEmbedded."""
         cfg = self._config
+        profile = cfg.get("profile", "hermes")
         llm_provider = _daemon_llm_provider(cfg.get("llm_provider", ""))
-        logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                     cfg.get("profile", "hermes"), llm_provider)
+        logger.debug("Creating Hindsight embedded client (profile=%s, provider=%s)", profile, llm_provider)
         self._idle_timeout = self._int_setting(
             "idle_timeout", "HINDSIGHT_IDLE_TIMEOUT", _DEFAULT_IDLE_TIMEOUT, env_default=self._idle_timeout,
         )
-        kwargs = dict(profile=cfg.get("profile", "hermes"), llm_provider=llm_provider,
-                      llm_api_key=_embedded_llm_api_key(cfg), llm_model=cfg.get("llm_model", ""),
-                      idle_timeout=self._idle_timeout)
-        if self._llm_base_url:
-            kwargs["llm_base_url"] = self._llm_base_url
-        return HindsightEmbedded(**kwargs)
+        # Starts (or reuses) the side-env daemon; the URL comes from the side env's
+        # own ProfileManager/get_url, never a hardcoded port.
+        changed = _load_simple_env(_embedded_profile_env_path(cfg)) != _build_embedded_profile_env(cfg)
+        restart = changed and _may_rewrite_profile_env(cfg)
+        if restart:
+            _materialize_embedded_profile_env(cfg)
+        elif changed:
+            logger.warning(
+                "Hindsight profile env for %r holds an LLM API key this process cannot see "
+                "(no secret scope); leaving the file and running daemon untouched so it keeps its key.",
+                profile,
+            )
+        url = _start_sideenv_daemon(cfg, restart=restart)
+        self._api_url = url
+        _ensure_client_dependency()
+        from hindsight_client import Hindsight
+        kwargs = {"base_url": url, "timeout": float(self._timeout or _DEFAULT_TIMEOUT)}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        logger.info("Hindsight embedded: HTTP client ready (profile=%s, url=%s)", profile, url)
+        return Hindsight(**kwargs)
 
     def _new_cloud_client(self):
         _ensure_client_dependency()
@@ -1863,30 +1877,11 @@ class HindsightMemoryProvider(MemoryProvider):
         if client is None:
             return True
         try:
-            if self._mode == "local_embedded":
-                # HindsightEmbedded.close() delegates to its sync client.close().
-                # Close the embedded inner async client on the shared loop
-                # first, then let the wrapper clean up daemon/UI bookkeeping.
-                # Only when _client was explicitly set on the wrapper (skip
-                # MagicMock auto-attributes in unit tests that seed a plain
-                # mock as provider._client).
-                inner_client = client.__dict__.get("_client")
-                if inner_client is not None and hasattr(inner_client, "aclose"):
-                    await inner_client.aclose()
-                    try:
-                        client._client = None
-                    except Exception:
-                        pass
-                try:
-                    client.close()
-                except RuntimeError:
-                    pass
-            else:
-                aclose = getattr(client, "aclose", None)
-                if callable(aclose):
-                    result = aclose()
-                    if inspect.isawaitable(result):
-                        await result
+            aclose = getattr(client, "aclose", None)
+            if callable(aclose):
+                result = aclose()
+                if inspect.isawaitable(result):
+                    await result
             return True
         except Exception:
             logger.debug("Hindsight: closing a displaced client failed", exc_info=True)
@@ -2299,7 +2294,8 @@ class HindsightMemoryProvider(MemoryProvider):
         stable session-scoped id with ``update_mode='append'``; older APIs get
         *fallback_document_id* (per-process unique) and no update_mode — the only
         way the resume-overwrite fix works there. The /version probe targets the
-        embedded client's dynamic per-profile port when running, else api_url.
+        embedded daemon URL resolved by the side env (stored in ``_api_url``), else
+        the configured api_url.
 
         On Hindsight ≥ 0.5.0 the API supports ``update_mode='append'``, which lets us reuse a stable
         session-scoped ``document_id`` across process lifecycles without overwriting prior turns. On older
@@ -2307,8 +2303,7 @@ class HindsightMemoryProvider(MemoryProvider):
         minted at initialize / switch time) and don't pass ``update_mode`` at all — that's the only way the
         resume-overwrite fix (#6654) keeps working on legacy servers.
         """
-        url = getattr(self._client, "url", None) if self._mode == "local_embedded" else None
-        probe_url = str(url) if url else (self._api_url or "")
+        probe_url = self._api_url or ""
         if self._session_id and _check_api_supports_update_mode_append(probe_url, self._api_key):
             return self._session_id, "append"
         return fallback_document_id, None
@@ -2339,14 +2334,14 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local":  # legacy alias
             self._mode = "local_embedded"
         if self._mode == "local_embedded":
-            # Must precede the daemon_embed_manager import, which reads it at import time.
-            _export_port_health_grace_timeout(cfg)
             available, reason = _check_local_runtime()
             if not available:
-                logger.warning("Hindsight local mode disabled because its runtime could not be imported: %s.%s",
+                logger.warning("Hindsight local_embedded disabled: the isolated runtime is unavailable: %s.%s",
                                reason, _local_runtime_hint(reason))
                 self._mode = "disabled"
                 return
+            logger.info("Hindsight local_embedded: isolated runtime available (profile=%s); "
+                        "daemon start queued", cfg.get("profile", "hermes"))
         self._apply_connection_settings(cfg)
         self._apply_retain_settings(cfg)
         self._apply_recall_settings(cfg)
@@ -2483,45 +2478,15 @@ class HindsightMemoryProvider(MemoryProvider):
         spawn_context_thread(self._daemon_start_worker, name="hindsight-daemon-start").start()
 
     def _daemon_start_worker(self) -> None:
-        import traceback
-        log_path = get_hermes_home() / "logs" / "hindsight-embed.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        def _log(text: str) -> None:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(text)
-
+        """Background daemon bring-up: keep the materialized profile .env in sync,
+        then start/reuse the side-env daemon and connect the HTTP client."""
         try:
-            # Rich console -> our log file (redirecting global fds would capture other threads).
-            import hindsight_embed.daemon_embed_manager as dem
-            from rich.console import Console
-            dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
-
-            client = self._get_client()
-            profile = self._config.get("profile", "hermes")
-            # Profile .env out of sync with config -> rewrite and restart a running daemon.
-            # Fail-closed on key material: when this process holds no key (no secret
-            # scope on this thread) but the file does, a rewrite would destroy the
-            # only key copy the daemon subprocess can read. Skip the write AND the
-            # stop: restarting the daemon now would boot it keyless, which is the
-            # exact outage this guards against. _get_client() above already passed
-            # whatever key WAS available into the in-process client kwargs.
-            if _load_simple_env(_embedded_profile_env_path(self._config)) != _build_embedded_profile_env(self._config):
-                if _may_rewrite_profile_env(self._config):
-                    _materialize_embedded_profile_env(self._config)
-                    if client._manager.is_running(profile):
-                        _log("\n=== Config changed, restarting daemon ===\n")
-                        client._manager.stop(profile)
-                else:
-                    logger.warning(
-                        "Hindsight profile env for %r holds an LLM API key this process cannot see "
-                        "(no secret scope); leaving the file untouched so the daemon keeps its key.",
-                        profile)
-                    _log("\n=== Profile env has a key this process cannot see; left untouched ===\n")
-            client._ensure_started()
-            _log("\n=== Daemon started successfully ===\n")
+            cfg = self._config
+            profile = cfg.get("profile", "hermes")
+            self._get_client()
+            logger.info("Hindsight embedded: daemon start worker finished (profile=%s)", profile)
         except Exception as e:
-            _log(f"\n=== Daemon startup failed: {e} ===\n" + traceback.format_exc())
+            logger.warning("Hindsight embedded daemon startup failed: %s", e, exc_info=True)
 
     def system_prompt_block(self) -> str:
         mode = self._memory_mode if self._memory_mode in _SYSTEM_PROMPT_TAILS else "hybrid"
@@ -2875,22 +2840,12 @@ class HindsightMemoryProvider(MemoryProvider):
                      self._session_id, self._parent_session_id, reset, self._document_id)
 
     def _close_client(self) -> None:
-        if self._mode != "local_embedded":
-            self._run_sync(self._client.aclose())
-            return
-        # HindsightEmbedded.close() closes its sync client from this thread ("attached
-        # to a different loop" before aiohttp releases the session): aclose the inner
-        # client on the shared loop first, then let the wrapper clean up bookkeeping.
-        inner_client = getattr(self._client, "_client", None)
-        if inner_client is not None and hasattr(inner_client, "aclose"):
-            _run_sync(inner_client.aclose())
-            with contextlib.suppress(Exception):
-                self._client._client = None
-        with contextlib.suppress(RuntimeError):
-            self._client.close()
+        # Both client kinds are hindsight_client.Hindsight now (the embedded mode
+        # is an HTTP client against the side-env daemon): close on the shared loop.
+        self._run_sync(self._client.aclose())
 
     def shutdown(self) -> None:
-        logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        logger.debug("Hindsight shutdown: mode=%s, stopping writer + waiting for background threads", self._mode)
         # Stop accepting retain jobs first so late sync_turn() calls are dropped.
         self._shutting_down.set()
         # The writer finishes in-flight work then exits on the sentinel; the

@@ -61,6 +61,14 @@ def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
 
 
 
+@pytest.mark.platforms("windows")
+def test_native_drive_path_and_file_uri_refer_to_same_attachment(tmp_path):
+    from acp_adapter.content import _path_from_file_uri
+    path = tmp_path / "notes with spaces.md"
+    path.write_text("body", encoding="utf-8")
+    assert _path_from_file_uri(str(path)) == _path_from_file_uri(path.as_uri()) == path
+
+
 @pytest.mark.asyncio
 async def test_initialize_advertises_image_prompt_capability():
     response = await HermesACPAgent().initialize()

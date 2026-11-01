@@ -31,14 +31,19 @@ ROOT_SKIP_DIRS = DEPENDENCY_DIRS | {
 
 
 def _py_files():
-    for dirpath, dirnames, filenames in os.walk(ROOT):
+    def fail(error):
+        raise error
+
+    for dirpath, dirnames, filenames in os.walk(ROOT, onerror=fail):
         excluded = ROOT_SKIP_DIRS if Path(dirpath) == ROOT else DEPENDENCY_DIRS
-        dirnames[:] = [name for name in dirnames if name not in excluded]
+        dirnames[:] = [
+            name for name in dirnames
+            if name not in excluded and not name.startswith(".")
+        ]
         for filename in filenames:
-            if not filename.endswith(".py") or filename == "check_compat_pointers.py":
-                continue
-            # The compat layer's own contract test uses the pointers on purpose; it is deleted with them.
-            if filename == "test_compat_manifest_targets.py":
+            if not filename.endswith(".py") or filename in {
+                "check_compat_pointers.py", "test_compat_manifest_targets.py"
+            }:
                 continue
             yield Path(dirpath) / filename
 

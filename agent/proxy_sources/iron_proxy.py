@@ -387,9 +387,22 @@ def _read_text_or_none(p: Path) -> Optional[str]:
         return None
 
 
+def _management_token_path() -> Path:
+    """Management-token location; resolving it never creates or changes state."""
+    return _proxy_state_dir_ro() / "management.token"
+
+
 def ensure_management_token(*, force: bool = False) -> str:
-    """Return the management-API bearer key (0600 at <proxy>/management.token), minting on first call."""
-    p = _proxy_state_dir() / "management.token"
+    """Return the management-API bearer key, minting it on first call.
+
+    Stored at the path from :func:`_management_token_path` with 0600 perms.
+    The daemon receives it via the ``HERMES_IRON_PROXY_MGMT_KEY`` env var
+    (named in the generated config's ``management.api_key_env``);
+    ``hermes egress reload`` reads the same file to authenticate.
+    """
+
+    _proxy_state_dir()
+    p = _management_token_path()
     if not force and (existing := _read_text_or_none(p)):
         return existing
     token = mint_proxy_token(prefix="hermes-mgmt")
@@ -453,7 +466,7 @@ def reload_proxy() -> bool:
         raise RuntimeError(
             "The generated proxy.yaml has no management listener (written before reload support).  Re-run `hermes egress setup` and use `hermes egress restart` this one time."
         )
-    if not (token := _read_text_or_none(_proxy_state_dir_ro() / "management.token")):
+    if not (token := _read_text_or_none(_management_token_path())):
         raise RuntimeError("management.token is missing — re-run `hermes egress setup`, then `hermes egress restart`.")
     host, port = mgmt
     req = urllib.request.Request(f"http://{host}:{port}/v1/reload", method="POST", headers={"Authorization": f"Bearer {token}"}, data=b"")

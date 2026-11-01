@@ -199,6 +199,7 @@ class TestDetectAudioEnvironment:
         assert result["warnings"] == []
         assert any("SSH" in n for n in result.get("notices", []))
 
+    @pytest.mark.platforms("linux")
     def test_wsl_without_pulse_blocks_voice(self, monkeypatch, tmp_path):
         """WSL without PULSE_SERVER should block voice mode."""
         monkeypatch.delenv("SSH_CLIENT", raising=False)
@@ -542,7 +543,7 @@ class TestTranscribeRecording:
 
 class TestWhisperHallucinationFilter:
     def test_known_hallucinations(self):
-        from tools.voice_mode import is_whisper_hallucination
+        from tools.voice_mode_transcript import is_whisper_hallucination
 
         assert is_whisper_hallucination("Thank you.") is True
         assert is_whisper_hallucination("thank you") is True
@@ -552,7 +553,7 @@ class TestWhisperHallucinationFilter:
         assert is_whisper_hallucination("you") is True
 
     def test_real_speech_not_filtered(self):
-        from tools.voice_mode import is_whisper_hallucination
+        from tools.voice_mode_transcript import is_whisper_hallucination
 
         assert is_whisper_hallucination("Hello, how are you?") is False
         assert is_whisper_hallucination("Thank you for your help with the project.") is False

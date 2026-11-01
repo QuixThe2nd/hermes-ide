@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 import hermes_cli.doctor as doctor
-from hermes_cli.doctor import check_legacy_desktop_checkout
+from hermes_cli.doctor_state import check_legacy_desktop_checkout
 
 
 def _git(cwd, *args):
@@ -45,11 +45,14 @@ def embedded_context(tmp_path, monkeypatch):
 
 
 class TestLegacyDesktopCheckout:
-    def test_pristine_checkout_gets_a_deletion_suggestion(self, embedded_context, capsys):
+    def test_pristine_checkout_gets_report_without_deletion_command(self, embedded_context, capsys):
         check_legacy_desktop_checkout()
         out = capsys.readouterr().out
         assert "Unused checkout" in out
-        assert "rm -rf" in out
+        # Report-review posture: no deletion command is ever suggested —
+        # pristineness proves nothing about unpublished commits or other clients.
+        assert "rm -rf" not in out
+        assert "delete" not in out.lower() or "does not delete" in out.lower()
 
     def test_dirty_checkout_warns_and_suggests_nothing(self, embedded_context, capsys):
         (embedded_context / "f.txt").write_text("local work\n")

@@ -16,6 +16,7 @@ from hermes_cli.update_channel import (
     CHANNEL_CANARY,
     CHANNEL_STABLE,
     default_channel,
+    handle_channel_flags,
     install_id,
     resolve_update_channel,
     set_install_channel,
@@ -202,6 +203,29 @@ class TestSetChannel:
         assert written["update"]["installs"][install_id(other)]["channel"] == "canary"
         assert written["update"]["installs"][install_id(root)]["channel"] == "stable"
 
+    def test_preserves_comments_in_config(self, tmp_path, monkeypatch):
+        """Persisting a channel must not strip user comments from
+        config.yaml — the write goes through the shared comment-preserving
+        atomic round-trip writer."""
+        home = self._home(tmp_path, monkeypatch)
+        (home / "config.yaml").write_text(
+            "# my hand-maintained settings\n"
+            "model:\n"
+            "  provider: nous  # keep this\n"
+        )
+        root = tmp_path / "install"
+        _stamp(root, "self")
+        set_install_channel("stable", root)
+
+        text = (home / "config.yaml").read_text()
+        assert "# my hand-maintained settings" in text
+        assert "# keep this" in text
+        import yaml
+
+        written = yaml.safe_load(text)
+        assert written["model"] == {"provider": "nous"}
+        assert written["update"]["installs"][install_id(root)]["channel"] == "stable"
+
     def test_external_mechanism_refuses(self, tmp_path, monkeypatch):
         self._home(tmp_path, monkeypatch)
         root = tmp_path / "nix-tree"
@@ -219,6 +243,125 @@ class TestSetChannel:
 
 class TestSetChannelCLI:
     """cmd_update --set-channel: the switch texts (design record)."""
+
+    @pytest.fixture(autouse=True)
+    def _fail_fast_updater_sentinel(self, monkeypatch, tmp_path):
+        """Isolation harness (C03 revalidation).
+
+        If the informational flags were ever unhandled in preflight,
+        ``cmd_update`` would enter the real updater (lock, git, backups,
+        process pause) — that must fail HERE, at a ``_cmd_update_impl``
+        sentinel, instead of mutating anything. Subprocess and network
+        are denied outright, and the install root is pinned to ``tmp_path``
+        (a real root, never this checkout) so stamp reads cannot touch the
+        worktree either.
+        """
+        import socket
+        import subprocess
+
+        def _sentinel(*_a, **_kw):
+            raise AssertionError(
+                "fail-fast sentinel: _cmd_update_impl entered — channel "
+                "flags were not handled by the update preflight"
+            )
+
+        def _denied(what):
+            def _deny(*_a, **_kw):
+                raise AssertionError(
+                    f"fail-fast guard: {what} attempted from a channel-flag test"
+                )
+
+            return _deny
+
+        monkeypatch.setattr(
+            "hermes_cli.update_cmd._cmd_update_impl", _sentinel
+        )
+        for name in ("Popen", "run", "call", "check_call", "check_output"):
+            monkeypatch.setattr(subprocess, name, _denied(f"subprocess.{name}"))
+        monkeypatch.setattr(
+            socket, "create_connection", _denied("socket.create_connection")
+        )
+        monkeypatch.setattr(socket.socket, "connect", _denied("socket.connect"))
+        # Real root, real filesystem — but a temp one, never the checkout.
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path))
+
+    def _home(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def test_malformed_update_section_refused_not_normalized(self, tmp_path, monkeypatch):
+        """A scalar/malformed ``update`` (or ``update.installs``) is refused —
+        the dotted writer would silently turn it into a mapping and destroy
+        the user's value. The file is left byte-identical."""
+        for bad in ("update: not-a-mapping\n", "update:\n  installs: 7\n"):
+            home = self._home(tmp_path, monkeypatch)
+            cfg = home / "config.yaml"
+            cfg.write_text("# user header\n" + bad)
+            root = tmp_path / "install"
+            _stamp(root, "self")
+            with pytest.raises(ValueError, match="not a mapping"):
+                set_install_channel("stable", root)
+            assert cfg.read_text() == "# user header\n" + bad
+            # cleanup between loop iterations
+            import shutil
+
+            shutil.rmtree(home)
+
+    def test_stored_record_outranks_running_stamp_in_switch_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The reported previous channel comes from the stored per-install
+        record when one exists — not from what the running artifact implies."""
+        home = self._home(tmp_path, monkeypatch)
+        root = tmp_path  # == HERMES_INSTALL_ROOT (see sentinel fixture)
+        (root / "install-stamp.json").write_text(json.dumps({
+            "schemaVersion": 2,
+            "updateMechanism": "electron-updater",
+            "displayVersion": "0.28.0-canary.20260818",
+        }))
+        import yaml
+
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"update": {"installs": {
+                    install_id(root): {"path": str(root), "channel": "stable"}
+                }}}
+            )
+        )
+        from types import SimpleNamespace
+
+        args = SimpleNamespace(
+            check=False, gateway=False, branch=None, channel=None,
+            set_channel="canary", install_id=False, plan=False,
+        )
+        with pytest.raises(SystemExit) as exc:
+            handle_channel_flags(args)
+        assert exc.value.code == 0
+        assert "Channel set to 'canary' (was 'stable')" in capsys.readouterr().out
+
+    def test_hint_requires_a_valid_canary_shape(self, tmp_path, monkeypatch, capsys):
+        """A ``displayVersion`` only reads as canary when it validates as a
+        canary version shape — 'nightly' builds must not claim the canary
+        switch text."""
+        home = self._home(tmp_path, monkeypatch)
+        root = tmp_path  # == HERMES_INSTALL_ROOT (see sentinel fixture)
+        (root / "install-stamp.json").write_text(json.dumps({
+            "schemaVersion": 2,
+            "updateMechanism": "electron-updater",
+            "displayVersion": "0.28.0-nightly.123",
+        }))
+        from types import SimpleNamespace
+
+        args = SimpleNamespace(
+            check=False, gateway=False, branch=None, channel=None,
+            set_channel="stable", install_id=False, plan=False,
+        )
+        with pytest.raises(SystemExit) as exc:
+            handle_channel_flags(args)
+        assert exc.value.code == 0
+        assert "Channel set to 'stable' (was 'stable')" in capsys.readouterr().out
 
     def _args(self, **kw):
         from types import SimpleNamespace

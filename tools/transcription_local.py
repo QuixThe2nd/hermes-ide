@@ -58,11 +58,10 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
 def _try_lazy_install_stt() -> bool:
     """Lazy-install faster-whisper and re-check dynamically so it's usable without a restart."""
     try:
-        from tools.lazy_deps import ensure
-        # prompt=False: a bare input() deadlocks under the interactive CLI where prompt_toolkit
-        # owns stdin; the install is already gated by security.allow_lazy_installs.
-        # prompt=False: never raise a blocking input() prompt mid-session. See #40490.
-        ensure("stt.faster_whisper", prompt=False)
+        # pm installs are gated by security.allow_lazy_installs; never a blocking
+        # prompt mid-session. See #40490.
+        import pm
+        pm.ensure_import("voice")
         if _ilu.find_spec("faster_whisper"):
             return True
         logger.warning("faster-whisper was installed but importlib still cannot find it (may require Python restart)")

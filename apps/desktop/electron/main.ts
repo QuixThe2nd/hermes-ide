@@ -41,6 +41,7 @@ import {
   withRetry
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import { runAppInstallerChecker } from './appinstaller-checker'
 import {
   stopBackendChild as stopBackendChildImpl,
   stopBackendTreesForUpdate,
@@ -3571,11 +3572,12 @@ function isLightVariant(): boolean {
 }
 
 /**
- * Run a bundled payload python script. The payload python needs the payload
- * venv's site-packages on PYTHONPATH to import the winrt module — the same
- * way the bundled CLI launcher sets it (the launcher-wrapper.py shebang
- * overlay puts the venv's site-packages on sys.path). Without it the
- * checker would always fail with "winrt import failed".
+ * Run a bundled payload python script (the App Installer update checker).
+ * The payload python needs the payload venv's site-packages on PYTHONPATH to
+ * import the winrt module — the same way the bundled CLI launcher sets it.
+ * Bounded via runAppInstallerChecker: a wedged child is killed at the
+ * deadline and reported as an unknown, and the deadline resolves even if the
+ * child never emits close (see appinstaller-checker.ts).
  */
 async function runPayloadPython(python: string, script: string): Promise<{ code: number; stdout: string }> {
   const payload = resolvePayload(process.resourcesPath, { fileExists, directoryExists, isWindows: IS_WINDOWS })
@@ -3584,21 +3586,9 @@ async function runPayloadPython(python: string, script: string): Promise<{ code:
     env.PYTHONPATH = payload.sitePackages
   }
 
-  return new Promise((resolve) => {
-    const child = spawn(python, [script], {
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', chunk => { stdout += chunk.toString() })
-    child.stderr.on('data', chunk => { stderr += chunk.toString() })
-    child.on('error', (error) => resolve({ code: 1, stdout: JSON.stringify({ available: null, error: error.message }) }))
-    child.on('close', (code) => {
-      if (stderr) console.error(`[app-installer] checker stderr: ${stderr.slice(0, 400)}`)
-      resolve({ code: code ?? 1, stdout })
-    })
+  return runAppInstallerChecker(python, script, {
+    env,
+    onStderr: stderr => console.error(`[app-installer] checker stderr: ${stderr.slice(0, 400)}`)
   })
 }
 
@@ -12957,29 +12947,14 @@ async function stopAllPoolBackends() {
 }
 
 /**
- * Last teardown act on Windows: kill anything still running out of THIS
- * install's roots, so no straggler holds an image open.
- *
- * Two roots, because two install shapes have the same daemon problem:
- *
- *  - The artifact resources dir (bundled/MSIX). A live process rooted in the
- *    package family pins the family's container silo, and every later
- *    activation then fails the job → silo conversion with 0x80070020 — the app
- *    never launches again. Live cause on windows-11-arm was the payload's
- *    bundled-git gpg-agent, which daemonizes out of our process tree and so is
- *    unreachable by taskkill /T.
- *  - The managed tool store (mutable install.ps1 / install.sh checkout), where
- *    pm stages node, git and uv. A daemonized tool there keeps its own image
- *    open, and Windows cannot overwrite a running image — so the next
- *    `hermes update` fails to replace exactly those files.
- *
- * HERMES_RUNTIME_DIR is the store when pm is aimed at one (a bundled payload
- * aims it at its own, where the roots overlap harmlessly); otherwise the store
- * is <hermes root>/tools, mirroring pm.paths.store_root().
- *
- * Runs AFTER the graceful backend teardown and skips the pids it owned, so
- * this is only the net for what detached. Best effort throughout: quit must
- * never hang or fail on it. See package-process-reap.ts for the evidence.
+ * Last teardown act on Windows: kill orphaned tools still running out of
+ * THIS install's artifact root, so no straggler pins the package silo
+ * (0x80070020 on the next activation). The managed tool store is NOT a quit
+ * root — it is machine-scoped and shared with the surviving gateway and
+ * other installs; image locks there are the updater's pause/resume job.
+ * Runs after the graceful backend teardown, skips the pids it owned and
+ * every live Hermes runtime process, so it is only the net for what
+ * detached. Best effort throughout; see package-process-reap.ts.
  */
 function reapInstallRootedStragglers(excludePids: number[]): void {
   if (!IS_WINDOWS) {
@@ -12987,12 +12962,10 @@ function reapInstallRootedStragglers(excludePids: number[]): void {
   }
 
   const payloadRoot = isBundledInstall(process.resourcesPath, { fileExists }) ? process.resourcesPath : null
-  // HERMES_HOME is already root-normalized by resolveHermesHome().
-  const managedStore = process.env.HERMES_RUNTIME_DIR || path.join(HERMES_HOME, 'tools')
 
   try {
     reapPackageRootedProcesses({
-      installRoots: [payloadRoot, managedStore],
+      installRoots: [payloadRoot],
       listProcesses: () => listWindowsProcesses((file, args, options) => execFileSync(file, args, {
         ...hiddenWindowsChildOptions({ encoding: 'utf8', timeout: options.timeout }),
         windowsHide: options.windowsHide

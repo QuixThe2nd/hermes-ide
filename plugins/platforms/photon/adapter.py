@@ -35,7 +35,7 @@ else:
         HTTPX_AVAILABLE = False
         httpx = None
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, _coerce_float, _coerce_int
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
@@ -209,6 +209,11 @@ def _is_timeout_error(exc: BaseException) -> bool:
     if HTTPX_AVAILABLE and isinstance(exc, httpx.TimeoutException):
         return True
     return "timeout" in type(exc).__name__.lower()
+
+
+def _first_set(*vals: Any) -> Any:
+    """First non-None value, else None (same semantic as the honcho helper)."""
+    return next((val for val in vals if val is not None), None)
 
 
 def _node_command(command: str) -> Optional[str]:

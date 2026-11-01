@@ -20,11 +20,11 @@ set -e
 # can force pip/entrypoints to import a different checkout than the one being
 # installed, which makes fresh installs appear broken or stale.
 if [ -n "${PYTHONPATH:-}" ]; then
-    echo "⚠ Ignoring inherited PYTHONPATH during install to avoid module shadowing"
+    echo "⚠ Ignoring inherited PYTHONPATH during install to avoid module shadowing" >&2
     unset PYTHONPATH
 fi
 if [ -n "${PYTHONHOME:-}" ]; then
-    echo "⚠ Ignoring inherited PYTHONHOME during install"
+    echo "⚠ Ignoring inherited PYTHONHOME during install" >&2
     unset PYTHONHOME
 fi
 
@@ -349,18 +349,44 @@ EOF
     log_info "Discarded npm lockfile churn (${dirty_count} file(s))"
 }
 
+# The single authoritative stage list: emit_manifest prints it and main runs
+# it, so --include-desktop affects the real install exactly as advertised.
+stage_names() {
+    printf '%s\n' prerequisites repository venv python-deps node-deps path config setup gateway
+    [ "$INCLUDE_DESKTOP" = true ] && printf '%s\n' desktop
+    printf '%s\n' complete
+}
+
+# "$1" stage name -> its manifest record fields (title|category|needs_user_input).
+stage_record() {
+    case "$1" in
+        prerequisites) echo "System prerequisites|runtime|false" ;;
+        repository)    echo "Download Hermes Agent|runtime|false" ;;
+        venv)          echo "Create Python virtual environment|runtime|false" ;;
+        python-deps)   echo "Install Python dependencies|runtime|false" ;;
+        node-deps)     echo "Install browser-tool dependencies|runtime|false" ;;
+        path)          echo "Install hermes command|runtime|false" ;;
+        config)        echo "Prepare config and skills|configuration|false" ;;
+        setup)         echo "Configure API keys and settings|configuration|true" ;;
+        gateway)       echo "Configure gateway service|configuration|true" ;;
+        desktop)       echo "Build desktop app|runtime|false" ;;
+        complete)      echo "Finish install|runtime|false" ;;
+    esac
+}
+
 emit_manifest() {
-    # Stage-Desktop is included only with --include-desktop, mirroring
-    # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
-    # a GUI install ends up with a launchable app; the Electron app's own
-    # first-launch bootstrap and the CLI one-liner omit it (building the
-    # desktop from inside the already-running app would clobber it).
-    local desktop_stage=""
-    if [ "$INCLUDE_DESKTOP" = true ]; then
-        desktop_stage='{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false},'
-    fi
-    printf '%s' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'"$desktop_stage"'{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
-    printf '\n'
+    # Desktop is included only with --include-desktop, mirroring install.ps1:
+    # a GUI install ends with a launchable app, while the Electron app's own
+    # bootstrap omits rebuilding the already-running app.
+    printf '%s' '{"protocol_version":1,"stages":['
+    local _sep="" _s _title _category _needs
+    for _s in $(stage_names); do
+        IFS='|' read -r _title _category _needs <<< "$(stage_record "$_s")"
+        printf '%s{"name":"%s","title":"%s","category":"%s","needs_user_input":%s}' \
+            "$_sep" "$_s" "$_title" "$_category" "$_needs"
+        _sep=","
+    done
+    printf '%s\n' ']}'
 }
 
 stage_needs_user_input() {
@@ -1737,15 +1763,27 @@ EOF
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
+        # Build every fresh clone in a sibling staging directory and publish
+        # only a fully materialized tree. A throttled or interrupted clone must
+        # never leave a partial INSTALL_DIR for later installer stages.
+        mkdir -p "$(dirname "$INSTALL_DIR")"
+        local staged
+        staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || {
+            log_error "Cannot create a staging directory for the clone"
+            return 1
+        }
+        local clone_ok=false
+
+        # Try SSH first (for private repo access), fall back to HTTPS.
         # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
         # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$staged/tree" 2>/dev/null; then
+            clone_ok=true
             log_success "Cloned via SSH"
         else
-            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
+            rm -rf "$staged/tree" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
             # GitHub throttles packfile generation for large repos (this one:
             # ~9.6k files at HEAD plus thousands of auto-generated branches)
@@ -1758,17 +1796,16 @@ EOF
             # (many small packs instead of one big one — what gets past the
             # throttle). Fully materialize the tree afterwards so the rest of
             # the installer sees the normal files.
-            local clone_ok=false
             local attempt=0
             local max_attempts=4
             for attempt in $(seq 1 "$max_attempts"); do
                 [ "$attempt" -gt 1 ] && log_info "Retrying HTTPS clone (attempt $attempt/$max_attempts)..."
                 if git clone --depth 1 --single-branch --branch "$BRANCH" \
-                     "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                     "$REPO_URL_HTTPS" "$staged/tree"; then
                     clone_ok=true
                     break
                 fi
-                rm -rf "$INSTALL_DIR" 2>/dev/null  # partial clone is unusable
+                rm -rf "$staged/tree" 2>/dev/null  # partial clone is unusable
                 [ "$attempt" -lt "$max_attempts" ] && sleep $((attempt * 5))
             done
             if [ "$clone_ok" != true ]; then
@@ -1780,30 +1817,35 @@ EOF
                 # failed clone. The blobs are fetched by the reset below — a
                 # separate request the retry can actually wrap.
                 if git clone --depth 1 --single-branch --filter=blob:none \
-                     --no-checkout --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-                    # Materialize the working tree: on a --no-checkout clone
-                    # this reset is the step that fetches the blobs (several
-                    # small packs instead of one big one). Fail closed — a
-                    # half-materialized checkout must not report success and
-                    # hand the rest of the installer an unusable tree.
-                    if (cd "$INSTALL_DIR" \
-                        && (git reset --hard HEAD >/dev/null 2>&1 \
-                            || { sleep 5; git reset --hard HEAD >/dev/null 2>&1; })); then
+                     --no-checkout --branch "$BRANCH" "$REPO_URL_HTTPS" "$staged/tree"; then
+                    # Materialize the working tree with two attempts. Fail
+                    # closed: a half-materialized checkout is never published.
+                    if git -C "$staged/tree" reset --hard HEAD >/dev/null 2>&1 \
+                       || { sleep 5; git -C "$staged/tree" reset --hard HEAD >/dev/null 2>&1; }; then
                         clone_ok=true
                     else
-                        rm -rf "$INSTALL_DIR" 2>/dev/null  # unusable checkout
+                        rm -rf "$staged/tree" 2>/dev/null
                     fi
                 else
-                    rm -rf "$INSTALL_DIR" 2>/dev/null
+                    rm -rf "$staged/tree" 2>/dev/null
                 fi
             fi
             if [ "$clone_ok" = true ]; then
                 log_success "Cloned via HTTPS"
-            else
-                log_error "Failed to clone repository"
-                exit 1
             fi
         fi
+
+        if [ "$clone_ok" != true ]; then
+            rm -rf "$staged"
+            log_error "Failed to clone repository; no checkout published"
+            return 1
+        fi
+        if ! mv "$staged/tree" "$INSTALL_DIR"; then
+            rm -rf "$staged"
+            log_error "Cannot publish cloned checkout"
+            return 1
+        fi
+        rmdir "$staged"
     fi
 
     cd "$INSTALL_DIR"
@@ -3635,220 +3677,31 @@ install_desktop_voice_deps() {
 }
 
 install_desktop() {
-    local desktop_dir="$INSTALL_DIR/apps/desktop"
-
-    # The desktop stage only runs when a build is explicitly requested
-    # (--include-desktop / 'desktop' stage), so a missing toolchain is a hard
-    # failure, not a silent skip — a silent skip yields a "complete" install
-    # with no app and a confusing "couldn't find a built desktop" at launch.
-    # Always re-resolve Node here. Stages run in separate processes, so we can't
-    # trust an earlier check; more importantly check_node now enforces the
-    # supported Node lines and prepends the Hermes-managed Node to PATH, so
-    # the build never runs on a too-old system Node — the cause of the opaque
-    # "Build desktop app … exit code 1" failure (Vite crashes on old Node).
-    check_node
-    if ! command -v npm >/dev/null 2>&1; then
-        log_error "Cannot build desktop app: Node.js / npm unavailable"
-        log_info "Install Node.js and retry: cd $desktop_dir && npm run pack"
+    # `hermes desktop --build-only` is the current build authority (the same
+    # path as `hermes gui` and updates). Do not keep a competing installer-
+    # local npm/Electron implementation here.
+    local hermes_python="$INSTALL_DIR/venv/bin/python"
+    if [ "$USE_VENV" = false ]; then
+        hermes_python="${PYTHON_PATH:-python3}"
+    elif [ ! -x "$hermes_python" ]; then
+        log_error "Cannot build desktop app: venv python missing at $hermes_python"
         return 1
     fi
-    if [ ! -f "$desktop_dir/package.json" ]; then
-        log_warn "Skipping desktop build (apps/desktop not present in checkout)"
-        return 0
-    fi
 
-    # 1. Root workspace install so apps/desktop's deps (Electron, Vite,
-    #    node-pty prebuilds) resolve. The browser-tools install runs in the
-    #    repo-root package workspace, which does not pull apps/* deps.
-    #
-    #    Prefer `npm ci`: it deletes node_modules and reinstalls from the
-    #    lockfile, so it always produces a complete tree. Bare `npm install`
-    #    can report "up to date" against a stale node_modules/.package-lock.json
-    #    marker while node_modules is actually empty (Windows workspace-hoisting
-    #    flake) — leaving tsc/typescript unresolved and `npm run pack`'s
-    #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
-    #    only if `npm ci` is unavailable or the lockfile is out of sync.
-    #
-    #    Both the install and the build below are wrapped in a hard wall-clock
-    #    timeout (#39219): the Electron binary (~150MB) is fetched from GitHub,
-    #    and on a throttled/blocked connection that download can *stall* — npm
-    #    neither errors nor exits, so the installer sits on "Build desktop app"
-    #    forever with only `npm warn deprecated` lines visible. A stall now
-    #    converts to a non-zero exit, which feeds the existing self-heal /
-    #    mirror-fallback escalation instead of hanging the whole install.
-    #
-    #    The `npm ci` and its `npm install` fallback SHARE one budget: a stalled
-    #    link wedges both identically, so giving each a full DESKTOP_BUILD_TIMEOUT
-    #    would double the worst-case hang. We compute a single deadline and pass
-    #    the remaining seconds to the fallback (min 30s so it still gets a real
-    #    attempt if `npm ci` failed fast rather than stalling).
-    log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    local _deps_start _deps_remaining
-    _deps_start=$(date +%s)
-    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" bash -c 'cd "$1" && npm ci --include=optional && node apps/desktop/scripts/ensure-rolldown-binding.mjs' _ "$INSTALL_DIR"; then
-        log_success "Desktop workspace dependencies installed"
-    elif _deps_remaining=$(( DESKTOP_BUILD_TIMEOUT - ($(date +%s) - _deps_start) )); \
-         [ "$_deps_remaining" -lt 30 ] && _deps_remaining=30; \
-         run_with_timeout "$_deps_remaining" bash -c 'cd "$1" && npm install --include=optional && node apps/desktop/scripts/ensure-rolldown-binding.mjs' _ "$INSTALL_DIR"; then
-        log_success "Desktop workspace dependencies installed"
-    elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
-        log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
-        _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
+    log_info "Building desktop app (hermes desktop --build-only)..."
+    if (cd "$INSTALL_DIR" && "$hermes_python" "$INSTALL_DIR/hermes" desktop --build-only); then
+        log_success "Desktop app built"
     else
-        log_error "Desktop workspace npm install failed"
-        # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
-        # ~/.npm, so this non-root install can't write the shared cache. npm hides
-        # it behind a confusing EEXIST / "File exists" message while the real errno
-        # is EACCES (-13). Point the user at the fix instead of a raw npm trace.
-        log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
-        log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
-        log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
-        log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
-        log_info "Then re-run this installer, or build manually:"
-        log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
+        log_error "Desktop app build failed (hermes desktop --build-only)"
         return 1
     fi
-
-    # 2. Build, with up to three escalating attempts so a transient/blocked
-    #    Electron download self-heals instead of failing the whole install:
-    #      a) plain `npm run pack` (downloads Electron from GitHub),
-    #      b) on failure, purge a corrupt cached zip + stale unpacked dir and
-    #         retry (matches install.ps1 / `hermes desktop`),
-    #      c) on still-failing, fall back to a public Electron mirror — this is
-    #         the GitHub-blocked/throttled case (the repeating "retrying" log).
-    log_info "Building desktop app (this takes 1-3 minutes)..."
-    local pack_ok=false
-    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" _desktop_pack "$desktop_dir"; then
-        pack_ok=true
-    else
-        local purged=""
-        local restored=false
-        if ! _electron_dist_ok "$INSTALL_DIR"; then
-            purged="$(clear_electron_build_cache "$desktop_dir")"
-            if _restore_electron_dist "$INSTALL_DIR"; then restored=true; fi
-        fi
-        if [ "$restored" = true ]; then
-            log_warn "Desktop build failed; refreshed the Electron download and retrying once..."
-            if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" _desktop_pack "$desktop_dir"; then
-                pack_ok=true
-            fi
-        fi
-    fi
-
-    # (c) GitHub blocked → mirror fallback (#47266).
-    if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ] && ! _electron_dist_ok "$INSTALL_DIR"; then
-        log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
-        log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
-        log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-        _electron_dist_ok "$INSTALL_DIR" || _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" || true
-        if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
-            pack_ok=true
-        fi
-    fi
-
-    if [ "$pack_ok" = false ]; then
-        log_error "Desktop app build failed"
-        # If the log shows repeated "retrying" lines fetching the Electron zip,
-        # the binary download is blocked/throttled (firewall, proxy, region) and
-        # the mirror fallback above also couldn't reach a host. Try a mirror you
-        # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
-        if ! _electron_dist_ok "$INSTALL_DIR"; then
-            log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
-            log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
-            log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
-        fi
-        log_info "Otherwise build manually: cd $desktop_dir && npm run pack"
-        return 1
-    fi
-
-    local app=""
-    if [ "$OS" = "linux" ]; then
-        if [ -x "$desktop_dir/release/linux-unpacked/Hermes" ]; then
-            app="$desktop_dir/release/linux-unpacked/Hermes"
-        elif [ -x "$desktop_dir/release/linux-unpacked/hermes" ]; then
-            app="$desktop_dir/release/linux-unpacked/hermes"
-        fi
-    else
-        local cand
-        for cand in \
-            "$desktop_dir/release/mac-arm64/Hermes.app" \
-            "$desktop_dir/release/mac/Hermes.app"; do
-            if [ -d "$cand" ]; then
-                app="$cand"
-                break
-            fi
-        done
-    fi
-    if [ -z "$app" ]; then
-        log_error "Desktop build completed but no app was found under $desktop_dir/release/"
-        return 1
-    fi
-    log_success "Desktop app built: $app"
-
-    # Linux: Electron's chrome-sandbox helper needs root:root 4755 or the
-    # sandboxed renderer will abort on startup.  Check the file is a regular
-    # file (not a symlink) before chown/chmod so we don't follow an
-    # attacker-controlled link to an arbitrary path.
-    if [ "$OS" = "linux" ]; then
-        local sandbox="$desktop_dir/release/linux-unpacked/chrome-sandbox"
-        if [ -f "$sandbox" ] && [ ! -L "$sandbox" ]; then
-            if [ "$(id -u)" -eq 0 ]; then
-                chown root:root "$sandbox" && chmod 4755 "$sandbox" || {
-                    log_error "Cannot configure Electron sandbox helper: $sandbox"
-                    return 1
-                }
-            elif command -v sudo >/dev/null 2>&1; then
-                sudo chown root:root "$sandbox" && sudo chmod 4755 "$sandbox" || {
-                    log_error "Cannot configure Electron sandbox helper (sudo failed): $sandbox"
-                    return 1
-                }
-            else
-                log_error "Cannot configure Electron sandbox helper without sudo: $sandbox"
-                return 1
-            fi
-        fi
-    fi
-
-    # macOS: route through the same config-aware signing fixup as
-    # `hermes desktop`, so install/repair and self-update agree about the app's
-    # identity. The fixup preserves the Electron entitlement plists and signs
-    # with a stable Designated Requirement (configured keychain identity, else
-    # identifier-pinned ad-hoc), so macOS TCC grants — Full Disk Access,
-    # Desktop/Downloads/Documents, Accessibility, microphone — survive the
-    # rebuild instead of resetting on every update. The shell's
-    # publisher-signing decision governed the build and is passed explicitly so
-    # importing Python cannot reverse it by loading HERMES_HOME/.env. If the
-    # helper is unavailable or fails, branch into the historical quarantine
-    # strip + deep ad-hoc repair so a broken venv never leaves the bundle
-    # unsigned/unlaunchable.
-    if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
-        local config_python="$INSTALL_DIR/venv/bin/python"
-        local fixup_ok=""
-        if [ -x "$config_python" ]; then
-            if HERMES_HOME="$HERMES_HOME" "$config_python" - "$desktop_dir" <<'PYEOF'
-import sys
-from pathlib import Path
-from hermes_cli.main import _desktop_macos_relaunchable_fixup
-ok = _desktop_macos_relaunchable_fixup(
-    Path(sys.argv[1]), publisher_signing_configured=False
-)
-sys.exit(0 if ok else 1)
-PYEOF
-            then
-                fixup_ok=1
-            else
-                log_warn "Config-aware macOS signing fixup failed; applying the historical ad-hoc fallback."
-            fi
-        fi
-        if [ -z "$fixup_ok" ]; then
-            xattr -cr "$app" 2>/dev/null || true
-            codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
-        fi
-    fi
-
-    # `npm install` + `npm run pack` rewrite lockfiles; restore them so the
-    # checkout stays clean for the next `hermes update`.
     restore_dirty_lockfiles "$INSTALL_DIR"
+}
+
+stage_desktop() {
+    # Keep the parsed product CLI as the build authority for both the stage
+    # protocol and sourced installer consumers; no installer-local build path.
+    install_desktop
 }
 
 # Each --stage runs in its own process, so (unlike the monolithic main() where
@@ -3948,7 +3801,7 @@ run_stage_body() {
             # so install_desktop can find npm instead of silently skipping.
             check_node
             install_desktop_voice_deps
-            install_desktop
+            stage_desktop
             ;;
         complete)
             detect_os
@@ -4013,52 +3866,22 @@ run_stage_protocol() {
 # ============================================================================
 
 main() {
-    print_banner
-
-    detect_os
-    resolve_install_layout
-    install_uv
-    check_python
-    check_git
-    check_node
-    check_cxx_compiler
-    check_network_prerequisites
-    install_system_packages
-
-    clone_repo
-    setup_venv
-    install_deps
-    install_node_deps || return
-    install_browser_use_cli
-    install_computer_use_driver
-    setup_path
-    copy_config_templates
-    run_setup_wizard
-    maybe_start_gateway
-
-    if [ "$INCLUDE_DESKTOP" = true ]; then
-        install_desktop_voice_deps
-        install_desktop
-    fi
-
-    print_success
-
-    write_bootstrap_marker
-
-    # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
-    # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker
-    # gateway too), so a stamp there gets clobbered by the container's 'docker'
-    # stamp and wrongly blocks 'hermes update' on this host install.
-    # See detect_install_method().
-    echo "git" > "$INSTALL_DIR/.install_method"
+    local stage
+    for stage in $(stage_names); do
+        run_stage_body "$stage" || return
+    done
 }
 
-if [ "$MANIFEST_MODE" = true ]; then
-    emit_manifest
-elif [ -n "$STAGE_NAME" ]; then
-    run_stage_protocol "$STAGE_NAME"
-elif [ -n "$ENSURE_DEPS" ]; then
-    ensure_mode
-else
-    main
+# Sourcing defines functions for focused installer tests without running an
+# install; normal execution retains the manifest/stage/ensure/main protocol.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    if [ "$MANIFEST_MODE" = true ]; then
+        emit_manifest
+    elif [ -n "$STAGE_NAME" ]; then
+        run_stage_protocol "$STAGE_NAME"
+    elif [ -n "$ENSURE_DEPS" ]; then
+        ensure_mode
+    else
+        main
+    fi
 fi

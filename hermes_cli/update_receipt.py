@@ -37,7 +37,7 @@ def _code_identity(refresh: bool = False) -> dict[str, Any]:
     their install-stamp provenance — ``source="docker"``/``"nix"``/… — for deployment-kind awareness).
     """
     with suppress(Exception):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity(refresh=refresh) or {}
         if identity.get("sha"):

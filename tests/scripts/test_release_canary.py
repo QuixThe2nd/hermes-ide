@@ -116,7 +116,7 @@ class TestCanaryBuildNumberGuards:
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 
-        release.cmd_canary(SimpleNamespace(date="20260818103000", publish=True, remote="origin"))
+        release.cmd_canary(SimpleNamespace(no_changelog=True, date="20260818103000", publish=True, remote="origin"))
         assert calls == [], "same-minute same-line re-cut must not create a release"
 
     def test_same_minute_new_line_allowed(self, monkeypatch, tmp_path):
@@ -147,7 +147,7 @@ class TestCanaryBuildNumberGuards:
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 
-        release.cmd_canary(SimpleNamespace(date="20260818103000", publish=True, remote="origin"))
+        release.cmd_canary(SimpleNamespace(no_changelog=True, date="20260818103000", publish=True, remote="origin"))
         create = [c for c in captured if c[:3] == ["gh", "release", "create"]]
         assert len(create) == 1, captured
 
@@ -170,7 +170,7 @@ class TestCanaryBuildNumberGuards:
         monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 
         with pytest.raises(SystemExit) as exc:
-            release.cmd_canary(SimpleNamespace(date="20260829000000", publish=True, remote="origin"))
+            release.cmd_canary(SimpleNamespace(no_changelog=True, date="20260829000000", publish=True, remote="origin"))
         assert exc.value.code == 1
 
 
@@ -213,7 +213,7 @@ class TestCanaryIsDrafted:
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 
-        release.cmd_canary(SimpleNamespace(date="20260818103000", publish=True, remote="origin"))
+        release.cmd_canary(SimpleNamespace(no_changelog=True, date="20260818103000", publish=True, remote="origin"))
         return next(c for c in captured if c[:3] == ["gh", "release", "create"])
 
     def test_created_as_a_draft_prerelease(self, monkeypatch, tmp_path):
@@ -264,7 +264,7 @@ class TestCanaryStartsItsOwnBuild:
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
 
-        release.cmd_canary(SimpleNamespace(date="20260818103000", publish=True, remote="origin"))
+        release.cmd_canary(SimpleNamespace(no_changelog=True, date="20260818103000", publish=True, remote="origin"))
         return captured
 
     def test_dispatches_the_build_for_the_tag_it_cut(self, monkeypatch, tmp_path):

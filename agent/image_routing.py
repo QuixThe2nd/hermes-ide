@@ -53,10 +53,13 @@ def _matches_outside_code(pattern: re.Pattern, text: str) -> Iterable[str]:
 
 
 def _existing_file(candidate: str) -> Optional[str]:
-    """Expanded path when it is a regular file; None otherwise (incl. OSError on pathological input)."""
+    """Normalized path when it is a regular file; None otherwise (incl. OSError on pathological input).
+    The return value is the OS-canonical spelling of the real file (same norm class as
+    ``str(Path(...))``), so callers can compare it against actual paths — ``~`` expansion
+    alone would leave the textual ``/`` separators of the source text in place on Windows."""
     expanded = os.path.normpath(os.path.expanduser(candidate))
     try:
-        return expanded if os.path.isfile(expanded) else None
+        return os.path.normpath(expanded) if os.path.isfile(expanded) else None
     except OSError:
         return None
 

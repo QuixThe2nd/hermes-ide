@@ -14,6 +14,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+# The real loopback range server (shared with tests/pm): importing the
+# fixture name at module scope registers it for these tests too.
+from tests.pm._range_server import dl_server, url as _srv_url  # noqa: F401
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -504,3 +508,267 @@ def test_download_pause_reaches_paused_status(client, monkeypatch):
             break
         time.sleep(0.05)
     assert status is not None and status["status"] == "paused"
+
+
+# ── pause / resume against a real loopback range server ──────
+
+
+def _pin_budget(monkeypatch):
+    """Deterministic variant selection: a generous GPU budget so the
+    download path (not selection) is what the test exercises."""
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    budget = HardwareBudget(usable_vram_bytes=64 << 30,
+                            total_device_bytes=64 << 30,
+                            ram_available_bytes=64 << 30)
+    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget",
+                        lambda **kw: budget)
+
+
+def _serve_plan(monkeypatch, dl_server, tmp_partials, bodies):
+    """Point the download plan at the real loopback range server: one
+    served body per plan file, dests under the temp models dir, partials
+    under a temp dir (never the machine's cache)."""
+    from pm import paths as pm_paths
+    from tests.pm._range_server import RangeHandler
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.web_routers import local_models as lm
+
+    RangeHandler.chunk = 128 * 1024
+    RangeHandler.slow_per_chunk = 0.2
+    RangeHandler.payloads = {}
+    plan = []
+    for name, body in bodies.items():
+        RangeHandler.payloads[f"/{name}"] = body
+        dest = models_dir() / f"{name}.gguf"
+        plan.append((_srv_url(dl_server, f"/{name}"), dest, len(body)))
+    monkeypatch.setattr(pm_paths, "partials_root", lambda: Path(tmp_partials))
+    monkeypatch.setattr(lm, "_download_plan", lambda entry, variant: plan)
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.bootstrap.refresh_local_runtime",
+        lambda: False)
+    return plan
+
+
+def _poll_job(client, job_id, deadline_s=15, until=("paused", "done", "error")):
+    deadline = time.time() + deadline_s
+    status = None
+    while time.time() < deadline:
+        status = client.get(f"/api/local-models/jobs/{job_id}").json()
+        if status["status"] in until:
+            return status
+        time.sleep(0.03)
+    return status
+
+
+def _pause_when_flowing(client, job_id):
+    """Pause once bytes are actually moving, so the pause lands mid-flight
+    (the downloader stops between chunks) rather than before the probe."""
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        status = client.get(f"/api/local-models/jobs/{job_id}").json()
+        if (status.get("done_bytes") or 0) > 0:
+            break
+        time.sleep(0.03)
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        pr = client.post("/api/local-models/download/pause",
+                         json={"job_id": job_id})
+        if pr.status_code == 200 and pr.json().get("paused") is True:
+            return
+        time.sleep(0.03)
+    raise AssertionError("pause never reached the live download handle")
+
+
+_BIG_BODY = bytes(range(256)) * (8 * 1024 * 1024 // 256)  # 8 MiB, deterministic
+
+
+def test_download_pause_parks_job_with_handle_and_partials(
+        client, monkeypatch, dl_server, tmp_path):
+    """Mid-flight pause: the job parks as 'paused' (never 'done'/'error'),
+    the resume handle stays registered, and the downloader's partial
+    state survives on disk for the later resume."""
+    _pin_budget(monkeypatch)
+    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.web_routers import local_models as lm
+
+    _serve_plan(monkeypatch, dl_server, tmp_path / "partials",
+                {"PartA": _BIG_BODY})
+
+    job_id = client.post("/api/local-models/download",
+                         json={"model_id": CATALOG[0].id}).json()["job_id"]
+    _pause_when_flowing(client, job_id)
+
+    status = _poll_job(client, job_id)
+    assert status["status"] == "paused", status
+    assert status["error"] is None
+    # The resume handle survives the pause — the route can pick it up.
+    assert lm._RUNNING[job_id].get("resume") is not None
+    # Partial state is the downloader's own and must be intact.
+    partials = list(Path(tmp_path / "partials").glob("*.part"))
+    assert partials and any(p.stat().st_size > 0 for p in partials)
+
+
+def test_download_resume_completes_bytes(client, monkeypatch, dl_server,
+                                         tmp_path):
+    """Resume after a mid-flight pause finishes the remaining ranges and
+    stages the exact file the server serves."""
+    _pin_budget(monkeypatch)
+    from tests.pm._range_server import RangeHandler
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.web_routers import local_models as lm
+
+    _serve_plan(monkeypatch, dl_server, tmp_path / "partials",
+                {"PartA": _BIG_BODY})
+
+    job_id = client.post("/api/local-models/download",
+                         json={"model_id": CATALOG[0].id}).json()["job_id"]
+    _pause_when_flowing(client, job_id)
+    status = _poll_job(client, job_id)
+    assert status["status"] == "paused", status
+
+    RangeHandler.slow_per_chunk = 0.0   # let the resume run at full speed
+    assert client.post("/api/local-models/download/resume",
+                       json={"job_id": job_id}).json()["resumed"] is True
+
+    status = _poll_job(client, job_id, until=("done", "error"))
+    assert status["status"] == "done", status
+    assert (models_dir() / "PartA.gguf").read_bytes() == _BIG_BODY
+    # Finished jobs release their handles again.
+    assert job_id not in lm._RUNNING
+
+
+def test_repeated_resume_never_spawns_concurrent_writers(
+        client, monkeypatch, dl_server, tmp_path):
+    """Spamming resume while a worker is already running must not build a
+    second Download — one writer per job, ever."""
+    import threading as _threading
+
+    _pin_budget(monkeypatch)
+    from tests.pm._range_server import RangeHandler
+    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.web_routers import local_models as lm
+
+    _serve_plan(monkeypatch, dl_server, tmp_path / "partials",
+                {"PartA": _BIG_BODY})
+
+    job_id = client.post("/api/local-models/download",
+                         json={"model_id": CATALOG[0].id}).json()["job_id"]
+    _pause_when_flowing(client, job_id)
+    assert _poll_job(client, job_id)["status"] == "paused"
+
+    built = []
+    started = _threading.Event()
+    release = _threading.Event()
+    real_download = lm.Download
+
+    class _Counting(real_download):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            built.append(self)
+
+        def run(self, *a, **kw):
+            started.set()
+            assert release.wait(timeout=15)
+            return super().run(*a, **kw)
+
+    monkeypatch.setattr(lm, "Download", _Counting)
+
+    try:
+        client.post("/api/local-models/download/resume", json={"job_id": job_id})
+        assert started.wait(timeout=15), "resume never built a Download"
+        # Keep the real downloader parked while repeated requests contend.
+        for _ in range(2):
+            response = client.post("/api/local-models/download/resume", json={"job_id": job_id})
+            assert response.json()["resumed"] is False
+        assert len(built) == 1
+    finally:
+        RangeHandler.slow_per_chunk = 0.0
+        release.set()
+    status = _poll_job(client, job_id, until=("done", "error"))
+    assert status["status"] == "done", status
+
+
+def test_quickstart_pause_stops_the_sequence(client, monkeypatch, dl_server,
+                                             tmp_path):
+    """A quickstart paused mid-download must stop dead: no second file, no
+    server start, no default assignment — the job parks for a resume, and
+    its resume handle stays registered."""
+    _pin_budget(monkeypatch)
+    from tests.pm._range_server import RangeHandler
+    from hermes_cli.web_routers import local_models as lm
+
+    _serve_plan(monkeypatch, dl_server, tmp_path / "partials",
+                {"QsPartA": _BIG_BODY, "QsPartB": _BIG_BODY})
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags",
+                        lambda: ["b99999"])   # runtime leg already satisfied
+    monkeypatch.setattr(lm, "_runtime_target",
+                        lambda requested=None: ("b1", "cpu"))
+
+    calls = {"server": 0, "assign": 0}
+
+    def _fail_server(*a, **kw):
+        calls["server"] += 1
+        raise RuntimeError("server must not start after a pause")
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.bootstrap.ensure_local_runtime", _fail_server)
+
+    class _RecordLate:
+        def __call__(self, *a, **kw):
+            calls["assign"] += 1
+
+    monkeypatch.setattr(lm.web_deps, "late", _RecordLate())
+
+    from hermes_cli.local_runtime.catalog import CATALOG
+
+    job_id = client.post("/api/local-models/quickstart",
+                         json={"model_id": CATALOG[0].id}).json()["job_id"]
+    _pause_when_flowing(client, job_id)
+
+    status = _poll_job(client, job_id)
+    assert status["status"] == "paused", status
+    assert calls == {"server": 0, "assign": 0}
+    # The second plan file must never have been touched after the pause.
+    from hermes_cli.local_runtime.bootstrap import models_dir
+
+    assert not (models_dir() / "QsPartB.gguf").exists()
+    assert lm._RUNNING[job_id].get("resume") is not None
+    assert lm._QUICKSTART_LOCK.locked(), "paused quickstart must retain setup ownership"
+
+    def activate(*args, **kwargs):
+        calls["server"] += 1
+
+    def assign(*args, **kwargs):
+        calls["assign"] += 1
+
+    monkeypatch.setattr(lm, "_ensure_server", activate)
+    monkeypatch.setattr(lm, "_assign_default", assign)
+    RangeHandler.slow_per_chunk = 0
+    assert client.post("/api/local-models/quickstart", json={"model_id": CATALOG[0].id}).status_code == 409
+    assert client.post("/api/local-models/download/resume", json={"job_id": job_id}).json()["resumed"]
+    status = _poll_job(client, job_id, until=("done", "error"))
+    assert status["status"] == "done", status
+    assert calls == {"server": 1, "assign": 1}
+    assert (models_dir() / "QsPartA.gguf").read_bytes() == _BIG_BODY
+    assert (models_dir() / "QsPartB.gguf").read_bytes() == _BIG_BODY
+    assert job_id not in lm._RUNNING
+    assert not lm._QUICKSTART_LOCK.locked()
+
+
+def test_download_failure_releases_resume_handle(client, monkeypatch):
+    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.web_routers import local_models as lm
+
+    _pin_budget(monkeypatch)
+    monkeypatch.setattr(lm, "_download_plan", lambda *args: [])
+
+    def fail(*args):
+        raise OSError("download failed")
+
+    monkeypatch.setattr(lm, "_download_job", fail)
+    job_id = client.post("/api/local-models/download", json={"model_id": CATALOG[0].id}).json()["job_id"]
+    status = _poll_job(client, job_id)
+    assert status["status"] == "error", status
+    assert job_id not in lm._RUNNING

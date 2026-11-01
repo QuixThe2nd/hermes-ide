@@ -55,6 +55,24 @@ def test_mint_proxy_token_has_prefix_and_length():
     assert len(t) >= len("alpha-") + 32
 
 
+def test_management_token_path_is_single_authority(hermes_home):
+    """One token path: <hermes_home>/proxy/management.token, shared by mint, reuse and readers."""
+    assert ip._management_token_path() == ip._proxy_state_dir_ro() / "management.token"
+    assert not (hermes_home / "proxy").exists()
+
+    token = ip.ensure_management_token()
+    assert token
+    p = ip._management_token_path()
+    assert p.is_file()
+    assert p.read_text(encoding="utf-8-sig").strip() == token
+    # 0600-style private write: reuse without minting a second token.
+    assert ip.ensure_management_token() == token
+    # Forced rotation mints a new token at the same single path.
+    rotated = ip.ensure_management_token(force=True)
+    assert rotated != token
+    assert ip._management_token_path().read_text(encoding="utf-8-sig").strip() == rotated
+
+
 
 
 

@@ -16,7 +16,7 @@
 
 import assert from 'node:assert/strict'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   authHeader,
@@ -26,8 +26,12 @@ import {
   contentTypeFor,
   encodeKeyPath,
   feedDirFor,
+  feedReferencedKeys,
   mergeFeedYmls,
   canaryDoomedKeys,
+  publishFeedUploads,
+  referencedFeedBundleFilenames,
+  staleFeedBundleKeys,
   rewriteFeedPaths,
   stagingKeyFor,
   parseListXml,
@@ -270,4 +274,234 @@ releaseDate: '2026-08-18T00:00:00.000Z'
   assert.ok(merged.includes('releaseDate'))
   // Idempotent: merging the merged output adds nothing new.
   assert.equal(mergeFeedYmls([merged, arm64]), merged)
+})
+
+
+// ── C22: artifact first, feed pointer last ──────────────────────────────────
+
+test('publishFeedUploads uploads the msixbundle BEFORE the .appinstaller pointer', () => {
+  const calls = []
+  publishFeedUploads(
+    {
+      channelDir: 'releases/win32/canary',
+      appinstallerName: 'canary.appinstaller',
+      bundleFilename: 'HermesBundled-0.27.2.9-win.msixbundle',
+      bundleFile: 'C:/rel/HermesBundled-0.27.2.9-win.msixbundle',
+      appinstallerFile: 'C:/rel/canary.appinstaller',
+    },
+    (key, file) => calls.push([key, file]),
+  )
+  assert.deepEqual(calls, [
+    ['releases/win32/canary/HermesBundled-0.27.2.9-win.msixbundle', 'C:/rel/HermesBundled-0.27.2.9-win.msixbundle'],
+    ['releases/win32/canary/canary.appinstaller', 'C:/rel/canary.appinstaller'],
+  ])
+})
+
+test('publishFeedUploads never writes the pointer when the bundle upload fails', () => {
+  const calls = []
+  assert.throws(() =>
+    publishFeedUploads(
+      {
+        channelDir: 'releases/win32/stable',
+        appinstallerName: 'stable.appinstaller',
+        bundleFilename: 'HermesBundled-0.28.0.0-win.msixbundle',
+        bundleFile: 'bundle',
+        appinstallerFile: 'feed',
+      },
+      (key) => {
+        calls.push(key)
+        throw new Error('R2 PUT -> 503')
+      },
+    ),
+  )
+  assert.deepEqual(calls, ['releases/win32/stable/HermesBundled-0.28.0.0-win.msixbundle'])
+})
+
+// ── C22: canary feed-dir retention (fail-closed, keep-days grace) ───────────
+
+const CANARY_FEED_XML = `<?xml version="1.0" encoding="utf-8"?>
+<AppInstaller Uri="https://r2.example/releases/win32/canary/canary.appinstaller" Version="0.27.2.9" xmlns="http://schemas.microsoft.com/appx/appinstaller/2017/2">
+  <MainPackage Name="NousResearch.HermesBundled" Publisher="CN=..." Version="0.27.2.9" Uri="https://r2.example/releases/win32/canary/HermesBundled-0.27.2.9-win.msixbundle" />
+</AppInstaller>
+`
+
+test('referencedFeedBundleFilenames reads MainPackage only; unrecognized -> []', () => {
+  assert.deepEqual(referencedFeedBundleFilenames(CANARY_FEED_XML), ['HermesBundled-0.27.2.9-win.msixbundle'])
+  // The AppInstaller ROOT Uri (the feed pointer itself) must NOT count.
+  assert.ok(!referencedFeedBundleFilenames(CANARY_FEED_XML).includes('canary.appinstaller'))
+  assert.deepEqual(referencedFeedBundleFilenames(''), [])
+  assert.deepEqual(referencedFeedBundleFilenames('<html>ServiceUnavailable</html>'), [])
+  // A bundle Uri OUTSIDE MainPackage/MainBundle is not a reference.
+  assert.deepEqual(referencedFeedBundleFilenames('<Foo Uri="https://x/HermesBundled-1.0.0-win.msixbundle" />'), [])
+})
+
+test('feedReferencedKeys protects the referenced bundle and absolute tag Uris by exact key', () => {
+  const tagFeed = CANARY_FEED_XML.replace(
+    /Uri="https:\/\/r2\.example\/releases\/win32\/canary\/HermesBundled-0\.27\.2\.9-win\.msixbundle"/,
+    'Uri="https://r2.example/releases/tag/v0.27.2-canary.20260829/HermesBundled-0.27.2-win-x64.msix"',
+  )
+  const keys = feedReferencedKeys('releases/win32/canary', tagFeed)
+  assert.ok(keys.includes('releases/win32/canary/HermesBundled-0.27.2-win-x64.msix'))
+  assert.ok(keys.includes('releases/tag/v0.27.2-canary.20260829/HermesBundled-0.27.2-win-x64.msix'))
+})
+
+const CANARY_DIR = 'releases/win32/canary'
+const OLD_MS = Date.parse('2026-08-01T00:00:00Z')
+const FRESH_MS = Date.parse('2026-09-03T00:00:00Z')
+const CUTOFF_MS = Date.parse('2026-08-21T00:00:00Z')
+
+function canaryKeys(extra = []) {
+  return [
+    `${CANARY_DIR}/canary.appinstaller`,
+    `${CANARY_DIR}/HermesBundled-0.27.2.9-win.msixbundle`, // referenced
+    `${CANARY_DIR}/HermesBundled-0.27.1.12000-win.msixbundle`, // stale
+    `${CANARY_DIR}/HermesBundled-0.27.2.99-win.msixbundle`, // uploaded, not yet pointed
+    'releases/win32/stable/stable.appinstaller',
+    'releases/win32/stable/HermesBundled-0.28.0.0-win.msixbundle', // referenced
+    'releases/win32/stable/HermesBundled-0.27.0.0-win.msixbundle', // stale stable
+    ...extra,
+  ]
+}
+
+function lastModifiedFor(keys, overrides = {}) {
+  const lm = {}
+  for (const k of keys) lm[k] = OLD_MS
+  return Object.assign(lm, overrides)
+}
+
+test('staleFeedBundleKeys: old unreferenced canary bundle doomed, referenced and fresh ones kept', () => {
+  const keys = canaryKeys()
+  const lm = lastModifiedFor(keys, {
+    // Uploaded-but-not-yet-pointed canary bundle is FRESH -> survives grace.
+    [`${CANARY_DIR}/HermesBundled-0.27.2.99-win.msixbundle`]: FRESH_MS,
+  })
+  const doomed = staleFeedBundleKeys(keys, { [CANARY_DIR]: [CANARY_FEED_XML] }, lm, CUTOFF_MS)
+  assert.deepEqual(doomed, [`${CANARY_DIR}/HermesBundled-0.27.1.12000-win.msixbundle`])
+})
+
+test('staleFeedBundleKeys: stable dirs are never pruned', () => {
+  const keys = canaryKeys()
+  const lm = lastModifiedFor(keys, {
+    // Uploaded-but-not-yet-pointed bundle is fresh here; its fate is covered
+    // by the dedicated grace test.
+    [`${CANARY_DIR}/HermesBundled-0.27.2.99-win.msixbundle`]: FRESH_MS,
+  })
+  const feeds = {
+    [CANARY_DIR]: [CANARY_FEED_XML],
+    'releases/win32/stable': [CANARY_FEED_XML.replace(/0\.27\.2\.9/g, '0.28.0.0').replace('HermesBundled-0.27.2.9-win', 'HermesBundled-0.28.0.0-win')],
+  }
+  const doomed = staleFeedBundleKeys(keys, feeds, lm, CUTOFF_MS)
+  assert.deepEqual(doomed, [`${CANARY_DIR}/HermesBundled-0.27.1.12000-win.msixbundle`])
+})
+
+test('staleFeedBundleKeys: empty/malformed manifest dooms NOTHING in its dir (fail closed)', () => {
+  const keys = canaryKeys()
+  for (const bad of ['', '<html>boom</html>', null, '<Foo Uri="https://x/HermesBundled-1-win.msixbundle" />',
+    '<MainPackage Uri="https://x/old.msixbundle" />',
+    '<AppInstaller><MainBundle Uri="https://x/old.msixbundle" />',
+  ]) {
+    assert.deepEqual(
+      staleFeedBundleKeys(keys, { [CANARY_DIR]: [bad] }, lastModifiedFor(keys), CUTOFF_MS),
+      [],
+      `bad manifest must block the dir: ${JSON.stringify(bad)}`,
+    )
+  }
+})
+
+test('staleFeedBundleKeys: two manifests in one dir — union protected, one bad blocks all', () => {
+  const second = CANARY_FEED_XML.replace(/0\.27\.2\.9/g, '0.27.3.0').replace(
+    'HermesBundled-0.27.2.9-win',
+    'HermesBundled-0.27.3.0-win',
+  )
+  const keys = canaryKeys([`${CANARY_DIR}/second.appinstaller`, `${CANARY_DIR}/HermesBundled-0.27.3.0-win.msixbundle`])
+  const lm = lastModifiedFor(keys, { [`${CANARY_DIR}/HermesBundled-0.27.2.99-win.msixbundle`]: FRESH_MS })
+  // Union of both feeds: both referenced bundles kept, the rest pruned.
+  assert.deepEqual(staleFeedBundleKeys(keys, { [CANARY_DIR]: [CANARY_FEED_XML, second] }, lm, CUTOFF_MS), [
+    `${CANARY_DIR}/HermesBundled-0.27.1.12000-win.msixbundle`,
+  ])
+  // ONE unreadable/unrecognized manifest in the dir blocks feed retention.
+  assert.deepEqual(staleFeedBundleKeys(keys, { [CANARY_DIR]: [CANARY_FEED_XML, null] }, lm, CUTOFF_MS), [])
+  assert.deepEqual(staleFeedBundleKeys(keys, { [CANARY_DIR]: [CANARY_FEED_XML, ''] }, lm, CUTOFF_MS), [])
+})
+
+test('staleFeedBundleKeys: missing LastModified metadata keeps the object (fail closed)', () => {
+  const keys = canaryKeys()
+  for (const unknown of [undefined, NaN, Infinity]) {
+    const metadata = Object.fromEntries(keys.map(key => [key, unknown]))
+    const doomed = staleFeedBundleKeys(keys, { [CANARY_DIR]: [CANARY_FEED_XML] }, metadata, CUTOFF_MS)
+    assert.deepEqual(doomed, [])
+  }
+})
+
+test('prune-canaries --dry-run via main(): controlled clock, env restored, no DELETEs', async () => {
+  const { main } = await import('../scripts/r2-release.mjs')
+  // Clock: 2026-09-04, keep-days 14 -> cutoff 2026-08-21.
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-09-04T00:00:00Z'))
+  const STABLE_FEED = CANARY_FEED_XML.replace(/0\.27\.2\.9/g, '0.28.0.0').replace(
+    'releases/win32/canary/canary.appinstaller',
+    'releases/win32/stable/stable.appinstaller',
+  )
+  const bucketKeys = [
+    ['releases/tag/v0.27.2-canary.20260801034013/HermesBundled-0.27.2-canary.20260801034013-win-x64.msix', OLD_MS],
+    [`${CANARY_DIR}/canary.appinstaller`, OLD_MS],
+    [`${CANARY_DIR}/HermesBundled-0.27.2.9-win.msixbundle`, OLD_MS],
+    [`${CANARY_DIR}/HermesBundled-0.27.1.12000-win.msixbundle`, OLD_MS],
+    [`${CANARY_DIR}/HermesBundled-0.27.2.99-win.msixbundle`, FRESH_MS],
+    ['releases/win32/stable/stable.appinstaller', OLD_MS],
+    ['releases/win32/stable/HermesBundled-0.27.0.0-win.msixbundle', OLD_MS],
+  ]
+  const BUCKET_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult><IsTruncated>false</IsTruncated>
+${bucketKeys.map(([k, t]) => `  <Contents><Key>${k}</Key><LastModified>${new Date(t).toISOString()}</LastModified></Contents>`).join('\n')}
+</ListBucketResult>`
+  const deletes = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url)
+    if (init.method === 'DELETE') {
+      deletes.push(u)
+      return { ok: true, status: 204, headers: new Map(), text: async () => '' }
+    }
+    if (u.includes('list-type=2')) return { ok: true, status: 200, headers: new Map(), text: async () => BUCKET_XML }
+    if (u.endsWith('/canary.appinstaller')) return { ok: true, status: 200, headers: new Map(), text: async () => CANARY_FEED_XML }
+    if (u.endsWith('/stable.appinstaller')) return { ok: true, status: 200, headers: new Map(), text: async () => STABLE_FEED }
+    throw new Error(`unexpected fetch ${init.method ?? 'GET'} ${u}`)
+  }
+  const logs = []
+  const origLog = console.log
+  const origWarn = console.warn
+  console.log = (...a) => logs.push(a.join(' '))
+  console.warn = (...a) => logs.push('WARN ' + a.join(' '))
+  for (const [k, v] of Object.entries({
+    CLOUDFLARE_R2_ACCOUNT_ID: 'abc123',
+    CLOUDFLARE_R2_ACCESS_KEY_ID: 'AKIDEXAMPLE',
+    CLOUDFLARE_R2_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY',
+    CLOUDFLARE_R2_BUCKET: 'hermes-releases',
+  })) vi.stubEnv(k, v)
+  try {
+    await main(['prune-canaries', '--keep-days', '14', '--dry-run'])
+  } finally {
+    console.log = origLog
+    console.warn = origWarn
+    globalThis.fetch = realFetch
+    vi.unstubAllEnvs()
+    vi.useRealTimers()
+  }
+  // Doomed: the old tag-archive canary + the old UNREFERENCED canary bundle.
+  assert.ok(logs.some((l) => l.includes('would delete r2:releases/tag/v0.27.2-canary.20260801034013/')))
+  assert.ok(logs.some((l) => l.includes(`would delete r2:${CANARY_DIR}/HermesBundled-0.27.1.12000-win.msixbundle`)))
+  // Survivors: referenced bundle (old but referenced), fresh not-yet-pointed
+  // bundle (keep-days grace), stable dir (never pruned), pointers.
+  for (const keep of [
+    `r2:${CANARY_DIR}/HermesBundled-0.27.2.9-win.msixbundle`,
+    `r2:${CANARY_DIR}/HermesBundled-0.27.2.99-win.msixbundle`,
+    'r2:releases/win32/stable/HermesBundled-0.27.0.0-win.msixbundle',
+  ]) {
+    assert.ok(!logs.some((l) => l.includes(`would delete ${keep}`)), `must survive: ${keep}`)
+  }
+  assert.ok(!logs.some((l) => l.includes('would delete') && l.includes('.appinstaller')))
+  assert.deepEqual(deletes, [], 'dry-run must not issue any DELETE')
+  // Env restoration: stubEnv values were unstubbed (none pre-existed here).
+  assert.equal(process.env.CLOUDFLARE_R2_ACCOUNT_ID, undefined)
 })

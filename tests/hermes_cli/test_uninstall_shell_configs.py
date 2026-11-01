@@ -60,6 +60,20 @@ class TestHappyPath:
         assert uninstall.remove_path_from_shell_configs() == []
         assert rc.read_text(encoding="utf-8") == "export EDITOR=vim\n"
 
+    def test_all_shell_rc_candidates_are_swept(self, fake_home: Path):
+        """Every rc name the shell-config resolver knows gets the PATH sweep.
+
+        Guards the single resolver's coverage: an rc the resolver misses keeps
+        a stale Hermes PATH entry after uninstall.
+        """
+        names = (".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile")
+        for name in names:
+            (fake_home / name).write_text(ZSHRC, encoding="utf-8")
+
+        removed = uninstall.remove_path_from_shell_configs()
+
+        assert sorted(p.name for p in removed) == sorted(names)
+
 
 class TestCrashDurability:
     def test_shell_config_survives_an_interrupted_rewrite(self, fake_home: Path):
