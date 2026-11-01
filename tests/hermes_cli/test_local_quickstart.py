@@ -86,7 +86,7 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
         "hermes_cli.web_routers.local_models._state_endpoint",
         lambda: {"base_url": "http://127.0.0.1:1/v1", "api_key": "k"})
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._assign_default",
+        "hermes_cli.web_server_config._apply_model_assignment_sync",
         lambda *a, **k: calls.append("assign"))
 
     r = client.post("/api/local-models/quickstart", json={})
@@ -137,7 +137,7 @@ def test_quickstart_skips_satisfied_legs(client, monkeypatch):
         "hermes_cli.web_routers.local_models._state_endpoint",
         lambda: {"base_url": "http://127.0.0.1:1/v1", "api_key": "k"})
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models._assign_default",
+        "hermes_cli.web_server_config._apply_model_assignment_sync",
         lambda *a, **k: calls.append("assign"))
 
     r = client.post("/api/local-models/quickstart", json={})

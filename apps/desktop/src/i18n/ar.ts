@@ -1,6 +1,13 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+  externalOpenFailed: {
+    title: 'تعذّر فتح هذا الرابط',
+    message: 'لا يوجد متصفح مسجل لفتح هذا العنوان. انسخ الرابط وافتحه يدويًا.',
+    copyUrl: 'نسخ الرابط',
+    close: 'إغلاق'
+  },
+
 
   sessionImport: {
     title: 'المتابعة من تطبيق آخر',
