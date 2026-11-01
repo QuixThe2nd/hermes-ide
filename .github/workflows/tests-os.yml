@@ -156,13 +156,13 @@ jobs:
 
           # ``tr -d '\r'``: on Windows the helper's redirected stdout gains
           # CRLF line endings; a stray \r would corrupt the path. The list
-          # is ';'-joined for the runner's --files flag (its separator on
-          # every host — explicit file lists bypass discovery).
+          # uses the native path-list separator consumed by --files.
           #
           # Any non-zero exit propagates red: real test failures, or the
           # runner's own zero-run guard (every file filtered to empty by
           # ``-m`` — "must never pass without running its OS's tests").
-          FILES="$(tr -d '\r' < "$LIST" | paste -sd ';' -)"
+          SEPARATOR="$(uv run --no-sync python -c 'import os, sys; sys.stdout.write(os.pathsep)')"
+          FILES="$(tr -d '\r' < "$LIST" | paste -sd "$SEPARATOR" -)"
           scripts/run_tests.sh --files "$FILES" -- \
             ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
             -m "platforms and not integration" \

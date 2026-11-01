@@ -1055,7 +1055,7 @@ class TestImportAtomicWrites:
         assert target.read_text() == "model: restored\n"
         assert (target.stat().st_mode & 0o777) == 0o644
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership")
+    @pytest.mark.platforms("posix")
     def test_restore_preserves_existing_file_owner(self, tmp_path, monkeypatch):
         """A root-run import must not re-own the user's files to root.
 
@@ -1092,21 +1092,14 @@ class TestImportAtomicWrites:
         # state.db is newly created, so there is no prior owner to restore.
         assert chown_calls == [(target, 123, 456)]
 
-    @pytest.mark.skipif(not hasattr(os, "fchmod"), reason="needs fchmod present to remove it")
-    def test_mode_is_applied_before_the_replace_without_fchmod(self, tmp_path, monkeypatch):
-        """Covers the Windows branch: no ``fchmod``, so ``chmod`` the temp path.
-
-        Applying the mode only *after* ``atomic_replace`` leaves the published
-        file at mkstemp's 0600 until that chmod lands (and permanently if the
-        process dies in between), and ``atomic_replace``'s EXDEV/EBUSY
-        ``shutil.copystat`` fallback would copy 0600 onto the target. Mirrors
-        the transit-window fix ``atomic_yaml_write`` already carries.
-        """
+    def test_mode_is_applied_before_the_replace(self, tmp_path, monkeypatch):
+        """Publish the correct native permission bits with no permissive window."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         target = hermes_home / "config.yaml"
         target.write_text("model: original\n")
         os.chmod(target, 0o644)
+        expected_mode = target.stat().st_mode & 0o777
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
@@ -1123,17 +1116,15 @@ class TestImportAtomicWrites:
                 staged_modes.append(os.stat(tmp).st_mode & 0o777)
             return real_replace(tmp, dst)
 
-        monkeypatch.delattr(os, "fchmod")
         monkeypatch.setattr(backup_mod, "atomic_replace", spying_replace)
 
         from hermes_cli.backup import run_import
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
-        # Without the pre-replace chmod this reads 0o600 (mkstemp's mode).
-        assert staged_modes == [0o644]
-        assert (target.stat().st_mode & 0o777) == 0o644
+        assert staged_modes == [expected_mode]
+        assert (target.stat().st_mode & 0o777) == expected_mode
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX setuid/setgid bits")
+    @pytest.mark.platforms("posix")
     def test_restore_does_not_carry_setuid_onto_archive_content(
         self, tmp_path, monkeypatch
     ):
