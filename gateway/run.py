@@ -6979,6 +6979,11 @@ class TurnRunner:
         )
 
         while True:
+            # Mid-turn platform reconnect swaps the registry adapter; re-resolve
+            # per iteration so remaining sends/edits/typing ride the current
+            # transport instead of raising on the dead snapshot for the rest
+            # of the turn.
+            adapter = self._runner._adapter_for_source(ctx.source) or adapter
             try:
                 if not ctx._run_still_current():
                     while not ctx.progress_queue.empty():
@@ -7195,6 +7200,7 @@ class TurnRunner:
                 # stopped the turn.  Only the spawned-run agent-viewer notice
                 # stays durable, and a reset may still clear local
                 # bookkeeping.
+                adapter = self._runner._adapter_for_source(ctx.source) or adapter
                 while not ctx.progress_queue.empty():
                     try:
                         raw = ctx.progress_queue.get_nowait()
@@ -8281,6 +8287,9 @@ class TurnRunner:
                         chat_id=ctx.source.chat_id,
                         config=_consumer_cfg,
                         metadata=ctx._status_thread_metadata,
+                        adapter_provider=lambda: self._runner._adapter_for_source(
+                            ctx.source
+                        ),
                         on_new_message=(
                             (lambda: ctx.progress_queue.put(("__reset__",)))
                             if ctx.progress_queue is not None

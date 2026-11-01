@@ -791,6 +791,7 @@ class TurnRunner:
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
+        st.adapter = self._runner._delivery_adapter_for(ctx.source) or st.adapter
         with suppress(Exception):
             while not ctx.progress_queue.empty():
                 raw = ctx.progress_queue.get_nowait()
@@ -862,6 +863,11 @@ class TurnRunner:
         last_edit_ts = 0.0
         EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
         while True:
+            # Mid-turn platform reconnect swaps the registry adapter; re-resolve
+            # per iteration so remaining sends/edits/typing ride the current
+            # transport instead of raising on the dead snapshot for the rest
+            # of the turn.
+            st.adapter = self._runner._delivery_adapter_for(ctx.source) or st.adapter
             try:
                 if not ctx._run_still_current():
                     self._drain_progress_queue()
@@ -1093,6 +1099,9 @@ class TurnRunner:
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
+                        adapter_provider=lambda: self._runner._delivery_adapter_for(
+                            ctx.source
+                        ),
                         on_new_message=(
                             (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
                         ),

@@ -121,8 +121,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         run_still_current: Optional[Callable[[], bool]] = None,
         on_visible_progress: Optional[Callable[[], None]] = None,
         visible_delivery_lock=None,
-        context_gate: Optional[Callable[[], Any]] = None):
-        self.adapter = adapter
+        context_gate: Optional[Callable[[], Any]] = None,
+        *,
+        adapter_provider: Optional[Callable[[], Any]] = None):
+        # Mid-turn hub reconnect swaps the runner's adapter; the consumer must
+        # follow the current transport or every remaining delta/finalize raises
+        # on the dead one.
+        self._adapter_provider = adapter_provider
+        self._adapter_snapshot = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
@@ -205,6 +211,22 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # to emit a lone "✅"; an EAGER re-seed opened a bubble that got_done MUST close.
         self._awaiting_reopen_after_boundary = False
         self._reopen_seeded_eagerly = False
+
+    @property
+    def adapter(self):
+        provider = self._adapter_provider
+        if provider is not None:
+            try:
+                live = provider()
+            except Exception:
+                live = None
+            if live is not None:
+                return live
+        return self._adapter_snapshot
+
+    @adapter.setter
+    def adapter(self, value):
+        self._adapter_snapshot = value
 
     def _reset_message_state(self) -> None:
         """Per-message (segment) state: fresh at construction and after each segment break."""

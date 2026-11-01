@@ -2703,6 +2703,7 @@ class GatewayTurnMixin:
                 adapter=_adapter, chat_id=source.chat_id, config=_consumer_cfg,
                 metadata=_thread_metadata, on_before_finalize=_pause_typing_before_finalize,
                 initial_reply_to_id=event_message_id, run_still_current=_run_still_current,
+                adapter_provider=lambda: self._delivery_adapter_for(source),
             )
         except Exception as _sc_err:
             logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
