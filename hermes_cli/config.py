@@ -3806,6 +3806,30 @@ def set_config_value(key: str, value: str, force: bool = False):
         _print_unknown_key_notice(key, suggestion)
 
 
+def peek_config_value(key: str, default=None):
+    """Programmatic read: the user's value when set, else ``default``.
+    Never prints, never masks, never exits. Complements the CLI-facing
+    get_config_value(), which prints and may exit (#84106)."""
+    from hermes_cli.config_env_routing import is_env_setting_key, read_env_setting
+
+    if _is_env_config_key(key):
+        env_value = get_env_value(key.upper())
+        if env_value is not None:
+            return env_value
+    elif is_env_setting_key(key):
+        env_value = read_env_setting(key)
+        if env_value is not None:
+            return env_value
+    else:
+        # Mirror set_config_value: read the canonical display.platforms path.
+        # See #71047.
+        key, _ = _redirect_platform_display_key(key)
+        value = _get_nested(load_config(), key)
+        if value is not _MISSING:
+            return value
+    return default
+
+
 def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     """Print a resolved configuration value. Credentials are masked unless ``--raw`` or
     ``security.redact_secrets: false``: ``print`` bypasses the log redactor, and the agent runs

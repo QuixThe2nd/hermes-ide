@@ -68,11 +68,11 @@ def lazy_installs_allowed() -> bool:
     ):
         return False
     try:
-        from hermes_cli.config import get_config_value
+        from hermes_cli.config import peek_config_value
     except ImportError:
         return True
     try:
-        return bool(get_config_value("security.allow_lazy_installs", True))
+        return bool(peek_config_value("security.allow_lazy_installs", True))
     except Exception:
         return False
 
