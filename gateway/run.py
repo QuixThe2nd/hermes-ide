@@ -2928,17 +2928,13 @@ _ensure_ssl_certs()
 # actions, enrollment) need helpers, not PATH provisioning or a pm verdict
 # on their behalf.
 def _run_pm_startup() -> None:
+    # Shared contract with CLI dispatch (hermes_cli/pm_startup.py): activate a
+    # healthy store, or repair it off the boot path so a slow artifact fetch
+    # never delays gateway readiness.
     try:
-        import pm
+        from hermes_cli.pm_startup import run_pm_startup
 
-        pm.adopt()
-        problems = pm.check()
-        if problems:
-            logging.getLogger("gateway.run").warning(
-                f"install out of sync ({'; '.join(problems)}) — run `hermes pm install`"
-            )
-        else:
-            pm.activate()
+        run_pm_startup()
     except Exception:
         logging.getLogger("gateway.run").debug("pm startup check failed", exc_info=True)
 
@@ -38943,15 +38939,6 @@ def main():
 
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a
     # wedged non-daemon worker can't block Py_FinalizeEx's join. SystemExit caught so EVERY path exits.
-
-    # Match CLI dispatch: activate a healthy store, or repair it off the boot
-    # path so a slow artifact fetch never delays gateway readiness.
-    try:
-        from hermes_cli.pm_startup import run_pm_startup
-
-        run_pm_startup()
-    except Exception:
-        logger.debug("pm startup check failed", exc_info=True)
 
     # start_gateway() performs the full graceful teardown (adapters
     # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,
