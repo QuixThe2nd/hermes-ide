@@ -3527,9 +3527,9 @@ def _windows_scm_service_command(action: str | None) -> None:
 
     def _config_get() -> bool:
         try:
-            from hermes_cli.config import get_config_value
+            from hermes_cli.config import peek_config_value
 
-            return bool(get_config_value("gateway.service", False))
+            return bool(peek_config_value("gateway.service", False))
         except Exception:
             return False
 
@@ -3627,9 +3627,9 @@ def _windows_scm_service_command(action: str | None) -> None:
 
     def _config_get() -> bool:
         try:
-            from hermes_cli.config import get_config_value
+            from hermes_cli.config import peek_config_value
 
-            return bool(get_config_value("gateway.service", False))
+            return bool(peek_config_value("gateway.service", False))
         except Exception:
             return False
 
