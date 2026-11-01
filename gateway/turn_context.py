@@ -21,7 +21,8 @@ class TurnContext:
     # registered the watch.  Their routine delivery surfaces stay quiet.
     scheduled_heartbeat: bool = False
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
-    _live_status_adapter: Any = None
+    _live_status_adapter_snapshot: Any = None
+    _live_status_adapter_provider: Optional[Callable] = None
     _live_status_mode: str = "off"
     _thinking_enabled: bool = False
     progress_mode: str = "off"
@@ -112,7 +113,8 @@ class TurnContext:
     # hook / status bridge wiring
     _loop_for_step: Any = None
     _hooks_ref: Any = None
-    _status_adapter: Any = None
+    _status_adapter_snapshot: Any = None
+    _status_adapter_provider: Optional[Callable] = None
     _status_chat_id: Any = None
     _status_thread_metadata: Optional[dict] = None
     # bound TurnRunner callbacks read via ctx
@@ -241,6 +243,40 @@ class TurnContext:
     # tool_call_ids whose combined delegation card already went out — a
     # duplicate viewer event for the same call must not spawn a second card.
     _agent_viewer_cards_sent: set = field(default_factory=set)
+
+    @property
+    def _status_adapter(self):
+        """Re-resolve the status transport after a mid-turn hub reconnect; snapshot is turn-start fallback."""
+        provider = getattr(self, "_status_adapter_provider", None)
+        if provider is not None:
+            try:
+                live = provider()
+            except Exception:
+                live = None
+            if live is not None:
+                return live
+        return getattr(self, "_status_adapter_snapshot", None)
+
+    @_status_adapter.setter
+    def _status_adapter(self, value):
+        self._status_adapter_snapshot = value
+
+    @property
+    def _live_status_adapter(self):
+        """Re-resolve live-status transport after reconnect; snapshot preserves turn-start wiring."""
+        provider = getattr(self, "_live_status_adapter_provider", None)
+        if provider is not None:
+            try:
+                live = provider()
+            except Exception:
+                live = None
+            if live is not None:
+                return live
+        return getattr(self, "_live_status_adapter_snapshot", None)
+
+    @_live_status_adapter.setter
+    def _live_status_adapter(self, value):
+        self._live_status_adapter_snapshot = value
 
     def mark_visible_progress(self) -> None:
         """Record a successful user-visible delivery for this turn (see

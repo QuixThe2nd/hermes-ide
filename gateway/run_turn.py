@@ -2703,6 +2703,7 @@ class GatewayTurnMixin:
                 adapter=_adapter, chat_id=source.chat_id, config=_consumer_cfg,
                 metadata=_thread_metadata, on_before_finalize=_pause_typing_before_finalize,
                 initial_reply_to_id=event_message_id, run_still_current=_run_still_current,
+                adapter_provider=lambda: self._delivery_adapter_for(source),
             )
         except Exception as _sc_err:
             logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -2918,7 +2919,8 @@ class GatewayTurnMixin:
         # agent.display budget an interleaved turn may have overwritten.
         tool_preview_max_len: int = 0
         _live_status_mode: str = "off"
-        _live_status_adapter: Any = None
+        _live_status_adapter_snapshot: Any = None
+        _live_status_adapter_provider: Any = None
         log_mode_enabled: bool = False
         log_queue: Any = None
         interim_assistant_messages_enabled: bool = False
@@ -3001,9 +3003,14 @@ class GatewayTurnMixin:
         tool_progress_enabled = progress_mode not in {"off", "log"} and not is_webhook
         # Live status for text-rendering typing indicators (Slack); independent of tool_progress.
         _live_status_mode = resolve_display_setting(user_config, platform_key, "live_status", "full")
-        _live_status_adapter = (
+        _live_status_adapter_snapshot = (
             adapter if getattr(adapter, "supports_status_text", False) and _live_status_mode != "off" else None
         )
+        def _live_status_adapter_provider():
+            if _live_status_mode == "off":
+                return None
+            a = self._delivery_adapter_for(source)
+            return a if getattr(a, "supports_status_text", False) else None
         # "log" mode: tool calls go to ~/.hermes/logs/tool_calls.log instead of the chat. Gateway-only.
         log_mode_enabled = progress_mode == "log" and not is_webhook
         # Interim assistant messages and thinking_progress are independent of tool progress (same
@@ -3041,7 +3048,9 @@ class GatewayTurnMixin:
             progress_codebox=progress_codebox,
             _display_surface_mode=_display_surface_mode, tool_preview_max_len=tool_preview_max_len,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
-            _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
+            _live_status_adapter_snapshot=_live_status_adapter_snapshot,
+            _live_status_adapter_provider=_live_status_adapter_provider,
+            log_mode_enabled=log_mode_enabled,
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
@@ -3051,7 +3060,8 @@ class GatewayTurnMixin:
 
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
-        "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
+        "_live_status_adapter_snapshot", "_live_status_adapter_provider",
+        "_live_status_mode", "_thinking_enabled", "progress_mode",
         "progress_grouping", "progress_codebox", "tool_preview_max_len", "tool_progress_enabled", "log_queue",
         "resolve_display_setting", "user_config", "enabled_toolsets", "disabled_toolsets",
         "log_mode_enabled", "interim_assistant_messages_enabled", "needs_progress_queue",
@@ -4124,6 +4134,7 @@ class GatewayTurnMixin:
         turn_ctx._event_callback_sync = turn_runner._event_callback_sync
         turn_ctx._status_callback_sync = turn_runner._status_callback_sync
         turn_ctx._status_adapter = self._delivery_adapter_for(source)
+        turn_ctx._status_adapter_provider = lambda: self._delivery_adapter_for(source)
         turn_ctx._status_chat_id = source.chat_id
         turn_ctx._status_thread_metadata = _status_thread_metadata
         return _status_thread_metadata

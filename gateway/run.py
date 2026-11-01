@@ -6979,6 +6979,11 @@ class TurnRunner:
         )
 
         while True:
+            # Mid-turn platform reconnect swaps the registry adapter; re-resolve
+            # per iteration so remaining sends/edits/typing ride the current
+            # transport instead of raising on the dead snapshot for the rest
+            # of the turn.
+            adapter = self._runner._adapter_for_source(ctx.source) or adapter
             try:
                 if not ctx._run_still_current():
                     while not ctx.progress_queue.empty():
@@ -7195,6 +7200,7 @@ class TurnRunner:
                 # stopped the turn.  Only the spawned-run agent-viewer notice
                 # stays durable, and a reset may still clear local
                 # bookkeeping.
+                adapter = self._runner._adapter_for_source(ctx.source) or adapter
                 while not ctx.progress_queue.empty():
                     try:
                         raw = ctx.progress_queue.get_nowait()
@@ -8281,6 +8287,9 @@ class TurnRunner:
                         chat_id=ctx.source.chat_id,
                         config=_consumer_cfg,
                         metadata=ctx._status_thread_metadata,
+                        adapter_provider=lambda: self._runner._adapter_for_source(
+                            ctx.source
+                        ),
                         on_new_message=(
                             (lambda: ctx.progress_queue.put(("__reset__",)))
                             if ctx.progress_queue is not None
@@ -35999,10 +36008,17 @@ class GatewayRunner(
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
 
+        def _live_status_adapter_provider():
+            if _live_status_mode == "off":
+                return None
+            a = self._adapter_for_source(source)
+            return a if getattr(a, "supports_status_text", False) else None
+
         turn_ctx = TurnContext(
             source=source,
             _run_still_current=_run_still_current,
-            _live_status_adapter=_live_status_adapter,
+            _live_status_adapter_snapshot=_live_status_adapter,
+            _live_status_adapter_provider=_live_status_adapter_provider,
             _live_status_mode=_live_status_mode,
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
@@ -36305,6 +36321,7 @@ class GatewayRunner(
         # status wiring computed above onto the shared TurnContext at the
         # exact original binding site.
         turn_ctx._status_adapter = _status_adapter
+        turn_ctx._status_adapter_provider = lambda: self._adapter_for_source(source)
         turn_ctx._status_chat_id = _status_chat_id
         turn_ctx._status_thread_metadata = _status_thread_metadata
         turn_ctx._status_callback_sync = turn_runner._status_callback_sync

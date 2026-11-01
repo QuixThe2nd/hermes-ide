@@ -123,7 +123,7 @@ def _status_ctx(
         progress_grouping=grouping,
         tool_progress_enabled=tool_progress,
         progress_queue=progress_queue,
-        _status_adapter=adapter,
+        _status_adapter_snapshot=adapter,
         _status_chat_id="c1",
         _status_thread_metadata=status_metadata,
         _loop_for_step=loop,
