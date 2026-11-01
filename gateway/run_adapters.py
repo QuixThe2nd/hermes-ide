@@ -1071,6 +1071,10 @@ class GatewayAdapterLifecycleMixin:
             ) or self._refuse_duplicate_claim(listener_claim, claimed, profile_name, platform, "listener"):
                 continue
             self._configure_profile_adapter(adapter, profile_name, platform)
+            from gateway.overlap_restart import defer_adapter_until_authoritative, defer_secondary_adapter
+            if defer_adapter_until_authoritative(self, adapter):
+                defer_secondary_adapter(self, profile_name, platform)
+                continue
             try:
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     success = await self._connect_initial_adapter_with_timeout(adapter, platform)

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from hermes_constants import get_default_hermes_root
+from gateway.overlap_restart import OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV
 
 logger = logging.getLogger(__name__)
 
@@ -522,6 +523,12 @@ class DiscordHubServer:
         home = str(params.get("hermes_home") or "")
         if not home:
             raise ValueError("hermes_home is required")
+        try:
+            predecessor_pid = int(params.get("predecessor_pid") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("predecessor_pid must be a positive integer") from exc
+        if predecessor_pid <= 0:
+            raise ValueError("predecessor_pid must be a positive integer")
 
         def _popen(argv: list[str], **kwargs: Any):
             import subprocess
@@ -532,6 +539,8 @@ class DiscordHubServer:
                 os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
             for marker in ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE"):
                 env.pop(marker, None)
+            env[OVERLAP_SUCCESSOR_ENV] = "1"
+            env[OVERLAP_PREDECESSOR_PID_ENV] = str(predecessor_pid)
             kwargs["env"] = env
             return subprocess.Popen(argv, **kwargs)
 
