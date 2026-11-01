@@ -35,7 +35,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     #   "subtext"   -> each line prefixed with "-# " (Discord small grey subtext)
     #   "compact"   -> single "💭 thought for Xs" duration line, no CoT text;
     #                  appends " (N tokens)" when this turn's count is known
-    # Discord defaults to "subtext"; everywhere else defaults to "code".
+    # All platforms (including Discord) default to "code"; "subtext" is an explicit opt-in.
     "reasoning_style": "code",
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -101,8 +101,8 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
         "busy_ack_detail": False,
     },
     # Discord has a native "subtext" primitive (-# small grey text) that reads
-    # as metadata rather than content, so reasoning summaries default to it
-    # here instead of the fenced code block used elsewhere.
+    # as metadata rather than content; select it via
+    # display.platforms.discord.reasoning_style when desired.
     # Discord's long-running heartbeat defaults to the phase line ("⏳ terminal
     # 1m42s" / "⏳ grok-4.6 38s" / "⏳ packing 12s") — the current wait plus its
     # elapsed time — instead of the raw diagnostic join ("⏳ Working — 3 min —
@@ -115,7 +115,6 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # display.platforms.discord.tool_preview_length re-caps.
     "discord":     {
         **_TIER_HIGH,
-        "reasoning_style": "subtext",
         "long_running_notifications": "phase",
         "tool_preview_length": 0,
     },

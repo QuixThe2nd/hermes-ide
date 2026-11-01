@@ -2923,26 +2923,6 @@ _ensure_ssl_certs()
 # pm startup: same contract as the CLI dispatch path (hermes_cli/main.py)
 # — the gateway daemon never passes through the CLI fast-launch checks, so
 # the store's tools (git/bash/ffmpeg/...) must be on PATH here. O(1) stamp
-# checks, no network, no installs; warns, never blocks. Runs from main(),
-# not import time: importers of this module (relay runtime, platform
-# actions, enrollment) need helpers, not PATH provisioning or a pm verdict
-# on their behalf.
-def _run_pm_startup() -> None:
-    try:
-        import pm
-
-        pm.adopt()
-        problems = pm.check()
-        if problems:
-            logging.getLogger("gateway.run").warning(
-                f"install out of sync ({'; '.join(problems)}) — run `hermes pm install`"
-            )
-        else:
-            pm.activate()
-    except Exception:
-        logging.getLogger("gateway.run").debug("pm startup check failed", exc_info=True)
-
-
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -38910,11 +38890,17 @@ def main():
     for _step in (_register_identity, _arm_watchdog, _utf8_stdio):
         _best_effort(_step)
 
-    # pm startup contract (PATH provisioning for the store's tools), then
-    # the post-update bootstrap: the same one-pass record-gated maintenance
-    # registry the CLI dispatch path runs (hermes_cli/main.py) — this
-    # entrypoint bypasses that dispatch, so run it here too. Never raises.
-    _best_effort(_run_pm_startup)
+    # pm startup: activate a healthy store, or repair it off the boot path
+    # (hermes_cli.pm_startup auto-heal). Then the post-update bootstrap: the
+    # same one-pass record-gated maintenance registry the CLI dispatch path
+    # runs (hermes_cli/main.py) — this entrypoint bypasses that dispatch, so
+    # run it here too. Never raises.
+    try:
+        from hermes_cli.pm_startup import run_pm_startup
+
+        run_pm_startup()
+    except Exception:
+        logger.debug("pm startup check failed", exc_info=True)
     try:
         from hermes_cli.boot_bootstrap import (
             default_project_root,

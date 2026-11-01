@@ -3494,22 +3494,14 @@ def main():
 
         sys.exit(pm_main(sys.argv[2:]))
 
-    # The startup check: O(1) stamp comparisons, no network, no installs.
-    # One loud line when the install is damaged; never blocks the command.
-    # Then provision: prepend the store's tool dirs to PATH so reactive
-    # which('git'|'bash'|'ffmpeg'|...) resolves the bundled binaries.
+    # The startup check is fast and never installs inline. An out-of-sync
+    # store is repaired in the background, then activated to refresh PATH.
     try:
-        import pm
+        from hermes_cli.pm_startup import run_pm_startup
 
-        pm.adopt()
-        problems = pm.check()
-        if problems:
-            print(
-                f"⚠ install out of sync ({'; '.join(problems)}) — run `hermes pm install`",
-                file=sys.stderr,
-            )
-        else:
-            pm.activate()
+        run_pm_startup(
+            warn=lambda message: print(f"⚠ {message}", file=sys.stderr)
+        )
     except Exception:
         import logging
 
