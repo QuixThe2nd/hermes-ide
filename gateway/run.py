@@ -36011,7 +36011,16 @@ class GatewayRunner(
         turn_ctx = TurnContext(
             source=source,
             _run_still_current=_run_still_current,
-            _live_status_adapter=_live_status_adapter,
+            _live_status_adapter_snapshot=_live_status_adapter,
+            _live_status_adapter_provider=lambda: (
+                None
+                if _live_status_mode == "off"
+                else (
+                    (a := self._adapter_for_source(source))
+                    if getattr(a, "supports_status_text", False)
+                    else None
+                )
+            ),
             _live_status_mode=_live_status_mode,
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
@@ -36314,6 +36323,7 @@ class GatewayRunner(
         # status wiring computed above onto the shared TurnContext at the
         # exact original binding site.
         turn_ctx._status_adapter = _status_adapter
+        turn_ctx._status_adapter_provider = lambda: self._adapter_for_source(source)
         turn_ctx._status_chat_id = _status_chat_id
         turn_ctx._status_thread_metadata = _status_thread_metadata
         turn_ctx._status_callback_sync = turn_runner._status_callback_sync
