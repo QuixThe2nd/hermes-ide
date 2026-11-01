@@ -9,6 +9,7 @@ the newest attached generation.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import inspect
 import json
@@ -16,7 +17,7 @@ import logging
 import os
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -138,6 +139,11 @@ _PICKER_CALLBACK_KWARGS = {
     "send_model_picker": "on_model_selected",
     "send_choice_picker": "on_choice_selected",
 }
+_PROCESSING_REACTION_EMOJI = "👀"
+# One gateway generation may react on many messages; cap matches the spirit of _raw_messages
+# (4096) but per-generation sets are dropped wholesale on detach, so this only bounds a
+# long-lived single attachment against pathological RPC volume.
+_MAX_TRACKED_PROCESSING_REACTIONS = 4096
 
 
 def _send_result_dict(result: Any) -> Dict[str, Any]:
@@ -162,6 +168,7 @@ class _Client:
     controls: Dict[str, asyncio.Future]
     token_key: str = ""
     router: Optional[DiscordSessionRouter] = None
+    processing_reactions: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
 
     async def deliver(self, session_key: str, record: Dict[str, Any]) -> None:
         await self.send({"type": "event", "session_key": session_key, "record": record})
@@ -344,6 +351,7 @@ class DiscordHubServer:
             logger.exception("Discord hub client connection failed")
         finally:
             if client is not None:
+                await self._reap_client_processing_reactions(client)
                 self._clients.pop(client.generation_id, None)
                 (client.router or self.router).detach(client.generation_id)
                 for future in client.controls.values():
@@ -383,6 +391,21 @@ class DiscordHubServer:
             return await self._adapter_rpc(client, params)
         raise ValueError(f"unknown Discord hub method: {method}")
 
+    async def _reap_client_processing_reactions(self, client: _Client) -> None:
+        """Remove processing 👀 reactions owned by a detaching gateway generation."""
+        if not client.processing_reactions:
+            return
+        adapter = self._adapters.get(client.token_key)
+        hub_user = getattr(getattr(adapter, "_client", None), "user", None) if adapter else None
+        raw_keys = list(client.processing_reactions)
+        client.processing_reactions.clear()
+        for raw_key in raw_keys:
+            message = self._raw_messages.get(raw_key)
+            if message is None or hub_user is None:
+                continue
+            with contextlib.suppress(Exception):
+                await message.remove_reaction(_PROCESSING_REACTION_EMOJI, hub_user)
+
     async def _adapter_rpc(self, client: _Client, params: Dict[str, Any]) -> Any:
         token_key = str(params.get("token_key") or "")
         adapter = self._adapters.get(token_key)
@@ -390,14 +413,24 @@ class DiscordHubServer:
             raise RuntimeError("Discord hub connection is unavailable")
         method = str(params.get("method") or "")
         if method in {"add_reaction", "remove_reaction"}:
-            message = self._raw_messages.get(f"{token_key}:{params.get('message_id')}")
+            message_id = str(params.get("message_id") or "")
+            raw_key = f"{token_key}:{message_id}"
+            message = self._raw_messages.get(raw_key)
             if message is None:
                 return False
+            emoji = params.get("emoji")
             fn = getattr(message, method)
             if method == "remove_reaction":
-                result = await fn(params["emoji"], adapter._client.user)
+                result = await fn(emoji, adapter._client.user)
+                if emoji == _PROCESSING_REACTION_EMOJI and result is not False:
+                    client.processing_reactions.pop(raw_key, None)
             else:
-                result = await fn(params["emoji"])
+                result = await fn(emoji)
+                if emoji == _PROCESSING_REACTION_EMOJI and result is not False:
+                    client.processing_reactions.pop(raw_key, None)
+                    client.processing_reactions[raw_key] = None
+                    while len(client.processing_reactions) > _MAX_TRACKED_PROCESSING_REACTIONS:
+                        client.processing_reactions.popitem(last=False)
             return True if result is None else result
         if method.startswith("_") or method in {"connect", "disconnect"}:
             raise ValueError("Discord RPC method is not public")
