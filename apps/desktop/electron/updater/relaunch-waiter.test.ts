@@ -47,7 +47,10 @@ function fakeSpawn(handshake: 'ready' | 'error' | 'exit-nonzero' | 'none'): { sp
 
     child.unref = () => {}
 
-    child.kill = () => { seen.killed = true; child.emit('exit', null) }
+    child.kill = () => {
+      seen.killed = true
+      child.emit('exit', null)
+    }
 
     const readyFile = args[args.indexOf('-ReadyFile') + 1]
 
@@ -154,10 +157,7 @@ describe('startRelaunchWaiter', () => {
     const scriptPath = await stageScript()
     const { spawn, seen } = fakeSpawn('none')
 
-    const result = await startRelaunchWaiter(
-      { ...OPTIONS, scriptPath },
-      { spawn, handshakeTimeoutMs: 80, pollMs: 20 }
-    )
+    const result = await startRelaunchWaiter({ ...OPTIONS, scriptPath }, { spawn, handshakeTimeoutMs: 80, pollMs: 20 })
 
     expect(result).toBe(false)
     expect(seen.killed).toBe(true)

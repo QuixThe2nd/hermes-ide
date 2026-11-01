@@ -17,7 +17,12 @@ import {
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
 } from '../updater-process'
-import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers, stopSafeVenvBlockers } from '../venv-blocker-scan'
+import {
+  formatBlockerMessage,
+  formatProbeFailedMessage,
+  scanVenvBlockers,
+  stopSafeVenvBlockers
+} from '../venv-blocker-scan'
 
 import type { UpdaterApplyResultWire, UpdaterMechanism, UpdaterStatusWire, UpdaterStrategy } from './index'
 
@@ -45,7 +50,11 @@ export interface CheckoutStrategyDeps {
     branch: string,
     isShallow: boolean
   ) => Promise<{ sha: string; summary: string; author: string; at: number }[]>
-  fetchCompareBehindCount: (input: { currentSha: string; originUrl: string; targetSha: string }) => Promise<number | null>
+  fetchCompareBehindCount: (input: {
+    currentSha: string
+    originUrl: string
+    targetSha: string
+  }) => Promise<number | null>
   pathWithVenvBin: (...entries: string[]) => string
   venvHermesShimPath: (updateRoot: string) => string
   emitUpdateProgress: (payload: { stage: string; message: string; percent: number | null }) => void
@@ -97,180 +106,182 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   return { mechanism, check, apply }
 
   async function checkBody(): Promise<UpdaterStatusWire> {
-  const updateRoot = deps.resolveUpdateRoot()
-  let { branch } = deps.readDesktopUpdateConfig()
-  const gitDir = path.join(updateRoot, '.git')
+    const updateRoot = deps.resolveUpdateRoot()
+    let { branch } = deps.readDesktopUpdateConfig()
+    const gitDir = path.join(updateRoot, '.git')
 
-  if (!deps.directoryExists(gitDir)) {
-    return {
-      supported: false,
-      reason: 'not-a-git-checkout',
-      message: `${updateRoot} isn't a git checkout — desktop self-update only runs against a source install.`,
-      hermesRoot: updateRoot,
-      branch
+    if (!deps.directoryExists(gitDir)) {
+      return {
+        supported: false,
+        reason: 'not-a-git-checkout',
+        message: `${updateRoot} isn't a git checkout — desktop self-update only runs against a source install.`,
+        hermesRoot: updateRoot,
+        branch
+      }
     }
-  }
 
-  // The update-root policy (update-root-policy.ts): a `.git` tree the install
-  // contract does not manage with updateMechanism "self" (or one with no
-  // stamp at all — a dev checkout) is the only legitimate git-update
-  // territory. A steward-owned tree (external / electron-updater) must not be
-  // pulled into from the desktop.
-  const rootStamp = deps.readCanonicalInstallStamp()
+    // The update-root policy (update-root-policy.ts): a `.git` tree the install
+    // contract does not manage with updateMechanism "self" (or one with no
+    // stamp at all — a dev checkout) is the only legitimate git-update
+    // territory. A steward-owned tree (external / electron-updater) must not be
+    // pulled into from the desktop.
+    const rootStamp = deps.readCanonicalInstallStamp()
 
-  const rootPolicy = classifyUpdateRoot({
-    isGitTree: true,
-    updateMechanism: (rootStamp?.updateMechanism as any) ?? null
-  })
+    const rootPolicy = classifyUpdateRoot({
+      isGitTree: true,
+      updateMechanism: (rootStamp?.updateMechanism as any) ?? null
+    })
 
-  if (!rootPolicy.updatable) {
-    return {
-      supported: false,
-      reason: `update-root-${rootPolicy.verdict}`,
-      message: rootPolicy.message || `${updateRoot} is not desktop-updatable.`,
-      advice: rootPolicy.advice,
-      hermesRoot: updateRoot,
-      branch
+    if (!rootPolicy.updatable) {
+      return {
+        supported: false,
+        reason: `update-root-${rootPolicy.verdict}`,
+        message: rootPolicy.message || `${updateRoot} is not desktop-updatable.`,
+        advice: rootPolicy.advice,
+        hermesRoot: updateRoot,
+        branch
+      }
     }
-  }
 
-  branch = await deps.resolveHealedBranch(updateRoot, branch)
-  const originUrl = await deps.getOriginUrl(updateRoot)
+    branch = await deps.resolveHealedBranch(updateRoot, branch)
+    const originUrl = await deps.getOriginUrl(updateRoot)
 
-  if (isOfficialSshRemote(originUrl)) {
-    const git = args => deps.runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+    if (isOfficialSshRemote(originUrl)) {
+      const git = args => deps.runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
-      git(['rev-parse', 'HEAD']),
-      deps.runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
-      git(['status', '--porcelain']),
-      git(['rev-parse', '--abbrev-ref', 'HEAD'])
-    ])
+      const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
+        git(['rev-parse', 'HEAD']),
+        deps.runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
+        git(['status', '--porcelain']),
+        git(['rev-parse', '--abbrev-ref', 'HEAD'])
+      ])
 
-    const targetSha = deps.firstLine(target.stdout).split(/\s+/)[0] || ''
+      const targetSha = deps.firstLine(target.stdout).split(/\s+/)[0] || ''
 
-    if (target.code !== 0 || !targetSha) {
+      if (target.code !== 0 || !targetSha) {
+        return {
+          supported: true,
+          branch,
+          error: 'fetch-failed',
+          message: deps.firstLine(target.stderr) || 'git ls-remote failed.',
+          hermesRoot: updateRoot,
+          fetchedAt: Date.now()
+        }
+      }
+
+      // Passive SSH-official checks only know tip SHAs (ls-remote) — never
+      // fabricate a "1 commit behind". Recover the exact count via the GitHub
+      // compare API when possible; otherwise behind stays null ("update
+      // available, count unknown") and updateAvailable carries the signal.
+      // ahead_by === 0 with differing tips means the remote tip is reachable
+      // from our HEAD — a local carried commit sitting AHEAD, not behind:
+      // flagging that as an update nudges the user into wiping their work.
+      const tipsEqual = Boolean(currentSha && currentSha === targetSha)
+
+      const sshBehind = tipsEqual
+        ? 0
+        : await deps.fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
+
+      const upToDate = tipsEqual || sshBehind === 0
+
       return {
         supported: true,
         branch,
-        error: 'fetch-failed',
-        message: deps.firstLine(target.stderr) || 'git ls-remote failed.',
+        currentBranch,
+        behind: upToDate ? 0 : sshBehind,
+        updateAvailable: !upToDate,
+        currentSha,
+        targetSha,
+        commits: [],
+        dirty: dirtyStr.length > 0,
         hermesRoot: updateRoot,
         fetchedAt: Date.now()
       }
     }
 
-    // Passive SSH-official checks only know tip SHAs (ls-remote) — never
-    // fabricate a "1 commit behind". Recover the exact count via the GitHub
-    // compare API when possible; otherwise behind stays null ("update
-    // available, count unknown") and updateAvailable carries the signal.
-    // ahead_by === 0 with differing tips means the remote tip is reachable
-    // from our HEAD — a local carried commit sitting AHEAD, not behind:
-    // flagging that as an update nudges the user into wiping their work.
-    const tipsEqual = Boolean(currentSha && currentSha === targetSha)
+    // Self-heal abandoned git lock files before fetching. A stale
+    // .git/shallow.lock from a crashed/interrupted fetch otherwise fails every
+    // later fetch ("Unable to create '.git/shallow.lock': File exists") and this
+    // check reports 'fetch-failed' forever — git never removes these itself.
+    await clearStaleGitLocks(updateRoot)
 
-    const sshBehind = tipsEqual
-      ? 0
-      : await deps.fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
+    const fetched = await deps.runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
 
-    const upToDate = tipsEqual || sshBehind === 0
+    if (fetched.code !== 0) {
+      return {
+        supported: true,
+        branch,
+        error: 'fetch-failed',
+        message: deps.firstLine(fetched.stderr) || 'git fetch failed.',
+        hermesRoot: updateRoot,
+        fetchedAt: Date.now()
+      }
+    }
+
+    const git = args => deps.runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+
+    const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
+      git(['rev-parse', 'HEAD']),
+      git(['rev-parse', `origin/${branch}`]),
+      git(['status', '--porcelain']),
+      git(['rev-parse', '--abbrev-ref', 'HEAD']),
+      git(['rev-parse', '--is-shallow-repository'])
+    ])
+
+    const isShallow = shallowStr === 'true'
+
+    // A shallow graph cannot provide a trustworthy exact count, even when it has
+    // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
+    const countStr = shouldCountCommits({ isShallow })
+      ? await git(['rev-list', `HEAD..origin/${branch}`, '--count'])
+      : ''
+
+    // A positive directional ancestry result remains trustworthy in a shallow
+    // graph and prevents a local commit on top of origin from looking outdated.
+    const targetIsAncestorOfHead =
+      isShallow &&
+      currentSha !== targetSha &&
+      (await deps.runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
+
+    let behind = resolveBehindCount({
+      countStr,
+      currentSha,
+      targetSha,
+      isShallow,
+      targetIsAncestorOfHead
+    })
+
+    // Recover the exact count a shallow clone can't compute: the GitHub compare
+    // API knows the full graph regardless of local clone depth. Best-effort —
+    // offline, rate-limited, or non-GitHub origins keep the honest null
+    // ("update available", no fabricated number).
+    if (behind === null) {
+      behind = await deps.fetchCompareBehindCount({ currentSha, originUrl, targetSha })
+    }
+
+    // behind === null means "update available, exact count unknown" (shallow
+    // clone): still list what origin offers — resolveCommitLogSelection keeps
+    // the shallow log to the fetched tip so the range walk can't enumerate the
+    // contaminated ancestry — so "See what's new" stays useful and honest.
+    const commits = behind !== 0 ? await deps.readCommitLog(updateRoot, branch, isShallow) : []
 
     return {
       supported: true,
       branch,
       currentBranch,
-      behind: upToDate ? 0 : sshBehind,
-      updateAvailable: !upToDate,
+      behind,
+      updateAvailable: behind === null || behind > 0,
       currentSha,
       targetSha,
-      commits: [],
+      commits,
       dirty: dirtyStr.length > 0,
       hermesRoot: updateRoot,
       fetchedAt: Date.now()
     }
   }
 
-  // Self-heal abandoned git lock files before fetching. A stale
-  // .git/shallow.lock from a crashed/interrupted fetch otherwise fails every
-  // later fetch ("Unable to create '.git/shallow.lock': File exists") and this
-  // check reports 'fetch-failed' forever — git never removes these itself.
-  await clearStaleGitLocks(updateRoot)
-
-  const fetched = await deps.runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
-
-  if (fetched.code !== 0) {
-    return {
-      supported: true,
-      branch,
-      error: 'fetch-failed',
-      message: deps.firstLine(fetched.stderr) || 'git fetch failed.',
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  const git = args => deps.runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr] = await Promise.all([
-    git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
-    git(['status', '--porcelain']),
-    git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    git(['rev-parse', '--is-shallow-repository'])
-  ])
-
-  const isShallow = shallowStr === 'true'
-
-  // A shallow graph cannot provide a trustworthy exact count, even when it has
-  // a visible merge-base. Skip the ancestry walk and use the SHA fallback.
-  const countStr = shouldCountCommits({ isShallow }) ? await git(['rev-list', `HEAD..origin/${branch}`, '--count']) : ''
-
-  // A positive directional ancestry result remains trustworthy in a shallow
-  // graph and prevents a local commit on top of origin from looking outdated.
-  const targetIsAncestorOfHead =
-    isShallow &&
-    currentSha !== targetSha &&
-    (await deps.runGit(['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], { cwd: updateRoot })).code === 0
-
-  let behind = resolveBehindCount({
-    countStr,
-    currentSha,
-    targetSha,
-    isShallow,
-    targetIsAncestorOfHead
-  })
-
-  // Recover the exact count a shallow clone can't compute: the GitHub compare
-  // API knows the full graph regardless of local clone depth. Best-effort —
-  // offline, rate-limited, or non-GitHub origins keep the honest null
-  // ("update available", no fabricated number).
-  if (behind === null) {
-    behind = await deps.fetchCompareBehindCount({ currentSha, originUrl, targetSha })
-  }
-
-  // behind === null means "update available, exact count unknown" (shallow
-  // clone): still list what origin offers — resolveCommitLogSelection keeps
-  // the shallow log to the fetched tip so the range walk can't enumerate the
-  // contaminated ancestry — so "See what's new" stays useful and honest.
-  const commits = behind !== 0 ? await deps.readCommitLog(updateRoot, branch, isShallow) : []
-
-  return {
-    supported: true,
-    branch,
-    currentBranch,
-    behind,
-    updateAvailable: behind === null || behind > 0,
-    currentSha,
-    targetSha,
-    commits,
-    dirty: dirtyStr.length > 0,
-    hermesRoot: updateRoot,
-    fetchedAt: Date.now()
-  }
-  }
-
   async function applyBody(opts: { stopSafeBlockers?: boolean } = {}): Promise<UpdaterApplyResultWire> {
-  const updater = deps.resolveUpdaterBinary()
+    const updater = deps.resolveUpdaterBinary()
 
     if (!updater && !deps.isWindows) {
       // macOS/Linux: hand off to the repo-owned posix script — same shape as
@@ -316,7 +327,9 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
           // Best-effort: fall back to bare `hermes update` if branch detection fails.
         }
 
-        deps.rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
+        deps.rememberLog(
+          `[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`
+        )
         deps.emitUpdateProgress({ stage: 'manual', message: command, percent: null })
 
         return { ok: true, manual: true, command, hermesRoot: updateRoot }
@@ -600,125 +613,135 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   }
 
   async function applyPosixHandoff(opts: any): Promise<UpdaterApplyResultWire> {
-  const updateRoot = deps.resolveUpdateRoot()
-  const handoff = resolvePosixScriptHandoff(updateRoot)
+    const updateRoot = deps.resolveUpdateRoot()
+    const handoff = resolvePosixScriptHandoff(updateRoot)
 
-  if (!handoff) {
-    deps.emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
+    if (!handoff) {
+      deps.emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
 
-    return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
-  }
-
-  const handoffConflict = updateHandoffConflict(deps.hermesHome)
-
-  if (handoffConflict) {
-    // Same hazard as the Windows path (#75778): a live foreign updater
-    // already owns the marker — refuse rather than double-mutate the tree.
-    deps.rememberLog(`[updates] refusing posix hand-off: ${handoffConflict.message}`)
-    deps.emitUpdateProgress({ stage: 'error', message: handoffConflict.message, percent: null })
-
-    return { ok: false, error: 'update-already-running', message: handoffConflict.message }
-  }
-
-  // ── Pre-flight state.db integrity guard (#68474) ──
-  deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
-
-  // Branch-pin so a non-main checkout doesn't get switched to main (and
-  // self-heal to main when the pinned branch no longer exists on origin).
-  let branch = 'main'
-
-  try {
-    const head = await deps.runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-    const current = (head.stdout || '').trim()
-
-    if (head.code === 0 && current && current !== 'HEAD') {
-      branch = await deps.resolveHealedBranch(updateRoot, current)
-    }
-  } catch {
-    // best effort
-  }
-
-  const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
-  const updateStartedAt = Math.floor(Date.now() / 1000)
-
-  // Relaunch target: the running .app bundle on mac (script swaps the
-  // rebuilt bundle over it), the running binary elsewhere. The script's gate
-  // (an exact port of update-relaunch.ts's decideRelaunchOutcome) relaunches
-  // only a binary the rebuild replaced with a launchable sandbox helper —
-  // replaying the original launch context (filtered args, cwd, sandbox
-  // opt-out) so a deep-link or --no-sandbox launch survives the update.
-  const targetApp = deps.isMac ? deps.runningAppBundle() : process.execPath
-
-  if (targetApp) {
-    args.push('--relaunch-target', targetApp)
-  }
-
-  const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
-
-  if (!deps.isMac) {
-    args.push('--relaunch-cwd', process.cwd())
-
-    if (sandboxFallbackFromEnv(process.env, relaunchArgs)) {
-      args.push('--sandbox-fallback')
+      return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
     }
 
-    if (relaunchArgs.length) {
-      args.push('--', ...relaunchArgs)
+    const handoffConflict = updateHandoffConflict(deps.hermesHome)
+
+    if (handoffConflict) {
+      // Same hazard as the Windows path (#75778): a live foreign updater
+      // already owns the marker — refuse rather than double-mutate the tree.
+      deps.rememberLog(`[updates] refusing posix hand-off: ${handoffConflict.message}`)
+      deps.emitUpdateProgress({ stage: 'error', message: handoffConflict.message, percent: null })
+
+      return { ok: false, error: 'update-already-running', message: handoffConflict.message }
     }
-  }
 
-  const child = spawnUpdaterProcess(handoff.command, args, {
-    cwd: deps.hermesHome,
-    env: {
-      ...process.env,
-      HERMES_HOME: deps.hermesHome,
-      HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-      PATH: deps.pathWithVenvBin(path.join(updateRoot, 'venv', 'bin'))
-    },
-    detached: true,
-    stdio: 'ignore'
-  })
+    // ── Pre-flight state.db integrity guard (#68474) ──
+    deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
 
-  // Bridge marker (same contract as the Windows hand-off): cover the gap
-  // until the script claims the marker with its own pid as step 0. If the
-  // script never starts, the dead pid reads as stale and self-deletes.
-  if (Number.isInteger(child.pid)) {
-    writeUpdateMarker(deps.hermesHome, child.pid, { startedAt: updateStartedAt })
-  }
+    // Branch-pin so a non-main checkout doesn't get switched to main (and
+    // self-heal to main when the pinned branch no longer exists on origin).
+    let branch = 'main'
 
-  deps.rememberLog(`[updates] launched posix hand-off: ${handoff.scriptPath} (branch ${branch}); quitting to hand off`)
-  deps.emitUpdateProgress({
-    stage: 'restart',
-    message:
-      'Updating Hermes — this window will close. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
-    percent: 100
-  })
+    try {
+      const head = await deps.runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
+      const current = (head.stdout || '').trim()
 
-  // Settle window (#66753): the reported macOS failure mode is exactly this
-  // path — the app quits, bash/posix.sh dies early (or was never spawnable),
-  // and the user is left with no app, no updater, and no relaunch. Watch the
-  // child through the dwell; on spawn error or early death, stay alive and
-  // surface the failure instead of quitting into nothing.
-  const dwellStartedAt = Date.now()
-  const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
+      if (head.code === 0 && current && current !== 'HEAD') {
+        branch = await deps.resolveHealedBranch(updateRoot, current)
+      }
+    } catch {
+      // best effort
+    }
 
-  if (!handoffOutcome.ok) {
-    const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
+    const args = [
+      ...handoff.args,
+      '--install-root',
+      updateRoot,
+      '--branch',
+      branch,
+      '--desktop-pid',
+      String(process.pid)
+    ]
+    const updateStartedAt = Math.floor(Date.now() / 1000)
 
-    deps.rememberLog(`[updates] posix hand-off not viable, aborting quit: ${handoffOutcome.message}`)
-    deps.emitUpdateProgress({ stage: 'error', message, percent: null })
+    // Relaunch target: the running .app bundle on mac (script swaps the
+    // rebuilt bundle over it), the running binary elsewhere. The script's gate
+    // (an exact port of update-relaunch.ts's decideRelaunchOutcome) relaunches
+    // only a binary the rebuild replaced with a launchable sandbox helper —
+    // replaying the original launch context (filtered args, cwd, sandbox
+    // opt-out) so a deep-link or --no-sandbox launch survives the update.
+    const targetApp = deps.isMac ? deps.runningAppBundle() : process.execPath
 
-    return { ok: false, error: 'updater-spawn-failed', message }
-  }
+    if (targetApp) {
+      args.push('--relaunch-target', targetApp)
+    }
 
-  deps.markQuittingForHandoff()
-  setTimeout(
-    () => {
-      deps.quit()
-    },
-    Math.max(0, deps.updateHandoffDwellMs - (Date.now() - dwellStartedAt))
-  )
+    const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
 
-  return { ok: true, handedOff: true, updater: handoff.scriptPath }
+    if (!deps.isMac) {
+      args.push('--relaunch-cwd', process.cwd())
+
+      if (sandboxFallbackFromEnv(process.env, relaunchArgs)) {
+        args.push('--sandbox-fallback')
+      }
+
+      if (relaunchArgs.length) {
+        args.push('--', ...relaunchArgs)
+      }
+    }
+
+    const child = spawnUpdaterProcess(handoff.command, args, {
+      cwd: deps.hermesHome,
+      env: {
+        ...process.env,
+        HERMES_HOME: deps.hermesHome,
+        HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
+        PATH: deps.pathWithVenvBin(path.join(updateRoot, 'venv', 'bin'))
+      },
+      detached: true,
+      stdio: 'ignore'
+    })
+
+    // Bridge marker (same contract as the Windows hand-off): cover the gap
+    // until the script claims the marker with its own pid as step 0. If the
+    // script never starts, the dead pid reads as stale and self-deletes.
+    if (Number.isInteger(child.pid)) {
+      writeUpdateMarker(deps.hermesHome, child.pid, { startedAt: updateStartedAt })
+    }
+
+    deps.rememberLog(
+      `[updates] launched posix hand-off: ${handoff.scriptPath} (branch ${branch}); quitting to hand off`
+    )
+    deps.emitUpdateProgress({
+      stage: 'restart',
+      message:
+        'Updating Hermes — this window will close. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
+      percent: 100
+    })
+
+    // Settle window (#66753): the reported macOS failure mode is exactly this
+    // path — the app quits, bash/posix.sh dies early (or was never spawnable),
+    // and the user is left with no app, no updater, and no relaunch. Watch the
+    // child through the dwell; on spawn error or early death, stay alive and
+    // surface the failure instead of quitting into nothing.
+    const dwellStartedAt = Date.now()
+    const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
+
+    if (!handoffOutcome.ok) {
+      const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
+
+      deps.rememberLog(`[updates] posix hand-off not viable, aborting quit: ${handoffOutcome.message}`)
+      deps.emitUpdateProgress({ stage: 'error', message, percent: null })
+
+      return { ok: false, error: 'updater-spawn-failed', message }
+    }
+
+    deps.markQuittingForHandoff()
+    setTimeout(
+      () => {
+        deps.quit()
+      },
+      Math.max(0, deps.updateHandoffDwellMs - (Date.now() - dwellStartedAt))
+    )
+
+    return { ok: true, handedOff: true, updater: handoff.scriptPath }
   }
 }

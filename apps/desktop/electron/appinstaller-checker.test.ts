@@ -14,12 +14,7 @@ interface CapturedCall {
 function stubExecFile(behavior: (call: CapturedCall) => void) {
   const calls: CapturedCall[] = []
 
-  const impl = (
-    file: string,
-    args: readonly string[],
-    options: CapturedCall['options'],
-    callback: Callback
-  ) => {
+  const impl = (file: string, args: readonly string[], options: CapturedCall['options'], callback: Callback) => {
     const call: CapturedCall = { file, args, options, callback }
 
     calls.push(call)

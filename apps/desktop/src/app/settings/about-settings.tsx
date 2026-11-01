@@ -1,9 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { UpdateStatusCard, VersionHero } from '@/components/update-status'
 import { VersionDetails } from '@/components/version-details'
-import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, RefreshCw } from '@/lib/icons'
 import { $connection } from '@/store/session'

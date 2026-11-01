@@ -16,7 +16,9 @@ function dependencies(): CheckoutStrategyDeps {
     resolveUpdaterBinary: () => null,
     resolveHealedBranch: async (_, branch) => branch,
     getOriginUrl: async () => '',
-    runGit: vi.fn(async () => { throw new Error('unexpected git invocation') }),
+    runGit: vi.fn(async () => {
+      throw new Error('unexpected git invocation')
+    }),
     firstLine: text => text.split('\n')[0],
     readCommitLog: async () => [],
     fetchCompareBehindCount: async () => null,

@@ -111,7 +111,8 @@ export class AppInstallerStrategy {
 
     if (!registered) {
       this.deps.emitUpdateProgress({
-        stage: 'restart', percent: 100,
+        stage: 'restart',
+        percent: 100,
         message: 'Automatic relaunch could not be registered. Reopen Hermes after App Installer finishes.'
       })
     }

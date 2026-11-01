@@ -12,7 +12,13 @@ export const DEFAULT_RELAUNCH_WAITER_TIMEOUT_SECONDS = 900
 export const DEFAULT_RELAUNCH_WAITER_HANDSHAKE_MS = 10_000
 
 /** Absolute path — never resolved via inherited PATH (it can point into the package). */
-export const POWERSHELL_PATH = path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+export const POWERSHELL_PATH = path.win32.join(
+  process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows',
+  'System32',
+  'WindowsPowerShell',
+  'v1.0',
+  'powershell.exe'
+)
 
 export interface RelaunchWaiterOptions {
   /** The quitting app's pid — the waiter waits for this process to exit. */
@@ -105,9 +111,11 @@ export async function startRelaunchWaiter(
   let child: ChildProcess
 
   try {
-    child = spawn(POWERSHELL_PATH,
+    child = spawn(
+      POWERSHELL_PATH,
       buildRelaunchWaiterArgs({ ...options, scriptPath: staging.scriptPath }, staging.readyFile),
-      { detached: true, stdio: 'ignore', windowsHide: true, cwd: staging.stageDir })
+      { detached: true, stdio: 'ignore', windowsHide: true, cwd: staging.stageDir }
+    )
   } catch {
     await cleanup()
 
@@ -120,7 +128,9 @@ export async function startRelaunchWaiter(
     const deadline = Date.now() + handshakeTimeoutMs
 
     const finish = (ready: boolean) => {
-      if (settled) { return }
+      if (settled) {
+        return
+      }
       settled = true
       clearTimeout(timer)
 
@@ -129,7 +139,9 @@ export async function startRelaunchWaiter(
         resolve(true)
       } else {
         child.kill()
-        void cleanup().catch(() => {}).finally(() => resolve(false))
+        void cleanup()
+          .catch(() => {})
+          .finally(() => resolve(false))
       }
     }
 
@@ -137,7 +149,9 @@ export async function startRelaunchWaiter(
     child.once('exit', () => finish(false))
 
     const check = () => {
-      if (settled) { return }
+      if (settled) {
+        return
+      }
 
       if (fs.existsSync(staging.readyFile)) {
         finish(true)

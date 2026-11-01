@@ -690,7 +690,11 @@ export function LocalModelsSettings() {
                         {dJob.kind === 'model-download' ? (
                           dJob.status === 'paused' ? (
                             <Button
-                              onClick={() => void resumeLocalModelDownload(dJob.job_id).catch(err => notifyError(err, copy.downloadResumeAction))}
+                              onClick={() =>
+                                void resumeLocalModelDownload(dJob.job_id).catch(err =>
+                                  notifyError(err, copy.downloadResumeAction)
+                                )
+                              }
                               size="sm"
                               variant="ghost"
                             >
@@ -699,7 +703,11 @@ export function LocalModelsSettings() {
                             </Button>
                           ) : (
                             <Button
-                              onClick={() => void pauseLocalModelDownload(dJob.job_id).catch(err => notifyError(err, copy.downloadPauseAction))}
+                              onClick={() =>
+                                void pauseLocalModelDownload(dJob.job_id).catch(err =>
+                                  notifyError(err, copy.downloadPauseAction)
+                                )
+                              }
                               size="sm"
                               variant="ghost"
                             >
