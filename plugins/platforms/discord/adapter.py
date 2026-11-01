@@ -4644,7 +4644,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         author_id = self._root_turn_author_from_recovery(reply_to)
         if not author_id:
             author_id = await self._root_turn_author_from_parent(reply_to, channel)
-        return f"<@{author_id}> " if author_id else ""
+        if not author_id:
+            return ""
+        prefix = f"<@{author_id}>"
+        guild_id = getattr(getattr(channel, "guild", None), "id", None)
+        parent_id = getattr(channel, "parent_id", None)
+        if guild_id and parent_id:
+            try:
+                prefix += (
+                    " [↪](https://discord.com/channels/"
+                    f"{int(guild_id)}/{int(parent_id)}/{int(reply_to)})"
+                )
+            except (ValueError, TypeError):
+                pass
+        return prefix + " "
 
     def prefers_fresh_final_streaming(
         self,
