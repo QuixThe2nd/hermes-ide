@@ -3,13 +3,13 @@
 A LiteLLM-style proxy answers with the configured alias in the body's ``model`` field and puts
 the deployment it really routed to in response headers (``x-litellm-model-name`` first, then
 ``x-litellm-model-id``, else ``x-litellm-model-api-base``). Values that are not human-displayable
-(purely numeric hashes, URLs) are skipped in favor of the next header; if every non-empty value
-is un-displayable, the first non-empty raw value is kept by the shared response hook. The OpenAI SDK's
-parsed objects drop headers, so capture has two sources: an ``httpx`` response hook on the client Hermes
-builds for the agent, and ``capture_served_model_from_stream`` for Codex streams that retain their opening
-``httpx`` response. The stream capture stores only displayable values; both sources write to
-``agent.last_served_model`` (a previously captured value is preserved when the
-response carries no served-model headers, so stream-event capture is not cleared by a bare 200).
+(purely numeric hashes, URLs) are skipped in favor of the next header; if no value is displayable,
+nothing is captured and any previously captured value is preserved. The OpenAI SDK's parsed objects
+drop headers, so capture has two sources: an ``httpx`` response hook on the client Hermes builds for
+the agent, and ``capture_served_model_from_stream`` for Codex streams that retain their opening
+``httpx`` response. Both sources store only displayable values in ``agent.last_served_model``
+(a previously captured value is preserved when the response carries no served-model headers,
+so stream-event capture is not cleared by a bare 200).
 Consumers: ``agent/turn_finalizer.py``
 (result ``served_model`` / ``requested_model``) and the opt-in gateway footer field
 ``served_model`` (``gateway/runtime_footer.py``). Fail-open everywhere.
@@ -41,19 +41,15 @@ def is_displayable_served_model(value: str) -> bool:
 
 
 def served_model_from_headers(headers: Any) -> Optional[str]:
-    """First displayable non-empty served-model header, or the first non-empty raw value."""
+    """Return the first displayable non-empty served-model header, if any."""
     if headers is None or not hasattr(headers, "get"):
         return None
-    non_empty: list[str] = []
     for name in SERVED_MODEL_HEADERS:
         value = headers.get(name)
         if value not in (None, ""):
             stripped = str(value).strip()
-            non_empty.append(stripped)
-            if is_displayable_served_model(stripped):
+            if stripped and is_displayable_served_model(stripped):
                 return stripped
-    if non_empty:
-        return non_empty[0]
     return None
 
 
