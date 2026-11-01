@@ -15,17 +15,10 @@ from typing import Any, Optional
 
 
 def _profiles_root() -> Path:
-    # Profile roots are derived from get_default_hermes_root() — the ONE
-    # authority for "where do profiles live" (hermes_constants): it
-    # returns HERMES_HOME directly for custom roots (Docker /opt/data,
-    # non-default local roots) and <root> for profile-mode HERMES_HOME,
-    # on both standard and custom layouts. Hardcoding Path.home()/
-    # .hermes/profiles silently omits custom-root profiles — their
-    # enabled dep plugins never join the union and bisect disable
-    # decisions never write back to their config.
-    from hermes_constants import get_default_hermes_root
+    # Plugin discovery and dependency publication must use the same home root.
+    from hermes_cli.runtime_paths import dependency_home_root
 
-    return get_default_hermes_root() / "profiles"
+    return dependency_home_root() / "profiles"
 
 
 def _read_home_config(home: Path) -> Optional[dict[str, Any]]:
@@ -69,9 +62,9 @@ def _all_homes() -> list[Path]:
     """The default home + every profile home (the union's scope)."""
     homes: list[Path] = []
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_cli.runtime_paths import dependency_home_root
 
-        homes.append(get_default_hermes_root())
+        homes.append(dependency_home_root())
     except Exception:
         pass
     try:

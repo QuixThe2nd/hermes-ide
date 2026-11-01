@@ -14,8 +14,7 @@ import tempfile
 import time
 import uuid
 
-from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
-from hermes_constants import get_default_hermes_root
+from hermes_cli.runtime_paths import dependency_home_root, install_state_dir, runtime_facts_path
 
 
 def _lock(fd: int, *, wait: bool) -> bool:
@@ -93,7 +92,7 @@ def recover_publication(project: Path) -> None:
     try:
         row = json.loads(data)
         config = Path(row["config"])
-        if config.name != "config.yaml" or not config.resolve().is_relative_to(get_default_hermes_root().resolve()):
+        if config.name != "config.yaml" or not config.resolve().is_relative_to(dependency_home_root().resolve()):
             raise ValueError("config path is outside Hermes state")
         previous = base64.b64decode(row["previous"], validate=True) if row["previous"] is not None else None
         if _digest(runtime_facts_path(project)) == row["facts_before"]:

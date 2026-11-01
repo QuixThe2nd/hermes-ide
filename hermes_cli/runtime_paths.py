@@ -18,8 +18,16 @@ def install_key(project_root: Path) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+def dependency_home_root() -> Path:
+    """Scope dependency state like a process launched in the active home."""
+    from hermes_constants import get_default_hermes_root, get_hermes_home_override
+
+    override = get_hermes_home_override()
+    return get_default_hermes_root(home=override) if override else get_default_hermes_root()
+
+
 def installs_root() -> Path:
-    return get_default_hermes_root() / "installs"
+    return dependency_home_root() / "installs"
 
 
 def install_state_dir(project_root: Path) -> Path:
