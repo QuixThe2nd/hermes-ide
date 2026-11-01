@@ -1885,8 +1885,9 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 restart.incomplete = True
             with suppress(Exception):
                 import hermes_cli.update_receipt as _ur
-                if _ur._current is not None:
-                    _ur._current.data["runtime_outcomes"] = _runtime_outcomes
+                _active = _ur._current.get()
+                if _active is not None:
+                    _active.data["runtime_outcomes"] = _runtime_outcomes
 
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt

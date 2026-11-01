@@ -55,6 +55,7 @@ export interface UpdaterStatusWire {
   currentBranch?: string
   reason?: string
   message?: string
+  advice?: string
   error?: string
   behind?: number | null
   currentSha?: string

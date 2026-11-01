@@ -28,49 +28,74 @@ The updater, backup, setup, voice-text helpers, and several plugins now use
 one implementation per reconciled concern. Runtime paths have a shared owner
 in `hermes_cli/runtime_paths.py`.
 
-## Verification limits
+## Closure implementation
 
-The first broad native-Windows run completed its file list with 43,358 passed,
-257 failed, and 1,390 skipped tests. Eight files had no completed result.
-Repairs overlapped that run, so it does not certify the final tree.
+| Contract | Owner and proof |
+| --- | --- |
+| Interrupted publication | `hermes_cli/runtime_state.py` journals the old config and the proposed config hash. Startup recovers before dependency activation. Recovery refuses to overwrite unrelated edits. Real subprocess tests terminate before and after facts publication. |
+| Live-generation collection | Startup holds a generation lease under the publication lock. `pm gc` removes only unselected, lease-managed generations without live readers. Tests keep a real reader alive while collection runs. |
+| Receipt correlation | PM completions carry the invoking update ID. The updater embeds that completion, including failed steps and refusal reasons. Nested commands and copied contexts cannot finalize an enclosing receipt. |
+| Warning surfaces | Doctor uses the update checker's local provenance rules. The desktop reads sync status and distinguishes a healthy no-op from an embedded failure. |
+| Updater ownership | `electron/updater/checkout.ts` owns checkout checks and handoffs. `main.ts` supplies its dependencies. |
+| Windows relaunch | A detached PowerShell waiter snapshots package identity before quit, waits for the original process to exit, then waits for the installed version to change. A failed registration produces a manual-reopen warning. |
+| Test integrity | TCC behavior uses actual host markers. Installer source-grep assertions were removed. Runtime and installer behavior tests remain. |
 
-A later run selected all changed Python test files plus the broad run's failed
-files. Its 206 files reported 4,630 passed, one failed, and 330 skipped tests.
-There were no files without completed results. The remaining failure was a
-Hindsight setup fixture that crossed into dependency installation. The fixture
-now isolates that boundary. The final six-file rerun reported 234 passed and
-two skipped tests, including Hindsight setup, PM state, admission, environment
-sanitization, and terminal timeout output. A separate four-file store review
-rerun reported 83 passed and one skipped test.
+## Verified execution
 
-Desktop renderer tests reported 7,225 passed. Electron tests reported 2,295
-passed and 23 skipped. Both desktop TypeScript checks also passed after the
-locked development packages were restored. These are unit/type checks, not an
-installer or signed-release lifecycle test.
+- The latest complete native-Windows Python run reported 44,557 passed, one
+  failed, and 1,404 skipped tests across 3,746 files. Python source hashes stayed
+  unchanged throughout the run. It also reported one pass-on-retry HTTP test.
+  The install-ID race and HTTP test were then fixed. Their two files passed
+  35 tests without retries. This is not a complete final-tree suite pass.
+- Root `npm run check` completed with exit code zero, including MSIX packaging.
+  Desktop UI: 7,231 passed. Electron: 2,311 passed and 23 skipped. TUI:
+  1,719 passed and eight skipped. Dashboard: 291 passed. Root JS: 77 passed.
+  Type checks and lint had no errors. Existing lint warnings remain. This
+  packaging check used the primary build directory's existing payload, not
+  the separately verified fresh audit payload.
+- The actual core project resolved and built through the workspace helper.
+  Imports resolved from the generated workspace and the source lock was unchanged.
+- A fresh native ARM64 PM bundle completed its pinned-tool checks and all-extras
+  environment build. Its manifest records source tree
+  `60c9fb444c93e8a79ae22a01677c3291385343a6`.
+- The rebuilt thin desktop started its real backend twice in an isolated home,
+  answered HTTP 200, and exited cleanly. Home entries survived relaunch.
+- A real isolated API-server messaging gateway retained its PID and birth time
+  after ordinary desktop quit. The desktop backend stopped; the gateway did not.
+- A thin MSIX built with the real packaging toolchain. Windows Sandbox installed
+  version `0.17.0.0`, updated to `0.17.0.1`, and verified absence after uninstall.
+  Test-certificate creation and trust were confined to the disposable guest.
 
-A real Hindsight side-environment daemon started in a disposable home, answered
-its health endpoint with HTTP 200, and stopped successfully. This verifies
-startup, health, and shutdown, not an LLM retain/recall operation.
+- A separate fresh bundled MSIX was produced from payload tree `60c9fb44...`.
+  The unpacked artifact's own CLI ran, imports resolved inside its payload,
+  and `hermes serve` answered HTTP 200. The Sandbox deployment attempt failed
+  on an incorrect unpacked path. It does not prove bundled installation.
+- Plugin checks now run from the first housekeeping tick, with the configured
+  interval gate controlling network checks. A real isolated gateway wrote two
+  successful plugin-check receipts one tick apart. Auto-apply was disabled.
+
+These receipts cover different layers. Thin-package deployment and unpacked
+runtime startup do not prove bundled installation or App Installer-triggered
+relaunch. No tests sent an LLM request as evidence of this acceptance pass.
 
 ## Remaining acceptance work
 
-- Run the full Python suite on one fixed final tree and the relevant native
-  platform CI lanes. Targeted reruns do not substitute for this gate.
-- Complete packaged install, update, relaunch, and uninstall checks. Verify
-  that the messaging gateway survives ordinary desktop quit.
-- Complete the remaining updater-strategy and warning-surface contracts from
-  the audit. Manual update checks alone do not prove those surfaces.
-- Define and verify safe collection of obsolete dependency generations while
-  older processes still use them. The current conservative retention avoids
-  deleting a live generation but does not bound storage use.
-- Strengthen publication recovery for process death between plugin-config and
-  runtime-facts writes. Exception rollback is tested; those two files are not
-  one crash-atomic transaction.
-- Complete receipt correlation and failure-reporting checks across nested PM
-  and updater operations.
-- Reconcile the remaining documentation and complete the final aggregate diff
-  review. The bounded pre-commit review does not cover every moved updater line.
+- Obtain a green complete Python run on the final tree. The completed run and
+  later bounded reruns must be reported separately.
+- Repeat bundled MSIX deployment with the corrected Sandbox harness and the
+  final source snapshot. The existing fresh bundle predates the final cron,
+  install-ID, and plugin-cadence fixes. Its unpacked runtime proof remains
+  scoped to the recorded payload tree.
+- Exercise an actual App Installer-triggered package update and automatic
+  relaunch. The tested Windows Sandbox image has no Desktop App Installer.
+- Run the relevant native macOS/Linux acceptance lanes. Windows host selection
+  verifies markers, not foreign-platform behavior.
+- Resolve the remaining review limit: a context-only config home outside the
+  process install root cannot be recovered by the current journal validator.
+- Identify the test that creates relative `MagicMock` SQLite artifacts. The
+  generated files are preserved outside the commit, but the producer is unresolved.
+- Record the final commit and native CI verification.
 
-The external audit directory contains the original reports, per-batch logs,
-review adjudication, and the exact test-file selection. No remote release,
-service installation, or push is implied by this commit.
+The external audit directory contains original findings, exact test selections,
+per-run logs, source snapshots, and review adjudication. No remote release,
+production service installation, or push is implied by this work.

@@ -76,13 +76,8 @@ def _read_manifest_field(plugin_dir: Path, key: str) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def check_provenanced(
-    prov: Provenance,
-    *,
-    fetch: Callable[[str], str],           # url -> text (raises on failure)
-    ls_remote: Callable[[str], str],       # source -> HEAD sha (raises)
-) -> CheckResult:
-    """Check ONE sidecar-provenanced plugin per the resolution order."""
+def check_local_provenance(prov: Provenance) -> CheckResult:
+    """Check installed provenance without fetching remote metadata."""
     result = CheckResult(name=prov.name, klass=prov.klass.value)
 
     if prov.klass is ProvenanceClass.MANUAL:
@@ -122,6 +117,22 @@ def check_provenanced(
             f"{claimed!r}; run `hermes plugins trust-update-url` after review"
         )
         return result
+
+    return result
+
+
+def check_provenanced(
+    prov: Provenance,
+    *,
+    fetch: Callable[[str], str],
+    ls_remote: Callable[[str], str],
+) -> CheckResult:
+    """Check local provenance before contacting its approved update source."""
+    result = check_local_provenance(prov)
+    if result.reason or result.needs_fixing:
+        return result
+    row = prov.row or {}
+    saved = row.get("update_url") or None
 
     # ── 1. matching saved tag → fetch the feed ─────────────────────
     if saved is not None:

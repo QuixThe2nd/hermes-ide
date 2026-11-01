@@ -2327,6 +2327,10 @@ def _update_preflight_handled(args) -> bool:
     return False
 
 
+from hermes_cli.update_receipt import update_receipt_scope
+
+
+@update_receipt_scope()
 def cmd_update(args):
     """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
     if _update_preflight_handled(args):

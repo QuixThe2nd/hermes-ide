@@ -139,10 +139,12 @@ def _run_check_locked(
     config_get: Callable = None,
 ) -> list:
     check_ok = True
+    warning = ""
     try:
         results = run_checks_fn(plugins_dir)
     except Exception:
-        log.warning("plugin update check failed", exc_info=True)
+        warning = "plugin update check failed"
+        log.warning(warning, exc_info=True)
         results = []
         check_ok = False
 
@@ -150,8 +152,11 @@ def _run_check_locked(
         from pm import receipt
         token = receipt.begin("plugin-check")
         receipt.record_plugin_checks(results)
+        if warning:
+            receipt.record_warning(warning)
         updates = [r for r in results if getattr(r, "update_available", None) is True]
-        receipt.finalize("failed" if not check_ok else "updates-available" if updates else "ok", token=token)
+        receipt.finalize("failed" if not check_ok else "updates-available" if updates else "ok",
+                         exit_code=0 if check_ok else 1, token=token)
     except Exception:
         log.debug("plugin-check receipt write failed", exc_info=True)
 

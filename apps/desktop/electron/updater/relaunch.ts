@@ -9,10 +9,11 @@
 // The marker is a JSON file under HERMES_HOME (not a run-key / scheduled
 // task): a registry entry can't be made one-shot safely from a dying process,
 // and a file survives the package swap (HERMES_HOME lives outside the
-// package). For the actual relaunch we rely on Windows restarting the app
-// when an MSIX package update completes while the app registered itself
-// for restart (RegisterApplicationRestart) — the marker's job is only to
-// tell the NEW version it was an update relaunch, so it can toast + clean up.
+// package). The actual relaunch is the detached waiter
+// (relaunch-waiter.ts + scripts/update-relaunch-waiter.ps1): it waits for
+// this process to exit, waits for the installed package version to change,
+// and activates the NEW package. The marker's job is only to tell the NEW
+// version it was an update relaunch, so it can toast + clean up.
 //
 // If the OS does NOT relaunch (update applied later, on next launch), the
 // marker is still correct: the first launch after the swap detects it and
@@ -57,6 +58,41 @@ export function writePendingRelaunch(
     writeFile(markerPath(hermesHome), JSON.stringify(marker))
 
     return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Register the post-update relaunch: write the pending-relaunch marker AND
+ * start the relaunch mechanism. The mechanism itself is injected — the
+ * App Installer arm passes the detached relaunch waiter (relaunch-waiter.ts),
+ * which re-opens the NEW package after the OS swap; nothing here re-executes
+ * the current binary. The relaunched instance reads the marker, toasts, and
+ * cleans it up. Failure never blocks the update — relaunch just stays
+ * manual (the marker alone still produces the "updated" toast on the next
+ * manual launch).
+ */
+export interface UpdateRelaunchDeps {
+  /** Start the relaunch mechanism (the detached relaunch waiter). */
+  relaunch: () => boolean | void | Promise<boolean | void>
+}
+
+export async function registerUpdateRelaunch(
+  hermesHome: string,
+  fromVersion: string,
+  deps: UpdateRelaunchDeps,
+  writeFile: (file: string, contents: string) => void = (f, c) => fs.writeFileSync(f, c)
+): Promise<boolean> {
+  // Marker first: a relaunch that wins the race against the write still
+  // leaves the next manual launch marker-less (honest), but a marker without
+  // a started mechanism is the exact "marker is not a mechanism" gap.
+  writePendingRelaunch(hermesHome, fromVersion, writeFile)
+
+  try {
+    // `undefined` (a fire-and-forget mechanism) counts as started; only an
+    // explicit false or a throw means registration failed.
+    return (await deps.relaunch()) !== false
   } catch {
     return false
   }

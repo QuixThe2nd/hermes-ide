@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -43,43 +42,13 @@ def _config_path() -> Path:
     return get_hermes_home() / "config.yaml"
 
 
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
+def _config_commit(candidate_enabled: set, candidate_disabled: set):
+    """Journal both config versions before publishing either config or facts."""
+    import shutil
     import tempfile
 
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".admission-")
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-
-
-def _config_commit(candidate_enabled: set, candidate_disabled: set):
-    """The before_publish hook: commit the config EXACTLY ONCE while pm
-    holds the install lock. Returns an undo callable — invoked by
-    sync_venv only when the subsequent facts write fails — that restores
-    the previous config bytes atomically (or removes a config this
-    commit created)."""
-    path = _config_path()
-    existed = path.is_file()
-    previous = path.read_bytes() if existed else None
-
-    commit_plugin_sets(candidate_enabled, candidate_disabled)
-
-    def undo() -> None:
-        if previous is None:
-            path.unlink(missing_ok=True)
-        else:
-            _atomic_write_bytes(path, previous)
-
-    return undo
-
-
-def commit_plugin_sets(enabled: set, disabled: set) -> None:
-    """Write BOTH plugin keys in ONE atomic config save."""
+    from pm.paths import repo_root
+    from hermes_cli.runtime_state import begin_publication, _atomic_bytes
     from hermes_cli.config import read_raw_config
     from utils import atomic_roundtrip_yaml_save
 
@@ -88,9 +57,21 @@ def commit_plugin_sets(enabled: set, disabled: set) -> None:
     plugins_cfg = config.setdefault("plugins", {})
     if not isinstance(plugins_cfg, dict):
         raise ValueError(f"plugins must be a mapping in {path}")
-    plugins_cfg["enabled"] = sorted(enabled)
-    plugins_cfg["disabled"] = sorted(disabled)
-    atomic_roundtrip_yaml_save(path, config)
+    plugins_cfg["enabled"] = sorted(candidate_enabled)
+    plugins_cfg["disabled"] = sorted(candidate_disabled)
+    with tempfile.TemporaryDirectory(prefix="hermes-admission-") as temporary:
+        staged = Path(temporary) / "config.yaml"
+        if path.is_file():
+            shutil.copyfile(path, staged)
+        atomic_roundtrip_yaml_save(staged, config)
+        proposed = staged.read_bytes()
+    publication = begin_publication(repo_root(), path, proposed)
+    try:
+        _atomic_bytes(path, proposed)
+    except BaseException:
+        publication()
+        raise
+    return publication
 
 
 def admit_plugin_set_change(
@@ -111,13 +92,13 @@ def admit_plugin_set_change(
     """
     from pm.ensure import sync_venv
 
-    members = candidate_member_dirs(
-        candidate_enabled, candidate_disabled, active_plugins_dir=active_plugins_dir, extra_dirs=extra_dirs
-    )
+    extra_dirs = tuple(extra_dirs)
     try:
         sync_venv(
             explicit=True,
-            plugin_dirs=members,
+            plugin_dirs=lambda: candidate_member_dirs(
+                candidate_enabled, candidate_disabled, active_plugins_dir=active_plugins_dir, extra_dirs=extra_dirs
+            ),
             before_publish=lambda: _config_commit(candidate_enabled, candidate_disabled),
         )
     except Exception as exc:

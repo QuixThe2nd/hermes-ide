@@ -105,9 +105,17 @@ def activate_dependencies(project_root: Path) -> None:
     """
     import sys
 
-    if not runtime_facts_path(project_root).is_file():
+    state = install_state_dir(project_root)
+    if not state.is_dir():
         return
-    selected = site_packages(selected_venv(project_root))
+    from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
+    with runtime_lock(project_root):
+        recover_publication(project_root)
+        if not runtime_facts_path(project_root).is_file():
+            return
+        environment = selected_venv(project_root)
+        lease_generation(environment)
+        selected = site_packages(environment)
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
     import site

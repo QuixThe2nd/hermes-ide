@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import patch
+import subprocess
+
 import pytest
 
 
@@ -172,3 +176,82 @@ def patch_pm_uv_to_shutil_which():
 
     with patch("pm.uv", side_effect=_fake_pm_uv):
         yield
+
+
+@pytest.fixture
+def isolated_update_uv(patch_pm_uv_to_shutil_which):
+    """Make pm.uv follow shutil.which mocking in tests."""
+    yield
+
+
+@pytest.fixture
+def isolated_update_processes():
+    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
+
+    The restart phase used to swallow every exception at debug level, so these
+    end-to-end tests never noticed it touching real gateway discovery. Since
+    the phase is surfaced (#78574: an aborted restart now fails the update),
+    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
+    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
+    Discovery returning nothing makes the phase a clean no-op for every test
+    in this module (none of them assert on gateway restarts).
+    """
+    # create=True: the fork's main.py resolves several of these names lazily
+    # (via _m() on first read) rather than importing them at module load, so
+    # the attribute may legitimately not exist until the update flow runs.
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.main._detect_venv_python_processes", return_value=[], create=True), \
+         patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False, create=True), \
+         patch("os.kill"), \
+         patch("pm.sync_venv"), \
+         patch(
+             "hermes_cli.update_inventory.collect_runtime_inventory",
+             return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+         ), \
+         patch("hermes_cli.main._purge_stale_hermes_modules", create=True), \
+         patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None, create=True), \
+         patch("hermes_cli.main._resume_windows_gateways_after_update", create=True), \
+         patch(
+             "hermes_cli.main._install_hangup_protection",
+             return_value={
+                 "prev_stdout": None, "prev_stderr": None,
+                 "log_file": None, "installed": False,
+             },
+             create=True,
+         ), \
+         patch("hermes_cli.main._finalize_update_output", create=True), \
+         patch("hermes_cli.update_cmd._reload_config_modules", create=True):
+        yield
+
+
+@pytest.fixture
+def isolated_update_checkout(monkeypatch, tmp_path):
+    """Keep the updater on an isolated checkout and intercept the web build's Popen path."""
+    import hermes_cli.main as cli_main
+    from hermes_cli import main_web_build
+
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path, raising=False)
+    noop_build = lambda *args, **kwargs: True  # noqa: E731
+    monkeypatch.setattr(cli_main, "_build_web_ui", noop_build, raising=False)
+    monkeypatch.setattr(main_web_build, "_build_web_ui", noop_build, raising=False)
+    monkeypatch.setattr(
+        main_web_build, "_web_ui_build_needed", lambda *a, **k: False, raising=False
+    )
+    fake_npm = lambda *a, **k: subprocess.CompletedProcess(  # noqa: E731
+        [], 0, stdout="", stderr=""
+    )
+    monkeypatch.setattr(
+        main_web_build, "_run_npm_install_deterministic", fake_npm, raising=False
+    )
+
+    # Tests that exercise ZIP fallback must override this tripwire explicitly.
+    def _no_zip_fallback(*args, **kwargs):
+        pytest.fail(
+            "test reached _update_via_zip — the git checkout path was not "
+            "isolated correctly (missing tmp .git or unexpected fallback)"
+        )
+
+    monkeypatch.setattr("hermes_cli.update_cmd._update_via_zip", _no_zip_fallback)

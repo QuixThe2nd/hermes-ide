@@ -108,11 +108,15 @@ def sealed() -> bool:
 
 
 def _refuse_lazy(name: str, what: str) -> InstallError:
-    return InstallError(
+    from pm import receipt
+
+    error = InstallError(
         name,
         f"not installed and lazy installs are disabled: {what}",
         "enable security.allow_lazy_installs or run `hermes pm install`",
     )
+    receipt.record_refusal("lazy-install", str(error))
+    return error
 
 
 def _remove_entry(store: Store, entry_name: str) -> None:
@@ -372,26 +376,22 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                 )
 
         package = get_package("venv")
-        inputs = {} if plugin_dirs is None else {"plugin_dirs": plugin_dirs}
-        facts = Facts(paths.runtime_facts_path())
-        baseline = _facts().get("venv") or {}
-        fact = facts.get("venv") or baseline
-        enabled = sorted(set(fact.get("extras", [])) | set(extras or []))
-        stamp = package.expected_stamp(enabled, **inputs)
-        if before_publish is None and _runtime_state_matches(fact, stamp):
-            receipt.record_venv_rebuild(False, "already in sync")
-            outcome = "ok"
-            return
-        if not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
-            raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
-        with Store(facts.path.parent).install_lock():
-            facts.reload()
-            fact = facts.get("venv") or baseline
+        from hermes_cli.runtime_state import runtime_lock, recover_publication
+        with runtime_lock(paths.repo_root()):
+            recover_publication(paths.repo_root())
+            members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
+            inputs = {} if members is None else {"plugin_dirs": members}
+            facts = Facts(paths.runtime_facts_path())
+            fact = facts.get("venv") or _facts().get("venv") or {}
             enabled = sorted(set(fact.get("extras", [])) | set(extras or []))
             stamp = package.expected_stamp(enabled, **inputs)
+            if not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
+                raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
             if _runtime_state_matches(fact, stamp):
                 if before_publish is not None:
-                    before_publish()
+                    publication = before_publish()
+                    if hasattr(publication, "finish"):
+                        publication.finish()
                 receipt.record_venv_rebuild(False, "already in sync")
                 outcome = "ok"
                 return
@@ -402,6 +402,8 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                 if before_publish is not None:
                     undo = before_publish()
                 facts.record_state("venv", stamp, enabled, **result)
+                if hasattr(undo, "finish"):
+                    undo.finish()
                 receipt.record_venv_rebuild(True)
             except BaseException:
                 if undo is not None:
@@ -411,6 +413,9 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                         LOG.exception("pm sync: publish undo failed; config may drift")
                 raise
         outcome = "ok"
+    except BaseException as exc:
+        receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")
+        raise
     finally:
         receipt.finalize(outcome, 0 if outcome == "ok" else 1, token=token)
 

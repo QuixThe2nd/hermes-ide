@@ -56,11 +56,8 @@ def _read(path: Path) -> dict:
 
 
 def _write(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-
+    from hermes_cli.runtime_state import _atomic_bytes
+    _atomic_bytes(path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 class Lockfile:
     """Read side of lock.json. Written only by `pm lock --bump` (cli)."""

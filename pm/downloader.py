@@ -157,7 +157,7 @@ def gc_protected_names(
             # contract for "sweep everything"). mtime can tick a hair
             # NEWER than `now` on some filesystems, which <= would
             # wrongly treat as inside a zero window.
-            if now - entry.stat().st_mtime < grace_seconds:
+            if grace_seconds > 0 and now - entry.stat().st_mtime < grace_seconds:
                 protected.add(entry.name)
         except OSError:
             protected.add(entry.name)  # unreadable → assume live

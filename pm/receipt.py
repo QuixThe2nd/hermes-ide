@@ -23,6 +23,15 @@ Two hazards of ContextVar state are handled explicitly:
   to ``finalize(..., token=...)`` restores the OUTER receipt instead of
   discarding it. The ambient no-token begin→finalize stays as-is (the
   existing linear consumers — pm sync, the plugin-check cadence).
+
+Correlation: ``begin`` stamps the receipt with the ambient update
+correlation id (derived from the open update receipt's own identity in
+the same context). ``finalize`` files the finished receipt under that
+id in a per-context map, and the updater embeds only the entry carrying
+ITS OWN id (``last_for_update``), never latest.json — a sync that
+finished before the update began, a standalone sync, or one from a
+concurrent thread cannot be misattributed to it, and a nested update's
+sync never displaces the outer update's entry.
 """
 
 from __future__ import annotations
@@ -45,6 +54,29 @@ _current: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.Context
     "pm_receipt_current", default=None
 )
 
+# Completed sync receipts, keyed by the update correlation id they were
+# begun under (copy-on-written per finalize — copied contexts never share
+# a mutated dict). The updater embeds ONLY the entry carrying ITS id, so
+# a nested update's sync can never displace the outer update's, and a
+# standalone sync (update_id None) is never embedded. Bounded: one entry
+# per distinct update id seen in this context (nesting depth).
+_completed_by_update: contextvars.ContextVar[Optional[dict[str, dict[str, Any]]]] = (
+    contextvars.ContextVar("pm_receipt_completed_by_update", default=None)
+)
+
+
+def _ambient_update_id() -> Optional[str]:
+    """The update correlation id in force in this context, or None.
+
+    Lazy import: hermes_cli.update_receipt imports pm.receipt at embed
+    time, so this direction must stay function-scoped. Never raises."""
+    try:
+        from hermes_cli.update_receipt import current_correlation_id
+
+        return current_correlation_id()
+    except Exception:
+        return None
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -62,11 +94,16 @@ def begin(kind: str) -> contextvars.Token:
     """Start recording a sync. ``kind``: 'sync' | 'update' | 'plugin-check'.
     Returns the ContextVar token — pass it to ``finalize(token=...)`` when
     this begin nests inside an outer begin in the same context, so the
-    outer receipt survives the inner finalize."""
+    outer receipt survives the inner finalize.
+
+    The receipt is stamped with the ambient update correlation id (the
+    ``hermes update`` this sync belongs to), or None for a standalone
+    sync — the id is what makes the updater's embed selective."""
     return _current.set(
         {
             "schema": 1,
             "kind": kind,
+            "update_id": _ambient_update_id(),
             "started_at": _utc_now_iso(),
             "steps": [],
             "venv_rebuild": None,
@@ -74,6 +111,8 @@ def begin(kind: str) -> contextvars.Token:
             "feature_list": None,
             "platform": None,
             "outcome": None,
+            "warnings": [],
+            "refusal": None,
         }
     )
 
@@ -120,6 +159,28 @@ def record_plugin_checks(results: list) -> None:
     )
 
 
+def record_warning(message: str) -> None:
+    """Record a warning surfaced to the user during this sync — a warning
+    that reached the operator's eyes must reach the receipt too."""
+    _record(
+        lambda r: r.update(
+            warnings=[*r.get("warnings", []),
+                      {"message": str(message), "at": _utc_now_iso()}]
+        )
+    )
+
+
+def record_refusal(code: str, detail: str = "") -> None:
+    """Record WHY this sync refused to act (e.g. the lazy-install policy).
+    ``outcome`` stays whatever ``finalize`` is given (refusals finalize as
+    ``failed``/``refused``) — this names the refusal class."""
+    _record(
+        lambda r: r.__setitem__(
+            "refusal", {"code": str(code), "detail": str(detail), "at": _utc_now_iso()}
+        )
+    )
+
+
 def snapshot() -> Optional[dict[str, Any]]:
     """The in-flight receipt data — for the updater to EMBED its sync
     sections into its own receipt (one schema, one directory). A deep
@@ -148,11 +209,35 @@ def finalize(
     current["outcome"] = outcome
     current["exit_code"] = exit_code
     current["finished_at"] = _utc_now_iso()
+    # Correlation: file this completion under its update id (copy-on-write
+    # — a deep-copied entry in a freshly copied map, never a shared dict).
+    update_id = current.get("update_id")
+    if update_id:
+        completed = dict(_completed_by_update.get() or {})
+        completed[update_id] = copy.deepcopy(current)
+        _completed_by_update.set(completed)
     try:
         path = _write_rotated(current)
     except OSError:
         return None
     return path
+
+
+def last_for_update(update_id: Optional[str], *, consume: bool = False) -> Optional[dict[str, Any]]:
+    """The last sync receipt completed in THIS context under ``update_id``
+    — the correlation surface for an invoking update's embed. A sync from
+    before this update, a standalone sync, or one from a concurrent
+    context cannot be returned; a nested update's sync is filed under the
+    nested id and never displaces the outer update's entry. Deep copy;
+    None when no matching completion exists."""
+    if not update_id:
+        return None
+    entries = dict(_completed_by_update.get() or {})
+    completed = entries.get(update_id)
+    if consume:
+        entries.pop(update_id, None)
+        _completed_by_update.set(entries)
+    return copy.deepcopy(completed) if completed is not None else None
 
 
 def latest() -> Optional[dict[str, Any]]:

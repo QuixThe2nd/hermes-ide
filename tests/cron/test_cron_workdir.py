@@ -159,6 +159,7 @@ class TestTickWorkdirPartition:
         ]
         monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
         monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "_maybe_run_worktree_maintenance", lambda: None)
 
         barrier = threading.Barrier(2, timeout=5)
         calls: list[tuple[str, str]] = []
@@ -215,7 +216,7 @@ class TestRunJobTerminalCwd:
                 observed["terminal_cwd_during_run"] = os.environ.get(
                     "TERMINAL_CWD", "_UNSET_"
                 )
-                return {"final_response": "done", "messages": []}
+                return {"final_response": "done", "messages": [{"role": "assistant", "content": "done"}]}
 
             def get_activity_summary(self):
                 return {"seconds_since_activity": 0.0}

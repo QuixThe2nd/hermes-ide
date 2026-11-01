@@ -351,10 +351,16 @@ def _gc_store(store, facts) -> tuple[int, int]:
 
 
 def cmd_gc(args) -> int:
-    facts = _facts()
-    store = _store()
+    from pm.paths import writable_store_root
+    from pm.lock import Facts
+    from pm.store import Store
+    store = Store(writable_store_root())
+    facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
     removed, kept = _gc_store(store, facts)
-    print(f"gc: removed {removed}, kept {kept}")
+    from hermes_cli.runtime_state import collect_generations
+    from pm.paths import repo_root
+    generations = collect_generations(repo_root())
+    print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations")
     return 0
 
 

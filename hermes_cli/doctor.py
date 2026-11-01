@@ -54,6 +54,7 @@ from hermes_cli.doctor_state import (
     _check_profiles,
     _check_skills_hub,
     _check_state_db,
+    _check_update_provenance,
 )
 
 _PROVIDER_ENV_HINTS = (
@@ -185,7 +186,8 @@ DOCTOR_CHECKS = (
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_checkpoint_store),
-    (None, _check_gateway_supervision), ('Plugin Provenance', _check_plugin_provenance),
+    (None, _check_update_provenance), (None, _check_gateway_supervision),
+    ('Plugin Provenance', _check_plugin_provenance),
     (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),

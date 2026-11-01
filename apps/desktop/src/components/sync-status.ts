@@ -33,7 +33,7 @@ export function deriveSyncStatusSummary(
 
   if (!receipt) {return empty}
 
-  const disabledPlugins = (receipt.plugin_bisect ?? [])
+  const disabledPlugins = (receipt.pm_plugin_bisect ?? receipt.plugin_bisect ?? [])
     .filter(d => d.action === 'disabled')
     .map(d => ({ plugin: d.plugin, reason: d.reason }))
 
@@ -47,14 +47,19 @@ export function deriveSyncStatusSummary(
     .filter(c => c.update_available === true)
     .map(c => ({ name: c.name, current: c.current ?? null, latest: c.latest ?? null }))
 
-  const rebuildFailed =
-    receipt.venv_rebuild != null && receipt.venv_rebuild.ok === false
+  const outcome = receipt.pm_sync_outcome ?? receipt.outcome
+  const rebuild = receipt.pm_venv_rebuild ?? receipt.venv_rebuild
+  const steps = receipt.pm_steps ?? receipt.steps ?? []
+  const failureDetail = steps.find(step => step.ok === false)?.detail ?? rebuild?.reason
+
+  const rebuildFailed = outcome === 'failed' || outcome === 'refused' ||
+    (outcome !== 'ok' && outcome !== 'success' && rebuild?.ok === false)
 
   let headline: string | null = null
   let level: SyncStatusSummary['level'] = 'ok'
 
   if (rebuildFailed) {
-    headline = 'Dependency rebuild failed — some plugins may be missing packages'
+    headline = failureDetail ? `Dependency rebuild failed — ${failureDetail}` : 'Dependency rebuild failed — inspect the update receipt'
     level = 'error'
   } else if (needsFixing.length > 0) {
     headline = `${needsFixing.length} plugin${

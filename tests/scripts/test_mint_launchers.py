@@ -30,7 +30,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _MINT = _REPO / "scripts" / "desktop-cli" / "mint-launchers.py"
 
 pytestmark = [
-    pytest.mark.skipif(sys.platform != "win32", reason="distlib launcher minting is win32-only"),
+    pytest.mark.platforms("windows"),
 ]
 
 
@@ -80,7 +80,10 @@ def payload_tree(tmp_path: Path):
         ignore=shutil.ignore_patterns("__pycache__", "site-packages", "test", "idlelib", "tkinter", "turtledemo", "config-*"),
     )
 
-    (repo / "hermes_cli" / "__init__.py").write_text("", encoding="utf-8")
+    # Exercise the real bootstrap before the fixture entry point.
+    for relative in ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py",
+                     "hermes_cli/runtime_paths.py", "hermes_cli/runtime_state.py"):
+        shutil.copy2(_REPO / relative, repo / relative)
     (repo / "hermes_cli" / "main.py").write_text(
         "import os, sys\n"
         "def main():\n"
@@ -154,7 +157,7 @@ def test_minted_launcher_runs_relocated_and_forwards_exit_code(payload_tree, tmp
 
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "PYTHONPYCACHEPREFIX")}
     env["LOCALAPPDATA"] = str(payload_tree["tmp"] / "lad")
-    proc = subprocess.run([str(exe), "--version"], capture_output=True, text=True, cwd=os.path.expanduser("~"), env=env)
+    proc = subprocess.run([str(exe), "--version"], capture_output=True, text=True, cwd=tmp_path, env=env)
     assert proc.returncode == 7, proc.stderr[-800:]
     assert proc.stdout.strip() == "OK None"  # PYTHONHOME was dropped
 

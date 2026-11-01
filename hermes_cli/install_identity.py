@@ -63,11 +63,16 @@ def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
 
     ``None`` = neither readable nor persistable; an ephemeral id would violate the authority/registry contract.
     """
+    # A reader can collide with the first atomic replace on Windows. Serialize
+    # threads before reading, and recheck an unavailable file under the OS lock.
     root = get_default_hermes_root() if root is None else root
     path = root / _INSTALL_ID_FILENAME
     existing, mint = _read_existing(path)
-    if not mint:
+    if not mint and existing is not None:
         return existing
+    # A read failure (``None, mint=False``) is not "no identity": it can be a
+    # transient collision with the first atomic replace. Fall through and
+    # recheck under the publication lock instead of reporting None.
     try:
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(root)

@@ -387,8 +387,13 @@ async function listBranches(repoPath, gitBin) {
       runGit(gitBin, ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate', 'refs/heads'], resolved),
       runGit(gitBin, ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate', 'refs/remotes'], resolved)
     ])
+
     const [local, remote] = probes
-    if (local.status === 'rejected' || remote.status === 'rejected') return []
+
+    if (local.status === 'rejected' || remote.status === 'rejected') {
+      return []
+    }
+
     const [localOut, remoteOut] = [local.value, remote.value]
 
     const trees = await listWorktrees(resolved, gitBin)

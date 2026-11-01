@@ -1,6 +1,6 @@
 // updater/app-installer-strategy.test.ts — the apply-flow contract: the
-// one-shot relaunch marker is written BEFORE the OS hand-off, teardown runs
-// before the trigger, and quit is unconditional (no relaunch question).
+// relaunch registration (marker + detached waiter) completes BEFORE the OS
+// hand-off, teardown runs before the trigger, and quit is unconditional.
 
 import { describe, expect, it } from 'vitest'
 
@@ -22,7 +22,7 @@ function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}) {
     emitUpdateProgress: () => {},
     appVersion: '0.18.2',
     quit: () => { calls.push('quit') },
-    registerPendingRelaunch: () => { calls.push('relaunch-marker');
+    registerPendingRelaunch: async () => { calls.push('relaunch-marker');
 
  return true },
     ...over
@@ -42,10 +42,17 @@ describe('AppInstallerStrategy.apply', () => {
   })
 
   it('fails open: a marker-write failure never blocks the update', async () => {
-    const { deps, calls } = makeDeps({ registerPendingRelaunch: () => false })
+    const progress: string[] = []
+
+    const { deps, calls } = makeDeps({
+      registerPendingRelaunch: async () => false,
+      emitUpdateProgress: event => { progress.push(event.message) }
+    })
+
     const result = await new AppInstallerStrategy(deps).apply({})
     expect(result.ok).toBe(true)
     expect(calls).toContain('quit')
+    expect(progress.some(message => message.includes('Reopen Hermes'))).toBe(true)
   })
 
   it('no feed URL → manual card, no teardown, no quit', async () => {

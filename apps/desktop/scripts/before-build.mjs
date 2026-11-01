@@ -70,12 +70,11 @@ function writeMsixExtensions() {
   const desktop = path.join(import.meta.dirname, '..')
   const output = path.join('build', 'msix-extensions.xml')
   const file = path.join(desktop, output)
-  // One uap5:Extension per payload CLI launcher exe (see
-  // scripts/desktop-cli/cli-entrypoints.mjs): the minted exes are three
-  // REAL executables now — the old rust shim's one-exe-argv[0]-dispatch is
-  // gone — and an AppExecutionAlias's Executable must name the exact exe
-  // that serves the alias, so each alias gets its own Extension block.
-  const aliases = light ? '' : appExecutionAliasExtensions()
+  const manifest = path.join(desktop, 'build', 'agent-payload', 'manifest.json')
+  const payload = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, 'utf8')) : null
+  const launchers = light || !payload || payload.external
+    ? [] : CLI_LAUNCHER_SPECS.map(spec => spec.name)
+  const aliases = appExecutionAliasExtensions(launchers)
   // The uap3:AppExtension fragment that registers the app as a Windows
   // Copilot hardware key provider. The press activates hermes://copilot-key/start.
   //
@@ -115,6 +114,7 @@ ${aliases}`
  * @param {{ name: string }[]} [launchers] exe stems under bin/
  */
 export function appExecutionAliasExtensions(launchers = CLI_LAUNCHER_SPECS.map((s) => s.name)) {
+  if (launchers.length === 0) return ''
   const bs = String.fromCharCode(92)
   const executable = (name) => ['app', 'resources', 'agent-payload', 'bin', `${name}.exe`].join(bs)
   // ONE windows.appExecutionAlias extension per package — makeappx rejects a

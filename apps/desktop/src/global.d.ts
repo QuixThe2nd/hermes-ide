@@ -663,6 +663,10 @@ export interface DesktopSyncReceipt {
   finished_at?: string
   steps?: Array<{ name: string; ok: boolean; detail?: string; at?: string }>
   venv_rebuild?: { ok: boolean; reason?: string } | null
+  pm_sync_outcome?: string
+  pm_steps?: DesktopSyncReceipt['steps']
+  pm_venv_rebuild?: DesktopSyncReceipt['venv_rebuild']
+  pm_plugin_bisect?: DesktopSyncReceipt['plugin_bisect']
   plugin_bisect?: Array<{ plugin: string; action: string; reason: string }>
   plugin_checks?: Array<{
     name: string

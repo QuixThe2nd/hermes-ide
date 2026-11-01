@@ -3689,7 +3689,7 @@ def _maybe_run_worktree_maintenance() -> None:
             repos = _worktree_maintenance_repos()
             if not repos:
                 return
-            from cli import _prune_stale_worktrees
+            from hermes_cli.worktree_ops import _prune_stale_worktrees
 
             for repo in repos:
                 try:

@@ -41,12 +41,13 @@ export interface AppInstallerStrategyDeps {
   /** Quit the app (after handing the swap to the OS). */
   quit: () => void
   /**
-   * Register a one-shot post-update relaunch (run-key entry or equivalent)
-   * before quitting, so Hermes reopens on the new version with no user
-   * action. The new version's first run detects + deletes the marker.
-   * Returns false when registration failed (relaunch stays manual).
+   * Register a one-shot post-update relaunch before quitting, so Hermes
+   * reopens on the new version with no user action. Resolves true only once
+   * the relaunch mechanism has acknowledged (the waiter handshake) — the
+   * caller must await this BEFORE quitting. Resolves false when the
+   * mechanism could not be started (relaunch stays manual).
    */
-  registerPendingRelaunch: (targetVersion: string) => boolean
+  registerPendingRelaunch: (targetVersion: string) => Promise<boolean>
 }
 
 export interface CheckOutcome {
@@ -101,9 +102,19 @@ export class AppInstallerStrategy {
       percent: 100
     })
 
-    // Unconditional relaunch: register the one-shot marker BEFORE the swap so
-    // Hermes comes back on the new version with no user action.
-    this.deps.registerPendingRelaunch(this.deps.appVersion)
+    // Unconditional relaunch: register the mechanism BEFORE the swap so
+    // Hermes comes back on the new version with no user action. The
+    // handshake is awaited so the app never quits into an unregistered
+    // waiter (false = the waiter lost the race or failed to spawn; the
+    // update proceeds and relaunch stays manual).
+    const registered = await this.deps.registerPendingRelaunch(this.deps.appVersion)
+
+    if (!registered) {
+      this.deps.emitUpdateProgress({
+        stage: 'restart', percent: 100,
+        message: 'Automatic relaunch could not be registered. Reopen Hermes after App Installer finishes.'
+      })
+    }
 
     await triggerAppInstallerUpdate(
       feedBaseUrl,

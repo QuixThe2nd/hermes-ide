@@ -60,7 +60,8 @@ def sync_calls(monkeypatch):
     calls = []
 
     def _sync(extras=None, *, explicit=False, plugin_dirs=None, before_publish=None):
-        calls.append(list(plugin_dirs or []))
+        members = plugin_dirs() if callable(plugin_dirs) else plugin_dirs
+        calls.append(list(members or []))
         if before_publish is not None:
             before_publish()  # same contract: config commits under the sync
 

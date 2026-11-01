@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
+import { SyncStatusCard } from '@/components/sync-status-card'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import {
@@ -254,6 +255,7 @@ function IdleView({
           version={version}
         />
         <UpdateStatusCard target={target} />
+        <SyncStatusCard />
         {details}
       </div>
     )
@@ -312,6 +314,8 @@ function IdleView({
       </div>
 
       {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
+
+      <SyncStatusCard />
     </div>
   )
 }

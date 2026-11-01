@@ -174,7 +174,7 @@ class TestReceiptIntegration:
         home = tmp_path / "receipt_home"
         home.mkdir()
         monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home, raising=False)
-        ur._current = None
+        ur._current.set(None)
         ur.begin_update_receipt()
         plan = ui.collect_runtime_inventory()
         ui.record_plan_in_receipt(plan)
@@ -186,5 +186,5 @@ class TestReceiptIntegration:
     def test_noop_without_active_receipt(self, fleet):
         import hermes_cli.update_receipt as ur
 
-        ur._current = None
+        ur._current.set(None)
         ui.record_plan_in_receipt(ui.collect_runtime_inventory())  # must not raise

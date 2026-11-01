@@ -38058,7 +38058,7 @@ def _start_gateway_housekeeping(
         (60, "Sync pull tick", _housekeeping_skill_sync),
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
-        (60, "Plugin update check", _housekeeping_plugin_update_check),
+        (1, "Plugin update check", _housekeeping_plugin_update_check),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),

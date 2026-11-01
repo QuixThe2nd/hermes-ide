@@ -445,6 +445,42 @@ def _check_checkpoint_store(should_fix: bool, f: Finding) -> None:
         check_warn(notice)
 
 
+def _plugin_provenance_rows(plugins_dir) -> list:
+    """Report local provenance using the update checker's admission rules."""
+    from hermes_cli.plugins_provenance import ProvenanceClass, plugins_provenance
+    from hermes_cli.plugins_updates import check_local_provenance
+
+    if plugins_dir is None or not Path(plugins_dir).is_dir():
+        return [("info", "No plugins directory yet (nothing to check provenance for)", "")]
+    try:
+        provenances = plugins_provenance(Path(plugins_dir))
+    except (OSError, ValueError, RuntimeError) as exc:
+        return [("warn", "Plugin provenance could not be read", str(exc))]
+    rows = []
+    for provenance in provenances:
+        result = check_local_provenance(provenance)
+        detail = result.needs_fixing or result.reason
+        if result.needs_fixing or provenance.klass is ProvenanceClass.DRIFT:
+            rows.append(("warn", f"Plugin '{provenance.name}': {detail}", ""))
+        elif provenance.klass is ProvenanceClass.MANUAL:
+            rows.append(("info", f"Plugin '{provenance.name}' installed manually", detail))
+        elif provenance.klass is ProvenanceClass.SELF_CLONED:
+            rows.append(("info", f"Plugin '{provenance.name}': self-cloned", detail))
+        else:
+            rows.append(("ok", f"Plugin '{provenance.name}': provenance in good standing", detail))
+    return rows or [("info", "No provenanced plugins found", "")]
+
+
+@doctor_check("")
+def _check_update_provenance(should_fix: bool, f: Finding) -> None:
+    """Inspect local plugin update provenance without network or writes."""
+    from hermes_constants import get_hermes_home
+
+    printers = {"warn": check_warn, "ok": check_ok, "info": lambda text, detail: check_info(f"{text} {detail}".rstrip())}
+    for kind, text, detail in _plugin_provenance_rows(get_hermes_home() / "plugins"):
+        printers[kind](text, detail)
+
+
 def _gh_authenticated() -> bool:
     """Check if gh CLI is authenticated via token file or device flow.
 

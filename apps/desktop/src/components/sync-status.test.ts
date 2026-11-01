@@ -5,6 +5,19 @@ import type { DesktopSyncReceipt } from '@/global'
 import { deriveSyncStatusSummary } from './sync-status'
 
 describe('deriveSyncStatusSummary', () => {
+  test('a no-op sync is healthy, while an embedded failed sync is visible', () => {
+    expect(deriveSyncStatusSummary({ outcome: 'ok', venv_rebuild: { ok: false, reason: 'already in sync' } }).headline).toBeNull()
+
+    const receipt = {
+      outcome: 'failed', pm_sync_outcome: 'failed',
+      pm_steps: [{ name: 'dependency-sync', ok: false, detail: 'network unavailable' }]
+    }
+
+    const summary = deriveSyncStatusSummary(receipt)
+    expect(summary.level).toBe('error')
+    expect(summary.headline).toContain('network unavailable')
+  })
+
   test('null receipt degrades to nothing-to-show', () => {
     const summary = deriveSyncStatusSummary(null)
     expect(summary.headline).toBeNull()

@@ -85,6 +85,8 @@ class _StubHandler(BaseHTTPRequestHandler):
             self._send(404, {})
 
     def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length)) if length else {}
         if self.path == "/v1/chat/completions":
             self._send(200, {"choices": [{"message": {
                 "role": "assistant", "content": self.chat_answer}}]})
@@ -92,8 +94,6 @@ class _StubHandler(BaseHTTPRequestHandler):
             self._send(200, {"success": True})
         elif self.path == "/models/unload":
             type(self).unloaded = getattr(type(self), "unloaded", [])
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length)) if length else {}
             type(self).unloaded.append(body.get("model"))
             self._send(200, {"success": True})
         else:
@@ -116,8 +116,12 @@ def stub_server():
     server = HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    yield server.server_address[1], Handler
-    server.shutdown()
+    try:
+        yield server.server_address[1], Handler
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 # ── detection (Rollout 1) ────────────────────────────────────

@@ -58,8 +58,8 @@ def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
 
 
 def _make_safe_tempdir(prefix: str) -> str:
-    """Create a temp dir outside macOS system-sensitive /private/var paths."""
-    return tempfile.mkdtemp(prefix=prefix, dir=os.getcwd())
+    """Keep transient fixtures outside the checkout walked by other pytest workers."""
+    return tempfile.mkdtemp(prefix=prefix)
 
 
 # ---------------------------------------------------------------------------
