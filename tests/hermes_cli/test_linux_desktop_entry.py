@@ -226,6 +226,8 @@ def test_exec_prefixes_interpreter_for_env_shebang_python_script(
     entry = lde.install_desktop_entry(root)
     exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
 
+    # The Exec carries the venv-LEXICAL interpreter (resolving would follow
+    # uv/pyenv symlinks out of the venv and lose pyvenv.cfg discovery).
     interpreter = os.path.abspath(sys.executable)
     tokens = exec_line.split(" ")
     assert tokens[0] == "env"
@@ -263,6 +265,9 @@ def test_exec_leaves_venv_shebang_scripts_alone(tmp_path, xdg_home, monkeypatch)
     root = _make_project(tmp_path)
     hermes_bin = tmp_path / "bin" / "hermes"
     hermes_bin.parent.mkdir()
+    # venv-LEXICAL interpreter, matching what the launcher persists: a
+    # resolved() path would dereference out of the venv and look foreign to
+    # the lexical comparison, provoking a spurious interpreter prefix.
     interpreter = os.path.abspath(sys.executable)
     hermes_bin.write_text(f"#!{interpreter}\nimport hermes_cli\n", encoding="utf-8")
     hermes_bin.chmod(0o755)

@@ -1285,56 +1285,63 @@ class TestGatewaySystemServiceRouting:
 
         assert run_calls == []
 
+
+def _seed_pm_environment(tmp_path, monkeypatch, with_venv_fact=True):
+    """Commit a pm environment the way ``pm sync`` records it: an install-keyed
+    facts.json whose venv fact names a committed environment generation under
+    the install state (pyvenv.cfg included). Returns
+    ``(project_root, environment_dir)``."""
+    from hermes_cli.runtime_paths import install_state_dir
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # installs_root() under the test root
+    project_root = tmp_path / "payload" / "hermes-agent"
+    project_root.mkdir(parents=True)
+    state = install_state_dir(project_root)
+    environment = state / "environments" / "gen-1"
+    environment.mkdir(parents=True)
+    (environment / "pyvenv.cfg").write_text("", encoding="utf-8")
+    packages = (
+        {"venv": {"stamp": "abc", "extras": [], "environment": str(environment)}}
+        if with_venv_fact
+        else {}
+    )
+    (state / "facts.json").write_text(
+        json.dumps({"schema": 1, "packages": packages}), encoding="utf-8"
+    )
+    return project_root, environment
+
+
 class TestDetectVenvDir:
     """Tests for _detect_venv_dir() virtualenv detection.
 
-    pm's facts/store resolution is the primary source; each legacy-probe
-    test isolates it (``_pm_runtime_venv_dir`` patched to None) so the
-    fallbacks are exercised deterministically regardless of whether the
-    host checkout has pm-provisioned a venv.
+    pm's committed-environment resolution (runtime_paths.selected_venv) is
+    the primary source; each legacy-probe test isolates it
+    (``_pm_runtime_venv_dir`` patched to None) so the fallbacks are exercised
+    deterministically regardless of whether the host checkout has
+    pm-provisioned a venv.
     """
 
     def test_resolves_pm_provisioned_venv_without_virtual_env(self, tmp_path, monkeypatch):
-        """No sys.prefix venv, no VIRTUAL_ENV anywhere — the pm-provisioned
-        venv (facts + store layout) is the answer."""
+        """No sys.prefix venv, no VIRTUAL_ENV anywhere — the pm-committed
+        environment (venv fact + selected_venv contract) is the answer."""
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
         monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
-        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        project_root, environment = _seed_pm_environment(tmp_path, monkeypatch)
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project_root)
 
-        payload = tmp_path / "payload"
-        store = payload / "tools"
-        venv = payload / "venv"
-        venv.mkdir(parents=True)
-        store.mkdir(parents=True)
-        (payload / "manifest.json").write_text("{}", encoding="utf-8")
-        (store / "facts.json").write_text(
-            json.dumps(
-                {"schema": 1, "packages": {"venv": {"stamp": "abc", "extras": []}}}
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
-
-        assert gateway_cli._detect_venv_dir() == venv
+        assert gateway_cli._detect_venv_dir() == environment
 
     def test_pm_resolution_none_without_venv_fact(self, tmp_path, monkeypatch):
-        """A store without a venv fact does not vouch — no pm answer."""
+        """A committed state without a venv fact does not vouch — no pm answer."""
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
-
-        payload = tmp_path / "payload"
-        store = payload / "tools"
-        (payload / "venv").mkdir(parents=True)
-        store.mkdir(parents=True)
-        (payload / "manifest.json").write_text("{}", encoding="utf-8")
-        (store / "facts.json").write_text(
-            json.dumps({"schema": 1, "packages": {}}), encoding="utf-8"
+        project_root, _ = _seed_pm_environment(
+            tmp_path, monkeypatch, with_venv_fact=False
         )
-        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project_root)
 
         assert gateway_cli._detect_venv_dir() is None
 
@@ -1385,21 +1392,12 @@ class TestServicePathDirsPmVenv:
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
         monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
 
-        payload = tmp_path / "payload"
-        store = payload / "tools"
-        venv_bin = payload / "venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        store.mkdir(parents=True)
-        (payload / "manifest.json").write_text("{}", encoding="utf-8")
-        (store / "facts.json").write_text(
-            json.dumps(
-                {"schema": 1, "packages": {"venv": {"stamp": "abc", "extras": []}}}
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        project_root, environment = _seed_pm_environment(tmp_path, monkeypatch)
+        venv_bin = environment / "bin"
+        venv_bin.mkdir()
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project_root)
 
-        dirs = gateway_cli._build_service_path_dirs(project_root=tmp_path / "project")
+        dirs = gateway_cli._build_service_path_dirs(project_root=project_root)
 
         assert str(venv_bin) in dirs
 
@@ -1407,9 +1405,11 @@ class TestServicePathDirsPmVenv:
 def _seed_pm_node_facts(hermes_root):
     """Write a pm installed-state file recording node/npm store entries.
 
-    _append_node_dir_for_service() resolves the managed Node through the pm
-    store (facts.json) rather than a fixed ``node/`` tree, so tests seed the
-    state the way a real install records it.
+    _append_node_dir_for_service() resolves managed Node through pm's
+    installed-state (facts.json env PATH entries with ``{{store}}`` templates
+    resolved against the target home's store), so tests seed the record the
+    way a real `pm install` writes it — via the same Facts schema, read back
+    through Facts.env_for().
     """
     store_root = hermes_root / "tools"
     node_dir = store_root / "node-v22.0.0"

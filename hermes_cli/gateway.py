@@ -2839,39 +2839,25 @@ def launchd_gateway_labels_for_install() -> list[str]:
     return root_label + sorted(profile_labels)
 
 
-def _pm_runtime_venv_dir() -> Path | None:
-    """The venv pm provisioned for this install, resolved from pm's own
-    records (facts.json + store layout) — never from interpreter state.
+def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
+    """The venv pm provisioned for this install, resolved through
+    ``runtime_paths.selected_venv`` — the committed-environment contract —
+    never from interpreter state.
 
     Under no-boot-through-venv the gateway runs the store python with the
     venv's site-packages on PYTHONPATH, so ``sys.prefix`` always equals
     ``sys.base_prefix`` and ``VIRTUAL_ENV`` is unset in bundled installs;
-    prefix/env probing silently degrades. pm is the authority instead: a
-    bundled install keeps its relocatable venv beside the manifest (a
-    sibling of the store), a dev install syncs the project venv
-    (``venv``/``.venv``, per ``hermes_constants.project_venv_dir`` — the
-    same layout ``pm.packages.Venv.venv_dir`` materializes). The venv fact
-    must exist: pm only vouches for what it provisioned.
+    prefix/env probing silently degrades. Resolution follows the committed-
+    environment contract: a committed selection is returned as-is, a host
+    with nothing committed yields nothing launchable, and a malformed
+    selection raises — fail closed, never a silently wrong venv.
     """
-    try:
-        from pm import paths
-        from pm.lock import Facts
-    except Exception:
-        return None
-    try:
-        if not Facts(paths.facts_path()).get("venv"):
-            return None
-    except Exception:
-        return None
-    store = paths.store_root()
-    bundled = store.parent / "venv"
-    if (store.parent / "manifest.json").is_file():
-        return bundled if bundled.is_dir() else None
-    try:
-        from hermes_constants import project_venv_dir
-    except ImportError:
-        return None
-    return project_venv_dir(paths.repo_root())
+    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    from hermes_cli.runtime_paths import selected_venv
+
+    venv = selected_venv(root)  # a malformed committed selection raises: fail closed
+    return venv if venv.is_dir() else None
+
 
 
 def _detect_venv_dir() -> Path | None:
@@ -2994,20 +2980,20 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
             return False
 
     candidates = []
-
-    # The interpreter's own bin dir. Under no-boot-through-venv the
-    # gateway runs the store python (sys.prefix == sys.base_prefix), so
-    # the venv bin dir comes from pm's facts/store resolution, not from
-    # prefix sniffing.
-    venv_bin = project_root / "venv" / "bin"
-    if _is_dir(venv_bin):
-        candidates.append(str(venv_bin))
-    else:
-        pm_venv = _pm_runtime_venv_dir()
-        if pm_venv is not None:
-            pm_venv_bin = pm_venv / "bin"
-            if _is_dir(pm_venv_bin):
-                candidates.append(str(pm_venv_bin))
+    # pm-provisioned runtime venv first — the same authority _detect_venv_dir()
+    # trusts: under no-boot-through-venv sys.prefix equals base_prefix and the
+    # committed environment is the only record of which venv serves this install.
+    pm_venv = _pm_runtime_venv_dir(project_root)
+    if pm_venv is not None:
+        pm_bin = pm_venv / ("Scripts" if is_windows() else "bin")
+        if _is_dir(pm_bin):
+            candidates.append(str(pm_bin))
+    if not candidates:
+        venv_bin = project_root / "venv" / "bin"
+        if _is_dir(venv_bin):
+            candidates.append(str(venv_bin))
+        elif sys.prefix != sys.base_prefix:
+            candidates.append(str(Path(sys.prefix) / "bin"))
 
     hermes_home = get_hermes_home()
     extras = (project_root / "node_modules" / ".bin", hermes_home / "node" / "bin", hermes_home / "node_modules" / ".bin")
