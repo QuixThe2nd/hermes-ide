@@ -940,7 +940,17 @@ def test_zip_archive_source_only_install_defaults_to_hermes_ide(tmp_path, monkey
     )
 
 
-@pytest.mark.parametrize("origin", [None, "https://gitlab.com/example/hermes.git"])
+@pytest.mark.parametrize(
+    "origin",
+    [
+        None,
+        "https://gitlab.com/example/hermes.git",
+        "https://github.com.evil.example/example/hermes.git",
+        "https://github.com@evil.example/example/hermes.git",
+        "git@github.com.evil:example/hermes.git",
+        "https://evil.example/github.com/example/hermes.git",
+    ],
+)
 def test_zip_archive_refuses_unresolvable_origin_without_downloading(
     tmp_path, monkeypatch, capsys, origin
 ):

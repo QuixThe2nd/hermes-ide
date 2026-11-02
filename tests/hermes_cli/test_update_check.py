@@ -51,6 +51,34 @@ def _stub_git(monkeypatch, *, head=SHA_A, origin="https://github.com/example/cus
     return calls
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/Example/custom-hermes.git",
+        "git@github.com:Example/custom-hermes.git",
+        "ssh://git@github.com/Example/custom-hermes.git",
+        "ssh://git@github.com:22/Example/custom-hermes.git",
+    ],
+)
+def test_github_repo_slug_accepts_actual_github_origins(origin):
+    assert banner._github_repo_slug(origin) == "example/custom-hermes"
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com.evil.example/example/hermes.git",
+        "https://github.com@evil.example/example/hermes.git",
+        "https://github.com:evil.example/example/hermes.git",
+        "git@github.com.evil:example/hermes.git",
+        "https://evil.example/github.com/example/hermes.git",
+        "https://github.com/example/hermes.git/extra",
+    ],
+)
+def test_github_repo_slug_rejects_lookalikes_and_invalid_repositories(origin):
+    assert banner._github_repo_slug(origin) is None
+
+
 def test_passive_check_uses_the_api_and_never_fetches(git_repo, monkeypatch):
     """The whole point: no ``git fetch`` / ``ls-remote`` for a GitHub origin, exact count via compare."""
     calls = _stub_git(monkeypatch, head=SHA_A)

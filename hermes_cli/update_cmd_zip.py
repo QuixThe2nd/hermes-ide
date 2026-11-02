@@ -409,15 +409,14 @@ def _zip_archive_url(branch: str) -> str:
     Hermes IDE repository. A configured non-GitHub origin cannot be translated
     to GitHub's archive API, so refuse rather than downloading another project.
     """
-    from hermes_cli.banner import _canonical_github_remote
+    from hermes_cli.banner import _github_repo_slug
     from hermes_cli.update_cmd import _m
 
     slug = "quixthe2nd/hermes-ide"
     if (_m().PROJECT_ROOT / ".git").exists():
         origin_url = _m()._get_origin_url(["git"], _m().PROJECT_ROOT)
-        canonical = _canonical_github_remote(origin_url)
-        candidate = canonical.removeprefix("github.com/")
-        if not origin_url or candidate == canonical or candidate.count("/") != 1:
+        candidate = _github_repo_slug(origin_url)
+        if candidate is None:
             print("✗ ZIP fallback cannot resolve a GitHub archive from the configured origin:")
             print(f"  {origin_url or '(origin is not configured)'}")
             print("  Repair git or configure a GitHub origin, then re-run `hermes update`.")

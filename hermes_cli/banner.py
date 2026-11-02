@@ -165,6 +165,35 @@ def _canonical_github_remote(url: str | None) -> str:
     return value.strip().rstrip("/").removesuffix(".git").lower()
 
 
+def _github_repo_slug(url: str | None) -> Optional[str]:
+    """Return a validated ``owner/repo`` only for an actual github.com remote."""
+    if not url:
+        return None
+    value = url.strip()
+    if "://" not in value:
+        # Git's scp-like syntax has no URL scheme: [user@]host:owner/repo.
+        user_and_host, separator, path = value.partition(":")
+        if not separator or not user_and_host or not path or "/" in user_and_host or "\\" in user_and_host:
+            return None
+        value = f"ssh://{user_and_host}/{path}"
+    try:
+        parsed = urlparse(value)
+        hostname, port = parsed.hostname, parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https", "ssh", "git"} or hostname != "github.com" or port == 0:
+        return None
+    parts = parsed.path.removeprefix("/").rstrip("/").split("/")
+    if len(parts) != 2:
+        return None
+    owner, repo = parts[0].lower(), parts[1].lower().removesuffix(".git")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", owner):
+        return None
+    if repo in {"", ".", ".."} or not re.fullmatch(r"[a-z0-9_.-]+", repo):
+        return None
+    return f"{owner}/{repo}"
+
+
 _GIT_TEXT_KW = {"text": True, "encoding": "utf-8", "errors": "replace"}
 
 
@@ -361,16 +390,16 @@ def _check_via_local_git(repo_dir: Path, origin_url: Optional[str] = None) -> Op
     head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
     if not head_rev:
         return None
-    canonical = _canonical_github_remote(origin_url)
-    if canonical.startswith("github.com/"):
-        target_rev = _github_branch_tip(canonical.removeprefix("github.com/"), "main")
+    repo_slug = _github_repo_slug(origin_url)
+    if repo_slug is not None:
+        target_rev = _github_branch_tip(repo_slug, "main")
     else:
         # Non-GitHub origin: one ls-remote for the tip (ref advertisement only, no pack transfer).
         result = _git_run(["ls-remote", "origin", "refs/heads/main"], cwd=repo_dir, timeout=10, network=True)
         target_rev = result.stdout.split()[0] if result is not None and result.returncode == 0 and result.stdout else None
     global _last_target_rev, _last_compare_repo
     _last_target_rev = target_rev
-    _last_compare_repo = canonical.removeprefix("github.com/") if canonical.startswith("github.com/") else None
+    _last_compare_repo = repo_slug
     # Tip SHAs alone can't distinguish "behind" from a local commit AHEAD of origin/main, and
     # misreporting an ahead checkout nudges the user into `hermes update`, which can wipe carried
     # work — hence the ancestor check inside _tips_behind, against the FRESH upstream SHA.
@@ -486,9 +515,8 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
         if not tag:
             return None
         origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=rd, network=True) if rd else None
-        canonical = _canonical_github_remote(origin_url)
-        slug = canonical.removeprefix("github.com/")
-        if origin_url and (slug == canonical or slug.count("/") != 1):
+        slug = _github_repo_slug(origin_url)
+        if origin_url and slug is None:
             return None
         slug = slug if origin_url else _DEFAULT_REPO_SLUG
         return tag, f"https://github.com/{slug}/releases/tag/{tag}"

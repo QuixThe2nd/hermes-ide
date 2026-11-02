@@ -768,10 +768,9 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         if head_sha and target_sha and head_sha == target_sha:
             print("✓ Already up to date.")
             return
-        from hermes_cli.banner import _canonical_github_remote, _github_compare_behind
+        from hermes_cli.banner import _github_compare_behind, _github_repo_slug
         origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
-        canonical = _canonical_github_remote(origin_url)
-        repo_slug = canonical.removeprefix("github.com/") if canonical.startswith("github.com/") else ""
+        repo_slug = _github_repo_slug(origin_url) or ""
         # counted == 0 means local-ahead, not behind; None means the API could not count.
         _print_update_check_result(
             _github_compare_behind(head_sha, target_sha, repo_slug), compare_branch)
@@ -1133,10 +1132,9 @@ def _prepare_checkout_for_update(
 
     apply_is_shallow = _is_shallow_checkout(git_cmd)
     if commit_count > 0 and apply_is_shallow:
-        from hermes_cli.banner import _canonical_github_remote, _github_compare_behind
+        from hermes_cli.banner import _github_compare_behind, _github_repo_slug
         origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
-        canonical = _canonical_github_remote(origin_url)
-        repo_slug = canonical.removeprefix("github.com/") if canonical.startswith("github.com/") else ""
+        repo_slug = _github_repo_slug(origin_url) or ""
         counted = _github_compare_behind(*_tip_shas(git_cmd, target_ref), repo_slug)
         # counted == 0 means local-ahead: falls through to the up-to-date path.
         commit_count = counted if counted is not None else -1
