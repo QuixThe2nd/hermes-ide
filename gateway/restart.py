@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from hermes_cli.config import DEFAULT_CONFIG
@@ -251,12 +252,31 @@ def wait_for_pid_exit(
         sleep(poll_s)
 
 
+def _replacement_interpreter(project_root: str) -> tuple[str, Optional[Path]]:
+    """The checkout's own venv interpreter when it exists, else the current interpreter.
+
+    A hub (or detached watcher) process may itself run under a different venv or carry a foreign
+    ``PYTHONPATH``; launching the successor with ``sys.executable`` then mixes site-packages in
+    one process (the cffi 2.0.0/2.1.1 incident: pure-python ``cffi`` from one venv, the C
+    ``_cffi_backend`` from another). The checkout's ``.venv`` is the identity the gateway is
+    supposed to run under.
+    """
+    root = Path(project_root)
+    if os.name == "nt":
+        candidate = root / ".venv" / "Scripts" / "python.exe"
+    else:
+        candidate = root / ".venv" / "bin" / "python"
+    if candidate.is_file():
+        return str(candidate), candidate.parent
+    return sys.executable, None
+
+
 def spawn_replacement_gateway(
     project_root: str,
     *,
-    popen=subprocess.Popen,
+    popen=None,
 ):
-    """Launch the replacement gateway directly: ``sys.executable -m
+    """Launch the replacement gateway directly: ``<checkout venv python> -m
     gateway.run`` from *project_root*.
 
     ``-m`` puts the working directory at the head of ``sys.path``, so the
@@ -266,8 +286,13 @@ def spawn_replacement_gateway(
     environment — already built without ``_HERMES_GATEWAY`` — and detaches
     per platform through the existing safe detach helpers (a new session on
     POSIX, the no-breakaway creation flags on Windows).
+
+    Custom ``popen`` env builders receive ``checkout_venv_bin_dir`` (the
+    resolved venv's bin/Scripts directory) so they can pin ``VIRTUAL_ENV`` and
+    ``PATH`` to the checkout venv instead of the spawning process's.
     """
-    argv = [sys.executable, "-m", "gateway.run"]
+    interpreter, venv_bin_dir = _replacement_interpreter(project_root)
+    argv = [interpreter, "-m", "gateway.run"]
     kwargs: dict = {
         "cwd": project_root,
         "stdout": subprocess.DEVNULL,
@@ -281,6 +306,10 @@ def spawn_replacement_gateway(
         kwargs["creationflags"] = windows_detach_flags_without_breakaway()
     else:
         kwargs["start_new_session"] = True
+    if popen is None:
+        return subprocess.Popen(argv, **kwargs)
+    if venv_bin_dir is not None:
+        kwargs["checkout_venv_bin_dir"] = str(venv_bin_dir)
     return popen(argv, **kwargs)
 
 

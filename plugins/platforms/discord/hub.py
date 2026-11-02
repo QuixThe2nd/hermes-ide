@@ -534,9 +534,16 @@ class DiscordHubServer:
             import subprocess
             from tools.environments.local import served_profile_child_env
 
+            # The checkout venv the replacement was resolved to (spawn_replacement_gateway);
+            # pinning the child to it prevents a hub running under another interpreter from
+            # leaking a foreign VIRTUAL_ENV/PYTHONPATH into mixed site-packages (cffi incident).
+            venv_bin_dir = kwargs.pop("checkout_venv_bin_dir", None)
             env = served_profile_child_env(target_home=home, inherit_credentials=True)
-            env["PYTHONPATH"] = project_root + (
-                os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+            if venv_bin_dir:
+                env["VIRTUAL_ENV"] = str(Path(venv_bin_dir).parent)
+                env["PATH"] = venv_bin_dir + os.pathsep + env.get("PATH", "")
+            # Exactly the checkout: foreign inherited entries poison the child's sys.path.
+            env["PYTHONPATH"] = project_root
             for marker in ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE"):
                 env.pop(marker, None)
             env[OVERLAP_SUCCESSOR_ENV] = "1"
