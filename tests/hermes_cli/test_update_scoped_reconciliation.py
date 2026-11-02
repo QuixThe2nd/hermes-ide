@@ -192,7 +192,7 @@ def test_pulled_update_marker_owns_pre_update_inventory(monkeypatch):
 
     monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        update_cmd._apply_pulled_update([], "main", "old", SimpleNamespace(in_place_update=True), None, gateway_mode=False, is_fork=False, desktop_dir=None, had_desktop_app_before_update=False, pre_update_snapshot_id=None, _pre_update_plan=plan, _windows_gateway_resume=None, args=SimpleNamespace())
+        update_cmd._apply_pulled_update([], "main", "old", SimpleNamespace(in_place_update=True), None, gateway_mode=False, desktop_dir=None, had_desktop_app_before_update=False, pre_update_snapshot_id=None, _pre_update_plan=plan, _windows_gateway_resume=None, args=SimpleNamespace())
     marker = fleet._fleet_restart_pending_marker_path()
     fields = dict(line.split("=", 1) for line in marker.read_text().splitlines())
     assert fields["expected_sha"] == "new"

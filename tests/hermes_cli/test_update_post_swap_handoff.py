@@ -50,7 +50,7 @@ def test_parent_reexecs_tail_on_pulled_tree_and_relays_exit_code(monkeypatch, tm
 
     with pytest.raises(SystemExit) as exit_info:
         update_cmd._hand_off_post_swap(
-            args, swap="git", branch="main", pre_pull_sha="a" * 40, is_fork=False, opts=_opts(),
+            args, swap="git", branch="main", pre_pull_sha="a" * 40, opts=_opts(),
             gateway_mode=False, had_desktop_app_before_update=True, pre_update_snapshot_id="s1",
             _pre_update_plan=plan, _windows_gateway_resume=token)
 
@@ -97,7 +97,7 @@ def test_child_resumes_receipt_and_runs_git_tail_from_payload(monkeypatch, tmp_p
     started = "2026-09-16T15:57:48+00:00"
     handoff = tmp_path / "post_swap.json"
     handoff.write_text(json.dumps({
-        "swap": "git", "branch": "main", "pre_pull_sha": "a" * 40, "is_fork": True,
+        "swap": "git", "branch": "main", "pre_pull_sha": "a" * 40,
         "gateway_mode": False, "had_desktop_app_before_update": True, "pre_update_snapshot_id": "s1",
         "pre_update_version": "0.21.3", "active_lazy_features": ["voice"], "active_tool_dependencies": {},
         "plan": UpdatePlan(expected_sha="a" * 40, runtimes=[RuntimeRecord(kind="gateway", profile="work", pid=9)]).to_dict(),
@@ -127,7 +127,7 @@ def test_child_resumes_receipt_and_runs_git_tail_from_payload(monkeypatch, tmp_p
     assert opts.pre_update_version == "0.21.3" and opts.active_lazy_features == ["voice"]
     plan = seen["kw"]["_pre_update_plan"]
     assert isinstance(plan, UpdatePlan) and isinstance(plan.runtimes[0], RuntimeRecord)
-    assert plan.runtimes[0].profile == "work" and seen["kw"]["is_fork"] is True
+    assert plan.runtimes[0].profile == "work" and "is_fork" not in seen["kw"]
     assert cfg._LAST_SIBLING_SNAPSHOTS == {"work": "snap-w"}
     assert not handoff.exists()  # consumed: nothing left to leak
     update_receipt._current = None

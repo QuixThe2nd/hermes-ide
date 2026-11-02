@@ -292,7 +292,7 @@ def test_current_checkout_with_stale_dependency_set_runs_the_sync(monkeypatch, c
         return update_cmd._repair_current_checkout(
             assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
             had_desktop_app_before_update=False, active_lazy_features=[], active_tool_dependencies=[],
-            upstream_checked=True, _windows_gateway_resume=None)
+            _windows_gateway_resume=None)
 
     assert run((True, "installed hermes-agent 0.20.6, checkout is 0.21.2")) is True
     assert calls == ["sync"]

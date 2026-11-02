@@ -123,8 +123,8 @@ EOF
   # replacement, so _get_origin_url() sees file://$SERVE_REPO and _is_fork() would return true.
   # we check for the arguments "remote get-url origin" in order in any position
   # to allow for e.g. -c with some config being passed.
-  # if we didn't do this, we'd need the  .skip_upstream_prompt file to prevent a hang in headless,"add the
-  # official repo as upstream?" prompt would hang a headless run. But we don't anymore :D
+  # Preserve the official-source classification across the insteadOf rewrite;
+  # transport still follows the isolated local repository.
   REAL_GIT="$(command -v git)"
   REAL_GIT_QUOTED="$(printf '%q' "$REAL_GIT")"
   SHIM_DIR="$WORK_ROOT/shim"
@@ -185,7 +185,6 @@ phase_stage() {
 
   arm_redirect
   mkdir -p "$HERMES_HOME"
-  touch "$HERMES_HOME/.skip_upstream_prompt"
 
   printf 'OLD_SHA=%s\nOLD_REF=%s\nHEAD_SHA=%s\n' "$old_sha" "$old_ref" "$head_sha" > "$STATE"
   ok "serve.git main = $old_sha ($old_ref), update target $head_sha"
