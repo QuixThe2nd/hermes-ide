@@ -40,8 +40,6 @@ Under `plugins.entries.hermes_starts.settings` in `config.yaml`:
 | Key | Default | What it does |
 |---|---|---|
 | `mention_user_id` | *(unset)* | Discord user ID pinged on each start. The mention prefixes the opening, and the same user is added to the thread so replies and subscription keep working. |
-| `quiet_hours` | `23:00-08:00` | Window in `quiet_tz` where starts still post but neither ping nor thread-add happens. Empty string disables the gate. |
-| `quiet_tz` | `Australia/Sydney` | IANA zone used to evaluate `quiet_hours`. |
 
 ## Duplicate-start protection
 
@@ -74,7 +72,7 @@ Enabled starts serialize their state reads, cooldown checks, comparison and deli
 A reservation is saved before sending and retains any known anchor or thread after a
 partial failure. Retrying the same opening therefore cannot assume that a timeout
 means nothing was posted. Inspect the recorded destination before any manual recovery.
-The guard preserves quiet hours, mentions, thread membership and conversation seeding.
+The guard preserves mentions, thread membership and conversation seeding.
 
 ## Multi-guild bots
 

@@ -697,55 +697,12 @@ def _add_thread_member(token: str, thread_id: str, user_id: str) -> None:
     )
 
 
-def _quiet_hours_active(settings: Dict[str, Any], now=None) -> bool:
-    """True when the local time in the configured timezone is inside the
-    quiet window during which starts still post but do NOT ping Quix.
-
-    Settings (plugins.entries.hermes_starts.settings):
-      quiet_hours: ``"23:00-08:00"`` (default). Empty string disables the gate.
-      quiet_tz: IANA zone name, default ``"Australia/Sydney"``.
-
-    Overnight windows (start later than end) wrap past midnight. Any
-    misconfiguration fails open (pinging), since a missed ping is worse
-    than an extra one.
-    """
-    raw_window = settings.get("quiet_hours")
-    # NOTE: unset means default-on; explicit empty string disables the gate.
-    # `or` would conflate the two because "" is falsy.
-    window = str("23:00-08:00" if raw_window is None else raw_window).strip()
-    if not window:
-        return False
-    tz_name = str(settings.get("quiet_tz") or "Australia/Sydney").strip()
-    try:
-        from datetime import datetime as _dt
-
-        from zoneinfo import ZoneInfo
-
-        tz = ZoneInfo(tz_name)
-        start_s, end_s = window.split("-", 1)
-        sh, sm = (int(x) for x in start_s.strip().split(":"))
-        eh, em = (int(x) for x in end_s.strip().split(":"))
-    except Exception:
-        return False
-    moment = now if now is not None else _dt.now(tz)
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=tz)
-    cur = moment.hour * 60 + moment.minute
-    start = sh * 60 + sm
-    end = eh * 60 + em
-    if start == end:
-        return False
-    if start < end:
-        return start <= cur < end
-    return cur >= start or cur < end
-
-
 def _start_cooldown_seconds() -> int:
     """Minimum seconds between verified starts.
 
-    Read live from plugins.entries.hermes_starts.settings.minimum_interval_minutes
-    (same config path as quiet hours). Unset, non-positive, or unparseable = 0
-    (guard off, current behavior). Never fails a start on config trouble.
+    Read live from plugins.entries.hermes_starts.settings.minimum_interval_minutes.
+    Unset, non-positive, or unparseable = 0 (guard off, current behavior).
+    Never fails a start on config trouble.
     """
     try:
         from hermes_cli.config import load_config_readonly
@@ -781,8 +738,7 @@ def _mention_user_id() -> str:
     in config.yaml. The mention prefixes the opening message in the channel,
     which both pings the user and anchors the thread. The same ID is then
     added as a member of the created thread. Empty string disables both.
-    Both are also suppressed (the post still happens) during the configured
-    quiet hours so a 3 a.m. observation doesn't ring the doorbell.
+    A configured numeric ID always pings, regardless of the time of day.
     """
     try:
         from hermes_cli.config import load_config_readonly
@@ -794,8 +750,6 @@ def _mention_user_id() -> str:
     settings = entry.get("settings") or {}
     uid = str(settings.get("mention_user_id") or "").strip()
     if not uid.isdigit():
-        return ""
-    if _quiet_hours_active(settings):
         return ""
     return uid
 

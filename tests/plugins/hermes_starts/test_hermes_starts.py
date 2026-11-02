@@ -9,7 +9,6 @@ import re
 import stat
 import sys
 import urllib.error
-from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List
@@ -620,12 +619,7 @@ class TestStartMention:
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
         _write_state(_isolate_env)
-        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
-        # defaults to the overnight window, which would silently suppress the
-        # mention whenever the test runs during those hours in quiet_tz.
-        _write_plugin_settings(
-            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
-        )
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
 
         result = _call(
             hermes_starts_module,
@@ -647,35 +641,6 @@ class TestStartMention:
             ("PUT", f"/channels/thread-1/thread-members/{_MENTION_UID}"),
         ]
 
-    def test_quiet_hours_suppress_mention_and_member_add(
-        self, hermes_starts_module, token_env, discord_router, _isolate_env
-    ):
-        _write_state(_isolate_env)
-        # A window that is active right now in UTC, whatever "now" is.
-        now = datetime.now(timezone.utc)
-        start = (now - timedelta(minutes=5)).strftime("%H:%M")
-        end = (now + timedelta(minutes=5)).strftime("%H:%M")
-        _write_plugin_settings(
-            _isolate_env,
-            {"mention_user_id": _MENTION_UID, "quiet_hours": f"{start}-{end}", "quiet_tz": "UTC"},
-        )
-
-        result = _call(
-            hermes_starts_module, {"kind": "observation", "message": "It is late."}
-        )
-
-        assert result["success"] is True
-        assert "mentioned_user_id" not in result
-
-        contents = _posted_contents(discord_router)
-        assert contents == ["It is late."]
-        assert "<@" not in contents[0]
-
-        assert _endpoints(discord_router) == [
-            ("POST", "/channels/channel-existing/messages"),
-            ("POST", "/channels/channel-existing/messages/msg-1/threads"),
-        ]
-
     def test_non_numeric_mention_id_is_ignored(
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
@@ -689,41 +654,6 @@ class TestStartMention:
         assert result["success"] is True
         assert "mentioned_user_id" not in result
         assert _posted_contents(discord_router) == ["Hello there."]
-
-
-class TestQuietHoursWindow:
-    @staticmethod
-    def _at(hour: int, minute: int = 0) -> datetime:
-        return datetime(2026, 8, 25, hour, minute, tzinfo=timezone.utc)
-
-    def test_overnight_window_wraps_midnight(self, hermes_starts_module):
-        settings = {"quiet_hours": "23:00-08:00", "quiet_tz": "UTC"}
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(23, 30)) is True
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(3, 0)) is True
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(7, 59)) is True
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(8, 0)) is False
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(12, 0)) is False
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(22, 59)) is False
-
-    def test_daytime_window(self, hermes_starts_module):
-        settings = {"quiet_hours": "09:00-17:00", "quiet_tz": "UTC"}
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(9, 0)) is True
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(16, 59)) is True
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(17, 0)) is False
-        assert hermes_starts_module._quiet_hours_active(settings, self._at(2, 0)) is False
-
-    def test_empty_window_disables_gate_and_misconfig_fails_open(
-        self, hermes_starts_module
-    ):
-        assert hermes_starts_module._quiet_hours_active({"quiet_hours": ""}) is False
-        assert hermes_starts_module._quiet_hours_active({"quiet_hours": "garbage"}) is False
-        assert hermes_starts_module._quiet_hours_active({"quiet_tz": "Not/AZone"}) is False
-
-    def test_unconfigured_window_defaults_to_overnight(
-        self, hermes_starts_module
-    ):
-        assert hermes_starts_module._quiet_hours_active({}, self._at(2, 0)) is True
-        assert hermes_starts_module._quiet_hours_active({}, self._at(12, 0)) is False
 
 
 class TestLongOpeningSplit:
@@ -741,12 +671,7 @@ class TestLongOpeningSplit:
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
         _write_state(_isolate_env)
-        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
-        # defaults to the overnight window, which would silently suppress the
-        # mention whenever the test runs during those hours in quiet_tz.
-        _write_plugin_settings(
-            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
-        )
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
 
         result = _call(
             hermes_starts_module,
@@ -785,12 +710,7 @@ class TestLongOpeningSplit:
         into the thread.
         """
         _write_state(_isolate_env)
-        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
-        # defaults to the overnight window, which would silently suppress the
-        # mention whenever the test runs during those hours in quiet_tz.
-        _write_plugin_settings(
-            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
-        )
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
 
         opening = "x" * 1940
         result = _call(
@@ -887,12 +807,7 @@ class TestMemberAddFailure:
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
         _write_state(_isolate_env)
-        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
-        # defaults to the overnight window, which would silently suppress the
-        # mention whenever the test runs during those hours in quiet_tz.
-        _write_plugin_settings(
-            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
-        )
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
         discord_router.fail_thread_member = True
 
         result = _call(
@@ -925,12 +840,7 @@ class TestSessionSeeding:
         self, hermes_starts_module, token_env, discord_router, _isolate_env
     ):
         _write_state(_isolate_env)
-        # Mention on, quiet-hours gate explicitly off: unset quiet_hours
-        # defaults to the overnight window, which would silently suppress the
-        # mention whenever the test runs during those hours in quiet_tz.
-        _write_plugin_settings(
-            _isolate_env, {"mention_user_id": _MENTION_UID, "quiet_hours": ""}
-        )
+        _write_plugin_settings(_isolate_env, {"mention_user_id": _MENTION_UID})
 
         result = _call(
             hermes_starts_module,
