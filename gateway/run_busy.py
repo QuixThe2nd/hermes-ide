@@ -185,6 +185,7 @@ class GatewayBusySessionMixin:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        queued_event._gateway_processing_deferred = True
         queued_event._gateway_accepted = True
 
     def _promote_queued_event(
@@ -532,6 +533,7 @@ class GatewayBusySessionMixin:
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
+            event._gateway_processing_deferred = True
             event._gateway_accepted = True
             return
 

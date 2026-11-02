@@ -218,6 +218,7 @@ def _mark_drain_snapshot_owned(event: MessageEvent) -> None:
     """
     try:
         setattr(event, DRAIN_SNAPSHOT_OWNED_ATTR, True)
+        event._gateway_processing_deferred = True
         event._gateway_accepted = True
     except Exception:
         pass
@@ -505,8 +506,13 @@ def _load_snapshot_events(path: Path) -> List[Dict[str, Any]]:
     return [event for event in events if isinstance(event, dict)]
 
 
-def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bool:
+def record_drain_event(
+    runner: Any, session_key: str, event: MessageEvent, *, home: Optional[Path] = None
+) -> bool:
     """Append one event to the durable drain snapshot.
+
+    ``home`` pins the owning profile for boot-time replay staging; live drain
+    callers retain the ambient profile-scoped default.
 
     Returns True only when the event is durably on disk; the caller must
     answer with the OLD refusal on False so the ack never promises a queue
@@ -534,7 +540,7 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
     requires. A False return (cap / serialize / IO) leaves both unset, so a
     failed admission stays retryable.
     """
-    path = drain_queue_path()
+    path = drain_queue_path(home)
     events = _load_snapshot_events(path)
     cap = int(getattr(runner, "_BUSY_QUEUE_MAX_PENDING", 32))
     session = str(session_key or "")
@@ -638,7 +644,9 @@ def queue_drain_refused_message(
     if not record_drain_event(runner, session_key, event):
         return None
     runner._queue_or_replace_pending_event(session_key, event)
-    return (
+    from gateway.platforms.base import DeferredReply
+
+    return DeferredReply(
         f"⏳ Gateway {runner._status_action_gerund()} — queued for the next "
         f"turn after it comes back."
     )
@@ -969,11 +977,12 @@ def replay_drain_queue(
     without waiting for the user to speak again.
 
     Durability contract: a group's records leave the claim ledger only once
-    their consumption is secured (turn dispatched, or a live/scheduler-owned
-    turn will drain the FIFO), so a crash mid-replay leaves exactly the
-    un-delivered records claimed and the next boot resumes them. Events
-    whose adapter is not live (platform down at boot) are NOT dropped:
-    their records return to the live snapshot and retry at the next natural
+    their consumption is secured (execution admitted the replayed turn, or a
+    replacement durable snapshot owns it, or a live/scheduler-owned turn will
+    drain the FIFO), so a crash mid-replay leaves exactly the un-delivered
+    records claimed and the next boot resumes them. Events whose adapter is
+    not live (platform down at boot) are NOT dropped: their records return
+    to the live snapshot and retry at the next natural
     point — the platform's reconnect or the next boot. ``platform`` scopes a
     retry pass to one platform; other platforms' records stay queued
     untouched.
@@ -1050,6 +1059,33 @@ def replay_drain_queue(
     cooperative = set(raw_allowlist or set())
 
     started = 0
+    in_flight: set[str] = set()
+    had_in_flight = False
+    pass_finished = False
+
+    def _finish_replay_pass() -> List[Dict[str, Any]]:
+        nonlocal pass_finished
+        retained = [record for group in pending.values() for record in group]
+        if pass_finished:
+            return retained
+        pass_finished = True
+        if retained and not _write_back_retained_records(
+            retained, home, folded_live and not had_in_flight
+        ):
+            # The claim remains the sole durable copy after a write-back failure.
+            return retained
+        clear_claimed_drain_queue(home)
+        if folded_live and not retained and not had_in_flight:
+            _unlink_folded_live(home)
+        return retained
+
+    def _settle_replay(session: str, event: MessageEvent, admitted: bool) -> None:
+        if admitted or getattr(event, DRAIN_SNAPSHOT_OWNED_ATTR, False):
+            _mark_group_dispatched(pending, session, home)
+        in_flight.discard(session)
+        if not in_flight:
+            _finish_replay_pass()
+
     for session_key, adapter in injected.items():
         if session_key in cooperative and _scheduler_will_resume(
             runner, session_key, raw_allowlist
@@ -1069,25 +1105,24 @@ def replay_drain_queue(
             # Injected and the FIFO already consumed them: settled.
             _mark_group_dispatched(pending, session_key, home)
             continue
-        if _dispatch_replay_turn(runner, adapter, head, session_key):
+        task = _dispatch_replay_turn(
+            runner,
+            adapter,
+            head,
+            session_key,
+            on_admission=lambda admitted, key=session_key, event=head: _settle_replay(
+                key, event, admitted
+            ),
+        )
+        if task:
             started += 1
-            _mark_group_dispatched(pending, session_key, home)
+            in_flight.add(session_key)
+            had_in_flight = True
         # A failed dispatch leaves the group in the ledger: its events sit
         # in a FIFO with no turn to drain it, so the next boot/reconnect
         # retries them instead of stranding the messages.
 
-    retained = [record for group in pending.values() for record in group]
-    if retained and not _write_back_retained_records(retained, home, folded_live):
-        # Write-back failed: the claim file still holds every retained
-        # record — the sole surviving copy. KEEP it (clearing it here would
-        # delete the messages); the next boot resumes the claim once
-        # storage recovers.
-        return started
-    clear_claimed_drain_queue(home)
-    if folded_live and not retained:
-        # A folded snapshot with nothing retained was fully consumed by this
-        # pass; the early fold usually removed it already.
-        _unlink_folded_live(home)
+    retained = [] if in_flight else _finish_replay_pass()
     if not injected:
         return 0
     logger.info(
@@ -1143,11 +1178,28 @@ def replay_drain_queues_for_profiles(
     return started
 
 
-def _dispatch_replay_turn(runner: Any, adapter: Any, event: MessageEvent, session_key: str) -> bool:
-    """Start the replayed turn through the resume scheduler's dispatch path."""
+def _dispatch_replay_turn(
+    runner: Any,
+    adapter: Any,
+    event: MessageEvent,
+    session_key: str,
+    on_admission: Any = None,
+) -> bool:
+    """Start replay and report admission only after its adapter turn finishes."""
     import asyncio
 
     from gateway.run import _AGENT_PENDING_SENTINEL
+
+    async def _run_and_report() -> bool:
+        admitted = False
+        try:
+            admitted = bool(await runner._run_startup_resume_event(adapter, event, session_key))
+            return admitted
+        finally:
+            if callable(on_admission):
+                on_admission(
+                    admitted or bool(getattr(event, DRAIN_SNAPSHOT_OWNED_ATTR, False))
+                )
 
     # Same marker the startup-restore drain sets, so the (still closed)
     # inbound restore gate lets the replayed turn through instead of
@@ -1171,9 +1223,7 @@ def _dispatch_replay_turn(runner: Any, adapter: Any, event: MessageEvent, sessio
             exc_info=True,
         )
     try:
-        task = asyncio.create_task(
-            runner._run_startup_resume_event(adapter, event, session_key)
-        )
+        task = asyncio.create_task(_run_and_report())
     except Exception:
         logger.warning("Drain replay turn dispatch failed for %s", session_key, exc_info=True)
         # The pre-claim above holds the running-agent slot and the task that

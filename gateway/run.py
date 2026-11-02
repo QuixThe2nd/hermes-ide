@@ -3981,6 +3981,7 @@ from gateway.run_drain_queue import (
 from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    DeferredReply,
     EphemeralReply,
     MessageEvent,
     MessageType,
@@ -12970,11 +12971,11 @@ class GatewayRunner(
         if self._queue_during_drain_enabled(effective_mode) and queue_drain_busy_message(
             self, event, session_key
         ):
-            return (
+            return DeferredReply(
                 f"⏳ Gateway {self._status_action_gerund()} — queued for the "
                 f"next turn after it comes back."
             )
-        return (
+        return DeferredReply(
             f"⏳ Gateway is {self._status_action_gerund()} and is not "
             f"accepting another turn right now."
         )
@@ -16305,7 +16306,7 @@ class GatewayRunner(
                 return None
         if canonical is not None and canonical in _DRAIN_ALLOWED_COMMANDS:
             return None
-        return (
+        return DeferredReply(
             f"⏳ Gateway is {self._status_action_gerund()} and is not "
             f"accepting new work right now."
         )
@@ -17064,15 +17065,15 @@ class GatewayRunner(
         adapter: BasePlatformAdapter,
         event: MessageEvent,
         session_key: str,
-    ) -> None:
-        """Dispatch one synthetic startup resume and wait for its agent turn.
+    ) -> bool:
+        """Dispatch startup work, wait for its adapter turn, and report execution admission.
 
         ``BasePlatformAdapter.handle_message()`` returns after it installs the
         adapter-level guard and spawns the background processing task.  Startup
-        restore needs a stronger boundary: inbound messages must stay queued
-        until the resumed agent turn itself has finished, otherwise a user
-        message can race the restore turn immediately after ``handle_message``
-        returns.
+        restore waits for that task. Drain replay additionally uses this result
+        to keep its claim until the post-lease admission boundary (or a new
+        durable snapshot) owns the event. A synchronous adapter completed
+        handling when no background task exists.
         """
         try:
             await adapter.handle_message(event)
@@ -17080,6 +17081,11 @@ class GatewayRunner(
             task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
             if task is not None:
                 await asyncio.shield(task)
+                return bool(
+                    getattr(event, "_gateway_turn_admitted", False)
+                    or getattr(event, "_drain_snapshot_owned", False)
+                )
+            return True
         finally:
             # _schedule_resume_pending_sessions pre-claims the runner slot
             # before spawning this task.  If adapter.handle_message raises
@@ -17090,49 +17096,78 @@ class GatewayRunner(
                 self._release_running_agent_state(session_key)
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
+        from gateway.platforms.event import inbound_platform_message_id
+        from gateway.run_drain_queue import record_drain_event
+
+        event._gateway_processing_deferred = True
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        adapter = self._adapter_for_source(source)
+        inbound_id = inbound_platform_message_id(event) if adapter is not None else None
+        if inbound_id:
+            mid = str(inbound_id)
+            has_active = getattr(adapter, "_discord_message_has_active_claim", None)
+            is_complete = getattr(adapter, "_discord_message_is_persistently_complete", None)
+            if callable(is_complete) and is_complete(mid):
+                return
+            if (
+                callable(has_active)
+                and has_active(mid)
+                and self._is_session_running(session_key)
+            ):
+                return
+        home = None
+        if getattr(self.config, "multiplex_profiles", False):
+            home = self._resolve_profile_home_for_source(source)
+        if record_drain_event(self, session_key, event, home=home):
+            logger.info(
+                "Durably queued inbound message during gateway startup restore: "
+                "platform=%s chat=%s",
+                source.platform.value if source and source.platform else "unknown",
+                source.chat_id if source else "unknown",
+            )
+            return
+        # Storage failure leaves no durable owner. Keep a process-local retry
+        # for the restore drain instead of pretending the queue accepted it.
         queue = getattr(self, "_startup_restore_queue", None)
         if queue is None:
             queue = []
             self._startup_restore_queue = queue
         queue.append(event)
-        try:
-            source = event.source
-            logger.info(
-                "Queued inbound message during gateway startup restore: platform=%s chat=%s",
-                source.platform.value if source and source.platform else "unknown",
-                source.chat_id if source else "unknown",
-            )
-        except Exception:
-            pass
+        logger.warning(
+            "Startup restore could not durably queue inbound message; retaining "
+            "a process-local retry for this boot"
+        )
 
     async def _drain_startup_restore_queue(self) -> int:
-        """Replay inbound messages queued while startup auto-resume ran."""
+        """Move accepted startup work into the durable drain replay, without waiting for turns."""
         from gateway.platforms.event import inbound_platform_message_id
+        from gateway.run_drain_queue import record_drain_event, replay_drain_queues_for_profiles
 
         drained = 0
-        queue = getattr(self, "_startup_restore_queue", None)
-        if queue is None:
-            return 0
+        queue = getattr(self, "_startup_restore_queue", None) or []
         while queue:
             event = queue.pop(0)
             source = getattr(event, "source", None)
+            session_key = self._session_key_for_source(source)
             adapter = self._adapter_for_source(source)
-            if adapter is None:
-                logger.debug(
-                    "Dropping startup-restore queued message: adapter unavailable for %s",
-                    getattr(getattr(source, "platform", None), "value", None),
-                )
-                continue
-            inbound_id = inbound_platform_message_id(event)
-            if inbound_id and adapter is not None:
+            inbound_id = inbound_platform_message_id(event) if adapter is not None else None
+            if inbound_id:
                 try:
                     mid = str(inbound_id)
                     has_active = getattr(adapter, "_discord_message_has_active_claim", None)
                     is_complete = getattr(adapter, "_discord_message_is_persistently_complete", None)
-                    if callable(has_active) and has_active(mid):
+                    if (
+                        callable(has_active)
+                        and has_active(mid)
+                        and self._is_session_running(session_key)
+                    ):
+                        # Only a live execution owner may dedupe on a processing
+                        # claim. The startup queue's own deferred attempt writes
+                        # the same row without admitting a turn.
                         logger.info(
-                            "Skipping startup-restore replay: Discord ledger active claim "
-                            "on inbound %s",
+                            "Skipping startup-restore replay: running session owns "
+                            "Discord inbound %s",
                             mid,
                         )
                         continue
@@ -17145,14 +17180,16 @@ class GatewayRunner(
                         continue
                 except Exception:
                     logger.debug("startup-restore ledger dedupe check failed", exc_info=True)
-            # Mark this replay so _handle_message does not queue it again while
-            # the restore gate remains closed for any fresh inbound arrivals.
-            try:
-                setattr(event, "_hermes_startup_restore_replay", True)
-            except Exception:
-                pass
-            await adapter.handle_message(event)
+            home = None
+            if getattr(self.config, "multiplex_profiles", False):
+                home = self._resolve_profile_home_for_source(source)
+            if not record_drain_event(self, session_key, event, home=home):
+                # A failed durable append must not consume the process-local
+                # copy. Earlier staged records can still replay independently.
+                queue.append(event)
+                break
             drained += 1
+        replay_drain_queues_for_profiles(self)
         return drained
 
     def _start_startup_warmup(self) -> None:
@@ -24996,7 +25033,7 @@ class GatewayRunner(
                 "Refusing new turn for session %s — external drain active.",
                 _quick_key,
             )
-            return (
+            return DeferredReply(
                 "⏳ This agent is draining for a maintenance action and isn't "
                 "accepting new turns right now. It'll be back in a moment — "
                 "please resend shortly."
@@ -25091,7 +25128,7 @@ class GatewayRunner(
                     _quick_key,
                     exc.session_id,
                 )
-                return (
+                return DeferredReply(
                     "⏳ Another turn is still running on this session. To "
                     "protect the transcript, this message was not processed. "
                     "Wait for the active turn to finish, then resend it."
@@ -25712,6 +25749,8 @@ class GatewayRunner(
         session_key: str,
     ) -> bool:
         """Persist the exact resolved routing key for this running turn."""
+        event._gateway_turn_admitted = True
+        event._gateway_processing_deferred = False
         try:
             token = await self.async_session_store.mark_turn_active(session_key)
         except Exception as exc:

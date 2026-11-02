@@ -49,9 +49,8 @@ class GatewayStartupMixin:
 
     async def _run_startup_resume_event(
         self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
-    ) -> None:
-        """Dispatch one synthetic startup resume and wait for its agent turn (inbound stays queued
-        until it finishes, else a user message can race it)."""
+    ) -> bool:
+        """Wait for the adapter turn and report execution admission to drain replay."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         try:
             await adapter.handle_message(event)
@@ -59,6 +58,11 @@ class GatewayStartupMixin:
             task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
             if task is not None:
                 await asyncio.shield(task)
+                return bool(
+                    getattr(event, "_gateway_turn_admitted", False)
+                    or getattr(event, "_drain_snapshot_owned", False)
+                )
+            return True
         finally:
             # Release the pre-claimed slot if handle_message raised before _handle_message took ownership.
             _pre_state = self._peek_session_state(session_key)
@@ -66,37 +70,82 @@ class GatewayStartupMixin:
                 self._release_running_agent_state(session_key)
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
+        from gateway.platforms.event import inbound_platform_message_id
+        from gateway.run_drain_queue import record_drain_event
+
+        event._gateway_processing_deferred = True
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        adapter = self._intake_adapter_for(source)
+        inbound_id = inbound_platform_message_id(event) if adapter is not None else None
+        if inbound_id:
+            mid = str(inbound_id)
+            has_active = getattr(adapter, "_discord_message_has_active_claim", None)
+            is_complete = getattr(adapter, "_discord_message_is_persistently_complete", None)
+            if callable(is_complete) and is_complete(mid):
+                return
+            if (
+                callable(has_active)
+                and has_active(mid)
+                and self._is_session_running(session_key)
+            ):
+                return
+        home = None
+        if getattr(self.config, "multiplex_profiles", False):
+            home = self._resolve_profile_home_for_source(source)
+        if record_drain_event(self, session_key, event, home=home):
+            logger.info(
+                "Durably queued inbound message during gateway startup restore: "
+                "platform=%s chat=%s",
+                source.platform.value if source and source.platform else "unknown",
+                source.chat_id if source else "unknown",
+            )
+            return
         queue = getattr(self, "_startup_restore_queue", None)
         if queue is None:
             queue = self._startup_restore_queue = []
         queue.append(event)
-        with suppress(Exception):
-            source = event.source
-            logger.info(
-                "Queued inbound message during gateway startup restore: platform=%s chat=%s",
-                source.platform.value if source and source.platform else "unknown",
-                source.chat_id if source else "unknown",
-            )
+        logger.warning(
+            "Startup restore could not durably queue inbound message; retaining "
+            "a process-local retry for this boot"
+        )
 
     async def _drain_startup_restore_queue(self) -> int:
-        """Replay inbound messages queued while startup auto-resume ran."""
+        """Move accepted startup work into the durable drain replay, without waiting for turns."""
+        from gateway.platforms.event import inbound_platform_message_id
+        from gateway.run_drain_queue import record_drain_event, replay_drain_queues_for_profiles
+
         drained = 0
         queue = getattr(self, "_startup_restore_queue", None) or []
         while queue:
             event = queue.pop(0)
             source = getattr(event, "source", None)
+            session_key = self._session_key_for_source(source)
             adapter = self._intake_adapter_for(source)
-            if adapter is None:
-                logger.debug(
-                    "Dropping startup-restore queued message: adapter unavailable for %s",
-                    getattr(getattr(source, "platform", None), "value", None),
-                )
-                continue
-            # Mark the replay so _handle_message does not re-queue it while the restore gate is closed.
-            with suppress(Exception):
-                setattr(event, "_hermes_startup_restore_replay", True)
-            await adapter.handle_message(event)
+            inbound_id = inbound_platform_message_id(event) if adapter is not None else None
+            if inbound_id:
+                try:
+                    mid = str(inbound_id)
+                    has_active = getattr(adapter, "_discord_message_has_active_claim", None)
+                    is_complete = getattr(adapter, "_discord_message_is_persistently_complete", None)
+                    if (
+                        callable(has_active)
+                        and has_active(mid)
+                        and self._is_session_running(session_key)
+                    ):
+                        continue
+                    if callable(is_complete) and is_complete(mid):
+                        continue
+                except Exception:
+                    logger.debug("startup-restore ledger dedupe check failed", exc_info=True)
+            home = None
+            if getattr(self.config, "multiplex_profiles", False):
+                home = self._resolve_profile_home_for_source(source)
+            if not record_drain_event(self, session_key, event, home=home):
+                queue.append(event)
+                break
             drained += 1
+        replay_drain_queues_for_profiles(self)
         return drained
 
     @staticmethod

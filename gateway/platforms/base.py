@@ -1697,6 +1697,13 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+class DeferredReply(EphemeralReply):
+    """Lifecycle notice for work that was refused or deferred, not an answer to the request."""
+
+    def __new__(cls, text: str):
+        return super().__new__(cls, text, ttl_seconds=0)
+
+
 def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
                                 event: MessageEvent, *, merge_text: bool = False) -> None:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
@@ -3589,15 +3596,19 @@ class BasePlatformAdapter(ABC):
         ephemeral deletion — no session lifecycle (active-session bypass paths)."""
         thread_meta = _thread_metadata_for_event(event)
         response = await self._message_handler(event)
+        is_deferred_response = isinstance(response, DeferredReply)
         text, eph_ttl = self._unwrap_ephemeral(response)
         if not text:
             return
+        metadata = _mark_notify_metadata(thread_meta)
+        if is_deferred_response:
+            metadata["_interim_send"] = True
         if log_cmd is not None:
             logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
                         len(text), event.source.chat_id)
         result = await self._send_with_retry(
             chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
-            metadata=_mark_notify_metadata(thread_meta))
+            metadata=metadata)
         if eph_ttl > 0 and result.success and result.message_id:
             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
 
@@ -4139,6 +4150,7 @@ class BasePlatformAdapter(ABC):
         if event.message_type == MessageType.PHOTO:
             logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
             merge_pending_message_event(self._pending_messages, session_key, event)
+            event._gateway_processing_deferred = True
             event._gateway_accepted = True
             return
         if self._is_queue_text_debounce_candidate(event):
@@ -4151,6 +4163,7 @@ class BasePlatformAdapter(ABC):
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
             merge_pending_message_event(self._pending_messages, session_key, event,
                                         merge_text=event.message_type == MessageType.TEXT)
+            event._gateway_processing_deferred = True
             event._gateway_accepted = True
 
     @staticmethod
@@ -4556,6 +4569,10 @@ class BasePlatformAdapter(ABC):
                 if diagnostic_wake_muted(event):
                     response = None
             is_ephemeral_response = isinstance(response, EphemeralReply)
+            is_deferred_response = (
+                isinstance(response, DeferredReply)
+                or getattr(event, "_gateway_processing_deferred", False)
+            )
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
             # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
@@ -4569,8 +4586,10 @@ class BasePlatformAdapter(ABC):
                 extracted = await self._extract_response_content(
                     response, event, session_key, is_ephemeral_response=is_ephemeral_response)
                 text_content, media_files = extracted.text_content, extracted.media_files
-                # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
+                # Final content gets notify=True; deferred lifecycle notices stay interim delivery.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                if is_deferred_response:
+                    _final_thread_metadata["_interim_send"] = True
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
@@ -4597,13 +4616,16 @@ class BasePlatformAdapter(ABC):
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            outcome = (
+                ProcessingOutcome.DEFERRED if is_deferred_response
+                else ProcessingOutcome.SUCCESS if processing_ok
+                else ProcessingOutcome.FAILURE
+            )
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
-            await self._run_processing_hook(
-                "on_processing_complete", event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            await self._run_processing_hook("on_processing_complete", event, outcome)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)

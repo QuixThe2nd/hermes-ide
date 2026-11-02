@@ -4037,6 +4037,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not message_id:
             return
         now = self._utc_now_iso()
+        if outcome == ProcessingOutcome.DEFERRED:
+            deferred_status = (
+                "queued" if getattr(event, "_drain_snapshot_owned", False) else "processing"
+            )
+
+            def _defer(conn):
+                conn.execute(
+                    "UPDATE discord_messages "
+                    "SET status=CASE WHEN status='responded' THEN status ELSE ? END, "
+                    "updated_at=? WHERE message_id=?",
+                    (deferred_status, now, message_id),
+                )
+
+            self._with_discord_recovery_db(_defer)
+            return
         if outcome == ProcessingOutcome.SUCCESS:
             # SUCCESS means the base delivered the final (or the stream already had). Attribute it
             # to the inbound id here: streamed/edited finals, fresh-final sends and media-only replies
@@ -4065,8 +4080,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Record a send outcome using its visual or internal reply anchor."""
         ledger_reply_to = reply_to or (metadata or {}).get("reply_to_message_id")
+        substantive_final = bool(final and not (metadata or {}).get("_interim_send"))
         await asyncio.to_thread(
-            self._record_discord_response, reply_to=ledger_reply_to, result=result, content=content, final=final,
+            self._record_discord_response,
+            reply_to=ledger_reply_to,
+            result=result,
+            content=content,
+            final=substantive_final,
         )
         return result
 
@@ -4088,13 +4108,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     status=CASE WHEN ? THEN 'responded' ELSE discord_messages.status END,
                     replied=CASE WHEN ? THEN 1 ELSE discord_messages.replied END,
                     outage_response=CASE WHEN ? THEN 0 ELSE discord_messages.outage_response END,
-                    response_message_id=COALESCE(?, response_message_id),
+                    response_message_id=CASE WHEN ? THEN COALESCE(?, response_message_id) ELSE response_message_id END,
                     updated_at=?
                 """,
                 (
-                    reply_to, status, 1 if completed else 0, result.message_id, now,
+                    reply_to, status, 1 if completed else 0, result.message_id if completed else None, now,
                     1 if completed else 0, 1 if completed else 0, 1 if completed else 0,
-                    result.message_id, now,
+                    1 if completed else 0, result.message_id, now,
                 ),
             )
         self._with_discord_recovery_db(_op)
@@ -4755,12 +4775,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             message_id=message_id,
                             raw_response={"message_ids": [message_id]},
                         )
-                        await asyncio.to_thread(
-                            self._record_discord_response,
-                            reply_to=reply_to,
-                            result=result,
-                            content=content,
-                            final=final_delivery,
+                        await self._record_response_async(
+                            reply_to, result, content, final_delivery, metadata
                         )
                         return result
                     except Exception as e:
@@ -4785,12 +4801,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
-                await asyncio.to_thread(
-                    self._record_discord_response,
-                    reply_to=reply_to or (metadata or {}).get("reply_to_message_id"),
-                    result=result,
-                    content=content,
-                    final=final_delivery,
+                await self._record_response_async(
+                    reply_to or (metadata or {}).get("reply_to_message_id"),
+                    result, content, final_delivery, metadata,
                 )
                 return result
 
@@ -5060,7 +5073,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if finalize:
                 # A finalized edit is a delivered turn-final reply: gate evidence like a send.
                 self._response_gate_observe_sent(channel, content)
-                await self._record_response_async((metadata or {}).get("reply_to_message_id"), result, content, True)
+                await self._record_response_async(
+                    (metadata or {}).get("reply_to_message_id"), result, content, True, metadata
+                )
             return result
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)

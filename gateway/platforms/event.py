@@ -30,6 +30,7 @@ class ProcessingOutcome(Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     CANCELLED = "cancelled"
+    DEFERRED = "deferred"
 
 
 @dataclass
@@ -91,6 +92,11 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # A queued/deferred handler result is not a delivered answer. Execution admission clears this.
+    _gateway_processing_deferred: bool = field(default=False, init=False, repr=False, compare=False)
+    # Set only after the runner owns the turn lease; unlike _gateway_accepted this survives task waits
+    # as the replay queue's proof that execution (not merely a handler task) admitted the event.
+    _gateway_turn_admitted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
