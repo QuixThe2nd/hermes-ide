@@ -10123,6 +10123,8 @@ class TurnRunner:
                 "interrupted": result.get("interrupted", False),
                 "interrupt_message": result.get("interrupt_message"),
                 "error": result.get("error"),
+                "served_model": result.get("served_model"),
+                "requested_model": result.get("requested_model"),
                 "compression_exhausted": result.get("compression_exhausted", False),
                 "compression_deferred": result.get("compression_deferred", False),
                 "tools": ctx.tools_holder[0] or [],
@@ -10166,6 +10168,8 @@ class TurnRunner:
                 "interrupted": result.get("interrupted", False),
                 "interrupt_message": result.get("interrupt_message"),
                 "error": result.get("error"),
+                "served_model": result.get("served_model"),
+                "requested_model": result.get("requested_model"),
                 "compression_exhausted": result.get("compression_exhausted", False),
                 "compression_deferred": result.get("compression_deferred", False),
                 "tools": ctx.tools_holder[0] or [],
@@ -10242,6 +10246,8 @@ class TurnRunner:
             "interrupted": ctx.result_holder[0].get("interrupted", False) if ctx.result_holder[0] else False,
             "partial": ctx.result_holder[0].get("partial", False) if ctx.result_holder[0] else False,
             "error": ctx.result_holder[0].get("error") if ctx.result_holder[0] else None,
+            "served_model": (ctx.result_holder[0].get("served_model") if ctx.result_holder[0] else None),
+            "requested_model": (ctx.result_holder[0].get("requested_model") if ctx.result_holder[0] else None),
             "interrupt_message": ctx.result_holder[0].get("interrupt_message") if ctx.result_holder[0] else None,
             "compression_exhausted": (
                 ctx.result_holder[0].get("compression_exhausted", False)
