@@ -3111,6 +3111,7 @@ def _service_venv_dir() -> str:
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
+    project_root = PROJECT_ROOT
     venv_dir = _service_venv_dir()
 
     path_entries = _build_service_path_dirs()
@@ -3134,6 +3135,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # Remap paths under the calling user's home (/root/) to the target user's so the service can read them.
         python_path = _remap_path_for_user(python_path, home_dir)
         working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
+        project_root = Path(_remap_path_for_user(str(project_root), home_dir))
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         # Managed Node for the TARGET user's tree, prepended so it outranks remapped shell-PATH entries.
@@ -3178,6 +3180,7 @@ Type={systemd_type}
 {systemd_watchdog_directives}{identity_lines}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 {env_lines}Environment="PATH={sane_path}"
+Environment="PYTHONPATH={project_root}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Environment="HERMES_SUPERVISED_CHILD=1"
