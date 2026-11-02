@@ -4,18 +4,11 @@ import { test } from 'vitest'
 
 import {
   checkAppInstallerUpdate,
-  PLACEHOLDER_FEED_BASE_URL,
   triggerAppInstallerUpdate,
   win32AppInstallerFeedPath
 } from './app-updater'
 
 // ── feed hosting + paths ────────────────────────────────────────────
-
-test('the feed base URL placeholder is a documented dead end', () => {
-  // Overridden by `updates.desktop_feed_base_url` (read inline in main.ts);
-  // the placeholder itself must never resolve to a real host.
-  assert.equal(PLACEHOLDER_FEED_BASE_URL, 'https://updates.invalid/hermes-desktop')
-})
 
 test('win32 App Installer feed paths are per-channel and per-variant', () => {
   assert.equal(win32AppInstallerFeedPath('stable', false), 'win32/stable/')
@@ -66,36 +59,37 @@ test('win32 check surfaces an unknown verdict (missing winrt) without crashing',
   assert.match(result.error || '', /winrt import failed/)
 })
 
-test('win32 trigger opens ms-appinstaller with the channel .appinstaller after teardown', async () => {
+test('win32 trigger prepares a local descriptor before teardown and file activation', async () => {
   const calls: string[] = []
 
-  const shell = {
-    openExternal: async (url: string) => void calls.push(`open:${url}`)
+  const installer = {
+    prepare: async (url: string) => { calls.push(`download:${url}`);
+
+ return 'update.appinstaller' },
+    open: async (file: string) => { calls.push(`open:${file}`);
+
+ return '' }
   }
 
   const result = await triggerAppInstallerUpdate(
-    'https://updates.example.com/',
-    'stable',
-    false,
-    shell as any,
+    'https://updates.example.com/', 'stable', false, installer,
     () => void calls.push('teardown')
   )
 
   assert.equal(result.ok, true)
   assert.deepEqual(calls, [
-    'teardown',
-    'open:ms-appinstaller:?source=https%3A%2F%2Fupdates.example.com%2Fwin32%2Fstable%2Fstable.appinstaller'
+    'download:https://updates.example.com/win32/stable/stable.appinstaller',
+    'teardown', 'open:update.appinstaller'
   ])
 })
 
-test('win32 trigger light+canary targets the light canary feed dir', async () => {
-  const calls: string[] = []
-
-  const shell = {
-    openExternal: async (url: string) => void calls.push(url)
-  }
-
-  await triggerAppInstallerUpdate('https://updates.example.com', 'canary', true, shell as any)
-
-  assert.equal(calls[0], 'ms-appinstaller:?source=https%3A%2F%2Fupdates.example.com%2Fwin32%2Flight%2Fcanary%2Fcanary.appinstaller')
+test('win32 trigger refuses failed downloads before teardown and surfaces file-open errors', async () => {
+  const teardown = () => { throw new Error('unexpected teardown') }
+  await assert.rejects(triggerAppInstallerUpdate('https://updates.example.com', 'canary', true, {
+    prepare: async url => { assert.match(url, /win32\/light\/canary\/canary.appinstaller$/); throw new Error('download failed') },
+    open: async () => ''
+  }, teardown), /download failed/)
+  await assert.rejects(triggerAppInstallerUpdate('https://updates.example.com', 'stable', false, {
+    prepare: async () => 'update.appinstaller', open: async () => 'No file association'
+  }), /No file association/)
 })

@@ -70,6 +70,9 @@ def _stub_module(*, identity_error: bool, availability: str | None, check_raises
             get_body,
             "",
             "class _FakePackage:",
+            "    def get_app_installer_info(self):",
+            "        from types import SimpleNamespace",
+            "        return SimpleNamespace(uri=SimpleNamespace(absolute_uri='https://registered.example/updates.appinstaller'))",
             "    def check_update_availability_async(self):",
             check_body,
             "",
@@ -132,6 +135,7 @@ def test_update_available_exit_2(tmp_path):
     assert code == 2
     assert payload["available"] is True
     assert payload["availability"] == "AVAILABLE"
+    assert payload["source_uri"] == "https://registered.example/updates.appinstaller"
 
 
 def test_no_update_exit_0(tmp_path):

@@ -6,7 +6,7 @@
 //            wholesale. The app's only job is the checker: ask the OS whether
 //            an update is available (via the bundled payload python's winrt),
 //            show its own prompt, run graceful teardown, then trigger
-//            ms-appinstaller: and quit. Installations that Windows manages
+//            the downloaded App Installer file and quit. Installations that Windows manages
 //            for us — Microsoft Store deployments (process.windowsStore) and
 //            stamps whose updateMechanism is 'external' — get NO in-app
 //            updater at all: the store/steward owns the update loop.
@@ -27,20 +27,6 @@
 // (electron shell, payload python) are injected.
 
 // ─── feed hosting ───────────────────────────────────────────────────────────
-
-/**
- * PLACEHOLDER — the default base URL of the desktop release feeds.
- *
- * W3 (R2 hosting) supplies the real value; until it lands, this default is
- * a documented dead end that config overrides (`updates.desktop_feed_base_url`
- * in config.yaml — read inline by main.ts). Layout under the base:
- *
- *   <base>/win32/<channel>/            — App Installer feed dir (.appinstaller
- *                                        + .msixbundle) for out-of-store MSIX.
- *
- * `<channel>` is 'stable' or 'canary'.
- */
-export const PLACEHOLDER_FEED_BASE_URL = 'https://updates.invalid/hermes-desktop'
 
 /**
  * The App Installer feed dir for a channel. The .appinstaller for a channel
@@ -67,6 +53,7 @@ export interface AppInstallerCheck {
   /** Human-readable availability string from the OS, when reported. */
   availability?: string
   error?: string
+  sourceUri?: string
 }
 
 /**
@@ -84,60 +71,53 @@ export interface PayloadPythonRunner {
 
 /**
  * win32 arm: ask the OS whether an App Installer update is available, via
- * the bundled payload python's winrt (PackageManager.CheckPackageUpdateAvailabilityAsync).
+ * the bundled payload python's winrt (Package.check_update_availability_async).
  * The OS compares the package's registered .appinstaller source against the
  * installed version; it does NOT download anything.
  */
-export async function checkAppInstallerUpdate(
-  runner: PayloadPythonRunner
-): Promise<AppInstallerCheck> {
+export async function checkAppInstallerUpdate(runner: PayloadPythonRunner): Promise<AppInstallerCheck> {
   const { code, stdout } = await runner.run(runner.python, runner.script)
-  const text = stdout.trim()
-  let parsed: { available?: boolean | null; availability?: string; error?: string; reason?: string } | null = null
 
-  try {
-    parsed = text ? JSON.parse(text) : null
-  } catch {
-    parsed = null
-  }
-
-  if (parsed && typeof parsed.available === 'boolean') {
-    return { available: parsed.available, availability: parsed.availability, error: parsed.error }
-  }
-
-  if (parsed && parsed.available === null) {
-    return { available: null, error: parsed.error || 'checker returned unknown' }
-  }
-
-  if (code !== 0) {
-    return { available: null, error: parsed?.error || `checker exited ${code}` }
-  }
-
-  return { available: null, error: 'checker returned no availability' }
+  return parseCheckOutput(code, stdout)
 }
 
-/**
- * win32 arm: trigger the OS App Installer to apply the update and quit.
- * `ms-appinstaller:?source=<feed .appinstaller URL>` makes the OS re-read the
- * package's update source and install the newer bundle; the app then exits so
- * the package swap is not contested. `beforeInstall` runs first (backend
- * teardown while the process is still alive).
- */
+export function parseCheckOutput(code: number, stdout: string): AppInstallerCheck {
+  let parsed: { available?: boolean | null; availability?: string; error?: string; source_uri?: string } | null = null
+
+  try {
+    parsed = stdout.trim() ? JSON.parse(stdout) : null
+  } catch {
+    return { available: null, error: code !== 0 ? `checker exited ${code}` : 'checker returned invalid JSON' }
+  }
+
+  if (typeof parsed?.available === 'boolean') {
+    return { available: parsed.available, availability: parsed.availability, error: parsed.error, sourceUri: parsed.source_uri }
+  }
+
+  return { available: null, error: parsed?.error || (code !== 0 ? `checker exited ${code}` : 'checker returned no availability') }
+}
+
+/** Open a local descriptor. The ms-appinstaller protocol is disabled by default. */
 export async function triggerAppInstallerUpdate(
   feedBaseUrl: string,
   channel: 'stable' | 'canary',
   light: boolean,
-  shell: { openExternal: (url: string) => Promise<void> },
-  beforeInstall?: () => void | Promise<void>
+  installer: { prepare: (url: string) => Promise<string>; open: (file: string) => Promise<string> },
+  beforeInstall?: () => void | Promise<void>,
+  sourceUri?: string
 ): Promise<{ ok: true }> {
+  const appinstallerUrl = sourceUri ||
+    `${feedBaseUrl.replace(/\/+$/, '')}/${win32AppInstallerFeedPath(channel, light)}${channel}.appinstaller`
+
+  const file = await installer.prepare(appinstallerUrl)
+
   if (beforeInstall) {
     await beforeInstall()
   }
 
-  const appinstallerUrl =
-    `${feedBaseUrl.replace(/\/+$/, '')}/${win32AppInstallerFeedPath(channel, light)}${channel}.appinstaller`
+  const error = await installer.open(file)
 
-  await shell.openExternal(`ms-appinstaller:?source=${encodeURIComponent(appinstallerUrl)}`)
+  if (error) { throw new Error(`App Installer could not open: ${error}`) }
 
   return { ok: true }
 }

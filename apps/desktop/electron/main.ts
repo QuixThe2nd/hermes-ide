@@ -41,6 +41,7 @@ import {
   withRetry
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import { stageAppInstallerFile } from './app-installer-file'
 import { runAppInstallerChecker } from './appinstaller-checker'
 import {
   stopBackendChild as stopBackendChildImpl,
@@ -301,7 +302,6 @@ import { wireOauthSessionResponse } from './oauth-session-response'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { adoptPayloadVenv, installIdForRoot, isBundledInstall, resolvePayload, type PayloadInfo } from './payload-backend'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
-import { PLACEHOLDER_FEED_BASE_URL } from './app-updater'
 import { AppInstallerStrategy } from './updater/app-installer'
 import { ExternalStrategy } from './updater/external'
 import { resolveUpdaterMechanism } from './updater'
@@ -3593,7 +3593,10 @@ function resolveBundledUpdateStrategy(bundledPayload) {
       channel: resolveUpdaterChannelFromStamp(),
       light: isLightVariant(),
       feedBaseUrl: resolveDesktopFeedBaseUrl(),
-      shell: { openExternal: url => shell.openExternal(url) },
+      installer: {
+        prepare: url => stageAppInstallerFile(url, path.join(app.getPath('userData'), 'updates')),
+        open: file => shell.openPath(file)
+      },
       teardownBundledBackend,
       emitUpdateProgress,
       appVersion: app.getVersion(),
@@ -3688,14 +3691,14 @@ function isWindowsStore(): boolean {
 /**
  * The App Installer feed base URL for a bundled MSIX install: config.yaml's
  * `updates.desktop_feed_base_url`, then HERMES_DESKTOP_FEED_BASE_URL, then
- * the documented placeholder. Empty only when nothing configured the feed.
+ * Windows' registered App Installer source when no override is set.
  */
 function resolveDesktopFeedBaseUrl(): string {
   const configured = readUpdatesFeedBaseFromConfig()
   if (configured) return configured
   const env = process.env.HERMES_DESKTOP_FEED_BASE_URL
   if (env) return env
-  return PLACEHOLDER_FEED_BASE_URL
+  return ''
 }
 
 /** Read `updates.desktop_feed_base_url` from the user's config.yaml. */

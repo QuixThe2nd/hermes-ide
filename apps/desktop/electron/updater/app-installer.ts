@@ -5,7 +5,7 @@
 // the OS checks it and swaps the package wholesale. The app's only jobs:
 //   check()  ask the OS whether an update is available (via the bundled
 //            payload python's winrt), surfacing UNKNOWN honestly;
-//   apply()  run graceful teardown, trigger ms-appinstaller:, quit — and
+//   apply()  stage the descriptor, tear down, open it, and quit with
 //            a pending-relaunch marker so Hermes comes back by itself.
 //
 // Pure-injectable: the impure pieces (python runner, shell, quit, relaunch
@@ -13,6 +13,7 @@
 
 import {
   type AppInstallerCheck,
+  parseCheckOutput,
   type PayloadPythonRunner,
   triggerAppInstallerUpdate,
   win32AppInstallerFeedPath
@@ -31,7 +32,7 @@ export interface AppInstallerStrategyDeps {
   light: boolean
   /** The App Installer feed base URL; empty when nothing configured it. */
   feedBaseUrl: string
-  shell: { openExternal: (url: string) => Promise<void> }
+  installer: { prepare: (url: string) => Promise<string>; open: (file: string) => Promise<string> }
   /** Graceful backend teardown before the package swap. */
   teardownBundledBackend: () => void | Promise<void>
   /** Progress emitter for the updates overlay. */
@@ -85,8 +86,14 @@ export class AppInstallerStrategy {
 
   async apply(_opts: { stopSafeBlockers?: boolean }): Promise<UpdaterApplyResultWire> {
     const feedBaseUrl = this.deps.feedBaseUrl
+    let sourceUri: string | undefined
 
     if (!feedBaseUrl) {
+      const { code, stdout } = await this.deps.run(this.deps.python, this.deps.script)
+      sourceUri = parseCheckOutput(code, stdout).sourceUri
+    }
+
+    if (!feedBaseUrl && !sourceUri) {
       this.deps.emitUpdateProgress({
         stage: 'manual',
         message: 'bundled install: update by installing the new app release',
@@ -102,26 +109,24 @@ export class AppInstallerStrategy {
       percent: 100
     })
 
-    // Unconditional relaunch: register the mechanism BEFORE the swap so
-    // Hermes comes back on the new version with no user action. The
-    // handshake is awaited so the app never quits into an unregistered
-    // waiter (false = the waiter lost the race or failed to spawn; the
-    // update proceeds and relaunch stays manual).
-    const registered = await this.deps.registerPendingRelaunch(this.deps.appVersion)
-
-    if (!registered) {
-      this.deps.emitUpdateProgress({
-        stage: 'restart', percent: 100,
-        message: 'Automatic relaunch could not be registered. Reopen Hermes after App Installer finishes.'
-      })
-    }
-
     await triggerAppInstallerUpdate(
       feedBaseUrl,
       this.deps.channel,
       this.deps.light,
-      this.deps.shell,
-      this.deps.teardownBundledBackend
+      this.deps.installer,
+      async () => {
+        const registered = await this.deps.registerPendingRelaunch(this.deps.appVersion)
+
+        if (!registered) {
+          this.deps.emitUpdateProgress({
+            stage: 'restart', percent: 100,
+            message: 'Automatic relaunch could not be registered. Reopen Hermes after App Installer finishes.'
+          })
+        }
+
+        await this.deps.teardownBundledBackend()
+      },
+      sourceUri
     )
 
     this.deps.quit()
@@ -130,31 +135,7 @@ export class AppInstallerStrategy {
   }
 }
 
-/** Parse the payload-python checker's output into an AppInstallerCheck. */
-export function parseCheckOutput(code: number, stdout: string): AppInstallerCheck {
-  const text = stdout.trim()
-  let parsed: { available?: boolean | null; availability?: string; error?: string; reason?: string } | null = null
-
-  try {
-    parsed = text ? JSON.parse(text) : null
-  } catch {
-    parsed = null
-  }
-
-  if (parsed && typeof parsed.available === 'boolean') {
-    return { available: parsed.available, availability: parsed.availability, error: parsed.error }
-  }
-
-  if (parsed && parsed.available === null) {
-    return { available: null, error: parsed.error || 'checker returned unknown' }
-  }
-
-  if (code !== 0) {
-    return { available: null, error: parsed?.error || `checker exited ${code}` }
-  }
-
-  return { available: null, error: 'checker returned no availability' }
-}
+export { parseCheckOutput }
 
 export { win32AppInstallerFeedPath }
 export type { AppInstallerCheck, PayloadPythonRunner }

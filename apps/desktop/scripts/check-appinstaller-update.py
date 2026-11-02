@@ -62,6 +62,8 @@ def main() -> int:
         return 1
 
     try:
+        source = package.get_app_installer_info()
+        source_uri = source.uri.absolute_uri if source is not None else None
         result = package.check_update_availability_async().get()
         availability = PackageUpdateAvailability(result.availability)
     except Exception as exc:  # noqa: BLE001
@@ -73,11 +75,11 @@ def main() -> int:
     # them as such would suppress a real update prompt — so they surface as
     # an unknown with the availability name as the extended error.
     if availability == PackageUpdateAvailability.NO_UPDATES:
-        print(json.dumps({"available": False, "availability": availability.name}))
+        print(json.dumps({"available": False, "availability": availability.name, "source_uri": source_uri}))
         return 0
 
     if availability in (PackageUpdateAvailability.AVAILABLE, PackageUpdateAvailability.REQUIRED):
-        print(json.dumps({"available": True, "availability": availability.name}))
+        print(json.dumps({"available": True, "availability": availability.name, "source_uri": source_uri}))
         return 2
 
     print(json.dumps({"available": None, "error": f"availability unknown: {availability.name}"}))

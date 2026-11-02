@@ -17,7 +17,14 @@ function makeDeps(over: Partial<AppInstallerStrategyDeps> = {}) {
     channel: 'stable',
     light: false,
     feedBaseUrl: 'https://updates.example/hermes-desktop',
-    shell: { openExternal: async () => { calls.push('openExternal') } },
+    installer: {
+      prepare: async () => { calls.push('prepare');
+
+ return 'update.appinstaller' },
+      open: async () => { calls.push('open');
+
+ return '' }
+    },
     teardownBundledBackend: async () => { calls.push('teardown') },
     emitUpdateProgress: () => {},
     appVersion: '0.18.2',
@@ -38,7 +45,7 @@ describe('AppInstallerStrategy.apply', () => {
     const result = await strategy.apply({})
 
     expect(result).toEqual({ ok: true, manual: false, bundled: true, mechanism: 'app-installer' })
-    expect(calls).toEqual(['relaunch-marker', 'teardown', 'openExternal', 'quit'])
+    expect(calls).toEqual(['prepare', 'relaunch-marker', 'teardown', 'open', 'quit'])
   })
 
   it('fails open: a marker-write failure never blocks the update', async () => {
@@ -53,6 +60,25 @@ describe('AppInstallerStrategy.apply', () => {
     expect(result.ok).toBe(true)
     expect(calls).toContain('quit')
     expect(progress.some(message => message.includes('Reopen Hermes'))).toBe(true)
+  })
+
+  it('uses the package registered source when no feed override is configured', async () => {
+    const prepared: string[] = []
+
+    const { deps, calls } = makeDeps({
+      feedBaseUrl: '',
+      run: async () => ({ code: 2, stdout: JSON.stringify({ available: true, source_uri: 'https://registered.example/channel.appinstaller' }) }),
+      installer: {
+        prepare: async url => { prepared.push(url);
+
+ return 'registered.appinstaller' },
+        open: async () => ''
+      }
+    })
+
+    expect((await new AppInstallerStrategy(deps).apply({})).manual).toBe(false)
+    expect(prepared).toEqual(['https://registered.example/channel.appinstaller'])
+    expect(calls).toEqual(['relaunch-marker', 'teardown', 'quit'])
   })
 
   it('no feed URL → manual card, no teardown, no quit', async () => {
