@@ -94,9 +94,9 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # A queued/deferred handler result is not a delivered answer. Execution admission clears this.
     _gateway_processing_deferred: bool = field(default=False, init=False, repr=False, compare=False)
-    # Set only after the runner owns the turn lease; unlike _gateway_accepted this survives task waits
-    # as the replay queue's proof that execution (not merely a handler task) admitted the event.
-    _gateway_turn_admitted: bool = field(default=False, init=False, repr=False, compare=False)
+    # Process-local replay settlement hook. The drain queue binds its record/claim
+    # identity before enqueue; base processing invokes it with the real outcome.
+    _gateway_replay_completion: Any = field(default=None, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
@@ -120,6 +120,35 @@ class MessageEvent:
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+
+
+def transfer_replay_completion(
+    consumer: MessageEvent, incoming: MessageEvent
+) -> MessageEvent:
+    """Move replay settlement to the queued event that will actually run.
+
+    Dedup and media merges keep an older event object. Each durable record still
+    needs its own callback, so two replay owners on one consumer are chained in
+    arrival order. The finally keeps one faulty callback from suppressing the
+    other record's settlement; the processing boundary logs the failure.
+    """
+    callback = getattr(incoming, "_gateway_replay_completion", None)
+    if consumer is incoming or not callable(callback):
+        return consumer
+    existing = getattr(consumer, "_gateway_replay_completion", None)
+    if existing is callback:
+        combined = existing
+    elif callable(existing):
+        def combined(outcome, previous=existing, following=callback):
+            try:
+                previous(outcome)
+            finally:
+                following(outcome)
+    else:
+        combined = callback
+    consumer._gateway_replay_completion = combined
+    incoming._gateway_replay_completion = None
+    return consumer
 
 
 def inbound_platform_message_id(event: MessageEvent) -> Optional[str]:

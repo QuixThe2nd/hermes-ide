@@ -168,11 +168,13 @@ class GatewayBusySessionMixin:
             )
         return dropped
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
+    def _enqueue_fifo(
+        self, session_key: str, queued_event: "MessageEvent", adapter: Any
+    ) -> Optional["MessageEvent"]:
+        """Append a /queue event and return the event that will consume it."""
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
-            return
+            return None
         # One platform message id, one queued turn: a re-delivered copy parked here would run as
         # its own turn at promotion time.
         message_id = self._fifo_message_id(queued_event)
@@ -180,13 +182,16 @@ class GatewayBusySessionMixin:
             queued_copy = self._find_queued_copy_by_message_id(session_key, message_id, adapter)
             if queued_copy is not None:
                 self._drop_redelivered_fifo_copy(session_key, message_id, queued_copy)
-                return
+                from gateway.platforms.event import transfer_replay_completion
+
+                return transfer_replay_completion(queued_copy, queued_event)
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
         queued_event._gateway_processing_deferred = True
         queued_event._gateway_accepted = True
+        return queued_event
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]

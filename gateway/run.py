@@ -13088,13 +13088,15 @@ class GatewayRunner(
             )
         return dropped
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
+    def _enqueue_fifo(
+        self, session_key: str, queued_event: "MessageEvent", adapter: Any
+    ) -> Optional["MessageEvent"]:
+        """Append a /queue event and return the event that will consume it."""
         if adapter is None:
-            return
+            return None
         pending_slot = getattr(adapter, "_pending_messages", None)
         if pending_slot is None:
-            return
+            return None
         # One platform message id, one queued turn: a re-delivered copy
         # parked here would run as its own turn at promotion time.
         message_id = self._fifo_message_id(queued_event)
@@ -13104,13 +13106,16 @@ class GatewayRunner(
             )
             if queued_copy is not None:
                 self._drop_redelivered_fifo_copy(session_key, message_id, queued_copy)
-                return
+                from gateway.platforms.event import transfer_replay_completion
+
+                return transfer_replay_completion(queued_copy, queued_event)
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(
                 queued_event
             )
         else:
             pending_slot[session_key] = queued_event
+        return queued_event
 
     def _promote_queued_event(
         self,
@@ -14362,10 +14367,13 @@ class GatewayRunner(
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    def _queue_or_replace_pending_event(
+        self, session_key: str, event: MessageEvent
+    ) -> Optional[MessageEvent]:
+        """Queue one event and return its consumer, or None when not inserted."""
         adapter = self._adapter_for_source(event.source)
         if not adapter:
-            return
+            return None
         # #28503 — Previously this called ``merge_pending_message_event``
         # with the default ``merge_text=False``, which silently OVERWROTE
         # the single pending slot when consecutive text messages arrived
@@ -14386,7 +14394,9 @@ class GatewayRunner(
             )
             if _queued_copy is not None:
                 self._drop_redelivered_fifo_copy(session_key, _dedupe_id, _queued_copy)
-                return
+                from gateway.platforms.event import transfer_replay_completion
+
+                return transfer_replay_completion(_queued_copy, event)
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
         security_metadata_keys = (
@@ -14413,13 +14423,12 @@ class GatewayRunner(
             or bool(getattr(event, "media_urls", None))
         ):
             # Preserve photo-burst / media-merge semantics for the head slot.
-            merge_pending_message_event(
+            return merge_pending_message_event(
                 adapter._pending_messages,
                 session_key,
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
-            return
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
@@ -14427,9 +14436,9 @@ class GatewayRunner(
                 session_key,
                 self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            return None
 
-        self._enqueue_fifo(session_key, event, adapter)
+        return self._enqueue_fifo(session_key, event, adapter)
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Return steerable text for a busy follow-up, transcribing voice first.
@@ -17066,14 +17075,13 @@ class GatewayRunner(
         event: MessageEvent,
         session_key: str,
     ) -> bool:
-        """Dispatch startup work, wait for its adapter turn, and report execution admission.
+        """Dispatch startup work and wait for its adapter turn.
 
         ``BasePlatformAdapter.handle_message()`` returns after it installs the
-        adapter-level guard and spawns the background processing task.  Startup
-        restore waits for that task. Drain replay additionally uses this result
-        to keep its claim until the post-lease admission boundary (or a new
-        durable snapshot) owns the event. A synchronous adapter completed
-        handling when no background task exists.
+        adapter-level guard and spawns the background processing task. Startup
+        restore waits for that task; durable replay settlement is reported
+        separately by the event's processing-completion callback. A synchronous
+        adapter completed handling when no background task exists.
         """
         try:
             await adapter.handle_message(event)
@@ -17081,10 +17089,6 @@ class GatewayRunner(
             task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
             if task is not None:
                 await asyncio.shield(task)
-                return bool(
-                    getattr(event, "_gateway_turn_admitted", False)
-                    or getattr(event, "_drain_snapshot_owned", False)
-                )
             return True
         finally:
             # _schedule_resume_pending_sessions pre-claims the runner slot
@@ -25749,7 +25753,6 @@ class GatewayRunner(
         session_key: str,
     ) -> bool:
         """Persist the exact resolved routing key for this running turn."""
-        event._gateway_turn_admitted = True
         event._gateway_processing_deferred = False
         try:
             token = await self.async_session_store.mark_turn_active(session_key)

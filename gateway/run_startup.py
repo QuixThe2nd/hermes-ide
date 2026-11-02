@@ -50,7 +50,7 @@ class GatewayStartupMixin:
     async def _run_startup_resume_event(
         self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
     ) -> bool:
-        """Wait for the adapter turn and report execution admission to drain replay."""
+        """Wait for the adapter turn; replay settlement uses processing completion."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         try:
             await adapter.handle_message(event)
@@ -58,10 +58,6 @@ class GatewayStartupMixin:
             task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
             if task is not None:
                 await asyncio.shield(task)
-                return bool(
-                    getattr(event, "_gateway_turn_admitted", False)
-                    or getattr(event, "_drain_snapshot_owned", False)
-                )
             return True
         finally:
             # Release the pre-claimed slot if handle_message raised before _handle_message took ownership.

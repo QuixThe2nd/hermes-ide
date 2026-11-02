@@ -1705,10 +1705,15 @@ class DeferredReply(EphemeralReply):
 
 
 def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
-                                event: MessageEvent, *, merge_text: bool = False) -> None:
-    """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
-    turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
-    replace."""
+                                event: MessageEvent, *, merge_text: bool = False) -> Optional[MessageEvent]:
+    """Store or merge a pending event and return its actual queued consumer.
+
+    Photo bursts/albums merge into the queued event so the next turn sees the
+    whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
+    replace. ``None`` means the ownership boundary refused the merge.
+    """
+    from gateway.platforms.event import transfer_replay_completion
+
     existing = pending_messages.get(session_key)
     if existing:
         existing_type = getattr(existing, "message_type", None)
@@ -1726,7 +1731,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         # shutdown, and its incoming portion is ALSO replayed after restart.
         incoming_owned = bool(getattr(event, "_drain_snapshot_owned", False))
         if bool(getattr(existing, "_drain_snapshot_owned", False)) and not incoming_owned:
-            return
+            return None
         if incoming_owned:
             existing._drain_snapshot_owned = True
 
@@ -1755,13 +1760,14 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts"):
                 if hasattr(existing, attr):
                     delattr(existing, attr)
-            return
+            return transfer_replay_completion(existing, event)
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
-            return
+            return transfer_replay_completion(existing, event)
     pending_messages[session_key] = event
+    return event
 
 
 # Transient *connection* failures worth retrying. Plain/read/write "timeout" excluded on purpose:
@@ -4548,6 +4554,17 @@ class BasePlatformAdapter(ABC):
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
+
+        def _complete_replay(outcome):
+            callback = getattr(event, "_gateway_replay_completion", None)
+            if not callable(callback):
+                return
+            try:
+                callback(outcome)
+            except Exception:
+                # Settlement failure must not replace the turn's real outcome; the
+                # claim remains durable and is resumed by a later replay pass.
+                logger.error("[%s] Drain replay completion failed", self.name, exc_info=True)
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
@@ -4626,6 +4643,7 @@ class BasePlatformAdapter(ABC):
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
             await self._run_processing_hook("on_processing_complete", event, outcome)
+            _complete_replay(outcome)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
@@ -4648,12 +4666,13 @@ class BasePlatformAdapter(ABC):
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
-            await self._run_processing_hook(
-                "on_processing_complete", event,
-                ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
+            outcome = ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE
+            await self._run_processing_hook("on_processing_complete", event, outcome)
+            _complete_replay(outcome)
             raise
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            _complete_replay(ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
