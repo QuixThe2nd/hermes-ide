@@ -8,13 +8,12 @@ me". This file guards the section that answers it: Your turn, first in
 the sidebar, holding exactly the open conversations whose projected
 tip is neither ended nor archived and whose next move is the human's —
 an explicit wait the core names in its batch waiting-status answer (an
-API-run clarify, a native gateway clarify prompt, or a restart
-confirmation: all one surface to this server, and the endpoint says
-only THAT a session waits) or an idle chat whose newest active event
-is a plain assistant answer. Closed still wins over both (in this
-bundled server the projected tip's ended_at already means Closed, so
-an ended row is never promoted however it ended), and the badge
-counts parent conversations only.
+API-run clarify or a native gateway clarify prompt: one surface to this
+server, and the endpoint says only THAT a session waits) or an idle chat
+whose newest active event is a plain assistant answer. Closed still wins
+over both (in this bundled server the projected tip's ended_at already
+means Closed, so an ended row is never promoted however it ended), and
+the badge counts parent conversations only.
 
 Covered end to end at the HTTP layer over throwaway DBs (production
 schema) with a stub core API standing in for the real one:
@@ -335,19 +334,6 @@ class TestExplicitWaits(YourTurnCase):
         self.assertEqual(
             len(self.core.hits("GET", self.waiting_path())), 1)
         self.assertEqual(len(self.core.hits("GET")), 1)
-
-    def test_native_restart_wait_lands_in_your_turn(self):
-        """A restart confirmation registers through the same core
-        surface the batch endpoint reads — same promotion, same one
-        request."""
-        sid = "20260909_yt_restart"
-        self.seed_active(sid)
-        self.hold_wait(sid)
-        status, page = self.request("GET", "/")
-        self.assertEqual(status, 200)
-        self.assertEqual(self.section_of(page, sid), "your_turn")
-        self.assertEqual(self.section_count(page, "your_turn"), 1)
-        self.assertEqual(self.section_count(page, "active"), 0)
 
     def test_wait_promotes_row_with_expired_lease(self):
         """Lease/job is NOT a prerequisite: the wait names the session,

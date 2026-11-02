@@ -440,11 +440,7 @@ class DiscordHubServer:
             raise ValueError(f"Discord adapter has no RPC method {method}")
         args = list(params.get("args") or [])
         kwargs = dict(params.get("kwargs") or {})
-        if method in {"begin_restart_pending_thread_title", "end_restart_pending_thread_title"} and args:
-            from plugins.platforms.discord.adapter import RestartPendingThreadTitle
-            if isinstance(args[0], dict):
-                args[0] = RestartPendingThreadTitle(**args[0])
-        elif method == "format_tool_preview" and args and isinstance(args[0], dict):
+        if method == "format_tool_preview" and args and isinstance(args[0], dict):
             from agent.display import ToolPreview
             args[0] = ToolPreview(**args[0])
         elif method == "claim_startup_resume_inbound" and len(args) > 1 and isinstance(args[1], dict):

@@ -9571,44 +9571,6 @@ class TurnRunner:
                         _replay_outcome.failure,
                     )
                     _forced_recovery_blocked = "forced_resume_replay_failed"
-                if _forced_recovery_blocked is None:
-                    # Superseded restart gate (transparent-resume twin of
-                    # Delta 1): a restart tool result of
-                    # ``status:"superseded"`` in the tail was written BEFORE
-                    # the bounce, with no bounce timestamp of its own — left
-                    # alone, the model reads its own pre-bounce result as
-                    # the last word on a restart it never saw land.  The
-                    # suffix rides the EXISTING tool row (agent_history rows
-                    # are copies built by _build_gateway_agent_history, so
-                    # this never rewrites the durable transcript) and
-                    # creates no synthetic user/system row.  Only trailing
-                    # tool rows are scanned; a tail without a superseded
-                    # result is untouched, so ordinary forced victims keep
-                    # today's silent continuation byte-for-byte.
-                    try:
-                        from gateway.restart import annotate_superseded_restart_tail
-
-                        _superseded_annotated = annotate_superseded_restart_tail(
-                            agent_history,
-                            restarted_at=getattr(
-                                _resume_entry, "last_resume_marked_at", None
-                            ),
-                        )
-                    except Exception:
-                        _superseded_annotated = 0
-                        logger.debug(
-                            "Transparent resume: superseded-restart tail "
-                            "annotation skipped (%s)",
-                            exc_info=True,
-                        )
-                    if _superseded_annotated:
-                        logger.info(
-                            "Transparent resume for %s: annotated %d "
-                            "superseded restart tool result(s) with the "
-                            "bounce note",
-                            ctx.session_key,
-                            _superseded_annotated,
-                        )
                 if not _replay_plan.batch_present and _continue_interrupted_turn:
                     # Text-only interruption: the turn died while the model
                     # was mid-text, leaving an incomplete trailing assistant
@@ -16583,27 +16545,6 @@ class GatewayRunner(
             if getattr(self, "_running", True):
                 self._draining = False
             raise
-        # The restart task is real: it now owns its state outright. Sweep any
-        # restart-confirmation waits that were already blocked on an older
-        # runner's prompt — a committed restart supersedes them without
-        # requiring another queue call. Runs only here, after the task is
-        # established: a rolled-back setup above never settles a sibling
-        # wait, and the flags are provisional until create_task succeeds.
-        try:
-            from tools.clarify_gateway import resolve_restart_waits_superseded
-
-            superseded_gates = resolve_restart_waits_superseded()
-        except Exception as exc:
-            superseded_gates = 0
-            logger.debug(
-                "Restart owner: superseded-gate sweep failed: %s", exc
-            )
-        if superseded_gates:
-            logger.info(
-                "Restart owner: %d pending restart gate(s) superseded by "
-                "this restart",
-                superseded_gates,
-            )
         return True
 
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
@@ -36582,11 +36523,6 @@ class GatewayRunner(
                     _exec_ref = _executor_task
                 except NameError:
                     _exec_ref = None
-                if self._heartbeat_temporarily_suppressed(session_key):
-                    # Restart-consent wait parked on the user: skip this tick but keep
-                    # the loop alive — the wait can resolve or be cancelled mid-run and
-                    # later model/tool work still needs liveness updates.
-                    continue
                 if not self._should_emit_long_running_notification(
                     session_key, agent_holder[0], _exec_ref
                 ):
@@ -36642,10 +36578,6 @@ class GatewayRunner(
                         _lp_now = turn_ctx.last_visible_progress_monotonic()
                         if _lp_now is not None and _lp_now > _silence_origin[0]:
                             continue
-                        if self._heartbeat_temporarily_suppressed(session_key):
-                            # Restart-consent wait parked on the user: skip
-                            # this tick without a "Working" bubble.
-                            continue
                         if not self._should_emit_long_running_notification(
                             session_key, agent_holder[0], _exec_ref
                         ):
@@ -36677,8 +36609,6 @@ class GatewayRunner(
                         # that delivery).
                         _lp_now = turn_ctx.last_visible_progress_monotonic()
                         if _lp_now is not None and _lp_now > _silence_origin[0]:
-                            continue
-                        if self._heartbeat_temporarily_suppressed(session_key):
                             continue
                         if not self._should_emit_long_running_notification(
                             session_key, agent_holder[0], _exec_ref

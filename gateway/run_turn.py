@@ -4177,11 +4177,6 @@ class GatewayTurnMixin:
             # A consumed tick (heartbeat attempt or a suppressed skip) restarts the
             # silence clock so this loop never fires faster than one interval.
             _silence_origin[0] = time.monotonic()
-            if self._heartbeat_temporarily_suppressed(session_key):
-                # Restart-consent wait parked on the user: skip this tick but keep
-                # the loop alive — the wait can resolve or be cancelled mid-run and
-                # later model/tool work still needs liveness updates.
-                continue
             if not self._should_emit_long_running_notification(
                 session_key, agent_holder[0], _executor_task_holder[0]
             ):
@@ -4225,12 +4220,6 @@ class GatewayTurnMixin:
                     _lp_now = turn_ctx.last_visible_progress_monotonic()
                     if _lp_now is not None and _lp_now > _silence_origin[0]:
                         continue
-                    if self._heartbeat_temporarily_suppressed(session_key):
-                        # Restart-consent wait parked on the user: skip this
-                        # tick (no "Working" bubble: that is exactly the noise
-                        # being suppressed); the next tick re-checks, since
-                        # the wait can resolve or be cancelled mid-run.
-                        continue
                     if not self._should_emit_long_running_notification(
                         session_key, agent_holder[0], _executor_task_holder[0]
                     ):
@@ -4253,8 +4242,6 @@ class GatewayTurnMixin:
                 async with turn_ctx.delivery_lock():
                     _lp_now = turn_ctx.last_visible_progress_monotonic()
                     if _lp_now is not None and _lp_now > _silence_origin[0]:
-                        continue
-                    if self._heartbeat_temporarily_suppressed(session_key):
                         continue
                     # A drain/restart notice may have gone out meanwhile, and
                     # a fresh "Working" bubble after it reads as a contradiction (#10990).

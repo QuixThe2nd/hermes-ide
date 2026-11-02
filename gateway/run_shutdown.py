@@ -1155,25 +1155,6 @@ class GatewayShutdownMixin:
 
         return requester_session_key(self) == session_key
 
-    def _heartbeat_temporarily_suppressed(self, session_key: Optional[str]) -> bool:
-        """True while a TEMPORARY wait (restart-consent clarify) parks this session.
-
-        Temporary waits only — heartbeat loops must SKIP (continue) the tick
-        rather than terminate: the wait can end mid-run (the user confirms,
-        a wrong reply cancels the gate, or delivery of the consent prompt
-        fails) and later model/tool work still needs liveness updates. Scoped
-        to the owning session: a restart wait parked in a different session
-        must not silence this one's heartbeat.
-        """
-        if not session_key:
-            return False
-        from tools import clarify_gateway
-
-        return any(
-            entry.wait_kind == "restart"
-            for entry in clarify_gateway.pending_entries_for_session(session_key)
-        )
-
     def _should_emit_long_running_notification(
         self, session_key: Optional[str], agent: Any, executor_task: Optional[Any],
     ) -> bool:
@@ -1181,9 +1162,7 @@ class GatewayShutdownMixin:
 
         Terminal conditions only: stop once the executor finishes, the agent is gone, or the
         session key has been rebound to a different live agent (e.g. the user sent ``/new`` and
-        a fresh agent took the slot mid-run, #12029). Temporary suppression (a restart-consent
-        wait parked on the user) lives in ``_heartbeat_temporarily_suppressed`` so the loops skip
-        a tick instead of exiting — the wait can resolve or be cancelled mid-run.
+        a fresh agent took the slot mid-run, #12029).
         """
         if agent is None or (executor_task is not None and executor_task.done()):
             return False
