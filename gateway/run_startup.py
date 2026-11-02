@@ -522,7 +522,7 @@ class GatewayStartupMixin:
             return None
         # Restart-loop breaker: only boots WITH restart-interrupted sessions count; when tripped, skip
         # auto-resume for THIS boot only (inbound still served; sessions stay resume_pending).
-        if candidates:
+        if candidates and not getattr(self, "_overlap_successor_pending", False):
             try:
                 from gateway import restart_loop_guard as _rlg
                 _max_restarts, _window, _max_gap = self._restart_loop_guard_config()
@@ -1071,7 +1071,12 @@ class GatewayStartupMixin:
             # Under multiplexing the default profile needs the same whole-handler runtime scope as a
             # secondary (authorization and prompt rendering run before the agent-turn scope).
             self._wire_adapter_handlers(adapter)
-            _pending_connects.append((platform, platform_config, adapter))
+            from gateway.overlap_restart import defer_adapter_until_authoritative, defer_primary_adapter
+            pending = (platform, platform_config, adapter)
+            if defer_adapter_until_authoritative(self, adapter):
+                defer_primary_adapter(self, pending)
+            else:
+                _pending_connects.append(pending)
         return False, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
 
     async def _start_connect_pending(self, _pending_connects: list) -> Optional[list]:

@@ -17924,7 +17924,7 @@ class GatewayRunner(
         # is now in the loop). Defenses 1-2 cover the cron/CLI/terminal paths;
         # this catches every other SIGTERM source (e.g. a raw `terminal(
         # "launchctl kickstart ai.hermes.gateway")`).
-        if candidates:
+        if candidates and not getattr(self, "_overlap_successor_pending", False):
             try:
                 from gateway import restart_loop_guard as _rlg
 
@@ -18761,7 +18761,12 @@ class GatewayRunner(
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter.set_platform_event_handler(self._primary_platform_event_handler())
             adapter._busy_text_mode = self._busy_text_mode
-            _pending_connects.append((platform, platform_config, adapter))
+            from gateway.overlap_restart import defer_adapter_until_authoritative, defer_primary_adapter
+            pending = (platform, platform_config, adapter)
+            if defer_adapter_until_authoritative(self, adapter):
+                defer_primary_adapter(self, pending)
+            else:
+                _pending_connects.append(pending)
 
         if await self._abort_startup_if_shutdown_requested():
             return True
@@ -22047,6 +22052,10 @@ class GatewayRunner(
                     continue
 
             self._configure_profile_adapter(adapter, profile_name, platform)
+            from gateway.overlap_restart import defer_adapter_until_authoritative, defer_secondary_adapter
+            if defer_adapter_until_authoritative(self, adapter):
+                defer_secondary_adapter(self, profile_name, platform)
+                continue
 
             try:
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
@@ -38491,17 +38500,38 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
     return shutdown_signal_handler
 
 
-def _start_gateway_claim_pid_file() -> bool:
-    """Claim the runtime lock + PID file (O_EXCL winner is the authoritative gateway). False = lost."""
+def _start_gateway_claim_pid_file(predecessor_pid: int | None = None) -> bool | str:
+    """Claim authority normally, or let the expected overlap successor boot pending."""
     import atexit
+    from gateway.overlap_restart import (
+        GATEWAY_CLAIM_SUCCESSOR_PENDING, OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV,
+        overlap_predecessor_pid,
+    )
     from gateway.status import (
         acquire_gateway_runtime_lock, get_running_pid, release_gateway_runtime_lock,
         remove_pid_file, write_pid_file)
     _current_pid = get_running_pid()
+    _overlap_predecessor_pid = (
+        predecessor_pid if predecessor_pid is not None else overlap_predecessor_pid()
+    )
     if _current_pid is not None and _current_pid != os.getpid():
+        if _current_pid == _overlap_predecessor_pid:
+            logger.info(
+                "Overlap successor PID %d booting non-authoritatively behind predecessor PID %d",
+                os.getpid(), _current_pid,
+            )
+            return GATEWAY_CLAIM_SUCCESSOR_PENDING
         logger.error("Another gateway instance (PID %d) started during our startup. "
                      "Exiting to avoid double-running.", _current_pid)
         return False
+    if _current_pid is None and _overlap_predecessor_pid is not None:
+        from gateway.status import _pid_exists
+        if _pid_exists(_overlap_predecessor_pid):
+            logger.info(
+                "Overlap successor PID %d waiting for predecessor PID %d before claiming authority",
+                os.getpid(), _overlap_predecessor_pid,
+            )
+            return GATEWAY_CLAIM_SUCCESSOR_PENDING
     if not acquire_gateway_runtime_lock():
         logger.error("Gateway runtime lock is already held by another instance. Exiting.")
         return False
@@ -38513,6 +38543,10 @@ def _start_gateway_claim_pid_file() -> bool:
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+    if _overlap_predecessor_pid is not None:
+        # One-shot launch authority: children and later reconnects must not inherit pending-successor behavior.
+        os.environ.pop(OVERLAP_SUCCESSOR_ENV, None)
+        os.environ.pop(OVERLAP_PREDECESSOR_PID_ENV, None)
     return True
 
 
@@ -38719,9 +38753,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     record_boot_fingerprint()
 
     # Duplicate-instance guard scoped to HERMES_HOME; distinct-home multi-profile setups coexist.
+    from gateway.overlap_restart import overlap_predecessor_pid
     from gateway.status import get_running_pid
     existing_pid = get_running_pid()
     if (existing_pid is not None and existing_pid != os.getpid()
+            and existing_pid != overlap_predecessor_pid()
             and not await _start_gateway_replace_existing_instance(existing_pid, replace)):
         return False
 
@@ -38785,11 +38821,25 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _planned_stop_watcher_thread.start()
 
     # PID file BEFORE adapters: of two concurrent `run --replace`, only the O_EXCL winner opens sockets.
-    if not _start_gateway_claim_pid_file():
+    # The one marked overlap successor may attach to the Discord hub before it wins this claim.
+    from gateway.overlap_restart import (
+        GATEWAY_CLAIM_SUCCESSOR_PENDING, OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV,
+        overlap_predecessor_pid,
+    )
+    _claim_state = _start_gateway_claim_pid_file()
+    if not _claim_state:
         return False
+    runner._overlap_successor_pending = _claim_state == GATEWAY_CLAIM_SUCCESSOR_PENDING
+    if runner._overlap_successor_pending:
+        runner._overlap_predecessor_pid = overlap_predecessor_pid()
+        # The runner and claim task now own this one-shot launch state; do not leak it into tool children.
+        os.environ.pop(OVERLAP_SUCCESSOR_ENV, None)
+        os.environ.pop(OVERLAP_PREDECESSOR_PID_ENV, None)
 
-    # Right after the PID claim (which makes us authoritative); non-fatal — consumers fall back to scan.
-    _control_server = await _start_gateway_start_control_socket(runner)
+    # A pending successor is not a truthful control-plane authority yet; its socket starts after the claim.
+    _control_server = None
+    if not runner._overlap_successor_pending:
+        _control_server = await _start_gateway_start_control_socket(runner)
 
     def _lifecycle_record_startup() -> None:
         # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
@@ -38801,7 +38851,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
         start_nous_auth_keepalive()
 
-    _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+    if not runner._overlap_successor_pending:
+        _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
     _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
     _ensure_windows_gateway_venv_imports()
 
@@ -38851,13 +38902,38 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         finally:
             _shutdown_gateway_health_export(runner)
 
-    cron_stop, cron_provider, cron_thread, housekeeping_thread = (
-        _start_gateway_start_cron_and_housekeeping(runner))
+    cron_stop = threading.Event()
+    cron_provider = cron_thread = housekeeping_thread = None
+    _overlap_claim_task = None
+    if runner._overlap_successor_pending:
+        from gateway.overlap_restart import claim_when_predecessor_exits, start_deferred_adapters
 
-    # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
-    runner._start_systemd_watchdog()
+        async def _on_overlap_authoritative() -> None:
+            nonlocal _control_server, cron_stop, cron_provider, cron_thread, housekeeping_thread
+            _control_server = await _start_gateway_start_control_socket(runner)
+            _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+            await start_deferred_adapters(runner)
+            cron_stop, cron_provider, cron_thread, housekeeping_thread = (
+                _start_gateway_start_cron_and_housekeeping(runner))
+            runner._start_systemd_watchdog()
+
+        _overlap_claim_task = asyncio.create_task(
+            claim_when_predecessor_exits(
+                runner, runner._overlap_predecessor_pid, _on_overlap_authoritative,
+            ),
+            name="overlap-successor-claim",
+        )
+    else:
+        cron_stop, cron_provider, cron_thread, housekeeping_thread = (
+            _start_gateway_start_cron_and_housekeeping(runner))
+        # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
+        runner._start_systemd_watchdog()
 
     await runner.wait_for_shutdown()
+
+    if _overlap_claim_task is not None:
+        _overlap_claim_task.cancel()
+        await asyncio.gather(_overlap_claim_task, return_exceptions=True)
 
     return await _start_gateway_shutdown_tail(
         runner, _control_server, cron_stop, cron_provider, cron_thread, housekeeping_thread,

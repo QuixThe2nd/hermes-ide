@@ -11,6 +11,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,9 @@ from hermes_constants import get_default_hermes_root, get_hermes_home
 from plugins.platforms.discord.hub import default_socket_path
 
 logger = logging.getLogger(__name__)
+
+_OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS = 300.0
+_OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -322,21 +326,32 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
         return self._running and self._overlap_successor_ready
 
     async def wait_for_overlap_successor(self) -> None:
-        for _ in range(300):
+        deadline = time.monotonic() + _OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS
+        while True:
             status = await self._call("ping")
             current = status.get("current_generation")
             if current and current != self._generation_id:
                 self.mark_overlap_successor_ready()
                 return
-            await asyncio.sleep(0.1)
-        raise RuntimeError("Discord hub successor did not attach within 30 seconds")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    "Discord hub successor did not attach within "
+                    f"{_OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS:g} seconds"
+                )
+            await asyncio.sleep(min(_OVERLAP_SUCCESSOR_ATTACH_POLL_SECONDS, remaining))
 
-    async def spawn_overlap_successor(self, *, via_service: bool = False) -> Optional[int]:
+    async def spawn_overlap_successor(
+        self, *, via_service: bool = False, predecessor_pid: Optional[int] = None
+    ) -> Optional[int]:
         # systemd is taught not to respawn the predecessor after a successful
         # overlap handoff. Other supervisors retain their legacy restart path.
         if via_service and not os.environ.get("INVOCATION_ID"):
             return None
-        result = await self._call("spawn_gateway", {"hermes_home": str(get_hermes_home())})
+        result = await self._call("spawn_gateway", {
+            "hermes_home": str(get_hermes_home()),
+            "predecessor_pid": predecessor_pid or os.getpid(),
+        })
         pid = int(result["pid"])
         await self.wait_for_overlap_successor()
         return pid

@@ -245,6 +245,312 @@ def test_overlap_admission_opens_only_after_successor_attaches(tmp_path):
     run(scenario())
 
 
+def test_hub_marks_successor_with_predecessor_pid(monkeypatch, tmp_path):
+    import subprocess
+    from gateway.overlap_restart import OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV
+
+    monkeypatch.setattr("gateway.restart.detached_restart_spawn_blocked", lambda: False)
+    monkeypatch.setattr(
+        "tools.environments.local.served_profile_child_env",
+        lambda **kwargs: {"PYTHONPATH": "", "HERMES_GATEWAY_MODE": "inherited"},
+    )
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return SimpleNamespace(pid=5150)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    server = DiscordHubServer(tmp_path / "unused.sock")
+    result = run(server._spawn_gateway({
+        "hermes_home": str(tmp_path), "predecessor_pid": 4242,
+    }))
+
+    assert result == {"pid": 5150}
+    env = captured["env"]
+    assert env[OVERLAP_SUCCESSOR_ENV] == "1"
+    assert env[OVERLAP_PREDECESSOR_PID_ENV] == "4242"
+    assert "HERMES_GATEWAY_MODE" not in env
+
+
+def test_marked_successor_boots_pending_without_touching_authority(monkeypatch):
+    from gateway.overlap_restart import (
+        GATEWAY_CLAIM_SUCCESSOR_PENDING, OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV,
+    )
+    import gateway.run as gateway_run
+
+    monkeypatch.setenv(OVERLAP_SUCCESSOR_ENV, "1")
+    monkeypatch.setenv(OVERLAP_PREDECESSOR_PID_ENV, "4242")
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    acquire = MagicMock()
+    write = MagicMock()
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", acquire)
+    monkeypatch.setattr("gateway.status.write_pid_file", write)
+
+    assert gateway_run._start_gateway_claim_pid_file() == GATEWAY_CLAIM_SUCCESSOR_PENDING
+    acquire.assert_not_called()
+    write.assert_not_called()
+
+
+def test_plain_second_gateway_still_refuses_live_pid(monkeypatch):
+    from gateway.overlap_restart import OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV
+    import gateway.run as gateway_run
+
+    monkeypatch.delenv(OVERLAP_SUCCESSOR_ENV, raising=False)
+    monkeypatch.delenv(OVERLAP_PREDECESSOR_PID_ENV, raising=False)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    acquire = MagicMock()
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", acquire)
+
+    assert gateway_run._start_gateway_claim_pid_file() is False
+    acquire.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deferred_successor_claim_retries_then_becomes_authoritative(monkeypatch):
+    from gateway.overlap_restart import (
+        GATEWAY_CLAIM_SUCCESSOR_PENDING, claim_when_predecessor_exits,
+    )
+
+    alive = iter((True, False))
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: next(alive))
+    claims = iter((GATEWAY_CLAIM_SUCCESSOR_PENDING, True))
+    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_: next(claims))
+    runner = SimpleNamespace(
+        _overlap_successor_pending=True,
+        _shutdown_event=asyncio.Event(),
+        stop=AsyncMock(),
+    )
+    on_authoritative = AsyncMock()
+
+    assert await claim_when_predecessor_exits(
+        runner, 4242, on_authoritative, poll_seconds=0,
+    )
+    assert runner._overlap_successor_pending is False
+    on_authoritative.assert_awaited_once_with()
+    runner.stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deferred_successor_exits_cleanly_when_another_gateway_wins(monkeypatch):
+    from gateway.overlap_restart import claim_when_predecessor_exits
+
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_: False)
+    runner = SimpleNamespace(
+        _overlap_successor_pending=True,
+        _shutdown_event=asyncio.Event(),
+        stop=AsyncMock(),
+    )
+
+    assert not await claim_when_predecessor_exits(
+        runner, 4242, AsyncMock(), poll_seconds=0,
+    )
+    assert runner._exit_cleanly is True
+    assert "lost the gateway lock/PID claim" in runner._exit_reason
+    runner.stop.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_deferred_claim_error_does_not_leave_a_pending_zombie(monkeypatch):
+    from gateway.overlap_restart import claim_when_predecessor_exits
+
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+
+    def fail_claim(_pid):
+        raise OSError("lock probe failed")
+
+    monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", fail_claim)
+    runner = SimpleNamespace(
+        _overlap_successor_pending=True,
+        _shutdown_event=asyncio.Event(),
+        stop=AsyncMock(),
+    )
+
+    assert not await claim_when_predecessor_exits(runner, 4242, AsyncMock(), poll_seconds=0)
+    assert runner._exit_with_failure is True
+    runner.stop.assert_awaited_once_with()
+
+
+def test_successor_boot_does_not_count_toward_restart_loop_breaker(monkeypatch):
+    from contextlib import nullcontext
+    from gateway.overlap_restart import OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV
+    from gateway import restart_loop_guard
+    import gateway.run as gateway_run
+
+    monkeypatch.setenv(OVERLAP_SUCCESSOR_ENV, "1")
+    monkeypatch.setenv(OVERLAP_PREDECESSOR_PID_ENV, "4242")
+    entry = SimpleNamespace(
+        resume_pending=True, suspended=False, origin=object(), resume_reason="restart_interrupted",
+    )
+    runner = SimpleNamespace(
+        _overlap_successor_pending=True,
+        session_store=SimpleNamespace(
+            _lock=nullcontext(), _ensure_loaded_locked=lambda: None, _entries={"session": entry},
+        ),
+        _AUTO_RESUME_REASONS={"restart_interrupted"},
+        _restart_loop_guard_config=lambda: (3, 600, 3600),
+    )
+    check = MagicMock()
+    monkeypatch.setattr(restart_loop_guard, "check_and_record", check)
+
+    assert gateway_run.GatewayRunner._resume_pending_candidates(runner) == [entry]
+    check.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_successor_attach_window_covers_a_five_minute_cold_boot(monkeypatch):
+    import plugins.platforms.discord.hub_client as hub_client_module
+
+    now = [0.0]
+
+    async def advance_clock(_seconds):
+        now[0] += 1.0
+
+    monkeypatch.setattr(hub_client_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(hub_client_module.asyncio, "sleep", advance_clock)
+    client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    client._generation_id = "predecessor"
+
+    async def ping(_method):
+        return {"current_generation": "successor" if now[0] >= 300 else "predecessor"}
+
+    client._call = ping
+    await client.wait_for_overlap_successor()
+    assert client._overlap_successor_ready is True
+
+
+def test_only_hub_capable_adapters_start_while_successor_is_pending():
+    from gateway.overlap_restart import defer_adapter_until_authoritative
+
+    runner = SimpleNamespace(_overlap_successor_pending=True)
+    assert not defer_adapter_until_authoritative(
+        runner, SimpleNamespace(supports_overlap_restart=True),
+    )
+    assert defer_adapter_until_authoritative(runner, SimpleNamespace())
+    runner._overlap_successor_pending = False
+    assert not defer_adapter_until_authoritative(runner, SimpleNamespace())
+
+
+@pytest.mark.asyncio
+async def test_claim_starts_deferred_primary_and_secondary_adapters():
+    from gateway.overlap_restart import start_deferred_adapters
+
+    pending = [(SimpleNamespace(value="api_server"), object(), object())]
+    runner = SimpleNamespace(
+        _overlap_deferred_primary_adapters=pending,
+        _overlap_deferred_secondary_adapters=True,
+        _start_connect_pending=AsyncMock(return_value=[("raw-result")]),
+        _start_aggregate_connect_results=AsyncMock(),
+        _start_secondary_profile_adapters=AsyncMock(return_value=1),
+    )
+
+    await start_deferred_adapters(runner)
+    runner._start_connect_pending.assert_awaited_once_with(pending)
+    runner._start_aggregate_connect_results.assert_awaited_once()
+    runner._start_secondary_profile_adapters.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatch, tmp_path):
+    from gateway.config import GatewayConfig
+    from gateway.overlap_restart import (
+        GATEWAY_CLAIM_SUCCESSOR_PENDING, OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV,
+    )
+    import gateway.run as gateway_run
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv(OVERLAP_SUCCESSOR_ENV, "1")
+    monkeypatch.setenv(OVERLAP_PREDECESSOR_PID_ENV, "4242")
+    monkeypatch.setattr("hermes_cli.resource_limits.apply_nofile_soft_limit", lambda: None)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr("gateway.code_skew.record_boot_fingerprint", lambda: None)
+    monkeypatch.setattr(gateway_run, "_start_gateway_configure_logging", lambda verbosity: None)
+    monkeypatch.setattr(gateway_run, "_enable_multiplex_log_routing", lambda config: None)
+    monkeypatch.setattr(gateway_run, "_start_gateway_claim_pid_file", lambda: GATEWAY_CLAIM_SUCCESSOR_PENDING)
+    monkeypatch.setattr(gateway_run, "_discover_gateway_mcp_tools", AsyncMock())
+    monkeypatch.setattr(gateway_run, "_ensure_windows_gateway_venv_imports", lambda: None)
+    monkeypatch.setattr("hermes_cli.nous_auth_keepalive.start_nous_auth_keepalive", lambda: None)
+    monkeypatch.setattr("gateway.shutdown_flush.recover_pending_to_db", lambda **kwargs: 0)
+    replace = AsyncMock()
+    monkeypatch.setattr(gateway_run, "_start_gateway_replace_existing_instance", replace)
+    events = []
+
+    class FakeRunner:
+        def __init__(self, config):
+            self.config = config
+            self.adapters = {}
+            self.session_store = SimpleNamespace(resolve_session_id_for_key=lambda key: key)
+            self.should_exit_cleanly = False
+            self.exit_reason = None
+            self.exit_code = None
+            self._running = True
+            self._shutdown_event = asyncio.Event()
+
+        async def start(self):
+            import os
+            assert self._overlap_successor_pending is True
+            assert OVERLAP_SUCCESSOR_ENV not in os.environ
+            assert OVERLAP_PREDECESSOR_PID_ENV not in os.environ
+            events.append("hub-adapter-start")
+            return True
+
+        async def wait_for_shutdown(self):
+            await self._shutdown_event.wait()
+
+        def _start_systemd_watchdog(self):
+            events.append("systemd-watchdog")
+
+    control = SimpleNamespace()
+    cron_provider = SimpleNamespace()
+
+    async def start_control(runner):
+        events.append("control-socket")
+        return control
+
+    def start_cron(runner):
+        events.append("cron")
+        return threading_event, cron_provider, None, None
+
+    import threading
+    threading_event = threading.Event()
+    deferred = AsyncMock()
+    monkeypatch.setattr(gateway_run, "GatewayRunner", FakeRunner)
+    monkeypatch.setattr(gateway_run, "_start_gateway_start_control_socket", start_control)
+    monkeypatch.setattr(gateway_run, "_start_gateway_start_cron_and_housekeeping", start_cron)
+    monkeypatch.setattr("gateway.overlap_restart.start_deferred_adapters", deferred)
+
+    async def fake_claim(runner, predecessor_pid, on_authoritative, **kwargs):
+        assert predecessor_pid == 4242
+        assert "control-socket" not in events and "cron" not in events
+        events.append("predecessor-exited")
+        await on_authoritative()
+        runner._shutdown_event.set()
+        return True
+
+    monkeypatch.setattr("gateway.overlap_restart.claim_when_predecessor_exits", fake_claim)
+    tail = {}
+
+    async def fake_tail(*args):
+        tail["control"] = args[1]
+        tail["cron_provider"] = args[3]
+        args[6].set()
+        args[7].join(timeout=1)
+        return True
+
+    monkeypatch.setattr(gateway_run, "_start_gateway_shutdown_tail", fake_tail)
+    monkeypatch.setattr("gateway.lifecycle_ledger.record_startup", lambda: events.append("lifecycle"))
+
+    assert await gateway_run.start_gateway(config=GatewayConfig(), verbosity=None)
+    replace.assert_not_awaited()
+    assert events == [
+        "hub-adapter-start", "predecessor-exited", "control-socket", "lifecycle", "cron", "systemd-watchdog",
+    ]
+    deferred.assert_awaited_once()
+    assert tail == {"control": control, "cron_provider": cron_provider}
+
+
 @pytest.mark.platforms("posix")
 def test_restart_control_and_pending_title_stay_on_prompt_owner(tmp_path):
     async def scenario():
@@ -339,7 +645,10 @@ async def test_overlap_successor_starts_before_predecessor_finishes_owned_work()
         if adapter.spawn_overlap_successor.await_count:
             break
         await asyncio.sleep(0.01)
-    adapter.spawn_overlap_successor.assert_awaited_once_with(via_service=False)
+    import os
+    adapter.spawn_overlap_successor.assert_awaited_once_with(
+        via_service=False, predecessor_pid=os.getpid(),
+    )
     secondary.spawn_overlap_successor.assert_not_awaited()
     secondary.mark_overlap_successor_ready.assert_called_once_with()
     runner.stop.assert_not_awaited()
