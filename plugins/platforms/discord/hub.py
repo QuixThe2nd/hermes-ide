@@ -239,7 +239,13 @@ class DiscordHubServer:
         self.socket_path.unlink(missing_ok=True)
 
     async def _disconnect_adapter_with_deadline(self, adapter: Any, context: str) -> None:
-        """Detach a wedged disconnect so it cannot block a same-token retry."""
+        """Stop the event producer before detachable transport/voice cleanup."""
+        # DiscordAdapter.disconnect() deliberately leaves voice before awaiting bot cancellation.
+        # Recovery cannot let that earlier step strand a reconnecting bot after the deadline.
+        adapter._disconnecting = True
+        bot_task = getattr(adapter, "_bot_task", None)
+        if bot_task is not None and not bot_task.done():
+            bot_task.cancel()
         task = asyncio.ensure_future(adapter.disconnect())
         try:
             done, _pending = await asyncio.wait(
