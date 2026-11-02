@@ -626,16 +626,14 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
                 })
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        if not self._reactions_enabled() or not event.message_id:
-            return
+        from gateway.run_drain_queue import serialize_drain_event
+
         with contextlib.suppress(Exception):
-            await self._call("rpc", {
-                "token_key": self._token_key, "method": "remove_reaction",
-                "message_id": event.message_id, "emoji": "👀",
-            })
-            emoji = {ProcessingOutcome.SUCCESS: "✅", ProcessingOutcome.FAILURE: "❌"}.get(outcome)
-            if emoji:
-                await self._call("rpc", {
-                    "token_key": self._token_key, "method": "add_reaction",
-                    "message_id": event.message_id, "emoji": emoji,
-                })
+            record = serialize_drain_event(self._event_session_key(event), event)
+            record["_gateway_replay_message_ids"] = list(
+                getattr(event, "_gateway_replay_message_ids", ())
+            )
+            record["_drain_snapshot_owned"] = getattr(event, "_drain_snapshot_owned", False); record["_gateway_processing_deferred"] = bool(
+                getattr(event, "_gateway_processing_deferred", False)
+            )
+            await self._rpc("on_processing_complete", record, outcome.value)

@@ -446,6 +446,23 @@ class DiscordHubServer:
         elif method == "claim_startup_resume_inbound" and len(args) > 1 and isinstance(args[1], dict):
             from gateway.session import SessionSource
             args[1] = SessionSource.from_dict(args[1])
+        elif method == "on_processing_complete" and len(args) == 2 and isinstance(args[0], dict):
+            from gateway.platforms.event import ProcessingOutcome
+            from gateway.run_drain_queue import deserialize_drain_event
+
+            record = args[0]
+            _session_key, event = deserialize_drain_event(record)
+            event._gateway_replay_message_ids = [
+                str(message_id) for message_id in record.get("_gateway_replay_message_ids", ())
+                if str(message_id)
+            ]
+            event._drain_snapshot_owned = bool(record.get("_drain_snapshot_owned"))
+            event._gateway_processing_deferred = bool(record.get("_gateway_processing_deferred"))
+            raw_message = self._raw_messages.get(f"{token_key}:{event.message_id}")
+            if raw_message is not None:
+                event.raw_message = raw_message
+            args[0] = event
+            args[1] = ProcessingOutcome(args[1])
         elif method == "join_voice_channel" and args and isinstance(args[0], dict):
             channel_id = int(args[0]["id"])
             channel = adapter._client.get_channel(channel_id)
