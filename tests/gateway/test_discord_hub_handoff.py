@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import pytest
@@ -305,6 +306,93 @@ def test_plain_second_gateway_still_refuses_live_pid(monkeypatch):
 
     assert gateway_run._start_gateway_claim_pid_file() is False
     acquire.assert_not_called()
+
+
+def test_hub_spawn_pins_the_checkout_venv_and_sanitizes_the_child_env(monkeypatch, tmp_path):
+    import subprocess
+    import gateway.restart as gateway_restart
+    from gateway.overlap_restart import OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV
+
+    checkout = tmp_path / "repo"
+    venv_bin = checkout / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").write_text("#!stub\n")
+    monkeypatch.setattr(gateway_restart, "detached_restart_spawn_blocked", lambda: False)
+    # Deterministic venv resolution regardless of whether this test checkout ships a .venv.
+    monkeypatch.setattr(
+        gateway_restart, "_replacement_interpreter",
+        lambda root: (str(venv_bin / "python"), venv_bin))
+    monkeypatch.setattr(
+        "tools.environments.local.served_profile_child_env",
+        lambda **kwargs: {
+            "PYTHONPATH": "/foreign/site-packages", "VIRTUAL_ENV": "/other/venv",
+            "PATH": "/other/venv/bin:/usr/bin:/bin", "HERMES_GATEWAY_MODE": "inherited",
+        },
+    )
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return SimpleNamespace(pid=5150)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    server = DiscordHubServer(tmp_path / "unused.sock")
+    result = run(server._spawn_gateway({
+        "hermes_home": str(tmp_path), "predecessor_pid": 4242,
+    }))
+
+    assert result == {"pid": 5150}
+    assert captured["argv"][0] == str(venv_bin / "python")
+    env = captured["env"]
+    # The cffi-class regression: a foreign VIRTUAL_ENV/PYTHONPATH inherited from the
+    # spawning process must not survive into the child env — that mixed site-packages
+    # gave one process pure-python cffi 2.0.0 plus a C _cffi_backend 2.1.1.
+    assert env["VIRTUAL_ENV"] == str(checkout / ".venv")
+    assert env["PATH"].startswith(str(venv_bin) + ":")
+    import plugins.platforms.discord.hub as hub_module
+    assert env["PYTHONPATH"] == str(Path(hub_module.__file__).resolve().parents[3])
+    assert "HERMES_GATEWAY_MODE" not in env
+    assert env[OVERLAP_SUCCESSOR_ENV] == "1"
+    assert env[OVERLAP_PREDECESSOR_PID_ENV] == "4242"
+
+
+def test_spawn_replacement_falls_back_to_current_interpreter_without_a_checkout_venv(tmp_path):
+    import sys as _sys
+    from gateway.restart import spawn_replacement_gateway
+
+    calls = []
+
+    def recording_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(pid=1)
+
+    spawn_replacement_gateway(str(tmp_path), popen=recording_popen)
+
+    argv, kwargs = calls[0]
+    assert argv[0] == _sys.executable
+    assert "checkout_venv_bin_dir" not in kwargs
+
+
+def test_spawn_replacement_uses_the_checkout_venv_interpreter(tmp_path):
+    from gateway.restart import spawn_replacement_gateway
+
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python = venv_bin / "python"
+    python.write_text("#!stub\n")
+
+    calls = []
+
+    def recording_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(pid=1)
+
+    spawn_replacement_gateway(str(tmp_path), popen=recording_popen)
+
+    argv, kwargs = calls[0]
+    assert argv[0] == str(python)
+    assert kwargs["checkout_venv_bin_dir"] == str(venv_bin)
 
 
 @pytest.mark.asyncio
