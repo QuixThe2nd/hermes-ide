@@ -97,6 +97,9 @@ class MessageEvent:
     # Process-local replay settlement hook. The drain queue binds its record/claim
     # identity before enqueue; base processing invokes it with the real outcome.
     _gateway_replay_completion: Any = field(default=None, init=False, repr=False, compare=False)
+    # Original durable inbound ids absorbed by replay dedup/media merges. These move
+    # with the completion callback so platform hooks can settle every accepted row.
+    _gateway_replay_message_ids: List[str] = field(default_factory=list, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
@@ -129,12 +132,25 @@ def transfer_replay_completion(
 
     Dedup and media merges keep an older event object. Each durable record still
     needs its own callback, so two replay owners on one consumer are chained in
-    arrival order. The finally keeps one faulty callback from suppressing the
+    arrival order. Their original inbound ids move with them, including ids from
+    earlier merges. The finally keeps one faulty callback from suppressing the
     other record's settlement; the processing boundary logs the failure.
     """
     callback = getattr(incoming, "_gateway_replay_completion", None)
     if consumer is incoming or not callable(callback):
         return consumer
+    aliases = list(getattr(consumer, "_gateway_replay_message_ids", ()))
+    absorbed_ids = [
+        *getattr(incoming, "_gateway_replay_message_ids", ()),
+        inbound_platform_message_id(incoming),
+    ]
+    for absorbed_id in absorbed_ids:
+        if absorbed_id:
+            alias = str(absorbed_id)
+            if alias not in aliases:
+                aliases.append(alias)
+    consumer._gateway_replay_message_ids = aliases
+    incoming._gateway_replay_message_ids = []
     existing = getattr(consumer, "_gateway_replay_completion", None)
     if existing is callback:
         combined = existing

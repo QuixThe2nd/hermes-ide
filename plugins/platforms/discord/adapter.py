@@ -4057,10 +4057,27 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # to the inbound id here: streamed/edited finals, fresh-final sends and media-only replies
             # carry no reply anchor (reply_to_mode "off" never does), so the send-path ledger writer
             # cannot mark the row and backfill would re-dispatch it on every reconnect (#113631).
+            # A replay absorbed into this event owns the same final; non-success outcomes never
+            # complete those aliases and leave their recovery rows retryable.
+            message_ids = list(dict.fromkeys(
+                [message_id]
+                + [str(alias) for alias in getattr(event, "_gateway_replay_message_ids", ()) if alias]
+            ))
+
             def _complete(conn):
-                conn.execute(
-                    "UPDATE discord_messages SET status='responded', replied=1, updated_at=? WHERE message_id=?",
-                    (now, message_id),
+                survivor = conn.execute(
+                    "SELECT response_message_id FROM discord_messages WHERE message_id=?",
+                    (message_id,),
+                ).fetchone()
+                response_message_id = survivor[0] if survivor else None
+                conn.executemany(
+                    """
+                    UPDATE discord_messages
+                       SET status='responded', replied=1,
+                           response_message_id=COALESCE(?, response_message_id), updated_at=?
+                     WHERE message_id=?
+                    """,
+                    [(response_message_id, now, absorbed_id) for absorbed_id in message_ids],
                 )
             self._with_discord_recovery_db(_complete)
             return
