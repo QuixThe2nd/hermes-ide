@@ -77,6 +77,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# --- Dot-source guard (part 1: detect) ---------------------------------------
+# Tests (and any embedding host) dot-source this file (`. install.ps1`) to get
+# at its FUNCTIONS. Only the definitions must enter the caller's session --
+# the install itself must never run, not even its side-effectful-looking
+# prologue (the 8.3 normalization below rewrites process env vars).
+# (Upstream eeb3da55 port) Dot-sourced files see InvocationName '.'; the flag
+# is captured HERE, at the top, because the prologue moved into
+# Initialize-ResolvedPaths below and the entry-time check alone no longer
+# precedes it.
+$script:IsDotSourced = $MyInvocation.InvocationName -eq "."
+# $PSBoundParameters inside a FUNCTION refers to the function's own binding,
+# so the script's binding is captured here, once, at script scope.
+$script:BoundParams = $PSBoundParameters
+
 # Suppress Invoke-WebRequest's per-chunk progress bar.  Windows PowerShell
 # 5.1's progress UI repaints synchronously on every received byte, which
 # pegs CPU on a single core and throttles downloads by 10-100x (a 57MB
@@ -335,48 +349,60 @@ function Set-LongProfileEnvVars {
 # Set-StrictMode before any stage starts. 'none' is the resolver's own value
 # for "nothing ran".
 $script:LastResolver = 'none'
-$script:NormalizedProfilePaths = Set-LongProfileEnvVars
 
-# Re-derive the install paths now that the env vars behind their defaults are
-# long. An explicitly passed -HermesHome / -InstallDir is normalized in place
-# rather than replaced, so a caller's choice is never overwritten by a default.
-# $PSBoundParameters is only meaningful at script scope, so this stays inline.
-if ($PSBoundParameters.ContainsKey('HermesHome')) {
-    $HermesHome = ConvertTo-LongPath $HermesHome
-} else {
-    $HermesHome = ConvertTo-LongPath $(
-        if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
-    )
-}
-if ($PSBoundParameters.ContainsKey('InstallDir')) {
-    $InstallDir = ConvertTo-LongPath $InstallDir
-} else {
-    $InstallDir = ConvertTo-LongPath $(
-        if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
-    )
-}
-if ($script:NormalizedProfilePaths) {
-    # Which paths the install actually settled on. Absent from every report of
-    # this bug class, and the whole question once a short alias is in play.
-    Write-PathDiag "resolved install paths: HermesHome=$HermesHome InstallDir=$InstallDir"
-}
+# (Upstream eeb3da55 port) A dot-source must not rewrite the caller's process
+# env, so the normalization prologue runs only on real entry: it lives in the
+# function below, called from the entry dispatch alongside the stage ladder.
+# Upstream's Initialize-ResolvedPaths shape, fork's inline comment prose and
+# fork's $HermesHome / $InstallDir script-scope style kept -- every downstream
+# fork stage reads the bare names, not upstream's $script:-prefixed copies.
+function Initialize-ResolvedPaths {
+    $script:NormalizedProfilePaths = Set-LongProfileEnvVars
 
-# Captured here, where the values are final, and emitted from the entry-point
-# dispatch at the bottom (alongside -ProtocolVersion / -Manifest) so
-# -ShowResolvedPaths exits before any stage runs.
-#
-# The report goes to STDOUT as JSON: on Windows a child's stderr does not
-# reliably reach a parent process -- three separate capture mechanisms each came
-# back empty on a windows-latest runner while stdout arrived intact -- and the
-# first question on any "installer says a path doesn't exist" report is which
-# paths it actually resolved.
-$script:ResolvedPathReport = @{
-    long_profile_root = (Get-LongProfileRoot)
-    normalized        = $script:NormalizedPathRewrites
-    resolver          = $script:LastResolver
-    temp              = $env:TEMP
-    hermes_home       = $HermesHome
-    install_dir       = $InstallDir
+    # Re-derive the install paths now that the env vars behind their defaults
+    # are long. An explicitly passed -HermesHome / -InstallDir is normalized
+    # in place rather than replaced, so a caller's choice is never
+    # overwritten by a default. The script's own $PSBoundParameters was
+    # captured at script scope ($script:BoundParams) because a function body
+    # sees its own binding, not the script's.
+    if ($script:BoundParams.ContainsKey('HermesHome')) {
+        $HermesHome = ConvertTo-LongPath $HermesHome
+    } else {
+        $HermesHome = ConvertTo-LongPath $(
+            if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
+        )
+    }
+    if ($script:BoundParams.ContainsKey('InstallDir')) {
+        $InstallDir = ConvertTo-LongPath $InstallDir
+    } else {
+        $InstallDir = ConvertTo-LongPath $(
+            if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
+        )
+    }
+    if ($script:NormalizedProfilePaths) {
+        # Which paths the install actually settled on. Absent from every
+        # report of this bug class, and the whole question once a short
+        # alias is in play.
+        Write-PathDiag "resolved install paths: HermesHome=$HermesHome InstallDir=$InstallDir"
+    }
+
+    # Captured here, where the values are final, and emitted from the
+    # entry-point dispatch at the bottom (alongside -ProtocolVersion /
+    # -Manifest) so -ShowResolvedPaths exits before any stage runs.
+    #
+    # The report goes to STDOUT as JSON: on Windows a child's stderr does not
+    # reliably reach a parent process -- three separate capture mechanisms
+    # each came back empty on a windows-latest runner while stdout arrived
+    # intact -- and the first question on any "installer says a path doesn't
+    # exist" report is which paths it actually resolved.
+    $script:ResolvedPathReport = @{
+        long_profile_root = (Get-LongProfileRoot)
+        normalized        = $script:NormalizedPathRewrites
+        resolver          = $script:LastResolver
+        temp              = $env:TEMP
+        hermes_home       = $HermesHome
+        install_dir       = $InstallDir
+    }
 }
 
 # ============================================================================
@@ -4826,12 +4852,21 @@ function Main {
 
 # Dot-sourcing loads the installer's real functions for isolated behavioral
 # tests without running an install. Normal script and `irm | iex` entry points
-# are unchanged.
-if ($MyInvocation.InvocationName -eq ".") {
+# are unchanged. (Upstream eeb3da55 port) The detection flag is captured at
+# the top of the script ($script:IsDotSourced) so a dot-source also skips the
+# 8.3 normalization prologue (Initialize-ResolvedPaths below) -- upstream's
+# part-1/part-2 guard split.
+if ($script:IsDotSourced) {
     return
 }
 
 try {
+    # The normalization prologue runs once per real entry, before any switch
+    # is honored, so every stage below sees long-form paths. Inside the try
+    # so a resolver failure surfaces through the structured JSON error frame
+    # in stage-driver mode.
+    Initialize-ResolvedPaths
+
     if ($Ensure -ne "") {
         if ($PSBoundParameters.ContainsKey("Stage")) {
             Write-Err "Cannot use -Ensure and -Stage simultaneously"
@@ -4845,7 +4880,7 @@ try {
         exit 0
     }
 
-    if ($ProtocolVersion) {
+    if (-not $script:IsDotSourced -and $ProtocolVersion) {
         Write-Output $InstallStageProtocolVersion
         exit 0
     }

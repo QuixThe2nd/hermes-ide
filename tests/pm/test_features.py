@@ -62,7 +62,9 @@ def test_installed_extras_reports_only_anchor_resolved(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     venv = tmp_path / "venv"
-    site = venv / "Lib" / "site-packages"
+    from hermes_cli.runtime_paths import site_packages
+
+    site = site_packages(venv)
     site.mkdir(parents=True)
     (site / "somepkg.py").write_text("x = 1\n", encoding="utf-8")
 

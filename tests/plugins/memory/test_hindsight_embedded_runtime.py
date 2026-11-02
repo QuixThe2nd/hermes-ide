@@ -78,9 +78,11 @@ def test_ensure_sideenv_short_circuits_when_current(side_root, monkeypatch):
     gen.mkdir(parents=True)
     (side_root / "active.json").write_text(json.dumps({"generation": "gen-1", "pins": rt._EXPECTED}), encoding="utf-8")
     (gen / _STATE).write_text(json.dumps({"pins": rt._EXPECTED}), encoding="utf-8")
-    scripts = gen / ".venv" / "Scripts"
-    scripts.mkdir(parents=True)
-    (scripts / "python.exe").write_bytes(b"")
+    from hermes_constants import venv_python_path
+
+    py = venv_python_path(gen / ".venv")
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_bytes(b"")
     monkeypatch.setattr(rt, "_uv_bridge", lambda venv: pytest.fail("bridge used for an up-to-date env"))
     assert rt.ensure_sideenv() == gen
 
@@ -166,12 +168,15 @@ def loopback_health():
 
 
 def _install_side_python(side_root, name="gen-1"):
-    """A minimal 'installed' generation: selection record + interpreter file."""
+    """A minimal 'installed' generation: selection record + interpreter file
+    (laid out by the canonical venv_python_path, so the test matches the
+    platform layout the runtime itself resolves)."""
+    from hermes_constants import venv_python_path
+
     gen = side_root / name
-    scripts = gen / ".venv" / "Scripts"
-    scripts.mkdir(parents=True, exist_ok=True)
+    py = venv_python_path(gen / ".venv")
+    py.parent.mkdir(parents=True, exist_ok=True)
     (side_root / "active.json").write_text(json.dumps({"generation": name}), encoding="utf-8")
-    py = scripts / "python.exe"
     py.write_bytes(b"")
     return py
 
