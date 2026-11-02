@@ -2108,7 +2108,7 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_refresh_bootstrap_cache_scripts", "_refresh_windows_gateway_launchers",
         "_relaunch_stopped_serves", "_restore_stashed_changes",
         "_resume_windows_gateways_after_update", "_run_logged_subprocess", "_run_pre_update_backup",
-        "_stash_local_changes_if_needed", "_stop_process_trees", "_sync_with_upstream_if_needed",
+        "_stash_local_changes_if_needed", "_stop_process_trees",
         "_venv_launcher_ancestors",
         "_wait_for_windows_update_gateway_exit", "_warn_orphaned_update_autostashes",
         "_write_update_incomplete_marker",

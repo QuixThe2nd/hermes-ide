@@ -33,7 +33,7 @@ def git_repo(tmp_path, monkeypatch):
     return repo_dir
 
 
-def _stub_git(monkeypatch, *, head=SHA_A, origin="https://github.com/NousResearch/hermes-agent.git"):
+def _stub_git(monkeypatch, *, head=SHA_A, origin="https://github.com/example/custom-hermes.git"):
     calls = []
 
     def fake_run(args, **kwargs):
@@ -56,14 +56,16 @@ def test_passive_check_uses_the_api_and_never_fetches(git_repo, monkeypatch):
     calls = _stub_git(monkeypatch, head=SHA_A)
     tip = MagicMock(return_value=SHA_B)
     monkeypatch.setattr(banner, "_github_branch_tip", tip)
-    monkeypatch.setattr(banner, "_github_compare_behind", lambda cur, tgt: 61)
+    monkeypatch.setattr(banner, "_github_compare_behind", lambda cur, tgt, slug: 61)
 
     assert banner.check_for_updates() == 61
-    tip.assert_called_once_with("nousresearch/hermes-agent", "main")
+    tip.assert_called_once_with("example/custom-hermes", "main")
     assert not any(c[1] in {"fetch", "ls-remote"} for c in calls)
 
     cached = json.loads((git_repo.parent / ".update_check").read_text())
     assert (cached["head"], cached["target"], cached["behind"]) == (SHA_A, SHA_B, 61)
+    assert (cached["source"], cached["repo"]) == (
+        "github.com/example/custom-hermes", "example/custom-hermes")
 
 
 def test_cache_is_daily_but_invalidated_when_head_moves(git_repo, monkeypatch):
@@ -78,7 +80,8 @@ def test_cache_is_daily_but_invalidated_when_head_moves(git_repo, monkeypatch):
 
     def write_cache(*, ts, head, behind):
         cache_file.write_text(json.dumps(
-            {"ts": ts, "behind": behind, "rev": None, "ver": __version__, "head": head}))
+            {"ts": ts, "behind": behind, "rev": None, "ver": __version__, "head": head,
+             "source": "github.com/example/custom-hermes"}))
 
     write_cache(ts=time.time() - banner._UPDATE_CHECK_CACHE_SECONDS + 60, head=SHA_A, behind=3)
     assert banner.check_for_updates() == 3

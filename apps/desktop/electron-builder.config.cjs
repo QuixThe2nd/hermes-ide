@@ -49,7 +49,7 @@ const { OUT_OF_STORE_PUBLISHER } = require('../../scripts/msix-shared.mjs')
 
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
 
-const [owner, repo] = (process.env.GITHUB_REPOSITORY || 'NousResearch/hermes-agent').split('/')
+const [owner, repo] = (process.env.GITHUB_REPOSITORY || 'QuixThe2nd/hermes-ide').split('/')
 if (!owner || !repo) {
   throw new Error(`invalid GITHUB_REPOSITORY ${process.env.GITHUB_REPOSITORY}`)
 }

@@ -238,22 +238,3 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
             )  # must not raise
 
         assert result is False
-
-    def test_upstream_remote_prompt_unicode_decode_error_falls_through_to_skip(
-        self, tmp_path
-    ):
-        from hermes_cli.update_cmd import _sync_with_upstream_if_needed
-
-        with patch(
-            "hermes_cli.update_cmd._has_upstream_remote", return_value=False
-        ), patch(
-            "hermes_cli.update_cmd._should_skip_upstream_prompt", return_value=False
-        ), patch(
-            "hermes_cli.update_cmd._add_upstream_remote"
-        ) as mock_add, patch(
-            "builtins.input",
-            side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
-        ):
-            _sync_with_upstream_if_needed(["git"], tmp_path)  # must not raise
-
-        mock_add.assert_not_called()

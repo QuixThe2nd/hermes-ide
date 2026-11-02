@@ -402,6 +402,32 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     _m()._reapply_plugin_python_dependencies()
 
 
+def _zip_archive_url(branch: str) -> str:
+    """Resolve the branch archive from the configured GitHub origin.
+
+    A source-only install without ``.git`` uses the independently maintained
+    Hermes IDE repository. A configured non-GitHub origin cannot be translated
+    to GitHub's archive API, so refuse rather than downloading another project.
+    """
+    from hermes_cli.banner import _canonical_github_remote
+    from hermes_cli.update_cmd import _m
+
+    slug = "quixthe2nd/hermes-ide"
+    if (_m().PROJECT_ROOT / ".git").exists():
+        origin_url = _m()._get_origin_url(["git"], _m().PROJECT_ROOT)
+        canonical = _canonical_github_remote(origin_url)
+        candidate = canonical.removeprefix("github.com/")
+        if not origin_url or candidate == canonical or candidate.count("/") != 1:
+            print("✗ ZIP fallback cannot resolve a GitHub archive from the configured origin:")
+            print(f"  {origin_url or '(origin is not configured)'}")
+            print("  Repair git or configure a GitHub origin, then re-run `hermes update`.")
+            _m().sys.exit(1)
+        slug = candidate
+    archive_url = f"https://github.com/{slug}/archive/refs/heads/{branch}.zip"
+    print(f"→ ZIP source: https://github.com/{slug}")
+    return archive_url
+
+
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windows_gateway_resume=None) -> bool:
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
     drivers causing 'Invalid argument'). Swaps the tree, then hands the rest of the run to an
@@ -425,7 +451,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windo
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
-    _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")
+    _download_and_swap_zip(branch, _zip_archive_url(branch))
     _sweep_bytecode_after_update(branch)
     from dataclasses import replace as _replace
     _hand_off_post_swap(
