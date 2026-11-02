@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from agent.async_utils import consume_detached_task_result
 from hermes_constants import get_default_hermes_root
 from gateway.overlap_restart import OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV
 
@@ -145,6 +146,7 @@ _PROCESSING_REACTION_EMOJI = "👀"
 # (4096) but per-generation sets are dropped wholesale on detach, so this only bounds a
 # long-lived single attachment against pathological RPC volume.
 _MAX_TRACKED_PROCESSING_REACTIONS = 4096
+_ADAPTER_DISCONNECT_TIMEOUT_SECONDS = 5.0
 
 
 def _send_result_dict(result: Any) -> Dict[str, Any]:
@@ -236,6 +238,28 @@ class DiscordHubServer:
         self._adapter_tokens.clear()
         self.socket_path.unlink(missing_ok=True)
 
+    async def _disconnect_adapter_with_deadline(self, adapter: Any, context: str) -> None:
+        """Detach a wedged disconnect so it cannot block a same-token retry."""
+        task = asyncio.ensure_future(adapter.disconnect())
+        try:
+            done, _pending = await asyncio.wait(
+                {task}, timeout=_ADAPTER_DISCONNECT_TIMEOUT_SECONDS)
+            if task in done:
+                await task
+            else:
+                logger.warning(
+                    "Discord hub %s cleanup timed out after %.1fs; continuing",
+                    context, _ADAPTER_DISCONNECT_TIMEOUT_SECONDS,
+                )
+        finally:
+            if not task.done():
+                task.cancel()
+                task.add_done_callback(consume_detached_task_result)
+            # Scoped-lock ownership is PID-based, and all hub adapters share one PID.
+            # Release and disarm the old instance before a replacement can acquire the
+            # token, so detached cleanup cannot unlink that replacement's lock later.
+            adapter._release_platform_lock()
+
     async def _attach_adapter(self, generation_id: str, config_data: Dict[str, Any], profile: str,
                               profile_routes: Optional[list] = None,
                               gate_credential: Optional[str] = None) -> None:
@@ -249,7 +273,7 @@ class DiscordHubServer:
         key = _token_key(config.token)
         profile_name = profile or "default"
         # One token has one lifecycle: a concurrent attach waits for either the
-        # live adapter or the failed attempt's complete teardown.
+        # live adapter or the failed attempt's bounded cleanup.
         async with self._adapter_locks.setdefault(key, asyncio.Lock()):
             if self._stopping:
                 raise RuntimeError("Discord hub is stopping")
@@ -294,7 +318,7 @@ class DiscordHubServer:
                 else:
                     self._adapter_routes[key] = previous_routes
                 try:
-                    await adapter.disconnect()
+                    await self._disconnect_adapter_with_deadline(adapter, "failed-attach")
                 except Exception:
                     logger.exception("Discord hub failed-attach cleanup failed")
                 raise
@@ -316,7 +340,7 @@ class DiscordHubServer:
                     # its gateway queues reconnect while this token lock holds teardown.
                     client.writer.close()
             try:
-                await adapter.disconnect()
+                await self._disconnect_adapter_with_deadline(adapter, "fatal-adapter")
             except Exception:
                 # The failed instance is already evicted, so a later attach can retry.
                 logger.exception("Discord hub fatal-adapter cleanup failed")
