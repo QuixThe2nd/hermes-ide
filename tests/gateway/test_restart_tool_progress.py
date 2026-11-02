@@ -1,11 +1,9 @@
-"""The ``restart`` tool renders no progress bubble — its confirmation
-message IS the prompt.
+"""The ``restart`` tool renders no progress bubble.
 
-The restart tool's user-facing rendering is the dedicated confirmation it
-sends (a Discord embed on capable adapters, plain text elsewhere), which
-blocks the turn until the requester replies. A ``♻️ restart`` progress
-bubble underneath it is pure duplication of the same ask — the same rule
-the ``clarify`` tool already follows (#52374).
+Restart lifecycle notices own the user-facing presentation after the tool
+queues the shared drain. A separate ``♻️ restart`` progress bubble adds no
+useful activity signal — the same display-suppression rule the ``clarify``
+tool already follows (#52374).
 """
 
 import importlib

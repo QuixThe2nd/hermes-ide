@@ -473,17 +473,6 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         return self._value(await self._rpc("create_handoff_thread", parent_chat_id, name))
 
-    async def send_restart_confirmation(self, chat_id: str, prompt: str, requester_user_id: str = "",
-                                        metadata: Optional[dict] = None) -> SendResult:
-        return self._send_result(await self._rpc(
-            "send_restart_confirmation", chat_id, prompt,
-            requester_user_id=requester_user_id, metadata=metadata))
-
-    async def settle_restart_confirmation(self, chat_id: str, message_id: str, *, shared: bool = False,
-                                          thread_id: Optional[str] = None) -> SendResult:
-        return self._send_result(await self._rpc(
-            "settle_restart_confirmation", chat_id, message_id, shared=shared, thread_id=thread_id))
-
     async def send_restart_wind_down_offer(self, *, channel_id: str, requester_user_id: str,
                                            generation: int, nonce: Optional[str],
                                            spec: Optional[dict] = None) -> Optional[str]:
@@ -496,21 +485,6 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
         return bool(self._value(await self._rpc(
             "finalize_restart_wind_down_offer", message_id=message_id,
             channel_id=channel_id, spec=spec)))
-
-    async def capture_restart_pending_thread_title(self, thread_id: str):
-        value = self._value(await self._rpc("capture_restart_pending_thread_title", thread_id))
-        if value is None:
-            return None
-        from plugins.platforms.discord.adapter import RestartPendingThreadTitle
-        if isinstance(value, dict):
-            return RestartPendingThreadTitle(**value)
-        return RestartPendingThreadTitle(*value)
-
-    async def begin_restart_pending_thread_title(self, restore) -> None:
-        await self._rpc("begin_restart_pending_thread_title", restore._asdict() if restore is not None else None)
-
-    async def end_restart_pending_thread_title(self, restore) -> None:
-        await self._rpc("end_restart_pending_thread_title", restore._asdict() if restore is not None else None)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:

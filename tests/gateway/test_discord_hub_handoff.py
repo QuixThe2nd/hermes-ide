@@ -640,30 +640,16 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
 
 
 @pytest.mark.platforms("posix")
-def test_restart_control_and_pending_title_stay_on_prompt_owner(tmp_path):
+def test_restart_wind_down_control_stays_on_prompt_owner(tmp_path):
     async def scenario():
-        from plugins.platforms.discord.adapter import RestartPendingThreadTitle
-
         server = DiscordHubServer(tmp_path / "discord-hub.sock")
 
         class FakeDiscordConnection:
-            def __init__(self):
-                self.title_calls = []
-
             async def disconnect(self):
                 pass
 
             async def send_restart_wind_down_offer(self, **kwargs):
                 return "offer-1"
-
-            async def capture_restart_pending_thread_title(self, thread_id):
-                return RestartPendingThreadTitle(thread_id=42, original_name="original")
-
-            async def begin_restart_pending_thread_title(self, restore):
-                self.title_calls.append(("begin", restore))
-
-            async def end_restart_pending_thread_title(self, restore):
-                self.title_calls.append(("end", restore))
 
         connection = FakeDiscordConnection()
 
@@ -698,12 +684,6 @@ def test_restart_control_and_pending_title_stay_on_prompt_owner(tmp_path):
             }
             clients[0].gateway_runner.accept_restart_wind_down_opt_in.assert_awaited_once_with(**params)
             clients[1].gateway_runner.accept_restart_wind_down_opt_in.assert_not_awaited()
-
-            captured = await clients[0].capture_restart_pending_thread_title("42")
-            assert captured == RestartPendingThreadTitle(thread_id=42, original_name="original")
-            await clients[0].begin_restart_pending_thread_title(captured)
-            await clients[0].end_restart_pending_thread_title(captured)
-            assert connection.title_calls == [("begin", captured), ("end", captured)]
         finally:
             await asyncio.gather(*(client.disconnect() for client in clients), return_exceptions=True)
             await server.stop()

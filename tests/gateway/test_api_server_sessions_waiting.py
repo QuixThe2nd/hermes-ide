@@ -2,9 +2,9 @@
 
 Mission Control's "Your turn" inbox needs one bounded, authenticated,
 profile-scoped request that names every session of THIS profile parked on
-an explicit wait: API-run clarifies, native gateway clarifies, and native
-restart confirmations. These tests prove the endpoint's ownership rules
-against the real adapter and the real process-wide clarify registry:
+an explicit wait: API-run clarifies and native gateway clarifies. These
+tests prove the endpoint's ownership rules against the real adapter and
+the real process-wide clarify registry:
 
 - the answer carries ONLY canonical session ids and a wait kind — never a
   question, choices, clarify_id, or run_id — and confers no ability to
@@ -266,43 +266,41 @@ class TestNativeWaits:
     async def test_native_owned_entry_appears_with_its_kind(self, adapter):
         app = _create_waiting_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            # What gateway/run.py and plugins/gateway_restart/tool.py do
-            # in this same process when a native turn arms a wait.
+            # Native turns register through this same process-wide registry.
             clarify_gateway.register(
-                clarify_id="nat_restart",
+                clarify_id="nat_clarify",
                 session_key="telegram:42",  # routing key, NOT the id
-                question="Type restart to confirm",
-                choices=None,
+                question="Continue?",
+                choices=["Yes", "No"],
                 owner_profile="default",
-                owner_session_id="mc_native_restart",
-                wait_kind="restart",
+                owner_session_id="mc_native_clarify",
             )
             rows = await _wait_for_waiting(
                 cli,
                 lambda rows: any(
-                    r["session_id"] == "mc_native_restart" for r in rows))
+                    r["session_id"] == "mc_native_clarify" for r in rows))
             assert rows == [
-                {"session_id": "mc_native_restart", "kind": "restart"},
+                {"session_id": "mc_native_clarify", "kind": "clarify"},
             ]
 
             # The per-session clarify GET stays empty for native waits:
             # the composer never sees a native prompt to answer.
             native_get = await cli.get(
-                "/api/sessions/mc_native_restart/clarify")
+                "/api/sessions/mc_native_clarify/clarify")
             assert native_get.status == 200
             assert (await native_get.json())["pending_clarify"] is None
 
             # And the POST cannot consume it: no API-run registration
             # exists, so even the true clarify_id fails closed.
             stolen = await cli.post(
-                "/api/sessions/mc_native_restart/clarify",
-                json={"clarify_id": "nat_restart", "response": "restart"})
+                "/api/sessions/mc_native_clarify/clarify",
+                json={"clarify_id": "nat_clarify", "response": "Yes"})
             assert stolen.status == 409
             # the native wait is untouched — still pending, still waiting
-            assert clarify_gateway.get_pending_entry("nat_restart") is not None
+            assert clarify_gateway.get_pending_entry("nat_clarify") is not None
             rows = await _get_waiting(cli)
             assert rows == [
-                {"session_id": "mc_native_restart", "kind": "restart"},
+                {"session_id": "mc_native_clarify", "kind": "clarify"},
             ]
 
     @pytest.mark.asyncio

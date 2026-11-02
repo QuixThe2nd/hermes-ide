@@ -1,12 +1,11 @@
 """``/bg`` and its executor worker inside the restart accounting (#77184).
 
-``_background_tasks`` used to be invisible to ``_active_work_count()`` and
-to the restart tool's confirmation check, and cancelling the /bg coroutine
-only cancelled the asyncio view of its executor work — the worker thread
-kept running while every count read zero. These regressions pin all three
-sides: a pending /bg blocks the count, a cancelled /bg with a live worker
-stays counted through the deferred-worker registry, and the worker's
-delayed completion is what finally unblocks it.
+``_background_tasks`` used to be invisible to ``_active_work_count()``, and
+cancelling the /bg coroutine only cancelled the asyncio view of its executor
+work — the worker thread kept running while every count read zero. These
+regressions pin all three sides: a pending /bg blocks the count, a cancelled
+/bg with a live worker stays counted through the deferred-worker registry,
+and the worker's delayed completion is what finally unblocks it.
 """
 
 import asyncio
@@ -15,7 +14,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import plugins.gateway_restart.tool as restart_tool
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
@@ -141,44 +139,3 @@ async def test_delayed_worker_completion_finally_unblocks_the_count():
     assert worker not in runner._deferred_agent_workers
     assert runner._active_deferred_agent_worker_count() == 0
     assert runner._authoritative_active_work_count() == 0
-
-
-# ── the restart tool's confirmation sees the same accounting ────────────────
-
-
-def test_pending_bg_keeps_the_exact_word_confirmation():
-    """The calling session is the only RUNNING agent, but a pending /bg
-    beside it is work the timing gate exists for — skipping the
-    confirmation requires provably nothing else in flight."""
-    runner, _adapter = make_restart_runner()
-    runner._running_agents = {"tg-42": MagicMock()}
-    runner._background_tasks.add(_pending_future())
-
-    assert restart_tool._session_is_only_active_work(runner, "tg-42") is False
-    assert restart_tool._other_active_work_in_flight(runner, "tg-42") is True
-
-
-def test_cancelled_bg_with_live_worker_keeps_the_confirmation():
-    """The /bg coroutine is gone from ``_background_tasks`` but its executor
-    worker is still running — the confirmation must stay."""
-    runner, _adapter = make_restart_runner()
-    runner._running_agents = {"tg-42": MagicMock()}
-    worker = concurrent.futures.Future()
-    assert worker.set_running_or_notify_cancel() is True
-    runner._track_deferred_agent_worker(worker, MagicMock())
-
-    assert restart_tool._session_is_only_active_work(runner, "tg-42") is False
-    assert restart_tool._other_active_work_in_flight(runner, "tg-42") is True
-
-
-def test_bg_delayed_completion_restores_the_only_session_skip():
-    runner, _adapter = make_restart_runner()
-    runner._running_agents = {"tg-42": MagicMock()}
-    runner._background_tasks.add(_pending_future())
-    assert restart_tool._session_is_only_active_work(runner, "tg-42") is False
-
-    # The background task finishes — now the requester really is alone and
-    # the ping has nothing to time the bounce around.
-    runner._background_tasks.clear()
-    assert restart_tool._session_is_only_active_work(runner, "tg-42") is True
-    assert restart_tool._other_active_work_in_flight(runner, "tg-42") is False

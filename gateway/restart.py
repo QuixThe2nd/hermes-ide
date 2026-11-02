@@ -395,7 +395,7 @@ def _restart_notify_payload(
 async def queue_user_restart(
     runner: Any, source: Optional[SessionSource], message_id: Optional[str]
 ) -> dict:
-    """Queue a confirmed user-requested restart — the ONE shared ``/restart`` sequence.
+    """Queue a user-requested restart — the ONE shared ``/restart`` sequence.
 
     Every user-restart entry point (the ``/restart`` slash command and the
     agent-callable ``restart`` tool) funnels through this helper so their
@@ -503,33 +503,6 @@ async def queue_user_restart(
         via_service = user_restart_via_service()
         started = runner.request_restart(detached=not via_service, via_service=via_service)
 
-        # This queued restart supersedes every OTHER pending restart gate in the
-        # process: their confirm waits are moot — the bounce happens no matter
-        # what their requesters reply — and resolving them HERE, with the
-        # distinguished token and only AFTER the restart is committed, lets each
-        # waiting restart tool return the truthful shared-consent result
-        # (success: the restart is happening via this chat's consent) while its
-        # session is still running (the natural-wait drain then collects the
-        # turn normally instead of forcing it). AFTER matters: an uncommitted
-        # setup must never settle a sibling wait — if request_restart throws or
-        # rolls its setup back above, every sibling wait stays pending — and
-        # an already-active restart settles them just the same. The sweep
-        # touches only restart-kind waits; the confirming gate's own entry is
-        # already resolved by its real reply, and first-writer-wins keeps it
-        # that way.
-        try:
-            from tools.clarify_gateway import resolve_restart_waits_superseded
-
-            superseded_gates = resolve_restart_waits_superseded()
-        except Exception as exc:
-            superseded_gates = 0
-            logger.debug("Restart queue: superseded-gate sweep failed: %s", exc)
-        if superseded_gates:
-            logger.info(
-                "Restart queue: %d pending restart gate(s) superseded by this restart",
-                superseded_gates,
-            )
-
         return {
             "status": "restarting" if started else "already_in_progress",
             "active_agents": active_agents,
@@ -541,163 +514,16 @@ async def queue_user_restart(
         restart_preflight.release_restart_preflight(preflight_attempt)
 
 
-# ── superseded restart gates: shared consent, one resume-seam note ───────────
-#
-# When a confirmed restart queues while OTHER restart gates' confirm-waits
-# are still pending, the drain resolves those waits with the distinguished
-# ``tools.clarify_gateway.SUPERSEDED_RESPONSE`` token and each waiting
-# ``restart`` tool answers with the exact JSON below — ``success: true``,
-# ``status: "restarting"``, ``consent: "shared"``: the restart IS happening,
-# via the other chat's consent, so the result is never "cancelled" (which
-# would claim a reply that never arrived) and never a failure. The constants
-# live here (the module that owns the queue sequence) so the plugin emitting
-# the result and the resume seam annotating it share ONE source of truth and
-# cannot drift.
-
-SHARED_RESTART_STATUS = "restarting"
-
-SHARED_RESTART_CONSENT = "shared"
-
-SHARED_RESTART_EXPLANATION = (
-    "The gateway restart is proceeding via another chat's confirmed restart, "
-    "which queued while this confirmation was still waiting — this gate "
-    "shares that chat's consent."
-)
-
-# The exact JSON fields the restart tool emits for a superseded gate. The
-# resume seam matches tool rows on BOTH so only the tool's own result —
-# never a lookalike another tool happened to echo, and never a normal
-# restart result (which also says "status":"restarting" but carries no
-# "consent":"shared") — is annotated.
-SUPERSEDED_RESTART_RESULT_MARKER = f'"consent":"{SHARED_RESTART_CONSENT}"'
-
-# Pre-upgrade transcripts carry the ORIGINAL superseded result (success:false,
-# status:"superseded"). The resume seam must keep annotating those historical
-# rows too — they describe the same bounced wait — so the old markers stay
-# matched verbatim alongside the shared-consent ones. Never rewritten: only
-# matched.
-LEGACY_SUPERSEDED_RESTART_STATUS = "superseded"
-
-LEGACY_SUPERSEDED_RESTART_ERROR = (
-    "Gateway restart was queued by another confirmed restart while this "
-    "confirmation was still waiting. The gateway restarted without this "
-    "gate's confirmation."
-)
-
-LEGACY_SUPERSEDED_RESTART_RESULT_MARKER = (
-    f'"status":"{LEGACY_SUPERSEDED_RESTART_STATUS}"'
-)
-
-# The resume-seam note's own prefix doubles as its idempotency mark: a row
-# already carrying it is never annotated twice.
-SUPERSEDED_RESTART_NOTE_PREFIX = "[system] The gateway was restarted"
-
-
-def is_superseded_restart_tool_result(content: object) -> bool:
-    """True when *content* is the restart tool's shared-consent result JSON.
-
-    Both markers — the ``"consent":"shared"`` field and the shared-consent
-    explanation text — must appear, so a normal (non-shared) restart result
-    or a lookalike echo is never matched. A LEGACY superseded result
-    (pre-upgrade transcripts: ``status:"superseded"`` plus its exact error
-    text) matches on the same two-marker contract.
-    """
-    text = content if isinstance(content, str) else ""
-    return (
-        SUPERSEDED_RESTART_RESULT_MARKER in text
-        and SHARED_RESTART_EXPLANATION in text
-    ) or (
-        LEGACY_SUPERSEDED_RESTART_RESULT_MARKER in text
-        and LEGACY_SUPERSEDED_RESTART_ERROR in text
-    )
-
-
 def restart_committed(runner: Any) -> bool:
     """True when *runner* already has a committed restart (queued or draining).
 
-    The authoritative answer the ``restart`` tool rechecks after registering
-    a confirm wait — read on the gateway loop so it can never observe a
-    half-open queue sequence — and settles its own wait as shared consent
-    when covered, instead of waiting on (or prompting for) a consent the
-    committed restart already provides. ``_restart_requested`` only: it is
-    set BEFORE the setup/rollback window, so it is authoritative only when
-    read on the gateway loop after that synchronous transaction finishes;
-    failed setup clears it. ``_draining`` alone is a generic shutdown (signal,
-    supervisor stop) that never carried restart consent.
+    Read on the gateway loop so callers cannot observe a half-open queue
+    sequence. ``_restart_requested`` is set BEFORE the setup/rollback window,
+    so it is authoritative only after that synchronous transaction finishes;
+    failed setup clears it. ``_draining`` alone may instead be a generic
+    shutdown (signal or supervisor stop).
     """
     return bool(getattr(runner, "_restart_requested", False))
-
-
-def _iso8601_utc(value: object) -> str:
-    """Best-effort ISO 8601 UTC stamp: datetime or epoch in, ``...Z`` out.
-
-    ``None`` (or anything unparseable) stamps "now" — the caller's best
-    available proxy for the bounce it is naming.
-    """
-    from datetime import datetime, timezone
-
-    moment = None
-    if isinstance(value, datetime):
-        moment = value
-    elif isinstance(value, (int, float)) and not isinstance(value, bool):
-        try:
-            moment = datetime.fromtimestamp(float(value), tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            moment = None
-    if moment is None:
-        moment = datetime.now(timezone.utc)
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
-        "+00:00", "Z"
-    )
-
-
-def superseded_restart_resume_note(restarted_at: object = None) -> str:
-    """The one-line bounce note a resumed shared-consent gate's result carries.
-
-    The shared-consent result itself was computed as the bounce began —
-    truthful that the restart was happening via another chat's consent, stale
-    about everything since. This line names the bounce with a timestamp so
-    the resumed model cannot treat the pre-restart result as the last word.
-    """
-    return (
-        f"{SUPERSEDED_RESTART_NOTE_PREFIX} at {_iso8601_utc(restarted_at)} by "
-        "another chat's shared consent while this confirmation was pending — "
-        "the gateway has since restarted; this result described the "
-        "pre-restart state."
-    )
-
-
-def annotate_superseded_restart_tail(rows: list, *, restarted_at: object = None) -> int:
-    """Suffix the bounce note onto superseded restart results in a transcript tail.
-
-    Operates on the model-facing history rows of a FORCED-resume turn and
-    only on the trailing contiguous tool rows — the final interrupted batch,
-    the same tail :func:`gateway.forced_resume_replay.build_victim_replay_plan`
-    walks. Matching rows keep their original content and gain one appended
-    line (the note rides the EXISTING tool message: no synthetic user or
-    system row, no new persistence pipeline, role alternation untouched).
-    Returns how many rows were annotated; a second pass over the same rows
-    annotates nothing (the note prefix is the idempotency mark).
-    """
-    if not isinstance(rows, list):
-        return 0
-    note = superseded_restart_resume_note(restarted_at)
-    annotated = 0
-    for row in reversed(rows):
-        if not isinstance(row, dict) or row.get("role") != "tool":
-            break
-        content = row.get("content")
-        if not isinstance(content, str):
-            continue
-        if SUPERSEDED_RESTART_NOTE_PREFIX in content:
-            continue
-        if not is_superseded_restart_tool_result(content):
-            continue
-        row["content"] = f"{content}\n{note}"
-        annotated += 1
-    return annotated
 
 
 def _seconds(value: object, fallback: float = 0.0) -> float:
