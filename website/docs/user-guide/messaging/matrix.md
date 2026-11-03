@@ -129,6 +129,61 @@ Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@a
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
 :::
 
+### Inbox Rooms: One Private Chat Per Opening Message
+
+`matrix.inbox_rooms` opts specific rooms into email-style intake. Each authorized,
+new top-level text or media message opens one separate private room instead of a
+synthetic Matrix thread:
+
+```yaml
+matrix:
+  allowed_users:
+    - "@alice:matrix.example.org"
+  allowed_rooms:
+    - "!inbox:matrix.example.org"
+    - "!requests:matrix.example.org"
+  inbox_rooms:
+    "!inbox:matrix.example.org": null                         # no parent space
+    "!requests:matrix.example.org": "!team:matrix.example.org" # optional space
+```
+
+The bot needs permission to create rooms and invite the sender. For an optional
+parent space, it also needs permission to send `m.space.child` state in that
+space. A space-permission failure is reported in the acknowledgement but does
+not discard the private conversation.
+
+For each opening message, Hermes:
+
+- creates an invite-only direct room and invites the originating human;
+- gives it a generic label based only on the media kind, never message contents;
+- sends a link back to the original event in the child room, then acknowledges
+  the opening message with the child-room link in the inbox;
+- delivers the original text, media, event ID, and context to the child session;
+- keeps the assistant response and later follow-ups in that child room, without
+  creating a synthetic thread.
+
+Inbox messages do not require a mention. Existing sender authorization and room
+allowlists still apply, and authorization is checked **before** room creation.
+Edits, replies (including Matrix thread replies), commands, notices, self/bridge
+messages, and unauthorized senders do not create child rooms. Commands and other
+excluded events keep their existing non-inbox behavior. A reply inside a child
+continues that child's session and does not open another room or synthetic
+thread.
+
+The root-event mapping and delivery checkpoints are stored in the active
+profile's `platforms/matrix/inbox-routes.db` and mirrored without message
+contents to bot-owned Matrix account data. Replayed events and gateway restarts
+reuse the existing child. If creation ended uncertainly before a child mapping
+could be recorded, Hermes fails closed rather than risk a duplicate room; send a
+new top-level message after checking the gateway logs. An unused private room
+can remain if the homeserver created it immediately before a persistence or
+network failure.
+
+Encrypted inbox messages require an active E2EE client. Hermes verifies the
+source room's encryption state and creates the child with the same Matrix
+encryption algorithm. It never responds to an encrypted opening by silently
+creating an unencrypted child or falling back to an inbox thread.
+
 ### Project Room Isolation
 
 If you use the same Matrix bot in multiple project rooms, configure stable

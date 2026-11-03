@@ -18,7 +18,7 @@ import re
 import time
 from contextlib import suppress
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply
+from gateway.platforms.base import DeferredReply, EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
 from gateway.run_inbound_unauthorized import (
@@ -703,7 +703,7 @@ class GatewayInboundMixin:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
                 self._queue_or_replace_pending_event(_quick_key, event)
-            return (
+            return DeferredReply(
                 f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                 if queue_during_drain
                 else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
@@ -1312,7 +1312,7 @@ class GatewayInboundMixin:
             # only fall to zero. Reversible.
             if self._external_drain_active:
                 logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
-                return (
+                return DeferredReply(
                     "⏳ This agent is draining for a maintenance action and isn't "
                     "accepting new turns right now. It'll be back in a moment — "
                     "please resend shortly."
@@ -1348,7 +1348,7 @@ class GatewayInboundMixin:
                     "the user must resend",
                     _quick_key, exc.session_id,
                 )
-                return (
+                return DeferredReply(
                     "⏳ Another turn is still running on this session. To "
                     "protect the transcript, this message was not processed. "
                     "Wait for the active turn to finish, then resend it."
@@ -1740,6 +1740,8 @@ class GatewayInboundMixin:
 
     async def _mark_durable_active_turn(self, event: "MessageEvent", session_key: str) -> bool:
         """Persist the exact resolved routing key for this running turn."""
+        event._gateway_turn_admitted = True
+        event._gateway_processing_deferred = False
         try:
             token = await self.async_session_store.mark_turn_active(session_key)
         except Exception as exc:
