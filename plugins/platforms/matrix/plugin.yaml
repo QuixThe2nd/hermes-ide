@@ -6,8 +6,8 @@ description: >
   Matrix gateway adapter for Hermes Agent.
   Connects to a Matrix homeserver via mautrix (with optional E2EE) and relays
   messages between Matrix rooms/DMs and the Hermes agent. Supports threads,
-  HTML/markdown rendering, native media uploads, mention gating, free-response
-  rooms, and per-room allowlists.
+  opt-in one-private-room-per-message inboxes, HTML/markdown rendering, native
+  media uploads, mention gating, free-response rooms, and per-room allowlists.
 author: NousResearch
 requires_env:
   - name: MATRIX_HOMESERVER
