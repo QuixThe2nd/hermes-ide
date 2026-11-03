@@ -4,7 +4,17 @@
 
 # Hermes IDE ☤
 
-A developer edition of [Hermes Agent](https://github.com/NousResearch/hermes-agent): a Hermes that can maintain codebases, with extra tooling and gateway behaviour, kept current with upstream (auto-synced hourly). Everything lands via PR with full CI.
+Hermes IDE is an independently maintained fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent), building a developer-focused agent harness with extra tooling and gateway behaviour.
+
+## Diverging from upstream
+
+This repository is no longer kept in sync with NousResearch/hermes-agent. Automatic upstream imports have stopped, and Hermes IDE follows its own development direction. Updates come from this repository, or an explicitly configured origin, rather than pulling in Nous changes. Differences from upstream are intentional, not a backlog to catch up on.
+
+The plan is to replace the inherited implementation one subsystem at a time while keeping the application usable. Starting from a working agent lets us preserve useful behaviour and test replacements against real workflows, instead of rebuilding everything and rediscovering the same edge cases. We keep what works until its replacement is ready; we do not need a complete rewrite before we can improve the system.
+
+The long-term goal is an independent harness with no remaining upstream implementation code. That is a direction, not a claim about today's codebase: substantial inherited code remains, and moving or renaming it does not make it a new implementation. Features, configuration and architecture will increasingly differ, so upstream documentation and compatibility should not be assumed to carry over unchanged.
+
+Nous Research and the Hermes contributors built the foundation this project started from. We retain that history and the applicable license, copyright and attribution notices as the codebase evolves.
 
 Stock Hermes needs a lot of config. It does not arrive wheels-included, so you spend a long time wiring providers, channels, memory, notifications, a home server, and skills before it feels like a working assistant. A fresh Hermes also starts off stupid, and it only slowly learns: skills from experience, memory of who you are, your conventions, the shape of your homelab. Learning is the point of Hermes, but day one is bare.
 
@@ -172,7 +182,9 @@ On Discord, automatic context compression reports as a single tool-style status 
 
 The usage-proxy ledger ships with a read-only web dashboard in `apps/usage-proxy-webui`: one shared, URL-persisted filter state (time range, harness, provider, model, chat type, searchable chat, route, outcome) narrows every card, chart, breakdown and event list at once, with drill-down from per-chat/per-harness rows and the model donut. Hermes's own routed transports name the chat each request serves (`X-Usage-Chat-*` headers, validated and stripped before anything reaches the provider): gateway chats attribute to their platform chat (threads stay distinct), cron runs to their durable job, CLI/TUI sessions to their session id — and rows without recorded identity stay an explicit `Unknown` rather than being guessed. The chart stacks by harness/model/chat/chat-type plus input/output and cached/uncached modes; the per-chat table sorts by requests and token splits. Model names carry their provider's brand — an inline SVG logo (OpenAI, Anthropic, xAI, OpenRouter from Simple Icons; clean initial badges for Z.ai and Kimi) beside every model name on the donut legend, model chart mode and events table, with the brand colour driving donut slices and per-model series; unknown providers keep the neutral palette, and caller chips carry matching identity colours — hermes blue, Claude orange for claude-code, teal for the hindsight family — with unknown callers keeping the rank palette. Python stdlib only, no external assets, binds loopback by default (`python3 server.py --port 9136`).
 
-For the upstream project, see [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). Everything below this paragraph is upstream's README.
+## Inherited upstream documentation
+
+The material below is retained from [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) as a historical reference, not a promise of feature or configuration parity. Its installation commands target Nous Hermes, not Hermes IDE. Use this repository's documentation and [issue tracker](https://github.com/QuixThe2nd/hermes-ide/issues) for fork-specific behaviour and support.
 
 ---
 
