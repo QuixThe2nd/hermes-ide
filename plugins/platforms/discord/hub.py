@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from agent.async_utils import consume_detached_task_result
 from hermes_constants import get_default_hermes_root
 from gateway.overlap_restart import OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV
 
@@ -145,6 +146,7 @@ _PROCESSING_REACTION_EMOJI = "👀"
 # (4096) but per-generation sets are dropped wholesale on detach, so this only bounds a
 # long-lived single attachment against pathological RPC volume.
 _MAX_TRACKED_PROCESSING_REACTIONS = 4096
+_ADAPTER_DISCONNECT_TIMEOUT_SECONDS = 5.0
 
 
 def _send_result_dict(result: Any) -> Dict[str, Any]:
@@ -191,6 +193,7 @@ class DiscordHubServer:
         self._clients: Dict[str, _Client] = {}
         self._adapters: Dict[str, Any] = {}
         self._adapter_tokens: Dict[str, str] = {}
+        self._adapter_locks: Dict[str, asyncio.Lock] = {}
         self._adapter_profiles: Dict[str, set[str]] = {}
         self._adapter_routes: Dict[str, list] = {}
         self._raw_messages: "OrderedDict[str, Any]" = OrderedDict()
@@ -235,6 +238,34 @@ class DiscordHubServer:
         self._adapter_tokens.clear()
         self.socket_path.unlink(missing_ok=True)
 
+    async def _disconnect_adapter_with_deadline(self, adapter: Any, context: str) -> None:
+        """Stop the event producer before detachable transport/voice cleanup."""
+        # DiscordAdapter.disconnect() deliberately leaves voice before awaiting bot cancellation.
+        # Recovery cannot let that earlier step strand a reconnecting bot after the deadline.
+        adapter._disconnecting = True
+        bot_task = getattr(adapter, "_bot_task", None)
+        if bot_task is not None and not bot_task.done():
+            bot_task.cancel()
+        task = asyncio.ensure_future(adapter.disconnect())
+        try:
+            done, _pending = await asyncio.wait(
+                {task}, timeout=_ADAPTER_DISCONNECT_TIMEOUT_SECONDS)
+            if task in done:
+                await task
+            else:
+                logger.warning(
+                    "Discord hub %s cleanup timed out after %.1fs; continuing",
+                    context, _ADAPTER_DISCONNECT_TIMEOUT_SECONDS,
+                )
+        finally:
+            if not task.done():
+                task.cancel()
+                task.add_done_callback(consume_detached_task_result)
+            # Scoped-lock ownership is PID-based, and all hub adapters share one PID.
+            # Release and disarm the old instance before a replacement can acquire the
+            # token, so detached cleanup cannot unlink that replacement's lock later.
+            adapter._release_platform_lock()
+
     async def _attach_adapter(self, generation_id: str, config_data: Dict[str, Any], profile: str,
                               profile_routes: Optional[list] = None,
                               gate_credential: Optional[str] = None) -> None:
@@ -246,34 +277,79 @@ class DiscordHubServer:
         if not config.token:
             raise RuntimeError("Discord hub attach has no bot token")
         key = _token_key(config.token)
-        self._adapter_profiles.setdefault(key, set()).add(profile or "default")
-        routes = parse_profile_routes(profile_routes)
-        if routes:
-            merged = {(route.name, route.profile, route.bot_profile): route
-                      for route in [*self._adapter_routes.get(key, []), *routes]}
-            self._adapter_routes[key] = sorted(
-                merged.values(), key=lambda route: route.specificity, reverse=True)
-        if key in self._adapters:
+        profile_name = profile or "default"
+        # One token has one lifecycle: a concurrent attach waits for either the
+        # live adapter or the failed attempt's bounded cleanup.
+        async with self._adapter_locks.setdefault(key, asyncio.Lock()):
+            if self._stopping:
+                raise RuntimeError("Discord hub is stopping")
+            self._adapter_profiles.setdefault(key, set()).add(profile_name)
+            routes = parse_profile_routes(profile_routes)
+            previous_routes = self._adapter_routes.get(key)
+            if routes:
+                merged = {(route.name, route.profile, route.bot_profile): route
+                          for route in [*self._adapter_routes.get(key, []), *routes]}
+                self._adapter_routes[key] = sorted(
+                    merged.values(), key=lambda route: route.specificity, reverse=True)
+            if key in self._adapters:
+                return
+            adapter = DiscordAdapter(config)
+            adapter._owner_profile = None
+            # The attaching gateway resolved the owning profile's judge credential under
+            # that profile's secret scope; pin it before connect() so the hub-side
+            # adapter never falls back to this hub process's (unscoped, possibly
+            # default-profile) env. "" pins "no key" — fail closed, not env fallback.
+            adapter._hub_gate_credential = str(gate_credential or "")
+            adapter.gateway_runner = _HubProfileResolver(self, key)
+            adapter.handle_message = self._make_inbound_handler(adapter, key)
+            adapter._fatal_error_handler = (
+                lambda failed: self._handle_adapter_fatal_error(key, failed))
+            try:
+                connected = await adapter.connect()
+                if not connected:
+                    raise RuntimeError(
+                        getattr(adapter, "_fatal_error_message", None) or "Discord connection failed")
+                if self._stopping:
+                    raise RuntimeError("Discord hub is stopping")
+                self._adapters[key] = adapter
+                self._adapter_tokens[key] = config.token
+            except BaseException:
+                profiles = self._adapter_profiles.get(key)
+                if profiles is not None:
+                    profiles.discard(profile_name)
+                    if not profiles:
+                        self._adapter_profiles.pop(key, None)
+                if previous_routes is None:
+                    self._adapter_routes.pop(key, None)
+                else:
+                    self._adapter_routes[key] = previous_routes
+                try:
+                    await self._disconnect_adapter_with_deadline(adapter, "failed-attach")
+                except Exception:
+                    logger.exception("Discord hub failed-attach cleanup failed")
+                raise
+
+    async def _handle_adapter_fatal_error(self, token_key: str, adapter: Any) -> None:
+        """Evict a failed adapter and make its gateways use their normal reconnect path."""
+        if not adapter.fatal_error_retryable:
             return
-        adapter = DiscordAdapter(config)
-        adapter._owner_profile = None
-        # The attaching gateway resolved the owning profile's judge credential under
-        # that profile's secret scope; pin it before connect() so the hub-side
-        # adapter never falls back to this hub process's (unscoped, possibly
-        # default-profile) env. "" pins "no key" — fail closed, not env fallback.
-        adapter._hub_gate_credential = str(gate_credential or "")
-        adapter.gateway_runner = _HubProfileResolver(self, key)
-        adapter.handle_message = self._make_inbound_handler(adapter, key)
-        try:
-            connected = await adapter.connect()
-        except Exception:
-            self._adapter_profiles[key].discard(profile)
-            raise
-        if not connected:
-            self._adapter_profiles[key].discard(profile)
-            raise RuntimeError(getattr(adapter, "_fatal_error_message", None) or "Discord connection failed")
-        self._adapters[key] = adapter
-        self._adapter_tokens[key] = config.token
+        async with self._adapter_locks.setdefault(token_key, asyncio.Lock()):
+            # A delayed callback belongs to the old transport, not its replacement;
+            # intentional hub shutdown owns teardown and must not trigger reattachment.
+            if self._stopping or self._adapters.get(token_key) is not adapter:
+                return
+            self._adapters.pop(token_key, None)
+            self._adapter_tokens.pop(token_key, None)
+            for client in list(self._clients.values()):
+                if client.token_key == token_key:
+                    # EOF becomes retryable discord_hub_disconnected in hub_client;
+                    # its gateway queues reconnect while this token lock holds teardown.
+                    client.writer.close()
+            try:
+                await self._disconnect_adapter_with_deadline(adapter, "fatal-adapter")
+            except Exception:
+                # The failed instance is already evicted, so a later attach can retry.
+                logger.exception("Discord hub fatal-adapter cleanup failed")
 
     def _make_inbound_handler(self, adapter: Any, token_key: str):
         async def _deliver(event: Any) -> None:

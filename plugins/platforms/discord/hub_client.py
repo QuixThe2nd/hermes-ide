@@ -152,6 +152,11 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             })
             self.hub_pid = int(result["pid"])
             self._token_key = str(result.get("token_key") or "")
+            # A buffered ACK can be followed by EOF before this task resumes. In
+            # that case the read loop saw _running=False and deliberately sent no
+            # runtime-fatal notification; never mark its dead socket connected.
+            if self._read_task is None or self._read_task.done():
+                raise ConnectionError("Discord hub connection closed during attach")
             self._mark_connected()
             logger.info(
                 "[%s] Attached generation %s to Discord hub pid %s",
