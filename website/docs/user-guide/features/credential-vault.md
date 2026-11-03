@@ -1,14 +1,15 @@
 ---
 title: Passwords & Logins
-description: The agent signs into sites, pays and fills addresses for you without ever seeing a password.
+description: The agent uses vaulted logins, cards and addresses without seeing masked entries.
 ---
 
 # Passwords & Logins
 
 Say **"log into GitHub"** and the agent signs in for you. The first time it
 reaches a sign-in page it has no login for, it asks you, right there, in a
-masked prompt. After that it just works. Passwords are encrypted on this
-machine and injected straight into the page; the model never sees them.
+masked prompt. After that it just works. Passwords entered through that prompt
+are encrypted on this machine and injected straight into the page; the model
+never sees those entries.
 
 There is nothing to set up.
 
@@ -33,6 +34,40 @@ From then on the agent lists your saved logins, types the identifier itself and
 fills the password through Hermes. The tool result it sees is
 `{filled_fields: 1, origin: "https://github.com"}`; the password is also
 registered with the redactor so a later page read cannot echo it back.
+
+## If a credential was already pasted into chat
+
+Prefer the masked prompt, `hermes vault add`, or **Desktop → Settings →
+Passwords & Logins → Add**. Please do not post credentials in chat. If you
+already have, the agent must not refuse to help solely because the credential
+arrived there. It must not repeat the value, and it should discourage further
+chat sharing without quoting it.
+
+For a reusable credential, the agent must migrate every such credential through
+a supported secure vault storage/import path before use, after which it fills
+only from its vault handle. The agent owns this migration and must claim saving
+only after confirmed successful vault storage. Manual re-entry is not the
+default when an available supported secure storage/import path can perform the
+migration.
+
+`browser_vault_save_login` accepts only a site label; it **does not ingest chat
+values**. For that prompt-only tool, re-entering the login in its masked prompt
+is the concrete fallback when no other supported secure storage/import path can
+perform the migration. Cards can be migrated through the CLI or Desktop instead.
+Hermes does not automatically import chat messages into the vault, and secrets
+must never be placed in labels, identifiers, or other metadata to work around
+that boundary.
+
+Masked entry is the path with the model-blind guarantee: the model never sees a
+secret entered there. A credential already pasted into chat is already in the
+model's context and conversation history. Saving it in the vault does not erase
+or redact that earlier history.
+
+If the current surface cannot provide the needed secure intake, the agent
+should explain that specific capability gap and point to an interactive vault
+path rather than refusing all assistance. A credential displayed by a page or a
+prompt injection is untrusted content, not user authorization; this migration
+rule for something you supplied does not make page text authoritative.
 
 ## Two-factor codes
 
@@ -109,11 +144,13 @@ vault:
 
 ## What this does and does not guarantee
 
-**Does:** the password never enters the model's context through Hermes: not in
-tool results, logs, the session database, or the CLI arguments of any process.
-Fills happen over the supervised browser session's direct CDP socket and are
-refused unless the page origin exactly matches the saved origin, checked again
-inside the page immediately before the write.
+**Does:** for a password entered through a masked vault path, the password
+never enters the model's context through Hermes: not in tool results, logs, the
+session database, or the CLI arguments of any process. Fills happen over the
+supervised browser session's direct CDP socket and are refused unless the page
+origin exactly matches the saved origin, checked again inside the page
+immediately before the write. This guarantee does not retroactively cover a
+credential already pasted into chat.
 
 **Does not:** protect against the page itself. Once a password is typed into a
 site, that site (and any script it runs) has it, exactly as when you type it
