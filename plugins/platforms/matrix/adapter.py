@@ -69,6 +69,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.adapter_inbox import MatrixInboxRouter, parse_inbox_rooms
 
 logger = logging.getLogger(__name__)
 
@@ -899,6 +900,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # which must not decide who approves tool calls on a secondary bot.
         self._allowed_user_ids: Set[str] = _extra_csv_set(config, "allowed_users", "MATRIX_ALLOWED_USERS")
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
+        self._inbox_router = MatrixInboxRouter(self, parse_inbox_rooms(config.extra.get("inbox_rooms")))
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in _csv_set(_extra_or_secret(config.extra, "ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "")):
             try:
@@ -1340,6 +1342,7 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
+        await self._inbox_router.recover_account_data()
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
@@ -1387,6 +1390,7 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
+        reply_to = self._inbox_router.child_reply_anchor(chat_id, reply_to)
         last_event_id = None
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
@@ -1773,6 +1777,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 msg_content["info"]["duration"] = audio_metadata["duration"]
             if audio_metadata:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
+        reply_to = self._inbox_router.child_reply_anchor(room_id, reply_to)
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
         return await self._send_content_event(room_id, msg_content)
 
@@ -1913,7 +1918,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _is_allowed_matrix_room_event(self, room_id: str) -> bool:
         """MATRIX_ALLOWED_ROOMS gate; DMs are exempt so personal chats survive a project allowlist."""
-        if not self._allowed_room_ids or room_id in self._allowed_room_ids:
+        if (not self._allowed_room_ids or room_id in self._allowed_room_ids
+                or self._inbox_router.is_child_room(room_id)):
             return True
         try:
             return await self._is_dm_room(room_id)
@@ -1999,6 +2005,12 @@ class MatrixAdapter(BasePlatformAdapter):
         # m.notice is the conventional bot-response msgtype; ignoring it prevents bot-to-bot loops.
         if msgtype == "m.notice" and not self._process_notices:
             return
+        body = str(source_content.get("body") or "")
+        is_command = bool(body) and _normalize_matrix_bang_command(body).startswith("/")
+        if await self._inbox_router.route_inbound(
+                room_id, sender, event_id, event_ts, source_content, relates_to, msgtype,
+                is_command=is_command):
+            return
         if msgtype in ("m.image", "m.audio", "m.video", "m.file"):
             await self._handle_media_message(room_id, sender, event_id, event_ts, source_content, relates_to, msgtype)
         elif msgtype in ("m.text", "m.notice"):
@@ -2051,7 +2063,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 body = self._strip_mention(body)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
-        if not thread_id:
+        if not thread_id and not self._inbox_router.is_child_room(room_id):
             if is_dm:
                 synthetic = (self._dm_mention_threads and is_mentioned) or self._dm_auto_thread
             else:
@@ -2115,22 +2127,23 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict) -> None:
+        relates_to: dict, *, batch: bool = True) -> Optional[MessageEvent]:
         body = source_content.get("body", "") or ""
         if not body:
-            return
+            return None
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:
-            return
-        if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+            return None
+        if batch and msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
         else:
             await self.handle_message(msg_event)
+        return msg_event
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, msgtype: str) -> None:
+        relates_to: dict, msgtype: str) -> Optional[MessageEvent]:
         body = source_content.get("body", "") or ""
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
@@ -2179,6 +2192,7 @@ class MatrixAdapter(BasePlatformAdapter):
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
             await self.handle_message(msg_event)
+        return msg_event
 
     @staticmethod
     def _classify_inbound_media(
@@ -2556,7 +2570,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def create_room(
         self, name: str = "", topic: str = "", invite: Optional[list] = None, is_direct: bool = False,
-        preset: str = "private_chat") -> Optional[str]:
+        preset: str = "private_chat", initial_state: Optional[list[dict]] = None) -> Optional[str]:
         if not self._client:
             return None
         if preset == "public_chat" and not _env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS"):
@@ -2568,10 +2582,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 "trusted_private_chat": RoomCreatePreset.TRUSTED_PRIVATE}.get(preset, RoomCreatePreset.PRIVATE)
             room_id = await self._client.create_room(
                 name=name or None, topic=topic or None, invitees=[UserID(u) for u in (invite or [])],
-                is_direct=is_direct, preset=preset_enum)
+                is_direct=is_direct, preset=preset_enum,
+                **({"initial_state": initial_state} if initial_state is not None else {}))
             room_id_str = str(room_id)
             self._joined_rooms.add(room_id_str)
-            logger.info("Matrix: created room %s (%s)", room_id_str, name or "unnamed")
+            logger.info("Matrix: created room %s", room_id_str)
             return room_id_str
         except Exception as exc:
             logger.warning("Matrix: create_room error: %s", exc)
@@ -3046,7 +3061,11 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
-    return _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE)
+    seeded = _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE) or {}
+    if "inbox_rooms" in matrix_cfg:
+        # Non-secret structured config stays in YAML and never crosses the process environment.
+        seeded["inbox_rooms"] = matrix_cfg["inbox_rooms"]
+    return seeded
 
 
 
