@@ -26,17 +26,17 @@ Ownership of the underlying semantics stays where it was:
   same startup-restore gate as boot auto-resume turns.
 
 Replay never loses an acknowledged message to a crash: the snapshot is
-claimed by an atomic rename BEFORE any event is injected, and a session
-group's records leave the claim ledger the moment their consumption is
-secured (turn dispatched, or a live/resumed turn owns the FIFO) — that
-rewrite IS the per-record dispatch state. A claim left by a crashed replay
-therefore holds exactly the un-delivered records, and the next boot RESUMES
-it instead of discarding it; the only duplicate window is a turn that fully
-completes between its dispatch and its ledger rewrite, and a duplicate
-answer outranks a lost one. Events whose adapter is not live are retained,
-not dropped: their records return to the live snapshot and retry at the
-platform's reconnect or the next boot; when that write-back fails, the
-claim file — the sole copy — is kept and retried after storage recovers.
+claimed by an atomic rename BEFORE any event is injected, and each record
+leaves the claim ledger only when its own processing completes successfully.
+Deferred, cancelled, and failed turns retain their original record for the
+final write-back. A claim left by a crashed replay therefore holds exactly
+the unsettled records, and the next boot RESUMES it instead of discarding it.
+Events whose adapter is not live are retained, not dropped: their records
+return to the live snapshot and retry at the platform's reconnect or the next
+boot; when that write-back fails, the claim file — the sole copy — is kept
+and retried after storage recovers. One runner-scoped owner per canonical
+profile home prevents overlapping startup/reconnect passes from sharing the
+claim file; callback identity fences stale owners from a later pass.
 
 Under ``gateway.multiplex_profiles`` each profile's handler queues under
 its own home, so startup replays every served profile's queue, not just
@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -218,6 +218,7 @@ def _mark_drain_snapshot_owned(event: MessageEvent) -> None:
     """
     try:
         setattr(event, DRAIN_SNAPSHOT_OWNED_ATTR, True)
+        event._gateway_processing_deferred = True
         event._gateway_accepted = True
     except Exception:
         pass
@@ -505,8 +506,13 @@ def _load_snapshot_events(path: Path) -> List[Dict[str, Any]]:
     return [event for event in events if isinstance(event, dict)]
 
 
-def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bool:
+def record_drain_event(
+    runner: Any, session_key: str, event: MessageEvent, *, home: Optional[Path] = None
+) -> bool:
     """Append one event to the durable drain snapshot.
+
+    ``home`` pins the owning profile for boot-time replay staging; live drain
+    callers retain the ambient profile-scoped default.
 
     Returns True only when the event is durably on disk; the caller must
     answer with the OLD refusal on False so the ack never promises a queue
@@ -534,7 +540,7 @@ def record_drain_event(runner: Any, session_key: str, event: MessageEvent) -> bo
     requires. A False return (cap / serialize / IO) leaves both unset, so a
     failed admission stays retryable.
     """
-    path = drain_queue_path()
+    path = drain_queue_path(home)
     events = _load_snapshot_events(path)
     cap = int(getattr(runner, "_BUSY_QUEUE_MAX_PENDING", 32))
     session = str(session_key or "")
@@ -638,7 +644,9 @@ def queue_drain_refused_message(
     if not record_drain_event(runner, session_key, event):
         return None
     runner._queue_or_replace_pending_event(session_key, event)
-    return (
+    from gateway.platforms.base import DeferredReply
+
+    return DeferredReply(
         f"⏳ Gateway {runner._status_action_gerund()} — queued for the next "
         f"turn after it comes back."
     )
@@ -816,26 +824,33 @@ def _rewrite_claim_ledger(
         return False
 
 
-def _mark_group_dispatched(
+def _mark_record_settled(
     pending: Dict[str, List[Dict[str, Any]]],
     session_key: str,
+    record: Dict[str, Any],
     home: Optional[Path] = None,
 ) -> None:
-    """Durably mark one session group's records as dispatched.
+    """Remove only the completed callback's original record from the claim.
 
-    This rewrite is the per-record dispatch state: a record's presence in
-    the claim ledger means "delivery not yet confirmed", so a crash right
-    after a dispatch leaves the group in the ledger and the next boot
-    re-replays it — at-least-once with a window of one rewrite, instead of
-    the old unconditional claim discard that lost everything the crashed
-    replay had acknowledged but not yet delivered.
+    Record identity, not session or message id, is the settlement key: a head
+    turn must never acknowledge its queued siblings. If the rewrite fails the
+    record returns to its exact position and the final write-back retains it.
     """
-    records = pending.pop(session_key, None)
+    records = pending.get(session_key)
     if not records:
         return
+    for index, candidate in enumerate(records):
+        if candidate is record:
+            break
+    else:
+        return
+    records.pop(index)
+    if not records:
+        pending.pop(session_key, None)
     if _rewrite_claim_ledger(pending, home):
         return
-    pending[session_key] = records  # keep the in-memory mirror honest
+    records.insert(index, record)
+    pending[session_key] = records
 
 
 def _unlink_folded_live(home: Optional[Path] = None) -> None:
@@ -947,36 +962,62 @@ def _scheduler_will_resume(runner: Any, session_key: str, allowlist: Any) -> boo
     return True
 
 
+def _canonical_replay_home(home: Optional[Path]) -> str:
+    base = Path(home) if home is not None else get_hermes_home()
+    return os.path.normcase(str(base.expanduser().resolve(strict=False)))
+
+
+def _release_replay_owner(runner: Any, home_key: str, owner: Dict[str, Any]) -> None:
+    """Release only the owner's own slot; stale callbacks cannot remove a successor."""
+    owner["finished"] = True
+    owner["waiting"] = False
+    owners = getattr(runner, "_drain_replay_owners", None)
+    if isinstance(owners, dict) and owners.get(home_key) is owner:
+        owners.pop(home_key, None)
+
+
 def replay_drain_queue(
     runner: Any,
     platform: Optional[Platform] = None,
     home: Optional[Path] = None,
 ) -> int:
-    """Replay the drain snapshot into the live queues; returns turns started.
+    """Run one owned replay pass per canonical profile home on this runner.
 
-    Called from gateway ``start()`` after adapters are ready and before the
-    resume scheduler runs (and, scoped to one platform, from the reconnect
-    watcher). *home* pins the profile home whose queue is replayed — under
-    ``multiplex_profiles`` startup goes through
-    ``replay_drain_queues_for_profiles`` so every served profile's file is
-    claimed; the drain-time append always writes the ambient (profile-scoped)
-    home. Every event re-enters the owning adapter's FIFO through
-    ``_queue_or_replace_pending_event`` (same merge/cap semantics as live
-    queueing). Sessions in the cooperative-restart resume set only enqueue —
-    their resumed turn picks pending events up at its post-turn drain. Every
-    other affected session gets a turn started for its head event through
-    the resume scheduler's dispatch path, so the queued text is answered
-    without waiting for the user to speak again.
+    Ownership is acquired BEFORE the rename claim. A reconnect that overlaps a
+    live startup/reconnect pass therefore cannot steal its ``.replaying.json``;
+    a later process still recovers that file through the normal crash path.
+    """
+    owners = getattr(runner, "_drain_replay_owners", None)
+    if not isinstance(owners, dict):
+        owners = {}
+        runner._drain_replay_owners = owners
+    home_key = _canonical_replay_home(home)
+    if home_key in owners:
+        logger.debug("Drain replay already active for profile home %s", home_key)
+        return 0
+    owner: Dict[str, Any] = {"waiting": False, "finished": False}
+    owners[home_key] = owner
+    try:
+        return _replay_drain_queue_owned(runner, owner, home_key, platform, home)
+    finally:
+        if not owner.get("waiting"):
+            _release_replay_owner(runner, home_key, owner)
 
-    Durability contract: a group's records leave the claim ledger only once
-    their consumption is secured (turn dispatched, or a live/scheduler-owned
-    turn will drain the FIFO), so a crash mid-replay leaves exactly the
-    un-delivered records claimed and the next boot resumes them. Events
-    whose adapter is not live (platform down at boot) are NOT dropped:
-    their records return to the live snapshot and retry at the next natural
-    point — the platform's reconnect or the next boot. ``platform`` scopes a
-    retry pass to one platform; other platforms' records stay queued
-    untouched.
+
+def _replay_drain_queue_owned(
+    runner: Any,
+    owner: Dict[str, Any],
+    home_key: str,
+    platform: Optional[Platform],
+    home: Optional[Path],
+) -> int:
+    """Replay a claimed snapshot and settle records from processing completion.
+
+    Every injected event receives a private callback bound to its ORIGINAL raw
+    record and this claim owner. Only a terminal ``SUCCESS`` removes that one
+    record. ``DEFERRED``, cancellation, and failure keep it claimed for the
+    final write-back; queued siblings are never settled by the head turn.
+    Events whose adapter is not live remain queued for reconnect/next boot.
     """
     claimed, folded_live = claim_drain_queue(home)
     if not claimed:
@@ -1007,13 +1048,57 @@ def replay_drain_queue(
             dropped_redeliveries,
         )
 
-    # In-memory mirror of the claim ledger: the records still owed a
-    # delivery. Groups leave it (and the on-disk ledger via
-    # ``_mark_group_dispatched``) as their consumption is secured.
+    # In-memory mirror of the on-disk claim. Successful per-event callbacks
+    # rewrite their own record out of BOTH; every other outcome stays here for
+    # the final retained-record write-back.
     pending: Dict[str, List[Dict[str, Any]]] = {
         session_key: [record for _event, record in items]
         for session_key, items in grouped.items()
     }
+    in_flight: set[int] = set()
+    had_in_flight = False
+    pass_finished = False
+
+    def _finish_replay_pass() -> List[Dict[str, Any]]:
+        nonlocal pass_finished
+        retained = [record for group in pending.values() for record in group]
+        if pass_finished:
+            return retained
+        pass_finished = True
+        try:
+            if retained and not _write_back_retained_records(
+                retained, home, folded_live and not had_in_flight
+            ):
+                # The claim remains the sole durable copy after write-back failure.
+                return retained
+            clear_claimed_drain_queue(home)
+            if folded_live and not retained and not had_in_flight:
+                _unlink_folded_live(home)
+            return retained
+        finally:
+            _release_replay_owner(runner, home_key, owner)
+
+    def _settle_replay(
+        session: str,
+        record: Dict[str, Any],
+        outcome: ProcessingOutcome,
+    ) -> None:
+        owners = getattr(runner, "_drain_replay_owners", None)
+        if (
+            owner.get("finished")
+            or not isinstance(owners, dict)
+            or owners.get(home_key) is not owner
+        ):
+            return
+        marker = id(record)
+        if marker not in in_flight:
+            return
+        in_flight.discard(marker)
+        if outcome is ProcessingOutcome.SUCCESS:
+            _mark_record_settled(pending, session, record, home)
+        if not in_flight:
+            _finish_replay_pass()
+
     injected: Dict[str, Any] = {}
     for session_key, items in grouped.items():
         source = items[0][0].source
@@ -1029,65 +1114,63 @@ def replay_drain_queue(
                 session_key,
             )
             continue
-        for event, _record in items:
+        for event, record in items:
             # A replay injection is a re-delivery of an already-received
             # platform message: mark the event so the model can tell it from
             # a fresh user message and answer it once, not per copy.
             event.redelivered = True
-            # Lifecycle receipt, proved per-record (see
-            # ``drain_restart_receipt_for_record``): only a record stamped by
-            # a finished restart's draining process earns it, and the note is
-            # idempotent — a repeated replay of the same record produces the
-            # same one receipt on that turn, never a stacked one.
-            _receipt = drain_restart_receipt_for_record(_record)
+            _receipt = drain_restart_receipt_for_record(record)
             if _receipt is not None:
                 _mark_drain_restart_receipt(event, _receipt)
-            runner._queue_or_replace_pending_event(session_key, event)
-        injected[session_key] = adapter
+            event._gateway_replay_completion = (
+                lambda outcome, key=session_key, original=record: _settle_replay(
+                    key, original, outcome
+                )
+            )
+            consumer = runner._queue_or_replace_pending_event(session_key, event)
+            if consumer is None:
+                # A capped or ownership-refused insertion has no processing
+                # callback to wait for. Keep its raw record durable, but do
+                # not pin the profile's replay owner on an immortal wait.
+                continue
+            in_flight.add(id(record))
+            had_in_flight = True
+            owner["waiting"] = True
+            injected[session_key] = adapter
 
     allowlist = getattr(runner, "_resume_allowlist_for_this_boot", None)
     raw_allowlist = allowlist() if callable(allowlist) else None
     cooperative = set(raw_allowlist or set())
+
+    def _forget_session_wait(session_key: str) -> None:
+        # No turn was dispatched to invoke these callbacks. Keep the records in
+        # pending, but let this pass write them back and release its owner.
+        for _event, record in grouped.get(session_key, []):
+            in_flight.discard(id(record))
 
     started = 0
     for session_key, adapter in injected.items():
         if session_key in cooperative and _scheduler_will_resume(
             runner, session_key, raw_allowlist
         ):
-            # The scheduler resumes this session THIS boot; that turn drains
-            # the FIFO after it finishes — no second turn from replay, and
-            # consumption is as secured as a dispatch would make it.
-            _mark_group_dispatched(pending, session_key, home)
+            # Scheduling is not completion: the injected records keep their
+            # callbacks and leave the claim only as their own turns finish.
             continue
         if runner._is_session_running(session_key):
-            # Already busy (e.g. boot auto-resume claimed it): the FIFO is
-            # consumed by that turn's post-turn drain — no second turn.
-            _mark_group_dispatched(pending, session_key, home)
+            # The live turn drains this FIFO. Busy scheduling likewise does
+            # not acknowledge any of the records queued behind it.
             continue
         head = _pop_replay_head(runner, adapter, session_key)
         if head is None:
-            # Injected and the FIFO already consumed them: settled.
-            _mark_group_dispatched(pending, session_key, home)
+            _forget_session_wait(session_key)
             continue
-        if _dispatch_replay_turn(runner, adapter, head, session_key):
+        task = _dispatch_replay_turn(runner, adapter, head, session_key)
+        if task:
             started += 1
-            _mark_group_dispatched(pending, session_key, home)
-        # A failed dispatch leaves the group in the ledger: its events sit
-        # in a FIFO with no turn to drain it, so the next boot/reconnect
-        # retries them instead of stranding the messages.
+        else:
+            _forget_session_wait(session_key)
 
-    retained = [record for group in pending.values() for record in group]
-    if retained and not _write_back_retained_records(retained, home, folded_live):
-        # Write-back failed: the claim file still holds every retained
-        # record — the sole surviving copy. KEEP it (clearing it here would
-        # delete the messages); the next boot resumes the claim once
-        # storage recovers.
-        return started
-    clear_claimed_drain_queue(home)
-    if folded_live and not retained:
-        # A folded snapshot with nothing retained was fully consumed by this
-        # pass; the early fold usually removed it already.
-        _unlink_folded_live(home)
+    retained = [] if in_flight else _finish_replay_pass()
     if not injected:
         return 0
     logger.info(
@@ -1143,11 +1226,19 @@ def replay_drain_queues_for_profiles(
     return started
 
 
-def _dispatch_replay_turn(runner: Any, adapter: Any, event: MessageEvent, session_key: str) -> bool:
-    """Start the replayed turn through the resume scheduler's dispatch path."""
+def _dispatch_replay_turn(
+    runner: Any,
+    adapter: Any,
+    event: MessageEvent,
+    session_key: str,
+) -> bool:
+    """Start replay; durable settlement arrives through the event completion callback."""
     import asyncio
 
     from gateway.run import _AGENT_PENDING_SENTINEL
+
+    async def _run() -> None:
+        await runner._run_startup_resume_event(adapter, event, session_key)
 
     # Same marker the startup-restore drain sets, so the (still closed)
     # inbound restore gate lets the replayed turn through instead of
@@ -1171,9 +1262,7 @@ def _dispatch_replay_turn(runner: Any, adapter: Any, event: MessageEvent, sessio
             exc_info=True,
         )
     try:
-        task = asyncio.create_task(
-            runner._run_startup_resume_event(adapter, event, session_key)
-        )
+        task = asyncio.create_task(_run())
     except Exception:
         logger.warning("Drain replay turn dispatch failed for %s", session_key, exc_info=True)
         # The pre-claim above holds the running-agent slot and the task that
