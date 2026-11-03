@@ -23,6 +23,12 @@ browser.
 > makes the out-of-box experience better. The core-vs-plugin guidance below
 > still governs *how* capability is wired into the agent runtime (schema
 > cost, prompt caching), but "keep it out of the repo" does not apply here.
+>
+> **Independent fork:** NousResearch/hermes-agent is historical ancestry, not an update source.
+> Scheduled automation and `hermes update` must not import, merge, or push Nous changes, nor offer
+> to add that upstream remote. Updates follow the configured origin; Hermes IDE's default is
+> `QuixThe2nd/hermes-ide`. Modules may be independently replaced while substantial overlap and all
+> existing licensing, copyright, and attribution notices remain.
 
 Two invariants shape almost every design decision and are the lens for reviewing any change:
 
