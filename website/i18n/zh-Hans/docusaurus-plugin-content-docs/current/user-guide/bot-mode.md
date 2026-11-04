@@ -54,7 +54,7 @@ Bot 模式**内置于[桌面应用](./desktop)**中，**默认开启**——无�
 
 ### 选择它运行在哪台机器上（"Create on"）
 
-当[设置 → Connections](./multi-connection-desktop) 中注册了不止一个连接时，New Agent 对话框会新增一个 **Create on** 选择器。选定一台设备后，profile 就会在**那台**机器的后端上创建——你的窗口不会切换 gateway。这个新 Bot 随后会以 Connections Bot 的身份出现在花名册中（当同名 Bot 存在于多台机器上时，带有 `@name-device` 形式的 handle），与它对话会路由到它自己所在的机器。
+当**设置 → Connections** 中注册了不止一个连接时，New Agent 对话框会新增一个 **Create on** 选择器。选定一台设备后，profile 就会在**那台**机器的后端上创建——你的窗口不会切换 gateway。这个新 Bot 随后会以 Connections Bot 的身份出现在花名册中（当同名 Bot 存在于多台机器上时，带有 `@name-device` 形式的 handle），与它对话会路由到它自己所在的机器。
 
 在只有一个连接的常见情况下，这个选择器会被隐藏，Bot 会在你当前连接的机器上创建——和以前的行为完全一致。
 
@@ -216,8 +216,6 @@ hermes peer stop spark run_abc123
 当你在**设置 → Connections** 中注册了多个后端——本地运行时、远程 gateway、SSH 主机、Hermes Cloud 实例——花名册会持续显示来自**每一个**已连接来源的 Bot：SSH 来源会在不在远程主机上启动任何进程的前提下被盘点，暂时无法触达的机器会保留它们最后已知的行，而不是直接消失。当同一个 profile 名称存在于多个来源时，handle 会以 `@name-device` 的形式消除歧义（例如 `@research-homelab`）。一个 Bot 的对话、会话、记忆和例行任务都存放在拥有该 profile 的那台机器上。
 
 点击一个 Connections Bot **不会**把你的窗口切换到那台机器上——留在你当前的对话里 @提及 它、把它安排进某个群聊，或者用 **Create on** 选择器直接在它所在的机器上创建新的 agent。云端和本地 agent 就这样共用同一个花名册：注册你的 Hermes Cloud 实例和你的桌面（比如通过 Tailscale 或 SSH），它们的 Bot 就能互相发消息、共处同一个房间，每个 agent 的工作都运行在自己的机器上。跨这些机器的 Bot 间私信会自动走 Desktop 中继（见上文*跨已连接机器的消息*）。
-
-完整的多连接指南请参阅[将 Desktop 连接到多个 Hermes 实例](./multi-connection-desktop)。
 
 ## Warm Bot Backends（同时运行多少个 Bot）
 

@@ -122,7 +122,7 @@ def test_identity_prefers_git(repo):
 
 def test_identity_sealed_stamp(tmp_path):
     (tmp_path / "install-stamp.json").write_text(
-        json.dumps({"commit": "a" * 40, "distribution": "desktop-app", "updateMechanism": "electron-updater"}),
+        json.dumps({"commit": "a" * 40, "distribution": "docker", "updateMechanism": "external"}),
         encoding="utf-8",
     )
     assert current_install_identity(tmp_path) == "a" * 40
@@ -131,6 +131,10 @@ def test_identity_sealed_stamp(tmp_path):
 def test_identity_broken_tree_is_none(tmp_path):
     assert current_install_identity(tmp_path) is None
     (tmp_path / "install-stamp.json").write_text("garbage", encoding="utf-8")
+    assert current_install_identity(tmp_path) is None
+    (tmp_path / "install-stamp.json").write_text(
+        json.dumps({"tag": "v1.2.3", "updateMechanism": "external"}), encoding="utf-8"
+    )
     assert current_install_identity(tmp_path) is None
 
 
@@ -399,10 +403,9 @@ def test_boot_machine_scope_current_is_skipped(repo, tmp_path, monkeypatch):
 
 
 def test_sealed_tree_bootstrap_end_to_end(tmp_path, monkeypatch):
-    """The desktop-bundle-swap scenario. A sealed tree (install-stamp.json,
-    no .git) must bootstrap on first boot, no-op on the second, and RE-RUN
-    when the stamp's commit changes — that is the only signal a bundle
-    swap emits."""
+    """A sealed tree (install-stamp.json, no .git) must bootstrap on first
+    boot, no-op on the second, and RE-RUN when the stamp's commit changes —
+    the signal an artifact replacement emits."""
     import json as _json
 
     from hermes_cli import post_update
@@ -414,10 +417,10 @@ def test_sealed_tree_bootstrap_end_to_end(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pm, "check", lambda: [])
 
-    sealed = tmp_path / "payload"
+    sealed = tmp_path / "image-tree"
     sealed.mkdir()
     (sealed / "install-stamp.json").write_text(
-        _json.dumps({"commit": "aaaa1111", "payload": "full", "updateMechanism": "electron-updater"})
+        _json.dumps({"commit": "aaaa1111", "distribution": "docker", "updateMechanism": "external"})
     )
 
     calls = {"n": 0}
@@ -434,13 +437,13 @@ def test_sealed_tree_bootstrap_end_to_end(tmp_path, monkeypatch):
     assert run_boot_bootstrap(sealed)["home"] == "skipped"
     assert calls["n"] == 1  # second boot: identity unchanged, no work
 
-    # The bundle swap: same root, new stamp commit.
+    # Artifact replacement: same root, new stamp commit.
     (sealed / "install-stamp.json").write_text(
-        _json.dumps({"commit": "bbbb2222", "payload": "full", "updateMechanism": "electron-updater"})
+        _json.dumps({"commit": "bbbb2222", "distribution": "docker", "updateMechanism": "external"})
     )
 
     assert run_boot_bootstrap(sealed)["home"] != "skipped"
-    assert calls["n"] == 2, "a swapped bundle must re-run the bootstrap"
+    assert calls["n"] == 2, "a replaced artifact must re-run the bootstrap"
 
 
 # ── the per-install state folder ─────────────────────────────────────
@@ -468,14 +471,14 @@ def test_ensure_install_dir_records_the_sealed_steward(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))  # isolate the default root
 
-    sealed = tmp_path / "payload"
+    sealed = tmp_path / "store-tree"
     sealed.mkdir()
     (sealed / "install-stamp.json").write_text(
-        json.dumps({"commit": "c" * 40, "distribution": "desktop-app", "updateMechanism": "electron-updater"})
+        json.dumps({"commit": "c" * 40, "distribution": "nix", "updateMechanism": "external"})
     )
     state = boot_bootstrap.ensure_install_dir(sealed)
     record = json.loads((state / "install.json").read_text())
-    assert record["steward"] == "desktop-app"
+    assert record["steward"] == "nix"
 
 
 def test_orphan_sweep_flags_only_vanished_roots(repo, tmp_path, monkeypatch):

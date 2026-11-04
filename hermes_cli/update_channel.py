@@ -8,23 +8,21 @@ Channel storage — per install, never home-global::
           path: /home/u/.hermes/hermes-agent   #   canonical install root)
           channel: canary
 
-One config.yaml serves many installs (host + docker gateway + desktop all
-bind-mount one ``~/.hermes``), so a home-global ``update.channel`` key is
-UNSAFE and does not exist: setting canary for a dev checkout must not
-flip the desktop app's feed. The id is sha16 of the canonical
-install-root PATH — the same key that names the ``installs/<sha16>/``
-state folder (``boot_bootstrap._install_key``; a byte-identical helper is
-inlined below until that module lands). Path-derived on purpose: an
-electron-updater update replaces the artifact (new stamp bytes) at the
-same path, and the channel opt-in must survive that.
+One config.yaml serves many installs (host + docker gateway all bind-mount
+one ``~/.hermes``), so a home-global ``update.channel`` key is UNSAFE and
+does not exist: setting a channel for a dev checkout must not flip a sibling
+install. The id is sha16 of the canonical install-root PATH — the same key
+that names the ``installs/<sha16>/`` state folder
+(``boot_bootstrap._install_key``; a byte-identical helper is inlined below
+until that module lands). Path-derived on purpose: replacing an install at
+the same path must preserve its channel opt-in.
 
 * Written by ``hermes update --set-channel <x>`` from inside an install
   (it knows its own id — the user never types a sha).
-* Shown by ``hermes update --install-id`` and the desktop About page.
+* Shown by ``hermes update --install-id``.
 * Channels are meaningful ONLY where the mechanism is ``self`` (which git
-  ref: main / stable / canary→main) or ``electron-updater`` (which feed:
-  latest.yml / canary.yml). ``external`` installs have no channel; the
-  steward owns updates.
+  ref: main / stable / canary→main). ``external`` installs have no channel;
+  the steward owns updates.
 
 Pure-stdlib leaf module (plus hermes-internal imports done lazily): the
 installers and boot paths read it before the full config machinery loads.
@@ -120,24 +118,8 @@ def channel_record(config: Optional[dict], project_root: Optional[Path] = None) 
 
 
 def default_channel(project_root: Optional[Path] = None) -> str:
-    """The channel an unconfigured install tracks.
-
-    ``self`` source installs follow main (historical behavior).
-    ``electron-updater`` bundles follow the channel their own artifact was
-    published to: a canary artifact tracks canary, every other bundle
-    tracks stable. The stamp's ``tag`` is the authority, the same fact
-    apps/desktop/product-identity.cjs keys the published feed name on — so
-    the feed a canary artifact asks for and the feed it was published to
-    can never disagree. Deriving stable here instead would send a fresh
-    canary install to look for its ``canary.yml`` feed file under the
-    newest STABLE release, where that file does not exist (404), leaving
-    the install unable to update at all.
-    """
-    root = Path(project_root) if project_root is not None else _default_root()
-    stamp = _read_stamp(root)
-    if stamp.get("updateMechanism") != "electron-updater":
-        return CHANNEL_MAIN
-    return CHANNEL_CANARY if is_canary_tag(stamp.get("tag")) else CHANNEL_STABLE
+    """Source installs follow main unless a per-install record overrides it."""
+    return CHANNEL_MAIN
 
 
 def resolve_update_channel(
@@ -147,11 +129,9 @@ def resolve_update_channel(
     """The effective update channel for this install.
 
     Resolution: the per-install record (``update.installs.<sha16>.channel``)
-    when valid; otherwise the mechanism default (main for self-source,
-    stable/canary for electron-updater bundles by artifact tag). Source
-    installs asking for canary normalize to main — canary builds are
-    release artifacts, and a git checkout tracks branches; callers print
-    the note.
+    when valid; otherwise main. Source installs asking for canary normalize
+    to main — canary builds are release artifacts, and a git checkout tracks
+    branches; callers print the note.
     """
     configured: Any = channel_record(config, project_root).get("channel")
     if isinstance(configured, str) and configured.strip().lower() in VALID_CHANNELS:
@@ -159,19 +139,15 @@ def resolve_update_channel(
     else:
         channel = default_channel(project_root)
 
-    if channel == CHANNEL_CANARY:
-        root = Path(project_root) if project_root is not None else _default_root()
-        if _read_stamp(root).get("updateMechanism") != "electron-updater":
-            # canary→main normalization for source installs.
-            return CHANNEL_MAIN
-    return channel
+    # canary→main normalization for source installs.
+    return CHANNEL_MAIN if channel == CHANNEL_CANARY else channel
 
 
 def canary_normalized_note() -> str:
     """The one-line note callers print when canary normalizes to main."""
     return (
         "→ Channel 'canary' on a source install tracks main "
-        "(canary builds are desktop release artifacts)."
+        "(canary builds are release artifacts)."
     )
 
 
@@ -237,47 +213,21 @@ def _write_channel_record(sha16: str, path: str, channel: str) -> None:
     atomic_roundtrip_yaml_update(config_path, f"update.installs.{sha16}", new_record)
 
 
-def _stable_wait_target(canary_version: str) -> str:
-    """The stable release a canary install waits for: the canary's own base
-    version (canary is current-stable patch+1; ``v0.28.0`` from
-    ``v0.28.0-canary.20260818171926``)."""
-    base = re.sub(r"-canary\.\d+$", "", canary_version.strip())
-    return base if base.startswith("v") else f"v{base}"
-
-
-def _stamp_channel_hint(stamp: dict) -> Optional[str]:
-    """The channel the RUNNING artifact implies, for stamps without a clean
-    ``tag`` (desktop About-page stamps carry ``displayVersion`` like
-    ``0.28.0-canary.20260818`` — the ``v`` prefix ``is_canary_tag`` requires
-    is restored before the shape check, so validation stays with the single
-    canary authority). Switch text only; resolution stays with
-    :func:`resolve_update_channel`."""
-    if stamp.get("updateMechanism") != "electron-updater":
-        return None
-    version = str(stamp.get("tag") or stamp.get("displayVersion") or "")
-    if not version:
-        return None
-    candidate = version if version.startswith("v") else f"v{version}"
-    return CHANNEL_CANARY if is_canary_tag(candidate) else None
-
-
 def _set_channel_from_cli(channel: str) -> None:
     """Persist ``--set-channel`` and print the switch text. Never updates.
 
     Runs before the update lock, git, network, backups, or process pause:
     this is a configuration action, not an update. The reported previous
-    channel prefers the stored per-install record over what the running
-    artifact implies.
+    channel prefers the stored per-install record over the source default.
     """
     from hermes_cli.config import read_raw_config
 
     root = _default_root()
-    stamp = _read_stamp(root)
     stored = channel_record(read_raw_config(), root).get("channel")
     if isinstance(stored, str) and stored.strip().lower() in VALID_CHANNELS:
         previous = stored.strip().lower()
     else:
-        previous = _stamp_channel_hint(stamp) or resolve_update_channel(None, root)
+        previous = resolve_update_channel(None, root)
     try:
         sha16 = set_install_channel(channel, root)
     except ValueError as exc:
@@ -285,21 +235,8 @@ def _set_channel_from_cli(channel: str) -> None:
         sys.exit(1)
 
     print(f"Channel set to '{channel}' (was '{previous}') for install {sha16}.")
-    version = str(stamp.get("tag") or stamp.get("displayVersion") or "")
-    if previous == CHANNEL_CANARY and channel == CHANNEL_STABLE:
-        print(f"  You are on canary build {version}.")
-        print(
-            f"  Stable updates begin at { _stable_wait_target(version) } —"
-            " canary outversions it until that release ships."
-        )
-        print("  Not patient? Switch back: hermes update --set-channel canary")
-        print("  Docs: https://hermes-agent.nousresearch.com")
-    elif channel == CHANNEL_CANARY:
-        print(
-            "  Canary builds are forward-incompatible: a canary install"
-            " only updates to artifacts that ship after it. Downgrading"
-            " means reinstalling."
-        )
+    if channel == CHANNEL_CANARY:
+        print(f"  {canary_normalized_note()}")
     sys.exit(0)
 
 

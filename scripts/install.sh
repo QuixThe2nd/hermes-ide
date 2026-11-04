@@ -3,7 +3,7 @@
 # Hermes Agent Installer
 # ============================================================================
 # Installation script for Linux, macOS, and Android/Termux.
-# Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
+# Uses uv for server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
 #   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
@@ -82,7 +82,6 @@ MANIFEST_MODE=false
 STAGE_NAME=""
 JSON_OUTPUT=false
 NON_INTERACTIVE=false
-INCLUDE_DESKTOP=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -144,10 +143,6 @@ while [[ $# -gt 0 ]]; do
             NON_INTERACTIVE=true
             shift
             ;;
-        --include-desktop|-IncludeDesktop)
-            INCLUDE_DESKTOP=true
-            shift
-            ;;
         --dir)
             INSTALL_DIR="$2"
             INSTALL_DIR_EXPLICIT=true
@@ -179,11 +174,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "                   (ignored when it would roll an existing install back)"
             echo "  --force-commit Apply --commit even if it rolls the install backwards"
-            echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
-            echo "  --stage NAME   Run one desktop bootstrap stage"
+            echo "  --manifest     Print installer stage manifest as JSON"
+            echo "  --stage NAME   Run one installer stage"
             echo "  --json         Print a JSON result frame for --stage"
             echo "  --non-interactive  Skip stages that require user input"
-            echo "  --include-desktop  Also build the desktop app (apps/desktop -> Hermes.app)"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -290,7 +284,7 @@ discard_update_lockfile_churn() {
                 dirty_package_dirs="${dirty_package_dirs}${pkg_dir}"$'\n'
                 # The single root lockfile records every workspace's specs (root
                 # package.json "workspaces" globs), so a dirty workspace manifest
-                # such as apps/desktop/package.json protects it; reverting it there
+                # such as web/package.json protects it; reverting it there
                 # desyncs spec and lock and every later npm ci fails (#112378). A
                 # manifest outside the graph (website/) has its own lockfile.
                 if [ "$pkg_dir" = "." ]; then
@@ -349,12 +343,9 @@ EOF
     log_info "Discarded npm lockfile churn (${dirty_count} file(s))"
 }
 
-# The single authoritative stage list: emit_manifest prints it and main runs
-# it, so --include-desktop affects the real install exactly as advertised.
+# The single authoritative stage list: emit_manifest prints it and main runs it.
 stage_names() {
-    printf '%s\n' prerequisites repository venv python-deps node-deps path config setup gateway
-    [ "$INCLUDE_DESKTOP" = true ] && printf '%s\n' desktop
-    printf '%s\n' complete
+    printf '%s\n' prerequisites repository venv python-deps node-deps path config setup gateway complete
 }
 
 # "$1" stage name -> its manifest record fields (title|category|needs_user_input).
@@ -369,15 +360,11 @@ stage_record() {
         config)        echo "Prepare config and skills|configuration|false" ;;
         setup)         echo "Configure API keys and settings|configuration|true" ;;
         gateway)       echo "Configure gateway service|configuration|true" ;;
-        desktop)       echo "Build desktop app|runtime|false" ;;
         complete)      echo "Finish install|runtime|false" ;;
     esac
 }
 
 emit_manifest() {
-    # Desktop is included only with --include-desktop, mirroring install.ps1:
-    # a GUI install ends with a launchable app, while the Electron app's own
-    # bootstrap omits rebuilding the already-running app.
     printf '%s' '{"protocol_version":1,"stages":['
     local _sep="" _s _title _category _needs
     for _s in $(stage_names); do
@@ -1149,14 +1136,14 @@ check_node() {
     configure_managed_node_npm_prefix
 
     # The system toolchain is only usable when BOTH halves work: a Node new
-    # enough for the desktop build AND an npm that can read our .npmrc. A
+    # enough for the JavaScript builds AND an npm that can read our .npmrc. A
     # bad-band npm (see npm_supports_npmrc) fails `npm ci` outright, and the
     # managed Node we install instead bundles one that works.
     #
     # npm must actually be reachable, not just node: a stray `node` symlink
     # without a sibling npm (leftover from a node version manager) makes
     # `command -v node` succeed while every later `npm install` silently
-    # fails and the desktop build dies with an opaque "Node.js / npm
+    # fails and the JavaScript build dies with an opaque "Node.js / npm
     # unavailable" (#77003). Node only counts as found when npm resolves on
     # the same PATH.
     if command -v node &> /dev/null && command -v npm &> /dev/null \
@@ -1859,10 +1846,9 @@ EOF
             return 1
         fi
         # A commit pin must never move an existing install BACKWARDS. The
-        # bootstrap installer bakes its build-time commit into the binary
-        # (BUILD_PIN_COMMIT) and passes it as --commit on every install-mode
-        # run -- including the one the desktop's failure screen retries. An
-        # installer built months ago would otherwise rewind a current checkout
+        # Automated installers may pin a build-time commit and pass it as
+        # --commit on every install-mode run. An installer built months ago
+        # would otherwise rewind a current checkout
         # to its build commit, stranding the user on ancient code with a
         # current venv. Only pin when the target is not already an ancestor of
         # HEAD; a fresh clone has no such ancestry and pins normally.
@@ -2598,10 +2584,9 @@ run_browser_install_with_timeout() {
 # Homebrew) for an external-command target; otherwise (and always for a shell
 # function target, which the `timeout` binary cannot exec) it uses a pure-shell
 # watchdog: launch the command in its own process group, poll until it finishes,
-# and SIGTERM (then SIGKILL) the whole group on timeout. The pure-shell path is
-# what protects the bug-#39219 case — a stalled Electron download on macOS,
-# where `timeout` is usually absent — turning an indefinite hang into a non-zero
-# exit so callers (install_desktop) can self-heal via the mirror fallback.
+# and SIGTERM (then SIGKILL) the whole group on timeout. The pure-shell path
+# protects macOS, where `timeout` is usually absent, by turning an indefinite
+# download hang into a non-zero exit (#39219).
 #
 # $1 (timeout) must be a bare integer number of seconds — the pure-shell loop
 # compares it arithmetically (the `timeout` binary would also accept suffixes
@@ -2611,7 +2596,7 @@ run_with_timeout() {
     local timeout_seconds="$1"
     shift
 
-    # Normalize to a bare integer; fall back to the desktop default if a caller
+    # Normalize to a bare integer; fall back to a conservative default if a caller
     # ever passes a suffixed/empty value (the pure-shell loop needs an int).
     case "$timeout_seconds" in
         ''|*[!0-9]*) timeout_seconds=900 ;;
@@ -2648,7 +2633,7 @@ run_with_timeout() {
     fi
 
     # Pure-shell fallback: run in a new process group so we can kill the whole
-    # subtree (npm spawns node + the Electron downloader as children).
+    # subtree (npm spawns node and installer children).
     set -m
     ( "$@" ) &
     local cmd_pid=$!
@@ -2811,21 +2796,16 @@ configure_browser_env_from_system_browser() {
 # Select the npm workspaces a CLI install actually needs, into the
 # NODE_DEPS_WORKSPACE_ARGS array.
 #
-# A bare `npm install` at the repo root resolves package.json's `apps/*`
-# glob, which materializes apps/desktop — and with it node-pty, which ships
-# no Linux prebuild and falls back to `node-gyp rebuild`. On a host without
-# make/gcc that rebuild fails, and since #85297 made a failed npm install
-# fatal it aborts the whole install of a machine that will never launch
-# Electron or a PTY addon (#38311, #38772). Desktop dependencies are
-# installed by install_desktop(), reachable only via --include-desktop.
+# Name the workspaces a CLI install needs instead of materializing every
+# workspace and its optional native dependencies (#38311, #38772).
 #
-# Naming ui-tui/web excludes the unnamed apps/* workspaces, and
+# Naming ui-tui/web also includes their shared dependencies, and
 # --include-workspace-root keeps the root's own devDependencies (the shared
 # ESLint flat config each workspace imports) from being pruned by the scoped
 # install — the same closure `hermes update` installs
 # (hermes_cli/main.py::_update_node_dependencies). Prebuilt/partial checkouts
 # can lack a workspace, and naming a missing one makes npm fail hard, so fall
-# back to a root-only install that still skips apps/*.
+# back to a root-only install.
 node_deps_workspace_args() {
     local install_dir="$1"
     NODE_DEPS_WORKSPACE_ARGS=()
@@ -2855,13 +2835,13 @@ install_node_deps() {
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
         # Time-boxed: a stalled registry fetch would otherwise hang here with no
-        # progress (same #39219 stall class as the desktop build below).
+        # progress (#39219).
         # A failed npm install used to still print "✓ Node.js dependencies
         # installed", hiding the degradation from the user (#77003). Now it
         # fails the install outright instead of burying the warning (#85297).
         # Capture npm output so failures are diagnosable (#87340).
-        # Scoped to the workspaces a CLI install needs so apps/desktop's
-        # node-pty is never built here — see node_deps_workspace_args().
+        # Scoped to the workspaces a CLI install needs; see
+        # node_deps_workspace_args().
         node_deps_workspace_args "$INSTALL_DIR"
         local npm_log
         npm_log="$(mktemp)"
@@ -3071,7 +3051,7 @@ cua_driver_runtime_compatible() {
 install_computer_use_driver() {
     # cua-driver powers the computer_use toolset (background desktop control).
     # Provision it at install time so enabling the tool later — via
-    # `hermes tools`, the dashboard, or the desktop app — is a config flip,
+    # `hermes tools` or the dashboard — is a config flip,
     # not a surprise multi-minute binary fetch (the confusion this fixes:
     # users had to discover `hermes computer-use install` on their own).
     # Best-effort and non-fatal: the enable paths still lazy-install via
@@ -3250,48 +3230,6 @@ maybe_start_gateway() {
     fi
 }
 
-write_bootstrap_marker() {
-    # Writes $INSTALL_DIR/.hermes-bootstrap-complete, which tells the Hermes
-    # desktop app (apps/desktop/electron/main.ts) and the macOS launcher fast
-    # path (apps/bootstrap-installer) "a real install finished here -- don't
-    # re-run first-run bootstrap."
-    #
-    # Schema mirrors install.ps1's Write-BootstrapMarker and main.ts's
-    # writeBootstrapMarker(). Keep the three in lockstep:
-    #   schemaVersion 1 + pinnedCommit (length >= 7) are what the desktop
-    #   validator requires; desktopVersion is omitted because only the desktop
-    #   app knows its own version.
-    if [ ! -d "$INSTALL_DIR" ]; then
-        log_warn "Skipping bootstrap marker: $INSTALL_DIR doesn't exist"
-        return 0
-    fi
-
-    # Explicit --commit wins; otherwise read HEAD from the checkout we just
-    # installed. If neither resolves, skip the marker entirely rather than
-    # write one the desktop will reject -- an absent marker is a clean
-    # "bootstrap needed", a malformed one is a confusing half-state.
-    local pinned_commit="$INSTALL_COMMIT"
-    if [ -z "$pinned_commit" ]; then
-        pinned_commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || pinned_commit=""
-    fi
-
-    if [ -z "$pinned_commit" ]; then
-        log_warn "Skipping bootstrap marker: could not resolve HEAD in $INSTALL_DIR"
-        return 0
-    fi
-
-    local marker_path="$INSTALL_DIR/.hermes-bootstrap-complete"
-    local tmp_path="$marker_path.tmp"
-
-    # Atomic publish: the macOS launcher predicate only checks existence, so a
-    # torn write would arm the fast path against a half-written marker.
-    printf '{\n  "schemaVersion": 1,\n  "pinnedCommit": "%s",\n  "pinnedBranch": "%s",\n  "completedAt": "%s"\n}\n' \
-        "$pinned_commit" \
-        "$BRANCH" \
-        "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$tmp_path"
-    mv -f "$tmp_path" "$marker_path"
-}
-
 print_success() {
     echo ""
     echo -e "${GREEN}${BOLD}"
@@ -3403,7 +3341,7 @@ ensure_browser() {
     local log_file
     log_file="$(mktemp)"
     # Time-boxed (#39219): a stalled npm registry fetch here would otherwise
-    # hang the installer with no progress, same class as the desktop build.
+    # hang the installer with no progress (#39219).
     if ! run_with_timeout "$NODE_DEPS_TIMEOUT" "$npm_bin" install -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
         "@askjo/camofox-browser@^1.5.2" \
         >"$log_file" 2>&1; then
@@ -3464,225 +3402,14 @@ ensure_mode() {
 }
 
 
-# Clear the cached Electron download + any half-written unpacked output so the
-# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
-# the per-user Electron download cache - most often a partial/resumed download
-# that leaves concatenated junk - makes electron-builder's `unpack-electron`
-# extract a tree MISSING the electron binary, so the `electron`->`Hermes` rename
-# dies with ENOENT and every re-run repeats the broken extraction forever. This
-# is the bash sibling of install.ps1's Clear-ElectronBuildCache and the Python
-# _purge_electron_build_cache() used by `hermes desktop`; install.sh was the only
-# build path lacking it. Echoes the removed paths (one per line); best-effort.
-clear_electron_build_cache() {
-    local desktop_dir="$1"
-    local removed=""
-
-    # Per-user Electron download cache dirs, honoring the overrides @electron/get
-    # respects, then the platform defaults (macOS: ~/Library/Caches/electron,
-    # Linux: $XDG_CACHE_HOME/electron or ~/.cache/electron).
-    local cache_dirs=()
-    [ -n "${electron_config_cache:-}" ] && cache_dirs+=("$electron_config_cache")
-    [ -n "${ELECTRON_CACHE:-}" ] && cache_dirs+=("$ELECTRON_CACHE")
-    if [ "$OS" = "macos" ]; then
-        cache_dirs+=("$HOME/Library/Caches/electron")
-    else
-        [ -n "${XDG_CACHE_HOME:-}" ] && cache_dirs+=("$XDG_CACHE_HOME/electron")
-        cache_dirs+=("$HOME/.cache/electron")
-    fi
-
-    local dir zip
-    for dir in "${cache_dirs[@]}"; do
-        [ -d "$dir" ] || continue
-        # Recurse: the bad copy may be the top-level zip OR a copy inside an
-        # @electron/get hash subdir.
-        while IFS= read -r zip; do
-            [ -n "$zip" ] || continue
-            if rm -f "$zip" 2>/dev/null; then
-                removed="$removed$zip
-"
-            fi
-        done <<EOF
-$(find "$dir" -type f -name 'electron-*.zip' 2>/dev/null)
-EOF
-    done
-
-    # A half-written unpacked dir from an interrupted prior pack poisons the
-    # rename even after the zip is fixed (mac-arm64-unpacked / linux-unpacked).
-    local release_dir="$desktop_dir/release"
-    if [ -d "$release_dir" ]; then
-        local unpacked
-        while IFS= read -r unpacked; do
-            [ -n "$unpacked" ] || continue
-            if rm -rf "$unpacked" 2>/dev/null; then
-                removed="$removed$unpacked
-"
-            fi
-        done <<EOF
-$(find "$release_dir" -maxdepth 1 -type d -name '*-unpacked' 2>/dev/null)
-EOF
-    fi
-
-    printf '%s' "$removed"
-}
-
-# Run the desktop pack in $1 (the apps/desktop dir). `npm run pack` = tsc +
-# vite build + electron-builder --dir, producing an unpacked app for the
-# current OS. Signing auto-discovery is disabled so electron-builder falls back
-# to an ad-hoc signature instead of grabbing an unrelated Developer ID from the
-# keychain (a real signed/notarized .dmg needs Apple credentials — a separate
-# release concern). Optional $2 = an ELECTRON_MIRROR base URL for this attempt,
-# used as a fallback when the default GitHub release download is blocked.
-_desktop_pack() {
-    local desktop_dir="$1"
-    local mirror="${2:-}"
-    if [ -n "$mirror" ]; then
-        ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
-    else
-        ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
-    fi
-}
-
-# Last-resort Electron mirror after GitHub download fails (#47266).
-DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
-
-# Per-attempt wall-clock cap for the desktop npm install / electron-builder pack
-# (#39219). A stalled (not failed) Electron download on a throttled/blocked link
-# never returns, so without this the installer hangs forever on "Build desktop
-# app". 900s is generous enough for a slow-but-progressing ~150MB fetch + build;
-# override with DESKTOP_BUILD_TIMEOUT for very slow links.
-DESKTOP_BUILD_TIMEOUT="${DESKTOP_BUILD_TIMEOUT:-900}"
-
-# Wall-clock cap for the plain registry `npm install`s (browser-tools + TUI
-# deps). Same #39219 stall class but no ~150MB Electron binary, so a shorter
-# default; override with NODE_DEPS_TIMEOUT for very slow links.
+# Wall-clock cap for registry npm installs (browser-tools + TUI deps). A
+# stalled registry fetch must not hang the installer forever (#39219).
 NODE_DEPS_TIMEOUT="${NODE_DEPS_TIMEOUT:-600}"
-
-# Electron package dir — workspace-local nest first, then root hoist.
-_electron_dir() {
-    local install_dir="$1"
-    if [ -d "$install_dir/apps/desktop/node_modules/electron" ]; then
-        printf '%s\n' "$install_dir/apps/desktop/node_modules/electron"
-    else
-        printf '%s\n' "$install_dir/node_modules/electron"
-    fi
-}
-
-# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.mjs).
-_electron_dist_ok() {
-    local install_dir="$1"
-    local electron_dir
-    electron_dir="$(_electron_dir "$install_dir")"
-    if [ "$OS" = "macos" ]; then
-        [ -e "$electron_dir/dist/Electron.app/Contents/MacOS/Electron" ]
-    else
-        [ -e "$electron_dir/dist/electron" ]
-    fi
-}
-
-# Best-effort: run electron/install.js to populate dist/ (optional mirror).
-_restore_electron_dist() {
-    local install_dir="$1"
-    local mirror="${2:-}"
-    local electron_dir
-    electron_dir="$(_electron_dir "$install_dir")"
-    _electron_dist_ok "$install_dir" && return 0
-
-    [ -f "$electron_dir/install.js" ] || return 1
-    command -v node >/dev/null 2>&1 || return 1
-
-    rm -rf "$electron_dir/dist" 2>/dev/null || true
-    rm -f "$electron_dir/path.txt" 2>/dev/null || true
-
-    if [ -n "$mirror" ]; then
-        ( cd "$electron_dir" && ELECTRON_MIRROR="$mirror" node install.js ) || true
-    else
-        ( cd "$electron_dir" && node install.js ) || true
-    fi
-    _electron_dist_ok "$install_dir"
-}
-
-_electron_pkg_staged_missing_dist() {
-    local install_dir="$1"
-    local electron_dir
-    electron_dir="$(_electron_dir "$install_dir")"
-    [ -f "$electron_dir/package.json" ] && [ -f "$electron_dir/install.js" ] && ! _electron_dist_ok "$install_dir"
-}
-
-_restore_electron_dist_with_fallback() {
-    local install_dir="$1"
-    _restore_electron_dist "$install_dir" \
-        || { [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$install_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; }
-}
-
-# Build apps/desktop into a launchable native app. Mirrors install.ps1's
-# Install-Desktop: a root-level npm install so the apps/* workspace resolves
-# the desktop's own deps (Electron ~150MB), then `npm run pack`
-# (electron-builder --dir) which emits an unpacked app for the current OS. Only invoked
-# via the 'desktop' stage / --include-desktop, which the Electron app's own
-# first-launch bootstrap never requests (it must not rebuild itself).
-install_desktop_voice_deps() {
-    # Desktop ships with working voice out of the box: eagerly install the
-    # wake-word + local-STT stacks ([wake] + [voice] extras) instead of
-    # leaving them to lazy first-use install. Policy change (Teknium, July
-    # 2026, #70509 testing): the first ear-click used to trigger a
-    # multi-minute onnxruntime pip install that froze the UI and blew RPC
-    # timeouts. Lazy install remains the fallback for CLI-only installs and
-    # for anything this best-effort step fails to fetch.
-    local _prev_venv="${VIRTUAL_ENV:-}"
-    if [ "$USE_VENV" = true ]; then
-        export VIRTUAL_ENV="$INSTALL_DIR/venv"
-    fi
-    if [ -z "${UV_CMD:-}" ]; then
-        install_uv || true
-    fi
-    if [ -z "${UV_CMD:-}" ]; then
-        log_warn "uv unavailable — voice/wake deps will lazy-install at first use instead"
-        return 0
-    fi
-    log_info "Installing voice + wake-word dependencies (onnxruntime, faster-whisper — 1-3min)..."
-    if (cd "$INSTALL_DIR" && $UV_CMD pip install -e ".[wake,voice]") ; then
-        log_success "Voice + wake-word dependencies installed"
-    else
-        log_warn "Voice/wake dependency install failed — they will lazy-install at first use"
-    fi
-    if [ "$USE_VENV" = true ] && [ -z "$_prev_venv" ]; then
-        unset VIRTUAL_ENV
-    fi
-    return 0
-}
-
-install_desktop() {
-    # `hermes desktop --build-only` is the current build authority (the same
-    # path as `hermes gui` and updates). Do not keep a competing installer-
-    # local npm/Electron implementation here.
-    local hermes_python="$INSTALL_DIR/venv/bin/python"
-    if [ "$USE_VENV" = false ]; then
-        hermes_python="${PYTHON_PATH:-python3}"
-    elif [ ! -x "$hermes_python" ]; then
-        log_error "Cannot build desktop app: venv python missing at $hermes_python"
-        return 1
-    fi
-
-    log_info "Building desktop app (hermes desktop --build-only)..."
-    if (cd "$INSTALL_DIR" && "$hermes_python" "$INSTALL_DIR/hermes" desktop --build-only); then
-        log_success "Desktop app built"
-    else
-        log_error "Desktop app build failed (hermes desktop --build-only)"
-        return 1
-    fi
-    restore_dirty_lockfiles "$INSTALL_DIR"
-}
-
-stage_desktop() {
-    # Keep the parsed product CLI as the build authority for both the stage
-    # protocol and sourced installer consumers; no installer-local build path.
-    install_desktop
-}
 
 # Each --stage runs in its own process, so (unlike the monolithic main() where
 # clone_repo cd's once and later steps inherit it) a stage that operates on the
 # checkout must cd into it explicitly. Without this, install_deps/setup_path run
-# from the desktop app's cwd and resolve `.` / the venv against the wrong tree.
+# from the caller's cwd and resolve `.` / the venv against the wrong tree.
 require_install_dir() {
     if [ -z "$INSTALL_DIR" ] || [ ! -d "$INSTALL_DIR" ]; then
         log_error "Install directory not found: ${INSTALL_DIR:-<unset>}"
@@ -3692,8 +3419,7 @@ require_install_dir() {
     cd "$INSTALL_DIR"
 }
 
-# Desktop bootstrap stage protocol. Mirrors the Windows install.ps1 surface
-# closely enough for the Electron bootstrap runner to show structured progress.
+# Installer stage protocol, shared with install.ps1 for programmatic drivers.
 run_stage_body() {
     local stage="$1"
 
@@ -3766,23 +3492,10 @@ run_stage_body() {
             require_install_dir
             maybe_start_gateway
             ;;
-        desktop)
-            detect_os
-            resolve_install_layout
-            require_install_dir
-            # Each stage runs in its own process, so the Hermes-managed Node
-            # provisioned during prerequisites/node-deps (at $HERMES_HOME/node/bin)
-            # isn't on PATH here. check_node re-adds it (or installs if missing)
-            # so install_desktop can find npm instead of silently skipping.
-            check_node
-            install_desktop_voice_deps
-            stage_desktop
-            ;;
         complete)
             detect_os
             resolve_install_layout
             print_success
-            write_bootstrap_marker
             # Code-scoped stamp: write next to the install tree, not into
             # $HERMES_HOME. $HERMES_HOME is a shared data dir (it can be
             # bind-mounted into a Docker gateway too), so a stamp there gets
@@ -3819,7 +3532,7 @@ run_stage_protocol() {
     # on failure (clone_repo, install_deps, etc. were written for the monolithic
     # flow) only exits the subshell — the parent still reaches the JSON result
     # frame below. Without this, a failed --stage would terminate the process
-    # before emitting the frame and the Rust/Electron parser would see "no
+    # before emitting the frame and the stage driver would see "no
     # result frame" instead of a clean {ok:false} contract response.
     set +e
     ( run_stage_body "$stage" )

@@ -4,7 +4,7 @@
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
   "workspaces": [
-    "apps/*",
+    "apps/shared",
     "ui-tui",
     "ui-tui/packages/*",
     "web",
@@ -15,7 +15,6 @@
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
-    "install:desktop": "npm install --workspace apps/desktop",
     "audit:root": "npm audit --workspaces=false",
     "audit:web": "npm audit --workspace web",
     "audit:tui": "npm audit --workspace ui-tui",
@@ -65,11 +64,6 @@
   "allowScripts": {
     "unicode-animations": false,
     "esbuild@0.28.1": true,
-    "node-pty@1.1.0": true,
-    "electron-winstaller@5.4.0": true,
-    "electron@40.10.2": true,
-    "fsevents@2.3.2": true,
-    "fsevents@2.3.3": true,
-    "get-windows@9.3.0": true
+    "fsevents@2.3.3": true
   }
 }

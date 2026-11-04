@@ -4,9 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import os
-import shutil
 import ssl
-import subprocess
 import sys
 from pathlib import Path
 from hermes_cli.colors import Colors, color
@@ -281,62 +279,6 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         issues.append("Enable linger for the gateway user service: sudo loginctl enable-linger $USER")
 
 
-_TCC_CDHASH_DETAIL = (
-    "the desktop bundle's designated requirement is cdhash-pinned (pre-#73681 build) — rebuilds invalidate "
-    "all permission grants. Run `hermes update` to get the stable identifier-pinned signing identity, "
-    "then re-grant permissions once.")
-_TCC_STABLE_DETAIL = {
-    True: "(certificate-anchored DR; grants survive rebuilds)",
-    False: "(identifier-pinned DR; grants survive rebuilds — for the strongest anchor, see `hermes desktop --setup-tcc-identity`)",
-}
-
-
-def check_macos_tcc_grants() -> None:
-    """Check macOS TCC grant persistence for a locally-built desktop bundle; silent on non-macOS / no bundle.
-
-    TCC keys grants to the app's designated requirement (DR). A cdhash-pinned ad-hoc DR changes on every
-    rebuild, so grants silently stop matching while the Settings toggle stays ON; identifier-pinned builds
-    survive rebuilds, but grants made to older binaries stay stale until re-granted once. TCC.db needs Full
-    Disk Access, so the DR string is the only readable signal (a proxy for the signing class, not DR wording).
-
-    See #86385.
-    """
-    app = _desktop_app_bundle() if sys.platform == "darwin" else None
-    if app is None:
-        return
-    dr = _macos_desktop_dr(app)
-    if not dr:
-        return check_warn("macOS TCC grant check", "(could not read code-signing requirement of the desktop bundle)")
-    if "cdhash" in dr.lower():
-        return check_warn("macOS TCC grants will reset after every update", _TCC_CDHASH_DETAIL)
-    # --setup-tcc-identity or notarized build (certificate-anchored) is the strongest anchor.
-    check_ok("macOS TCC signing identity is stable", _TCC_STABLE_DETAIL["certificate" in dr.lower()])
-    check_info("If macOS still re-prompts for permissions (toggle shows ON): the stored grant is stale — run "
-               "`tccutil reset ScreenCapture com.nousresearch.hermes` (repeat per affected service), toggle it ON in "
-               "System Settings, then fully quit & relaunch Hermes once.")
-
-
-def _desktop_app_bundle() -> Path | None:
-    """Locate the locally-built desktop bundle (``apps/desktop/release/mac-<arch>/Hermes.app``), newest first.
-
-    The only layout whose ad-hoc re-signed bundle can invalidate TCC grants. ``/Applications/Hermes.app`` is
-    deliberately not probed: it is the separately-signed, certificate-anchored Hermes-Setup launcher.
-    """
-    release_dir = Path(__file__).resolve().parents[1] / "apps" / "desktop" / "release"
-    candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
-    return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
-
-
-def _macos_desktop_dr(app: Path) -> str | None:
-    """Return the bundle's designated requirement string, or None on failure (a hanging codesign must never abort doctor)."""
-    codesign = shutil.which("codesign")
-    try:
-        proc = subprocess.run([codesign, "-d", "--requirements", "-", str(app)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15) if codesign else None
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    return None if proc is None or proc.returncode != 0 else (proc.stdout or "") + (proc.stderr or "")
-
-
 def check_macos_tcc_anchor(should_fix: bool = False) -> None:
     """Report (and with --fix install) the dylib-complete TCC anchor; silent on non-macOS / non-uv interpreters.
     Never raises. Install is gated by the module's pre-install boot probe, so ``--fix`` cannot brick the CLI.
@@ -377,7 +319,7 @@ def check_macos_full_disk_access() -> None:
                    "will never trip per-folder dialogs (Desktop/Downloads/Documents/...) again. Open: System Settings → "
                    "Privacy & Security → Full Disk Access — or run:\n"
                    "      open \"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles\"\n"
-                   "    then enable your terminal (and Hermes.app if you use Desktop), and restart them once. "
+                   "    then enable your terminal and restart it once. "
                    "With Hermes' stable signing identities the grant survives every update.")
     except OSError:
         pass  # missing dir / other error: indeterminate, stay silent
@@ -470,10 +412,6 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
     # permanently. Silent on non-macOS.
     check_macos_full_disk_access()
     _check_version_consistency(f.issues)
-    # macOS TCC grant persistence (issue #86385): a locally-built desktop bundle whose DR is cdhash-pinned
-    # loses every permission grant on each rebuild; a post-#73681 identifier-pinned DR survives, but grants
-    # made to older binaries stay stale (toggle shows ON while macOS re-prompts).
-    check_macos_tcc_grants()
 
 
 @doctor_check()

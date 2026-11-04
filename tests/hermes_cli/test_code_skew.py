@@ -94,14 +94,14 @@ class TestDashboardCodeSkewGuard:
         # Browser-dashboard path: never hardcode a Linux-only unit (#97046).
         assert "systemctl" not in msg
 
-    def test_serve_guard_message_points_at_desktop_backend(self, monkeypatch):
+    def test_serve_guard_message_points_at_serve_process(self, monkeypatch):
         from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
         msg = _web_server_config._dashboard_code_skew_guard()
         assert msg is not None
-        assert "Desktop-owned backend" in msg
+        assert "Hermes serve process" in msg
         assert "systemctl" not in msg
         assert "hermes-dashboard" not in msg
 

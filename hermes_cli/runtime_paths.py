@@ -52,20 +52,10 @@ def base_venv(project_root: Path) -> Path:
 
 
 def store_root(project_root: Path) -> Path:
-    """Read the stamped byte store before PM dependencies are available."""
+    """Resolve the dependency byte store without install-shape special cases."""
     override = os.environ.get("HERMES_RUNTIME_DIR")
     if override:
         return Path(override).resolve()
-    root = Path(project_root).resolve()
-    for directory in (root, *root.parents):
-        stamp = directory / "install-stamp.json"
-        if stamp.is_file():
-            try:
-                data = json.loads(stamp.read_text(encoding="utf-8-sig"))
-            except (OSError, ValueError):
-                return get_default_hermes_root() / "tools"
-            value = data.get("runtimeDir") if isinstance(data, dict) else None
-            return Path(value).resolve() if value else get_default_hermes_root() / "tools"
     return get_default_hermes_root() / "tools"
 
 

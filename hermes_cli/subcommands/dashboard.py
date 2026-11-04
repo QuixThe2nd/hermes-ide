@@ -1,7 +1,7 @@
 """``hermes dashboard`` / ``hermes serve`` subcommand parsers.
 
 ``dashboard`` is the browser web UI; ``serve`` is the same gateway, headless —
-what the desktop app and remote backends run. ``serve`` also skips the web UI
+what TUI and other JSON-RPC clients run. ``serve`` also skips the web UI
 build (``headless_backend=True``): pure JSON-RPC/WS clients never load the SPA.
 Both share one handler (``cmd_dashboard`` → ``start_server``).
 """
@@ -46,16 +46,16 @@ def _add_server_runtime_args(parser) -> None:
 
 
 def _configure_serve_parser(parser, *, cmd_dashboard: Callable) -> None:
-    """Canonical ``serve`` arguments; shared by the full tree and Desktop's lean hot-path parser."""
+    """Canonical ``serve`` arguments; shared by the full tree and the lean hot-path parser."""
     _add_server_runtime_args(parser)
     # Redundant (serve is always headless) but accepted so legacy callers don't error.
     parser.add_argument("--no-open", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--ssh-session-token-file", dest="ssh_session_token_file", metavar="PATH", default=None,
-        help="Read a one-shot Desktop SSH session token from PATH")
+        help="Read a one-shot SSH session token from PATH")
     parser.add_argument(
         "--ssh-owner-nonce", dest="ssh_owner_nonce", metavar="NONCE", default=None,
-        help="Identify a Desktop-owned SSH backend process")
+        help="Identify an SSH-owned backend process")
     parser.set_defaults(func=cmd_dashboard, no_open=True, headless_backend=True, command="serve")
 
 
@@ -65,9 +65,8 @@ def build_serve_parser(
     """Build the standalone parser used by the lean ``serve`` dispatch path."""
     parser = argparse.ArgumentParser(
         prog="hermes serve",
-        description="Run the Hermes backend server - the JSON-RPC/WebSocket gateway the "
-            "desktop app and remote clients connect to. Headless: it never opens "
-            "a browser UI.",
+        description="Run the Hermes backend server - the JSON-RPC/WebSocket gateway for "
+            "TUI and other remote clients. Headless: it never opens a browser UI.",
         add_help=add_help, exit_on_error=exit_on_error)
     _configure_serve_parser(parser, cmd_dashboard=cmd_dashboard)
     return parser
@@ -75,7 +74,7 @@ def build_serve_parser(
 
 def build_dashboard_parser(
     subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable) -> None:
-    """Attach ``dashboard`` (browser UI) and ``serve`` (headless backend the desktop spawns)."""
+    """Attach ``dashboard`` (browser UI) and ``serve`` (headless JSON-RPC backend)."""
     dashboard_parser = subparsers.add_parser(
         "dashboard", help="Start the web UI dashboard",
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
@@ -89,15 +88,14 @@ def build_dashboard_parser(
     dashboard_parser.add_argument("--tui", action="store_true", help=argparse.SUPPRESS)
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
-    # `serve`: same gateway as `dashboard`, never opens a browser. Exists so the desktop
-    # app / remote backends launch a backend WITHOUT invoking `dashboard` — independent
+    # `serve`: same gateway as `dashboard`, never opens a browser. TUI and other
+    # JSON-RPC clients launch a backend WITHOUT invoking `dashboard` — independent
     # surfaces that merely share this server.
     serve_parser = subparsers.add_parser(
         "serve",
-        help="Start the Hermes backend server (headless; powers the desktop app and remote backends)",
-        description="Run the Hermes backend server — the JSON-RPC/WebSocket gateway the "
-            "desktop app and remote clients connect to. Headless: it never opens "
-            "a browser UI.")
+        help="Start the headless Hermes JSON-RPC/WebSocket backend",
+        description="Run the Hermes backend server — the JSON-RPC/WebSocket gateway for "
+            "TUI and other remote clients. Headless: it never opens a browser UI.")
     _configure_serve_parser(serve_parser, cmd_dashboard=cmd_dashboard)
 
     # `register` is nested so bare `hermes dashboard` keeps launching the server.

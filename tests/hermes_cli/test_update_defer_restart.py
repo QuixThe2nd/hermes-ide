@@ -36,7 +36,7 @@ POST_SHA = "2" * 40
 
 def _make_head_moved_side_effect(pre_sha=PRE_SHA, post_sha=POST_SHA):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""
-    calls = {"n": 0}
+    calls = {"moved": False}
 
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
@@ -48,11 +48,11 @@ def _make_head_moved_side_effect(pre_sha=PRE_SHA, post_sha=POST_SHA):
             return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
 
         if joined.endswith("rev-parse HEAD"):
-            if calls["n"] == 0:
-                calls["n"] += 1
-                return SimpleNamespace(returncode=0, stdout=f"{pre_sha}\n", stderr="")
-            return SimpleNamespace(returncode=0, stdout=f"{post_sha}\n", stderr="")
+            sha = post_sha if calls["moved"] else pre_sha
+            return SimpleNamespace(returncode=0, stdout=f"{sha}\n", stderr="")
 
+        if "merge --ff-only" in joined:
+            calls["moved"] = True
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     return side_effect
@@ -113,6 +113,8 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_venv_core_imports_healthy", lambda: (True, ""))
     monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
+    monkeypatch.setattr("pm.sync_venv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **k: True)
     # Current main's import-health probe speaks a per-probe marker protocol;
     # the generic git-mock fallback above returns empty stdout, which that
     # protocol reads as a terminated probe and the deferred path correctly
@@ -410,9 +412,6 @@ _REQUIRED_STEP_FAILURES = {
     "web_build": lambda mp: mp.setattr(
         hermes_main, "_build_web_ui", lambda *a, **k: False
     ),
-    "desktop_build": lambda mp: mp.setattr(
-        update_cmd, "_rebuild_desktop_after_update", lambda *a, **k: False
-    ),
     "skill_sync": lambda mp: mp.setattr(
         "tools.skills_sync.sync_skills",
         lambda **kw: (_ for _ in ()).throw(RuntimeError("disk full")),
@@ -452,9 +451,6 @@ def test_deferred_unselected_optional_work_still_prepares(monkeypatch, tmp_path)
     _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
     _forbid_restart_paths(monkeypatch)
     monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
-    monkeypatch.setattr(
-        update_cmd, "_rebuild_desktop_after_update", lambda *a, **k: True
-    )
 
     hermes_main.cmd_update(_update_args(defer_restart=True))
 
@@ -510,12 +506,6 @@ def _patch_no_update_repair(monkeypatch):
         hermes_main, "_refresh_active_lazy_features", lambda *a, **k: True
     )
     monkeypatch.setattr(
-        hermes_main, "_restore_active_tool_dependencies", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        hermes_main, "_abort_dependency_sync_if_self_locked", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
         update_cmd, "_check_and_apply_config_migration", lambda **k: None
     )
     monkeypatch.setattr(update_cmd, "_print_update_completion", lambda *a, **k: None)
@@ -557,12 +547,6 @@ def test_deferred_no_update_repair_failure_withholds_the_stamp(
     )
     monkeypatch.setattr(
         hermes_main, "_refresh_active_lazy_features", lambda *a, **k: True
-    )
-    monkeypatch.setattr(
-        hermes_main, "_restore_active_tool_dependencies", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        hermes_main, "_abort_dependency_sync_if_self_locked", lambda *a, **k: None
     )
     monkeypatch.setattr(
         update_cmd, "_check_and_apply_config_migration", lambda **k: None

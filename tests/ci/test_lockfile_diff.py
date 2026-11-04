@@ -77,9 +77,9 @@ def test_render_markdown_contains_versions_and_nested_display():
         _mod.parse_lockfile(BASE),
         _mod.parse_lockfile(_lock({"node_modules/react": {"version": "19.0.0"}})),
     )
-    md = _mod.render_markdown({"apps/desktop/package-lock.json": d})
+    md = _mod.render_markdown({"package-lock.json": d})
     # Fragment starts directly with the per-lockfile subsection header.
-    assert md.startswith("#### `apps/desktop/package-lock.json`")
+    assert md.startswith("#### `package-lock.json`")
     assert "`18.2.0`" in md and "`19.0.0`" in md
     # nested display name keeps the parent chain visible
     assert "nested under foo" in md

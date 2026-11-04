@@ -25,11 +25,9 @@ _ZIP_STAGING_ARTIFACT_SUFFIXES = ".hermes-update-staging", ".hermes-update-old"
 _ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
 
 # Gitignored build outputs the source ZIP never ships, nested under top-level entries the swap replaces
-# (so `_ZIP_PRESERVED_TOP_LEVEL` cannot shield them): the packaged Desktop app, its renderer bundle and
-# its own node_modules (electron itself), and the dashboard assets. The dirty-tree guard admits them and
+# (so `_ZIP_PRESERVED_TOP_LEVEL` cannot shield them). The dirty-tree guard admits them and
 # `_stage_entries` grafts the live copies into the staged tree so the swap keeps them (#90495).
 _ZIP_PRESERVED_NESTED = {
-    "apps": ("desktop/release", "desktop/dist", "desktop/node_modules", "desktop/build"),
     "hermes_cli": ("web_dist",),
     "scripts": ("whatsapp-bridge/node_modules",),
     "ui-tui": ("dist", "node_modules", "packages/hermes-ink/dist"),
@@ -283,9 +281,8 @@ def _require_staging_space(extracted: str, entries: list[str], project_root: str
 
 
 def _link_or_copy_artifact(source: str, destination: str) -> None:
-    """Hardlink where the filesystem allows (apps/desktop/node_modules is hundreds of MB, and a link stays
-    valid after the swap unlinks the old tree; on Windows a link also succeeds on a locked Hermes.exe
-    where copy2 raises); byte copy otherwise."""
+    """Hardlink where possible so large dependency trees stay cheap and links survive the swap;
+    byte-copy otherwise, including filesystems that do not support hardlinks."""
     try:
         os.link(source, destination)
     except OSError:
@@ -312,8 +309,7 @@ def _stage_entries(extracted: str, entries: list[str], project_root: str) -> lis
         for item in entries:
             dst = os.path.join(project_root, item)
             staged.append((_stage_replacement(os.path.join(extracted, item), dst), dst))
-            # The source ZIP carries only source; the built outputs (#70337/#87331 release/, then
-            # dist/, apps/desktop/node_modules and web_dist — #90495) exist only in the LIVE tree. Graft
+            # The source ZIP carries only source; built outputs exist only in the LIVE tree. Graft
             # them into the staged copy BEFORE the swap so the commit preserves them atomically.
             _graft_nested_artifacts(item, dst, staged[-1][0])
     except Exception:
@@ -427,7 +423,7 @@ def _zip_archive_url(branch: str) -> str:
     return archive_url
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windows_gateway_resume=None) -> bool:
+def _update_via_zip(args, *, _windows_gateway_resume=None) -> bool:
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
     drivers causing 'Invalid argument'). Swaps the tree, then hands the rest of the run to an
     interpreter born on the new code (never returns; the child owns the receipt and exit code)."""
@@ -455,19 +451,16 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windo
     from dataclasses import replace as _replace
     _hand_off_post_swap(
         args, swap="zip", branch=branch, opts=_replace(opts, pre_update_version=pre_update_version),
-        gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update,
-        _windows_gateway_resume=_windows_gateway_resume)
+        gateway_mode=gateway_mode, _windows_gateway_resume=_windows_gateway_resume)
     return True  # unreachable: _hand_off_post_swap exits with the child's code
 
 
 def _finish_zip_update(
-    *, active_tool_dependencies, pre_update_version, had_desktop_app_before_update: bool,
-    _windows_gateway_resume=None) -> bool:
-    """Post-swap tail of the ZIP path (runs in the interpreter born on the new tree). Returns
-    ``False`` when a Desktop rebuild ran and failed."""
+    *, active_tool_dependencies, pre_update_version, _windows_gateway_resume=None) -> bool:
+    """Post-swap tail of the ZIP path, run in the interpreter born on the new tree."""
     from hermes_cli.update_cmd import (
         _finish_dashboard_update_cleanup, _m, _print_curator_first_run_notice,
-        _print_curator_recent_run_notice, _print_update_summary, _rebuild_desktop_after_update,
+        _print_curator_recent_run_notice, _print_update_summary,
         _update_node_dependencies, _validate_critical_modules_import,
         _verify_and_restore_state_dbs_post_update,
     )
@@ -488,9 +481,6 @@ def _finish_zip_update(
         _m().sys.exit(1)
     node_failures = _update_node_dependencies()
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
-    desktop_build_ok = _rebuild_desktop_after_update(
-        _m().PROJECT_ROOT / "apps" / "desktop", had_desktop_app_before_update=had_desktop_app_before_update,
-    )
     with suppress(Exception):
         print("→ Syncing bundled skills...")
         _print_bundled_skills_sync_report()
@@ -504,7 +494,7 @@ def _finish_zip_update(
         # See #97994.
         _verify_and_restore_state_dbs_post_update()
     update_complete = _print_update_summary(
-        node_failures=node_failures, desktop_build_ok=desktop_build_ok, pre_update_version=pre_update_version,
+        node_failures=node_failures, pre_update_version=pre_update_version,
     )
     with _best_effort('Curator first-run notice failed: %s'):
         _print_curator_first_run_notice()

@@ -1,9 +1,9 @@
 """Tests for the install-kind uninstall gate + the data-only mode.
 
 The rule under test: only a git checkout may have its code removed by the
-uninstaller. Sealed trees (Nix, the bundled desktop app, Docker) refuse the
-code-removing modes with the steward's own instructions, and the one mode
-valid everywhere — ``data`` — removes user data without touching code.
+uninstaller. Sealed trees (Nix, Docker) refuse the code-removing modes with
+the steward's own instructions, and the one mode valid everywhere — ``data``
+— removes user data without touching code.
 
 Adapted from the restack branch: detection here reads the install stamp
 (``install-stamp.json`` with its required ``updateMechanism``) through
@@ -18,7 +18,6 @@ import pytest
 
 import hermes_cli.uninstall as un
 from hermes_cli.steward import (
-    STEWARD_DESKTOP,
     STEWARD_DOCKER,
     STEWARD_NIX,
     steward_uninstall_message,
@@ -37,24 +36,10 @@ def test_steward_uninstall_messages_name_the_steward():
     assert "somepkg" in steward_uninstall_message("somepkg")
 
 
-def test_steward_desktop_message_is_per_platform():
-    win = steward_uninstall_message(STEWARD_DESKTOP, platform="win32")
-    mac = steward_uninstall_message(STEWARD_DESKTOP, platform="darwin")
-    linux = steward_uninstall_message(STEWARD_DESKTOP, platform="linux")
-    assert "Installed apps" in win
-    assert "Trash" in mac
-    assert "AppImage" in linux
-
-
 def test_all_refusals_point_at_the_data_mode():
     # Every refusal must leave the user a working next step for their data.
-    # CLI stewards point at the CLI flag; desktop refusals deliberately
-    # point at the app's own data path.
     for steward in (STEWARD_NIX, STEWARD_DOCKER, "somepkg"):
         assert "hermes uninstall --data" in steward_uninstall_message(steward)
-    for platform in ("win32", "darwin", "linux"):
-        message = steward_uninstall_message(STEWARD_DESKTOP, platform=platform)
-        assert "Settings -> About" in message
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +73,6 @@ def test_sealed_nix_tree_refuses_code_removal(monkeypatch, tmp_path):
     assert "Nix" in refusal
 
 
-def test_sealed_desktop_tree_refuses_code_removal(monkeypatch, tmp_path):
-    _fake_project_root(monkeypatch, tmp_path, git=False, distribution="desktop-app")
-    refusal = un.code_removal_refusal()
-    assert refusal is not None
-    assert "managed by the desktop app" in refusal
-
-
 def test_stampless_sealed_tree_still_refuses(monkeypatch, tmp_path):
     # No .git and no stamp: we cannot prove the tree is ours, so refuse.
     _fake_project_root(monkeypatch, tmp_path, git=False)
@@ -108,15 +86,6 @@ def test_run_uninstall_exits_on_sealed_tree(monkeypatch, tmp_path, capsys):
         un.run_uninstall(args)
     assert exc.value.code == 1
     assert "Nix" in capsys.readouterr().out
-
-
-def test_run_gui_uninstall_exits_on_sealed_tree(monkeypatch, tmp_path, capsys):
-    _fake_project_root(monkeypatch, tmp_path, git=False, distribution="desktop-app")
-    args = SimpleNamespace(yes=True)
-    with pytest.raises(SystemExit) as exc:
-        un.run_gui_uninstall(args)
-    assert exc.value.code == 1
-    assert "managed by the desktop app" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +109,6 @@ def _make_home(tmp_path: Path) -> Path:
 def test_run_data_uninstall_removes_data_keeps_code(monkeypatch, tmp_path):
     home = _make_home(tmp_path)
     monkeypatch.setattr(un, "get_hermes_home", lambda: home)
-    import hermes_cli.gui_uninstall as gu
-
-    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "electron-userdata-none")
 
     un.run_data_uninstall(SimpleNamespace(yes=True))
 
@@ -155,21 +121,6 @@ def test_run_data_uninstall_removes_data_keeps_code(monkeypatch, tmp_path):
     assert (home / "hermes-agent" / "hermes_cli" / "__init__.py").exists()
 
 
-def test_run_data_uninstall_removes_electron_userdata(monkeypatch, tmp_path):
-    home = _make_home(tmp_path)
-    userdata = tmp_path / "electron-userdata"
-    userdata.mkdir()
-    (userdata / "connection.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(un, "get_hermes_home", lambda: home)
-    import hermes_cli.gui_uninstall as gu
-
-    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: userdata)
-
-    un.run_data_uninstall(SimpleNamespace(yes=True))
-
-    assert not userdata.exists()
-
-
 def test_run_data_uninstall_works_on_sealed_trees(monkeypatch, tmp_path):
     # The whole point of the data mode: no code-removal gate applies.
     home = _make_home(tmp_path)
@@ -177,58 +128,11 @@ def test_run_data_uninstall_works_on_sealed_trees(monkeypatch, tmp_path):
         json.dumps({"distribution": "nix", "updateMechanism": "external"})
     , encoding="utf-8")
     monkeypatch.setattr(un, "get_hermes_home", lambda: home)
-    import hermes_cli.gui_uninstall as gu
-
-    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
 
     un.run_data_uninstall(SimpleNamespace(yes=True))
 
     assert not (home / "config.yaml").exists()
     assert (home / "hermes-agent").exists()
-
-
-# ---------------------------------------------------------------------------
-# gui_install_summary — steward facts for the desktop UI
-# ---------------------------------------------------------------------------
-
-
-def test_gui_summary_reports_steward_and_gate(monkeypatch, tmp_path):
-    import hermes_cli.gui_uninstall as gu
-    from hermes_cli import steward as st
-
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
-    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
-
-    # Sealed nix tree → steward named, code removal denied.
-    monkeypatch.setattr(st, "classify_install", lambda root: ("nix", False))
-    summary = gu.gui_install_summary(home)
-    assert summary["steward"] == "nix"
-    assert summary["code_removal_allowed"] is False
-
-    # Git checkout → ours to remove.
-    monkeypatch.setattr(st, "classify_install", lambda root: ("git", True))
-    summary = gu.gui_install_summary(home)
-    assert summary["steward"] == "git"
-    assert summary["code_removal_allowed"] is True
-
-
-def test_gui_summary_classifies_the_agent_root(tmp_path, monkeypatch):
-    """The steward facts classify the home's ``hermes-agent`` checkout — the
-    tree the code-removal modes would delete — not some unrelated root."""
-    import hermes_cli.gui_uninstall as gu
-    from hermes_cli import steward as st
-
-    seen = []
-    monkeypatch.setattr(st, "classify_install", lambda root: seen.append(root) or ("git", True))
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
-    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
-
-    home = tmp_path / ".hermes"
-    gu.gui_install_summary(home)
-
-    assert seen == [home / "hermes-agent"]
 
 
 # ---------------------------------------------------------------------------
@@ -239,13 +143,10 @@ def test_gui_summary_classifies_the_agent_root(tmp_path, monkeypatch):
 def test_module_entrypoint_routes_data_mode(monkeypatch):
     calls = []
     monkeypatch.setattr(un, "run_data_uninstall", lambda args: calls.append(("data", args)))
-    monkeypatch.setattr(un, "run_gui_uninstall", lambda args: calls.append(("gui", args)))
     monkeypatch.setattr(un, "run_uninstall", lambda args: calls.append(("agent", args)))
 
     assert un.main(["--mode", "data"]) == 0
     assert calls[-1][0] == "data"
-    assert un.main(["--mode", "gui"]) == 0
-    assert calls[-1][0] == "gui"
     assert un.main(["--mode", "full"]) == 0
     assert calls[-1][0] == "agent"
     assert calls[-1][1].full is True

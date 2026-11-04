@@ -28,7 +28,7 @@ Pinned or noninteractive installations can disable passive CLI version and banne
 hermes config set updates.check false
 ```
 
-This suppresses both cached update notices and passive update-check network requests. The default is `true`. Explicit `hermes update --check` and `hermes update` still work; this setting does not control the Desktop application's updater.
+This suppresses both cached update notices and passive update-check network requests. The default is `true`. Explicit `hermes update --check` and `hermes update` still work.
 
 ### What happens during an update
 
@@ -40,9 +40,8 @@ When you run `hermes update`, the following steps occur:
    After this point the updater re-executes itself on the freshly pulled code (`update.log` shows `=== hermes update continued on the pulled code ===`), so the remaining steps never mix old and new modules in one process. If you see two `hermes update` processes for a moment, that is the hand-off.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies. When the checkout is already current this step still runs if the venv is unhealthy (core imports fail) **or** if its installed `hermes-agent` distribution is from an older release than the checkout — the sign that a previous run's dependency install was refused or interrupted (`⚠ Checkout is current, but its dependencies were never synced after the last pull`), so `✓ Already up to date!` never hides a half-updated environment.
 5. **Config migration** — detects new config options added since your version and prompts you to set them
-6. **Desktop rebuild (stage-and-swap)** — if the Hermes Desktop app was built from this checkout, it is rebuilt so the GUI matches the new code. The rebuild packs into a temporary staging directory next to `apps/desktop/release/`, verifies the staged app, and only then renames it over the previous build (on Windows a real-time scanner briefly holding `release/win-unpacked` is ridden out with a few short retries). A rebuild that fails at any point — corrupt Electron download, missing dependency, disk full — leaves the previous app untouched and launchable; the update reports `⚠ Update partially complete` and `hermes desktop` retries the rebuild. On macOS the rebuilt bundle is then copied (with `ditto`, signature intact) over a stale `/Applications/Hermes.app` or `~/Applications/Hermes.app`, so the copy Finder and the Dock launch matches the backend; an installed copy that is currently running is left alone and the update tells you to quit it and run `hermes update` again.
-7. **Gateway auto-restart**: running gateways are refreshed after the update completes. Service-managed gateways (systemd on Linux, launchd on macOS) restart through the service manager. Manual gateways are relaunched when Hermes can map their PID to a profile. Manually launched `hermes serve` / `hermes dashboard` backends are different: the updater leaves them running and asks their owner to restart them. See [Manual backend restart reminders](#manual-backend-restart-reminders). Backends owned by a running Desktop app remain the app's responsibility.
-8. **Multiplex migration (multi-profile installs)** — once the fleet is verified on the new code, an install with two or more profiles that still run **one gateway per profile** is folded into a single multiplexed default gateway when nothing blocks it (same as `hermes gateway migrate --multiplex --yes`); if a blocker exists (a bot token shared by two profiles, a secondary profile binding a port with no `/p/<profile>/` ingress) the update prints the blockers with their fixes and changes nothing. Single-profile installs are never touched. See [Migrating from per-profile gateways](../user-guide/multi-profile-gateways.md#migrating-from-per-profile-gateways).
+6. **Gateway auto-restart**: running gateways are refreshed after the update completes. Service-managed gateways (systemd on Linux, launchd on macOS) restart through the service manager. Manual gateways are relaunched when Hermes can map their PID to a profile. Manually launched `hermes serve` / `hermes dashboard` backends are different: the updater leaves them running and asks their owner to restart them. See [Manual backend restart reminders](#manual-backend-restart-reminders).
+7. **Multiplex migration (multi-profile installs)** — once the fleet is verified on the new code, an install with two or more profiles that still run **one gateway per profile** is folded into a single multiplexed default gateway when nothing blocks it (same as `hermes gateway migrate --multiplex --yes`); if a blocker exists (a bot token shared by two profiles, a secondary profile binding a port with no `/p/<profile>/` ingress) the update prints the blockers with their fixes and changes nothing. Single-profile installs are never touched. See [Migrating from per-profile gateways](../user-guide/multi-profile-gateways.md#migrating-from-per-profile-gateways).
 
 ### Why the gateway restart can take a while
 
@@ -57,12 +56,6 @@ The restart is drain-first: the running gateway refuses new turns, then waits fo
 ```
 
 Chat turns show their session key, model and current tool; cron jobs show the job id, name and the process running them (an external restart-safe worker on systemd installs, otherwise the gateway itself). `hermes gateway status` lists the same units while the gateway is draining. To stop waiting, finish or kill the listed work, or lower `agent.restart_after_turn_timeout` in `config.yaml` (`0` enters the forced drain immediately).
-
-### Missing Windows updater files
-
-If the maintained updater script is missing (for example after antivirus quarantine), the legacy update forwarder fails instead of reporting a successful hand-off. Repair the installation and review the security software's quarantine report before retrying; do not disable antivirus protection. Before reporting success, the maintained updater checks the CLI import, Windows executable header, ASAR header and packaged main entry, readable renderer HTML with a local module entry, initial module files, and current build stamp. These are minimum artifact checks, not a full dependency audit or an application/backend launch test. Missing Python is reported before waiting for Desktop shutdown; dependency repair is still allowed to run as part of the update. Electron checks maintained handoff prerequisites before stopping backends when that layout is present; genuine legacy-flat updater layouts remain supported, so not every missing updater file is detected before backend shutdown.
-
-On Windows, a Desktop reopened during packaging is stopped again immediately before the staged build is promoted. This cleanup is restricted to executables inside that checkout's Desktop release tree; unrelated installations are not stopped. A remaining lock still makes staged promotion fail rather than bypassing the rename error.
 
 ### Updating against a non-default branch: `--branch`
 
@@ -80,7 +73,7 @@ If your local checkout is on a different branch, Hermes auto-stashes any uncommi
 If the source checkout was left sitting on a feature branch (by tooling, a worktree experiment, or a manual checkout), `hermes update` switches it back to the update target automatically whenever the working tree is clean:
 
 - **Branch fully merged** (every commit already contained in `origin/main` — `git cherry` reports nothing unmerged): the update says so — `Checkout was parked on '<branch>' (fully merged) — switched back to main` — and stays on `main` afterwards.
-- **Branch has unmerged commits** but the tree is clean: the update still switches to `main` so the update can proceed — this is what non-interactive callers (the desktop update button, gateway `/update`, cron) rely on, since they have no way to resolve a skip. Your commits are untouched: `git checkout` never discards committed work, and the update prints a loud notice naming the branch and commit count, plus the `git checkout <branch>` command to pick the work back up later.
+- **Branch has unmerged commits** but the tree is clean: the update still switches to `main` so the update can proceed — this is what non-interactive callers (gateway `/update`, cron) rely on, since they have no way to resolve a skip. Your commits are untouched: `git checkout` never discards committed work, and the update prints a loud notice naming the branch and commit count, plus the `git checkout <branch>` command to pick the work back up later.
 
 If you *deliberately* run a custom branch (local patches maintained on top of main), set `updates.parked_branch_strategy: update_in_place` in `config.yaml`. The update then merges `origin/main` **into** your branch instead of switching away from it — the checkout never moves, your commits survive, and the running code advances. Fast-forward when possible; on divergence a true merge behind a `pre-update-<stamp>` safety tag, stopping cleanly (nothing changed) on conflict. `hermes update --switch-branch` overrides back to the switch path for one run — useful on a deep feature branch that must not accumulate update-driven merge commits.
 
@@ -92,7 +85,7 @@ When you run `hermes update` in a terminal, Hermes stashes any uncommitted sourc
 
 The autostash only ever covers *source-tree* changes. On a **flat install** — where the git checkout root is also `$HERMES_HOME` (for example an install made with `HERMES_INSTALL_DIR=$HERMES_HOME`, or one created by an older installer) — the profile's runtime state (`state.db` and its WAL/SHM sidecars, `state-snapshots/`, `backups/`, `sessions/`, `cron/jobs.json`, the `cron/*.db` stores, `config.yaml`, `auth.json`, `memories/`, lock/pid files, …) lives inside the checkout as untracked files. Those paths are git-ignored, so the autostash never touches them and the running gateway keeps its database through the update. If you keep other untracked files in a flat install's root, move them out of the checkout or add them to `.git/info/exclude`; anything untracked and not ignored is swept into the autostash like a source edit.
 
-When the update runs **without a terminal** — from the desktop/chat app's "Update" button or a gateway-triggered update — there's no prompt to answer. The `updates.non_interactive_local_changes` setting decides what happens to your stashed changes:
+When the update runs **without a terminal** — from a gateway-triggered update — there's no prompt to answer. The `updates.non_interactive_local_changes` setting decides what happens to your stashed changes:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -104,15 +97,6 @@ updates:
 - `stash` (default) — auto-stash, pull, then auto-restore your changes on top of the updated code. Nothing is lost; if a restore hits conflicts they're preserved in a git stash for manual recovery.
 - `discard` — auto-stash and drop the stash after the pull, so the update always lands on a clean tree. Use this only on machines where you never intend to keep local edits to the Hermes source. It stash-drops (not `git reset --hard` + `git clean -fd`), so ignored paths like `node_modules`, `venv`, and build outputs are never touched.
 
-In the desktop app this is **Settings → Advanced → In-App Update Local Changes**.
-
-**Desktop updates never auto-restore.** The desktop updater invokes `hermes update --keep-stash`: local source edits are still stashed so the update can proceed, but they are **not** re-applied afterward — they stay parked in `git stash` and the update log prints the exact `git stash apply <ref>` command to bring them back. This prevents local edits from silently riding along across desktop updates and breaking the freshly updated install. (`non_interactive_local_changes: discard` still wins if you've opted into discarding.) To restore parked changes manually:
-
-```bash
-cd ~/.hermes/hermes-agent   # or your install root
-git stash list --format='%gd %H %s'   # find the hermes-update-autostash entry
-git stash apply stash@{0}
-```
 
 You can pass `--keep-stash` to a terminal `hermes update` too if you want the same never-reapply behavior interactively.
 
@@ -134,7 +118,7 @@ A multiplexed default gateway is one process serving several profiles, so it app
 
 ### Manual backend restart reminders
 
-After updating, ask the owner of each manually launched backend to relaunch `hermes serve` or `hermes dashboard`; reconnect Desktop for an SSH backend. Restarting gateways alone does not refresh these processes.
+After updating, ask the owner of each manually launched backend to relaunch `hermes serve` or `hermes dashboard`. Restarting gateways alone does not refresh these processes.
 
 For a verified live backend, the updater saves a reminder before recording its restart as `deferred`. This allows the update to complete if the remaining checks pass. An unknown process identity cannot qualify for fresh deferral.
 
@@ -144,7 +128,7 @@ If saving fails, Hermes warns and carries the unsaved obligation into later rece
 
 ### Automated updates from inside the gateway: `--no-gateway-restart`
 
-An update launched *by* the gateway (a cron job, the Desktop updater, any automation that is a
+An update launched *by* the gateway (a cron job or any automation that is a
 child of the gateway process) cannot survive its own fleet restart: the gateway drains on
 `SIGUSR1` and systemd's `KillMode=mixed` then kills everything left in the cgroup, updater
 included. `hermes update --no-gateway-restart` runs the full pipeline (pull, dependencies,
@@ -188,7 +172,7 @@ Update backups protect an in-place update. If you're migrating your whole setup 
 
 ### Windows: another `hermes.exe` is running
 
-On Windows, `hermes update` will refuse to run if it detects another `hermes.exe` process holding the venv's entry-point executable open — most commonly the Hermes Desktop app's spawned backend, an open `hermes` REPL in another terminal, or a running gateway:
+On Windows, `hermes update` will refuse to run if it detects another `hermes.exe` process holding the venv's entry-point executable open — most commonly an open `hermes` REPL in another terminal or a running gateway:
 
 ```
 $ hermes update
@@ -198,7 +182,7 @@ $ hermes update
   Updating now would fail to overwrite ...\venv\Scripts\hermes.exe because
   Windows blocks REPLACE on a running executable.
 
-  Close Hermes Desktop, exit any open `hermes` REPLs, and
+  Exit any open `hermes` REPLs and
   stop the gateway (`hermes gateway stop`) before retrying.
   Override with `hermes update --force` if you've already
   confirmed those processes will not write to the venv.
@@ -206,9 +190,9 @@ $ hermes update
 
 Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
 
-A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
+A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (a gateway, a backend, or a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
 
-Both guards, the Desktop update preflight, and the dependency repair steps look for the environment at `venv` first and then at the uv-default `.venv`, so a source checkout set up with `uv venv` / `uv sync` updates the same way an installer-created `venv` does. When both directories exist, `venv` is the one that gets updated.
+Both guards and the dependency repair steps look for the environment at `venv` first and then at the uv-default `.venv`, so a source checkout set up with `uv venv` / `uv sync` updates the same way an installer-created `venv` does. When both directories exist, `venv` is the one that gets updated.
 
 #### Windows: the update finishes under the venv Python
 
@@ -220,7 +204,7 @@ When the Windows installer must recreate an existing `venv`, it first moves the 
 
 If the move cannot be completed, the installer stops and leaves the live `venv` untouched. If `uv` fails or reports success without creating the interpreter, any partial replacement is moved to `venv.failed.*` and the previous venv is restored. This keeps the health and blocker checks usable after a failed install.
 
-A `venv.stale.*` or `venv.failed.*` directory can remain when another process still owns a file handle. Close Hermes Desktop, gateways, and Python processes using the install, then retry the install/update; parked directories are cleaned up best-effort after a successful recreation.
+A `venv.stale.*` or `venv.failed.*` directory can remain when another process still owns a file handle. Close gateways, backends, and Python processes using the install, then retry the install/update; parked directories are cleaned up best-effort after a successful recreation.
 
 Expected output looks like:
 

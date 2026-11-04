@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli.plugin_validate_desktop import check_desktop_surface
 
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _CONFIG_TYPES = {
@@ -515,22 +514,21 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
     _check_security_scan(report, plugin_dir)
-    check_desktop_surface(report, plugin_dir)
     return report
 
 
-_LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json")
+_LOADABLE_ENTRYPOINTS = ("__init__.py", "plugin.json")
 
 
 def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
-    """A plugin.yaml with nothing beside it that Hermes can load (no ``register()`` module, no
-    desktop bundle, no portable manifest) installs "successfully" and does nothing — a pip-layout
-    repo whose code lives under ``src/`` behind an entry point is the usual shape."""
+    """A plugin.yaml with nothing beside it that Hermes can load (no ``register()`` module and no
+    portable manifest) installs "successfully" and does nothing — a pip-layout repo whose code
+    lives under ``src/`` behind an entry point is the usual shape."""
     present = [rel for rel in _LOADABLE_ENTRYPOINTS if (plugin_dir / rel).is_file()]
     report.add(
         "loadable", bool(present),
         f"entry: {', '.join(present)}" if present else
-        "nothing to load: no __init__.py, desktop/plugin.js or plugin.json beside plugin.yaml "
+        "nothing to load: no __init__.py or plugin.json beside plugin.yaml "
         "(pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
     )
 
@@ -614,5 +612,4 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         "name present" if name else "plugin.json missing required 'name'",
     )
     _check_security_scan(report, plugin_dir)
-    check_desktop_surface(report, plugin_dir)
     return report

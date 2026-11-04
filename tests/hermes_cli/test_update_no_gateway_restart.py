@@ -32,7 +32,6 @@ def test_pulled_update_defers_restart_and_keeps_marker_under_flag():
         patch.object(uc, "_sweep_bytecode_after_update"),
         patch.object(uc, "_sync_python_dependencies_after_pull"),
         patch.object(uc, "_update_node_dependencies", return_value=[]),
-        patch.object(uc, "_rebuild_desktop_after_update", return_value=True),
         patch.object(uc, "_run_post_update_maintenance", return_value=True),
         patch.object(uc, "_branch_head_suffix", return_value=""),
         patch.object(uc, "_m", return_value=MagicMock()),
@@ -44,7 +43,6 @@ def test_pulled_update_defers_restart_and_keeps_marker_under_flag():
         uc._apply_pulled_update(
             "git", "main", "oldsha", SimpleNamespace(in_place_update=False),
             _opts(no_gateway_restart=True), gateway_mode=False,
-            desktop_dir="/tmp", had_desktop_app_before_update=False,
             pre_update_snapshot_id=None, _pre_update_plan=None,
             _windows_gateway_resume=None, args=SimpleNamespace(no_gateway_restart=True, yes=True),
         )

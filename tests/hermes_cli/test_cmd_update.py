@@ -276,7 +276,7 @@ class TestRepairCurrentCheckoutRuntimeRepair:
 
         assert update_cmd._repair_venv_on_current_checkout(
             assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
-            had_desktop_app_before_update=False, active_lazy_features=[],
+            active_lazy_features=[],
             active_tool_dependencies=[], _windows_gateway_resume=None,
         )
         assert calls == ["memory"]
@@ -311,8 +311,6 @@ class TestCmdUpdateBranchFallback:
             return_value=(True, ""),
         ), patch.object(
             update_cmd, "_update_node_dependencies", return_value=[]
-        ), patch.object(
-            update_cmd, "_rebuild_desktop_after_update", return_value=True
         ), patch.object(
             update_cmd, "_check_and_apply_config_migration"
         ):
@@ -391,8 +389,6 @@ class TestCmdUpdateBranchFallback:
                 (health_after_repair, "broken after repair"),
             ],
         ), patch("pm.sync_venv"), patch.object(
-            update_cmd, "_rebuild_desktop_after_update", return_value=True
-        ), patch.object(
             update_cmd, "_write_update_incomplete_marker"
         ), patch.object(
             hm, "_clear_update_incomplete_marker"
@@ -1029,7 +1025,7 @@ class TestNodeRuntimeNpmResolution:
         assert "mixed state" in out
 
     def test_wsl_update_skips_windows_npm_build_paths(self, mock_args, monkeypatch):
-        """A Windows-only npm on WSL must not reach web or desktop builds."""
+        """A Windows-only npm on WSL must not reach web builds."""
         from hermes_cli import main as hm
         import hermes_constants
 
@@ -1050,11 +1046,8 @@ class TestNodeRuntimeNpmResolution:
 
         with patch("subprocess.run") as mock_run, \
              patch.object(main_web_build, "_web_ui_build_needed", return_value=True), \
-             patch.object(hm, "_desktop_packaged_executable", return_value=None), \
-             patch.object(hm, "_desktop_dist_exists", return_value=True), \
              patch.object(hm, "_run_npm_install_deterministic") as mock_npm_install, \
-             patch.object(main_web_build, "_run_with_idle_timeout") as mock_idle_build, \
-             patch.object(hm, "_run_logged_subprocess") as mock_desktop_build:
+             patch.object(main_web_build, "_run_with_idle_timeout") as mock_idle_build:
             mock_run.side_effect = _make_run_side_effect(
                 branch="main", verify_ok=True, commit_count="1"
             )
@@ -1062,162 +1055,20 @@ class TestNodeRuntimeNpmResolution:
 
         mock_npm_install.assert_not_called()
         mock_idle_build.assert_not_called()
-        mock_desktop_build.assert_not_called()
         assert all(
             not call.args or not call.args[0] or call.args[0][0] != windows_npm
             for call in mock_run.call_args_list
         )
-
-    def test_update_rebuilds_desktop_that_disappears_mid_update(self):
-        """A previously packaged Desktop must be rebuilt when its release tree vanishes."""
-        from hermes_cli import main as hm
-        from hermes_cli import update_cmd
-
-        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-        (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
-        packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
-        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-
-        with (
-            patch.object(
-                hm, "_desktop_packaged_executable", side_effect=[packaged_exe, None]
-            ) as packaged,
-            patch.object(hm, "_desktop_dist_exists", return_value=False),
-            patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
-            patch.object(hm, "_desktop_build_needed", return_value=True),
-            patch.object(hm, "_run_logged_subprocess", return_value=build_ok) as desktop_build,
-        ):
-            had_desktop_app_before_update = update_cmd._desktop_app_present(desktop_dir)
-            assert not update_cmd._desktop_app_present(desktop_dir)
-            update_cmd._rebuild_desktop_after_update(
-                desktop_dir,
-                had_desktop_app_before_update=had_desktop_app_before_update,
-            )
-
-        assert packaged.call_count == 2
-        desktop_build.assert_called_once_with(
-            [hm.sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
-            cwd=PROJECT_ROOT,
-            env=ANY,
-        )
-
-    def test_git_failure_zip_fallback_rebuilds_missing_desktop(self, tmp_path, monkeypatch):
-        """The Windows ZIP fallback keeps Desktop intact when replacing ``apps/``.
-
-        Contract updated for the #70337/#87331 release-dir graft: the built
-        desktop app (release/win-unpacked/Hermes.exe) is preserved THROUGH
-        the swap — previously this test pinned the old repair shape (exe
-        deleted by the swap, then rebuilt from scratch). The rebuild hook
-        still runs (mocked _desktop_build_needed=True), but it now finds
-        the packaged exe alive rather than missing.
-        """
-        import zipfile
-
-        from hermes_cli import main as hm
-        from hermes_cli import update_cmd
-
-        project_root = tmp_path / "hermes-agent"
-        (project_root / ".git").mkdir(parents=True)
-        desktop_dir = project_root / "apps" / "desktop"
-        packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
-        packaged_exe.parent.mkdir(parents=True)
-        packaged_exe.write_bytes(b"desktop")
-
-        def write_source_zip(_url, destination):
-            with zipfile.ZipFile(destination, "w") as archive:
-                archive.writestr("hermes-agent-main/apps/desktop/package.json", "{}")
-
-        def fail_git_fetch(command, **_kwargs):
-            if "fetch" in command:
-                raise subprocess.CalledProcessError(1, command)
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
-        desktop_builds = []
-
-        def rebuild_desktop(*_args, **_kwargs):
-            desktop_builds.append(not packaged_exe.exists())
-            return subprocess.CompletedProcess([], 0, stdout="", stderr="")
-
-        monkeypatch.setattr(hm, "PROJECT_ROOT", project_root)
-        monkeypatch.setattr(hm, "_is_windows", lambda: True)
-        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda _args: None)
-        monkeypatch.setattr(hm, "_pause_windows_gateways_for_update", lambda: None)
-        monkeypatch.setattr(
-            hm, "_get_origin_url",
-            lambda *_args: "https://github.com/QuixThe2nd/hermes-ide.git",
-        )
-        monkeypatch.setattr(
-            hm,
-            "_desktop_packaged_executable",
-            lambda _desktop_dir: packaged_exe if packaged_exe.exists() else None,
-        )
-        monkeypatch.setattr(hm, "_desktop_dist_exists", lambda _desktop_dir: False)
-        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "npm.cmd")
-        monkeypatch.setattr(hm, "_desktop_build_needed", lambda *_args, **_kwargs: True)
-        monkeypatch.setattr(hm, "_run_logged_subprocess", rebuild_desktop)
-        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *_args: 0)
-        monkeypatch.setattr(hm, "_record_bytecode_fingerprint", lambda: None)
-        monkeypatch.setattr(hm, "_refresh_bootstrap_cache_scripts", lambda _branch: None)
-        monkeypatch.setattr(
-            hm, "_install_python_dependencies_with_optional_fallback", lambda *_args, **_kwargs: None
-        )
-        monkeypatch.setattr(hm, "_refresh_active_memory_provider_dependencies", lambda: None)
-        monkeypatch.setattr(hm, "_build_web_ui", lambda *_args: None)
-        monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *_args: None)
-        monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *_args: None)
-        monkeypatch.setattr(
-            update_cmd,
-            "_validate_critical_modules_import",
-            lambda *_args: (True, None, None),
-        )
-        monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
-        monkeypatch.setattr(update_cmd, "_print_curator_first_run_notice", lambda: None)
-        monkeypatch.setattr(update_cmd, "_print_curator_recent_run_notice", lambda: None)
-        monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda _failures: None)
-        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path / "hermes-home")
-
-        with (
-            patch("hermes_cli.config.load_config", return_value={}),
-            patch("subprocess.run", side_effect=fail_git_fetch),
-            patch("urllib.request.urlretrieve", side_effect=write_source_zip),
-            patch("pm.uv", return_value=("uv", dict(os.environ))),
-            patch(
-                "tools.skills_sync.sync_skills",
-                return_value={
-                    "copied": [],
-                    "updated": [],
-                    "user_modified": [],
-                    "cleaned": [],
-                    "relocated": [],
-                },
-            ),
-            patch("hermes_cli.model_catalog.seed_cache_from_checkout", return_value=False),
-        ):
-            update_cmd._cmd_update_impl(
-                SimpleNamespace(yes=True, force=True, force_venv=True, branch=None),
-                gateway_mode=False,
-            )
-
-        # Release-dir graft (#70337): the packaged exe SURVIVES the swap, so
-        # the rebuild hook observed it present (False), and the bytes are the
-        # original build — never deleted, never rebuilt from nothing.
-        assert desktop_builds == [False]
-        assert packaged_exe.exists()
-        assert packaged_exe.read_bytes() == b"desktop"
 
 
 class TestUpdateNodeDependencies:
     """Unit tests for _update_node_dependencies — issue #43564.
 
     Root package.json has no dependencies of its own: agent-browser
-    resolves at runtime via npx (tools/browser_tool.py), and @streamdown/math
-    moved to apps/desktop/package.json since it's a desktop-only import.
-    With nothing root-only left to protect, a single workspace-scoped
-    install (ui-tui, web) is safe — apps/desktop is simply never named, so
-    its ~200 MB Electron devDependency is never resolved. Skipping is
-    governed by _npm_lockfile_changed (content hash over the lockfile +
-    every workspace package.json), tested separately in
-    TestNpmLockfileChanged.
+    resolves at runtime via npx (tools/browser_tool.py). A workspace-scoped
+    install targets ui-tui and web directly. Skipping is governed by
+    _npm_lockfile_changed (content hash over the lockfile + every workspace
+    package.json), tested separately in TestNpmLockfileChanged.
     Uses a tmp_path root so tests never touch real node_modules.
     """
 
@@ -1266,9 +1117,7 @@ class TestUpdateNodeDependencies:
     @patch("subprocess.Popen")
     @patch("shutil.which", return_value="/usr/bin/npm")
     def test_install_names_ui_tui_and_web_workspaces(self, _which, mock_popen, tmp_path, monkeypatch):
-        """Regression for #43564: install ui-tui + web directly. apps/desktop
-        must never appear, so its Electron postinstall is never triggered.
-        """
+        """Regression for #43564: install ui-tui + web directly."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
@@ -1286,9 +1135,6 @@ class TestUpdateNodeDependencies:
         assert "--workspace ui-tui" in joined and "--workspace web" in joined, (
             f"expected ui-tui + web workspace selectors; actual: {calls[0]}"
         )
-        assert "desktop" not in joined, (
-            f"apps/desktop must not appear (avoids ~200 MB Electron download); actual: {calls[0]}"
-        )
         assert "--workspaces=false" not in joined, (
             f"no root-only deps remain to protect; --workspaces=false is unnecessary now; actual: {calls[0]}"
         )
@@ -1302,10 +1148,7 @@ class TestUpdateNodeDependencies:
         flat config every workspace's own eslint.config.mjs imports) even
         though agent-browser and @streamdown/math were removed from root
         `dependencies` (#43564). --include-workspace-root keeps them from
-        being pruned by this scoped install, while --workspace ui-tui
-        --workspace web still excludes the unnamed apps/desktop workspace
-        (confirmed empirically against npm 10.9.8 and 11.9.0 in PR #44772
-        review)."""
+        being pruned by this scoped install."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
@@ -1321,7 +1164,6 @@ class TestUpdateNodeDependencies:
         assert len(calls) == 1
         joined = " ".join(str(a) for a in calls[0])
         assert "--include-workspace-root" in joined
-        assert "desktop" not in joined
 
     @patch("subprocess.Popen")
     @patch("shutil.which", return_value="/usr/bin/npm")

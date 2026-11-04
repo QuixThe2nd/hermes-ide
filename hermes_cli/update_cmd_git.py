@@ -337,7 +337,7 @@ def _npm_lockfile_owners(repo_root: Path) -> set[Path]:
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore ``package-lock.json`` files npm rewrote non-deterministically, so the update sees a clean tree
     instead of autostashing every run. A lockfile is kept when a manifest it records is dirty: for the root
-    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty ``apps/desktop``
+    lock that is the root or ANY workspace ``package.json`` (reverting it under a dirty workspace
     manifest desyncs spec and lock and every later ``npm ci`` fails, #112378); a nested lock is kept only
     with its sibling manifest. Best-effort."""
     from hermes_cli.update_cmd_git import _git_run

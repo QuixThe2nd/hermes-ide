@@ -33,6 +33,80 @@ class TestResolveHermesBin:
         assert relaunch_mod.resolve_hermes_bin() == "/usr/bin/hermes"
 
 
+def test_needs_interpreter_case_insensitive_match(tmp_path, monkeypatch):
+    """An own-venv shebang is safe even when its path contains uppercase."""
+    venv_bin = tmp_path / "MyEnv" / "bin"
+    venv_bin.mkdir(parents=True)
+    interpreter = venv_bin / "python"
+    interpreter.write_text("", encoding="utf-8")
+
+    console_script = venv_bin / "hermes"
+    console_script.write_text(f"#!{interpreter}\nimport hermes_cli\n", encoding="utf-8")
+    monkeypatch.setattr(relaunch_mod.sys, "executable", str(interpreter))
+
+    assert relaunch_mod._needs_interpreter(console_script) is False
+
+
+def test_needs_interpreter_rejects_sibling_directory(tmp_path, monkeypatch):
+    """A sibling such as ``bin-extra`` is not the interpreter's ``bin`` directory."""
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    interp = venv_bin / "python"
+    interp.write_text("", encoding="utf-8")
+    monkeypatch.setattr(relaunch_mod.sys, "executable", str(interp))
+
+    sibling_script = tmp_path / "sibling"
+    sibling_script.write_text(
+        f"#!{tmp_path}/venv/bin-extra/python\nimport hermes_cli\n",
+        encoding="utf-8",
+    )
+    assert relaunch_mod._needs_interpreter(sibling_script) is True
+
+
+def test_needs_interpreter_strips_flags_before_comparing(tmp_path, monkeypatch):
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    interp = venv_bin / "python"
+    interp.write_text("", encoding="utf-8")
+    monkeypatch.setattr(relaunch_mod.sys, "executable", str(interp))
+
+    flagged = tmp_path / "flagged"
+    flagged.write_text(f"#!{interp} -S\nimport hermes_cli\n", encoding="utf-8")
+    assert relaunch_mod._needs_interpreter(flagged) is False
+
+
+def test_needs_interpreter_env_shebang_always_escapes(tmp_path, monkeypatch):
+    """PATH-resolved ``env`` escapes; an absolute interpreter after ``-S`` does not."""
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    interp = venv_bin / "python"
+    interp.write_text("", encoding="utf-8")
+    monkeypatch.setattr(relaunch_mod.sys, "executable", str(interp))
+
+    env_script = tmp_path / "envscript"
+    env_script.write_text(
+        f"#!{venv_bin}/env python3\nimport hermes_cli\n", encoding="utf-8"
+    )
+    assert relaunch_mod._needs_interpreter(env_script) is True
+
+    env_abs = tmp_path / "envabs"
+    env_abs.write_text(
+        f"#!/usr/bin/env -S {interp}\nimport hermes_cli\n", encoding="utf-8"
+    )
+    assert relaunch_mod._needs_interpreter(env_abs) is False
+
+
+def test_head_helpers_recognize_native_launchers_and_missing_files(tmp_path):
+    native = tmp_path / "hermes"
+    native.write_bytes(b"\x7fELFpayload")
+    assert relaunch_mod._read_head(native, size=4) == b"\x7fELF"
+    assert relaunch_mod._is_native_binary(relaunch_mod._read_head(native)) is True
+    assert relaunch_mod._read_head(tmp_path / "missing") is None
+    assert relaunch_mod._shebang_tokens("#!/usr/bin/env -S python3") == [
+        "/usr/bin/env", "-S", "python3",
+    ]
+
+
 class TestExtractInheritedFlags:
     def test_extracts_tui_and_dev(self):
         argv = ["--tui", "--dev", "chat"]

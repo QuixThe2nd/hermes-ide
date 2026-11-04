@@ -565,17 +565,13 @@ def _dashboard_code_skew_guard() -> Optional[str]:
 
 
 def _dashboard_skew_restart_hint() -> str:
-    """Restart advice matching how this process is owned — the same app backs the browser
-    dashboard and Desktop-owned ``hermes serve``; naming a systemd unit would mislead
-    macOS/launchd hosts and Desktop SSH backends.
+    """Restart advice matching how this process is owned.
 
+    Naming a systemd unit would mislead macOS/launchd hosts and remote backends.
     See #97046.
     """
     if os.environ.get("HERMES_SERVE_HEADLESS") == "1":
-        return (
-            "restart the Desktop-owned backend to load the new code "
-            "(use Restart backend in Hermes Desktop, or quit and reopen the app)"
-        )
+        return "restart this Hermes serve process to load the new code"
     return (
         "restart this Hermes process to load the new code "
         "(hermes dashboard --port <port>, or the equivalent service restart for this install)"

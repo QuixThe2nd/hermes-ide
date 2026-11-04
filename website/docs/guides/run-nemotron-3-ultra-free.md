@@ -12,35 +12,7 @@ Nous Research has been inducted into the **Nemotron Coalition** of leading AI la
 The `nvidia/nemotron-3-ultra:free` tier is available from **June 4th to June 18th**. The `:free` tag is what keeps it on the no-cost plan — pick that exact variant.
 :::
 
-Pick whichever install fits you. The **desktop app** is the easiest — no terminal required. If you live in a terminal, the **command-line** install is right below it.
-
-## Option A — Desktop app (recommended)
-
-The simplest path: a one-click installer with a guided, point-and-click setup. No terminal needed.
-
-### 1. Download and install
-
-[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/) for macOS or Windows, then open it. On first launch it finishes setting itself up (usually under a minute).
-
-### 2. Connect Nous Portal
-
-When the app opens, you'll see a "Let's get you set up" screen. Click **Nous Portal** (marked **Recommended**). Your browser opens — create a [Nous Portal](https://portal.nousresearch.com) account (or sign in), choose the **Free** plan, and authorize Hermes. The app connects automatically.
-
-### 3. Pick the free Nemotron 3 Ultra model
-
-After connecting, the app shows a **Default model** card. Click **Change**, search for **nemotron 3 ultra**, and select the variant tagged **Free tier**:
-
-```
-nvidia/nemotron-3-ultra:free
-```
-
-The `:free` tag is what keeps it on the no-cost tier — pick that variant.
-
-### 4. Start chatting
-
-Click **Start chatting**. That's it — you're talking to Nemotron 3 Ultra, free.
-
-## Option B — Command line
+## Command line
 
 Prefer the terminal?
 
@@ -117,7 +89,6 @@ Already set up with another model?
 
 ## See also
 
-- **[Desktop App](../user-guide/desktop.md)** — The native one-click app (macOS, Windows, Linux)
 - **[Run Hermes Agent with Nous Portal](./run-hermes-with-nous-portal.md)** — Full Portal walkthrough: models, Tool Gateway, and verification
 - **[Nous Portal integration](../integrations/nous-portal.md)** — What's in the subscription
 - **[Quickstart](../getting-started/quickstart.md)** — Install-to-chat in under 5 minutes

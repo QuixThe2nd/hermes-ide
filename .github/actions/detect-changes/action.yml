@@ -16,10 +16,10 @@ outputs:
     description: Run Python tests / ruff / ty / windows-footguns.
     value: ${{ steps.classify.outputs.python }}
   python_prod:
-    description: Python changes outside tests/ — gates product jobs (Desktop E2E, Docker).
+    description: Python changes outside tests/ — gates product jobs (Docker).
     value: ${{ steps.classify.outputs.python_prod }}
   frontend:
-    description: Run the TypeScript testing matrix + desktop build.
+    description: Run the TypeScript testing matrix.
     value: ${{ steps.classify.outputs.frontend }}
   docker_meta:
     description: Docker setup and meta files have changed.
@@ -48,15 +48,6 @@ outputs:
   installer:
     description: Run the PowerShell installer tests on a Windows runner.
     value: ${{ steps.classify.outputs.installer }}
-  desktop_updater:
-    description: Run the Windows desktop-update hand-off (windows.ps1) integration tests.
-    value: ${{ steps.classify.outputs.desktop_updater }}
-  bootstrap:
-    description: Run the bootstrap installer lane (install.sh sandbox + stamp verification).
-    value: ${{ steps.classify.outputs.bootstrap }}
-  rust:
-    description: Run `cargo test` for the Tauri bootstrap installer.
-    value: ${{ steps.classify.outputs.rust }}
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}

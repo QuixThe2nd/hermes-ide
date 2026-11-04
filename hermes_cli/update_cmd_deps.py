@@ -1,5 +1,5 @@
 """Post-``hermes update`` dependency sync: venv preflight, editable reinstall, lazy refresh,
-npm/Desktop rebuilds, self-lock deferral. Names are re-imported by ``update_cmd`` (so
+npm installs, self-lock deferral. Names are re-imported by ``update_cmd`` (so
 ``hermes_cli.update_cmd.<name>`` resolves/monkeypatches); origin helpers are imported lazily."""
 
 import logging
@@ -329,7 +329,7 @@ def _migrate_removed_memory_providers() -> None:
 def _npm_manifest_paths() -> tuple[Path, ...]:
     """Manifests whose changes must defeat the update-skip. The lockfile alone isn't enough (a
     package.json can be edited without running npm); workspaces come from the root ``workspaces``
-    globs so a new one can't escape the key, and every workspace counts (desktop too) because the
+    globs so a new one can't escape the key, and every workspace counts because the
     single lockfile spans the whole graph. Root manifests only if package.json is unreadable."""
     from hermes_cli.update_cmd import _m
     root_pkg = _m().PROJECT_ROOT / "package.json"
@@ -406,16 +406,14 @@ def _repair_node_deps_on_current_checkout(
     assume_yes: bool = False,
     gateway_mode: bool = False,
     pre_update_snapshot_id: str | None = None,
-    completion_message: str = "✓ Already up to date!",
-    had_desktop_app_before_update: bool = False) -> bool:
+    completion_message: str = "✓ Already up to date!") -> bool:
     """Repair Node deps on the ``commit_count == 0`` path: a failed npm install says "re-run hermes
     update" but the early return used to skip the refresh. ``_update_node_dependencies`` self-gates
     on the hash recorded only after a SUCCESSFUL install, so this is a cheap no-op when healthy.
 
     See #77211.
     """
-    from hermes_cli.update_cmd import (
-        _check_and_apply_config_migration, _m, _rebuild_desktop_after_update, _update_node_dependencies)
+    from hermes_cli.update_cmd import _check_and_apply_config_migration, _m, _update_node_dependencies
     node_failures = _update_node_dependencies()
     if node_failures:
         print(f"  ⚠ Node.js refresh failed for: {', '.join(node_failures)}")
@@ -426,17 +424,6 @@ def _repair_node_deps_on_current_checkout(
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     _check_and_apply_config_migration(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id)
-    # A current checkout can still owe a Desktop rebuild (e.g. the Windows hand-off child
-    # never reaches the commits-pulled rebuild). Self-gates on the build stamp.
-    # Skipping it leaves a stale desktop app behind a successful-looking update. See #97343.
-    if not _rebuild_desktop_after_update(
-        _m().PROJECT_ROOT / "apps" / "desktop", had_desktop_app_before_update=had_desktop_app_before_update):
-        # Retry hint already printed; withhold success rather than claim completion.
-        # See #88251.
-        print_completion(
-            "⚠ Update partially complete — the desktop app was not rebuilt "
-            "and is still on the previous build.")
-        return False
     return bool(print_completion(completion_message))
 
 
@@ -457,14 +444,7 @@ def _update_node_dependencies() -> list[str]:
         from hermes_constants import is_wsl
         path_npm = shutil.which("npm")
         if is_wsl() and path_npm and _m()._is_windows_npm_path(path_npm):
-            # Root package.json has no dependencies of its own (agent-browser and @streamdown/math were
-            # moved out — see #43564): agent-browser resolves at runtime via `npx agent-browser`
-            # (tools/browser_tool.py), and @streamdown/math is a desktop-only import now declared in
-            # apps/desktop/package.json. That means a plain workspace-scoped install can never prune
-            # anything root-only, so we only need to name the workspaces the CLI/TUI/web build actually
-            # requires. apps/desktop pulls in Electron as a devDependency with a ~200MB postinstall
-            # download, so it's deliberately never named here — desktop deps install on demand (see
-            # _desktop_build_needed).
+            # Name only the workspaces the CLI/TUI/web build actually requires.
             print("→ Updating Node.js dependencies...")
             print("  ⚠ Skipped: only a Windows npm is reachable from this WSL shell.")
             print("    Install Node.js inside the WSL distro (nvm, or your distro's")
@@ -492,14 +472,13 @@ def _update_node_dependencies() -> list[str]:
         return []
 
     # Root package.json has no deps of its own, so a workspace-scoped install prunes nothing
-    # root-only. apps/desktop is deliberately never named: its Electron devDependency has a
-    # ~200MB postinstall, so desktop deps install on demand (see _desktop_build_needed).
+    # root-only.
     print("→ Updating Node.js dependencies...")
     install_args = [
         "--no-fund", "--no-audit", "--prefer-offline", "--progress=false",
         "--workspace", "ui-tui", "--workspace", "web",
         # Root devDependencies (shared ESLint config) would otherwise be pruned by the
-        # scoped install; apps/desktop stays excluded since it is never named above.
+        # scoped install.
         "--include-workspace-root"]
 
     from hermes_constants import with_hermes_node_path
@@ -507,13 +486,11 @@ def _update_node_dependencies() -> list[str]:
 
     # capture_output=False is deliberate: postinstall scripts print download progress and
     # capturing makes a long download look hung.
-    # The chatty npm-deprecation noise during `hermes update` comes from the *desktop* build, not this step;
-    # that one is captured to update.log. See #18840.
     result = _m()._run_npm_install_deterministic(
         npm, _m().PROJECT_ROOT, extra_args=tuple(install_args), capture_output=False, env=nixos_env)
     if result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
-        print("  ✓ ui-tui, web workspaces installed (desktop skipped)")
+        print("  ✓ ui-tui, web workspaces installed")
         return []
     print("  ⚠ npm install failed")
     stderr = (result.stderr or "").strip()
@@ -590,7 +567,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
 def _venv_dependency_set_stale() -> tuple[bool, str]:
     """Whether the venv's ``hermes-agent`` distribution was installed from an OLDER checkout than
     the one on disk. The sync after a pull can be skipped (Windows hand-off child refused because
-    the Desktop backend held the venv, or died mid-install); the next run then finds git current,
+    the serve backend held the venv, or died mid-install); the next run then finds git current,
     passes the import probe — the old release imports fine — and prints "Already up to date!" over
     stale pins (#97208). Probed in the venv's own interpreter; ``(stale, detail)``, unknown = not stale."""
     from hermes_cli.update_cmd import _m, _read_project_version
@@ -616,85 +593,6 @@ def _venv_dependency_set_stale() -> tuple[bool, str]:
     except Exception:
         stale = installed != expected
     return stale, f"installed hermes-agent {installed}, checkout is {expected}" if stale else ""
-
-
-def _desktop_app_present(desktop_dir: Path) -> bool:
-    """Return whether a packaged or source Desktop build exists."""
-    from hermes_cli.update_cmd import _m
-    return (
-        _m()._desktop_packaged_executable(desktop_dir) is not None
-        or _m()._desktop_dist_exists(desktop_dir))
-
-
-def _report_installed_desktop_app(desktop_dir: Path) -> None:
-    """Refresh the installed macOS bundle from release/ and print the outcome (#52339)."""
-    from hermes_cli.update_cmd import _m
-    installed, problems = _m()._install_rebuilt_desktop_app(desktop_dir)
-    for app in installed:
-        print(f"  ✓ Installed the rebuilt Desktop app at {app}")
-    for problem in problems:
-        print(f"  ⚠ {problem}")
-    if not installed and not problems:
-        print("  ✓ Desktop app up to date")
-
-
-def _rebuild_desktop_after_update(
-    desktop_dir: Path, *, had_desktop_app_before_update: bool) -> bool:
-    """Rebuild an installed Desktop app when its source or artifact changed. Returns ``False``
-    only when a rebuild was attempted and failed (caller withholds ``✓ Update complete!`` and
-    writes a failing ``.update_exit_code`` in gateway mode); every other outcome is ``True``.
-
-    See #88251.
-    """
-    from hermes_cli.update_cmd import _m
-    # The release tree is git-ignored and can vanish mid-update; pre-update presence suffices. So does the
-    # build stamp under HERMES_HOME: it outlives a swap that lost the artifacts in an earlier run, and
-    # without it the install "forgets" Desktop was installed and never rebuilds (#90495). Never make
-    # people who never used Desktop pay for an Electron build.
-    has_desktop_app = (
-        had_desktop_app_before_update
-        or _desktop_app_present(desktop_dir)
-        or _m()._desktop_stamp_path().is_file())
-    if not (
-        (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app):
-        return True
-
-    print("→ Checking if desktop app needs rebuilding...")
-    # Check the content-hash stamp IN-PROCESS first (the subprocess spends ~1-3 s importing the
-    # CLI to reach the same check). Update never passes --source, so source_mode=False.
-    # Any pre-check error falls through to the subprocess.
-    try:
-        skip_desktop_build = not _m()._desktop_build_needed(
-            desktop_dir, _m().PROJECT_ROOT, source_mode=False)
-    except Exception:
-        skip_desktop_build = False
-    if skip_desktop_build:
-        # A current release/ can still sit beside a stale /Applications copy (an earlier update
-        # rebuilt but never installed); healing it must not wait for the next source change.
-        _report_installed_desktop_app(desktop_dir)
-        return True
-
-    desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
-    # Capture the loud build output into update.log; retry once on failure (still-settling
-    # rebuild window), then surface the tail. Put Hermes-managed Node on PATH: the desktop
-    # updater chain loses shell PATH customizations, so a bare-PATH child hits `node: not found`.
-    from hermes_constants import with_hermes_node_path
-    build_env = with_hermes_node_path()
-    for _attempt in range(2):
-        build_result = _m()._run_logged_subprocess(
-            desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=build_env)
-        if build_result.returncode == 0:
-            break
-    if build_result.returncode != 0:
-        print("  ⚠ Desktop build failed (run `hermes desktop` to retry)")
-        tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
-        if tail:
-            print(tail)
-        from hermes_constants import display_hermes_home as _dhh
-        print(f"  Full build log: {_dhh()}/logs/update.log")
-        return False
-    _report_installed_desktop_app(desktop_dir)
-    return True
 
 
 def _path_uid(path) -> Optional[int]:
@@ -797,13 +695,10 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
 
 def _sync_python_dependencies_after_pull(
     git_cmd, branch, pre_pull_sha, *, active_lazy_features, active_tool_dependencies,
-    _windows_gateway_resume, desktop_dir=None, had_desktop_app_before_update=False,
-    deferred_defects=None):
+    _windows_gateway_resume, deferred_defects=None):
     """Reinstall Python deps for the pulled checkout in the post-swap interpreter.
     Ownership preflight and the transactional pm sync run before the bytecode
-    sweep and feature/plugin repair; deferred defects are reported by the caller.
-    The desktop arguments remain accepted for the pre-handoff call shape;
-    `_finish_pulled_update` owns those phases."""
+    sweep and feature/plugin repair; deferred defects are reported by the caller."""
     from hermes_cli.update_cmd import (
         _m, _sweep_bytecode_after_update, _validate_critical_modules_import,
         _write_lazy_refresh_incomplete_marker, _write_update_incomplete_marker)

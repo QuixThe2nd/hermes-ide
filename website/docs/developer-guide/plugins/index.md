@@ -15,7 +15,6 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | If you want to add… | Read |
 |---|---|
 | Custom tools, hooks, slash commands, skills, or CLI subcommands | **This guide** (the general plugin surface) |
-| A **native desktop app** extension (panes, pages, status bar, palette, themes) | [Desktop Plugin SDK](../desktop-plugin-sdk.md) |
 | A **web dashboard** extension (tabs, shell slots, themes) | [Extending the Dashboard](../../user-guide/features/extending-the-dashboard.md) |
 | An **LLM / inference backend** (new provider) | [Model Provider Plugins](../model-provider-plugin.md) |
 | A **gateway channel** (Discord/Telegram/IRC/Teams/etc.) | [Adding Platform Adapters](../adding-platform-adapters.md) |
@@ -363,7 +362,7 @@ When both exist the `pyproject.toml` wins. What Hermes does with them:
   extensions) in their own sidecar venv and talk to it over a subprocess declare this in
   `plugin.yaml`; Hermes then installs nothing and the plugin never joins the shared resolution.
 - **Nothing to load is an error** — `hermes plugins validate` (and the catalog CI) fail a
-  `plugin.yaml` with no `__init__.py`, `desktop/plugin.js` or `plugin.json` beside it. A pip-layout
+  `plugin.yaml` with no `__init__.py` or `plugin.json` beside it. A pip-layout
   package whose code sits under `src/` behind an entry point needs a thin directory-plugin wrapper
   whose `pyproject.toml` depends on the package.
 - `security.allow_lazy_installs: false` disables all of this; the plugin installs, its dependencies

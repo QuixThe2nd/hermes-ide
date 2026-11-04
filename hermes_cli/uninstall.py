@@ -67,6 +67,14 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 
+def code_removal_refusal() -> "str | None":
+    """Why this install's code must be left to its steward, or ``None`` for a git checkout."""
+    from hermes_cli.steward import classify_install, steward_uninstall_message
+
+    steward, allowed = classify_install(get_project_root())
+    return None if allowed else steward_uninstall_message(steward)
+
+
 _SHELL_RC_NAMES = (".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile")
 
 
@@ -419,56 +427,46 @@ def _uninstall_profile(profile) -> None:
     _rmtree_step(profile.path, indent="  ", fully=False)
 
 
-def run_gui_uninstall(args):
-    """``hermes uninstall --gui``: remove the desktop app's built artifacts, packaged bundle
-    (best-effort) and Electron userData — never config/sessions/.env, the agent or its venv."""
-    from hermes_cli.gui_uninstall import agent_is_installed, gui_install_summary, uninstall_gui
+def run_data_uninstall(args):
+    """Remove Hermes user data while preserving both standard and running code checkouts."""
     hermes_home = get_hermes_home()
-    summary = gui_install_summary(hermes_home)
-    skip_confirm = bool(getattr(args, "yes", False))
+    if not bool(getattr(args, "yes", False)):
+        print(color("This permanently deletes Hermes configs, secrets, sessions, and logs.", Colors.RED))
+        if not _confirm_yes("to delete all Hermes user data"):
+            return
 
-    print()
-    _print_box("│         ☤ Hermes Chat GUI Uninstaller                  │", Colors.MAGENTA)
-    print()
+    def path_key(path: Path) -> str:
+        return os.path.normcase(os.path.abspath(path))
 
-    if not summary["gui_installed"]:
-        print("No Hermes Chat GUI installation was found.")
-        print(f"  Checked: {hermes_home}, and the standard app locations for this OS.")
-        return
+    code_roots = {path_key(hermes_home / "hermes-agent"), path_key(get_project_root())}
 
-    print(color("This removes the Chat GUI only. The Hermes agent stays installed.", Colors.CYAN))
-    print()
-    print(color("Will remove:", Colors.YELLOW, Colors.BOLD))
-    for p in (*summary["source_built_artifacts"], *summary["packaged_app_paths"]):
-        print(f"  • {p}")
-    if summary["userdata_exists"]:
-        print(f"  • {summary['userdata_dir']}  (desktop app data)")
-    print()
-    if agent_is_installed(hermes_home):
-        print(color("Kept intact:", Colors.GREEN, Colors.BOLD))
-        print(f"  • The Hermes agent at {hermes_home / 'hermes-agent'}")
-        print(f"  • Your config, sessions, and secrets under {hermes_home}")
-        print()
+    def remove_data_entry(path: Path) -> bool:
+        if path_key(path) in code_roots:
+            return False
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        return True
 
-    if not skip_confirm and not _confirm_yes("to remove the Chat GUI"):
-        return
-
-    print()
-    print(color("Uninstalling Chat GUI...", Colors.CYAN, Colors.BOLD))
-    print()
-    uninstall_gui(hermes_home)
-
-    print()
-    _print_box("│            ✓ Chat GUI Uninstalled!                      │", Colors.GREEN)
-    print()
-    print("The Hermes agent is still installed. Run 'hermes' to use the CLI,")
-    print("or 'hermes uninstall' to remove the agent too.")
-    print()
+    log_info("Removing Hermes user data (keeping installed code)...")
+    candidates = list(hermes_home.iterdir()) if hermes_home.is_dir() else ()
+    removed = _remove_each(candidates, remove_data_entry)
+    for path in removed:
+        log_success(f"Removed {path}")
+    if not removed:
+        log_info("No Hermes user data found to remove")
+    log_success("Installed code was left intact")
 
 
 def run_uninstall(args):
     """Interactive/``--yes`` uninstall: full removes code and ``~/.hermes/``; keep-data removes only
     the code so configs, data and logs survive a reinstall."""
+    refusal = code_removal_refusal()
+    if refusal is not None:
+        print(refusal)
+        raise SystemExit(1)
+
     project_root = get_project_root()
     hermes_home = get_hermes_home()
 
@@ -483,7 +481,7 @@ def run_uninstall(args):
     is_default_profile = _is_default_hermes_home(hermes_home)
     named_profiles = _discover_named_profiles() if is_default_profile else []
 
-    # ``--yes`` (the desktop app's detached cleanup script): no prompts; ``--full`` = full wipe.
+    # ``--yes``: no prompts; ``--full`` = full wipe.
     # Named profiles are NOT auto-removed here — too destructive a default for an unattended run.
     if bool(getattr(args, "yes", False)):
         _perform_uninstall(
@@ -574,7 +572,6 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print("  • Gateway services and standalone gateway processes")
     print("  • Hermes PATH entries from shell configs / Windows User PATH")
     print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
-    print("  • Desktop Chat GUI artifacts")
     print(f"  • Code checkout: {project_root}")
     if not full_uninstall:
         print(f"  • Keep Hermes config/data: {hermes_home}")
@@ -618,8 +615,8 @@ def _perform_uninstall(
     remove_profiles: bool,
     named_profiles: list) -> None:
     """The uninstall steps shared by the interactive and ``--yes`` paths: stop gateway -> strip PATH
-    (rc files + Windows registry) -> wrapper/launchers/node symlinks -> Chat GUI artifacts -> delete
-    the checkout -> (Windows) PortableGit/Node -> optionally ``$HERMES_HOME`` and named profiles."""
+    (rc files + Windows registry) -> wrapper/launchers/node symlinks -> delete the checkout ->
+    (Windows) PortableGit/Node -> optionally ``$HERMES_HOME`` and named profiles."""
     print()
     print(color("Uninstalling...", Colors.CYAN, Colors.BOLD))
     print()
@@ -652,16 +649,6 @@ def _perform_uninstall(
     ):
         if on_this_platform:
             _remove_step(label, remove, success_fmt, none_msg)
-
-    # 3c. Chat GUI artifacts go with the agent code. uninstall_gui() never touches config/sessions/
-    #     .env (safe in keep-data mode); the packaged app + Electron userData live OUTSIDE HERMES_HOME.
-    log_info("Removing desktop Chat GUI artifacts...")
-    try:
-        from hermes_cli.gui_uninstall import uninstall_gui
-        if not uninstall_gui(hermes_home):
-            log_info("No desktop GUI artifacts found")
-    except Exception as e:
-        log_warn(f"Could not remove desktop GUI artifacts: {e}")
 
     # 4. Remove installation directory (code) — we may be running from inside it.
     log_info("Removing installation directory...")
@@ -719,22 +706,23 @@ class _UninstallArgs:
     """Lightweight args namespace for the module entrypoint below."""
 
     def __init__(self, *, mode: str):
-        self.gui = mode == "gui"
-        self.gui_summary = False
         self.full = mode == "full"
         self.yes = True  # the module entrypoint is always non-interactive
 
 
 def main(argv=None) -> int:
-    """``python -m hermes_cli.uninstall --mode <gui|lite|full>``. Imports only stdlib +
+    """``python -m hermes_cli.uninstall --mode <lite|full|data>``. Imports only stdlib +
     ``hermes_constants`` + ``hermes_cli.colors``, so it runs under a bare system Python (no venv)."""
     import argparse
     parser = argparse.ArgumentParser(prog="python -m hermes_cli.uninstall")
     parser.add_argument(
-        "--mode", choices=["gui", "lite", "full"], required=True,
-        help="gui = Chat GUI only; lite = GUI + agent, keep data; full = everything")
-    args = _UninstallArgs(mode=parser.parse_args(argv).mode)
-    (run_gui_uninstall if args.gui else run_uninstall)(args)
+        "--mode", choices=["lite", "full", "data"], required=True,
+        help="lite = agent only, keep data; full = everything; data = user data only")
+    args = parser.parse_args(argv)
+    if args.mode == "data":
+        run_data_uninstall(_UninstallArgs(mode=args.mode))
+    else:
+        run_uninstall(_UninstallArgs(mode=args.mode))
     return 0
 
 

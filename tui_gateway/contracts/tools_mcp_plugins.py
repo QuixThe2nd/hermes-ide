@@ -601,7 +601,6 @@ class AgentPluginRow(Result):
     status: str
     portable: bool
     install_dir: str
-    has_desktop_half: bool
     catalog_name: str | None = None
     catalog_tier: str | None = None
     installed_sha: str | None = None

@@ -156,7 +156,7 @@ def _print_macos_fda_tip() -> None:
         return  # indeterminate — don't nag
     _info(None, "  macOS tip: silence ALL folder permission prompts with one switch —",
           "  System Settings → Privacy & Security → Full Disk Access → enable",
-          "  your terminal (and Hermes.app if you use Desktop), or run:",
+          "  your terminal, or run:",
           "    open \"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles\"",
           "  The grant is permanent — it survives every Hermes update.")
 

@@ -3016,12 +3016,6 @@
   },
   {
    "facade": "hermes_cli.doctor",
-   "name": "check_macos_tcc_grants",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.doctor_platform"
-  },
-  {
-   "facade": "hermes_cli.doctor",
    "name": "check_ok",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"

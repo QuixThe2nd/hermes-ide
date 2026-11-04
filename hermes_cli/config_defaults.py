@@ -2586,40 +2586,11 @@ DEFAULT_CONFIG = {
         # (`*.foo.com`) supported.
         "extra_allowed_hosts": [],
     },
-    "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
-        # CSS font-family for the app's chat and UI text (e.g. "OpenDyslexic"). Layered in front
-        # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
-        # theme's face. The terminal pane is terminal.font_family.
-        "font_family": "",
+    "desktop": {  # Session-GUI settings shared by TUI and JSON-RPC clients.
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],
-        # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
-        # strings; a single string is shell-split.
-        "electron_flags": [],
-        # Linux Ozone backend, bridged to ELECTRON_OZONE_PLATFORM_HINT (explicit env wins). auto =
-        # Chromium default; x11 = XWayland, for compositors that ignore always-on-top for Wayland
-        # clients (e.g. COSMIC) — also puts the HUD on the solid-window input path; wayland = force
-        # a native Wayland surface.
-        # See #84011.
-        "ozone_platform_hint": "auto",
-        # Bridged to HERMES_DESKTOP_DISABLE_GPU: auto = disable GPU only on remote displays
-        # (SSH/VNC/RDP); true = always software rendering (no-GPU VMs where the GPU path hangs);
-        # false = always keep GPU on.
-        "disable_gpu": "auto",
-        # Linux keychain for token storage (Chromium --password-store). auto = detect KWallet (KDE
-        # env) or any org.freedesktop.secrets provider via D-Bus;
-        # gnome-libsecret|kwallet|kwallet5|kwallet6|basic force one (basic = unencrypted). Bridged
-        # to HERMES_DESKTOP_PASSWORD_STORE; ignored off-Linux.
-        "password_store": "auto",
-        # Linux: False preserves an existing custom XDG launcher entry; missing entries
-        # are still created. True keeps the generated entry current on each launch.
-        "manage_launcher_entry": True,
-        # macOS only: code-signing identity (login-keychain cert; self-signed works) to re-sign
-        # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
-        # updates. Empty = default ad-hoc identifier-pinned signing.
-        "macos_signing_identity": "",
         # Auto-continue a turn killed by a crash: resuming re-submits the interrupted prompt if
         # fresh; a stale one just shows the recovered partial transcript.
         "auto_continue": {

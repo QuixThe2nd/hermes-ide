@@ -280,8 +280,7 @@ def test_current_checkout_with_stale_dependency_set_runs_the_sync(monkeypatch, c
     monkeypatch.setattr(update_cmd, "_venv_core_imports_healthy", lambda: (True, ""))
     monkeypatch.setattr(hm, "_is_windows", lambda: False)
     monkeypatch.delenv(hm._UPDATE_REEXEC_ENV, raising=False)
-    monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", lambda **kwargs: None)
-    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda **kwargs: "uv")
+    monkeypatch.setattr("pm.ensure", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(update_cmd, "_repair_venv_on_current_checkout",
                         lambda **kwargs: calls.append("sync") or True)
     monkeypatch.setattr(update_cmd, "_repair_node_deps_on_current_checkout",
@@ -291,11 +290,11 @@ def test_current_checkout_with_stale_dependency_set_runs_the_sync(monkeypatch, c
         monkeypatch.setattr(update_cmd, "_venv_dependency_set_stale", lambda: stale)
         return update_cmd._repair_current_checkout(
             assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
-            had_desktop_app_before_update=False, active_lazy_features=[], active_tool_dependencies=[],
+            active_lazy_features=[], active_tool_dependencies=[],
             _windows_gateway_resume=None)
 
-    assert run((True, "installed hermes-agent 0.20.6, checkout is 0.21.2")) is True
+    assert run((True, "installed hermes-agent 0.20.6, checkout is 0.21.2"))[0] is True
     assert calls == ["sync"]
     assert "never synced after the last pull" in capsys.readouterr().out
-    assert run((False, "")) is True
+    assert run((False, ""))[0] is True
     assert calls == ["sync", "✓ Already up to date!"]

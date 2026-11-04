@@ -52,7 +52,6 @@ def test_summary_withholds_success_when_sqlite_remediation_failed(capsys, monkey
 
     complete = update_cmd._print_update_summary(
         node_failures=[],
-        desktop_build_ok=True,
         pre_update_version="0.20.4",
     )
 
@@ -78,7 +77,7 @@ def test_sqlite_partial_message_is_shared_and_names_windows_installer(capsys, mo
 
     update_cmd._print_verified_update_completion("✓ Update complete!")
     verified_out = capsys.readouterr().out
-    update_cmd._print_update_summary(node_failures=[], desktop_build_ok=True, pre_update_version=None)
+    update_cmd._print_update_summary(node_failures=[], pre_update_version=None)
     summary_out = capsys.readouterr().out
 
     for out in (verified_out, summary_out):
@@ -115,16 +114,6 @@ def test_current_checkout_repair_returns_verified_completion_result(monkeypatch)
     monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
     monkeypatch.setattr(update_cmd_deps, "_update_node_dependencies", lambda: [])
     monkeypatch.setattr(update_cmd._m(), "_build_web_ui", lambda _path: None)
-    monkeypatch.setattr(
-        update_cmd,
-        "_rebuild_desktop_after_update",
-        lambda _dir, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        update_cmd_deps,
-        "_rebuild_desktop_after_update",
-        lambda _dir, **_kwargs: True,
-    )
 
     complete = update_cmd._repair_node_deps_on_current_checkout(
         lambda _message: False

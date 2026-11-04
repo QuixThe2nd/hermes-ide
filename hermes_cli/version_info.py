@@ -5,9 +5,8 @@ suffix only when it can prove the number of commits since that release.
 
 Resolution order:
 1. Install stamp (``install-stamp.json``) — written at build time by
-   ``scripts/write_install_stamp.py`` for every packager (Docker, Nix, and
-   the desktop app). The stamp is authoritative
-   for packaged builds.
+   ``scripts/write_install_stamp.py`` for Docker and Nix. The stamp is
+   authoritative for packaged builds.
 2. Live git — for source/dev installs with a ``.git`` directory.
 3. Unknown — no stamp and no git. The provenance is unknown.
 """
@@ -34,7 +33,7 @@ class VersionInfo:
     source: Literal["build", "ci", "docker", "fallback", "git", "local", "nix", "unknown"]
     dirty: bool = False
     commit_date: int | None = None
-    distribution: Literal["docker", "nix", "desktop-app"] | None = None
+    distribution: Literal["docker", "nix"] | None = None
 
 
 def _derived_version(base_version: str, distance: int | None, dirty: bool = False) -> str:
@@ -114,20 +113,12 @@ def _stamp_version_info() -> VersionInfo | None:
 
     # updateMechanism is required in every stamp. A stamp without it means
     # the writing build lane must be fixed, not tolerated.
-    if data.get("updateMechanism") not in ("self", "electron-updater", "external"):
+    if data.get("updateMechanism") not in ("self", "external"):
         raise RuntimeError(
             f"install-stamp.json at {stamp_file} is missing a valid "
-            "'updateMechanism' (one of self, electron-updater, external). The "
+            "'updateMechanism' (one of self, external). The "
             "build lane that wrote this stamp must pass --update-mechanism to "
             "scripts/write_install_stamp.py (or bake the field directly)."
-        )
-    # A light artifact ships no Python runtime. Reading a light stamp from
-    # a Python process means the artifact was mispackaged.
-    if data.get("payload") == "light":
-        raise RuntimeError(
-            f"install-stamp.json at {stamp_file} marks this artifact as 'light' "
-            "(no agent runtime). No Python process can legitimately run from a "
-            "light artifact — this build is mispackaged."
         )
 
     commit = data.get("commit") or None
@@ -150,7 +141,7 @@ def _stamp_version_info() -> VersionInfo | None:
         else "build"
     )
     distribution = data.get("distribution")
-    if distribution not in {"docker", "nix", "desktop-app"}:
+    if distribution not in {"docker", "nix"}:
         distribution = None
 
     commit_date = data.get("commitDate")
@@ -230,11 +221,10 @@ def get_version_info() -> VersionInfo:
         return _cached_version_info
 
     # 1. Install stamp (packaged builds: Docker, Nix)
-    # A malformed stamp (missing/illegal updateMechanism, mispackaged "light"
-    # payload) raises RuntimeError — the build lane that wrote it must be
-    # fixed, but a crashing CLI is the wrong failure mode for every uncached
-    # caller. Degrade to "unknown" and let the authoring lane's own tests
-    # surface the malformed stamp.
+    # A malformed stamp (missing/illegal updateMechanism) raises RuntimeError —
+    # the build lane that wrote it must be fixed, but a crashing CLI is the wrong
+    # failure mode for every uncached caller. Degrade to "unknown" and let the
+    # authoring lane's own tests surface the malformed stamp.
     try:
         info = _stamp_version_info()
     except RuntimeError:

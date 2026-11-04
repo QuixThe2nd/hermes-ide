@@ -83,9 +83,9 @@ from hermes_cli.update_cmd_config import (  # noqa: F401
 from hermes_cli.update_cmd_deps import (  # noqa: F401
     _INSTALL_DEFINING_FILES, _UPDATE_CRITICAL_MODULES, _capture_active_lazy_features,
     _capture_active_tool_dependencies, _critical_module_import_failures,
-    _desktop_app_present, _editable_install_is_current, _npm_bin_exists,
+    _editable_install_is_current, _npm_bin_exists,
     _npm_lockfile_changed, _npm_manifest_paths, _npm_manifests_digest, _path_uid,
-    _rebuild_desktop_after_update, _record_npm_lockfile_hash, _refresh_active_lazy_features,
+    _record_npm_lockfile_hash, _refresh_active_lazy_features,
     _reapply_plugin_python_dependencies,
     _refresh_active_memory_provider_dependencies, _refuse_update_if_venv_foreign_owned,
     _repair_node_deps_on_current_checkout, _sync_python_dependencies_after_pull,
@@ -518,6 +518,7 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
 # (for example v2026.7.20) use a four-digit year, and a numeric sort would
 # rank them above every SemVer release. This matches _SEMVER_TAG_RE in
 # scripts/write_install_stamp.py.
+_RELEASE_TAG_RE = re.compile(r"^v(0|[1-9]\d{0,2})\.(\d+)\.(\d+)$")
 
 
 def _parse_release_tag(tag: str):
@@ -812,8 +813,7 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
 
 def _repair_venv_on_current_checkout(
     *, assume_yes, gateway_mode, pre_update_snapshot_id,
-    had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
-    _windows_gateway_resume) -> bool:
+    active_lazy_features, active_tool_dependencies, _windows_gateway_resume) -> bool:
     """Stage a replacement dependency environment; keep the marker on failure."""
     _write_update_incomplete_marker()
     import pm
@@ -832,23 +832,20 @@ def _repair_venv_on_current_checkout(
         return False
     _m()._clear_update_incomplete_marker()
     print("✓ Dependencies repaired!")
-    # The hand-off child never reaches the commits-pulled Node/web/Desktop
-    # phase. Finish through the current-checkout repair path, whose npm digest
-    # gate keeps this cheap when the pulled manifests did not change.
+    # The hand-off child never reaches the commits-pulled Node/web phase. Finish through the
+    # current-checkout repair path, whose npm digest gate keeps this cheap when manifests are unchanged.
     return _repair_node_deps_on_current_checkout(
         _print_verified_update_completion,
         assume_yes=assume_yes,
         gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
         completion_message="✓ Update complete!",
-        had_desktop_app_before_update=had_desktop_app_before_update,
     )
 
 
 def _repair_current_checkout(
     *, assume_yes, gateway_mode, pre_update_snapshot_id,
-    had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
-    _windows_gateway_resume) -> tuple[bool, bool]:
+    active_lazy_features, active_tool_dependencies, _windows_gateway_resume) -> tuple[bool, bool]:
     """Already-up-to-date path: ensure the pm-managed uv, repair a broken venv.
     Returns ``(complete, repaired_runtime)`` — repaired_runtime is True when this run actually
     rewrote the venv (handed-off sync or unhealthy-venv repair), which a deferred run
@@ -887,7 +884,6 @@ def _repair_current_checkout(
         current_checkout_complete = _repair_venv_on_current_checkout(
             assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,
-            had_desktop_app_before_update=had_desktop_app_before_update,
             active_lazy_features=active_lazy_features,
             active_tool_dependencies=active_tool_dependencies,
             _windows_gateway_resume=_windows_gateway_resume)
@@ -898,8 +894,7 @@ def _repair_current_checkout(
         current_checkout_complete = _repair_node_deps_on_current_checkout(
             _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,
-            completion_message="✓ Already up to date!",
-            had_desktop_app_before_update=had_desktop_app_before_update)
+            completion_message="✓ Already up to date!")
     return current_checkout_complete, bool(handed_off_sync or not healthy)
 
 
@@ -1312,7 +1307,7 @@ def _verify_head_after_pull(
     # completed, not that the update applied: a checkout that is pinned to a raw SHA (detached HEAD) can
     # report "N new commit(s)" against origin yet still sit on the old commit afterward (the branch-switch
     # step re-detaches to the SHA). Before this guard, ``hermes update`` printed "✓ Code updated!" and
-    # reinstalled deps + rebuilt the desktop app against the stale tree — no error, no warning, ``hermes
+    # reinstalled deps and rebuilt the web UI against the stale tree — no error, no warning, ``hermes
     # doctor`` healthy. Compare pre-pull and post-pull HEAD; if they match, surface the no-op instead of
     # claiming success.
     post_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
@@ -1350,8 +1345,7 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 
 
 def _handle_update_called_process_error(
-    e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
-    _windows_gateway_resume=None) -> None:
+    e, args, gateway_mode: bool, _windows_gateway_resume=None) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
     stage = _format_update_failure_stage(e)
     zip_fallback_ok = _should_zip_fallback_on_update_error(e)
@@ -1359,11 +1353,10 @@ def _handle_update_called_process_error(
         print(f"⚠ {stage}: {e}")
         print("→ Falling back to ZIP download...")
         print()
-        desktop_build_ok = _update_via_zip(
-            args, had_desktop_app_before_update=had_desktop_app_before_update,
-            _windows_gateway_resume=_windows_gateway_resume)
+        update_complete = _update_via_zip(
+            args, _windows_gateway_resume=_windows_gateway_resume)
         if gateway_mode:
-            _write_gateway_update_exit_code(desktop_build_ok)
+            _write_gateway_update_exit_code(update_complete)
     else:
         if zip_fallback_ok and getattr(args, "defer_restart", False):
             # The ZIP fallback restarts the fleet, so a deferred run keeps this failure a failure
@@ -1397,9 +1390,8 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, assume_yes: bool, gateway_mode: bool,
-    gw_input_fn, pre_update_snapshot_id, had_desktop_app_before_update: bool,
-    active_lazy_features, active_tool_dependencies, _windows_gateway_resume,
-    defer_restart: bool = False, deferred_defects: list | None = None,
+    gw_input_fn, pre_update_snapshot_id, active_lazy_features, active_tool_dependencies,
+    _windows_gateway_resume, defer_restart: bool = False, deferred_defects: list | None = None,
     no_gateway_restart: bool = False) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
@@ -1425,7 +1417,6 @@ def _finish_already_up_to_date(
     current_checkout_complete, repaired_runtime = _repair_current_checkout(
         assume_yes=assume_yes, gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
-        had_desktop_app_before_update=had_desktop_app_before_update,
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies,
         _windows_gateway_resume=_windows_gateway_resume)
@@ -1458,9 +1449,8 @@ def _finish_already_up_to_date(
 
 
 def _apply_pulled_update(
-    git_cmd, branch, pre_pull_sha, _plan, opts, *, gateway_mode, desktop_dir,
-    had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume, args) -> None:
+    git_cmd, branch, pre_pull_sha, _plan, opts, *, gateway_mode,
+    pre_update_snapshot_id, _pre_update_plan, _windows_gateway_resume, args) -> None:
     """Post-pull phase, pre-swap half: verify HEAD, arm the fleet marker, sweep bytecode, then
     hand the rest of the run to an interpreter born on the pulled code (never returns)."""
     # Fork --defer-restart state may be absent on stock _UpdateOptions namespaces
@@ -1496,9 +1486,8 @@ def _apply_pulled_update(
 
     _hand_off_post_swap(
         args, swap="git", branch=branch, pre_pull_sha=pre_pull_sha, opts=opts,
-        gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update,
-        pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
-        _windows_gateway_resume=_windows_gateway_resume)
+        gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
+        _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume)
 
 
 # ``store_true`` update flags the post-swap child must see exactly as the user passed them.
@@ -1522,7 +1511,7 @@ def _post_swap_argv_tail(args) -> list[str]:
 
 
 def _post_swap_payload(
-    *, swap: str, branch: str, opts, gateway_mode: bool, had_desktop_app_before_update: bool,
+    *, swap: str, branch: str, opts, gateway_mode: bool,
     pre_pull_sha=None, pre_update_snapshot_id=None, _pre_update_plan=None,
     _windows_gateway_resume=None) -> dict:
     """Everything the post-swap tail needs that only the pre-swap process could observe: the
@@ -1533,7 +1522,6 @@ def _post_swap_payload(
     return {
         "swap": swap, "branch": branch, "pre_pull_sha": pre_pull_sha,
         "gateway_mode": bool(gateway_mode),
-        "had_desktop_app_before_update": bool(had_desktop_app_before_update),
         "pre_update_snapshot_id": pre_update_snapshot_id,
         "pre_update_version": opts.pre_update_version,
         "active_lazy_features": opts.active_lazy_features,
@@ -1618,41 +1606,34 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
         pre_update_version=payload.get("pre_update_version"),
         active_lazy_features=payload.get("active_lazy_features"),
         active_tool_dependencies=payload.get("active_tool_dependencies"))
-    had_desktop_app_before_update = bool(payload.get("had_desktop_app_before_update"))
-    desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
 
     try:
         if payload.get("swap") == "zip":
-            desktop_build_ok = _finish_zip_update(
+            update_complete = _finish_zip_update(
                 active_tool_dependencies=opts.active_tool_dependencies,
                 pre_update_version=opts.pre_update_version,
-                had_desktop_app_before_update=had_desktop_app_before_update,
                 _windows_gateway_resume=_windows_gateway_resume)
             if gateway_mode:
-                _write_gateway_update_exit_code(desktop_build_ok)
+                _write_gateway_update_exit_code(update_complete)
             return
         # The parent already ran the checkout preflight (fork banner, lockfile churn, EOL); the
         # child only needs a working git.
         git_cmd = _ensure_non_trampoline_git(_base_git_cmd())
         _finish_pulled_update(
             git_cmd, payload["branch"], payload.get("pre_pull_sha"), opts, gateway_mode=gateway_mode,
-            desktop_dir=desktop_dir,
-            had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=payload.get("pre_update_snapshot_id"),
             _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume)
     except _shim_quarantine_error_type() as e:
         _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
         _handle_update_called_process_error(
-            e, args, gateway_mode, had_desktop_app_before_update,
-            _windows_gateway_resume=_windows_gateway_resume)
+            e, args, gateway_mode, _windows_gateway_resume=_windows_gateway_resume)
 
 
 def _finish_pulled_update(
-    git_cmd, branch, pre_pull_sha, opts, *, gateway_mode, desktop_dir,
-    had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume) -> None:
-    """Post-swap tail (git path): sync Python/Node/web/Desktop, maintenance, fleet restart."""
+    git_cmd, branch, pre_pull_sha, opts, *, gateway_mode,
+    pre_update_snapshot_id, _pre_update_plan, _windows_gateway_resume) -> None:
+    """Post-swap tail (git path): sync Python/Node/web, maintenance, fleet restart."""
     # Fork --defer-restart state may be absent on stock _UpdateOptions namespaces
     # (upstream tests build minimal opts); degrade to "not deferred" then.
     defer_restart = getattr(opts, "defer_restart", False)
@@ -1674,10 +1655,6 @@ def _finish_pulled_update(
     web_build_ok = _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     if web_build_ok is False:
         deferred_defects.append("web UI build failed")
-    desktop_build_ok = _rebuild_desktop_after_update(
-        desktop_dir, had_desktop_app_before_update=had_desktop_app_before_update)
-    if desktop_build_ok is False:
-        deferred_defects.append("desktop app rebuild failed")
 
     print()
     print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
@@ -1685,16 +1662,13 @@ def _finish_pulled_update(
     update_complete = _run_post_update_maintenance(
         assume_yes=opts.assume_yes, gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
-        had_desktop_app_before_update=had_desktop_app_before_update,
-        node_failures=node_failures, desktop_build_ok=desktop_build_ok,
-        pre_update_version=opts.pre_update_version,
+        node_failures=node_failures, pre_update_version=opts.pre_update_version,
         deferred_defects=deferred_defects)
     if not update_complete:
-        # A run whose own completion verification failed (WAL-vulnerable SQLite runtime, unrebuilt
-        # Desktop app) is a partial update, and a partial update must not be published as a prepared
-        # generation — activation would restart the fleet onto a checkout this run could not prove
-        # complete. The non-deferred flow keeps its historical behavior: partial completion still
-        # proceeds into the restart phase (#91277).
+        # A run whose own completion verification failed is a partial update, and a partial update
+        # must not be published as a prepared generation — activation would restart the fleet onto
+        # a checkout this run could not prove complete. The non-deferred flow keeps its historical
+        # behavior: partial completion still proceeds into the restart phase (#91277).
         deferred_defects.append(
             "update completion verification failed — the update is only partially complete")
 
@@ -1705,7 +1679,7 @@ def _finish_pulled_update(
         # non-deferred run (or an idle auto-update activation) picks the obligation up.
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if gateway_mode:
-            _write_gateway_update_exit_code(desktop_build_ok)
+            _write_gateway_update_exit_code(update_complete)
         _finish_deferred_restart(prepared_update=True, defects=deferred_defects)
         return
 
@@ -1786,15 +1760,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
 
-    # Any venv python still running (typically the Desktop `hermes serve` backend) keeps .pyd
-    # locked and would corrupt the sync; refuse rather than race (the app respawns a killed
-    # backend). NOT bypassed by --force (desktop updater, shim guard only); --force-venv is.
+    # Any venv python still running (typically a `hermes serve` backend) keeps .pyd files locked
+    # and would corrupt the sync; refuse rather than race. --force only bypasses the shim guard;
+    # --force-venv is the explicit override for this holder guard.
     if _m()._is_windows() and not getattr(args, "force_venv", False):
         _clear_windows_venv_holders_or_exit(args, gateway_mode, _windows_gateway_resume)
-
-    # After every fail-closed venv guard, before either path can remove the release tree.
-    desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-    had_desktop_app_before_update = _desktop_app_present(desktop_dir)
 
     use_zip_update, git_cmd = _prepare_git_command()
 
@@ -1809,15 +1779,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(2)
         try:
-            desktop_build_ok = _update_via_zip(
-                args, had_desktop_app_before_update=had_desktop_app_before_update,
-                _windows_gateway_resume=_windows_gateway_resume)
+            update_complete = _update_via_zip(
+                args, _windows_gateway_resume=_windows_gateway_resume)
         finally:
             # No-op once the post-swap child owns the token (``resume_needed`` flipped);
             # still resumes after a pre-swap refusal (dirty tree, --branch).
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if gateway_mode:
-            _write_gateway_update_exit_code(desktop_build_ok)
+            _write_gateway_update_exit_code(update_complete)
         return
 
     try:
@@ -1883,7 +1852,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 git_cmd, branch, current_branch, _plan, assume_yes=assume_yes,
                 gateway_mode=gateway_mode, gw_input_fn=gw_input_fn,
                 pre_update_snapshot_id=pre_update_snapshot_id,
-                had_desktop_app_before_update=had_desktop_app_before_update,
                 active_lazy_features=opts.active_lazy_features,
                 active_tool_dependencies=opts.active_tool_dependencies,
                 _windows_gateway_resume=_windows_gateway_resume,
@@ -1904,8 +1872,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             keep_stash=opts.keep_stash, target_ref=target_ref)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
-            desktop_dir=desktop_dir,
-            had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=pre_update_snapshot_id, _pre_update_plan=_pre_update_plan,
             _windows_gateway_resume=_windows_gateway_resume, args=args)
     except _shim_quarantine_error_type() as e:
@@ -1914,8 +1880,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
         _handle_update_called_process_error(
-            e, args, gateway_mode, had_desktop_app_before_update,
-            _windows_gateway_resume=_windows_gateway_resume)
+            e, args, gateway_mode, _windows_gateway_resume=_windows_gateway_resume)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

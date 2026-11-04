@@ -1,11 +1,9 @@
-"""A CLI install must never resolve the desktop workspace.
+"""A CLI install must select only the workspaces it needs.
 
-``apps/desktop`` declares ``node-pty``, which ships no Linux prebuild and so
-falls back to ``node-gyp rebuild``. A bare ``npm install`` at the repo root
-resolves the root ``apps/*`` workspace glob and drags it in, so a host with no
-make/gcc cannot finish an install for a machine that will never launch Electron
-or a PTY addon (#38311, #38772). Since #85297 a failed npm install aborts the
-whole install, so this is the difference between a working CLI install and none.
+A bare ``npm install`` at the repo root resolves every workspace, including
+optional native dependencies that may require a compiler. Since #85297 a failed
+npm install aborts the whole install, so constraining the workspace set is the
+difference between a working CLI install and none (#38311, #38772).
 
 These exercise the real ``node_deps_workspace_args`` from ``scripts/install.sh``.
 ``--manifest`` makes the installer print its stage manifest and stop before
@@ -42,8 +40,8 @@ def workspace_args(install_dir: Path) -> list[str]:
 
 def make_checkout(root: Path, workspaces: tuple[str, ...]) -> Path:
     """Lay out a checkout with a root package and the given workspace dirs."""
-    (root / "package.json").write_text('{"workspaces": ["apps/*", "ui-tui", "web"]}')
-    for workspace in ("apps/desktop", *workspaces):
+    (root / "package.json").write_text('{"workspaces": ["apps/shared", "ui-tui", "web"]}')
+    for workspace in ("apps/shared", *workspaces):
         directory = root / workspace
         directory.mkdir(parents=True)
         (directory / "package.json").write_text("{}")
@@ -59,14 +57,13 @@ def selected_workspaces(args: list[str]) -> list[str]:
     [("ui-tui", "web"), ("ui-tui",), ("web",), ()],
     ids=["full", "tui-only", "web-only", "bare"],
 )
-def test_desktop_workspace_is_never_selected(tmp_path, workspaces):
-    """No checkout shape may let apps/desktop (and its node-pty) resolve."""
+def test_workspace_selection_is_always_constrained(tmp_path, workspaces):
+    """No checkout shape may fall back to an unconstrained npm install."""
     args = workspace_args(make_checkout(tmp_path, workspaces))
 
-    assert "desktop" not in " ".join(args)
     # Constraining npm is the whole point: an empty argument list would leave
-    # npm resolving every workspace, including apps/*.
-    assert args, "npm must be constrained, otherwise apps/* resolves"
+    # npm resolving every workspace.
+    assert args, "npm must be constrained, otherwise every workspace resolves"
     assert "--workspaces=false" in args or selected_workspaces(args)
 
 
@@ -88,7 +85,7 @@ def test_absent_workspace_is_not_named(tmp_path):
 
 
 def test_bare_checkout_installs_the_root_only(tmp_path):
-    """With no installable workspace, npm still must not walk apps/*."""
+    """With no installable workspace, npm still must not walk other workspaces."""
     args = workspace_args(make_checkout(tmp_path, ()))
 
     assert args == ["--workspaces=false"]

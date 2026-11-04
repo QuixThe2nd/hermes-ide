@@ -84,11 +84,9 @@ Cron jobs let Hermes Agent run tasks on a schedule — daily summaries, periodic
 
 Create named Bots with their own model, memory, skills, routines, and chats, then bring them together in group chats or through `@mentions`.
 
-1. [Desktop](../user-guide/desktop.md)
-2. [Profiles](../user-guide/profiles.md)
-3. [Bot Mode](../user-guide/bot-mode.md)
-4. [Cron Scheduling](../user-guide/features/cron.md)
-5. [Multi-connection Desktop](../user-guide/multi-connection-desktop.md)
+1. [Profiles](../user-guide/profiles.md)
+2. [Bot Mode](../user-guide/bot-mode.md)
+3. [Cron Scheduling](../user-guide/features/cron.md)
 
 ### "I want to build custom tools/skills"
 
