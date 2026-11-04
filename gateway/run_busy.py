@@ -968,7 +968,8 @@ class GatewayBusySessionMixin:
         event._bot_loop_admitted = True
 
         effective_mode = self._effective_busy_input_mode(event.source)
-        if self._draining:  # gateway restarting/stopping
+        from gateway.overlap_restart import admits_owned_work
+        if self._draining and not admits_owned_work(self, event.source):  # gateway restarting/stopping
             await self._send_busy_drain_notice(event, session_key, effective_mode)
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):

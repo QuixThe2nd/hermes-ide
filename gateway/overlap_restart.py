@@ -1,8 +1,8 @@
 """Generic adapter hooks for an overlapping gateway restart.
 
 A transport that can keep two gateway generations attached opts in through the
-adapter methods below.  The runner stays transport-agnostic: Discord's hub is
-one implementation of this capability.
+adapter methods below.  The runner stays transport-agnostic: shared transport
+hubs implement this capability without changing the agent loop.
 """
 
 from __future__ import annotations
@@ -29,6 +29,22 @@ def overlap_predecessor_pid() -> Optional[int]:
     except ValueError:
         return None
     return pid if pid > 0 else None
+
+
+def overlap_attachment() -> dict[str, Any]:
+    """Identify this process to the hub; the hub still must have spawned it."""
+    from gateway.status import get_process_start_time
+    from hermes_constants import get_process_hermes_home
+
+    payload: dict[str, Any] = {
+        "gateway_pid": os.getpid(),
+        "gateway_start_time": get_process_start_time(os.getpid()),
+        "gateway_home": str(get_process_hermes_home()),
+    }
+    predecessor = overlap_predecessor_pid()
+    if predecessor is not None:
+        payload["overlap_predecessor_pid"] = predecessor
+    return payload
 
 
 def defer_adapter_until_authoritative(runner: Any, adapter: Any) -> bool:
