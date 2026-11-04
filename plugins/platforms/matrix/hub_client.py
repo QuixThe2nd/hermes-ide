@@ -76,14 +76,28 @@ class MatrixHubClientAdapter(MatrixAdapter):
 
     @staticmethod
     def _attach_secret_scope() -> Dict[str, str]:
-        from agent.secret_scope import build_profile_secret_scope, get_secret
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+        from gateway.platforms._shared import get_scoped_secret
+        from hermes_constants import get_process_hermes_home
 
         secrets = build_profile_secret_scope(get_hermes_home())
-        # Explicit empty values are meaningful: they prevent a hub-side scoped
-        # miss from borrowing the hub process's default-profile environment.
-        for name in _MATRIX_SCOPE_KEYS:
-            secrets[name] = str(get_secret(name, "") or "")
-        return secrets
+        scope_token = None
+        if get_hermes_home().resolve() != get_process_hermes_home().resolve():
+            scope_token = set_secret_scope(secrets)
+        try:
+            # Explicit empty values are meaningful: they prevent a hub-side scoped
+            # miss from borrowing the hub process's default-profile environment.
+            for name in _MATRIX_SCOPE_KEYS:
+                existing = secrets.get(name) or ""
+                secrets[name] = str(get_scoped_secret(name, existing) or existing or "")
+            return secrets
+        finally:
+            if scope_token is not None:
+                reset_secret_scope(scope_token)
 
     def _resolved_hub_config(self) -> Dict[str, Any]:
         data = self.config.to_dict()
