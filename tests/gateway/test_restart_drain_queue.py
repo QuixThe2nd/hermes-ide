@@ -26,11 +26,12 @@ import asyncio
 import json
 import os
 from datetime import datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.config import Platform
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.restart_wind_down import write_resume_allowlist
 from gateway.run_drain_queue import (
     claimed_drain_queue_path,
@@ -48,12 +49,20 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from tests.gateway.restart_test_helpers import (
+    RestartTestAdapter,
     make_restart_runner,
     make_restart_source,
 )
 
 QUEUED_MARKER = "queued for the next turn after it comes back"
 REFUSAL_MARKER = "not accepting another turn"
+
+
+class _OverlapDrainTestAdapter(RestartTestAdapter):
+    supports_overlap_restart = True
+
+    def admits_owned_work_while_draining(self, source):
+        return True
 
 
 def _event(
@@ -121,12 +130,75 @@ def _resume_entry(source, session_key: str) -> SessionEntry:
     )
 
 
+def _complete_replay(event) -> None:
+    callback = getattr(event, "_gateway_replay_completion", None)
+    if callable(callback):
+        callback(ProcessingOutcome.SUCCESS)
+
+
+def _complete_queued_replays(runner, session_key: str) -> None:
+    state = runner._peek_session_state(session_key)
+    for event in state.conversation.queued_events:
+        _complete_replay(event)
+
+
 async def _settle(runner) -> None:
     if runner._background_tasks:
         await asyncio.gather(*list(runner._background_tasks))
+    # A bare AsyncMock handles the turn successfully but does not run the real
+    # adapter's processing-completion hook, which settles the durable record.
+    for adapter in runner.adapters.values():
+        for call in getattr(adapter.handle_message, "await_args_list", []):
+            _complete_replay(call.args[0])
 
 
 # ── drain-time durability ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_idle_overlap_drain_persists_instead_of_claiming_a_current_task():
+    """A generation-global hub predicate must not admit work for an idle session."""
+    adapter = _OverlapDrainTestAdapter(Platform.DISCORD)
+    runner, adapter = make_restart_runner(adapter=adapter, platform=Platform.DISCORD)
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    source = make_restart_source(
+        chat_id="idle-overlap-chat",
+        thread_id="idle-overlap-thread",
+        platform=Platform.DISCORD,
+    )
+    session_key = runner._session_key_for_source(source)
+    event = _event("i am home", source=source)
+
+    assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+    assert any(QUEUED_MARKER in message for message in adapter.sent)
+    assert not any("current task finishes" in message for message in adapter.sent)
+    assert [record["event"]["text"] for record in _snapshot_events()] == ["i am home"]
+
+
+@pytest.mark.asyncio
+async def test_live_overlap_drain_keeps_owned_follow_up_in_memory():
+    """A running session still owns its follow-up during an overlap drain."""
+    adapter = _OverlapDrainTestAdapter(Platform.DISCORD)
+    runner, adapter = make_restart_runner(adapter=adapter, platform=Platform.DISCORD)
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    source = make_restart_source(
+        chat_id="live-overlap-chat",
+        thread_id="live-overlap-thread",
+        platform=Platform.DISCORD,
+    )
+    session_key = runner._session_key_for_source(source)
+    runner._running_agents[session_key] = MagicMock()
+    event = _event("owned follow-up", source=source)
+
+    assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+    assert not drain_queue_path().exists()
+    assert adapter._pending_messages[session_key] is event
 
 
 @pytest.mark.asyncio
@@ -460,6 +532,7 @@ async def test_fresh_process_replays_snapshot_and_starts_the_turn():
     assert session_key not in fresh_adapter._pending_messages
     state = fresh._peek_session_state(session_key)
     assert [e.text for e in state.conversation.queued_events] == ["second thought"]
+    _complete_queued_replays(fresh, session_key)
     # At-most-once: both files are gone, and a second replay is a no-op.
     assert not drain_queue_path().exists()
     assert not claimed_drain_queue_path().exists()
@@ -727,6 +800,7 @@ async def test_crash_after_claim_before_dispatch_loses_nothing():
     assert replayed.text == "acknowledged before the crash"
     state = fresh._peek_session_state(session_key)
     assert [e.text for e in state.conversation.queued_events] == ["also acknowledged"]
+    _complete_queued_replays(fresh, session_key)
     assert not claimed_drain_queue_path().exists()
     assert not drain_queue_path().exists()
 
@@ -760,6 +834,7 @@ async def test_leftover_claim_plus_later_drain_snapshot_both_replay():
     assert replayed.text == "claimed by the crashed replay"
     state = fresh._peek_session_state(session_key)
     assert [e.text for e in state.conversation.queued_events] == ["queued after the crash"]
+    _complete_queued_replays(fresh, session_key)
     assert not claimed_drain_queue_path().exists()
     assert not drain_queue_path().exists()
 
@@ -938,6 +1013,8 @@ async def test_multiplex_gateway_replays_every_served_profiles_queue():
     # A secondary profile's handler queues under its own home scope — the
     # same way its inbound turns run.
     profile_home = get_hermes_home() / "profiles" / "medicina"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").touch()
     token = set_hermes_home_override(str(profile_home))
     try:
         _queue_in_draining_process(
@@ -980,6 +1057,8 @@ async def test_single_profile_gateway_leaves_other_homes_queues_alone():
         _event("solo launch message", source=launch_src), launch_key
     )
     profile_home = get_hermes_home() / "profiles" / "medicina"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").touch()
     token = set_hermes_home_override(str(profile_home))
     try:
         _queue_in_draining_process(
