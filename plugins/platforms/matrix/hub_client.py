@@ -92,7 +92,8 @@ class MatrixHubClientAdapter(MatrixAdapter):
             # Explicit empty values are meaningful: they prevent a hub-side scoped
             # miss from borrowing the hub process's default-profile environment.
             for name in _MATRIX_SCOPE_KEYS:
-                secrets[name] = str(get_scoped_secret(name, "") or "")
+                existing = secrets.get(name) or ""
+                secrets[name] = str(get_scoped_secret(name, existing) or existing or "")
             return secrets
         finally:
             if scope_token is not None:

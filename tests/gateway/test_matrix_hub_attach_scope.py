@@ -38,6 +38,33 @@ def test_attach_secret_scope_reads_default_profile_from_os_environ(multiplex_no_
     assert mapping["MATRIX_ACCESS_TOKEN"] == token
 
 
+def test_attach_secret_scope_reads_default_profile_from_env_only(
+    multiplex_no_scope, monkeypatch
+):
+    """Gateway has HERMES_HOME but Matrix keys only in profile .env, not os.environ."""
+    monkeypatch.delenv("MATRIX_HOMESERVER", raising=False)
+    monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
+
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    assert home.resolve() == get_process_hermes_home().resolve()
+
+    homeserver = "https://env-file-only.matrix.example"
+    token = "env-file-only-matrix-token"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text(
+        f"MATRIX_HOMESERVER={homeserver}\nMATRIX_ACCESS_TOKEN={token}\n",
+        encoding="utf-8",
+    )
+    ss.invalidate_env_file_cache(home / ".env")
+
+    mapping = MatrixHubClientAdapter._attach_secret_scope()
+
+    assert mapping["MATRIX_HOMESERVER"] == homeserver
+    assert mapping["MATRIX_ACCESS_TOKEN"] == token
+
+
 def _write_profile_env(home, *, homeserver: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / ".env").write_text(f"MATRIX_HOMESERVER={homeserver}\n", encoding="utf-8")
