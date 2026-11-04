@@ -55,6 +55,19 @@ def defer_adapter_until_authoritative(runner: Any, adapter: Any) -> bool:
     )
 
 
+def drop_inbound_session_refusal_during_overlap(runner: Any, refusal: Any) -> bool:
+    """During overlap handoff the predecessor still holds the cross-process lease.
+
+    The occupancy copy is for a real second writer (CLI vs gateway), not the
+    same bot's successor process waiting on ``claim_when_predecessor_exits``.
+    """
+    if not getattr(runner, "_overlap_successor_pending", False):
+        return False
+    from hermes_cli.active_sessions import SESSION_NOT_OWNED
+
+    return getattr(refusal, "reason", None) == SESSION_NOT_OWNED
+
+
 def defer_primary_adapter(runner: Any, pending: tuple) -> None:
     deferred = getattr(runner, "_overlap_deferred_primary_adapters", None)
     if deferred is None:
