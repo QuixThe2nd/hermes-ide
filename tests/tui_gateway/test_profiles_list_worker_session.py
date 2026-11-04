@@ -1,15 +1,14 @@
-"""Tests: profiles.list ``worker_session`` (freshest kanban/tool worker).
+"""Tests: profiles.list ``worker_session`` (freshest tool/historical worker).
 
-Why: kanban/tool worker sessions are deny-listed out of every conversation
-list, so the desktop Bots roster showed a profile as idle ("3 hr ago")
-while its kanban worker had been running for 12+ minutes
-(NousResearch/hermes-agent#90268). profiles.list now reports the newest
-DENIED row per profile as ``worker_session`` so roster UIs can light
-ACTIVE NOW off the worker's ``last_activity_at`` heartbeat.
+Why: tool worker sessions and historical Kanban rows are deny-listed out of
+every conversation list, so roster UIs need a separate activity preview.
+profiles.list reports the newest DENIED row per profile as ``worker_session``
+so roster UIs can light ACTIVE NOW off the worker's ``last_activity_at``
+heartbeat.
 
 Contract under test:
-- ``worker_session`` is the newest kanban/tool row: id, source, title,
-  last_active.
+- ``worker_session`` is the newest tool or historical Kanban row: id, source,
+  title, last_active.
 - ``None`` when the profile has no worker sessions.
 - ``last_session`` still never includes worker rows (existing deny intact).
 - ``include_sessions: false`` skips the field entirely.

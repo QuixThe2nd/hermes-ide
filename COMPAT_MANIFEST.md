@@ -388,17 +388,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `datetime` | import | `datetime` |
 | `timezone` | import | `datetime` |
 
-### `agent.pet.generate.atlas`
-
-| name | kind | new location |
-|---|---|---|
-| `COLUMNS` | restored-def | `(deleted; BASE body restored)` |
-| `FRAME_COUNTS` | restored-def | `(deleted; BASE body restored)` |
-| `ROWS` | restored-def | `(deleted; BASE body restored)` |
-| `atlas_to_webp_bytes` | restored-def | `(deleted; BASE body restored)` |
-| `io` | restored-import | `io` |
-| `io` | import | `io` |
-
 ### `agent.prompt_builder`
 
 | name | kind | new location |
@@ -794,17 +783,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `NoReturn` | import | `typing` |
 | `contextmanager` | import | `contextlib` |
 | `time` | import | `time` |
-
-### `gateway.kanban_watchers`
-
-| name | kind | new location |
-|---|---|---|
-| `Callable` | import | `typing` |
-| `Context` | import | `contextvars` |
-| `logging` | import | `logging` |
-| `re` | import | `re` |
-| `sqlite3` | import | `sqlite3` |
-| `t` | moved-lazy | `agent.i18n` |
 
 ### `gateway.memory_status`
 
@@ -1294,80 +1272,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `cmd_journey` | restored-def | `(deleted; BASE body restored)` |
-
-### `hermes_cli.kanban`
-
-| name | kind | new location |
-|---|---|---|
-| `Any` | import | `typing` |
-
-### `hermes_cli.kanban_db`
-
-| name | kind | new location |
-|---|---|---|
-| `DEFAULT_BUSY_TIMEOUT_MS` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `DEFAULT_LOG_BACKUP_COUNT` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `DEFAULT_LOG_ROTATE_BYTES` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `DEFAULT_SPAWN_FAILURE_LIMIT` | restored-def | `(deleted; BASE body restored)` |
-| `DERIVED_MAX_IN_PROGRESS_CEILING` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `DERIVED_MAX_IN_PROGRESS_FLOOR` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `KanbanDbCorruptError` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `MEMORY_GUARD_MB_PER_WORKER` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `Mapping` | import | `typing` |
-| `RepairResult` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `add_notify_sub` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `advance_notify_cursor` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `check_respawn_guard` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `claim_unseen_events_for_sub` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `configured_max_in_progress` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `connect` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `connect_closing` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `count_notify_subs` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `count_running_tasks` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `count_running_tasks_other_boards` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `derive_default_max_in_progress` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `detect_crashed_workers` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `detect_stale_running` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `dispatch_once` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `enforce_max_runtime` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `field` | import | `dataclasses` |
-| `has_spawnable_ready` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `has_spawnable_review` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `hashlib` | import | `hashlib` |
-| `heartbeat_worker` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `list_notify_subs` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `parent_results` | restored-def | `(deleted; BASE body restored)` |
-| `purge_stale_done_notify_subs` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `random` | import | `random` |
-| `reap_worker_zombies` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `reconcile_orphaned_running` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `remove_notify_sub` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `repair_db` | moved-lazy | `hermes_cli.kanban_db_connect` |
-| `resolve_max_in_progress` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `resolve_workspace` | moved-lazy | `hermes_cli.kanban_db_workspace` |
-| `review_dispatch_enabled` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `rewind_notify_cursor` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `run_daemon` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-| `set_branch_name` | moved-lazy | `hermes_cli.kanban_db_workspace` |
-| `set_workspace_path` | moved-lazy | `hermes_cli.kanban_db_workspace` |
-| `shutil` | import | `shutil` |
-| `threading` | import | `threading` |
-| `unseen_events_for_sub` | moved-lazy | `hermes_cli.kanban_db_notify` |
-| `worker_log_rotation_config` | moved-lazy | `hermes_cli.kanban_db_dispatch` |
-
-### `hermes_cli.kanban_decompose`
-
-| name | kind | new location |
-|---|---|---|
-| `json` | import | `json` |
-| `os` | import | `os` |
-
-### `hermes_cli.kanban_diagnostics`
-
-| name | kind | new location |
-|---|---|---|
-| `DIAGNOSTIC_KINDS` | restored-def | `(deleted; BASE body restored)` |
 
 ### `hermes_cli.local_runtime.binaries`
 
@@ -1963,7 +1867,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_env_vars` | moved-lazy | `hermes_cli.web_routers.config_env` |
 | `get_health` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_hermes_home` | moved-lazy | `hermes_cli.config` |
-| `get_learning_graph` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_learning_node` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_logs` | moved-lazy | `hermes_cli.web_routers.status` |
 | `get_media` | moved-lazy | `hermes_cli.web_routers.files` |

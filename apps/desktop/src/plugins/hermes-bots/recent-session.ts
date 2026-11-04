@@ -7,9 +7,9 @@
  *
  * No new backend surface: `profiles.list` already ships `last_session` — the
  * newest row that `session.list` would show (hidden rows such as the Bot Chat
- * and group member sessions never win, tool/kanban workers are denied
- * server-side). Opened through the same `host.openSession` contract the
- * canonical open uses, in the bot's own workspace and connection route.
+ * and group member sessions never win, tool workers are denied server-side).
+ * Opened through the same `host.openSession` contract the canonical open uses,
+ * in the bot's own workspace and connection route.
  */
 
 import * as sdk from '@hermes/plugin-sdk'

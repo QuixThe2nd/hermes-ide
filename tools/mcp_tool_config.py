@@ -124,9 +124,6 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
         value = get_secret(key)
         if value is not None:
             env[key] = value
-    for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
-        if key in os.environ:
-            env[key] = os.environ[key]
     if user_env:
         env.update(user_env)
     from agent.delegation_context import delegated_child_subprocess_env

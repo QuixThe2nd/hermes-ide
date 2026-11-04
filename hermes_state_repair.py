@@ -541,7 +541,7 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
     "fix" (deleting the ``-wal``) loses committed transactions. ``chmod u+rw`` repair only inside the Hermes home
     tree (Hermes owns those files; ``chmod`` fails on files the user doesn't own, bounding the repair exactly);
     otherwise fail fast naming the file and command. Never deletes/truncates a WAL sidecar — once writable, the
-    normal open checkpoints it. ``:memory:``/``file:`` skipped. Shared with ``kanban_db``.
+    normal open checkpoints it. ``:memory:``/``file:`` skipped.
 
     Port of Kilo-Org/kilocode#12508's startup preflight. This preflight:
     """

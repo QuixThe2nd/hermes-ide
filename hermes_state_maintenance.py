@@ -366,7 +366,7 @@ class SessionMaintenanceMixin:
         state-owned rows, optional VACUUM.  Runs at most once per ``min_interval_hours``; VACUUM has its own
         ``min_vacuum_interval_days`` throttle and also requires ``freelist_count / page_count`` >
         ``min_vacuum_freelist_ratio`` so a small prune on a dense multi-GB database never triggers a full
-        rewrite.  Stale-open reconciliation: cron/kanban/subagent/one-shot CLI rows never set ``ended_at``
+        rewrite.  Stale-open reconciliation: cron/historical Kanban/subagent/one-shot CLI rows never set ``ended_at``
         when their process dies and prune only deletes ended rows, so after pruning, open rows from
         :attr:`_AUTO_PRUNE_STALE_OPEN_SOURCES` older than ``retention_days`` are closed
         (``startup_orphan_reap``); they stay resumable and age from their close.  Returns ``{"skipped",

@@ -60,9 +60,8 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes usage` | Show the configured account's rate-limit windows (the `/usage` block) without a session; `--json` for scripts. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
-| `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up), kanban dispatch or gateway turns start until resumed; in-flight work is never killed. |
-| `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
-| `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
+| `hermes pause` / `hermes resume` | Global emergency stop: no new cron fires (built-in ticker, managed-cron webhook, misfire catch-up) or gateway turns start until resumed; in-flight work is never killed. |
+| `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping. State is per-profile. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
@@ -90,7 +89,6 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes portal` | Nous Portal status, subscription link, and Tool Gateway routing. See [Tool Gateway](../user-guide/features/tool-gateway.md). |
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes computer-use` | Install or check the Computer Use (cua-driver) backend (macOS/Windows/Linux). |
-| `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
@@ -155,12 +153,7 @@ When chat answers and exits (`-Q`, `chat --oneshot`, or a query with non-TTY
 stdio) the process exit code reports the turn's outcome, on both the quiet and
 the non-quiet path: `0` the turn completed; `1` it failed, stopped partway
 (`partial`), hit the iteration budget, or never ran (credentials / agent init
-failed); `130` it was interrupted. A Kanban dispatcher-spawned worker
-(`HERMES_KANBAN_TASK` set) whose turn failed only because the provider was
-rate-limited, overloaded, returning 5xx, timing out, or the account hit a
-billing/quota wall, exits
-`75` (`EX_TEMPFAIL`) so the dispatcher requeues the task without counting a
-failure.
+failed); `130` it was interrupted.
 
 #### Delegation in finite chat runs
 
@@ -741,76 +734,6 @@ NAS-managed provider for scale-to-zero hosted gateways) — configured via the
 the built-in, so cron is never left without a trigger. See the
 [cron internals](../developer-guide/cron-internals.md#gateway-integration) doc.
 
-## `hermes kanban`
-
-```bash
-hermes kanban [--board <slug>] <action> [options]
-```
-
-Multi-profile, multi-project collaboration board. Each install can host many boards (one per project, repo, or domain); each board is a standalone queue with its own SQLite DB and dispatcher scope. New installs start with one board called `default`, whose DB is `~/.hermes/kanban.db` for back-compat; additional boards live at `~/.hermes/kanban/boards/<slug>/kanban.db`. The gateway-embedded dispatcher sweeps every board per tick.
-
-**Global flags (apply to every action below):**
-
-| Flag | Purpose |
-|------|---------|
-| `--board <slug>` | Operate on a specific board. Defaults to the current board (set via `hermes kanban boards switch`, the `HERMES_KANBAN_BOARD` env var, or `default`). |
-
-**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](../user-guide/features/kanban.md#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_request_review`, `kanban_request_changes`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
-
-| Action | Purpose |
-|--------|---------|
-| `init` | Create `kanban.db` if missing. Idempotent. |
-| `boards list` / `boards ls` | List all boards with task counts. `--json`, `--all` (include archived). |
-| `boards create <slug>` | Create a new board. Flags: `--name`, `--description`, `--icon`, `--color`, `--switch` (make active). Slug is kebab-case, auto-downcased. |
-| `boards switch <slug>` / `boards use` | Persist `<slug>` as the active board (writes `~/.hermes/kanban/current`). |
-| `boards show` / `boards current` | Print the currently-active board's name, DB path, and task counts. |
-| `boards rename <slug> "<name>"` | Change a board's display name. Slug is immutable. |
-| `boards rm <slug>` | Archive (default) or hard-delete a board. `--delete` skips the archive step. Archived boards move to `boards/_archived/<slug>-<ts>/`. Refused for `default`. |
-| `create "<title>"` | Create a new task on the active board. Flags: `--body`, `--assignee`, `--parent` (repeatable), `--workspace scratch\|worktree\|dir:<path>`, `--tenant`, `--priority`, `--triage`, `--idempotency-key`, `--max-runtime`, `--max-retries`, `--skill` (repeatable). |
-| `list` / `ls` | List tasks on the active board. Filter with `--mine`, `--assignee`, `--status`, `--tenant`, `--archived`, `--json`. |
-| `show <id>` | Show a task with comments and events. `--json` for machine output. |
-| `assign <id> <profile>` | Assign or reassign. Use `none` to unassign. Refused while task is running. |
-| `link <parent> <child>` | Add a dependency. Cycle-detected. Both tasks must be on the same board. |
-| `unlink <parent> <child>` | Remove a dependency. |
-| `claim <id>` | Atomically claim a ready task. Prints resolved workspace path. |
-| `comment <id> "<text>"` | Append a comment. The next worker that claims the task reads it as part of its `kanban_show()` response. |
-| `complete <id>` | Mark task done. Flags: `--result`, `--summary`, `--metadata`. |
-| `block <id> "<reason>"` | Mark task blocked for human input. Also appends the reason as a comment. |
-| `request-review <id>` | Move a task to `review` with a reviewer handoff — NOT a block. Flags: `--summary`, `--metadata`, `--reviewer` (reassigns before review dispatch). |
-| `request-changes <id> <reason>` | Reviewer verdict for an active review run: close the review attempt and route the task back to its original implementer. |
-| `reopen-review <id>...` | Send review task(s) back for changes (`review` → ready/todo). Flag: `--reason` (appended as a comment). |
-| `schedule <id> "<reason>"` | Park time-delay/follow-up work in `scheduled` so it is not shown as a human blocker. |
-| `unblock <id>` | Restore a blocked task to its source phase (`review` or `ready`), or `todo` while dependencies remain open. |
-| `archive <id>` | Hide from default list. `gc` will remove scratch workspaces. |
-| `tail <id>` | Follow a task's event stream. |
-| `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--failure-limit N`, `--json`. |
-| `context <id>` | Print the full context a worker would see (title + body + parent results + comments). |
-| `specify <id>` / `specify --all` | Flesh out a triage-column task into a concrete spec (title + body with goal, approach, acceptance criteria) via the auxiliary LLM, then promote it to `todo`. Flags: `--tenant` (scope `--all` to one tenant), `--author`, `--json`. Configure the model under `auxiliary.triage_specifier` in `config.yaml`. |
-| `decompose <id>` / `decompose --all` | Fan a triage-column task out into a graph of child tasks routed to specialist profiles by description. Falls back to specify-style single-task promotion when the LLM decides the task doesn't benefit from fan-out. Same flags as `specify`. Configure the decomposer model under `auxiliary.kanban_decomposer` in `config.yaml`; `kanban.orchestrator_profile` only controls who owns the root/orchestration task after fan-out. Also runs automatically every dispatcher tick when `kanban.auto_decompose: true` (the default). See [Auto vs Manual orchestration](../user-guide/features/kanban.md#auto-vs-manual-orchestration). |
-| `gc` | Remove scratch workspaces for archived tasks. |
-
-Examples:
-
-```bash
-# Create a second board and put a task on it without switching away.
-hermes kanban boards create atm10-server --name "ATM10 Server" --icon 🎮
-hermes kanban --board atm10-server create "Restart server" --assignee ops
-
-# Switch the active board for subsequent calls.
-hermes kanban boards switch atm10-server
-hermes kanban list                  # shows atm10-server tasks
-
-# Archive a board (recoverable) or hard-delete it.
-hermes kanban boards rm atm10-server
-hermes kanban boards rm atm10-server --delete
-```
-
-Board resolution order (highest precedence first): `--board <slug>` flag → `HERMES_KANBAN_BOARD` env var → `~/.hermes/kanban/current` file → `default`.
-
-All actions are also available as a slash command in the gateway (`/kanban …`), with the same argument surface — including `boards` subcommands and the `--board` flag.
-
-For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see the [Kanban user guide](../user-guide/features/kanban.md).
-
 ## `hermes egress`
 
 Outbound credential-injection firewall for remote terminal sandboxes. Wraps the [iron-proxy](https://github.com/ironsh/iron-proxy) daemon — a TLS-intercepting proxy that swaps opaque proxy tokens for real upstream API credentials at the network boundary, so sandboxes never hold real keys. Disabled by default; see the full [Egress proxy](../user-guide/egress/iron-proxy.md) page for setup + architecture.
@@ -875,10 +798,10 @@ Common failure modes + recovery are covered in [Egress proxy → Troubleshooting
 ## `hermes project`
 
 ```bash
-hermes project <create|list|show|add-folder|remove-folder|rename|set-primary|use|archive|restore|bind-board>
+hermes project <create|list|show|add-folder|remove-folder|rename|set-primary|use|archive|restore>
 ```
 
-Projects are human-named workspaces that can span multiple folders / repos. They anchor desktop session grouping and, when bound to a kanban board, give tasks a deterministic worktree + branch convention. State is per-profile.
+Projects are human-named workspaces that can span multiple folders / repos. They anchor desktop session grouping. State is per-profile.
 
 | Subcommand | Description |
 |------------|-------------|
@@ -892,7 +815,6 @@ Projects are human-named workspaces that can span multiple folders / repos. They
 | `use` | Set the active project. |
 | `archive` | Archive a project (recoverable). |
 | `restore` | Restore an archived project. |
-| `bind-board` | Bind a kanban board to this project. |
 
 ## `hermes webhook`
 
@@ -1671,27 +1593,6 @@ names label cursor and session state; they do not own or share the runtime.
 of the update if cua-driver is on PATH, so most users will not need to
 call `--upgrade` manually. Use it when upstream ships a fix you want
 right now without waiting for the next Hermes update.
-
-## `hermes pets`
-
-```bash
-hermes pets <list|install|select|show|off|scale|remove|doctor>
-```
-
-[Petdex](https://github.com/crafter-station/petdex) is a public gallery of animated sprite pets for coding agents. Install one and Hermes shows it reacting to agent activity across the CLI, TUI, and desktop app.
-
-| Subcommand | Description |
-|------------|-------------|
-| `list` | Browse the petdex gallery. |
-| `install` | Install a pet from the gallery. |
-| `select` | Set the active pet (writes `display.pet.*`). |
-| `show` | Animate the active pet in the terminal. |
-| `off` | Disable the pet display. |
-| `scale` | Resize the pet everywhere (`display.pet.scale`). |
-| `remove` | Delete an installed pet. |
-| `doctor` | Check pet setup + terminal graphics support. |
-
-You can also generate a brand-new pet from a text description with the `/hatch` slash command. See [Pets](../user-guide/features/pets.md).
 
 ## `hermes sessions`
 

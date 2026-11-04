@@ -310,7 +310,7 @@ for the life of the process.
 
 Servers are also released when their workspace goes away, even if they
 are not idle: removing a Hermes-managed worktree (`hermes -w` session
-end, Kanban task cleanup, a delegated subagent's pruned worktree) shuts
+end, a delegated subagent's pruned worktree) shuts
 down that tree's language servers before `git worktree remove` runs, and
 the periodic sweep shuts down any server whose project root no longer
 exists on disk (deleted outside Hermes). The sweep is part of the idle

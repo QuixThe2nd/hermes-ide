@@ -295,7 +295,6 @@ export interface OverlayState {
   journey: boolean
   modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState
-  petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
   vaultUnlock: null | VaultUnlockReq

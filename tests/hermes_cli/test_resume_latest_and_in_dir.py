@@ -38,7 +38,6 @@ def main_mod(monkeypatch):
 
     monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)
     monkeypatch.setattr(mod, "_sync_bundled_skills_for_startup", lambda: False)
-    monkeypatch.setattr(mod, "_pin_kanban_board_env", lambda: None)
     return mod
 
 

@@ -205,7 +205,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
         def inspect(self, identifier):
             return SkillMeta(
                 name="skillopt",
-                description="kanban-based pipelines",
+                description="project-based pipelines",
                 source="skills.sh",
                 identifier="skills-sh/latipun7/agent-skill-collections/skills/skillopt",
                 trust_level="community",
@@ -243,7 +243,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
     assert meta is not None
     assert meta.source == "clawhub"
     assert meta.identifier == "skillopt"
-    assert "kanban-based" not in (meta.description or "")
+    assert "project-based" not in (meta.description or "")
     assert matched is not None
     assert matched.__class__ is ForeignSlugSource
 
@@ -256,7 +256,7 @@ def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
         def inspect(self, identifier):
             return SkillMeta(
                 name="skillopt",
-                description="kanban-based pipelines",
+                description="project-based pipelines",
                 source="skills.sh",
                 identifier="skills-sh/latipun7/agent-skill-collections/skills/skillopt",
                 trust_level="community",

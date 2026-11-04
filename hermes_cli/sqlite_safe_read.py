@@ -132,7 +132,7 @@ def connect_tracked(
     path: Path | str, *, tracking_path: Path | str | None = None, connect_fn=None, **kwargs,
 ) -> sqlite3.Connection:
     """``sqlite3.connect`` that registers the connection for the lifetime of the fd (released on
-    ``close()``). Use for any database that might be byte-probed (``state.db``, ``kanban.db``).
+    ``close()``). Use for any database that might be byte-probed (``state.db``, legacy board DBs).
     Open and registration happen together under ``_live_lock`` so a concurrent
     :func:`read_header_bytes_preopen` cannot slip between them and cancel this connection's locks."""
     opener = connect_fn if connect_fn is not None else sqlite3.connect

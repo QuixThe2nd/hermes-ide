@@ -1098,7 +1098,7 @@ def max_retries_exhausted_result(
         )
     result = _failed_turn_result(_final_response, messages, api_call_count, _final_summary)
     result.update({
-        # Classified reason so callers (kanban worker in cli.py) can tell a quota wall
+        # Classified reason so callers can tell a quota wall
         # (``rate_limit`` / ``billing``) from a task failure.
         "failure_reason": classified.reason.value,
         # The classifier's own retry verdict — UI surfaces use this, not the reason string.

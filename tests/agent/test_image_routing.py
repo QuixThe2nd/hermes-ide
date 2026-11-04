@@ -367,8 +367,7 @@ class TestLargeImageHandling:
 
 
 class TestExtractImageRefs:
-    """Scan task body / inbound text for image paths and URLs (kanban worker
-    enrichment, issue raised May 2026)."""
+    """Scan task body / inbound text for image paths and URLs."""
 
     def test_empty_or_none_returns_empty(self):
         assert extract_image_refs("") == ([], [])
@@ -417,8 +416,8 @@ class TestExtractImageRefs:
 
 
 class TestBuildNativeContentPartsURLs:
-    """URL pass-through support added so kanban task bodies (and other
-    inbound surfaces) can route remote image URLs straight to the model."""
+    """URL pass-through support lets task bodies and other inbound surfaces
+    route remote image URLs straight to the model."""
 
     def test_url_only_no_local_paths(self):
         parts, skipped = build_native_content_parts(

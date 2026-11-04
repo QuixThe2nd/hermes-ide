@@ -218,7 +218,7 @@ def _settle_client() -> Any:
     if client is not None:
         # atexit is LIFO: registering AFTER the SDK's constructor means our
         # finalizer runs first, so root spans ended there still get flushed
-        # by the SDK (short-lived processes: kanban workers, chat -q, cron).
+        # by the SDK (short-lived processes: automation workers, chat -q, cron).
         atexit.register(_finalize_all_traces)
     return settled
 
@@ -621,7 +621,7 @@ def _end_root(state: TraceState, label: str) -> None:
 
 
 def _finalize_all_traces() -> None:
-    """atexit: end every open root span. Short-lived processes (kanban workers,
+    """atexit: end every open root span. Short-lived processes (automation workers,
     ``chat -q``, cron) exit with tool calls queued; children export via the SDK
     flush but an un-ended root leaves an anonymous trace. Registered after the
     client is built so (LIFO) it runs before the SDK's shutdown hook."""

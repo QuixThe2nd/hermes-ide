@@ -23,14 +23,14 @@ logger = logging.getLogger("hermes_state")
 
 # WAL needs mmap shared memory + fcntl byte-range locks. Network filesystems (NFS, SMB/CIFS, some FUSE, WSL1) raise
 # ``locking protocol``; ZFS corrupts the -shm file under concurrent bursts (COW + mmap) -> ``disk I/O error``.
-# Either would silently break everything on state.db/kanban.db, so fall back to DELETE (readers block on writes).
+# Either would silently break state.db, so fall back to DELETE (readers block on writes).
 # "not authorized": some FUSE mounts block the WAL pragma outright.
 _WAL_INCOMPAT_MARKERS = ("locking protocol", "not authorized", "disk i/o error")
 # SQLite's default journal_size_limit is -1 (unlimited); see _apply_wal_size_limit.
 _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 
-# Once-per-process-per-db_label dedup sets (kanban_db.connect() runs on every kanban operation, so an undeduped
-# line would repeat per connection). Tests clear these via ``hermes_state_wal.<name>``.
+# Once-per-process-per-db_label dedup sets keep repeated connections from repeating each line.
+# Tests clear these via ``hermes_state_wal.<name>``.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
@@ -181,7 +181,7 @@ class WalUnsupportedError(sqlite3.OperationalError):
 # unreadable, the answer is False and behaviour is unchanged. Nothing else (ext4/btrfs/xfs/zfs/tmpfs/overlay/nfs)
 # is ever flagged here — those keep the existing reactive paths.
 _CROSS_VM_FSTYPES = frozenset({"virtiofs", "fuse.virtiofs", "9p", "9p2000", "9p2000.l", "9p2000.u"})
-_cross_vm_fs_cache: Dict[str, bool] = {}  # per DB directory; kanban_db.connect() opens per operation
+_cross_vm_fs_cache: Dict[str, bool] = {}  # per DB directory; avoids repeated mount probes
 _cross_vm_fs_cache_lock = threading.Lock()
 _cross_vm_warned_paths: set[str] = set()
 _cross_vm_warned_lock = threading.Lock()
@@ -254,8 +254,8 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
     """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
 
     Returns the mode actually set — or, when the read-only mode probe is blocked by a concurrent opener, ``"wal"``
-    as the assumed mode with nothing touched (``require_wal=True`` raises instead). Shared by :class:`SessionDB`
-    and ``hermes_cli.kanban_db_connect.connect``. WAL-incompatible filesystems either raise ``OperationalError`` ("locking protocol" / "disk I/O error") or —
+    as the assumed mode with nothing touched (``require_wal=True`` raises instead). WAL-incompatible filesystems
+    either raise ``OperationalError`` ("locking protocol" / "disk I/O error") or —
     macOS NFS / SMB / AgentFS — silently refuse and stay in DELETE; either way log ERROR once per process per
     ``db_label`` and fall back. ``require_wal=True`` raises :class:`WalUnsupportedError` instead. WAL-reset-bug
     builds (https://sqlite.org/wal.html#walresetbug) never enable WAL on non-WAL files; an already-WAL DB keeps WAL
@@ -382,7 +382,7 @@ def _enable_wal(conn: sqlite3.Connection, db_label: str, require_wal: bool, curr
             # Filesystems that reject BOTH pragmas (APFS external SSDs under heavy contention raise
             # "disk I/O error" on DELETE too). The connection keeps its current mode — typically the
             # SQLite default DELETE — and stays usable for reads/writes, so propagating would crash
-            # every DB-init caller (SessionDB, kanban_db, ResponseStore) for no benefit. Log once
+            # every DB-init caller (SessionDB, ResponseStore) for no benefit. Log once
             # per db_label and return the mode actually in effect, read back rather than guessed.
             _log_once("wal_delete_fallback_failed", db_label, exc, delete_exc)
             try:
@@ -503,15 +503,15 @@ _ONCE_LOGS = {
         "open re-applies the configured mode. Set `database.journal_mode: delete` in config.yaml to make it stick. "
         "This message fires once per process per database."),
     "wal_fallback": (_wal_fallback_warned_lock, "_wal_fallback_warned_paths", logging.ERROR,
-        # Under kanban dispatcher + workers a DELETE-mode write blocks readers as SQLITE_BUSY.
+        # Under concurrent writers a DELETE-mode write blocks readers as SQLITE_BUSY.
         "%s: WAL journal_mode unsupported on this filesystem (%s) — falling back to journal_mode=DELETE (slower "
         "rollback-journal mode; reduces concurrency but works on NFS/SMB/FUSE/ZFS). See "
         "https://www.sqlite.org/wal.html for details. This message fires once per process per database."),
     "wal_delete_fallback_failed": (_wal_delete_fallback_failed_lock, "_wal_delete_fallback_failed_paths", logging.WARNING,
         # Both pragmas rejected (observed on APFS external SSDs under heavy contention): the connection keeps
         # whatever mode it has (typically the SQLite default DELETE) and stays usable for reads/writes, so this
-        # is WARNING, not ERROR — propagating would crash every DB-init caller. Deduped per db_label because
-        # kanban_db.connect() runs on every kanban operation.
+        # is WARNING, not ERROR — propagating would crash every DB-init caller. Deduped per db_label
+        # because repeated opens must not repeat the warning.
         "%s: both WAL and DELETE journal_mode failed (WAL: %s; DELETE: %s) — continuing with the connection's "
         "current journal mode (reads/writes still work). Typically seen on APFS external SSDs under heavy "
         "contention. This message fires once per process per database."),

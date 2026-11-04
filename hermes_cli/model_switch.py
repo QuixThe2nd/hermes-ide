@@ -1777,7 +1777,7 @@ def _extra_headers_from_config(entry: Any) -> dict[str, str]:
 def _scoped_key_env(name: str) -> str:
     """Read a provider key env var the way the chat path does, honouring the per-profile scope.
 
-    With a secret scope installed (multiplexed gateway turn, dashboard/kanban workers) the scope's
+    With a secret scope installed (multiplexed gateway turn, dashboard/automation workers) the scope's
     verdict is authoritative: a hit is this profile's key, a miss must not borrow another profile's
     value from the process env or the default ``.env``. Multiplexing on with no scope fails closed
     (``UnscopedSecretError`` -> ""). Otherwise resolve through ``get_env_prefer_dotenv`` — the

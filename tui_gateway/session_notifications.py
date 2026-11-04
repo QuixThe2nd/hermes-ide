@@ -1,4 +1,4 @@
-"""Per-session notification poller: kanban/loop/delegation events routed to the owning session,
+"""Per-session notification poller: loop/delegation events routed to the owning session,
 desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals at install time
 (method_ctx.bind_module), so they reference server.py globals bare."""
 
@@ -131,10 +131,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt.get("session_id", ""), evt_type, *(evt.get(f, 0 if f == "suppressed" else "") for f in extra))
 
 
-# Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
-# past them and they can't wedge a later completed/blocked event behind an unclaimed row.
-_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
-_KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0  # /loop and /heartbeat share one idle-poll cadence
+_LOOP_POLL_SECONDS = 5.0  # /loop and /heartbeat share one idle-poll cadence
 
 
 def _notif_release_turn(session: dict) -> None:
@@ -295,162 +292,6 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
         _notif_release_turn(session)
         with contextlib.suppress(Exception):
             mgr.abandon_tick()
-
-
-def _kb_first_line(value: Any, limit: int) -> str:
-    lines = str(value).strip().splitlines()
-    return f"\n{lines[0][:limit]}" if lines else ""
-
-
-def _kb_completed(task, payload: dict, title: str) -> str:
-    handoff = (_kb_first_line(payload["summary"], 200) if payload.get("summary")
-               else _kb_first_line(task.result, 160) if getattr(task, "result", None) else "")
-    return f" done — {title}{handoff}"
-
-
-def _kb_timed_out(task, payload: dict, title: str) -> str:
-    with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
-
-
-# kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
-_KANBAN_EVENT_FORMATTERS = {
-    "completed": ("✔", _kb_completed),
-    "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
-    "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
-                + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
-    "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),
-    "timed_out": ("⏱", _kb_timed_out),
-    "status": ("🔄", lambda t, p, title: f" → {p.get('status') or ''}"),
-}
-
-
-def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[str]:
-    """Single-line notification text for one kanban event; wording mirrors gateway/kanban_watchers.py (reads the same
-    as on Telegram). None for silent kinds."""
-    if (entry := _KANBAN_EVENT_FORMATTERS.get(getattr(ev, "kind", ""))) is None:
-        return None
-    glyph, fmt = entry
-    task_id = sub.get("task_id", "")
-    title = (getattr(task, "title", None) or task_id)[:120]
-    who = getattr(task, "assignee", None) or ""
-    prefix = f"{glyph} " + (f"[{board_slug}] " if board_slug else "") + (f"@{who} " if who else "")
-    return f"{prefix}Kanban {task_id}{fmt(task, getattr(ev, 'payload', None) or {}, title)}"
-
-
-def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
-    """(slug, resolved DB identity) — multiple slugs can point at one DB when HERMES_KANBAN_DB pins it."""
-    slug = (board_meta or {}).get("slug") or _kb.DEFAULT_BOARD
-    db_path = (board_meta or {}).get("db_path")
-    try:
-        return slug, str(Path(db_path).expanduser().resolve() if db_path else _kb.kanban_db_path(slug).resolve())
-    except Exception:
-        return slug, f"slug:{slug}"
-
-
-def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
-    """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
-    writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
-    falls through so delivery is preserved)."""
-    from hermes_cli import kanban_db_connect as _kbc
-    from hermes_cli import kanban_db_notify as _kbn
-    with contextlib.suppress(Exception):
-        if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
-            return []
-    try:
-        conn = _kbc.connect(board=slug)
-    except Exception:
-        return []
-    texts: list = []
-    with contextlib.closing(conn):
-        try:
-            subs = _kbn.list_notify_subs(conn)
-        except Exception:
-            return []
-        for sub in subs:
-            if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") != session_key:
-                continue
-            sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-                             thread_id=sub.get("thread_id") or "")
-            _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
-            if not events:
-                continue
-            task = _kb.get_task(conn, sub["task_id"])
-            from gateway.kanban_watchers_notifier import diagnostic_event
-            from gateway.warning_notifications import DiagnosticText
-            for ev in events:
-                text = _format_kanban_event_text(sub, task, ev, slug)
-                if text:
-                    texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
-            # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
-            # later reopen notify the same session. The claimed cursor prevents replay.
-            if task and getattr(task, "status", "") == "archived":
-                with contextlib.suppress(Exception):
-                    _kbn.remove_notify_sub(conn, **sub_ident)
-    return texts
-
-
-def _collect_kanban_notifications(session: dict) -> list:
-    """Claim unseen terminal kanban events for this session's ``platform="tui"`` subscriptions (``kanban_create``
-    auto-subscribes with ``chat_id=HERMES_SESSION_KEY``; no "tui" messaging adapter exists, so this poller is the
-    delivery path). Same atomic cursor-claim as the gateway notifier: exactly-once even if a gateway polls the same DB.
-
-    See #59890.
-    """
-    session_key = str(session.get("session_key") or "")
-    if not session_key or session.get("_finalized"):
-        return []
-    try:
-        from hermes_cli import kanban_db as _kb
-    except Exception:
-        return []
-    try:
-        boards = _kb.list_boards(include_archived=False)
-    except Exception:
-        try:
-            boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
-        except Exception:
-            return []
-    # dict keyed by resolved DB identity: first slug per DB wins (a pinned HERMES_KANBAN_DB aliases slugs).
-    unique = {}
-    for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
-        unique.setdefault(resolved, slug)
-    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]
-
-
-def _notif_poll_kanban(sid: str, session: dict) -> None:
-    with _session_profile_runtime_scope(session):
-        _notif_poll_kanban_scoped(sid, session)
-
-
-def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
-    """One kanban poll: emit new texts, buffer them, and run the buffered batch as a turn if idle. Events are
-    cursor-claimed (never re-queued), so they wait in the buffer instead of dropping the agent turn."""
-    try:
-        texts = _collect_kanban_notifications(session)
-    except Exception as exc:
-        _notif_log_failure("kanban notification poll failed", exc)
-        texts = []
-    for text in texts:
-        from gateway.warning_notifications import DiagnosticText, render_notification
-        render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": text}),
-                            platform="tui", diagnostic=isinstance(text, DiagnosticText))
-    if texts:
-        session.setdefault("_kanban_pending", []).extend(texts)
-    if not session.get("_kanban_pending") or not _notif_claim_turn(session):
-        return
-    with session["history_lock"]:
-        pending = session.get("_kanban_pending") or []
-        from gateway.warning_notifications import DiagnosticText, warning_notifications_enabled
-        split = not warning_notifications_enabled("tui")
-        diagnostic = split and isinstance(pending[0], DiagnosticText)
-        batch = [text for text in pending if not split or isinstance(text, DiagnosticText) == diagnostic]
-        session["_kanban_pending"] = [text for text in pending if split and isinstance(text, DiagnosticText) != diagnostic]
-    with contextlib.suppress(Exception):
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
-                      "kanban notification dispatch failed",
-                      **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
 
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
@@ -666,12 +507,7 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
 
 def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     """Daemon thread (started by _init_session()) that drains the process-global completion_queue for this session
-    (ownership routing: _notif_handle_event) and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
-    delivery path for platform="tui" rows.
-
-    Also polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` for this session's TUI kanban
-    subscriptions and delivers terminal task events the same way (status.update + agent turn) — the delivery
-    path tools/kanban_tools.py documents for platform="tui" rows (issue #59890).
+    (ownership routing: _notif_handle_event) and drives /loop and /heartbeat wakeups while idle.
     """
     from tools.process_registry import process_registry
     from tools.process_registry_notifications import format_process_notification
@@ -679,12 +515,12 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = 0.0
+    last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
         _poll_bot_live_delivery_guarded(sid, session, now)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
-        # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
+        # as process dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
             last_loop_poll = now
             for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
@@ -692,9 +528,6 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
                     fire(sid, session)
                 except Exception as tick_exc:
                     _notif_log_failure(f"{what} poll failed", tick_exc)
-        if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
-            last_kanban_poll = now
-            _notif_poll_kanban(sid, session)
         try:
             evt = queue.get(timeout=0.5)
         except Exception:

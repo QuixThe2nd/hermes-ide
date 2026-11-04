@@ -188,10 +188,10 @@ class TestHolderMessage:
         label an unrelated subcommand as the Desktop backend (#90778)."""
         from hermes_cli.update_cmd import _format_venv_python_holders_message
 
-        proc = _spawn(["-m", "hermes_cli.main", "kanban", "--preserve-cache"])
+        proc = _spawn(["-m", "hermes_cli.main", "chat", "--preserve-cache"])
         try:
             matches = [m for m in _detect() if m[0] == proc.pid]
-            assert matches, "kanban process not detected"
+            assert matches, "chat process not detected"
             message = _format_venv_python_holders_message(matches)
             assert "close the desktop app" not in message.lower(), (
                 f"substring match mislabeled `--preserve-cache` (#90778):\n{message}"

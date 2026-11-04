@@ -10,7 +10,7 @@ It interoperates with any A2A-compliant peer — another Hermes, LangChain, Crew
 - **Delegating to specialist agents** — a peer that advertises `web_search`/`research`/`coding` skills on its Agent Card can be discovered and called mid-conversation.
 - **Being a callable service** — expose your Hermes so other frameworks' agents can send it tasks.
 
-When you want multiple agents on the **same machine**, prefer [delegation](../features/delegation.md) (in-process subagents) or the [kanban board](../features/kanban.md) (durable multi-profile work queue) — A2A is for crossing process/machine/framework boundaries.
+When you want multiple agents on the **same machine**, prefer [delegation](../features/delegation.md) (in-process subagents) — A2A is for crossing process/machine/framework boundaries.
 
 ## Enable
 

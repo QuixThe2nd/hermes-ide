@@ -65,7 +65,7 @@ function pluginPathSuffix(caller: string, path: string): string {
 
 /** The plugin REST door. Every call is scoped BY CONSTRUCTION to the plugin's
  *  own backend namespace — `path` is relative to `/api/plugins/<pluginId>`
- *  ('/board' → `/api/plugins/kanban/board`), so a plugin can't address another
+ *  ('/board' → `/api/plugins/example/board`), so a plugin can't address another
  *  plugin's API or a core route through it. Profile-aware like every desktop
  *  REST call. Broader reach (core endpoints, another namespace) is the future
  *  declared-capability seam; today the namespace IS the boundary. */

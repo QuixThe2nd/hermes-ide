@@ -52,7 +52,7 @@ default (:func:`resolve_background_arg`):
   (on unless configured off) detaches WHEN :func:`background_delivery_supported`
   says this session can receive a late completion, and silently falls back
   to the blocking foreground behavior where it cannot (cron jobs, one-shot
-  runs, Kanban workers, stateless HTTP endpoints). An explicit value is
+  runs, stateless HTTP endpoints). An explicit value is
   never overridden — ``background=true`` still fails loudly, before any
   work, on an unsupported channel.
 
@@ -1596,7 +1596,7 @@ def background_delivery_supported() -> tuple:
         False,
         "background=true is not available in this session: it cannot receive "
         "a detached result after the turn ends (a one-shot runner such as "
-        "`hermes -z`, a cron job, a Kanban worker, or a stateless HTTP "
+        "`hermes -z`, a cron job, or a stateless HTTP "
         "endpoint). NO WORK WAS STARTED. Omit `background` (or pass "
         "background=false) to run the task in the foreground this turn "
         "instead.",
@@ -1631,8 +1631,8 @@ def _omitted_default_delivery_supported() -> bool:
         return True
 
     if not async_delivery_supported():
-        # Stateless channel or Kanban worker: only a raw session id WITH a
-        # declared server-history consumer can consume a detached result.
+        # Stateless channel: only a raw session id WITH a declared
+        # server-history consumer can consume a detached result.
         if not _current_origin_session_id():
             return False
         try:
@@ -1676,8 +1676,8 @@ def resolve_background_arg(args: Optional[Dict[str, Any]], *, config: Optional[d
     3. absent (or ``None``) → the ``delegation.default_background`` config key
        (default ``True``); when the config default is on, delivery capability
        is still required — a session that cannot receive a late completion
-       (one-shot `hermes -q` chat, cron job, one-shot run, Kanban worker,
-       stateless HTTP endpoint with no declared server-history consumer)
+       (one-shot `hermes -q` chat, cron job, one-shot run, stateless HTTP
+       endpoint with no declared server-history consumer)
        silently falls back to ``False`` (today's blocking behavior) instead
        of erroring.
 

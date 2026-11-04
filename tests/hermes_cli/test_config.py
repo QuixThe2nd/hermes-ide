@@ -1840,21 +1840,8 @@ class TestProviderEnabledRuntimeGate:
 
 
 # ---------------------------------------------------------------------------
-# DEFAULT_CONFIG must not carry a duplicate "kanban" key
+# DEFAULT_CONFIG must not carry duplicate top-level keys
 # ---------------------------------------------------------------------------
-
-def test_default_config_kanban_block_not_dropped_by_duplicate_key():
-    """DEFAULT_CONFIG previously declared ``"kanban"`` twice, so Python kept
-    only the second literal and silently dropped the first — losing the
-    ``auto_subscribe_on_create`` default. Both sets of defaults must survive.
-    """
-    kanban = DEFAULT_CONFIG["kanban"]
-    # From the first (dropped) block:
-    assert kanban.get("auto_subscribe_on_create") is True
-    # From the second block:
-    assert "dispatch_in_gateway" in kanban
-    assert "auto_decompose" in kanban
-
 
 def test_default_config_has_no_duplicate_top_level_keys():
     """Guard against any duplicate key silently shadowing a default."""
@@ -1866,7 +1853,7 @@ def test_default_config_has_no_duplicate_top_level_keys():
     for node in ast.walk(tree):
         if isinstance(node, ast.Dict):
             keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
-            if "model" in keys and "kanban" in keys:  # the DEFAULT_CONFIG literal
+            if "model" in keys and "agent" in keys:  # the DEFAULT_CONFIG literal
                 dupes = {k for k in keys if keys.count(k) > 1}
                 assert not dupes, f"duplicate DEFAULT_CONFIG keys: {sorted(dupes)}"
 

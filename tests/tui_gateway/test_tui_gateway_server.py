@@ -2597,8 +2597,7 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["memory", "project"]. `kanban` is a configurable opt-in and is
-    # never recovered onto a saved list; `project` is GUI-only, folded in by
+    # Sorted: ["memory", "project"]. `project` is GUI-only, folded in by
     # _load_enabled_toolsets. Toolsets inside their first release
     # (_RECENTLY_SHIPPED_TOOLSETS) are back-filled onto saved lists that never
     # offered them — allow those too.
@@ -2607,7 +2606,6 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     result = server._load_enabled_toolsets()
     assert result is not None
     assert {"memory", "project"} <= set(result)
-    assert "kanban" not in result
     assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
@@ -2634,7 +2632,6 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
     result = server._load_enabled_toolsets()
     assert result is not None
     assert {"memory", "project"} <= set(result)
-    assert "kanban" not in result
     assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
@@ -8671,76 +8668,6 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
     assert yaml.safe_load((tmp_path / "config.yaml").read_text())["approvals"]["mode"] == "manual"
     assert emitted and emitted[0][0:2] == ("session.info", "sid")
     assert emitted[0][2]["approval_mode"] == "manual"
-
-
-def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch):
-    """display.pet.enabled: "false" (quoted) must report enabled=False.
-
-    The old check was bool(value) — bool('false') is True, so a hand-edited
-    quoted YAML value kept the petdex mascot enabled against the operator's
-    explicit intent.
-    """
-    import yaml
-
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text(
-        yaml.safe_dump({"display": {"pet": {"enabled": "false"}}})
-    )
-
-    response = server.handle_request(
-        {"id": "1", "method": "pet.gallery", "params": {}}
-    )
-    assert response["result"]["enabled"] is False
-
-
-def test_pet_info_known_revision_elides_spritesheet(monkeypatch):
-    """pet.info with a matching knownRevision must not resend the sheet bytes.
-
-    The spritesheet payload is multi-MB; resending it on every backstop
-    refresh stalls the WS write loop (#54730). A caller passing the revision
-    it already holds gets metadata plus spritesheetUnchanged instead.
-    """
-
-    class _FakePet:
-        slug = "codex"
-        display_name = "Codex"
-        exists = True
-        spritesheet = None
-
-    payload = {
-        "slug": "codex",
-        "displayName": "Codex",
-        "mime": "image/png",
-        "spritesheetBase64": "A" * 1024,
-        "spritesheetRevision": "123:456",
-        "frameW": 192,
-        "frameH": 208,
-        "scale": 0.33,
-    }
-
-    monkeypatch.setattr(server, "_pet_active_selection", lambda: (True, _FakePet(), 0.33))
-    monkeypatch.setattr(server, "_pet_sprite_payload", lambda pet, *, scale: dict(payload))
-
-    # Matching revision: bytes elided, unchanged marker set.
-    resp = server.handle_request(
-        {"id": "1", "method": "pet.info", "params": {"knownRevision": "123:456"}}
-    )
-    assert resp["result"]["enabled"] is True
-    assert "spritesheetBase64" not in resp["result"]
-    assert resp["result"]["spritesheetUnchanged"] is True
-    assert resp["result"]["spritesheetRevision"] == "123:456"
-
-    # Stale revision: full payload still flows.
-    resp = server.handle_request(
-        {"id": "2", "method": "pet.info", "params": {"knownRevision": "999:999"}}
-    )
-    assert resp["result"]["spritesheetBase64"] == "A" * 1024
-    assert "spritesheetUnchanged" not in resp["result"]
-
-    # No revision (legacy callers): full payload.
-    resp = server.handle_request({"id": "3", "method": "pet.info", "params": {}})
-    assert resp["result"]["spritesheetBase64"] == "A" * 1024
 
 
 def test_desktop_contract_includes_approval_mode_rpc():

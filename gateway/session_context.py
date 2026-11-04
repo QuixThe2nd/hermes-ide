@@ -55,7 +55,7 @@ _SESSION_VARS = (
 
 # Whether this channel can route an ASYNC completion back AFTER the turn ends (see
 # ``async_delivery_supported()``).  _UNSET => supported (CLI, contextvar-unaware paths); stateless
-# adapters (API server, Kanban workers) opt OUT via ``supports_async_delivery = False`` at bind.
+# adapters (API server and other one-shot runners) opt OUT via ``supports_async_delivery = False`` at bind.
 _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
 
 # Request-local proof that the client resumes SessionDB history. No env fallback
@@ -249,11 +249,8 @@ def declare_stateless_channel() -> None:
 
 
 def async_delivery_supported() -> bool:
-    """Whether the current session can deliver a background completion later.  False for
-    stateless channels (:func:`declare_stateless_channel`) and Kanban workers
-    (``HERMES_KANBAN_TASK``: one-shot subprocesses whose parent disappears after the turn)."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        return False
+    """Whether the current session can deliver a background completion later. False for
+    stateless channels declared with :func:`declare_stateless_channel`."""
     value = _SESSION_ASYNC_DELIVERY.get()
     return True if value is _UNSET else bool(value)
 

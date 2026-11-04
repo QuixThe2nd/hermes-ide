@@ -76,11 +76,11 @@ export function SidebarWorkspaceGroup({
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 
   // Leading glyph: a home mark for the repo's primary checkout (labeled by its
-  // live branch), a branch/kanban mark otherwise.
+  // live branch), a branch mark otherwise.
   const leadingIcon = (
     <Codicon
       className="shrink-0 text-(--ui-text-tertiary)"
-      name={group.isKanban ? 'checklist' : group.isHome ? 'home' : 'git-branch'}
+      name={group.isHome ? 'home' : 'git-branch'}
       size="0.75rem"
     />
   )

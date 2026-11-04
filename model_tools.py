@@ -50,16 +50,6 @@ def _is_delegated_child_context() -> bool:
         return False
 
 
-def _is_dispatcher_owned_worker() -> bool:
-    """False when HERMES_KANBAN_* is present but this execution does not own it
-    (delegate_agent child, or a cron job fired in-process from a worker)."""
-    try:
-        from agent.delegation_context import is_dispatcher_owned_worker_context
-        return is_dispatcher_owned_worker_context()
-    except Exception:
-        return True
-
-
 # --- Async bridging (single source of truth; registry.dispatch uses it too) ---
 # Loops are persistent (never asyncio.run per call): cached httpx/AsyncOpenAI
 # clients stay bound to a live loop, so their GC cleanup can't hit "Event loop
@@ -214,7 +204,7 @@ _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 _tool_defs_cache_lock = threading.Lock()
 # FIFO cap: 8 covers a long-lived gateway's warm set of platform/toolset combos.
 # Hard cap on memoized get_tool_definitions() results. A long-lived Gateway process sees many distinct
-# toolset/config fingerprints over its lifetime (per-session toolset sets, config edits, kanban-task
+# toolset/config fingerprints over its lifetime (per-session toolset sets, config edits,
 # toggles); without a bound the cache grows unboundedly. 8 comfortably covers the warm working set (the
 # handful of distinct platform/toolset combos a gateway actually serves) while keeping the cap small.
 # (#19251)
@@ -275,8 +265,8 @@ def _tool_defs_cache_key(
     """Memo key for get_tool_definitions, or None when caching must be bypassed.
 
     Covers every argument plus everything that changes the result without one:
-    registry generation, config.yaml stat signature (dynamic schemas), kanban
-    context, profile scope. check_fn results are TTL-cached in the registry.
+    registry generation, config.yaml stat signature (dynamic schemas), delegated-child
+    context, and profile scope. check_fn results are TTL-cached in the registry.
     """
     profile_scope = check_fn_cache_scope()
     if profile_scope == CHECK_FN_CACHE_BYPASS:
@@ -290,8 +280,7 @@ def _tool_defs_cache_key(
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
-        bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
-        _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
+        bool(skip_tool_search_assembly), _is_delegated_child_context(), profile_scope,
     )
 
 
@@ -332,13 +321,7 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     """Tool names requested by the toolset selection (before check_fn filtering)."""
     tools: set = set()
     if enabled_toolsets is not None:
-        enabled = list(enabled_toolsets)
-        # Dispatcher-spawned kanban workers always get the lifecycle handoff
-        # tools, even when the assignee profile restricts its chat toolsets.
-        if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
-                and _is_dispatcher_owned_worker() and "kanban" not in enabled):
-            enabled.append("kanban")
-        _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
+        _apply_toolset_selection(tools, list(enabled_toolsets), quiet_mode, disable=False)
     else:
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
@@ -552,11 +535,7 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
                               quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
-    # Selection is per schema, not per process/profile. Kanban's local checks
-    # are uncached; the outer definitions cache already keys on this selection.
-    from tools.kanban_toolset_context import scoped_kanban_toolset_selection
-    with scoped_kanban_toolset_selection(enabled_toolsets):
-        filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
+    filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
@@ -776,7 +755,7 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
     if not ts.is_bridge_tool(function_name):
         return None
     # Un-collapsed catalog scoped to the session's toolsets, so a restricted
-    # session (subagent, kanban worker) can't reach the whole registry via the bridge.
+    # session (for example a subagent) can't reach the whole registry via the bridge.
     try:
         current_defs = get_tool_definitions(enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
                                             quiet_mode=True, skip_tool_search_assembly=True) or []

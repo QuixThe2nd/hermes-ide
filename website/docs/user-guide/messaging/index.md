@@ -189,8 +189,8 @@ restarting it.
 On every platform the gateway runs an out-of-loop watchdog thread that probes
 the asyncio loop (`gateway.loop_watchdog_probe_interval_s`, default 30 s). When
 the loop stops dispatching for `gateway.loop_watchdog_max_strikes` consecutive
-probes (default 3), housekeeping, the cron scheduler and the embedded kanban
-dispatcher have all frozen with it, so the watchdog dumps every thread's stack
+probes (default 3), housekeeping and the cron scheduler have all frozen with
+it, so the watchdog dumps every thread's stack
 to the log, stamps `gateway_state.json` with `gateway_state: degraded` and
 `exit_reason: loop_liveness_watchdog`, and exits with code `75` so the service
 supervisor restarts the process. `hermes gateway status` renders that record as
@@ -885,8 +885,8 @@ overrides take precedence; `null` inherits. Invalid values do not enable
 suppression.
 
 The setting controls automatic engine warnings, retry/fallback diagnostics,
-watchdog and database notices, cron failure notifications, Kanban failure
-notifications, background/delegation diagnostics, and adapter-generated error
+watchdog and database notices, cron failure notifications,
+background/delegation diagnostics, and adapter-generated error
 notices. It applies to messaging platforms, CLI/TUI presentation and API
 notification presentation. Classification belongs to the producer: warning-like
 text in a user request or an ordinary result is not filtered by its wording.
@@ -894,7 +894,7 @@ text in a user request or an ordinary result is not filtered by its wording.
 Suppression changes presentation, not execution. Existing logs, stored diagnostic
 content, retry decisions, failure state, scheduler bookkeeping and notification
 cursors remain available. A diagnostic-only internal wake (a subagent or credit
-failure, a Kanban crash notice) still runs its agent turn — so the agent can act on
+failure) still runs its agent turn — so the agent can act on
 the failure and the session history stays consistent — and that turn is billed as
 usual; only its unsolicited text, media and streaming presentation are muted. Structured
 approval and clarification controls, direct command/API outcomes and requested

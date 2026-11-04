@@ -237,7 +237,7 @@ class GatewayAuthorizationMixin:
         ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
         platform is its own credential boundary and never borrows the primary. Restored/cached sources
         carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
-        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
+        profile deliverable after a restart (the same rule cron applies)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return False
@@ -298,7 +298,7 @@ class GatewayAuthorizationMixin:
         runtime_profile)`` delivers — ``_adapters_for_profile`` holds one adapter per platform per
         profile, a shared-bot satellite drains through the primary, and a disconnected secondary
         fails closed to ``{}`` rather than borrowing the default bot. Restored sessions, cron,
-        kanban and completion notices all rely on this row. Matrix: gateway/AGENTS.md § Profile scope.
+        and completion notices all rely on this row. Matrix: gateway/AGENTS.md § Profile scope.
         """
         if source is None:
             return None

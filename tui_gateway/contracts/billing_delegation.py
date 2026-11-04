@@ -1,5 +1,5 @@
 """Contracts: billing / subscription / usage envelopes, delegation controls, handoff, message
-reactions, pet generation and ``project.facts`` (handlers in ``tui_gateway/methods_session.py``).
+reactions and ``project.facts`` (handlers in ``tui_gateway/methods_session.py``).
 
 Billing routes are FAIL-OPEN: a logged-out / unreachable portal answers an ``ok`` result whose
 ``error`` carries the typed code (``_serialize_billing_error``) — never a JSON-RPC error — so the
@@ -7,8 +7,6 @@ client always resolves and branches on the envelope. ``BillingEnvelope`` is that
 """
 
 from __future__ import annotations
-
-from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import MessageReaction, OpenModel, ProfileParams, SessionParams
@@ -489,107 +487,6 @@ class MessageReactResult(Result):
 
 method("message.react", params=MessageReactParams, result=MessageReactResult,
        doc="Set/clear one author's emoji reaction on a message; returns the row's full reaction list.")
-
-
-# ── pets: generate / hatch / cancel / status ──────────────────────────────────────────────────
-
-
-class PetCancelParams(ProfileParams):
-    token: str | None = None
-
-
-class PetCancelResult(Result):
-    ok: bool
-
-
-method("pet.cancel", params=PetCancelParams, result=PetCancelResult,
-       doc="Stop an in-flight pet generate/hatch by token (idempotent).")
-
-
-class PetGenProvider(Result):
-    """``agent/pet/generate/imagegen.py::list_sprite_providers`` row."""
-
-    name: str
-    label: str
-    default: bool
-
-
-class PetGenerateStatusResult(Result):
-    available: bool
-    providers: list[PetGenProvider]
-
-
-method("pet.generate.status", params=ProfileParams, result=PetGenerateStatusResult,
-       doc="Whether pet generation is possible (a reference-capable image backend) and which providers.")
-
-
-class PetGenerateParams(ProfileParams):
-    """``prompt`` or a ``referenceImage`` data URL is required (the handler answers 4004 without one)."""
-
-    prompt: str | None = None
-    referenceImage: str | None = None  # noqa: N815 - wire key
-    count: int | None = None
-    style: str | None = None
-    provider: str | None = None
-
-
-class PetDraft(Result):
-    index: int
-    dataUri: str  # noqa: N815 - wire key
-
-
-class PetGenerateResult(Result):
-    ok: bool
-    token: str
-    drafts: list[PetDraft]
-
-
-method("pet.generate", params=PetGenerateParams, result=PetGenerateResult,
-       doc="Candidate base looks for a new pet (draft step); drafts also stream via pet.generate.progress.")
-
-
-class PetHatchParams(ProfileParams):
-    token: str
-    name: str
-    cancelToken: str | None = None  # noqa: N815 - wire key
-    index: int | None = None
-    description: str | None = None
-    prompt: str | None = None
-    style: str | None = None
-    provider: str | None = None
-
-
-# TODO(common): ``tui_gateway/server.py::_pet_sprite_payload`` is one shape for ``pet.info`` and
-# ``pet.hatch``; consolidate with the pets contract module. Every field optional: ``pet.hatch``
-# emits ``{}`` when the installed pet cannot be reloaded.
-class PetSpritePayload(Result):
-    slug: str | None = None
-    displayName: str | None = None  # noqa: N815 - wire key
-    mime: str | None = None
-    spritesheetBase64: str | None = None  # noqa: N815 - wire key
-    spritesheetRevision: str | None = None  # noqa: N815 - wire key
-    frameW: int | None = None  # noqa: N815 - wire key
-    frameH: int | None = None  # noqa: N815 - wire key
-    framesPerState: int | None = None  # noqa: N815 - wire key
-    framesByState: dict[str, int] | None = None  # noqa: N815 - wire key
-    framesByRow: dict[str, int] | None = None  # noqa: N815 - wire key
-    loopMs: int | None = None  # noqa: N815 - wire key
-    scale: float | None = None
-    stateRows: list[str] | None = None  # noqa: N815 - wire key
-
-
-class PetHatchResult(Result):
-    """The hatched pet is installed but NOT active (``pet.select`` adopts, ``pet.remove`` discards)."""
-
-    ok: bool
-    slug: str
-    displayName: str  # noqa: N815 - wire key
-    warnings: list[JsonValue] = Field(default_factory=list)
-    pet: PetSpritePayload
-
-
-method("pet.hatch", params=PetHatchParams, result=PetHatchResult,
-       doc="Turn a base draft into a full spritesheet pet; progress streams via pet.hatch.progress.")
 
 
 # ── project.facts ─────────────────────────────────────────────────────────────────────────────

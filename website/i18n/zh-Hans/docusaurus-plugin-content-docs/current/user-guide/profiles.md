@@ -46,13 +46,13 @@ hermes profile create mybot
 
 创建一个预置了内置技能的全新 profile。运行 `mybot setup` 配置 API 密钥、模型和 gateway token。
 
-如果你计划将此 profile 用作 kanban（看板）工作节点（或希望 kanban 编排器将任务路由到它），在创建时传入 `--description "<角色>"` 以便编排器了解其能力：
+在创建时传入 `--description "<角色>"` 记录该 profile 的用途：
 
 ```bash
 hermes profile create researcher --description "Reads source code and external docs, writes findings."
 ```
 
-你也可以稍后通过 `hermes profile describe` 设置或自动生成描述——完整路由模型请参阅 [Kanban 指南](./features/kanban#auto-vs-manual-orchestration)。
+你也可以稍后通过 `hermes profile describe` 设置或自动生成描述。
 
 ### 仅克隆配置（`--clone`）
 

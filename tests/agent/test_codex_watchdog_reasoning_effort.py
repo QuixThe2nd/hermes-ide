@@ -66,7 +66,7 @@ def test_default_effort_tiers_and_explicit_operator_values_are_untouched(tmp_pat
 
 
 def test_effort_floor_never_outlives_the_run_budget_cap(tmp_path, monkeypatch):
-    """A run budget (cron/kanban) caps the IMPLICIT stale timeout at half the remaining budget; the
+    """A cron run budget caps the IMPLICIT stale timeout at half the remaining budget; the
     high-effort floor must be applied before that cap, not override it."""
     import time
 

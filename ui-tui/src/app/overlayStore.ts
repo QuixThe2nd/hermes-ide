@@ -15,7 +15,6 @@ const buildOverlayState = (): OverlayState => ({
   journey: false,
   modelPicker: false,
   pager: null,
-  petPicker: false,
   pluginsHub: false,
   secret: null,
   vaultUnlock: null,
@@ -38,7 +37,6 @@ export const $isBlocked = computed(
     journey,
     modelPicker,
     pager,
-    petPicker,
     pluginsHub,
     secret,
     sessions,
@@ -57,7 +55,6 @@ export const $isBlocked = computed(
       journey ||
       modelPicker ||
       pager ||
-      petPicker ||
       pluginsHub ||
       secret ||
       sessions ||
@@ -84,10 +81,9 @@ export const $isBlocked = computed(
  *   (`ActiveWidgetSlot`, `sdk/host.tsx:209`, outside the ComposerPane
  *   subtree) so it can anchor the full-screen absolute `Overlay`
  *   (`components/overlay.tsx`) against the whole terminal.
- * - The FloatingOverlays set — `modelPicker`, `pager`, `petPicker`,
- *   `sessions`, `skillsHub`, `pluginsHub` — but ONLY when the rule sits at
- *   the top.  That panel is `position="absolute" bottom="100%"` inside
- *   ComposerPane's relative Box (`appOverlays.tsx:387`), so it grows UPWARD
+ * - The FloatingOverlays set — `modelPicker`, `pager`, `sessions`, `skillsHub`,
+ *   `pluginsHub` — but ONLY when the rule sits at the top.  That panel is
+ *   `position="absolute" bottom="100%"` inside ComposerPane's relative Box (`appOverlays.tsx:387`), so it grows UPWARD
  *   over the `at="top"` rule and never reaches the `at="bottom"` one.
  *
  * NOT occluding (deliberately excluded):
@@ -124,7 +120,6 @@ export const hasFloatingPanel = (overlay: OverlayState): boolean =>
   Boolean(
     overlay.modelPicker ||
     overlay.pager ||
-    overlay.petPicker ||
     overlay.pluginsHub ||
     overlay.sessions ||
     overlay.skillsHub
@@ -159,7 +154,6 @@ export const resetFlowOverlays = () =>
     widget: $overlayState.get().widget,
     journey: $overlayState.get().journey,
     modelPicker: $overlayState.get().modelPicker,
-    petPicker: $overlayState.get().petPicker,
     pluginsHub: $overlayState.get().pluginsHub,
     sessions: $overlayState.get().sessions,
     skillsHub: $overlayState.get().skillsHub

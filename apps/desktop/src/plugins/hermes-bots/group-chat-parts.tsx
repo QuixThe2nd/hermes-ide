@@ -285,7 +285,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
         // Shift+Enter falls through to the textarea's native newline.
         // Grow with wrapped text/newlines so long briefs stay reviewable
         // (#95300), then scroll internally before the composer takes over
-        // the room — same field-sizing idiom as the Kanban drawer.
+        // the room — the same field-sizing idiom used by other drawer editors.
         className={cn(
           'field-sizing-content max-h-[min(50vh,24rem)] min-h-9 resize-none overflow-y-auto',
           inputProps.className

@@ -139,7 +139,6 @@ def probe(surface, scenario, directory):
                 # Skip unrelated scheduled jobs; exercise the production poller loop.
                 stack.enter_context(patch.object(server, '_maybe_fire_tui_loop_tick', lambda *_a: None))
                 stack.enter_context(patch.object(server, '_maybe_fire_tui_heartbeat_tick', lambda *_a: None))
-                stack.enter_context(patch.object(server, '_notif_poll_kanban', lambda *_a: None))
                 poller = threading.Thread(target=server._notification_poller_loop,
                                           args=(stop, 'ui-owner', session))
                 poller.start()

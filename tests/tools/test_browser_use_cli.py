@@ -165,7 +165,7 @@ class TestSubprocessEnvironment:
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX PATH-floor semantics")
     def test_subprocess_env_floors_version_manager_only_path(self, monkeypatch):
-        """Profile workers (kanban bots, cron) can inherit a PATH of only
+        """Profile workers (bots, cron) can inherit a PATH of only
         version-manager dirs (observed in the wild: one nvm dir repeated
         7x). The uv browser-use trampoline resolves dirname/realpath
         through PATH, so /usr/bin must be guaranteed or the CLI dies

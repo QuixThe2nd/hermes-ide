@@ -93,8 +93,7 @@ function releasePointer(state: ResizeState): void {
  * The window is created `resizable: false` (see spawnHudWindow — a transparent
  * frameless window must not expose a system resize hot-zone, or every drag
  * grows it), so resizing has to be programmatic: the handle reports absolute
- * screen bounds and main flips resizable on for the setBounds call. Same
- * pattern as the pet overlay's wheel-scale (`hermes:pet-overlay:set-bounds`).
+ * screen bounds and main flips resizable on for the setBounds call.
  *
  * Each handle preserves its opposite edge, matching ordinary desktop windows
  * and CanvasTTY cards. Deltas are read in SCREEN coordinates, like the composer

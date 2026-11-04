@@ -67,7 +67,6 @@ async function main() {
     ['Cron', '/cron'],
     ['Profiles', '/profiles'],
     ['Agents', '/agents'],
-    ['Starmap', '/starmap'],
     ['Webhooks', '/webhooks'],
   ]) {
     results.push(await measure(ws, `OVERLAY: ${label} (open + 2s idle)`, async (ws) => {

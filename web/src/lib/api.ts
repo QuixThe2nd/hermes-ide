@@ -5,7 +5,7 @@ import {
 } from "@hermes/shared";
 
 // The dashboard can be served either at the root of its host (e.g.
-// https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
+// https://agent.example.com/) or under a URL prefix when reverse-proxied
 // (e.g. https://mission-control.tilos.com/hermes/). The Python backend
 // injects ``window.__HERMES_BASE_PATH__`` into index.html based on the
 // incoming ``X-Forwarded-Prefix`` header so the SPA can address its own
@@ -288,7 +288,7 @@ export async function authedFetch(
  * path can never be forgotten.
  *
  * ``path`` is the dashboard-relative path (e.g.
- * ``"/api/plugins/kanban/events"``); the base-path prefix and host are
+ * ``"/api/plugins/example/events"``); the base-path prefix and host are
  * applied here. Extra query params can be supplied via ``params`` and are
  * merged before the auth param.
  */

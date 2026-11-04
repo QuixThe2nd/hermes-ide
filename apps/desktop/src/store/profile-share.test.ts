@@ -20,7 +20,6 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { applyDesktopOverlay, buildDesktopOverlay, exportProfileBundle } = await import('./profile-share')
 const { $profileColors, setProfileColor } = await import('./profile')

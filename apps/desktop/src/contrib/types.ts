@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 
 /**
  * Where a contribution came from. `'core'` is the app's own default UI;
- * anything else is a plugin/extension id (e.g. `'plugin:kanban'`). This is the
+ * anything else is a plugin/extension id (e.g. `'plugin:example'`). This is the
  * provenance tag that drives precedence and, later, the trust/capability gate
  * (WoW-style taint: plugin-sourced contributions can be blocked from privileged
  * actions unless granted).

@@ -384,8 +384,8 @@ class GatewayAdapterLifecycleMixin:
         """Launch a long-lived supervised background task: exceptions a bare ``create_task`` drops
         are logged, and it respawns with capped backoff up to ``_MAX_SUPERVISED_RESTARTS`` rapid
         failures (counter resets after ``_SUPERVISED_HEALTHY_SECS`` healthy). Fresh ``Context`` per
-        spawn (an inherited delegated-child marker would make the Kanban dispatcher reject its own
-        writes). ``on_spawn`` fires on EVERY spawn incl. respawns — handle trackers MUST pass it or a
+        spawn keeps process-level services isolated from the message turn that spawned them.
+        ``on_spawn`` fires on EVERY spawn incl. respawns — handle trackers MUST pass it or a
         respawn leaves a stale handle and a SECOND watcher; ``on_give_up(name)`` fires at budget end.
 
         ``on_give_up`` (optional) is invoked with ``name`` when supervision is abandoned — the restart

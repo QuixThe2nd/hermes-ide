@@ -75,7 +75,7 @@ Each session is tagged with its source platform:
 | Source | Description |
 |--------|-------------|
 | `cli` | Interactive CLI (`hermes` or `hermes chat`) |
-| `oneshot` | Finite non-interactive runs: `hermes chat --oneshot -q`, `-Q`, `hermes -z`, and `-q` on non-TTY stdio. Hidden from the TUI, Desktop and dashboard session pickers (like `kanban` and `tool`), even when launched from inside a TUI or Desktop session — the run inherits that transport's environment but is not that conversation. Still counts as CLI history: `hermes -c` / `--resume latest` continue the last one-shot, and `hermes sessions list` shows it. An explicit `--source <tag>` always wins (`hermes chat -q --source tui` is stored as `tui`). |
+| `oneshot` | Finite non-interactive runs: `hermes chat --oneshot -q`, `-Q`, `hermes -z`, and `-q` on non-TTY stdio. Hidden from the TUI, Desktop and dashboard session pickers (like `tool`), even when launched from inside a TUI or Desktop session — the run inherits that transport's environment but is not that conversation. Still counts as CLI history: `hermes -c` / `--resume latest` continue the last one-shot, and `hermes sessions list` shows it. An explicit `--source <tag>` always wins (`hermes chat -q --source tui` is stored as `tui`). |
 | `telegram` | Telegram messenger |
 | `discord` | Discord server/DM |
 | `slack` | Slack workspace |
@@ -97,7 +97,6 @@ Each session is tagged with its source platform:
 | `acp` | ACP editor integration |
 | `cron` | Scheduled cron jobs |
 | `batch` | Batch processing runs |
-| `kanban` | Kanban dispatcher workers (read on the board, hidden from session pickers) |
 | `tool` | Third-party integrations (`--source tool`), hidden from session pickers |
 
 A session compressed mid-conversation continues under the same source: the compression child of a `--source tool` or `oneshot` run is tagged the same way, so it inherits the same picker visibility.
@@ -989,11 +988,11 @@ freshest of live activity, latest message, or session start — so a long-lived
 conversation used recently is not deleted merely because it began before the
 retention window.
 
-**Stale open sessions from automation.** Some producers — cron jobs, kanban
-workers, subagents, one-shot CLI runs — can die without ever marking their
+**Stale open sessions from automation.** Some producers — cron jobs,
+subagents, one-shot CLI runs — can die without ever marking their
 session ended, and pruning only deletes *ended* rows. To keep those from
 accumulating forever, each auto-prune pass also *closes* open sessions from
-those state-owned sources (`cli`, `cron`, `kanban`, `acp`, `api_server`,
+those state-owned sources (`cli`, `cron`, `acp`, `api_server`,
 `subagent`, `tool`, plus the `recovered` placeholders that
 `hermes sessions recover` synthesizes for orphaned messages) whose last
 activity is older than `retention_days`

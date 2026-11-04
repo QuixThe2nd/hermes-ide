@@ -184,7 +184,7 @@ class TestTheWarningFires:
     def test_it_fires_once_per_process_per_database(
         self, monkeypatch, tmp_path, caplog
     ):
-        """kanban opens a connection per operation; undeduped this is a flood."""
+        """Each database gets its own once-per-process warning."""
         from hermes_state_wal import apply_wal_with_fallback
 
         _configure_mode(monkeypatch, tmp_path, "wal")
@@ -213,7 +213,7 @@ class TestTheWarningFires:
         _disable_vulnerable_gate(monkeypatch)
 
         with caplog.at_level("WARNING", logger="hermes_state"):
-            for label in ("state.db", "kanban.db"):
+            for label in ("state.db", "projects.db"):
                 path = tmp_path / f"{label}"
                 _make_delete_db_with_content(path)
                 conn = sqlite3.connect(str(path))
@@ -223,7 +223,7 @@ class TestTheWarningFires:
                     conn.close()
 
         blob = "\n".join(r.getMessage() for r in caplog.records)
-        assert "state.db" in blob and "kanban.db" in blob
+        assert "state.db" in blob and "projects.db" in blob
 
 
 class TestTheWarningStaysQuiet:

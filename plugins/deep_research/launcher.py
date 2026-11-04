@@ -118,7 +118,7 @@ def resolve_worker_argv() -> List[str]:
     """The Hermes CLI used for worker sessions.
 
     ``$HERMES_BIN`` is the established override seam (same resolution order as
-    the kanban dispatcher) and is what the integration test uses to point the
+    an automation dispatcher) and is what the integration test uses to point the
     runner at a fake researcher executable.
     """
     override = os.environ.get("HERMES_BIN")

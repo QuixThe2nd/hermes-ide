@@ -31,7 +31,7 @@ class CatalogEntry:
     description: str
     schema: Dict[str, Any]  # the full {"type":"function", "function": {...}} entry
     source: str  # "mcp" | "plugin" | "other"
-    source_name: str  # toolset name, e.g. "mcp-github" or "kanban"
+    source_name: str  # toolset name, e.g. "mcp-github" or "browser"
     _tokens: List[str] = field(default_factory=list)  # pre-tokenized for BM25
 
 

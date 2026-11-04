@@ -46,8 +46,8 @@ describe('TitlebarControls fixed clusters', () => {
     dispose = registry.registerMany([
       {
         area: ROUTES_AREA,
-        data: { path: '/kanban' },
-        id: 'test-kanban-route',
+        data: { path: '/plugin-page' },
+        id: 'test-plugin-route',
         render: () => null
       },
       {
@@ -157,14 +157,14 @@ describe('TitlebarControls fixed clusters', () => {
     })
 
     it('hides the app clusters on a contributed full-page route', () => {
-      renderControls('/kanban')
+      renderControls('/plugin-page')
 
       expect(windowControls()).toBeNull()
       expect(appControls()).toBeNull()
     })
 
     it('keeps plugin titlebar contributions on a contributed full-page route', () => {
-      renderControls('/kanban')
+      renderControls('/plugin-page')
 
       expect(pluginChrome()).not.toBeNull()
       expect(windowControls()).toBeNull()
@@ -172,7 +172,7 @@ describe('TitlebarControls fixed clusters', () => {
     })
 
     it('keeps contributed titlebar tools on a chrome-owning page', () => {
-      renderControls('/kanban', { leftTools: [PLUGIN_TOOL] })
+      renderControls('/plugin-page', { leftTools: [PLUGIN_TOOL] })
 
       expect(pluginTool()).not.toBeNull()
     })
@@ -186,8 +186,8 @@ describe('TitlebarControls fixed clusters', () => {
     it('keeps measurable titlebar clusters on a chrome-owning contributed page', () => {
       // usePanelTitlebar positions the sessions tab strip from these hooks;
       // without them the tabs keep their stale chat-view offset and slide
-      // under the page's switcher (kanban's board switcher).
-      const { container } = renderControls('/kanban')
+      // under the page's own switcher.
+      const { container } = renderControls('/plugin-page')
 
       expect(container.querySelector('[data-titlebar-cluster="left"]')).not.toBeNull()
       expect(container.querySelector('[data-titlebar-cluster="right"]')).not.toBeNull()
@@ -198,7 +198,7 @@ describe('TitlebarControls fixed clusters', () => {
       window.addEventListener(TITLEBAR_CHROME_CHANGED_EVENT, listener)
 
       try {
-        renderControls('/kanban')
+        renderControls('/plugin-page')
 
         expect(listener).toHaveBeenCalled()
       } finally {

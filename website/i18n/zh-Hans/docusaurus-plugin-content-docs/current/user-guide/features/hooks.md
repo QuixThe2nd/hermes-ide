@@ -399,9 +399,6 @@ def register(ctx):
 | `pre_gateway_dispatch` | 指令/控制 | 非 internal 入站消息在 auth/pairing/dispatch 前；第一个有效 `skip`、`rewrite` 或 `allow` 控制流程。 | `event`, `gateway`, `session_store` | 极高权限的进程内对象会暴露入站用户/routing 数据和 host handle。 |
 | `pre_approval_request` | 观察者 | Prompted 或 smart approval 前；忽略返回值。 | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | 命令可能含 secret；smart observer preparation 会强制脱敏，但各 surface 并非完全相同。 |
 | `post_approval_response` | 观察者 | 决策、timeout 或 gateway 通知失败后；忽略返回值。 | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`；smart 路径可增加 `decided_by` | 同样的命令敏感性，加决策 metadata。 |
-| `kanban_task_claimed` | 观察者 | Claim commit 后，在 dispatcher 进程 spawn worker 前；忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee 标识。 |
-| `kanban_task_completed` | 观察者 | Completion 和 cleanup 后，通常在 worker 进程；忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary 可能含项目/用户内容。 |
-| `kanban_task_blocked` | 观察者 | Blocked transition 后；dependency-wait 路径在 transaction 退出前触发。忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason 可能含项目/用户内容。 |
 
 ---
 
@@ -1160,22 +1157,6 @@ Provider attempt 失败时触发，包含 status/retry timing、`error` 对象�
 ### `on_skill_lifecycle`
 
 权威 skill 使用状态变更后触发，仅观察；会暴露本地 `skill_name`、provenance、关联 ID、use count 和 reuse flag。
-
-### Kanban 生命周期观察者
-
-#### `kanban_task_claimed`
-
-Claim commit 后，在 dispatcher 进程 spawn worker 前触发。
-
-#### `kanban_task_completed`
-
-Completion 和 cleanup 后触发，通常位于 worker 进程；`summary` 可能包含项目或用户内容。
-
-#### `kanban_task_blocked`
-
-普通 blocked transition 后触发；dependency-wait 路径在该 write transaction 退出前调用。`reason` 可能包含项目或用户内容。
-
-三个 kanban hook 均仅观察，并携带 `task_id`、`profile_name`、`board`、`assignee`、`run_id`；completed 增加 `summary`，blocked 增加 `reason`。
 
 ---
 

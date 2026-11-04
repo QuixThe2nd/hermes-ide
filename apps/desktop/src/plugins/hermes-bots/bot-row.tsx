@@ -138,7 +138,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const isActive = botRowOwnsWorkspace(bot, activeGroup, botChatFocused, focusedOwner, selectedRosterKey)
 
   const { shape, color, image } = botAppearance(bot.name, meta)
-  // Keep user photos/pets. Drop the 160px SVG backfill so the math face can move.
+  // Keep user photos. Drop the 160px SVG backfill so the math face can move.
   const photo = Boolean(image && !isBackfilledFacePng(image))
   const turnBusy = useTurnBusy()
   // Preview identity must match click identity (#88200): when the backend
@@ -149,8 +149,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // last_session alone shows "6d ago" on a bot you just messaged.
   const previewSession = bot.canonical_session || last
   const activitySession = botActivitySession(bot)
-  // A live kanban/tool worker counts as activity (#90268): fresh age while it
-  // runs, falling back to chat activity when it ends.
+  // A live tool worker counts as activity (#90268): fresh age while it runs,
+  // falling back to chat activity when it ends.
   const workerActive = workerActiveAt(bot)
 
   const rowAgeTs = workerActive

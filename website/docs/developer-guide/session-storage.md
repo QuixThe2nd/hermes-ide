@@ -199,7 +199,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
 store the platform sender id, and `desktop` / dashboard sessions opened through
 an authenticated `hermes serve` (OAuth or the basic username/password provider)
 store the login as `<provider>:<user id>` (for example `basic:alice`). Sessions
-with nobody behind them — anonymous loopback use, `subagent`, `cron`, `kanban`
+with nobody behind them — anonymous loopback use, `subagent`, and `cron`
 — keep it empty. The value is set when the row is created and never inferred
 later.
 

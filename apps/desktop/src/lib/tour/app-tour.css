@@ -216,14 +216,12 @@
    For the one moment in a run that is worth more than a step — right now, the
    signpost that lands with the handoff. It has to read as different from the
    four steps that came before it without becoming a second visual language, so
-   it is the SAME travelling arc the kanban cards use for live agent work
-   (plugins/kanban/kanban.css), re-tuned for this radius: a conic gradient
-   rotating behind the popover, masked down to the border band so only a ring
-   of it shows and the glass body underneath is untouched.
+   it uses a travelling arc re-tuned for this radius: a conic gradient rotating
+   behind the popover, masked down to the border band so only a ring of it shows
+   and the glass body underneath is untouched.
 
-   Slower than the kanban arc on purpose. That one reports work in progress and
-   wants to catch the eye across a board; this one is being read from a foot
-   away and only needs to say "this one matters". */
+   The arc turns slowly on purpose: this popover is being read from a foot away
+   and only needs to say "this one matters". */
 
 @property --tour-arc-angle {
   syntax: '<angle>';

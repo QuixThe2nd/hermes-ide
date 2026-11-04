@@ -50,7 +50,7 @@ def _user(content, **extra):
 DECISION_MSG = "we decided to use PostgreSQL for the persistence layer"
 SUMMARY_MSG = (
     f"{SUMMARY_PREFIX}\n## Historical Task Snapshot\n"
-    "The project uses a kanban board for all dispatch. "
+    "The project uses a shared board for all dispatch. "
     "We agreed to route reviews through the fan-in consumer."
 )
 

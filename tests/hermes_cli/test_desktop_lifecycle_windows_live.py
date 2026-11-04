@@ -11,7 +11,7 @@ lane). Exercises the REAL ownership predicate against REAL processes:
     ``cold_start_if_installed`` again.
  3. Venv-holder fallback rung: a real venv-python process with true
     ``serve`` argv is detected by the scan and, having a live parent,
-    confers ownership; the token classifier rejects a ``kanban
+    confers ownership; the token classifier rejects a ``chat
     --preserve-cache`` lookalike (the #90778 class the salvage fixed).
 """
 
@@ -116,13 +116,13 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
     # Real process whose argv carries genuine serve shape, visible to psutil.
     serve_like = sleeper("-m", "hermes_cli.main", "serve")
     # Lookalike from the #90778 class — must NOT confer ownership.
-    kanban_like = sleeper("-m", "hermes_cli.main", "kanban", "--preserve-cache")
+    chat_like = sleeper("-m", "hermes_cli.main", "chat", "--preserve-cache")
 
     def fake_holders():
         import psutil
 
         out = []
-        for p in (serve_like, kanban_like):
+        for p in (serve_like, chat_like):
             proc = psutil.Process(p.pid)
             out.append((p.pid, proc.name(), " ".join(proc.cmdline())))
         return out
@@ -134,7 +134,7 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
     # serve-shaped holder with a live parent (us) → owns
     assert update_cmd._desktop_owns_gateway_lifecycle() is True
 
-    # Only the kanban lookalike left → classifier rejects → does not own
+    # Only the chat lookalike left → classifier rejects → does not own
     serve_like.kill()
     serve_like.wait()
     monkeypatch.setattr(

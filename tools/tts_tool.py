@@ -119,7 +119,7 @@ def _default_output_dir() -> str:
     after import); a monkeypatched ``DEFAULT_OUTPUT_DIR`` wins.
 
     Same bug class as skills_tool (f8723c478) and skills_sync (#65828): long-lived multi-profile runtimes
-    (dashboard console, TUI/Desktop backend, cron, kanban workers) import this module once under the launch
+    (dashboard console, TUI/Desktop backend, cron, automation workers) import this module once under the launch
     HERMES_HOME and later scope requests to a different profile via
     ``hermes_constants.set_hermes_home_override()`` — a frozen module constant keeps writing synthesized
     audio into the launch profile's cache instead of the active profile's (#98749). Keep the legacy

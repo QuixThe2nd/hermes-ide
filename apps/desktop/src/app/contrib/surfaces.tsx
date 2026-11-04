@@ -191,7 +191,6 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       <Route element={null} path="cron" />
       <Route element={null} path="profiles" />
       <Route element={null} path="settings" />
-      <Route element={null} path="starmap" />
       <Route element={null} path="webhooks" />
       {/* Registry-contributed pages (core features + plugins) render in the
           workspace pane like any built-in view — behind the same blast wall

@@ -1,10 +1,10 @@
 import { type MouseEvent as ReactMouseEvent, type RefObject, useState } from 'react'
 
 // Grab-to-pan for overflow containers — the shared primitive behind "scrub the
-// board/timeline by dragging its background" (kanban lanes, trace waterfalls,
+// board/timeline by dragging its background" (board lanes, trace waterfalls,
 // wide tables). Sibling of lib/trackpad-gestures.ts: that file classifies
 // wheel gestures, this one owns pointer-drag panning, so surfaces stop
-// re-deriving the same interaction (the dashboard kanban and the agent-traces
+// re-deriving the same interaction (dashboard boards and the agent-traces
 // waterfall each hand-rolled a copy).
 //
 // Behavior contract:

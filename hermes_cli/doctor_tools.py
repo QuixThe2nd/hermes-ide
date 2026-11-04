@@ -111,20 +111,6 @@ _TERMUX_INSTALL_ALL_FALLBACK_NOTES = (
 )
 
 
-def _is_kanban_worker_env_gate(item: dict) -> bool:
-    """Return True when Kanban is unavailable only because this is not a worker process."""
-    tools = item.get("tools") or []
-    return (item.get("name") == "kanban" and not os.environ.get("HERMES_KANBAN_TASK")
-            and bool(tools) and all(str(tool).startswith("kanban_") for tool in tools))
-
-
-def _doctor_tool_availability_detail(toolset: str) -> str:
-    """Optional explanatory suffix for toolsets whose doctor status needs context."""
-    if toolset == "kanban" and not os.environ.get("HERMES_KANBAN_TASK"):
-        return "(runtime-gated; loaded only for dispatcher-spawned workers)"
-    return ""
-
-
 def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
     """Return ``(status, label, detail)`` rows (status ``ok``/``warn``) for web search/extract readiness.
 
@@ -160,9 +146,7 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     from hermes_cli.doctor_state import _honcho_is_configured_for_doctor
     updated_available, updated_unavailable = list(available), []
     for item in unavailable:
-        if _is_kanban_worker_env_gate(item):
-            gated = "kanban"
-        elif item.get("name") == "honcho" and _honcho_is_configured_for_doctor():
+        if item.get("name") == "honcho" and _honcho_is_configured_for_doctor():
             gated = "honcho"
         else:
             updated_unavailable.append(item)
@@ -531,7 +515,7 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
             available = [tid for tid in available if tid != "web"]
             unavailable = [item for item in unavailable if item.get("name") != "web"]
     for tid in available:
-        check_ok(TOOLSET_REQUIREMENTS.get(tid, {}).get("name", tid), _doctor_tool_availability_detail(tid))
+        check_ok(TOOLSET_REQUIREMENTS.get(tid, {}).get("name", tid))
     for status, label, detail in web_rows:
         (check_ok if status == "ok" else check_warn)(label, detail)
     for item in unavailable:

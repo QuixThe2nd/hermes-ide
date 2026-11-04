@@ -48,7 +48,7 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
     profile's ``state.db`` under its own home and carry that profile's stamp (a NULL legacy stamp
     belongs to the store's own profile — the same rule the dashboard's session routes apply). An
     unserved profile, a missing row, a row stamped for another profile, or an unreadable store all
-    fail closed. Shared by the Kanban notifier and the background-process wake path.
+    fail closed. Used by the background-process wake path.
     """
     import contextlib
     from pathlib import Path

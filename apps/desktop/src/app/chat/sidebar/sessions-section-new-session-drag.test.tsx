@@ -359,36 +359,6 @@ describe('project-associated new-session drag sources', () => {
       })
     )
   })
-
-  it('does not expose a drag or click source for kanban aggregate lanes', () => {
-    const onNewSessionSplit = vi.fn()
-    const kanbanGroup = group({ id: 'kanban:review', isKanban: true, label: 'Review board' })
-
-    const kanbanProject = project({
-      repos: [
-        {
-          groups: [kanbanGroup],
-          id: '/repo',
-          label: 'Repo',
-          path: '/repo',
-          sessionCount: 0
-        }
-      ]
-    })
-
-    render(
-      <EnteredProjectContent
-        onNewSession={noop}
-        onNewSessionSplit={onNewSessionSplit}
-        project={kanbanProject}
-        renderRows={() => null}
-      />
-    )
-
-    expect(screen.queryByRole('button', { name: 'New session in Review board' })).toBeNull()
-    expect(startNewSessionDrag).not.toHaveBeenCalled()
-    expect(onNewSessionSplit).not.toHaveBeenCalled()
-  })
 })
 
 describe('flat-list date-divider new-session drag source', () => {

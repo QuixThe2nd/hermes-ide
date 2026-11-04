@@ -158,17 +158,17 @@ describe('TreeGroup', () => {
         registry.register({
           area: 'panes',
           id: 'terminal',
-          title: 'Kanban',
+          title: 'Reports',
           data: {
             placement: 'main',
             headerVeto: true,
-            headerContent: () => <button type="button">Board picker</button>
+            headerContent: () => <button type="button">View picker</button>
           },
-          render: () => <div>Board content</div>
+          render: () => <div>Report content</div>
         })
       })
       const header = container!.querySelector<HTMLElement>('[data-panel-page-header]')!
-      expect(header.textContent).toBe('Board picker')
+      expect(header.textContent).toBe('View picker')
       expect(header.closest('[data-tree-group]')?.getAttribute('data-tree-group')).toBe('terminal-zone')
       expect(header.querySelector('[data-slot="pane-tab"]')).not.toBeNull()
       expect(container!.querySelector('[data-zone-tabstrip]')).toBeNull()

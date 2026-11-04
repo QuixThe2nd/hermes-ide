@@ -3,7 +3,7 @@
 On a real TTY, ``hermes chat -q "…"`` seeds a normal interactive session with
 the prompt submitted literally as the first turn. Legacy answer-and-exit is
 preserved for ``--oneshot``, ``-Q/--quiet``, and every non-TTY invocation
-(kanban workers, cron, pipes, A2A). The seeded prompt bypasses slash-command
+(cron, pipes, A2A). The seeded prompt bypasses slash-command
 routing, ``!`` shell dispatch, and file-drop detection.
 
 Context: Omarchy prompted-agent launches (basecamp/omarchy#8705) needed a

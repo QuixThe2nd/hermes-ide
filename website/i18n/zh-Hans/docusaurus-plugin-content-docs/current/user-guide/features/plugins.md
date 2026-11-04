@@ -188,13 +188,13 @@ hermes plugins disable <name>     # 从允许列表移除并添加到禁用列�
 
 ## 可用 hook
 
-插件可注册 `hermes_cli.plugins.VALID_HOOKS` 当前接受的 24 个生命周期事件。**[Event Hooks 目录](/user-guide/features/hooks#已发布的-plugin-hook-目录)**是精确触发时机、返回值处理、payload 字段和隐私说明的 canonical reference。
+插件可注册 `hermes_cli.plugins.VALID_HOOKS` 当前接受的 21 个生命周期事件。**[Event Hooks 目录](/user-guide/features/hooks#已发布的-plugin-hook-目录)**是精确触发时机、返回值处理、payload 字段和隐私说明的 canonical reference。
 
 | 描述性类别 | 已发布 hook |
 |---|---|
 | **指令/控制** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
 | **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output` |
-| **观察者** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+| **观察者** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response` |
 
 这些类别只描述当前行为，不规定未来命名规则。Plugin middleware 仍是独立的 registry/surface。
 

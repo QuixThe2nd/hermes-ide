@@ -7,9 +7,9 @@
  *    the primary profile surfaced as @default instead of @hermes;
  *  - the "6d ago" class — canonical Bot Chats are hidden from session lists,
  *    so a bot DM'd all day read as a week idle because its newest VISIBLE
- *    session was a week old. Liveness keys off `botActivitySession`, and
- *    kanban/tool workers count too (hermes-agent#90268): a profile grinding
- *    through a 30-minute task must not read "3 hr ago" the whole time.
+ *    session was a week old. Liveness keys off `botActivitySession`, and tool
+ *    workers count too (hermes-agent#90268): a profile grinding through a
+ *    30-minute task must not read "3 hr ago" the whole time.
  */
 
 import { describe, expect, it, vi } from 'vitest'
@@ -151,12 +151,12 @@ describe('which bots are working right now', () => {
     expect(activeBots(bots, null, false, NOW).map(bot => bot.name)).toContain('default')
   })
 
-  it('counts a live kanban/tool worker heartbeat (#90268)', () => {
+  it('counts a live tool worker heartbeat (#90268)', () => {
     // The reported shape: last chat hours ago while the bot is mid-task.
     const working = row({
       last_session: { id: 'chat', last_active: secondsAgo(3 * 3600) },
       name: 'coding',
-      worker_session: { id: 'w1', last_active: secondsAgo(30), source: 'kanban' }
+      worker_session: { id: 'w1', last_active: secondsAgo(30), source: 'tool' }
     })
 
     expect(activeBots([working], null, false, NOW).map(bot => bot.name)).toContain('coding')
@@ -167,7 +167,7 @@ describe('which bots are working right now', () => {
     const finished = row({
       last_session: { id: 'chat', last_active: secondsAgo(3 * 3600) },
       name: 'coding',
-      worker_session: { id: 'w1', last_active: secondsAgo(3600), source: 'kanban' }
+      worker_session: { id: 'w1', last_active: secondsAgo(3600), source: 'tool' }
     })
 
     expect(activeBots([finished], null, false, NOW)).toEqual([])

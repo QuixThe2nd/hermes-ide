@@ -1,4 +1,4 @@
-"""Behavior contracts for the terminal Star Map renderer.
+"""Behavior contracts for the terminal Journey renderer.
 
 Asserts invariants of the timeline layout, the ported age gradient + palette, and
 the constellation scrubber — never a cell snapshot, which would be a
@@ -74,8 +74,6 @@ def test_recency_ink_follows_age_gradient():
     assert samples == sorted(samples)
 
 
-
-
 def test_grid_runs_are_text_style_alpha():
     # Runs are [text, style, alpha] with an optional 4th hex override for
     # category-colored bars.
@@ -101,18 +99,6 @@ def test_bars_render_skills_and_memories():
     assert render.STYLE_MEMORY in styles
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def test_frames_play_through_grows_visibility():
     payload = _payload(skills=10, memories=4)
     out = render.render_frames(payload, cols=50, rows=16, frames=12)
@@ -123,10 +109,6 @@ def test_frames_play_through_grows_visibility():
     assert "axis" in out
     for fr in out["frames"]:
         assert fr["grid"]
-
-
-
-
 
 
 

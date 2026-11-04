@@ -782,7 +782,7 @@ def _is_desktop_local_serve_cmdline(command: str) -> bool:
     those are operator-managed remote backends that legitimately run with ppid 1.
     """
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
-    # Canonical token matcher, never argv substrings: ``kanban --preserve-cache`` contains "serve" and
+    # Canonical token matcher, never argv substrings: ``chat --preserve-cache`` contains "serve" and
     # ``vim notes about hermes serve`` contains both markers — this predicate decides a kill.
     if _hermes_holder_subcommand(command) != "serve":
         return False

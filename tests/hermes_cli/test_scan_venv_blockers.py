@@ -432,17 +432,17 @@ def test_updater_owned_backend_purpose_mismatch_blocks(monkeypatch, capsys):
 
 def test_updater_owned_backend_non_backend_argv_never_deferred(monkeypatch, capsys):
     """A ledger entry cannot exempt a process whose argv is not a
-    serve/dashboard subcommand (#90778 token rules: `kanban --preserve-cache`
+    serve/dashboard subcommand (#90778 token rules: `chat --preserve-cache`
     must not read as serve)."""
     _patch_ledger(
         monkeypatch, [{"pid": 78, "purpose": "serve", "spawner_pid": 4242}], dead=True
     )
-    kanban = (
+    chat = (
         78,
         "python.exe",
-        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main kanban --preserve-cache",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main chat --preserve-cache",
     )
-    code, data = _run_main_with_detector(monkeypatch, capsys, [kanban])
+    code, data = _run_main_with_detector(monkeypatch, capsys, [chat])
     assert data["blocked"] is True
     assert data["deferred_backends"] == 0
 

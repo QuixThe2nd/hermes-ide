@@ -47,7 +47,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
 # one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
 # session env into child processes) but is NOT that conversation: labelling it ``tui``/``desktop`` lists it
 # in the TUI/WebUI pickers as a resumable chat and lets ``hermes -c`` in the TUI continue it (#112550).
-# Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
+# Automation sources (historical kanban, tool, cron, a2a, ...) are inherited on purpose.
 _UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
 
 # Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
@@ -215,8 +215,6 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_pre_verify_synthetic",
     # pre_turn_end end-of-turn nudge: same synthetic-user-nudge shape
     "_pre_turn_end_synthetic",
-    # kanban worker stop-guard: narrated exit without kanban_complete/block
-    "_kanban_stop_synthetic",
     # dropped tool-call re-prompt pair (finish_reason=tool_calls with an
     # empty tool_calls array): the interim narration-only assistant turn
     # and the "issue the actual tool call now" user nudge exist only to
@@ -3376,12 +3374,6 @@ class AIAgent(
         the exact ``(generation, timestamp)`` pair they sampled and
         revalidate it at the commit point.
 
-        Also bridges to the kanban board's heartbeat fields when this
-        process is a dispatcher-spawned worker (HERMES_KANBAN_TASK set),
-        so the dispatcher watchdog doesn't reclaim an actively-running
-        worker as stale (#31752). Bridge is rate-limited (60s) and
-        best-effort — it never raises into the agent loop.
-
         Separately, rate-limits a durable SessionDB activity projection
         (``last_activity_at`` + bounded description/provenance) so
         CLI/Gateway consumers share one observation source (#72016 / #72039).
@@ -3435,22 +3427,6 @@ class AIAgent(
             # mutation edge instead of publishing against a generation the
             # turn has already left behind.
             self._turn_liveness_abort_claim = None
-        if os.environ.get("HERMES_KANBAN_TASK"):
-            try:
-                from tools.kanban_tools import (
-                    heartbeat_current_worker_from_env,
-                    inject_new_comments_from_env,
-                )
-                heartbeat_current_worker_from_env()
-                # Fold any new operator notes into the running turn (OUT-OF-BAND
-                # steer) so the user can talk to a live task without a restart.
-                inject_new_comments_from_env(self)
-            except Exception:
-                # Never let the bridge break the agent loop.  The function
-                # already swallows exceptions internally; this outer guard
-                # covers import-time failures (kanban_tools unavailable,
-                # etc.) on niche deployment surfaces.
-                pass
         if force_persist:
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()

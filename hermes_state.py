@@ -1156,8 +1156,8 @@ def _ensure_test_isolation(db_path: Path) -> None:
 #
 # On those filesystems ``PRAGMA journal_mode=WAL`` raises
 # ``sqlite3.OperationalError: locking protocol`` (SQLITE_PROTOCOL).  If we
-# propagate that, every feature backed by state.db / kanban.db breaks
-# silently — /resume, /title, /history, /branch, kanban dispatcher, etc.
+# propagate that, every feature backed by state.db breaks
+# silently — /resume, /title, /history, /branch, etc.
 #
 # ZFS is a separate case: its COW + mmap semantics can corrupt the WAL
 # shared-memory (-shm) file under concurrent connection bursts, presenting
@@ -1189,16 +1189,14 @@ _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
 # unavailable instead of getting a bare "Session database not available."
-# Only SessionDB.__init__ writes to this; kanban_db.connect() failures
-# do not update it (by design — kanban failures are reported via their
-# own caller's error handling, not via /resume-style slash commands).
+# Only SessionDB.__init__ writes to this; other database users report
+# failures through their own caller's error handling, not /resume-style commands.
 _last_init_error: Optional[str] = None
 _last_init_error_lock = threading.Lock()
 
 # Paths for which we've already logged a WAL-fallback WARNING.  Without
-# this, kanban_db.connect() (called on every kanban operation — see
-# hermes_cli/kanban_db.py for ~30 call sites) would re-log the same
-# filesystem-incompat warning on every connection, filling errors.log.
+# this, repeated connections would re-log the same filesystem-incompat
+# warning, filling errors.log.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
@@ -1496,9 +1494,7 @@ def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
     sizes (so steady-state commits never pay a truncate) while capping the
     stranded slack at a bounded, predictable figure.
 
-    ``hermes_cli/kanban_db.py`` already bounds its WAL growth with
-    ``wal_autocheckpoint=100``; the session store — by far the larger
-    database — had no equivalent.
+    The session store previously had no equivalent bound on stranded WAL slack.
 
     Best-effort: never raises. A failure here only costs disk slack, and
     must not prevent the database from opening.
@@ -1711,13 +1707,9 @@ def apply_wal_with_fallback(
     NFS-homed installs keep working.
 
     The ERROR is deduplicated per ``db_label``: repeated connections to the
-    same underlying DB (e.g. kanban_db.connect() which is called on every
-    kanban operation) log once per process, not once per call.  Different
-    db_labels log independently, so state.db and kanban.db each get one error
-    on the same NFS mount.
-
-    Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
-    both databases get identical fallback behavior.
+    same underlying DB log once per process, not once per call. Different
+    db_labels log independently, so each database gets one error on the
+    same NFS mount.
 
     Never downgrades to DELETE if the on-disk DB header reports WAL — see
     _on_disk_journal_mode.  That holds for both the NFS path and the
@@ -2083,9 +2075,8 @@ def _log_journal_mode_upgrade_once(db_label: str, previous_mode: str) -> None:
     or which lever makes it stick. So this says what happened and names the
     durable setting, without claiming a degradation that is not there.
 
-    Deduped per process per ``db_label`` like its siblings: kanban opens a
-    fresh connection per operation, so an undeduped line here would be a log
-    flood rather than a signal.
+    Deduped per process per ``db_label`` like its siblings: repeated opens
+    must not turn one persistent condition into a log flood.
     """
     with _journal_upgrade_warned_lock:
         if db_label in _journal_upgrade_warned_paths:
@@ -2109,12 +2100,11 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
     """Log a single ERROR per (process, db_label) about WAL fallback.
 
     ERROR (not WARNING): a DB silently dropped to DELETE means a real loss of
-    concurrency — under the kanban dispatcher + workers a write blocks readers,
-    surfacing as SQLITE_BUSY/lock contention — so it must be loud, not cosmetic.
+    concurrency — under concurrent writers a write blocks readers, surfacing
+    as SQLITE_BUSY/lock contention — so it must be loud, not cosmetic.
 
-    Without this dedup, NFS users running kanban (which opens a fresh
-    connection on every operation — see hermes_cli/kanban_db.py) would
-    fill errors.log with hundreds of identical errors per hour.
+    Without this dedup, repeated connections on NFS would fill errors.log
+    with identical errors.
     """
     with _wal_fallback_warned_lock:
         if db_label in _wal_fallback_warned_paths:
@@ -2629,8 +2619,7 @@ def _cross_process_repair_lock(db_path: Path):
 
     Yields True when this process holds the repair lock for *db_path*, False
     when the bounded acquire timed out or the lock file could not be opened at
-    all.  Unlike the kanban init lock — whose critical section is idempotent,
-    so proceeding without the lock is merely redundant work — proceeding here
+    all.  Unlike an idempotent initialization lock, proceeding here
     would be exactly the unsafe interleaving we are trying to prevent, so a
     caller that gets False must NOT do surgery.
 
@@ -3492,7 +3481,7 @@ def preflight_db_writability(
       open path checkpoints its committed frames into the DB as intended.
 
     ``:memory:`` and ``file:`` URI paths are skipped (no plain on-disk files
-    to check). Shared by :class:`SessionDB` and ``hermes_cli.kanban_db``.
+    to check).
     """
     raw = str(db_path)
     if raw == ":memory:" or raw.startswith("file:"):
@@ -10833,7 +10822,7 @@ class SessionDB(
         cached agent accumulates across messages).
         """
         # Ensure the session row exists so the UPDATE doesn't silently affect
-        # 0 rows.  Under concurrent load (cron + kanban + delegate_agent) the
+        # 0 rows.  Under concurrent load (cron + delegate_agent) the
         # initial create_session() may have failed due to SQLite locking.
         # INSERT OR IGNORE is cheap and idempotent.
         self._insert_session_row(session_id, "unknown", model=model)
@@ -12045,7 +12034,7 @@ class SessionDB(
         flag: a hidden session is dropped from the default
         :meth:`list_sessions_rich` listing (which omits ``include_hidden``) but
         stays fully resumable by the surface that owns it — useful for plugins
-        that manage their own sessions (e.g. kanban) and don't want them
+        that manage their own sessions and don't want them
         cluttering the shared recents list. Like :meth:`set_session_archived`
         / :meth:`set_session_pinned` the whole compression chain is flipped as
         a unit, so hiding the surfaced tip hides the root (and vice-versa) no
@@ -16899,43 +16888,6 @@ class SessionDB(
             )
         self._execute_write(_do)
 
-    def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
-        """Retag legacy kanban worker rows from ``cli`` to ``kanban``.
-
-        Workers used to spawn without ``HERMES_SESSION_SOURCE``, so their runs
-        landed as untitled ``cli`` rows and the sidebar rendered one per attempt
-        labeled with the worker's own prompt. New workers tag themselves; this
-        reclaims the rows already on disk so they drop out of the session lists
-        too. Identified by cwd under the board's workspaces root — a path only
-        the dispatcher ever runs a session in.
-
-        Gated per workspaces root (``state_meta``) so each board reclaims its
-        own rows exactly once. Returns the number of rows retagged.
-        """
-        prefix = str(workspaces_root).rstrip("/\\")
-        if not prefix:
-            return 0
-
-        gate = f"kanban_worker_source_retagged:{prefix}"
-        if self.get_meta(gate) == "1":
-            return 0
-
-        def _do(conn):
-            esc = _escape_like(prefix)
-            cursor = conn.execute(
-                "UPDATE sessions SET source = 'kanban' "
-                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\' "
-                "OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, f"{esc}/%", f"{esc}\\\\%"),
-            )
-            # Read rowcount before set_meta reuses this cursor for its INSERT,
-            # which would otherwise overwrite it with the meta write's count.
-            retagged = cursor.rowcount or 0
-            self.set_meta(gate, "1", cursor=cursor)
-            return retagged
-
-        return self._execute_write(_do)
-
     def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
         """Return ``[(key, value), ...]`` for state_meta keys with ``prefix``.
 
@@ -17867,7 +17819,7 @@ class SessionDB(
         are removed as part of the same sweep (issue #3015).
 
         Stale-open reconciliation (#54189): several state-owned producers
-        (cron, kanban workers, subagents, one-shot CLI runs) never set
+        (cron, historical kanban workers, subagents, one-shot CLI runs) never set
         ``ended_at`` when their process dies, and ``prune_sessions`` only
         deletes ended rows — so retention was a no-op exactly where growth
         concentrates. After pruning, this pass closes open rows from

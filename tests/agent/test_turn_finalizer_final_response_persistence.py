@@ -460,7 +460,7 @@ def _finalize(agent, *, exit_reason, final_response, failed=False, api_calls=3):
 
 def test_advisory_exit_reasons_keep_failed_false_but_carry_a_failure_code(monkeypatch):
     """empty_response_exhausted / local_processing_error: Desktop and TUI get a specific code, yet
-    ``failed`` stays False so cron silence, the kanban breaker and gateway transcript persistence
+    ``failed`` stays False so cron silence and gateway transcript persistence
     behave exactly as before the code was added."""
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     agent_max = FakeAgent().max_iterations

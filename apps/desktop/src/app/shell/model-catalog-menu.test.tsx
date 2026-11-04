@@ -88,7 +88,7 @@ function renderMenu() {
 
 // Curation is ONE global preference, so it belongs to the catalog rather than
 // to whichever surface mounted it. If a host had to opt in, the composer and
-// the kanban board would end up disagreeing about what "my models" means —
+// a contributed editor would end up disagreeing about what "my models" means —
 // which is exactly the drift extracting this component was meant to prevent.
 describe('the catalog owns model curation', () => {
   it('honours the stored Edit Models shortlist', async () => {

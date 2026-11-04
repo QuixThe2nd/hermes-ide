@@ -583,7 +583,7 @@ def _secure_dir(path):
     directory listings.
 
     Also applies ``HERMES_UID``/``HERMES_GID``-based ownership when those env vars are set (#34107 — Docker
-    deployments need this so profile subdirs created at runtime by kanban workers don't land as root:root
+    deployments need this so profile subdirs created at runtime by automation workers don't land as root:root
     and block subsequent uid-mapped workers).
     """
     if is_managed():

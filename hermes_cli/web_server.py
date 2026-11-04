@@ -1677,7 +1677,6 @@ _PLUGIN_COMPAT_LAZY = {
     'get_env_vars': ('hermes_cli.web_routers.config_env', 'get_env_vars'),
     'get_health': ('hermes_cli.web_routers.status', 'get_health'),
     'get_hermes_home': ('hermes_cli.config', 'get_hermes_home'),
-    'get_learning_graph': ('hermes_cli.web_routers.status', 'get_learning_graph'),
     'get_learning_node': ('hermes_cli.web_routers.status', 'get_learning_node'),
     'get_logs': ('hermes_cli.web_routers.status', 'get_logs'),
     'get_media': ('hermes_cli.web_routers.files', 'get_media'),

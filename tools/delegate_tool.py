@@ -804,7 +804,7 @@ DELEGATE_TASK_SCHEMA = {
                     "consolidated results re-enter the conversation as a new "
                     "message when every child has finished; on sessions that "
                     "cannot receive a late completion (one-shot `hermes -z` "
-                    "runs, cron jobs, Kanban workers, stateless HTTP "
+                    "runs, cron jobs, stateless HTTP "
                     "endpoints) an omitted argument instead blocks to "
                     "completion and returns the results inline this turn. "
                     "Configuring delegation.default_background=false "

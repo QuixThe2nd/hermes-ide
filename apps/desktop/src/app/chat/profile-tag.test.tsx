@@ -13,7 +13,6 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { ProfileTag } = await import('./profile-tag')
 const { setProfileColor } = await import('@/store/profile')

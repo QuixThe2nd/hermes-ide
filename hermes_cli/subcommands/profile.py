@@ -52,15 +52,14 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_create.add_argument(
         "--description", default=None,
         help="One- or two-sentence description of what this profile is good at. "
-             "Used by the kanban decomposer to route tasks based on role instead "
-             "of profile name alone. Skip and add later via `hermes profile describe`.")
+             "Skip and add later via `hermes profile describe`.")
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
     profile_delete.add_argument("profile_name", help="Profile to delete")
     profile_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
     profile_describe = profile_subparsers.add_parser(
-        "describe", help="Read or set a profile's description (used by the kanban orchestrator)")
+        "describe", help="Read or set a profile's description")
     profile_describe.add_argument(
         "profile_name", nargs="?", default=None,
         help="Profile to describe (omit + use --all --auto to sweep)")

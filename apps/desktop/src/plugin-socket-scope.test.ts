@@ -31,7 +31,6 @@ vi.mock('@/hermes', async importOriginal => {
   }
 })
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { pluginSocket, setApiRequestConnection, setApiRequestProfile } = await import('@/hermes')
 const { closeSecondaryGateways, configureGatewayRegistry, setPrimaryGateway } = await import('@/store/gateway')
@@ -86,7 +85,7 @@ describe('pluginSocket active-backend scoping (#73044)', () => {
     getConnection.mockClear()
     getConnectionFor.mockClear()
 
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const dispose = pluginSocket('example-plugin', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
     expect(getConnection).toHaveBeenCalledWith('work')
@@ -100,7 +99,7 @@ describe('pluginSocket active-backend scoping (#73044)', () => {
     getConnection.mockClear()
     getConnectionFor.mockClear()
 
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const dispose = pluginSocket('example-plugin', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnectionFor).toHaveBeenCalled())
     expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'research' })
@@ -110,7 +109,7 @@ describe('pluginSocket active-backend scoping (#73044)', () => {
   })
 
   it('falls back to the primary when no profile or connection is active', async () => {
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const dispose = pluginSocket('example-plugin', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
     expect(getConnection).toHaveBeenCalledWith(null)

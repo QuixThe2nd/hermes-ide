@@ -3,8 +3,8 @@
 When Hermes runs in Docker with ``HERMES_UID=1000`` / ``HERMES_GID=911``,
 the entrypoint chowns the top-level ``HERMES_HOME`` once at startup. But
 subdirectories created at runtime by ``ensure_hermes_home()`` — especially
-for profile namespaces under ``profiles/<name>/`` spawned by kanban
-workers — were landing as ``root:root`` and blocking subsequent
+profile namespaces under ``profiles/<name>/`` spawned by workers — were
+landing as ``root:root`` and blocking subsequent
 uid-mapped worker invocations with ``PermissionError [Errno 13]``.
 
 The fix is a ``_chown_to_hermes_uid`` helper that reads the env vars and

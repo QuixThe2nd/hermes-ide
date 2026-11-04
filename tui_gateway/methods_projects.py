@@ -70,7 +70,7 @@ def _register_project_mutator(suffix: str, fn_name: str, takes_path: bool, kwarg
 
 _register_project_mutator(
     "update", "update_project", False,
-    lambda p: _pick(p, "name", "description", "icon", "color", "board_slug"))
+    lambda p: _pick(p, "name", "description", "icon", "color"))
 _register_project_mutator(
     "add_folder", "add_folder", True,
     lambda p: {"label": p.get("label"), "is_primary": bool(p.get("is_primary"))})
@@ -92,7 +92,7 @@ def _(rid, params, pdb, conn) -> dict:
 def _(rid, params, pdb, conn) -> dict:
     pid = pdb.create_project(
         conn, name=str(params.get("name") or ""), folders=params.get("folders") or [],
-        **_pick(params, "slug", "primary_path", "description", "icon", "color", "board_slug"))
+        **_pick(params, "slug", "primary_path", "description", "icon", "color"))
     if params.get("use"):
         pdb.set_active(conn, pid)
     proj = pdb.get_project(conn, pid)

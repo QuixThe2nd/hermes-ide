@@ -350,7 +350,7 @@ class TestMem0ModeSwitch:
         )
 
         # Contract (#99121, restated for fail-loud reads): every production caller is scoped
-        # (turn/cron/kanban scope installers); an OSS profile whose scope simply lacks MEM0_API_KEY
+        # (turn/cron scope installers); an OSS profile whose scope simply lacks MEM0_API_KEY
         # must initialize. A scope-LESS multiplex caller is a spawn-site bug and raises instead —
         # see test_load_config_fails_closed_without_scope_even_for_identity_settings.
         token = secret_scope.set_secret_scope({})

@@ -115,7 +115,6 @@ export type {
   SkillHubSourcesResponse,
   SkillInfo,
   StaleAuxAssignment,
-  StarmapGraph,
   StatusResponse,
   TelegramOnboardingApplyResponse,
   TelegramOnboardingStartResponse,

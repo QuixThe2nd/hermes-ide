@@ -1,7 +1,7 @@
 """Smoke tests for the final batch of subcommand builders extracted from main().
 
 These groups either imported their handler from a sibling module inside the
-parser block (moa, fallback, migrate, bundles, checkpoints, curator, pets,
+parser block (moa, fallback, migrate, bundles, checkpoints, curator,
 journey, secrets, egress) or carried a closure handler that only closed over
 its own parser (worktree, browser, computer-use, sessions, completion). The
 closures moved verbatim into the builder; sessions/completion take the handler
@@ -25,7 +25,6 @@ from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.journey import build_journey_parser
 from hermes_cli.subcommands.migrate import build_migrate_parser
 from hermes_cli.subcommands.moa import build_moa_parser
-from hermes_cli.subcommands.pets import build_pets_parser
 from hermes_cli.subcommands.secrets import build_secrets_parser
 from hermes_cli.subcommands.sessions import build_sessions_parser
 from hermes_cli.subcommands.whatsapp import build_whatsapp_cloud_parser
@@ -48,7 +47,6 @@ SELF_CONTAINED = [
     ("checkpoints", build_checkpoints_parser, ["checkpoints"]),
     ("bundles", build_bundles_parser, ["bundles"]),
     ("curator", build_curator_parser, ["curator"]),
-    ("pets", build_pets_parser, ["pets"]),
     ("journey", build_journey_parser, ["journey"]),
     ("computer-use", build_computer_use_parser, ["computer-use", "status"]),
 ]
@@ -60,7 +58,7 @@ def test_self_contained_builders_attach(name, builder, argv):
     builder(sub)
     ns = parser.parse_args(argv)
     assert ns.command == name
-    assert callable(getattr(ns, "func", None)) or name in ("checkpoints", "curator", "pets", "journey")
+    assert callable(getattr(ns, "func", None)) or name in ("checkpoints", "curator", "journey")
 
 
 def test_worktree_aliases_normalize_to_list(monkeypatch):

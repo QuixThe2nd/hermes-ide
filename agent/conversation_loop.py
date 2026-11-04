@@ -4571,7 +4571,7 @@ def _run_conversation_inlined(
                     if agent._session_db and agent.session_id:
                         try:
                             # Ensure the session row exists before attempting UPDATE.
-                            # Under concurrent load (cron/kanban), the initial
+                            # Under concurrent load, the initial
                             # _ensure_db_session() may have failed due to SQLite
                             # locking.  Retry here so per-call token deltas are
                             # not silently lost (UPDATE on a non-existent row
@@ -6934,10 +6934,9 @@ def _run_conversation_inlined(
                         "completed": False,
                         "failed": True,
                         "error": _final_summary,
-                        # Surface the classified reason so callers (notably the
-                        # kanban worker path in cli.py) can distinguish a
-                        # transient throttle from a real failure and choose a
-                        # different exit code. ``rate_limit`` / ``billing`` here
+                        # Surface the classified reason so callers can distinguish a
+                        # transient throttle from a real failure and choose an
+                        # appropriate outcome. ``rate_limit`` / ``billing`` here
                         # mean "quota wall, not a task error".
                         "failure_reason": classified.reason.value,
                         # The classifier's own retry verdict — UI surfaces use
@@ -8879,56 +8878,6 @@ def _run_conversation_inlined(
                     agent._session_messages = messages
                     logger.debug("pre_turn_end nudge issued (attempt %d)",
                                  agent._pre_turn_end_nudges)
-                    _pending_verification_response = final_response
-                    _pending_verification_response_previewed = (
-                        agent._interim_content_was_streamed(final_response or "")
-                    )
-                    final_response = None
-                    continue
-
-                # ── Kanban worker terminal-tool stop guard ─────────────
-                # Workers must end with kanban_complete / kanban_block.
-                # Models sometimes narrate the next step ("Let me write the
-                # report") and stop with finish_reason=stop — a clean exit
-                # that the dispatcher records as protocol_violation. Nudge
-                # once or twice before allowing that exit.
-                try:
-                    from agent.kanban_stop import build_kanban_stop_nudge
-
-                    _kanban_nudge = build_kanban_stop_nudge(
-                        messages=messages,
-                        attempts=getattr(agent, "_kanban_stop_nudges", 0),
-                    )
-                except Exception:
-                    logger.debug("kanban stop-loop check failed", exc_info=True)
-                    _kanban_nudge = None
-
-                if _kanban_nudge:
-                    agent._kanban_stop_nudges = (
-                        getattr(agent, "_kanban_stop_nudges", 0) + 1
-                    )
-                    final_msg["finish_reason"] = "kanban_terminal_required"
-                    final_msg["_kanban_stop_synthetic"] = True
-                    append_message(messages, final_msg)
-                    append_message(messages, {
-                        "role": "user",
-                        "content": _kanban_nudge,
-                        "_kanban_stop_synthetic": True,
-                    })
-                    agent._session_messages = messages
-                    logger.info(
-                        "kanban stop-loop nudge issued (attempt %d) task=%s",
-                        agent._kanban_stop_nudges,
-                        os.environ.get("HERMES_KANBAN_TASK", ""),
-                    )
-                    agent._emit_status(
-                        "⚠️ Kanban worker tried to exit without "
-                        "kanban_complete/kanban_block — nudging to finish"
-                    )
-                    # Same finalizer contract as verify-on-stop: clear
-                    # final_response while continuing so a later budget
-                    # exhaustion path does not treat the narrated stop as
-                    # a completed answer.
                     _pending_verification_response = final_response
                     _pending_verification_response_previewed = (
                         agent._interim_content_was_streamed(final_response or "")

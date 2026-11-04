@@ -373,7 +373,7 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("subagent", "api_server", "cli"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is False, platform
-    for platform in ("telegram", "discord", "cron", "kanban"):
+    for platform in ("telegram", "discord", "cron", "slack"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
 

@@ -2,12 +2,12 @@
 
 When ``PRAGMA journal_mode=WAL`` raises ``OperationalError("locking protocol")``
 (SQLITE_PROTOCOL — typical on NFS/SMB), Hermes must fall back to
-``journal_mode=DELETE`` so ``state.db`` / ``kanban.db`` remain usable.
+``journal_mode=DELETE`` so ``state.db`` / ``projects.db`` remain usable.
 
 Without this fallback, users on NFS-mounted ``HERMES_HOME`` silently lose
-``/resume``, ``/title``, ``/history``, ``/branch``, session search, and the
-kanban dispatcher — because ``SessionDB()`` init propagates the error and
-every caller swallows it, leaving ``_session_db = None``.
+``/resume``, ``/title``, ``/history``, ``/branch``, and session search —
+because ``SessionDB()`` init propagates the error and every caller swallows
+it, leaving ``_session_db = None``.
 
 See: https://www.sqlite.org/wal.html — "WAL does not work over a network
 filesystem".
@@ -157,13 +157,13 @@ class TestApplyWalWithFallback:
             str(tmp_path / "macnfs.db"), factory=factory, isolation_level=None
         )
         with caplog.at_level("ERROR", logger="hermes_state"):
-            mode = apply_wal_with_fallback(conn, db_label="kanban.db")
+            mode = apply_wal_with_fallback(conn, db_label="projects.db")
 
         assert mode == "delete", "must report the true mode, not a false 'wal'"
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
         errors = [r for r in caplog.records if r.levelname == "ERROR"]
         assert len(errors) == 1, "silent no-op must still emit exactly one ERROR"
-        assert "kanban.db" in errors[0].getMessage()
+        assert "projects.db" in errors[0].getMessage()
         conn.close()
 
     def test_transient_disk_io_error_recovers_to_wal(self, tmp_path):
@@ -327,10 +327,8 @@ class TestApplyWalWithFallback:
     def test_error_deduplicated_per_db_label(self, tmp_path, caplog):
         """Repeated calls with the same db_label log exactly ONE error.
 
-        Prevents log spam when NFS users run kanban (which opens a fresh
-        connection on every operation — see hermes_cli/kanban_db.py).
-        Regression guard: the fix for #22032 ran apply_wal_with_fallback()
-        on every kb.connect() call; without dedup, errors.log fills with
+        Prevents log spam for stores that open a fresh connection on every
+        operation. Regression guard: without dedup, errors.log fills with
         hundreds of identical errors per hour.
         """
         with caplog.at_level("ERROR", logger="hermes_state"):
@@ -360,7 +358,7 @@ class TestApplyWalWithFallback:
         *also* raises (``disk I/O error``, observed on APFS external SSDs
         under heavy contention). The connection's default journal_mode is
         already DELETE, so it is still usable; propagating would crash
-        SessionDB / kanban_db / ResponseStore init. Returns ``"delete"``
+        SessionDB / projects_db / ResponseStore init. Returns ``"delete"``
         and logs one WARNING per db_label.
 
         Fault injection only: the APFS trigger itself is not reproducible on
@@ -441,8 +439,8 @@ class TestApplyWalWithFallback:
     def test_delete_fallback_failure_warning_deduplicated_per_db_label(self, tmp_path, caplog):
         """Repeated both-fail calls with the same db_label log exactly ONE WARNING.
 
-        kanban_db.connect() runs on every kanban operation; without dedup,
-        APFS-external-SSD users would see hundreds of identical warnings.
+        projects_db.connect() may run on every project operation; without
+        dedup, APFS-external-SSD users would see hundreds of identical warnings.
         """
 
         class _BothPragmasFailConnection(sqlite3.Connection):
@@ -482,17 +480,17 @@ class TestApplyWalWithFallback:
             conn1.close()
 
             conn2, _ = _open_blocking(tmp_path / "b.db", isolation_level=None)
-            apply_wal_with_fallback(conn2, db_label="kanban.db")
+            apply_wal_with_fallback(conn2, db_label="projects.db")
             conn2.close()
 
         errors = [r for r in caplog.records if r.levelname == "ERROR"]
         labels_logged = {
             lbl
             for r in errors
-            for lbl in ("state.db", "kanban.db")
+            for lbl in ("state.db", "projects.db")
             if lbl in r.getMessage()
         }
-        assert labels_logged == {"state.db", "kanban.db"}, (
+        assert labels_logged == {"state.db", "projects.db"}, (
             f"Each db_label should log once; got {labels_logged}"
         )
 
@@ -501,7 +499,7 @@ class TestRequireWal:
     """``require_wal=True`` turns either WAL-refusal shape into a hard
     ``WalUnsupportedError`` for callers that mandate WAL concurrency, instead
     of silently degrading to DELETE. The default callers (SessionDB /
-    kanban_db.connect) keep ``require_wal=False`` so NFS-homed installs work.
+    projects_db.connect) keep ``require_wal=False`` so NFS-homed installs work.
     """
 
     def test_happy_path_unaffected_by_require_wal(self, tmp_path):
@@ -530,7 +528,7 @@ class TestRequireWal:
         )
         try:
             with pytest.raises(WalUnsupportedError, match="refused without raising"):
-                apply_wal_with_fallback(conn, db_label="kanban.db", require_wal=True)
+                apply_wal_with_fallback(conn, db_label="projects.db", require_wal=True)
         finally:
             conn.close()
 

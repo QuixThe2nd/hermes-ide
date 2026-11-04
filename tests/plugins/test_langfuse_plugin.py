@@ -1691,7 +1691,7 @@ class TestMoAReferenceGenerations:
         assert gens == []
 
 class TestAtexitFinalization(TestTurnTraceIsolation):
-    """Short-lived processes (kanban workers, `hermes chat -q`, cron) can exit
+    """Short-lived processes (`hermes chat -q`, cron) can exit
     with tool calls still queued — the root span never ends and the backend
     shows an anonymous trace (no name/session/metadata). _finalize_all_traces
     (registered atexit after client construction) must end every open root."""

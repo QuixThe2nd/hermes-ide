@@ -4,7 +4,7 @@ while the multiplexer runs, instead of snapshotting it once at boot.
 Three things were start-time snapshots: the secondary adapter set (``_start_secondary_profile_adapters``),
 the ``served_profiles`` record in ``gateway_state.json`` (``_record_served_profiles``) and the cron
 ticker's ``profile_homes`` list. Everything else (``/p/<profile>/`` prefixes, profile-route eligibility,
-handoff/kanban watchers, shared ingress) already reads ``profiles_to_serve()`` / ``_profile_adapters``
+handoff watchers, shared ingress) already reads ``profiles_to_serve()`` / ``_profile_adapters``
 live, so reconciling those three is enough for a profile created after boot to be served.
 
 ``reconcile_served_profiles`` runs on the loop under one lock, triggered by the ``rescan-profiles`` control

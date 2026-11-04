@@ -890,18 +890,18 @@ class TestDeliveryParity:
         fired = []
         mgr = self._fresh_manager(
             monkeypatch,
-            lambda m: m._hooks.setdefault("kanban_task_claimed", []).append(
+            lambda m: m._hooks.setdefault("pre_tool_call", []).append(
                 lambda **kw: fired.append(kw) or "ok"
             ),
         )
 
-        results = plugins_mod.invoke_hook("kanban_task_claimed", task_id="t1")
+        results = plugins_mod.invoke_hook("pre_tool_call", tool_name="search_files")
 
         assert mgr._discovered is True
         # invoke_hook may enrich kwargs (e.g. telemetry_schema_version);
         # assert on what the caller passed rather than exact equality.
         assert len(fired) == 1
-        assert fired[0]["task_id"] == "t1"
+        assert fired[0]["tool_name"] == "search_files"
         assert results == ["ok"]
 
     def test_module_invoke_middleware_lazily_discovers(self, monkeypatch):
@@ -2755,7 +2755,7 @@ class TestDispatchToolWithoutCliRef:
 
     This pins the contract the plugin docs rely on: a plugin can drive
     tools from a hook callback even when running in the gateway or a
-    kanban-spawned worker session, where _cli_ref is None.
+    spawned worker session, where _cli_ref is None.
     """
 
     def test_dispatch_tool_invokes_handler_without_cli_ref(self):

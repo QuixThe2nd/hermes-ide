@@ -353,7 +353,6 @@ describe('status-chrome timers track the current overlay model', () => {
   const occluding: Array<[string, Partial<OverlayState>]> = [
     ['modelPicker', { modelPicker: true }],
     ['pager', { pager: { lines: ['a'], offset: 0 } }],
-    ['petPicker', { petPicker: true }],
     ['pluginsHub', { pluginsHub: true }],
     ['sessions', { sessions: true }],
     ['skillsHub', { skillsHub: true }],

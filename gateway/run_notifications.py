@@ -1129,9 +1129,9 @@ class GatewayNotificationsMixin:
 
         A served profile's ``api_server`` turn binds the RAW session id as its session key, so its
         completion event names no profile: the only ownership proof is the served profile's own
-        store, exactly the rung the Kanban notifier applies. An event whose source DOES name a
-        served profile (structured key / persisted origin) must be owned by that profile or it
-        raises ``LookupError`` — never a wake in the default profile's store.
+        store. An event whose source DOES name a served profile (structured key / persisted origin)
+        must be owned by that profile or it raises ``LookupError`` — never a wake in the default
+        profile's store.
         """
         if not getattr(self.config, "multiplex_profiles", False):
             return None
@@ -1157,7 +1157,7 @@ class GatewayNotificationsMixin:
                 return owner[0]
             if getattr(source, "delivered_via_upstream_relay", False) is True:
                 return self.adapters.get(Platform.RELAY)
-        # One resolver with authz/kanban/cron: a secondary's own map, or the primary's for a
+        # One resolver with authz/cron: a secondary's own map, or the primary's for a
         # shared-bot satellite; a disconnected secondary fails closed to ``{}``.
         adapters = self._adapters_for_profile(getattr(source, "profile", None))
         try:

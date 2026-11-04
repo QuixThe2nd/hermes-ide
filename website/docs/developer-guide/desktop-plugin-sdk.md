@@ -311,7 +311,7 @@ side effects (a `<style>` tag, `html[data-*]` attributes, a `MutationObserver`)
 runs its setup once per registration and its cleanup once at dispose — never
 mid-navigation.
 
-Controls that belong to ONE page (the Kanban board switcher) go in
+Controls that belong to ONE page (a project selector) go in
 `WORKSPACE_PAGE_HEADER_AREA` instead: it renders in the workspace panel's
 tab-header row while that page is on screen and is empty otherwise. Register it
 with a mount-scoped `<Contribute>` (below) so it leaves with the page.
@@ -539,7 +539,7 @@ host.request<T>(method, params?)           // active-gateway JSON-RPC — the re
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
-cron, kanban, …). `host.requestProfile` accepts a descriptor from
+cron, …). `host.requestProfile` accepts a descriptor from
 `host.profileRoutes()` and routes that RPC through its exact registry source and
 profile without changing the active chat or gateway. The profile-only overload is
 retained only for the sole-local/legacy topology; registry-aware plugins should pass

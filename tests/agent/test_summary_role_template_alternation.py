@@ -211,7 +211,7 @@ class TestForcedUserGuardsStillWin:
         because everything after it is template-exempt)."""
         c = compressor
         c.compression_count = 1  # protect_first_n decays -> no head
-        messages = [{"role": "user", "content": "work kanban task 42"}]
+        messages = [{"role": "user", "content": "work assigned task 42"}]
         messages += _tool_turns(0, 12)
 
         mocked = f"{SUMMARY_PREFIX}\nsummary body"

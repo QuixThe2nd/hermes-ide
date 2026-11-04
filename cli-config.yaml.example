@@ -368,16 +368,6 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
-# Kanban Review Dispatch
-# =============================================================================
-# First-class review tasks are dispatched automatically by default. The worker
-# is spawned with the bundled sdlc-review skill and can approve, request changes
-# back to the original implementer, or escalate a genuine external blocker.
-# Disable this only when every review is performed manually from the dashboard.
-kanban:
-  review_dispatch: true
-
-# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.
@@ -1004,7 +994,7 @@ group_sessions_per_user: true
 # stays bounded: at CLI/gateway/cron startup (at most once per
 # min_interval_hours) Hermes deletes ENDED sessions whose last activity is
 # older than retention_days. Open, pinned, and in-progress sessions are never
-# deleted. Stale automation sessions (cron/kanban/subagent/one-shot CLI) whose
+# deleted. Stale automation sessions (cron/subagent/one-shot CLI) whose
 # process died without closing them are first *closed*, then aged through a
 # further full retention window before removal.
 #
@@ -1631,7 +1621,7 @@ stt:
   #   local_command/xai/
   #   elevenlabs             -> unsupported; DEBUG log, then continue
   #   plugin providers       -> `prompt` in `**extra`; plugin owns limits
-  # prompt: "Hermes, Teknium, Nous Research, kanban"
+  # prompt: "Hermes, Teknium, Nous Research, delegation"
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force

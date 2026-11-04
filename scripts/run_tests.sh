@@ -135,7 +135,7 @@ fi
 #     default time — inside the stripped environment.
 #
 # These are test-infrastructure knobs, not credentials — same class as the
-# HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER opt-ins already forwarded.
+# HERMES_E2E_BROWSER opt-in already forwarded.
 # Keep this an explicit allowlist (no HERMES_TEST_* glob) so the "no
 # credential can leak" property stays auditable at a glance.
 TEST_ENV=()
@@ -175,7 +175,6 @@ HERMETIC_ENV=(
   LC_ALL=C.UTF-8
   PYTHONHASHSEED=0
   PYTHONUTF8=1
-  ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"}
   ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"}
   ${__NIXOS_SET_ENVIRONMENT_DONE:+__NIXOS_SET_ENVIRONMENT_DONE="$__NIXOS_SET_ENVIRONMENT_DONE"}
   ${HERMES_PYTHON_SRC_ROOT:+HERMES_PYTHON_SRC_ROOT="$HERMES_PYTHON_SRC_ROOT"}

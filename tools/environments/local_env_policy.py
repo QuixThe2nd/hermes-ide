@@ -131,7 +131,7 @@ def _buzz_terminal_context_active() -> bool:
     platform is ``buzz`` via the gateway ContextVar — authoritative under a concurrent
     multi-session host, so a sibling Telegram session resolves its OWN platform.
 
-    Gateway / CLI / cron / kanban processes never carry it. See #76243.
+    Gateway / CLI / cron / automation processes never carry it. See #76243.
     """
     if os.environ.get("BUZZ_MANAGED_AGENT"):
         return True

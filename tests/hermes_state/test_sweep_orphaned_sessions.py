@@ -539,10 +539,10 @@ class TestSweepOrphanedSessions:
     def test_auto_prune_reports_closed_count_and_deletes_after_second_window(
         self, db
     ):
-        """#54189 end-to-end: leaky producers (cron/kanban/subagent) never set
-        ``ended_at``; pass 1 closes them (reported via ``closed``), pass 2 —
-        after a further retention window — deletes them, and a messaging row
-        is never touched by either pass."""
+        """#54189 end-to-end: leaky producers (cron/historical Kanban/subagent)
+        never set ``ended_at``; pass 1 closes them (reported via ``closed``),
+        pass 2 — after a further retention window — deletes them, and a
+        messaging row is never touched by either pass."""
         stale = time.time() - 200 * 86400
         for sid, source in (
             ("cron-0", "cron"),

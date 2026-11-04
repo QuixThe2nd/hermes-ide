@@ -1019,7 +1019,7 @@ class _RequestClientRegistry:
     Thread-ownership rule (#29507): the owning worker pops + fully closes on its
     way out. A *stranger* thread only aborts the sockets — never ``client.close()``
     — avoiding the FD-recycling race where a just-closed TLS FD was reassigned to
-    ``kanban.db`` and the live SSL BIO wrote into the SQLite header. The abort
+    ``state.db`` and the live SSL BIO wrote into the SQLite header. The abort
     happens under the lock: once released the worker may cache the client and the
     NEXT call check it out. Stream handles are safe to close from any thread.
     """

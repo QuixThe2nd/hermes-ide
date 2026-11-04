@@ -230,7 +230,7 @@ def _holder_value_flags() -> frozenset:
 def _hermes_holder_subcommand(cmdline: str) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
-    Token-based, never substring (``kanban --preserve-cache`` contains "serve"): find the ``hermes_cli.main`` /
+    Token-based, never substring (``chat --preserve-cache`` contains "serve"): find the ``hermes_cli.main`` /
     ``hermes(.exe)`` entry token, return the first following token that isn't a flag or a flag's value.
 
     Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
@@ -594,7 +594,7 @@ def _looks_like_desktop_control_plane(cmdline: str) -> bool:
     """True for this-install ``hermes serve`` / ``hermes dashboard`` argv (Desktop control plane).
 
     Not the messaging gateway — don't feed into ``looks_like_gateway_command_line``. Token-based via the
-    parser-derived classifier, never substring (``kanban --preserve-cache``, ``-m dashboard chat``).
+    parser-derived classifier, never substring (``chat --preserve-cache``, ``-m dashboard chat``).
     Undeterminable subcommand is NOT a control plane.
 
     See #92091.

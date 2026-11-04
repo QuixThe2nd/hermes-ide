@@ -210,8 +210,6 @@ _WORKTREE_SUBCOMMANDS = {
 _BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reasoning_details",
                      "codex_reasoning_items", "codex_message_items", "timestamp")
 
-_HATCH_PROGRESS = {"compose": "  ┊ composing spritesheet…", "save": "  ┊ saving…"}
-
 # /diff argument -> mode (anything else is a path; --stat/stat is the stat flag).
 _DIFF_MODES = {
     "staged": "staged", "--staged": "staged", "cached": "staged", "--cached": "staged",
@@ -1522,7 +1520,7 @@ class CLICommandsMixin:
         _pr(f"  ✅ Worktree ready: {wt_info['path']}", f"  Branch: {wt_info['branch']}",
             "  Terminal and file tools now operate in the worktree.")
 
-    # ---- /personality, /pet, /hatch -------------------------------------------------------
+    # ---- /personality ---------------------------------------------------------
     def _handle_personality_command(self, cmd: str):
         """Handle /personality [name] — list or set a predefined personality. All resolution and
         persistence goes through hermes_cli.personality, the single owner of personality state."""
@@ -1568,89 +1566,6 @@ class CLICommandsMixin:
             _retire_agent(self)  # Force re-init
             _pr(f"{face} Personality set to '{name}' {scope}",
                 f"  \"{_ellipsize(personality_prompt, 60)}\"")
-
-    def _handle_pet_command(self, cmd: str):
-        """Handle /pet [toggle|list|scale <n>|off|<slug>] — the petdex mascot. Writes
-        ``display.pet.*`` to config; pet surfaces pick it up on their next poll."""
-        from agent.pet import store
-        from agent.pet.manifest import ManifestError
-        from hermes_cli.pets import (
-            _set_active, _set_enabled, print_pet_gallery, set_pet_scale, toggle_pet_display)
-        arg = _command_arg(cmd)
-        low = arg.lower()
-        if not arg or low == "toggle":
-            enabled, name, err = toggle_pet_display()
-            print(f"(x_x) {err}" if err else f"(^_^)b {name} is out — it'll pop in shortly." if enabled
-                  else f"(-_-)zzZ {name} put away." if name else "(-_-)zzZ Pet put away.")
-        elif low in ("list", "gallery", "browse", "all"):
-            print_pet_gallery()
-        elif low == "scale" or low.startswith("scale "):
-            value = arg[len("scale"):].strip()
-            if not value:
-                return print("(o_o) Usage: /pet scale <factor>  (e.g. /pet scale 0.5)")
-            scale, err = set_pet_scale(value)
-            print(f"(x_x) {err}" if err else f"(^_^) Pet scale → {scale:g}.")
-        elif low == "off":
-            _set_enabled(False)
-            print("(-_-)zzZ Pet put away.")
-        else:
-            print(f"(o_o) Fetching '{arg}' from petdex…")
-            try:
-                pet = store.install_pet(arg)
-            except (store.PetStoreError, ManifestError) as exc:
-                return print(f"(x_x) Couldn't adopt '{arg}': {exc}")
-            _set_active(arg)
-            print(f"(^_^)b {pet.display_name} is out — it'll pop in shortly.")
-
-    def _handle_hatch_command(self, cmd: str):
-        """Generate ("hatch") a new petdex pet from a description: base look, one animation row
-        per state, spritesheet, then adopt. Progress streams inline (~a minute of image calls).
-        The desktop app opens a richer overlay for this command instead."""
-        from agent.pet import store
-        from agent.pet.generate import orchestrate
-        from agent.pet.generate.imagegen import GenerationError
-        from hermes_cli.pets import _set_active
-        concept = _command_arg(cmd)
-        if not concept:
-            # prompt_toolkit owns stdin on this daemon thread — raw input() never renders and eats
-            # keystrokes; prefer the thread-aware helper (None when prompting isn't safe).
-            # Bare /hatch is dispatched from the process_loop daemon thread while prompt_toolkit owns stdin
-            # — a raw input() here types into a prompt that never renders and swallows the next keystrokes
-            # (same class as #23185; found in the Aug 2026 full-surface CLI QA sweep: bare /hatch left the
-            # session eating input until Ctrl+C). Route through the thread-aware prompt helper, which uses
-            # run_in_terminal on the main thread and cancels cleanly (None) when prompting isn't safe.
-            prompt_helper = getattr(self, "_prompt_text_input", None)
-            try:
-                concept = ((prompt_helper or input)("(o_o) Describe your pet: ") or "").strip()
-            except (EOFError, KeyboardInterrupt):
-                return print()
-        if not concept:
-            return print("(o_o) Usage: /hatch <description>  (e.g. /hatch a tiny cyber fox)")
-        # A short, friendly display name from the first few words of the concept.
-        display_name = " ".join(w.capitalize() for w in concept.split()[:3])[:28].strip() or "Pet"
-        slug = store.slugify(display_name) or store.slugify(concept) or "pet"
-        print(f"(o_o) Designing '{concept}'… (a minute of image-model calls)")
-        try:
-            drafts = orchestrate.generate_base_drafts(concept, n=1)
-        except GenerationError as exc:
-            return print(f"(x_x) Couldn't generate a base look: {exc}")
-        if not drafts:
-            return print("(x_x) No base draft came back — try again.")
-
-        def _progress(event: str, detail: str) -> None:
-            if event == "row":  # detail is "<state>:<done>:<total>"; show the state name.
-                print(f"  ┊ drawing {detail.split(':', 1)[0]}…")
-            elif event in _HATCH_PROGRESS:
-                print(_HATCH_PROGRESS[event])
-
-        try:
-            result = orchestrate.hatch_pet(
-                base_image=drafts[0], slug=slug, display_name=display_name, concept=concept,
-                on_progress=_progress)
-        except GenerationError as exc:
-            return print(f"(x_x) Hatch failed: {exc}")
-        _set_active(result.slug)
-        print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
 
     # ---- /cron ----------------------------------------------------------------------------
     def _handle_cron_command(self, cmd: str):
@@ -1801,7 +1716,7 @@ class CLICommandsMixin:
             from hermes_cli.cron import _run_outcome
             print(f"  {_run_outcome(job)}")
 
-    # ---- delegating handlers: /suggestions, /blueprint, /curator, /kanban, /skills, /memory --
+    # ---- delegating handlers: /suggestions, /blueprint, /curator, /skills, /memory --
     def _handle_suggestions_command(self, cmd: str):
         """Handle /suggestions — review/accept/dismiss suggested automations via the shared handler.
         CLI origin is the local platform, so an accepted job needs an explicit deliver target —
@@ -1843,19 +1758,6 @@ class CLICommandsMixin:
             pass  # argparse exits on --help/errors; don't kill the interactive session
         except Exception as exc:
             print(f"(._.) curator: {exc}")
-
-    def _handle_kanban_command(self, cmd: str):
-        """Handle /kanban — strip the leading ``/kanban`` and hand the rest to ``kanban.run_slash``."""
-        from hermes_cli.kanban import run_slash
-        rest = cmd.strip().lstrip("/")
-        if rest.startswith("kanban"):
-            rest = rest[len("kanban"):].lstrip()
-        try:
-            output = run_slash(rest)
-        except Exception as exc:  # pragma: no cover - defensive
-            output = f"(._.) kanban error: {exc}"
-        if output:
-            print(output)
 
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the

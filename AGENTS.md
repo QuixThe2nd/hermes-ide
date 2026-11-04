@@ -153,7 +153,7 @@ itself: preinstalled tooling and prebuilt pipelines are the point of this fork.
 - **Third-party products integrated without an integration layer.** The
   upstream rule "third-party plugins never land in this tree" does NOT apply
   here — this fork deliberately preinstalls well-integrated capability
-  (observability, kanban, dev pipelines, and similar all live in-tree). What
+  (observability, dev pipelines, and similar all live in-tree). What
   we still reject is a raw vendor SDK dumped under `plugins/` with no
   adapter: wrap the product behind the plugin ABC/hooks so core never
   special-cases it, keep it gated/off by default when it phones home, and
@@ -263,7 +263,7 @@ hermes-agent/
 ├── gateway/              # run.py facade + run_*.py phases + session*.py + platforms/
 │   ├── platforms/        # One adapter per platform; see platforms/ADDING_A_PLATFORM.md
 │   └── builtin_hooks/    # Always-registered gateway hooks (extension point; none shipped)
-├── plugins/              # memory/, context_engine/, model-providers/, kanban/, image_gen/, ...
+├── plugins/              # memory/, context_engine/, model-providers/, image_gen/, ...
 ├── skills/               # Built-in skills (by category)   optional-skills/: shipped, not active
 ├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
 ├── tui_gateway/          # Python JSON-RPC backend for TUI + Desktop — server.py + methods_*.py
@@ -313,7 +313,7 @@ Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packag
 Every former god file is a **facade** (public entry points + the names other packages import)
 plus **siblings** `<stem>_<topic>.py` in the same directory, each owning one topic. Largest
 families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15),
-`hermes_cli/kanban.py` (14), `hermes_cli/web_server.py` (13 + 24 routers), `hermes_cli/auth.py`
+`hermes_cli/web_server.py` (13 + 24 routers), `hermes_cli/auth.py`
 (12), `tools/browser_tool.py` (11), `cli.py` (12 `hermes_cli/cli_*_mixin.py`), `run_agent.py`
 (`agent/turn_*.py`, `agent_init.py`, `conversation_loop.py`).
 
@@ -1104,8 +1104,7 @@ platforms inherit from.
 Current toolset keys: `browser`, `clarify`, `code_execution`, `cronjob`,
 `debugging`, `delegation`, `discord`, `discord_admin`, `feishu_doc`,
 `feishu_drive`, `file`, `file_readonly`, `homeassistant`, `image_gen`,
-`kanban`, `memory`,
-`messaging`, `moa`, `rl`, `safe`, `search`, `session_search`, `skills`,
+`memory`, `messaging`, `moa`, `rl`, `safe`, `search`, `session_search`, `skills`,
 `spotify`, `terminal`, `todo`, `tts`, `video`, `vision`, `web`, `yuanbao`.
 
 Enable/disable per platform via `hermes tools` (the curses UI) or the
@@ -1216,50 +1215,6 @@ Hardening invariants:
 Cron deliveries are **not** mirrored into the target gateway session —
 they land in their own cron session with a header/footer frame so the
 main conversation's message-role alternation stays intact.
-
----
-
-## Kanban (multi-agent work queue)
-
-Durable SQLite-backed board that lets multiple profiles / workers
-collaborate on shared tasks. Users drive it via `hermes kanban <verb>`;
-workers spawned by the dispatcher drive it via a dedicated `kanban_*`
-toolset so their schema footprint is zero when they're not inside a
-kanban task.
-
-- **CLI:** `hermes_cli/kanban.py` wires `hermes kanban` with verbs
-  `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
-  `unlink`, `comment`, `attach`, `attachments`, `attach-rm`, `complete`,
-  `request-review`, `request-changes`, `reopen-review`, `block`, `unblock`, `archive`,
-  `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
-  `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
-- **Worker/orchestrator toolset:** `tools/kanban_tools.py` exposes
-  `kanban_show`, `kanban_complete`, `kanban_request_review`,
-  `kanban_request_changes`, `kanban_block`,
-  `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`,
-  `kanban_attach`, `kanban_attach_url`, `kanban_attachments`; profiles that
-  explicitly enable the `kanban` toolset outside a dispatcher-spawned
-  task also get `kanban_list` and `kanban_unblock` for board routing.
-- **Dispatcher:** long-lived loop that (default every 60s) reclaims
-  stale claims, promotes ready tasks, atomically claims, and spawns
-  assigned profiles. Runs **inside the gateway** by default via
-  `kanban.dispatch_in_gateway: true`.
-- **Plugin assets:** `plugins/kanban/dashboard/` (web UI) +
-  `plugins/kanban/systemd/` (`hermes-kanban-dispatcher.service` for
-  standalone dispatcher deployment).
-
-Isolation model:
-- **Board** is the hard boundary — workers are spawned with
-  `HERMES_KANBAN_BOARD` pinned in their env so they can't see other
-  boards.
-- **Tenant** is a soft namespace *within* a board — one specialist
-  fleet can serve multiple businesses with workspace-path + memory-key
-  isolation.
-- After `kanban.failure_limit` consecutive non-success attempts on the
-  same task (default: 2), the dispatcher auto-blocks it to prevent spin
-  loops.
-
-Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ---
 
@@ -1475,7 +1430,7 @@ automatically scope to the active profile.
 ### DO NOT infer process identity from argv substrings
 The bug class behind ~10 fleet-update issues (#90778, #87594, #78089,
 #76129, #91964, ...): classifying a process by `"serve" in cmdline` or
-similar. `kanban --preserve-cache` contains "serve"; a flag VALUE can
+similar. A `--preserve-cache` flag contains "serve"; a flag VALUE can
 equal a subcommand (`-m dashboard serve`); truncated cmdlines hide the
 real subcommand. Rules:
 - Use the canonical matchers: `gateway.status.looks_like_gateway_command_line`
@@ -1750,7 +1705,7 @@ extract, not to regex around it.
 | `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | Dashboard embeds the real TUI; what React may and may not rebuild |
 | `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | Desktop judgment guide; `serve` backend, slash palette curation, Bot Mode canonical chat |
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | Frontmatter, HARDLINE authoring standards, curator |
-| `cron/`, kanban (`hermes_cli/kanban*.py`, `tools/kanban_tools.py`, `plugins/kanban/`) | `cron/AGENTS.md` | Scheduler invariants, job fields, kanban board/dispatcher |
+| `cron/` | `cron/AGENTS.md` | Scheduler invariants and job fields |
 | `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | Step-by-step adapter guide |
 
 Long-form background lives in `website/docs/developer-guide/` (agent-loop, prompt-assembly,

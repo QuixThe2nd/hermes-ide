@@ -19,7 +19,6 @@ export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
-export const STARMAP_ROUTE = '/starmap'
 
 export type AppView =
   | 'session-import'
@@ -37,7 +36,6 @@ export type AppView =
   | 'messaging'
   | 'profiles'
   | 'settings'
-  | 'starmap'
   | 'webhooks'
 
 export type AppRouteId =
@@ -51,7 +49,6 @@ export type AppRouteId =
   | 'new'
   | 'profiles'
   | 'settings'
-  | 'starmap'
   | 'webhooks'
 
 export interface AppRoute {
@@ -71,8 +68,7 @@ export const APP_ROUTES = [
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
-  { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
-  { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' }
+  { id: 'agents', path: AGENTS_ROUTE, view: 'agents' }
 ] as const satisfies readonly AppRoute[]
 
 const APP_VIEW_BY_PATH = new Map<string, AppView>(APP_ROUTES.map(route => [route.path, route.view]))
@@ -88,7 +84,7 @@ export const ROUTES_AREA = 'routes'
 
 /** Payload of a `routes` contribution's `data`. */
 export interface RouteContribution {
-  /** Absolute path, e.g. `/kanban`. One segment; no params. */
+  /** Absolute path, e.g. `/plugin-page`. One segment; no params. */
   path: string
 }
 
@@ -164,7 +160,6 @@ export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
   'cron',
   'profiles',
   'settings',
-  'starmap',
   'webhooks'
 ])
 
@@ -261,7 +256,7 @@ export function isWorkspacePageRoute(to: string): boolean {
  *  (settings/…) don't count — the chat stays beneath them. */
 export const $workspaceIsPage = atom(false)
 
-/** Page-owned controls (kanban's board switcher) projected into the workspace
+/** Page-owned controls (for example, a view switcher) projected into the workspace
  *  panel's tab-header space while `$workspaceIsPage` holds — the page's title
  *  row, not the native band. Distinct from `titleBar.*`, whose slots stay
  *  mounted on every route so plugin components never remount on navigation. */

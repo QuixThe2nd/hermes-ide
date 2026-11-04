@@ -41,7 +41,6 @@ async function main() {
     ['Cron', ws => ev(ws, `window.location.hash='#/cron'; true`), 2000],
     ['Profiles', ws => ev(ws, `window.location.hash='#/profiles'; true`), 2000],
     ['Agents', ws => ev(ws, `window.location.hash='#/agents'; true`), 2000],
-    ['Starmap', ws => ev(ws, `window.location.hash='#/starmap'; true`), 2000],
     ['Webhooks', ws => ev(ws, `window.location.hash='#/webhooks'; true`), 2000],
     ['CommandCenter/System', async ws => { await ev(ws, `window.location.hash='#/command-center'; true`); await sleep(400); await ev(ws, `Array.from(document.querySelectorAll('button')).find(b=>b.textContent?.trim()==='System')?.click(); true`) }, 2000],
   ]

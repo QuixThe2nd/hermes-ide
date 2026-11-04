@@ -1,4 +1,4 @@
-"""Safe ``tar.gz`` primitives shared by the profile and kanban transfer paths."""
+"""Safe ``tar.gz`` primitives shared by profile transfer paths."""
 
 from __future__ import annotations
 

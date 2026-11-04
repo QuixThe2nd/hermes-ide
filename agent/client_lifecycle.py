@@ -214,7 +214,7 @@ class ClientLifecycleMixin:
         The shared primary client has no single owning thread — worker threads from stale-killed attempts
         may still be unwinding their SSL BIOs, and the codex-direct / MoA paths stream on the shared client
         itself. If we release an FD while another thread's SSL layer still caches the raw integer fd, the
-        kernel can recycle it into an unrelated ``open()`` (e.g. ``kanban.db``) and the unwinding TLS flush
+        kernel can recycle it into an unrelated ``open()`` (e.g. a SQLite DB) and the unwinding TLS flush
         then writes an application-data record into that file — the SQLite-header corruption documented in
         #29507/#70773.
         """

@@ -43,8 +43,6 @@ from hermes_cli.config import (
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
-from agent.delegation_context import (
-    enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
 
 logger = logging.getLogger(__name__)
@@ -2128,17 +2126,11 @@ class _CronRunScope:
             record_session_cwd(self.task_id, self.workdir)
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
-        self._non_dispatcher_token = None
 
     def enter(self) -> None:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
         # os.environ fallback used by standalone entrypoints/tests).
         self._cron_session_token = self._cron_session_var.set("1")
-        # Mark NOT the kanban worker: a worker's cronjob(action="run") lands here with
-        # HERMES_KANBAN_TASK in env, and an unrelated job could close the worker's task. Must be a
-        # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
-        # concurrent jobs); copy_context() carries it into the agent thread.
-        self._non_dispatcher_token = enter_non_dispatcher_owned_context()
 
     def exit(self) -> None:
         from gateway.session_context import clear_session_vars
@@ -2148,8 +2140,6 @@ class _CronRunScope:
         clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
         if self._cron_session_token is not None:
             self._cron_session_var.reset(self._cron_session_token)
-        if self._non_dispatcher_token is not None:
-            exit_non_dispatcher_owned_context(self._non_dispatcher_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
 

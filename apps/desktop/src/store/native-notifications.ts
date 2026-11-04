@@ -138,8 +138,8 @@ function isBackgrounded(): boolean {
 }
 
 function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, global = false): boolean {
-  // Global notifications aren't tied to a chat session (e.g. pet generation,
-  // which runs from the command center with no active conversation). They fire
+  // Global notifications aren't tied to a chat session (e.g. a background
+  // export started with no active conversation). They fire
   // whenever the user is away, with no session-match requirement — otherwise a
   // background run started without an open session would be silently dropped.
   if (global) {
@@ -152,7 +152,7 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
   }
 
   // Completion kinds: only the active session, only while away — so a busy
-  // gateway (messaging, kanban, cron) can't spam a toast per background session.
+  // gateway (messaging, cron) can't spam a toast per background session.
   return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
 }
 
@@ -192,7 +192,7 @@ export interface NativeNotificationInput {
   body?: string
   sessionId?: null | string
   /**
-   * Not tied to a chat session (e.g. pet generation). Fires whenever the user
+   * Not tied to a chat session (e.g. a background export). Fires whenever the user
    * is away, bypassing the session-match gate that completion kinds normally
    * require.
    */

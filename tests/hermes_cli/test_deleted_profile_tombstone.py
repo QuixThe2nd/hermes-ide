@@ -124,7 +124,7 @@ class TestDeletedProfileTombstone:
         assert "worker" not in _named_homes(profile_env)
         served = [name for name, _ in profiles_to_serve(True)]
         assert "worker" not in served
-        # The name-only hot path (cron Bot Chat targets, kanban profile hints)
+        # The name-only hot path (cron Bot Chat targets and profile hints)
         # honors the same tombstone: a recreated shell must not resurface as a
         # `bot-chat:worker` delivery target.
         assert "worker" not in list_profile_names()

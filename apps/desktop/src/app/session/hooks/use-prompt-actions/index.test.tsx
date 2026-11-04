@@ -116,7 +116,6 @@ function Harness({
   onUpdateState,
   onReady,
   onSeedState,
-  openMemoryGraph,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -141,7 +140,6 @@ function Harness({
   ) => void
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
-  openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
@@ -196,7 +194,6 @@ function Harness({
     getRuntimeIdForStoredSession: getRuntimeIdForStoredSession ?? (() => null),
     getRouteToken: getRouteToken ?? (() => 'token'),
     handleSkinCommand: () => '',
-    openMemoryGraph: openMemoryGraph ?? (() => undefined),
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
@@ -1874,27 +1871,28 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
-  it('opens the memory graph overlay for /journey and its aliases instead of hitting the backend', async () => {
-    const openMemoryGraph = vi.fn()
-    const requestGateway = vi.fn(async () => ({}) as never)
+  it('routes /journey and its aliases through slash.exec and the command.dispatch fallback', async () => {
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === 'slash.exec') {
+        throw new Error('slash worker unavailable')
+      }
+
+      return { type: 'exec', output: 'journey output' } as never
+    })
 
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        openMemoryGraph={openMemoryGraph}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
     await handle!.submitText('/journey')
     await handle!.submitText('/memory-graph')
     await handle!.submitText('/learning')
 
-    expect(openMemoryGraph).toHaveBeenCalledTimes(3)
-    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
-    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+    const execCalls = requestGateway.mock.calls.filter(([method]) => method === 'slash.exec')
+    expect(execCalls.map(([, params]) => params?.command)).toEqual(['journey', 'memory-graph', 'learning'])
+    const dispatchCalls = requestGateway.mock.calls.filter(([method]) => method === 'command.dispatch')
+    expect(dispatchCalls.map(([, params]) => params?.name)).toEqual(['journey', 'memory-graph', 'learning'])
   })
 
   it('marks a timed-out handoff as failed so the next attempt can retry', async () => {

@@ -31,21 +31,11 @@ ITERATION_BUDGET_WARNING_TEMPLATE = (
 
 def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     """Append the opt-in one-shot warning to the newest tool result."""
-    import os
-    from agent.delegation_context import is_dispatcher_owned_worker_context
-
     # Cancellation results still need persistence, but must not urge more work.
     if getattr(agent, "_interrupt_requested", False):
         return False
 
     ratio = getattr(agent, "budget_warning_ratio", None)
-    kanban_worker = (
-        bool(os.environ.get("HERMES_KANBAN_TASK"))
-        and is_dispatcher_owned_worker_context()
-        and "kanban_complete" in getattr(agent, "valid_tool_names", ())
-    )
-    if ratio is None and kanban_worker:
-        ratio = 0.9
     budget = getattr(agent, "iteration_budget", None)
     if (
         ratio is None
@@ -59,13 +49,6 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
         used=budget.used, maximum=budget.max_total
     )
-    if kanban_worker:
-        notice += (
-            " While tools are still available, call kanban_complete only if all task "
-            "requirements are verified, or kanban_request_review if it is ready for "
-            "review; otherwise persist a kanban_comment handoff and "
-            "continue. A diff or commit alone is not completion evidence."
-        )
     # Only the current tool-result tail is mutable; an older turn may already be cached.
     from agent.context_compressor import _DB_PERSISTED_MARKER
     if (not messages or messages[-1].get("role") != "tool"

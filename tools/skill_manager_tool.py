@@ -75,7 +75,7 @@ def _skills_dir() -> Path:
     """Active profile's skills dir at call time (multi-profile runtimes rebind per session).
     An explicitly patched module-level ``SKILLS_DIR`` (tests) wins over the live HERMES_HOME.
 
-    Long-lived multi-profile runtimes (Dashboard/TUI/Desktop backend, cron, kanban workers) import this
+    Long-lived multi-profile runtimes (Dashboard/TUI/Desktop backend, cron, automation workers) import this
     module once under the launch HERMES_HOME and later bind a different profile per session (#40677).
     """
     configured = Path(SKILLS_DIR)

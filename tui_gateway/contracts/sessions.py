@@ -207,7 +207,7 @@ class SessionListResult(Result):
 
 
 method("session.list", params=SessionListParams, result=SessionListResult,
-       doc="Human-facing stored sessions, most recent first (sub-agent / kanban sources denied).")
+       doc="Human-facing stored sessions, most recent first (internal worker sources denied).")
 
 
 class SessionMostRecentParams(ProfileParams):

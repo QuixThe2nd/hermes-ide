@@ -1516,7 +1516,7 @@ export const host = {
     })
   },
 
-  /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
+  /** Gateway JSON-RPC — sessions, config, skills, cron, and every other method
    *  the app itself uses. Lazy: resolves the LIVE socket per call. */
   request: async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
     const gateway = $gateway.get()
@@ -1591,7 +1591,7 @@ export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/co
  *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
 export { nextRunOverdueMs } from '@/app/cron/job-state'
 /** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
- *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
+ *  jobs and other contributed views): a dense left `PanelList` of `PanelListRow`s beside a
  *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
  *  `PanelEmpty` is the icon+action empty state (plain `EmptyState` is title +
  *  description only, and silently drops an `icon`). A row takes a custom `lead`
@@ -1744,7 +1744,7 @@ export type {
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
  *  `ctx.register` stays the door for permanent contributions. Namespace the
- *  id with your plugin slug (`kanban:board-switcher`). */
+ *  id with your plugin slug (`example:view-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 
 // -- contracts ----------------------------------------------------------------

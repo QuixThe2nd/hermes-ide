@@ -55,6 +55,7 @@ const REGISTRY_CATALOG = registryCatalog(
     '/btw': 'text',
     '/debug': null,
     '/goal': 'mixed',
+    '/journey': 'mixed',
     '/personality': 'options',
     '/queue': 'text',
     '/retry': null,
@@ -64,7 +65,14 @@ const REGISTRY_CATALOG = registryCatalog(
     '/loop': 'mixed',
     '/lcm': 'text'
   },
-  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
+  {
+    '/tasks': '/agents',
+    '/background': '/bg',
+    '/q': '/queue',
+    '/proactive': '/loop',
+    '/learning': '/journey',
+    '/memory-graph': '/journey'
+  }
 )
 
 describe('desktop slash command curation', () => {
@@ -161,16 +169,6 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/tools')).toBeNull()
     expect(desktopSlashUnavailableMessage('/save')).toBeNull()
     expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
-  })
-
-  it('routes /pet through the desktop action handler and drops /pets', () => {
-    expect(resolveDesktopCommand('/pet')?.surface).toEqual({ kind: 'action', action: 'pet' })
-    expect(desktopSlashCommandArgumentMode('/pet')).toBe('options')
-    expect(isDesktopSlashSuggestion('/pet')).toBe(true)
-    expect(isDesktopSlashCommand('/pet')).toBe(true)
-    expect(resolveDesktopCommand('/pets')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
-    expect(isDesktopSlashSuggestion('/pets')).toBe(false)
-    expect(isDesktopSlashCommand('/pets')).toBe(false)
   })
 
   it('does not run /login on desktop before the catalog is loaded', () => {
@@ -282,10 +280,10 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashCommandArgumentMode('/version')).toBeNull()
   })
 
-  it('routes /journey (and aliases) to the memory graph overlay action', () => {
-    expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
-    expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })
-    expect(resolveDesktopCommand('/learning')?.surface).toEqual({ kind: 'action', action: 'journey' })
+  it('routes /journey (and aliases) through normal backend execution', () => {
+    expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/learning')?.surface).toEqual({ kind: 'exec' })
     expect(isDesktopSlashCommand('/journey')).toBe(true)
     expect(isDesktopSlashCommand('/memory-graph')).toBe(true)
     expect(isDesktopSlashSuggestion('/journey')).toBe(true)

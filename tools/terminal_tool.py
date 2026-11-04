@@ -3758,9 +3758,9 @@ def terminal_tool(
                         get_session_env as _gse,
                     )
 
-                    # Finite sessions (stateless HTTP requests and one-shot
-                    # Kanban workers) cannot route a completion back to the
-                    # agent after the turn/process ends. Refuse the promise:
+                    # Finite sessions (stateless HTTP requests and other one-shot
+                    # runners) cannot route a completion back to the agent after
+                    # the turn/process ends. Refuse the promise:
                     # drop the flags and tell the agent to poll.
                     if not _async_ok():
                         notify_on_complete = False
@@ -3770,7 +3770,7 @@ def terminal_tool(
                             "notify_on_complete / watch_patterns are not available in "
                             "this session — it cannot receive an async completion after "
                             "the turn ends (a one-shot runner such as `hermes -z`, a "
-                            "cron job, a Kanban worker, or a stateless HTTP endpoint). "
+                            "cron job, or a stateless HTTP endpoint). "
                             "The process is "
                             "running in the background; retrieve its result with "
                             "process(action='poll') or process(action='wait')."

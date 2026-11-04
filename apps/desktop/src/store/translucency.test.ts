@@ -366,7 +366,7 @@ describe('cross-window sync', () => {
 })
 
 // The store must actually CONSULT isChatWindow, not merely export it: glass
-// rewrites page-level surfaces, and the HUD / pet overlay / quick entry own
+// rewrites page-level surfaces, and the HUD / quick entry own
 // their own backgrounds. Driving window.location.search proves the wiring.
 describe('glass is confined to chat windows', () => {
   const setSearch = (search: string) => {
@@ -427,7 +427,7 @@ describe('glass is confined to chat windows', () => {
 })
 
 // Glass rewrites page surfaces, which is only correct in a real chat window.
-// The HUD, pet overlay, quick entry and wake indicator are transparent
+// The HUD, quick entry and wake indicator are transparent
 // special-purpose windows that own their own backgrounds.
 describe('isChatWindow', () => {
   it('accepts the primary window and secondary session windows', () => {
@@ -438,7 +438,7 @@ describe('isChatWindow', () => {
   })
 
   it('rejects every special-purpose window kind', () => {
-    for (const win of ['hud', 'pet', 'quick-entry', 'wake', 'anything-new']) {
+    for (const win of ['hud', 'quick-entry', 'wake', 'anything-new']) {
       expect(isChatWindow(`?win=${win}`), win).toBe(false)
     }
   })

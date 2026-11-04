@@ -243,6 +243,57 @@ def test_unknown_toolset_name_not_echoed_as_enabled():
     assert resolved  # "hermes-cli"-derived tools still resolve
 
 
+def test_explicit_unknown_platform_toolsets_fail_closed_not_composite(monkeypatch):
+    """An explicit saved list of only-unknown names must resolve empty.
+
+    Retired or typo allowlist entries grant nothing from that list: not
+    composite defaults (terminal/file/browser), and not x_search just because
+    xAI credentials happen to be present.
+    """
+    import hermes_cli.tools_config as _tc
+
+    monkeypatch.setattr(_tc, "_get_plugin_toolset_keys", lambda: set())
+    monkeypatch.setattr(_tc, "_xai_credentials_present", lambda: True)
+
+    config = {"platform_toolsets": {"cli": ["fully_retired_allowlist_entry"]}}
+    resolved = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "fully_retired_allowlist_entry" not in resolved
+    assert "x_search" not in resolved
+    assert not {"terminal", "file", "browser", "vision"} & resolved
+    assert resolved == set()
+
+
+def test_tui_load_enabled_toolsets_unknown_allowlist_is_not_unrestricted(monkeypatch):
+    """TUI must not treat an empty resolved CLI allowlist as None (all tools).
+
+    GUI-surface toolsets (project) may still fold in; terminal / x_search must
+    not come back from a fully-retired explicit list.
+    """
+    import agent.coding_context as cc
+    import hermes_cli.config as config_mod
+    import hermes_cli.tools_config as _tc
+    import tui_gateway.server as server
+
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: None)
+    monkeypatch.setattr(_tc, "_get_plugin_toolset_keys", lambda: set())
+    monkeypatch.setattr(_tc, "_xai_credentials_present", lambda: True)
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"platform_toolsets": {"cli": ["fully_retired_allowlist_entry"]}},
+    )
+
+    result = server._load_enabled_toolsets("tui")
+
+    assert result is not None
+    assert "x_search" not in result
+    assert "terminal" not in result
+    assert "file" not in result
+    assert set(result) <= {"project"}
+
+
 def test_resolvable_mcp_passthrough_name_survives_unknown_filter(caplog):
     """An MCP server name saved in platform_toolsets is not a toolset but DOES
     resolve to tools — the #38798 unknown-name filter must keep it flowing and
@@ -1037,17 +1088,17 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
 
 
 
-# Kanban now participates in the checklist: an explicit deselection must be
-# both visible in the diff and durable in the platform selection.
-def test_kanban_checklist_reports_and_persists_explicit_removal():
-    config = {"platform_toolsets": {"telegram": ["kanban", "web", "terminal"]}}
+# An explicit deselection must be both visible in the diff and durable in the
+# platform selection.
+def test_checklist_reports_and_persists_explicit_removal():
+    config = {"platform_toolsets": {"telegram": ["browser", "web", "terminal"]}}
     current = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
     universe = _checklist_toolset_keys("telegram")
-    new_enabled = current - {"kanban"}
-    assert ((current - new_enabled) & universe) == {"kanban"}
+    new_enabled = current - {"browser"}
+    assert ((current - new_enabled) & universe) == {"browser"}
     with patch("hermes_cli.tools_config.save_config"):
         _save_platform_tools(config, "telegram", new_enabled)
-    assert "kanban" not in _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+    assert "browser" not in _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
     assert {"web", "terminal"} <= set(config["platform_toolsets"]["telegram"])
 
 

@@ -173,7 +173,7 @@ class TestSyncFallbacks:
         assert res is None
 
     def test_async_delivery_unsupported_falls_back_to_sync(self):
-        """One-shot runtimes (hermes -z, cron child, Kanban) keep sync."""
+        """One-shot runtimes (hermes -z, cron child) keep sync."""
         with _bound_session_key():
             with patch("gateway.session_context.async_delivery_supported",
                        return_value=False):

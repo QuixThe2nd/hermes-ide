@@ -788,7 +788,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             if edit_approval_requester:
                 _bind_guarded(stack, "edit approval requester", _edit_approval)
             stack.callback(reset_hermes_interactive_context, set_hermes_interactive_context(True))
-            # Tools tag side-effects with the ACP session (``kanban_create``); save/restore it.
+            # Tools tag side-effects with the ACP session; save/restore it.
             stack.callback(_restore_env, "HERMES_SESSION_ID", os.environ.get("HERMES_SESSION_ID"))
             os.environ["HERMES_SESSION_ID"] = session_id
 
