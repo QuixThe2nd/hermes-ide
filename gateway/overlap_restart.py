@@ -55,6 +55,46 @@ def defer_adapter_until_authoritative(runner: Any, adapter: Any) -> bool:
     )
 
 
+def _overlap_holder_pid(session_id: str) -> Optional[int]:
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    for entry in active_session_registry_snapshot() or []:
+        if str(entry.get("session_id") or "") != session_id:
+            continue
+        try:
+            pid = int(entry.get("pid") or -1)
+        except (TypeError, ValueError):
+            return None
+        return pid if pid > 0 else None
+    return None
+
+
+def drop_inbound_session_refusal_during_overlap(
+    runner: Any, refusal: Any, session_id: str = "",
+) -> bool:
+    """During overlap handoff the predecessor still holds the cross-process lease.
+
+    The occupancy copy is for a real second writer (CLI vs gateway), not the
+    same bot's successor process waiting on ``claim_when_predecessor_exits``.
+    Silence only when the live holder is that known predecessor.
+    """
+    if not getattr(runner, "_overlap_successor_pending", False):
+        return False
+    from hermes_cli.active_sessions import SESSION_NOT_OWNED
+
+    if getattr(refusal, "reason", None) != SESSION_NOT_OWNED:
+        return False
+    try:
+        predecessor = int(getattr(runner, "_overlap_predecessor_pid", None) or 0)
+    except (TypeError, ValueError):
+        predecessor = 0
+    if predecessor <= 0:
+        predecessor = overlap_predecessor_pid() or 0
+    if predecessor <= 0 or not session_id:
+        return False
+    return _overlap_holder_pid(session_id) == predecessor
+
+
 def defer_primary_adapter(runner: Any, pending: tuple) -> None:
     deferred = getattr(runner, "_overlap_deferred_primary_adapters", None)
     if deferred is None:

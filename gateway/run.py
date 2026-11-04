@@ -25031,6 +25031,14 @@ class GatewayRunner(
             source,
         )
         if _limit_message is not None:
+            from gateway.overlap_restart import drop_inbound_session_refusal_during_overlap
+
+            if drop_inbound_session_refusal_during_overlap(self, _limit_message, _quick_key):
+                logger.info(
+                    "Deferring inbound for session %s during overlap-successor handoff",
+                    _quick_key,
+                )
+                return None
             logger.info(
                 "Rejecting new active session %s: max_concurrent_sessions reached",
                 _quick_key,
