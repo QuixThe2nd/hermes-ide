@@ -53,7 +53,7 @@ def test_reconcile_writes_both_units_pointing_at_run_py(tmp_path):
     result = lc.reconcile_scheduler_on_load(
         unit_dir=unit_dir,
         run_systemctl=ctl,
-        config={"pr_intent_watch": {"poll_seconds": 300}},
+        config={"pr_intent_watch": {"enabled": True, "poll_seconds": 300}},
     )
 
     assert result is not None and result.skip_reason is None and result.changed
@@ -84,7 +84,7 @@ def test_reconcile_writes_both_units_pointing_at_run_py(tmp_path):
 def test_second_reconcile_with_identical_content_is_noop(tmp_path):
     unit_dir = tmp_path / "systemd" / "user"
     ctl = FakeSystemctl()
-    config = {"pr_intent_watch": {"poll_seconds": 300}}
+    config = {"pr_intent_watch": {"enabled": True, "poll_seconds": 300}}
     lc.reconcile_scheduler_on_load(
         unit_dir=unit_dir, run_systemctl=ctl, config=config
     )
@@ -111,7 +111,7 @@ def test_default_interval_maps_to_every_five_minutes(tmp_path):
     lc.reconcile_scheduler_on_load(
         unit_dir=unit_dir,
         run_systemctl=FakeSystemctl(),
-        config={},
+        config={"pr_intent_watch": {"enabled": True}},
     )
 
     timer = (unit_dir / lc.TIMER_NAME).read_text(encoding="utf-8")
@@ -127,7 +127,7 @@ def test_interval_from_config_used_in_rendered_timer(tmp_path):
     lc.reconcile_scheduler_on_load(
         unit_dir=unit_dir,
         run_systemctl=FakeSystemctl(),
-        config={"pr_intent_watch": {"poll_seconds": 900}},
+        config={"pr_intent_watch": {"enabled": True, "poll_seconds": 900}},
     )
 
     timer = (unit_dir / lc.TIMER_NAME).read_text(encoding="utf-8")
@@ -192,6 +192,38 @@ def test_disabled_plugin_retires_leftover_timer(tmp_path):
     assert not any("enable" in c for c in ctl.calls)
 
 
+def test_empty_config_does_not_install_timer(tmp_path):
+    unit_dir = tmp_path / "systemd" / "user"
+    ctl = FakeSystemctl()
+
+    result = lc.reconcile_scheduler_on_load(
+        unit_dir=unit_dir, run_systemctl=ctl, config={}
+    )
+
+    assert result is not None
+    assert result.skip_reason == "watch disabled in config"
+    assert not result.enabled
+    assert not any("enable" in c for c in ctl.calls)
+    assert not (unit_dir / lc.SERVICE_NAME).exists()
+    assert not (unit_dir / lc.TIMER_NAME).exists()
+
+
+def test_empty_config_retires_leftover_timer(tmp_path):
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / lc.TIMER_NAME).write_text("[Unit]\n", encoding="utf-8")
+    ctl = FakeSystemctl()
+
+    result = lc.reconcile_scheduler_on_load(
+        unit_dir=unit_dir, run_systemctl=ctl, config={}
+    )
+
+    assert result is not None and result.skip_reason == "watch disabled in config"
+    assert any("stop" in c and c[-1] == lc.TIMER_NAME for c in ctl.calls)
+    assert any("disable" in c and c[-1] == lc.TIMER_NAME for c in ctl.calls)
+    assert not any("enable" in c for c in ctl.calls)
+
+
 def test_non_linux_is_skip_not_exception(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     unit_dir = tmp_path / "systemd" / "user"
@@ -200,7 +232,7 @@ def test_non_linux_is_skip_not_exception(tmp_path, monkeypatch):
         raise AssertionError("systemctl must not run on non-Linux")
 
     result = lc.reconcile_scheduler_on_load(
-        unit_dir=unit_dir, run_systemctl=boom, config={}
+        unit_dir=unit_dir, run_systemctl=boom, config={"pr_intent_watch": {"enabled": True}}
     )
 
     assert result is not None
@@ -212,7 +244,9 @@ def test_missing_user_systemd_is_skip_not_exception(tmp_path):
     unit_dir = tmp_path / "systemd" / "user"
 
     result = lc.reconcile_scheduler_on_load(
-        unit_dir=unit_dir, run_systemctl=FakeSystemctl(system_running=False), config={}
+        unit_dir=unit_dir,
+        run_systemctl=FakeSystemctl(system_running=False),
+        config={"pr_intent_watch": {"enabled": True}},
     )
 
     assert result is not None
@@ -227,7 +261,9 @@ def test_reconcile_never_raises_into_plugin_load(tmp_path):
 
     assert (
         lc.reconcile_scheduler_on_load(
-            unit_dir=tmp_path / "units", run_systemctl=boom, config={}
+            unit_dir=tmp_path / "units",
+            run_systemctl=boom,
+            config={"pr_intent_watch": {"enabled": True}},
         )
         is None
     )

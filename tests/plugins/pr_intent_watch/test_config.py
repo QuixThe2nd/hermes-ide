@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 
 import pytest
@@ -18,10 +17,27 @@ from plugins.pr_intent_watch.core import (
 )
 from plugins.pr_intent_watch.lifecycle import plugin_explicitly_disabled
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_PLUGIN_DIR = _REPO_ROOT / "plugins" / "pr_intent_watch"
+# Read bundled plugin sources at import time (before the per-test home guard).
+_PLUGIN_FILE_TEXT: dict[str, str] = {
+    path.name: path.read_text(encoding="utf-8")
+    for path in _REPO_PLUGIN_DIR.iterdir()
+    if path.is_file() and path.suffix in {".py", ".yaml", ".md"}
+}
+_PLUGIN_SUBDIR_TEXT: dict[str, str] = {}
+for sub in _REPO_PLUGIN_DIR.iterdir():
+    if sub.is_dir() and sub.name != "__pycache__":
+        for path in sub.rglob("*"):
+            if path.is_file() and path.suffix in {".py", ".yaml", ".md"}:
+                _PLUGIN_SUBDIR_TEXT[str(path.relative_to(_REPO_PLUGIN_DIR))] = path.read_text(
+                    encoding="utf-8"
+                )
+
 
 def test_defaults_when_section_absent():
     config = watch_config_from_raw({})
-    assert config.enabled is True
+    assert config.enabled is False
     assert config.repo == DEFAULT_REPO == "QuixThe2nd/hermes-ide"
     assert config.poll_seconds == 300
     assert config.skip_drafts is False
@@ -33,7 +49,8 @@ def test_defaults_when_section_absent():
 
 def test_defaults_when_raw_is_not_a_mapping():
     assert watch_config_from_raw(None).repo == DEFAULT_REPO
-    assert watch_config_from_raw("junk").enabled is True  # type: ignore[arg-type]
+    assert watch_config_from_raw("junk").enabled is False  # type: ignore[arg-type]
+    assert watch_config_from_raw(None).enabled is False
 
 
 def test_explicit_values_are_kept():
@@ -51,6 +68,7 @@ def test_explicit_values_are_kept():
             }
         }
     )
+    assert config.enabled is True
     assert config.repo == "someone/else-repo"
     assert config.poll_seconds == 900
     assert config.skip_drafts is True
@@ -75,7 +93,7 @@ def test_invalid_types_fall_back_to_defaults():
             }
         }
     )
-    assert config.enabled is True
+    assert config.enabled is False
     assert config.repo == DEFAULT_REPO  # non-str → default (42 has no "/")
     assert config.poll_seconds == 300
     assert config.skip_drafts is False
@@ -105,7 +123,7 @@ def test_load_watch_config_from_file(tmp_path):
 
     path = write_config(tmp_path, {"poll_seconds": 1200})
     assert load_watch_config(path).poll_seconds == 1200
-    assert load_watch_config(path).enabled is True  # absent key → default
+    assert load_watch_config(path).enabled is False  # absent key → default off
 
 
 def test_load_config_section_missing_file_raises(tmp_path):
@@ -140,19 +158,20 @@ def test_plugin_disable_forms():
 
 def _bundled_copy(tmp_path: Path) -> Path:
     """A bundled-plugins dir containing only pr_intent_watch (fast discovery)."""
-    repo_plugins = Path(__file__).resolve().parents[3] / "plugins"
     bundled = tmp_path / "bundled-plugins"
-    bundled.mkdir()
-    shutil.copytree(repo_plugins / "pr_intent_watch", bundled / "pr_intent_watch")
+    plugin_dir = bundled / "pr_intent_watch"
+    plugin_dir.mkdir(parents=True)
+    for name, text in _PLUGIN_FILE_TEXT.items():
+        (plugin_dir / name).write_text(text, encoding="utf-8")
+    for rel, text in _PLUGIN_SUBDIR_TEXT.items():
+        dest = plugin_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
     return bundled
 
 
 def test_manifest_declares_default_enabled(tmp_path):
-    manifest = yaml.safe_load(
-        (_bundled_copy(tmp_path) / "pr_intent_watch" / "plugin.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
+    manifest = yaml.safe_load(_PLUGIN_FILE_TEXT["plugin.yaml"])
     assert manifest["name"] == "pr_intent_watch"
     assert manifest["default_enabled"] is True
     assert manifest["kind"] == "backend"
