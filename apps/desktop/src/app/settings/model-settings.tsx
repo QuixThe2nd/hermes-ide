@@ -118,10 +118,8 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'mcp' },
   { key: 'title_generation' },
   { key: 'review' },
-  // Same three canonical slots the backend serves but the list below used to
-  // omit (#97297): triage_specifier, kanban_decomposer, profile_describer.
-  { key: 'triage_specifier' },
-  { key: 'kanban_decomposer' },
+  // The profile-describer slot was also omitted from this list previously
+  // (#97297); keep it visible alongside the other canonical backend slots.
   { key: 'profile_describer' },
   { key: 'curator' }
 ]

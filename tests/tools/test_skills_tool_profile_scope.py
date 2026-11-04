@@ -35,7 +35,7 @@ def test_skill_view_uses_live_profile_home_after_module_import(tmp_path, monkeyp
     profile_skill_dir = _write_skill(
         profile_home,
         "software-development",
-        "kanban-orchestrator-operations",
+        "orchestrator-operations",
         "orchestrator profile",
     )
 
@@ -45,11 +45,11 @@ def test_skill_view_uses_live_profile_home_after_module_import(tmp_path, monkeyp
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
     result = json.loads(
-        skills_tool.skill_view("kanban-orchestrator-operations", preprocess=False)
+        skills_tool.skill_view("orchestrator-operations", preprocess=False)
     )
 
     assert result["success"] is True
-    assert result["name"] == "kanban-orchestrator-operations"
+    assert result["name"] == "orchestrator-operations"
     assert Path(result["skill_dir"]) == profile_skill_dir
     assert "orchestrator profile" in result["content"]
 

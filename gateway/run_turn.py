@@ -2474,7 +2474,7 @@ class GatewayTurnMixin:
                         chat_id=source.chat_id, image_url=image_url, caption=alt_text, metadata=_thread_metadata,
                     )
             # Route each media file by type (voice bubble / video / image / document), as the
-            # streaming + kanban paths do.
+            # streaming path does.
             from gateway.platforms.base import should_send_media_as_audio as _should_send_media_as_audio
             from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
             for media_path, _is_voice in (media_files or []):

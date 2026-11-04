@@ -326,9 +326,7 @@ describe('ModelSettings', () => {
     await renderModelSettings()
 
     expect(await screen.findByText('Vision')).toBeTruthy()
-    // #97297 — the three canonical slots the backend serves must have rows too.
-    expect(screen.getByText('Triage specifier')).toBeTruthy()
-    expect(screen.getByText('Kanban decomposer')).toBeTruthy()
+    // #97297 — the profile-describer backend slot must have a row too.
     expect(screen.getByText('Profile describer')).toBeTruthy()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
   })

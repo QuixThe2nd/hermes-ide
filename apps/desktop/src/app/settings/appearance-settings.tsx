@@ -66,7 +66,6 @@ import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
-import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
 import { TerminalFontSetting } from './terminal-font-setting'
@@ -996,7 +995,6 @@ export function AppearanceSettings() {
       </div>
 
       <div className="mt-6">
-        <PetSettings />
       </div>
     </SettingsContent>
   )

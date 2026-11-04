@@ -57,7 +57,6 @@ vi.mock('@/store/gateway', () => ({
   openGatewayForProfile: vi.fn(async () => undefined)
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 vi.mock('@/lib/external-link', () => ({
   openExternalLink: (href: string) => openExternalLink(href)

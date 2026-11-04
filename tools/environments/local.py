@@ -263,8 +263,8 @@ def _filter_secret_env(
 
 def _finalize_child_env(env: dict) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
-    bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_agent
-    Kanban scrub. Returns the (possibly new) dict."""
+    bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, and delegated-child
+    lineage propagation. Returns the (possibly new) dict."""
     _apply_profile_home(env)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)

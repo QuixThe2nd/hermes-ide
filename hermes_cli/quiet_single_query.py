@@ -20,21 +20,8 @@ from typing import Any, Callable, MutableMapping
 # Nested A→B→C is one extra turn; this caps a runaway message_agent chain.
 _MAX_QUIET_NOTIFY_ROUNDS = 8
 
-# Last line a Kanban worker leaves in its own log: ``[kanban-worker-exit] rc=<code>``. A per-tick
-# ``hermes kanban dispatch`` process never reaped the worker, so ``os.waitpid`` cannot tell it how
-# the worker exited; the trailer is the process-independent witness the dead-worker sweep reads
-# instead, so a clean exit without a terminal board call is booked as the same protocol violation
-# (and a 75 as the same rate-limit requeue) whichever process notices the death.
-KANBAN_WORKER_EXIT_TRAILER = "[kanban-worker-exit] rc="
-
-
 def exit_single_query(code: int) -> None:
-    """``sys.exit(code)`` for a one-shot turn; a Kanban worker first writes the exit trailer to its log."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        with contextlib.suppress(Exception):
-            # stderr: stdout may be the ``--stream-json`` record stream, and the worker log
-            # captures both streams.
-            print(f"\n{KANBAN_WORKER_EXIT_TRAILER}{int(code)}", file=sys.stderr, flush=True)
+    """Exit a one-shot turn with its outcome code."""
     sys.exit(code)
 
 

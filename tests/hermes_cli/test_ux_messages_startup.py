@@ -104,8 +104,8 @@ def test_title_cased_profile_label_is_normalised_not_rejected(monkeypatch):
 def test_invalid_dash_p_after_a_subcommand_is_left_to_that_subcommand(monkeypatch):
     from hermes_cli import main as _main
 
-    # A plugin/subcommand flag such as `hermes kanban serve -p "Work Bot"` is not our profile selector.
-    monkeypatch.setattr(sys, "argv", ["hermes", "kanban", "serve", "-p", "Work Bot"])
+    # A plugin/subcommand flag such as `hermes example serve -p "Work Bot"` is not our profile selector.
+    monkeypatch.setattr(sys, "argv", ["hermes", "example", "serve", "-p", "Work Bot"])
     assert _main._scan_profile_flag(sys.argv[1:]) == (None, 0, None)
 
 

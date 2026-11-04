@@ -1,8 +1,8 @@
 """Text-response stop gates for the conversation turn loop.
 
-When the model stops with a text answer, three gates may instead append the answer as an
-interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919),
-the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
+When the model stops with a text answer, two gates may instead append the answer as an
+interim row plus a synthetic user-role nudge and continue the turn: verify-on-stop (#65919)
+and the ``pre_verify`` plugin hook after code edits.
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
 this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
@@ -12,7 +12,6 @@ module level (cycle).
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -76,21 +75,6 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     return None
 
 
-def _kanban_stop_nudge(agent, messages) -> Optional[str]:
-    """Workers must end with a terminal board tool (kanban_complete / kanban_block /
-    kanban_request_review / kanban_request_changes); a narrated stop is recorded
-    as protocol_violation, so nudge once or twice first."""
-    try:
-        from agent.kanban_stop import build_kanban_stop_nudge
-
-        return build_kanban_stop_nudge(
-            messages=messages, attempts=getattr(agent, "_kanban_stop_nudges", 0)
-        )
-    except Exception:
-        logger.debug("kanban stop-loop check failed", exc_info=True)
-        return None
-
-
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919)."""
@@ -107,9 +91,9 @@ def apply_stop_gates(
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
-    are user-role rows appended only after the assistant answer row, so role alternation
-    holds. Hook lookups are imported lazily from their origin modules (tests patch them
+    """Run verify-on-stop, then the pre_verify hook. Nudges are user-role rows
+    appended only after the assistant answer row, so role alternation holds.
+    Hook lookups are imported lazily from their origin modules (tests patch them
     there)."""
 
     def _continue(nudge: str, flag: str) -> StopGateVerdict:
@@ -151,23 +135,6 @@ def apply_stop_gates(
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)
         return verdict
 
-    _kanban_nudge = _kanban_stop_nudge(agent, messages)
-    if _kanban_nudge:
-        agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
-        final_msg["finish_reason"] = "kanban_terminal_required"
-        final_msg["_kanban_stop_synthetic"] = True
-        append_message(messages, final_msg)
-        verdict = _continue(_kanban_nudge, "_kanban_stop_synthetic")
-        logger.info(
-            "kanban stop-loop nudge issued (attempt %d) task=%s",
-            agent._kanban_stop_nudges,
-            os.environ.get("HERMES_KANBAN_TASK", ""),
-        )
-        agent._emit_diagnostic_status(
-            "⚠️ Kanban worker tried to exit without a terminal board call "
-            "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
-        )
-        return verdict
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

@@ -2,7 +2,7 @@
 module is listed here so the generator and the runtime see the same catalog."""
 
 from . import (  # noqa: F401
-    billing_delegation_pets,
+    billing_delegation,
     bot_desktop_display,
     common,
     config_free_tier_control,
@@ -11,7 +11,7 @@ from . import (  # noqa: F401
     groups_bot_relay,
     liveness,
     profiles_vault_complete_foreign_subagents,
-    projects_pets,
+    projects,
     prompt_voice,
     server_requests,
     sessions,

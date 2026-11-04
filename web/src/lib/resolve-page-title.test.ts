@@ -41,8 +41,8 @@ describe("resolvePageTitle", () => {
 
   it("prefers plugin tab labels", () => {
     expect(
-      resolvePageTitle("/kanban", t, [{ path: "/kanban", label: "Kanban" }]),
-    ).toBe("Kanban");
+      resolvePageTitle("/mission-control", t, [{ path: "/mission-control", label: "Mission Control" }]),
+    ).toBe("Mission Control");
   });
 
   it("falls back to capitalized path segment for unknown routes", () => {

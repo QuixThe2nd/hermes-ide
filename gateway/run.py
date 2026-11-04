@@ -3258,7 +3258,7 @@ def _profile_runtime_scope(
     Only used on the multiplexed inbound path. Single-profile gateways never
     enter this scope, so their behavior is unchanged. Loading the profile's
     ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
-    returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
+    returns an isolated dict — which is what keeps subprocesses (MCP, automation)
     from inheriting cross-profile secrets.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
@@ -3950,7 +3950,6 @@ from gateway.session_state import (
     legacy_lease_token_property,
 )
 from gateway.authz_mixin import GatewayAuthorizationMixin
-from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_claude_progress import (
@@ -10335,7 +10334,7 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
 
 
 class GatewayRunner(
-    GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
+    GatewayAuthorizationMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
@@ -10717,11 +10716,7 @@ class GatewayRunner(
         # /reasoning, /fast overrides; per-turn sidecar notes; ephemeral
         # context pin; last-delivered voice-channel context) lives on
         # SessionState.conversation — see gateway/session_state.py.
-        self._kanban_notifier_profile = self._active_profile_name()
-        # Launch-time identity of the profile that owns ``self.adapters``;
-        # ``_authorization_adapter`` compares against this rather than the
-        # per-turn ``_active_profile_name()`` (see gateway/authz_mixin.py).
-        self._primary_profile_name = self._kanban_notifier_profile
+        self._primary_profile_name = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
@@ -12562,7 +12557,7 @@ class GatewayRunner(
     def _scale_to_zero_has_live_background_work(self) -> bool:
         """Live background work that must block a suspend (D3/F7).
 
-        Backgrounded delegate_agent / kanban / terminal(background=true) are NOT
+        Backgrounded delegate_agent / terminal(background=true) are NOT
         counted by _running_agent_count(), but suspending mid-flight loses them.
         Checks the runner's own tracked tasks + the process registry's running
         processes + any pending process-completion watchers.
@@ -19224,17 +19219,6 @@ class GatewayRunner(
         # to /new (does not kill the turn; see agent.session_stall_timeout).
         self._spawn_supervised(self._session_stall_watcher, "session_stall_watcher")
 
-        # Start background kanban notifier — each gateway delivers events for
-        # subscriptions owned by the profiles whose adapters it hosts, even
-        # when another gateway owns the single dispatcher.
-        self._spawn_supervised(self._kanban_notifier_watcher, "kanban_notifier_watcher")
-
-        # Start background kanban dispatcher — spawns workers for ready
-        # tasks. Gated by `kanban.dispatch_in_gateway` (default True).
-        # When false, users run `hermes kanban daemon` externally or
-        # simply don't use kanban; this loop becomes a no-op.
-        self._spawn_supervised(self._kanban_dispatcher_watcher, "kanban_dispatcher_watcher")
-
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
             logger.info(
@@ -19319,8 +19303,8 @@ class GatewayRunner(
     # crashes that happen within this window of a (re)spawn accumulate toward
     # ``_MAX_SUPERVISED_RESTARTS``. Without this, a long-lived launchd daemon
     # whose watcher crashes a handful of times over days would hit the cap and
-    # be permanently abandoned (NS: silent loss of platform-reconnect / kanban /
-    # handoff for the rest of the process life).
+    # be permanently abandoned (NS: silent loss of platform-reconnect / handoff
+    # for the rest of the process life).
     _SUPERVISED_HEALTHY_SECS = 300
 
     @staticmethod
@@ -19356,9 +19340,8 @@ class GatewayRunner(
 
         Each watcher starts in a fresh ``Context``. These are process-level
         services, not continuations of whichever message turn happened to
-        spawn them; inheriting a delegated-child marker would make the Kanban
-        dispatcher reject its own writes when ``asyncio.to_thread`` copies the
-        watcher's context.
+        spawn them, so turn-scoped lineage and credentials do not leak into
+        the watcher or its ``asyncio.to_thread`` jobs.
 
         ``on_spawn`` (optional) is invoked with the freshly-created task on
         every spawn, INCLUDING internal backoff respawns. Callers that also
@@ -19393,7 +19376,7 @@ class GatewayRunner(
         task = Context().run(lambda: asyncio.create_task(coro_factory()))
         # Mark this as a PERMANENT supervised watcher, not transient background
         # WORK. The scale-to-zero idle check must ignore these: supervised
-        # watchers (session-expiry, kanban, reconnect, the scale-to-zero watcher
+        # watchers (session-expiry, reconnect, the scale-to-zero watcher
         # itself, ...) live for the whole process, so counting them as "live
         # background work" would make the gateway consider itself busy forever
         # and never go dormant/suspend. Transient tasks added to
@@ -20402,12 +20385,6 @@ class GatewayRunner(
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
-
-    # ── Kanban board watchers ───────────────────────────────────────────
-    # The kanban notifier/dispatcher watcher loops + their helpers live in
-    # GatewayKanbanWatchersMixin (gateway/kanban_watchers.py). They use only
-    # self state, so inheriting the mixin keeps every self._kanban_* call site
-    # working unchanged while lifting ~1,000 LOC out of this file.
 
     #: Interval of the slow respawn tier that takes over once the reconnect
     #: watcher has exhausted its supervised restart budget. Long on purpose:
@@ -23178,7 +23155,6 @@ class GatewayRunner(
             "agents": self._handle_agents_command,
             "bg": self._handle_background_command,
             "btw": self._handle_btw_command,
-            "kanban": self._handle_kanban_command,
             "subgoal": self._handle_subgoal_command,
             "heartbeat": self._handle_heartbeat_command,
             "busy": self._handle_busy_command,
@@ -23274,7 +23250,7 @@ class GatewayRunner(
         estop.engage(reason=args or None)
         suffix = f" (reason: {args})" if args else ""
         return (
-            f"⏸️ Paused{suffix}. New cron/kanban/gateway work is on hold; "
+            f"⏸️ Paused{suffix}. New cron/gateway work is on hold; "
             "in-flight work finishes normally. Use `/pause off` to resume."
         )
 
@@ -26043,7 +26019,7 @@ class GatewayRunner(
                 return
         else:
             # Internal wakes must observe reset policy without becoming user
-            # activity themselves. Otherwise periodic Kanban/process
+            # activity themselves. Otherwise periodic process
             # notifications keep the stable routing key alive across every
             # daily/idle boundary.
             session_entry = await self.async_session_store.get_or_create_session(
@@ -30502,7 +30478,7 @@ class GatewayRunner(
 
                 # Send media files, routing each by type so a TTS clip
                 # arrives as a voice bubble / a clip as a video rather than
-                # a generic document. Mirrors the streaming + kanban paths.
+                # a generic document. Mirrors the streaming path.
                 from gateway.platforms.base import (
                     should_send_media_as_audio as _should_send_media_as_audio,
                 )

@@ -178,6 +178,6 @@ class TestSurfaceRecording:
         assert busy_session["client_surface"] == ""
 
     def test_an_unknown_surface_is_not_hud(self, busy_session):
-        self._submit(surface="pet-overlay")
+        self._submit(surface="unknown-window")
 
         assert busy_session["client_surface"] == ""

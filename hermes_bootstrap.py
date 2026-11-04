@@ -258,7 +258,7 @@ def suppress_platform_ver_console() -> None:
 
     ``platform.win32_ver()`` (reached via ``platform.platform()``, which the OpenAI SDK
     calls) shells out ``cmd /c ver`` with ``shell=True`` and no ``CREATE_NO_WINDOW``: a
-    windowless parent (pythonw gateway, slash/kanban workers) flashes a console per call,
+    windowless parent (pythonw gateway, slash/automation workers) flashes a console per call,
     and Python 3.11.0/3.11.1 (no ``encoding="locale"`` fix) strict-utf-8-decodes the OEM
     code page output under PEP 540 mode and raises (#69413). Returning the inputs makes
     ``win32_ver()`` fall back to ``sys.getwindowsversion()`` — same data, no subprocess.

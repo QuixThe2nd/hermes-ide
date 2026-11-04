@@ -1,6 +1,5 @@
-// Star Map palette — ported from apps/desktop/src/app/starmap/color.ts so the
-// TUI overlay derives the same memory ink (complement of the theme primary) and
-// the same age fade (rgba(ink, alpha) over the background) as the desktop panel.
+// Journey palette — derives memory ink (complement of the theme primary) and
+// age fade (rgba(ink, alpha) over the background) for the learning timeline.
 
 interface Rgb {
   b: number
@@ -93,7 +92,7 @@ function complementaryInk(c: Rgb): Rgb {
   return hslToRgb(h + 165, Math.max(s, 0.5), Math.max(0.5, Math.min(0.7, l)))
 }
 
-export interface StarmapPalette {
+export interface JourneyPalette {
   bg: Rgb
   dim: Rgb
   label: Rgb
@@ -101,8 +100,8 @@ export interface StarmapPalette {
   skill: Rgb
 }
 
-/** Derive the Star Map inks from the theme primary + foreground color. */
-export function deriveStarmapPalette(primaryHex: string, fgHex: string): StarmapPalette {
+/** Derive the Journey inks from the theme primary + foreground color. */
+export function deriveJourneyPalette(primaryHex: string, fgHex: string): JourneyPalette {
   const primary = hexToRgb(primaryHex)
   const dark = luminance(hexToRgb(fgHex)) > 0.55
   const base: Rgb = dark ? { b: 255, g: 255, r: 255 } : { b: 0, g: 0, r: 0 }
@@ -120,14 +119,14 @@ export function deriveStarmapPalette(primaryHex: string, fgHex: string): Starmap
 }
 
 /** Fade an explicit hex ink toward the background by alpha (for category bars). */
-export function fadeHex(palette: StarmapPalette, hex: string, alpha: number): string {
+export function fadeHex(palette: JourneyPalette, hex: string, alpha: number): string {
   const base = hexToRgb(hex)
 
   return rgbToHex(alpha >= 0.999 ? base : mix(palette.bg, base, alpha))
 }
 
 /** Fade a base ink toward the background by alpha (rgba-over-bg), as a hex. */
-export function fadeInk(palette: StarmapPalette, style: string, alpha: number): string | undefined {
+export function fadeInk(palette: JourneyPalette, style: string, alpha: number): string | undefined {
   const base =
     style === 'skill'
       ? palette.skill

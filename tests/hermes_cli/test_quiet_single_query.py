@@ -16,8 +16,6 @@ from tools.bot_relay import RESUME_UNANSWERED_TURN_ENV
 
 
 def _quiet_turn(monkeypatch, history, marker):
-    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     if marker is None:
         monkeypatch.delenv(RESUME_UNANSWERED_TURN_ENV, raising=False)
     else:
@@ -84,8 +82,6 @@ def test_turn_report_is_written_before_the_exit_linger_and_the_path_is_not_inher
     linger — stamped with this pid, and the variable is popped before the turn spawns anything."""
     from hermes_cli import quiet_single_query as qsq
 
-    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     report = tmp_path / "turn.json"
     monkeypatch.setenv(qsq.TURN_REPORT_FILE_ENV, str(report))
     seen = {}

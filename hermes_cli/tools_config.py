@@ -67,7 +67,6 @@ CONFIGURABLE_TOOLSETS = [
     ("skills",          "📚 Skills",                    "view, manage"),
     ("skills_list",     "📚 Skills List (model-facing)", "skills_list tool only (default-off; `hermes skills list` CLI needs no opt-in)"),
     ("todo",            "📋 Task Planning",             "todo_list"),
-    ("kanban",          "📌 Kanban",                    "opt-in task board tools for this platform"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
@@ -130,14 +129,12 @@ def gui_toolset_label(label: str) -> str:
 # install. Enabling it is a deliberate swap of `file` for its read-only
 # mirror (`hermes tools enable file_readonly`, or `hermes profile create
 # --read-only`), never something a default session should drift into.
-# "kanban" (from upstream) is opt-in: registered for dispatcher-spawned task
-# workers and profiles that list the toolset explicitly (see toolsets.py).
 # "skills_list" is default-off as an atomic toolset: skill_view/skill_manage
 # stay core, but the model-facing skills_list tool is only exposed to profiles
 # that explicitly enable it (`hermes tools` → Skills List (model-facing), or
 # listing `skills_list` in platform_toolsets). Listing skills without it is
 # always available via the `hermes skills list` CLI command.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly", "kanban", "skills_list"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly", "skills_list"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
@@ -648,8 +645,14 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     # issue #81163.
     explicit_known_keys = configurable_keys | plugin_ts_keys
 
+    from toolsets import validate_toolset
+
     if any(ts in explicit_known_keys for ts in toolset_names):
         enabled_toolsets = _explicit_toolsets(toolset_names, explicit_known_keys, config, platform, explicitly_configured)
+    elif explicitly_configured and not any(validate_toolset(ts) for ts in toolset_names):
+        # Explicit list of only unknown/retired names (or empty): fail closed.
+        # Composite reverse-mapping would inject defaults such as x_search.
+        enabled_toolsets = set()
     else:
         enabled_toolsets = _composite_toolsets(toolset_names, platform, explicitly_configured, config)
 
@@ -669,18 +672,12 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     # names and the "no_mcp" sentinel are not toolsets, but they DO resolve to tools, so they never
     # enter this set and keep flowing through unchanged.
     enabled_mcp_servers = enabled_mcp_server_names(config)
-    from toolsets import validate_toolset
 
     explicit_passthrough -= {
         n for n in toolset_names
         if n != "no_mcp" and n not in enabled_mcp_servers and not validate_toolset(n)
     }
     enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
-
-    # Legacy profile opt-in is a fallback only. A saved platform list (even
-    # empty) is authoritative, so a later disable cannot silently re-enable it.
-    if not explicitly_configured and "kanban" in (config.get("toolsets") or []):
-        enabled_toolsets.add("kanban")
 
     # agent.disabled_toolsets is a global suppression list (#86661) and runs LAST so it overrides everything
     # above. It may arrive as a JSON-array string ("['memory']") from `hermes config set` or a JSON-mode editor.

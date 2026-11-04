@@ -157,7 +157,6 @@ def test_tty_seeded_chat_keeps_background_delegation(monkeypatch, query, image):
 
     reset_session_vars()
     monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(cli, "_collect_query_images", lambda q, i: (q, [i] if i else []))

@@ -18,12 +18,6 @@ from agent.turn_author import TURN_AUTHOR_ENV
 AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
 
 
-@pytest.fixture(autouse=True)
-def _plain_one_shot_env(monkeypatch):
-    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-
-
 def _run(monkeypatch, env_value, run_conversation=None):
     """One quiet turn with HERMES_TURN_AUTHOR set to ``env_value`` (unset for None); returns the recorded call kwargs."""
     if env_value is None:
@@ -71,8 +65,6 @@ def test_quiet_one_shot_resumes_nested_notify_on_this_session_not_parent(monkeyp
     from tools.approval_context import get_current_session_key
     from tools.process_registry import process_registry
 
-    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setenv("HERMES_SESSION_KEY", "session-A")
     calls = []
 

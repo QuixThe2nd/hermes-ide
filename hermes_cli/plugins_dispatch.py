@@ -27,7 +27,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # abandon without join — joining reintroduced a shutdown hang). Unlisted hooks run synchronously.
 # Intentionally unbounded: on_session_finalize/reset (last-chance flush — abandon can lose state);
 # subagent_start (observer); pre_gateway_dispatch (policy gate — neither fail mode is acceptable);
-# pre/post_approval_* (approval UX has its own timeout); kanban_* (own heartbeat/stale reclaim).
+# pre/post_approval_* (approval UX has its own timeout).
 # The goal is to stop a hung Python plugin callback from wedging the conversation loop (#76821) without
 # joining the worker (avoids the #6622 ThreadPoolExecutor shutdown hang). Hooks not listed below run
 # synchronously to completion. (on_session_start/end stay bounded — they sit on the common session-boundary
@@ -35,8 +35,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # than tool/LLM hooks. Abandoning is unsafe either way (fail-open skips auth-like checks; fail-closed can
 # drop legitimate messages). Prefer finish-or-exception fallthrough. - pre_approval_request /
 # post_approval_response — observers only (cannot veto); the approval UX already has its own timeout; not on
-# the tool loop hot path. - kanban_task_* — fire after the board DB commit, observers only, in
-# dispatcher/worker processes; kanban has its own heartbeat/stale reclaim. Abandon-without-join also leaves
+# the tool loop hot path. Abandon-without-join also leaves
 # a daemon thread that may still mutate shared state — safer for value-returning observers than for
 # gates/flushes.
 _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {

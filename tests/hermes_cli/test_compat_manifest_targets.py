@@ -1,9 +1,5 @@
 """Plugin-compat pointers must resolve to the SAME object the name moved to, never a same-named stranger.
 
-Regression: ``hermes_cli.kanban_db.connect`` was pointed at ``hermes_cli.projects_db.connect`` (a different
-database, no ``board=`` parameter) because the generator ranked candidate homes by path proximity. The
-manifest codified the mistake, so the compat lint treated it as valid.
-
 Invariant checked here: for every ``moved-lazy`` entry whose target module also exists in the manifest of
 some other facade under the same name, or whose facade stem has a sibling ``<stem>_*`` module defining the
 name, the facade attribute IS the sibling's object.
@@ -12,7 +8,6 @@ import importlib
 import importlib.util
 import json
 import pkgutil
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -92,26 +87,3 @@ def test_moved_lazy_pointers_resolve_to_the_split_off_siblings_object():
                 if not same:
                     bad.append((facade, name, e["target"], s))
     assert not bad, f"compat pointers resolve to a different object than the facade's own sibling binds: {bad}"
-
-
-def test_kanban_db_connect_opens_a_kanban_board(tmp_path, monkeypatch):
-    """The historical ``kanban_db.connect(board=...)`` opens a Kanban DB, not projects.db."""
-    import hermes_cli.kanban_db as kanban_db
-    import hermes_cli.kanban_db_connect as kanban_db_connect
-
-    assert kanban_db.connect is kanban_db_connect.connect
-    assert kanban_db.connect_closing is kanban_db_connect.connect_closing
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = tmp_path / "board.db"
-    conn = kanban_db.connect(db, board="qa")
-    try:
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    finally:
-        conn.close()
-    assert "tasks" in tables, tables
-    assert not (tmp_path / "projects.db").exists()
-    conn = sqlite3.connect(db)
-    try:
-        assert isinstance(conn, sqlite3.Connection)
-    finally:
-        conn.close()

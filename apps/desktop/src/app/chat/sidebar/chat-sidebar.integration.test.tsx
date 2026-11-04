@@ -72,9 +72,9 @@ describe('ChatSidebar navigation activity', () => {
 
   beforeEach(() => {
     disposeContributions = registry.registerMany([
-      { area: ROUTES_AREA, id: 'kanban-page', data: { path: '/kanban' }, render: () => null },
+      { area: ROUTES_AREA, id: 'plugin-page', data: { path: '/plugin-page' }, render: () => null },
       { area: ROUTES_AREA, id: 'reports-page', data: { path: '/reports' }, render: () => null },
-      { area: SIDEBAR_NAV_AREA, id: 'kanban-nav', data: { codicon: 'project', label: 'Kanban', path: '/kanban' } },
+      { area: SIDEBAR_NAV_AREA, id: 'plugin-nav', data: { codicon: 'project', label: 'Plugin page', path: '/plugin-page' } },
       { area: SIDEBAR_NAV_AREA, id: 'reports-nav', data: { codicon: 'graph', label: 'Reports', path: '/reports' } }
     ])
     $selectedStoredSessionId.set('tile-one')
@@ -101,8 +101,8 @@ describe('ChatSidebar navigation activity', () => {
   })
 
   it('keeps navigation and session activity coherent with the focused pane', () => {
-    renderSidebar('/kanban', 'extension')
-    expectOnlyCurrent('Kanban')
+    renderSidebar('/plugin-page', 'extension')
+    expectOnlyCurrent('Plugin page')
     expectOnlySelectedSession(null)
 
     focus('tile-one-group')
@@ -114,7 +114,7 @@ describe('ChatSidebar navigation activity', () => {
     expectOnlySelectedSession('Tile two')
 
     focus(null)
-    expectOnlyCurrent('Kanban')
+    expectOnlyCurrent('Plugin page')
     expectOnlySelectedSession(null)
 
     focus('tile-two-group')
@@ -156,8 +156,8 @@ describe('ChatSidebar navigation activity', () => {
     disposeContributions()
     disposeContributions = noop
     focus('workspace-group')
-    renderSidebar('/kanban', 'extension')
-    expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
+    renderSidebar('/plugin-page', 'extension')
+    expect(screen.queryByRole('button', { name: 'Plugin page' })).toBeNull()
     expectOnlyCurrent(null)
     expectOnlySelectedSession(null)
   })

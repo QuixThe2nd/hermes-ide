@@ -16,9 +16,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Manage projects (named, multi-folder workspaces)",
         description=(
             "Projects are human-named workspaces that can span multiple "
-            "folders / repos. They anchor desktop session grouping and, when "
-            "bound to a kanban board, give tasks a deterministic worktree + "
-            "branch convention. State is per-profile."
+            "folders / repos. They anchor desktop session grouping. State is per-profile."
         ),
     )
     sub = parser.add_subparsers(dest="project_action")
@@ -29,7 +27,6 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--primary", default=None, metavar="PATH", help="Primary repo path")
     for opt in ("--description", "--icon", "--color"):
         p_create.add_argument(opt, default=None)
-    p_create.add_argument("--board", default=None, metavar="SLUG", help="Bind a kanban board")
     p_create.add_argument("--use", action="store_true", help="Set as the active project")
     p_list = sub.add_parser("list", aliases=["ls"], help="List projects")
     p_list.add_argument("--all", action="store_true", dest="include_archived", help="Include archived projects")
@@ -51,9 +48,6 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_use.add_argument("project", nargs="?", default=None, help="Project id or slug (omit to clear)")
     project_sub("archive", "Archive a project")
     project_sub("restore", "Restore an archived project")
-    project_sub("bind-board", "Bind a kanban board to a project").add_argument(
-        "board", nargs="?", default="", help="Board slug (omit to unbind)"
-    )
     parser.set_defaults(_project_parser=parser)
     return parser
 
@@ -121,7 +115,7 @@ def _with_project(fn):
 def _print_project(proj) -> None:
     print(f"{proj.slug}  [{proj.id}]{' (archived)' if proj.archived else ''}")
     print(f"  name:    {proj.name}")
-    for label, value in (("about", proj.description), ("board", proj.board_slug), ("primary", proj.primary_path)):
+    for label, value in (("about", proj.description), ("primary", proj.primary_path)):
         if value:
             print(f"  {label}:{' ' * (8 - len(label))}{value}")
     if proj.folders:
@@ -134,7 +128,7 @@ def _print_project(proj) -> None:
 def _cmd_create(args, conn) -> int:
     pid = pdb.create_project(
         conn, name=args.name, slug=args.slug, folders=args.folders, primary_path=args.primary,
-        description=args.description, icon=args.icon, color=args.color, board_slug=args.board,
+        description=args.description, icon=args.icon, color=args.color,
     )
     if args.use:
         pdb.set_active(conn, pid)
@@ -208,23 +202,6 @@ def _flag_command(op: str, verb: str):
     return _with_project(lambda args, conn, proj: (getattr(pdb, op)(conn, proj.id), f"{verb} {proj.slug}")[1])
 
 
-@_with_project
-def _cmd_bind_board(args, conn, proj) -> str:
-    pdb.update_project(conn, proj.id, board_slug=args.board)
-    if not args.board.strip():
-        return f"Unbound board from {proj.slug}"
-    if proj.primary_path:  # best-effort: point the bound board's default_workdir at the primary repo
-        try:
-            from hermes_cli import kanban_db as kb
-
-            slug = kb._normalize_board_slug(args.board)
-            if slug and (slug == kb.DEFAULT_BOARD or kb.board_exists(slug)):
-                kb.write_board_metadata(slug, default_workdir=proj.primary_path)
-        except Exception:
-            pass
-    return f"Bound {proj.slug} -> board {args.board}"
-
-
 _HANDLERS = {
     "create": _cmd_create,
     "list": _cmd_list,
@@ -237,5 +214,4 @@ _HANDLERS = {
     "use": _cmd_use,
     "archive": _flag_command("archive_project", "Archived"),
     "restore": _flag_command("restore_project", "Restored"),
-    "bind-board": _cmd_bind_board,
 }

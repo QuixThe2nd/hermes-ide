@@ -47,7 +47,6 @@ from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
 from hermes_cli.cli_tui_mixin import CLITuiMixin
 from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
 from agent.interrupt_compat import request_hard_interrupt
-from agent.pet import render as pet_render
 
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
@@ -919,15 +918,14 @@ def _flush_one_shot_session_store(cli) -> None:
     """Durably flush + finalize the one-shot session row before exit (idempotent, best-effort).
 
     One-shot runs get a single turn, so nothing retries a transiently-failed transcript
-    flush, closes the session row, or drains token deltas the kanban ``os._exit(0)``
-    path skips. Handed-off sessions are left alone.
+    flush, closes the session row, or drains token deltas if the process hard-exits.
+    Handed-off sessions are left alone.
 
     - a turn whose in-loop ``_flush_messages_to_session_db`` failed under write-lock contention (e.g. a busy
     multiplex gateway sharing state.db) was silently lost — the reply reached stdout and agent.log but the
     resumed session's stored history never changed (#88583); - the resumed/created titled session row was
     left dangling open (``ended_at``/``end_reason`` NULL) on every one-shot exit; - queued async
-    token-accounting deltas relied on interpreter-exit hooks, which the kanban SIGTERM path's
-    ``os._exit(0)`` skips entirely.
+    token-accounting deltas relied on interpreter-exit hooks, which ``os._exit(0)`` skips entirely.
     Idempotent and best-effort: ``_persist_session`` dedupes via the per-message ``_DB_PERSISTED_MARKER``
     stamps (already-written turns are not re-written) and ``end_session`` no-ops on an already-ended row.
     See #88234.
@@ -1014,8 +1012,8 @@ def _reset_terminal_input_modes_on_exit() -> None:
     terminal, else /dev/tty (the TUI may have run with stdout redirected).
 
     Called from ``_run_cleanup`` (atexit-registered + invoked on the normal / EOF / interrupt exit paths)
-    this covers normal quit, Ctrl+C and SIGTERM/SIGHUP. ``kill -9`` is uncatchable, and the kanban worker's
-    ``os._exit(0)`` path bypasses ``atexit``; neither runs this — but both are non-TTY / non-TUI, so there
+    this covers normal quit, Ctrl+C and SIGTERM/SIGHUP. ``kill -9`` and ``os._exit(0)``
+    bypass ``atexit``; neither runs this, but hard-exit paths are non-TTY / non-TUI, so there
     is nothing to reset there. See #36823.
     """
     global _tui_input_modes_active
@@ -2834,7 +2832,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
     def _init_runtime_state(self, resume):
-        """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
+        """Session store + all per-run mutable state (queues, overlays, voice/status-bar fields)."""
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use
@@ -2936,19 +2934,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._spinner_text = self._command_status = ""
         self._last_scrollback_tool: str = ""  # "new" mode dedup
         self._command_running = self._command_blocks_input = False
-        # Petdex mascot (display.pet): kitty placeholders on kitty/Ghostty, half-blocks elsewhere.
-        self._pet_renderer = self._pet_anim_thread = None
-        self._pet_slug = self._pet_kitty_pending = ""
-        self._pet_enabled = self._pet_anim_running = False
-        self._pet_cols: int = 18
-        self._pet_scale: float = 0.7
-        self._pet_frames_cache: dict = {}
-        self._pet_kitty_cache: dict = {}
-        self._pet_kitty_image_id = self._pet_frame_idx = 0
-        self._pet_lock = threading.Lock()
-        self._pet_cfg_checked = self._pet_event_until = 0.0
-        self._pet_event: str = ""
-        self._pet_reasoning = self._pet_turn_error = False
         self._attached_images: list[Path] = []
         self._image_counter = 0
         # Ctrl+S prompt stash; in-memory only because drafts routinely contain secrets.
@@ -3034,9 +3019,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         finally:
             self._active_session_lease = None
 
-    _PET_FRAME_INTERVAL = 0.16
-    _PET_CFG_INTERVAL = 2.5
-
     def _install_tool_callbacks(self) -> None:
         """Install tool callbacks that need the live prompt UI."""
         if self._tool_callbacks_installed:
@@ -3119,7 +3101,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
+            # A typo'd name must not crash an automated run; only a fully-missing set fails loudly.
             if loaded_skills:
                 logger.warning(
                     "Unknown skill(s) requested, skipping: %s. "
@@ -3561,7 +3543,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
         self._agent_running = self._interactive_turn = True
-        self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
         self._app.invalidate()
         try:
@@ -3586,11 +3567,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
     def _tui_after_turn(self):
         """Post-turn bookkeeping after chat() returns (normal, error, or interrupt)."""
-        self._agent_running = self._pet_reasoning = False
+        self._agent_running = False
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
-        self._pet_react_turn_end()
         self._turn_summary_emit()
         self._interactive_turn = False
         self._app.invalidate()
@@ -3804,13 +3784,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         """Construct the prompt_toolkit Application for the REPL."""
         _cpr_disabled_output = _select_classic_cli_pt_output(sys.stdout)
 
-        # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
-        # runs 24-bit there. ColorDepth is imported lazily for tests that stub prompt_toolkit.
         extra_kw = {}
-        if pet_render.supports_kitty_placeholders():
-            from prompt_toolkit.output import ColorDepth
-
-            extra_kw["color_depth"] = ColorDepth.DEPTH_24_BIT
         if _cpr_disabled_output is not None:
             extra_kw["output"] = _cpr_disabled_output
         if _STEADY_CURSOR is not None:
@@ -3897,7 +3871,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         app = self._tui_build_application(layout, kb, style)
         _disable_prompt_toolkit_cpr_warning(app)
-        app.after_render += self._pet_flush_kitty_frame
         self._app = app
 
         # Ghost status-bar lines on resize: pt's renderer scrolls the terminal after each
@@ -3964,7 +3937,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 _mark_tui_input_modes_active()
                 if self._tui_multiline_shortcuts:
                     _enable_extended_enter_keys(app.output)
-                self._pet_start_anim()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
@@ -3996,9 +3968,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             relaunch(self._pending_relaunch, preserve_inherited=False)
 
     def _tui_shutdown(self):
-        """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
+        """Teardown after the app exits: interrupt agent, stop voice, persist + close session, cleanup, exit summary."""
         self._should_exit = True
-        self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):
             print(f"{_DIM}Shutting down… (finalizing session){_RST}", flush=True)
@@ -4074,94 +4045,10 @@ def _interrupt_agent_for_signal(agent, signum) -> None:
         pass  # never block signal handling
 
 
-def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str, run_turn=None, log=None) -> None:
-    """Drive a kanban goal_mode worker through ``goals.run_kanban_goal_loop`` after its first turn.
-
-    ``run_turn`` defaults to the bare ``-Q`` turn (final answer only). The ``-q`` worker path
-    passes ``cli.chat`` so every follow-up turn keeps the tool activity feed that the Kanban
-    worker log is made of. The caller swallows all errors: a broken loop must never wedge a worker.
-    """
-    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-    if not task_id:
-        return
-    raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
-    worker_run_id = _int_or(raw_run_id, None) if raw_run_id else None
-    if raw_run_id and worker_run_id is None:
-        logger.warning("invalid HERMES_KANBAN_RUN_ID=%r", raw_run_id)
-
-    from hermes_cli import kanban_db as _kb
-    from hermes_cli import kanban_db_connect as _kbc
-    from hermes_cli.goals import run_kanban_goal_loop as _run_loop, DEFAULT_MAX_TURNS as _DEF_TURNS
-
-    # Goal text = title + body (the acceptance criteria the judge evaluates against).
-    with _kbc.connect_closing() as conn:
-        task = _kb.get_task(conn, task_id)
-    if task is None:
-        return
-
-    goal_text = "\n\n".join(p for p in (task.title or "", task.body) if p).strip()
-    if not goal_text:
-        return
-
-    def _quiet_turn(prompt: str) -> str:
-        result = cli.agent.run_conversation(user_message=prompt, conversation_history=cli.conversation_history)
-        _sync_cli_session_id_from_agent(cli)
-        resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
-        if resp:
-            print(resp)
-        return resp or ""
-
-    def _task_status() -> "str | None":
-        with _kbc.connect_closing() as c:
-            return _kb.goal_run_status(c, task_id, worker_run_id)
-
-    def _block(reason: str) -> None:
-        with _kbc.connect_closing() as c:
-            _kb.block_task(c, task_id, reason=reason, expected_run_id=worker_run_id)
-
-    _run_loop(
-        task_id=task_id, goal_text=goal_text, run_turn=run_turn or _quiet_turn,
-        task_status_fn=_task_status, block_fn=_block,
-        max_turns=task.goal_max_turns or _DEF_TURNS, first_response=first_response or "",
-        log=log or (lambda m: logger.info("%s", m)),
-    )
-
-
-def _run_kanban_goal_loop_chat(cli: "HermesCLI", first_response: str) -> None:
-    """``-q`` worker variant: follow-up turns go through ``cli.chat`` (tool feed stays on stdout,
-    which is the Kanban worker log) and judge verdicts are printed there too, so a goal_mode card's
-    log reads like any other worker's instead of staying blank until the final answer."""
-
-    def _log(msg: str) -> None:
-        logger.info("%s", msg)
-        print(msg, flush=True)
-
-    _run_kanban_goal_loop_q(cli, first_response, run_turn=lambda p: cli.chat(p) or "", log=_log)
-
-
 def _sync_cli_session_id_from_agent(cli) -> None:
     """Keep ``cli.session_id`` in sync when mid-run compression rotated the agent's session."""
     if getattr(cli.agent, "session_id", None) and cli.agent.session_id != cli.session_id:
         cli.session_id = cli.agent.session_id
-
-
-# ``failure_reason`` values that say nothing about the task itself: the provider is walled,
-# down or unreachable, or the account is out of credit, so a Kanban worker signals "try
-# later" instead of "I failed" and the dispatcher does not spend the task's retry budget on it.
-_TRANSIENT_PROVIDER_REASONS = frozenset({
-    "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
-})
-
-# ``failure_reason`` values a retry can never heal: the credential was rejected, the model does
-# not exist for this account, or the TLS chain is broken. A Kanban worker exits
-# ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` so the dispatcher parks the card after ONE spawn with
-# the provider's words as the reason, instead of re-spawning into the same wall until
-# ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
-# ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
-# header change heals it, never a retry.
-_TERMINAL_PROVIDER_REASONS = frozenset({
-    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
-})
 
 
 def _single_query_exit_code(result) -> int:
@@ -4169,12 +4056,7 @@ def _single_query_exit_code(result) -> int:
 
     0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
     partway (`partial`, `completed: False`) or never ran at all (credentials / agent init
-    failed, so ``result`` is not a dict). A Kanban worker (``HERMES_KANBAN_TASK`` set) that
-    failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
-    (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
-    WITHOUT counting a failure, so a quota window or a provider outage cannot trip the breaker.
-    One that failed on a terminal provider error (credential revoked, model gone) exits
-    ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` (EX_CONFIG): the dispatcher blocks the card at once.
+    failed, so ``result`` is not a dict).
     """
     if not isinstance(result, dict):
         return 1
@@ -4182,14 +4064,6 @@ def _single_query_exit_code(result) -> int:
         return 130
     if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
         return 0
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        reason = result.get("failure_reason")
-        if reason in _TRANSIENT_PROVIDER_REASONS:
-            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
-            return KANBAN_RATE_LIMIT_EXIT_CODE
-        if reason in _TERMINAL_PROVIDER_REASONS:
-            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
-            return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
     return 1
 
 
@@ -4274,14 +4148,6 @@ def _run_quiet_single_query(cli, effective_query):
     elif response:
         print(response)
 
-    # Kanban goal_mode: keep working in THIS session until a judge agrees the card is
-    # done, the worker terminates it, or the turn budget runs out (sticky block).
-    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
-        try:
-            _run_kanban_goal_loop_q(cli, response)
-        except Exception as _goal_exc:
-            logger.debug("kanban goal loop failed: %s", _goal_exc)
-
     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
     _exit_code = _single_query_exit_code(result)
@@ -4332,37 +4198,8 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
         return _text_fallback()
 
 
-def _collect_kanban_task_images(single_query_images):
-    """Kanban workers: image paths/URLs in the task body join the first turn's attachments."""
-    single_query_image_urls: list[str] = []
-    _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
-    if not _kanban_task_id:
-        return single_query_image_urls
-    try:
-        from hermes_cli import kanban_db as _kb
-        from hermes_cli import kanban_db_connect as _kbc
-        from agent.image_routing import extract_image_refs as _extract_refs
-
-        with _kbc.connect_closing() as _conn:
-            _task = _kb.get_task(_conn, _kanban_task_id)
-        _body = getattr(_task, "body", "") if _task is not None else ""
-        if _body:
-            _kb_paths, _kb_urls = _extract_refs(_body)
-            # Dedupe against any --image the user already passed.
-            _seen = {str(p) for p in single_query_images}
-            for _p in _kb_paths:
-                if _p not in _seen:
-                    _seen.add(_p)
-                    single_query_images.append(Path(_p))
-            single_query_image_urls.extend(_kb_urls)
-    except Exception as _exc:
-        # Best-effort enrichment; never block worker startup on it.
-        logger.debug("kanban image-ref extraction failed: %s", _exc)
-    return single_query_image_urls
-
-
 def _install_single_query_signal_handlers(cli):
-    """Route SIGINT/SIGTERM/SIGHUP through agent.interrupt() before unwinding; kanban workers hard-exit.
+    """Route SIGINT/SIGTERM/SIGHUP through agent.interrupt() before unwinding.
 
     A plain KeyboardInterrupt only unwinds the main thread, so tool worker threads
     would orphan the setsid child; the interrupt + grace window lets them kill it.
@@ -4373,32 +4210,6 @@ def _install_single_query_signal_handlers(cli):
         logger.debug("Received signal %s in single-query mode", signum)
         _arm_exit_watchdog_on_shutdown_signal()  # covers wedges in the unwind below
         _interrupt_agent_for_signal(getattr(cli, "agent", None), signum)
-        # Kanban: a non-daemon worker blocked in _wait_for_process survives KeyboardInterrupt
-        # and the dispatcher sees 'running' forever, so os._exit(0) (SIGALRM deadman guards
-        # a blocking flush). That skips atexit + the token-drain hook, hence the explicit flush.
-        # Kanban worker exit path (#28181): SIGTERM hits a dispatcher-spawned worker that's likely in a
-        # non-daemon thread waiting on a child subprocess in _wait_for_process. Raising KeyboardInterrupt
-        # only unwinds the main thread; the worker thread keeps running, the process gets reparented to
-        # init, and the dispatcher's _pid_alive check returns True forever — task stuck in 'running'
-        # indefinitely. Skip the controlled-unwind dance and call os._exit(0) so the kernel reclaims the PID
-        # immediately and detect_crashed_workers can reclaim the stale claim on the next tick. Flush logging
-        # + stdout/stderr first so the final debug trace isn't lost; SIGALRM deadman guards the flush
-        # against any rare blocking-I/O case (the reporter measured flush in <1ms; the alarm is a failsafe,
-        # not the common path).
-        if os.environ.get("HERMES_KANBAN_TASK"):
-            with suppress(Exception):
-                if hasattr(_signal, "SIGALRM"):
-                    _signal.signal(_signal.SIGALRM, lambda *_: os._exit(0))
-                    _signal.alarm(5)
-            with suppress(Exception):
-                # Durable flush FIRST: memory-provider shutdown inside _run_cleanup can issue aux-LLM calls,
-                # and nothing after it may fail in a way that loses the turn (#88583).
-                # os._exit(0) skips atexit AND SessionDB's token-drain hook, so flush + finalize the session
-                # store here or the worker's turn (and its usage deltas) never become durable (#88583 /
-                # #50881 class). Best-effort under the SIGALRM deadman above.
-                _flush_one_shot_session_store(cli)
-            _flush_logging_and_stdio()
-            os._exit(0)
         raise KeyboardInterrupt()
     with suppress(Exception):  # restricted environments
         for _name in ("SIGINT", "SIGTERM", "SIGHUP"):
@@ -4588,7 +4399,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         exit_single_query(1)
     try:
         query, single_query_images = _collect_query_images(query, image)
-        single_query_image_urls = _collect_kanban_task_images(single_query_images)
+        single_query_image_urls: list[str] = []
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             cli.tool_progress_mode = "off"
@@ -4614,17 +4425,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
             cli.console.print(f"[bold blue]Query:[/] {_query_label}")
         cli._show_security_advisories()
         response = cli.chat(query, images=single_query_images or None)
-        # Kanban goal_mode on the `-q` path: same judge loop as `-Q`, but each follow-up turn
-        # runs through cli.chat so the worker log keeps its live tool feed (the dispatcher
-        # used to force -Q here, which left goal_mode cards with a blank Worker log).
-        if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
-            try:
-                _run_kanban_goal_loop_chat(cli, response or "")
-            except Exception as _goal_exc:
-                logger.debug("kanban goal loop failed: %s", _goal_exc)
         cli._print_exit_summary(clear_screen=False)
-        # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
-        # the exit code. This path used to fall through to an implicit 0 for every outcome.
+        # Match the quiet path's outcome-aware process exit contract.
         exit_single_query(_single_query_exit_code(cli._last_turn_result))
     finally:
         _finalize_single_query(cli)

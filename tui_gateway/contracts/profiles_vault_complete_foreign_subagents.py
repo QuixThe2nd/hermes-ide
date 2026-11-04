@@ -122,7 +122,7 @@ class ProfileSessionPreview(Result):
 
 
 class ProfileWorkerSession(Result):
-    """Newest kanban/tool worker row, so rosters can show a profile as working."""
+    """Newest tool-worker row, so rosters can show a profile as working."""
 
     id: str
     source: str = ""

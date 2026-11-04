@@ -75,11 +75,11 @@ function RouteChrome() {
       <TitlebarControls onOpenSettings={() => {}} />
       <Panel />
       <Link to="/">Chat</Link>
-      <Link to="/kanban">Kanban</Link>
+      <Link to="/plugin-page">Plugin page</Link>
       <Link to="/settings">Settings</Link>
-      {location.pathname === '/kanban' && (
+      {location.pathname === '/plugin-page' && (
         <Contribute area="titleBar.left" id="test:page-tools">
-          <button type="button">Openplanet</button>
+          <button type="button">Page tools</button>
         </Contribute>
       )}
     </>
@@ -109,8 +109,8 @@ beforeEach(() => {
   })
   disposeRoutes = registry.register({
     area: ROUTES_AREA,
-    data: { path: '/kanban' },
-    id: 'test:kanban-route',
+    data: { path: '/plugin-page' },
+    id: 'test:page-route',
     render: () => null
   })
 })
@@ -128,7 +128,7 @@ const reservation = (side: 'left' | 'right') =>
 const chromeChanged = () => window.dispatchEvent(new Event(TITLEBAR_CHROME_CHANGED_EVENT))
 
 describe('titlebar reservation lifecycle', () => {
-  it('rebinds to replacement nodes and tracks a longer board name under StrictMode', () => {
+  it('rebinds to replacement nodes and tracks a longer page name under StrictMode', () => {
     const fixture = (branch: string) => (
       <StrictMode>
         <Panel />
@@ -141,7 +141,7 @@ describe('titlebar reservation lifecycle', () => {
     expect(reservation('left')).toBe('200px')
 
     chipWidth = 200
-    rerender(fixture('kanban'))
+    rerender(fixture('page'))
     const current = globalThis.document.querySelector('[data-titlebar-cluster="left"]')!
     expect(current).not.toBe(previous)
     expect(previous.isConnected).toBe(false)
@@ -158,7 +158,7 @@ describe('titlebar reservation lifecycle', () => {
     render(
       <>
         <Panel />
-        <Clusters branch="kanban" />
+        <Clusters branch="page" />
       </>
     )
     const panel = screen.getByTestId('panel')
@@ -177,7 +177,7 @@ describe('titlebar reservation lifecycle', () => {
     render(
       <>
         <Panel />
-        <Clusters branch="kanban" />
+        <Clusters branch="page" />
       </>
     )
     expect(reservation('right')).toBe('0px')
@@ -200,8 +200,8 @@ describe('titlebar reservation lifecycle', () => {
     expect(reservation('left')).toBe('200px')
 
     chipWidth = 200
-    fireEvent.click(screen.getByText('Kanban'))
-    expect(screen.getByText('Openplanet').closest('[data-titlebar-cluster="left"]')).not.toBeNull()
+    fireEvent.click(screen.getByText('Plugin page'))
+    expect(screen.getByText('Page tools').closest('[data-titlebar-cluster="left"]')).not.toBeNull()
     expect(globalThis.document.querySelector('[data-titlebar-cluster="right"]')).not.toBeNull()
     expect(reservation('left')).toBe('310px')
 
@@ -212,6 +212,6 @@ describe('titlebar reservation lifecycle', () => {
     chipWidth = 90
     fireEvent.click(screen.getByText('Chat'))
     expect(reservation('left')).toBe('200px')
-    expect(screen.queryByText('Openplanet')).toBeNull()
+    expect(screen.queryByText('Page tools')).toBeNull()
   })
 })

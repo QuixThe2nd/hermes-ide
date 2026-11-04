@@ -40,7 +40,7 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
 
 const { noteActiveTreeGroup, revealTreePane } = await import('@/components/pane-shell/tree/store')
 
-const CONTRIBUTED_ROUTE = '/kanban'
+const CONTRIBUTED_ROUTE = '/plugin-page'
 
 function contributeRoute(): () => void {
   return registry.register({
@@ -190,8 +190,9 @@ describe('navigateToWorkspacePage', () => {
 })
 
 /**
- * `host.navigate` is the only nav door a plugin has (Kanban's ⌘K row, statusbar
- * count, ⌘⌥N). It writes the hash, which the router follows on a CHANGE — but
+ * `host.navigate` is the only nav door a plugin has (a contributed page's ⌘K
+ * row, statusbar count, ⌘⌥N). It writes the hash, which the router follows on a
+ * CHANGE — but
  * re-issuing the current route fires nothing, so it must reveal imperatively
  * like the sidebar does.
  */

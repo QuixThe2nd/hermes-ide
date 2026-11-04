@@ -34,7 +34,7 @@ limits use the bounded fallback. This does not change active-turn drain settings
 ## Process identity: never infer it from argv substrings
 
 The bug class behind ~10 fleet-update issues (#90778, #87594, #78089, #76129, #91964, ...):
-classifying a process by `"serve" in cmdline` or similar. `kanban --preserve-cache` contains
+classifying a process by `"serve" in cmdline` or similar. `chat --preserve-cache` contains
 "serve"; a flag VALUE can equal a subcommand (`-m dashboard serve`); truncated cmdlines hide the real
 subcommand. Rules:
 

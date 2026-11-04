@@ -618,7 +618,7 @@ def test_direct_platform_still_disarms_alongside_api_server(monkeypatch):
 
 # ── supervised watchers must NOT count as live background work (staging bug) ──
 #
-# _spawn_supervised parks every permanent watcher task (session-expiry, kanban,
+# _spawn_supervised parks every permanent watcher task (session-expiry,
 # reconnect, the scale-to-zero watcher ITSELF, ...) in _background_tasks. The
 # bg-work check counted them, so an armed gateway considered itself busy
 # forever and never went dormant — verified live on staging 2026-08-12 (armed
@@ -638,7 +638,7 @@ async def test_supervised_watchers_do_not_block_idle():
         await asyncio.sleep(3600)
 
     # Spawn like production does — through _spawn_supervised.
-    for name in ("session_expiry", "kanban", "scale_to_zero_watcher"):
+    for name in ("session_expiry", "reconnect", "scale_to_zero_watcher"):
         r._spawn_supervised(lambda: _forever(), name)
     await asyncio.sleep(0)  # let tasks start
     try:

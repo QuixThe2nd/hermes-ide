@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { GatewayClient } from '../gatewayClient.js'
 import { openInEditor } from '../lib/editor.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
-import { deriveStarmapPalette, fadeHex, fadeInk, type StarmapPalette } from '../lib/starmapPalette.js'
+import { deriveJourneyPalette, fadeHex, fadeInk, type JourneyPalette } from '../lib/journeyPalette.js'
 import type { Theme } from '../theme.js'
 
 import { listRowStyle } from './overlayPrimitives.js'
@@ -99,7 +99,7 @@ const buildTree = (buckets: BucketRow[]): TreeRow[] => {
 const windowStart = (cursor: number, len: number, h: number) =>
   Math.max(0, Math.min(Math.max(0, len - h), cursor - Math.floor(h / 2)))
 
-function ChartRow({ palette, row }: { palette: StarmapPalette; row: Run[] }) {
+function ChartRow({ palette, row }: { palette: JourneyPalette; row: Run[] }) {
   if (!row.length) {
     return <Text> </Text>
   }
@@ -140,7 +140,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   const chartRows = Math.max(5, Math.min(MAX_CHART_ROWS, Math.floor(rows * 0.32)))
   const page = Math.max(4, rows - 6)
 
-  const palette = deriveStarmapPalette(t.color.primary, t.color.text)
+  const palette = deriveJourneyPalette(t.color.primary, t.color.text)
 
   const [data, setData] = useState<FramesResponse | null>(null)
   const [err, setErr] = useState('')
@@ -516,7 +516,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   )
 }
 
-function TreeLine({ active, palette, row, t }: { active: boolean; palette: StarmapPalette; row: TreeRow; t: Theme }) {
+function TreeLine({ active, palette, row, t }: { active: boolean; palette: JourneyPalette; row: TreeRow; t: Theme }) {
   if (row.kind === 'gap') {
     return <Text> </Text>
   }

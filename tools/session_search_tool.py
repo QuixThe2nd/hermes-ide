@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Union
 from hermes_state_common import _BOUNDARY_END_REASONS
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
-# subagent runs, kanban workers are not the user's history.
+# subagent runs and historical kanban workers are not the user's history.
 _HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
 # Searchable but DEMOTED below interactive sessions: cron vocabulary dominates bare
 # BM25 and starves out the user's own sessions ("recall blindness").

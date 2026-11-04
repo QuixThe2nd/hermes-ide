@@ -20,9 +20,6 @@ Scope (what we expose):
   - image_generate                       — image generation
   - skill_view, skills_list              — Hermes' skill library
   - text_to_speech                       — TTS
-  - kanban_* (complete/block/comment/    — kanban worker + orchestrator
-    heartbeat/show/list/create/            handoff (stateless: read env var,
-    unblock/link)                          write ~/.hermes/kanban.db)
 
 What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
@@ -95,12 +92,6 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_snapshot", "browser_scroll",
     "browser_back", "browser_get_images", "browser_console", "browser_vision",
     "vision_analyze", "image_generate", "skill_view", "skills_list", "text_to_speech",
-    # Kanban handoff tools: stateless (read HERMES_KANBAN_TASK, write kanban.db).
-    # Without them a codex-runtime worker can't report completion and hangs.
-    "kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes", "kanban_comment",
-    "kanban_heartbeat", "kanban_show", "kanban_list",
-    # Orchestrator-only (the kanban tool gates them on HERMES_KANBAN_TASK unset).
-    "kanban_create", "kanban_unblock", "kanban_link",
 )
 
 

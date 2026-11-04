@@ -236,7 +236,6 @@ interface PromptActionsOptions {
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
   handleSkinCommand: (arg: string) => string
-  openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
@@ -268,7 +267,6 @@ export function usePromptActions({
   getRuntimeIdForStoredSession,
   getRouteToken,
   handleSkinCommand,
-  openMemoryGraph,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -604,7 +602,6 @@ export function usePromptActions({
     getRuntimeIdForStoredSession,
     handleSkinCommand,
     handoffSession,
-    openMemoryGraph,
     refreshSessions,
     requestGateway,
     resumeStoredSession,

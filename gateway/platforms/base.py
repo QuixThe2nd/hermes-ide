@@ -789,7 +789,7 @@ def _credential_home_roots() -> List[Path]:
 
 
 def _kanban_root() -> Path:
-    """Kanban is root-shared across profiles by design (``kanban_db.kanban_home``)."""
+    """Legacy Kanban data was root-shared across profiles by design."""
     return Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
 
 
@@ -802,7 +802,7 @@ def _kanban_board_dirs() -> List[Path]:
 
 
 def _kanban_attachment_roots() -> List[Path]:
-    """Return durable Kanban attachment roots without importing kanban_db."""
+    """Return durable legacy Kanban attachment roots without importing the retired runtime."""
     override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
     if override:
         return [Path(override).expanduser()]

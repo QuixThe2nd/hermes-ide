@@ -657,7 +657,6 @@ def test_package_schema_matches_the_skill_contract():
         ("browser-cdp", "browser"),
         ("image_gen", "media"),
         ("homeassistant", "home_automation"),
-        ("kanban", "planning"),
         ("project", "project"),
         ("discord", "communication"),
         ("feishu_doc", "communication"),

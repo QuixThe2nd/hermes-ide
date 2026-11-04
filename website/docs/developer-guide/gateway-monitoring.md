@@ -36,7 +36,7 @@ exporting account/profile identity or the raw install identifier.
 counts foreground message turns plus in-flight cron jobs plus API runs — the
 work the gateway drains on shutdown. `background_work` counts detached work that
 `active_agents` never includes: backgrounded `delegate_agent` subagents,
-`terminal(background=true)` processes, and kanban workers; it is
+`terminal(background=true)` processes; it is
 **task-granular** — a fan-out batch of N subagents counts as N — so it reflects
 real concurrent subagent load. `background_delegations` counts only async
 delegation **units** (each `delegate_agent` dispatch is one, a fan-out batch is

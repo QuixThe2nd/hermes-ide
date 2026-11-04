@@ -134,12 +134,11 @@ review capacity can absorb.
 
 Antigravity is a **worker execution backend or third-opinion reviewer** — an
 execution detail owned by the agent/profile running a task, NOT a first-class
-orchestration primitive. Do not put `agy` on a kanban board as its own card or
-treat it as a coordination layer; route work through the normal task graph and
-let the assigned worker choose `agy` (vs. codex/claude-code/direct tools) as its
-method. Reach for it explicitly only when the user asks, when a worker is
-configured to wrap it, or when you want a Gemini-family cross-check against
-another agent's plan or diff.
+orchestration primitive. Do not treat it as a coordination layer; let the
+assigned worker choose `agy` (vs. codex/claude-code/direct tools) as its method.
+Reach for it explicitly only when the user asks, when a worker is configured to
+wrap it, or when you want a Gemini-family cross-check against another agent's
+plan or diff.
 
 ## Core paths
 

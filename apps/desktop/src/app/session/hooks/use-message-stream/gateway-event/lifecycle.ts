@@ -4,11 +4,9 @@ import type { HermesSkin } from '@hermes/shared/skin'
 import {
   notifyCronChanged,
   notifyPairingChanged,
-  notifyPetChanged,
   notifyPlatformsChanged,
   notifySessionsChanged,
   notifySetupReady,
-  type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { markRuntimeGone } from '@/store/runtime-gone'
@@ -28,8 +26,8 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // Seed the active skin into the desktop theme registry without applying,
     // so a fresh connect never overrides the user's persisted desktop theme.
     ingestBackendSkin(ready?.skin, { apply: false })
-    // Backends with the change watcher broadcast pet/cron/sessions change
-    // events; consumers demote their legacy polls to slow backstops.
+    // Backends with the change watcher broadcast cron/session change events;
+    // consumers demote their legacy polls to slow backstops.
     setChangeEventsAvailable(Boolean(ready?.change_events))
 
     return true
@@ -60,7 +58,6 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (
-    event.type === 'pet.changed' ||
     event.type === 'cron.changed' ||
     event.type === 'sessions.changed' ||
     event.type === 'platforms.changed' ||
@@ -72,9 +69,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // changes apply — background profile sockets (and other connections'
     // gateways) watch their own homes.
     if (fromActiveSource()) {
-      if (event.type === 'pet.changed') {
-        notifyPetChanged(payload as PetChangeMeta | undefined)
-      } else if (event.type === 'cron.changed') {
+      if (event.type === 'cron.changed') {
         notifyCronChanged()
       } else if (event.type === 'platforms.changed') {
         notifyPlatformsChanged()

@@ -262,7 +262,7 @@ to any progressive-disclosure design, not specific to this implementation:
   live tool registry.
 - **The catalog is scoped to the session's toolsets.** `tool_search`,
   `tool_describe`, and `tool_call` only ever see and invoke tools the
-  session was actually granted. A subagent, kanban worker, or gateway
+  session was actually granted. A subagent or gateway
   session restricted to a subset of toolsets cannot use the bridge to
   discover or call a tool outside that subset — the deferred catalog is
   the deferrable slice of the session's own enabled/disabled toolsets,

@@ -45,24 +45,6 @@ Agent 默认不会主动生成 artifacts——需要明确告知。有两种方�
 
 Agent 需要使用的机制很简单：将文件渲染到绝对路径（例如 `/tmp/q3-revenue.png`），并在回复中以纯文本形式提及该路径。Gateway 负责其余工作。围栏代码块或反引号中的路径会被忽略，以避免代码示例被破坏。
 
-## Kanban：Artifacts 随完成通知一并发送
-
-如果使用 Hermes 的 kanban（看板）多 agent 工作流，worker 可以在调用 `kanban_complete` 时附加可交付文件：
-
-```python
-kanban_complete(
-    summary="rendered Q3 revenue chart and report",
-    artifacts=[
-        "/tmp/q3-revenue.png",
-        "/tmp/q3-report.pdf",
-    ],
-)
-```
-
-当 gateway 通知器将"任务完成"消息发送给在 Slack/Telegram 等平台订阅该任务的用户时，也会将每个 artifact 作为原生附件上传到对应聊天中。用户在同一位置获得可交付成果和摘要。
-
-通知器运行时磁盘上不存在的文件会被静默跳过。
-
 ## 通过 MCP 连接更多服务
 
 除 artifact 发送管道外，agent 还可以通过 MCP（Model Context Protocol，模型上下文协议）接入其他服务。MCP 生态系统为大多数主流工具提供了社区服务器——按需安装：

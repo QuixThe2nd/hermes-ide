@@ -1,9 +1,9 @@
 """Every remote-party-supplied URL fetch refuses internal targets before a socket opens.
 
-Provider response URLs, model-supplied image refs, manifest-derived pet URLs, and remote
-sitemap ``<loc>`` entries all route through ``tools.url_safety``: the URL is checked up
-front and every redirect hop is re-validated at TCP connect. A loopback listener records
-hits — the invariant is that it sees none for the hostile target.
+Provider response URLs, model-supplied image refs, and remote sitemap ``<loc>`` entries
+all route through ``tools.url_safety``: the URL is checked up front and every redirect
+hop is re-validated at TCP connect. A loopback listener records hits — the invariant is
+that it sees none for the hostile target.
 """
 from __future__ import annotations
 
@@ -39,8 +39,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             body = (f"<sitemapindex><sitemap><loc>http://{self.headers['Host']}/sitemap-skills-1.xml"
                     "</loc></sitemap></sitemapindex>").encode()
             ctype = "application/xml"
-        elif self.path.endswith(".json"):
-            body, ctype = b'{"pets": []}', "application/json"
         else:
             body, ctype = PNG, "image/png"
         self.send_response(200)
@@ -73,13 +71,6 @@ def _sitemap_catalog(url: str, monkeypatch):
     return src._sitemap_catalog(limit=5)
 
 
-def _fetch_manifest(url: str, monkeypatch):
-    from agent.pet import manifest
-
-    monkeypatch.setattr(manifest, "MANIFEST_URL", url)
-    return manifest.fetch_manifest(timeout=5, force=True)
-
-
 SITES = {
     "provider_media.save_url(image)": lambda u, mp, tmp: importlib.import_module(
         "agent.image_gen_provider").save_url_image(u, timeout=5),
@@ -89,10 +80,6 @@ SITES = {
         "plugins.image_gen.openai")._load_image_bytes(u),
     "image_gen/openai-codex::_remote_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
         "plugins.image_gen.openai-codex")._remote_image_to_data_url(u),
-    "pet/store::_http_get": lambda u, mp, tmp: importlib.import_module("agent.pet.store")._http_get(u, 5),
-    "pet/store::_download": lambda u, mp, tmp: importlib.import_module("agent.pet.store")._download(
-        u, tmp / "sheet.png", timeout=5),
-    "pet/manifest::fetch_manifest": lambda u, mp, tmp: _fetch_manifest(u, mp),
     "tui_gateway/methods_images::_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
         "tui_gateway.methods_images")._image_to_data_url(u, 1_000_000),
     "skills_hub_skillssh::_sitemap_catalog": lambda u, mp, tmp: _sitemap_catalog(u, mp),
@@ -115,7 +102,7 @@ def test_remote_fetch_sites_refuse_internal_targets_before_connect(site, listene
     from tools import url_safety
 
     base, hits = listener
-    suffix = "/index.xml" if "sitemap" in site else ("/manifest.json" if "manifest" in site else "/img.png")
+    suffix = "/index.xml" if "sitemap" in site else "/img.png"
 
     # Direct loopback target: refused up front, listener never sees a connection.
     monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)

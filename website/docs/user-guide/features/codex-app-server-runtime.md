@@ -78,29 +78,13 @@ These four Hermes tools require the running AIAgent context (mid-loop state) to 
 - **`session_search`** — cross-session search
 - **`todo`** — Hermes' todo store (codex's `update_plan` is the in-runtime equivalent)
 
-## Workflow features (`/goal`, kanban, cron)
+## Workflow features (`/goal`, cron)
 
 ### `/goal` (the Ralph loop)
 
 **Works on this runtime.** Goals persist in `state_meta` keyed by session id, the continuation prompt feeds back as a normal user message through `run_conversation()`, and codex executes the next turn natively. The goal judge runs via the auxiliary client (configured via `auxiliary.goal_judge` in config.yaml), independent of which runtime is active. The judge's "blocked, needs user input" verdict is a clean escape if codex stalls on approvals.
 
 **One thing to be aware of:** each continuation prompt is a fresh codex turn, which means codex re-evaluates command approval policy from scratch. If you're doing a long-running goal with lots of writes, expect more approval prompts than you'd see on a single in-session task. Set `default_permissions = ":workspace"` (which Hermes does automatically when you enable the runtime) so simple workspace writes don't require prompting.
-
-### Kanban (multi-agent worktree dispatch)
-
-**Works on this runtime, with one subtle dependency.** The kanban dispatcher spawns each worker as a separate `hermes chat -q` subprocess that reads the user's config — which means if `model.openai_runtime: codex_app_server` is set globally, workers also come up on the codex runtime.
-
-What works inside a codex-runtime worker:
-- Codex's full toolset (shell, apply_patch, update_plan, view_image, web_search) — the worker does its actual task work natively
-- The migrated codex plugins — Linear, GitHub, etc.
-- The Hermes tool callback for browser_*, vision, image_gen, skills, TTS
-
-What also works because the MCP callback exposes them:
-- **`kanban_complete` / `kanban_request_review` / `kanban_request_changes` / `kanban_block` / `kanban_comment` / `kanban_heartbeat`** — the worker handoff tools. These read `HERMES_KANBAN_TASK` from env (set by the dispatcher), gate access correctly, and write to the per-board SQLite DB pinned by `HERMES_KANBAN_DB`. Without these in the callback, a worker on this runtime could do its task but couldn't report back, hanging until the dispatcher's timeout.
-- **`kanban_show` / `kanban_list`** — read-only board queries for the worker to check its own context.
-- **`kanban_create` / `kanban_unblock` / `kanban_link`** — orchestrator-only operations. Available for orchestrator agents running on the codex runtime that need to dispatch new tasks.
-
-The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets — that var is propagated to the codex subprocess (codex inherits env) and from there to the spawned `hermes-tools` MCP server subprocess. So the tools see the right task id and gate correctly. For Codex app-server workers, Hermes also passes narrow app-server sandbox overrides when `HERMES_KANBAN_TASK` is present: keep `workspace-write` sandboxing, add the **board DB directory plus every Kanban path the dispatcher pinned** as extra writable roots (`HERMES_KANBAN_WORKSPACES_ROOT`, `HERMES_KANBAN_WORKSPACE`, legacy `HERMES_KANBAN_ROOT` — deduplicated, DB-dir first), and keep network disabled by default. This avoids the brittle `:danger-no-sandbox` workaround while letting `kanban_complete` / `kanban_block` update the board DB **and** letting workers write reports/artifacts under workspace mounts that live outside the DB directory (e.g. `/media/.../kanban-workspaces/...` on a separate drive — [issue #27941](https://github.com/NousResearch/hermes-agent/issues/27941)).
 
 ### Cron jobs
 
@@ -130,8 +114,6 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
 | System prompt / SOUL.md / channel `system_prompt` overrides | yes | yes (sent once as developer instructions on thread start) |
 | Multi-turn conversations | yes | yes |
 | `/goal` (Ralph loop) | yes | yes |
-| Kanban worker dispatch | yes | yes (via callback) |
-| Kanban orchestrator tools | yes | yes (via callback) |
 | All gateway platforms | yes | yes |
 | Non-OpenAI providers | yes | n/a — OpenAI/Codex-scoped |
 
@@ -201,7 +183,7 @@ model:
 ```
 
 If the Hermes process cannot resolve `codex` from `PATH` — typical for gateway services,
-cron and Kanban workers, or a desktop-bundled CLI — and the first turn fails with
+cron agents, or a desktop-bundled CLI — and the first turn fails with
 `No such file or directory: 'codex'`, point the runtime at the executable explicitly:
 
 ```yaml

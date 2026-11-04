@@ -69,16 +69,16 @@ export function botCanonicalSessionId(bot: null | RosterRow | undefined): null |
   return bot?.canonical_session?.resolved_id ?? bot?.canonical_session?.id ?? null
 }
 
-/** Worker liveness window: kanban/tool workers heartbeat last_activity_at
- *  at least every 60s while running (agent/session_activity.py), so a
- *  worker whose stamp is older than this is finished or stalled. Wider
- *  than ACTIVE_WINDOW_S to bridge one missed heartbeat. */
+/** Worker liveness window: tool workers heartbeat last_activity_at at least
+ *  every 60s while running (agent/session_activity.py), so a worker whose stamp
+ *  is older than this is finished or stalled. Wider than ACTIVE_WINDOW_S to
+ *  bridge one missed heartbeat. */
 const WORKER_ACTIVE_WINDOW_S = 150
 
-/** True while this bot's freshest kanban/tool worker looks alive. Workers
- *  never surface in conversation lists, so without this a profile grinding
- *  through a 30-minute kanban task reads idle ("3 hr ago") the whole time
- *  (hermes-agent#90268). Older gateways omit worker_session — always false. */
+/** True while this bot's freshest tool worker looks alive. Workers never
+ *  surface in conversation lists, so without this a profile grinding through a
+ *  30-minute task reads idle ("3 hr ago") the whole time (hermes-agent#90268).
+ *  Older gateways omit worker_session — always false. */
 export function workerActiveAt(bot: null | RosterRow | undefined, now = Date.now()): boolean {
   const ts = bot?.worker_session?.last_active || 0
 

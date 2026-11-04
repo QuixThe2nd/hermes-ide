@@ -14,7 +14,6 @@ import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { setTurnStartedAt } from '@/store/session'
 import { clearActiveSessionTodos } from '@/store/todos'
@@ -204,11 +203,6 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       clearActiveSessionTodos(sessionId)
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)
-    }
-
-    if (isActiveEvent) {
-      setPetActivity({ reasoning: false, toolRunning: false })
-      flashPetActivity({ error: true })
     }
 
     dispatchNativeNotification({

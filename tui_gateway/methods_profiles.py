@@ -185,8 +185,8 @@ def _latest_profile_session_rows(db):
     """(newest human-facing session, newest worker session); the worker row lets rosters show a
     profile as working (workers heartbeat ``last_activity_at`` every ≤60s).
 
-    First element mirrors session.list's deny-list (drops ``tool`` sub-agent rows and ``kanban`` dispatcher
-    workers). Second element is the newest DENIED row — the freshest kanban/tool worker — so roster UIs can
+    First element mirrors session.list's deny-list (drops ``tool`` sub-agent rows and historical ``kanban``
+    workers). Second element is the newest DENIED row — the freshest historical kanban/tool worker — so roster UIs can
     show that a profile is actively working even though worker sessions never surface in conversation lists
     (hermes-agent#90268). Workers heartbeat ``last_activity_at`` every ≤60s while running (#72016), so a
     live worker's ``last_active`` stays fresh and the client can apply its own liveness window. Best-effort:

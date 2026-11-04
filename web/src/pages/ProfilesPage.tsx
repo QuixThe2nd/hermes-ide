@@ -283,7 +283,7 @@ export default function ProfilesPage() {
       description: p.description ?? "Description",
       descriptionPlaceholder:
         p.descriptionPlaceholder ??
-        "What is this profile good at? Used to route kanban tasks by role.",
+        "What is this profile good at? Describe its role and strengths.",
       noDescription: p.noDescription ?? "No description",
       editDescription: p.editDescription ?? "Edit description",
       descriptionSaved: p.descriptionSaved ?? "Description saved",

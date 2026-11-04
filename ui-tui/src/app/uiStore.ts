@@ -45,6 +45,11 @@ const buildUiState = (): UiState => ({
 
 export const $uiState = atom<UiState>(buildUiState())
 
+// A monotonic tick for the reaction heart, bumped by the gateway `reaction`
+// event (core-detected ily / <3 / good bot).
+export const $goodVibesTick = atom(0)
+export const flashGoodVibes = () => $goodVibesTick.set($goodVibesTick.get() + 1)
+
 export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
 

@@ -1136,7 +1136,7 @@ export function botAppearance(name: string, meta: BotMeta | null | undefined): A
   // can hand it a near-black that renders as an ugly black square, and any
   // auto-seeded color in local bot-meta would otherwise stick. Give the
   // primary a nice fixed generic look (a friendly violet squircle). A user's
-  // EXPLICIT customization still wins: an uploaded/generated/pet image, or a
+  // EXPLICIT customization still wins: an uploaded/generated image, or a
   // shape/color they set via the editor (tracked by meta.custom === true).
   const isPrimary = (name || '').trim().toLowerCase() === 'default'
   const userCustomized = Boolean(meta?.custom)

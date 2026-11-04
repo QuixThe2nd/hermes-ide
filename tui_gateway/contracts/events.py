@@ -7,7 +7,7 @@ emitter it was typed from — that emitter is the source of truth, the hand-writ
 anything conditional is ``X | None = None``.
 
 A handful of payloads stay ``extra="allow"`` on purpose: their closed shape is owned by another
-module (the skin engine, the pet store, the goal/loop/heartbeat state files, the free-tier bootstrap
+module (the skin engine, the goal/loop/heartbeat state files, the free-tier bootstrap
 record) or they are watcher signals whose payload is ``{}`` today and may grow. Everything else is
 closed, so a drifted emitter fails the suite (``registry.check_payload`` raises under
 ``HERMES_TEST_ISOLATION``).
@@ -640,48 +640,11 @@ event("voice.transcript", VoiceTranscriptPayload, doc="A voice capture produced 
 event("wake.detected", WakeDetectedPayload, doc="A wake phrase fired.")
 
 
-# ── pets ──────────────────────────────────────────────────────────────────────────────────────
-
-
-class PetChangedPayload(OpenPayload):
-    """``change_watcher._pet_changed_payload`` — ``pet.info.meta``-shaped; ``{enabled: false}`` when off."""
-
-    enabled: bool
-    slug: str | None = None
-    displayName: str | None = None  # noqa: N815 - wire key
-    scale: float | None = None
-    spritesheetRevision: str | None = None  # noqa: N815 - wire key
-
-
-class PetGenerateProgressPayload(OpenPayload):
-    """``methods_session`` pet.generate: token-only init frame, then one per draft."""
-
-    token: str
-    count: int
-    index: int | None = None
-    dataUri: str | None = None  # noqa: N815 - wire key
-
-
-class PetHatchProgressPayload(OpenPayload):
-    """``methods_session`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form."""
-
-    event: str
-    detail: str | None = None
-    state: str | None = None
-    done: str | None = None
-    total: str | None = None
-
-
-event("pet.changed", PetChangedPayload, doc="The active pet / its spritesheet changed (watcher).")
-event("pet.generate.progress", PetGenerateProgressPayload, doc="Pet base-draft generation progress.")
-event("pet.hatch.progress", PetHatchProgressPayload, doc="Pet hatch (row drawing) progress.")
-
-
 # ── change watcher signals (payload is {} today) ─────────────────────────────────────────────
 
 
 class ChangeSignalPayload(OpenPayload):
-    """``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed."""
+    """``change_watcher._CHANGE_WATCHES`` payload fn — currently ``{}`` for every watch."""
 
 
 event("cron.changed", ChangeSignalPayload, doc="cron/jobs.json moved; refetch the cron list.")
@@ -698,7 +661,7 @@ __all__ = [
     "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
     "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",
-    "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload", "PreviewClosePayload",
+    "PreviewClosePayload",
     "PreviewOpenPayload", "PreviewRestartProgressPayload", "ReactionPayload", "ResumePhaseStatus",
     "ReviewSummaryPayload", "SessionControlSnapshot", "SessionControlUpdatePayload",
     "SessionReclaimedPayload", "SessionResumeProgressPayload", "SessionTitlePayload", "SessionUsagePayload",

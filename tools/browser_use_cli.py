@@ -154,7 +154,7 @@ def _base_subprocess_env() -> dict:
 
 
 def _floor_subprocess_path(path: str) -> str:
-    """Guarantee core system dirs on the CLI subprocess PATH: profile workers (kanban bots, cron) can inherit
+    """Guarantee core system dirs on the CLI subprocess PATH: profile workers (automation bots, cron) can inherit
     a PATH of only version-manager dirs, and the uv binary's POSIX sh trampoline resolves ``dirname``/``realpath``
     via PATH (exit 127 without /usr/bin). Reuses browser_tool's ``_merge_browser_path`` floor, else appends
     FHS bin dirs. Windows .cmd shims don't trampoline: no-op there."""

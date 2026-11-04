@@ -24,12 +24,12 @@ const REPORT = {
       }
     ],
     beta: [
-      { file: 'a.py', line: 1, old: 'hermes_cli.kanban_db.connect', new: 'hermes_cli.kanban_db_connect.connect' },
+      { file: 'a.py', line: 1, old: 'hermes_cli.legacy_db.connect', new: 'hermes_cli.legacy_db_connect.connect' },
       {
         file: 'a.py',
         line: 9,
-        old: 'hermes_cli.kanban_db.connect_closing',
-        new: 'hermes_cli.kanban_db_connect.connect_closing'
+        old: 'hermes_cli.legacy_db.connect_closing',
+        new: 'hermes_cli.legacy_db_connect.connect_closing'
       }
     ]
   },

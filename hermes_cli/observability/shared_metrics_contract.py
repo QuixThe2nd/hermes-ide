@@ -506,7 +506,7 @@ def count_bucket(count: int) -> str:
 
 _TOOL_CATEGORY_EXACT = {
     **{category: category for category in TOOL_CATEGORIES},
-    "clarify": "planning", "kanban": "planning", "todo": "planning", "session_search": "memory",
+    "clarify": "planning", "todo": "planning", "session_search": "memory",
     "cronjob": "scheduler", "skills": "skill", "x_search": "web",
 }
 _TOOL_CATEGORY_PREFIXES = (

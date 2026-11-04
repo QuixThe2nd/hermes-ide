@@ -93,7 +93,7 @@ plugin repo users install into `~/.hermes/plugins/`.
 
 **Fork note:** upstream rejects all third-party product integrations from its
 repo and points contributors at standalone plugin repos. This fork
-deliberately absorbs well-integrated capability — observability, kanban,
+deliberately absorbs well-integrated capability — observability,
 dev pipelines, and similar already live in-tree, and that is the point of a
 batteries-included distribution.
 

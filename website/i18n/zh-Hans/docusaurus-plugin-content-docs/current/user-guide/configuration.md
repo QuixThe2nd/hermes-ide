@@ -809,8 +809,6 @@ $ hermes model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
-[ ] triage_specifier     currently: auto / main model
-[ ] kanban_decomposer    currently: auto / main model
 [ ] profile_describer    currently: auto / main model
 ```
 
@@ -906,17 +904,6 @@ auxiliary:
     api_key: ""
     timeout: 30
 
-  # Kanban 分类规格说明器 —— `hermes kanban specify <id>`（或
-  # 仪表板上 Triage 列卡片的 ✨ Specify 按钮）使用此
-  # 槽位将单行描述扩展为具体规格并将
-  # 任务提升到 `todo`。便宜快速的模型在这里效果很好；规格扩展
-  # 很短，不需要推理深度。
-  triage_specifier:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 120
 ```
 
 :::tip

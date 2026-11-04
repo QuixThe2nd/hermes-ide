@@ -10,7 +10,6 @@ import contextlib
 import inspect
 import logging
 import os
-import re
 import shlex
 import sys
 import threading
@@ -356,84 +355,6 @@ class GatewaySlashCommandsMixin(
         runnable = list(dict.fromkeys(["help", "whoami"] + sorted(policy.user_allowed_commands)))
         runnable_str = ", ".join(f"/{c}" for c in runnable) if runnable else "(none)"
         return head + f"Tier: user\nSlash commands you can run: {runnable_str}"
-
-    async def _handle_kanban_command(self, event: MessageEvent) -> str:
-        """Handle /kanban — delegate to the shared kanban CLI (DB work in a thread pool). Allowed
-        while an agent runs: the board is profile-agnostic and never touches agent state."""
-        from hermes_cli.kanban import run_slash
-
-        # Strip the leading "/kanban" (with or without slash), leaving args.
-        text = (event.text or "").strip().lstrip("/")
-        if text.startswith("kanban"):
-            text = text[len("kanban"):].lstrip()
-        requested_board = action = None
-        tokens = iter(shlex.split(text) if text else [])
-        for tok in tokens:  # leading --board/--board=<b> options, then the action verb
-            if tok == "--board":
-                requested_board = next(tokens, requested_board)
-            elif tok.startswith("--board="):
-                requested_board = tok.split("=", 1)[1]
-            else:
-                action = tok
-                break
-        try:
-            output = await asyncio.to_thread(run_slash, text)
-        except Exception as exc:  # pragma: no cover - defensive
-            return t("gateway.kanban.error_prefix", error=exc)
-
-        # Auto-subscribe on create, parsing the task id from the CLI's standard success line
-        # ("Created t_abcd  (ready, ...)"). With --json there is no such line, so a scripting user
-        # gets no subscription and can call /kanban notify-subscribe explicitly.
-        m = re.search(r"Created\s+(t_[0-9a-f]+)\b", output) if action == "create" and output else None
-        if m:
-            task_id = m.group(1)
-            try:
-                if await self._kanban_auto_subscribe(event, task_id, requested_board):
-                    output = output.rstrip() + "\n" + t("gateway.kanban.subscribed_suffix", task_id=task_id)
-            except Exception as exc:
-                logger.warning("kanban create auto-subscribe failed: %s", exc)
-
-        # Gateway messages have practical length caps; truncate long listings.
-        if len(output) > 3800:
-            output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
-        return output or t("gateway.kanban.no_output")
-
-    async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
-        """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
-        source has no platform/chat to route back to."""
-        source = event.source
-
-        def _field(name: str) -> Optional[str]:
-            return str(getattr(source, name, "") or "") or None
-        platform = getattr(source, "platform", None)
-        platform_str = (platform.value if hasattr(platform, "value") else str(platform or "")).lower()
-        chat_id, chat_type = _field("chat_id"), _field("chat_type")
-        delivery_metadata = self._reply_metadata(event) or None
-        if isinstance(delivery_metadata, dict) and chat_type:
-            delivery_metadata.setdefault("chat_type", chat_type)
-        if not (platform_str and chat_id):
-            return False
-
-        def _sub():
-            from hermes_cli import kanban_db as _kb
-            from hermes_cli import kanban_db_connect as _kbc
-            from hermes_cli import kanban_db_notify as _kbn
-            conn = _kbc.connect(board=requested_board)
-            try:
-                _kbn.add_notify_sub(
-                    conn, task_id=task_id, platform=platform_str, chat_id=chat_id, chat_type=chat_type,
-                    thread_id=_field("thread_id"), user_id=_field("user_id"),
-                    # Also persist the stable alt id (Signal UUID, Feishu union_id): build_session_key
-                    # keys the participant on ``user_id_alt or user_id``, so a replayed wake rebuilds
-                    # the same session key only when the alt id survives the round-trip.
-                    user_id_alt=_field("user_id_alt"),
-                    notifier_profile=_field("profile") or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                    # Subscribing from chat: deliver the passive message and wake the destination agent.
-                    delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
-            finally:
-                conn.close()
-        await asyncio.to_thread(_sub)
-        return True
 
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.  A truly hung agent (blocked thread

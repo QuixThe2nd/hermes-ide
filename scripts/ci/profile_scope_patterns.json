@@ -14,8 +14,7 @@
       "C9": "systemd/launchd unit variants & migration transactionality",
       "C10": "profile lifecycle ops under a live multiplexer",
       "C11": "bare thread lifecycle / supervision",
-      "C12": "Desktop topology / surface parity (CLI vs REST vs RPC)",
-      "C13": "kanban notifier routing / silent fail-closed"
+      "C12": "Desktop topology / surface parity (CLI vs REST vs RPC)"
     },
     "dropped": [
       "P01: 296 hits on main",

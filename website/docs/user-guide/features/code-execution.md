@@ -259,7 +259,7 @@ injects explicitly so the RPC channel works).
 Earlier versions passed **any** variable whose name began with `HERMES_`
 through to the child. That broad prefix was removed for security hardening: it
 could leak `HERMES_*`-named configuration that doesn't match a secret substring
-(for example `HERMES_BASE_URL`, `HERMES_KANBAN_DB`, or a `HERMES_*_WEBHOOK`
+(for example `HERMES_BASE_URL`, `HERMES_CUSTOM_CONFIG`, or a `HERMES_*_WEBHOOK`
 endpoint) into arbitrary sandboxed code.
 
 If an `execute_code` script — or a repo/plugin module it imports at import time
@@ -279,7 +279,7 @@ be re-allowed this way):
    ```yaml
    terminal:
      env_passthrough:
-       - HERMES_KANBAN_DB
+       - HERMES_CUSTOM_CONFIG
        - HERMES_BASE_URL
    ```
 
@@ -288,7 +288,7 @@ be re-allowed this way):
 
    ```yaml
    required_environment_variables:
-     - HERMES_KANBAN_DB
+     - HERMES_CUSTOM_CONFIG
    ```
 
 **Diagnosing it.** When the child drops one or more non-allowlisted `HERMES_*`

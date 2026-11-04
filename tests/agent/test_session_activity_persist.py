@@ -38,7 +38,6 @@ def test_touch_activity_persists_session_activity_once_per_minute(monkeypatch):
     mono = {"t": 1000.0}
     monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_000.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: mono["t"])
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
     agent._touch_activity("starting API call #1")
     agent._session_db.touch_session_activity.assert_called_once_with(
@@ -68,7 +67,6 @@ def test_touch_activity_skips_persist_without_session_db(monkeypatch):
     agent._session_db = None
     monkeypatch.setattr(run_agent.time, "time", lambda: 1.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: 1.0)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
     agent._touch_activity("starting API call #1")
     assert agent._last_activity_desc == "starting API call #1"
@@ -79,7 +77,6 @@ def test_touch_activity_accepts_named_provenance(monkeypatch):
     agent = _agent_with_db()
     monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_000.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: 1000.0)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
     agent._touch_activity(
         "compressing context",
@@ -110,7 +107,6 @@ def test_touch_activity_persist_errors_are_swallowed(monkeypatch):
     agent._session_db.touch_session_activity.side_effect = RuntimeError("db locked")
     monkeypatch.setattr(run_agent.time, "time", lambda: 1.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: 1.0)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
     agent._touch_activity("tool completed: terminal (1.0s)")
     assert agent._last_activity_desc == "tool completed: terminal (1.0s)"
@@ -157,7 +153,6 @@ def test_heartbeat_respects_cadence_constant(monkeypatch):
     mono = {"t": 1000.0}
     monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_000.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: mono["t"])
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
     agent._touch_activity("first")
     assert agent._session_db.touch_session_activity.call_count == 1
@@ -176,7 +171,6 @@ def test_heartbeat_respects_cadence_constant(monkeypatch):
 def test_get_activity_summary_exposes_shared_activity_contract(monkeypatch):
     agent = _agent_with_db()
     monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_010.0)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     agent._last_activity_ts = 1_700_000_000.0
     agent._last_activity_desc = "executing tool: terminal"
     agent._last_activity_provenance = ActivityProvenance.UNKNOWN
@@ -249,7 +243,6 @@ def test_warn_context_overflow_blocked_stamps_compression_cooldown(monkeypatch):
     agent._touch_activity = run_agent.AIAgent._touch_activity.__get__(
         agent, SimpleNamespace
     )
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_100.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: 2000.0)
 
@@ -278,7 +271,6 @@ def test_warn_context_overflow_blocked_stamps_cooldown_for_ineffective(monkeypat
     agent._touch_activity = run_agent.AIAgent._touch_activity.__get__(
         agent, SimpleNamespace
     )
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_100.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: 2000.0)
 
@@ -293,7 +285,6 @@ def test_warn_context_overflow_blocked_stamps_cooldown_for_ineffective(monkeypat
 def test_compression_transition_provenances_surface_in_activity_summary(monkeypatch):
     """Compaction / timeout / cooldown publish through get_activity_summary."""
     agent = _agent_with_db()
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_200.0)
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: 3000.0)
 
@@ -333,7 +324,6 @@ def test_touch_activity_phase_start_resets_only_on_desc_change(monkeypatch):
     clock = {"t": 100.0}
     monkeypatch.setattr(run_agent.time, "time", lambda: clock["t"])
     monkeypatch.setattr(run_agent.time, "monotonic", lambda: 5000.0)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
     agent._touch_activity("executing tool: terminal")
     assert getattr(agent, "_phase_started_ts", None) == 100.0
@@ -359,7 +349,6 @@ def test_get_activity_summary_phase_seconds_survives_liveness_refresh(monkeypatc
     """Snapshots expose how long the current phase has lasted (or None)."""
     agent = _agent_with_db()
     monkeypatch.setattr(run_agent.time, "time", lambda: 130.0)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     agent._last_activity_ts = 130.0
     agent._last_activity_desc = "executing tool: terminal"
 

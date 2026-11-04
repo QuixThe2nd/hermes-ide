@@ -19,7 +19,7 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `list` | List all profiles. |
 | `use` | Set the active (default) profile. |
 | `create` | Create a new profile. |
-| `describe` | Read or set a profile's description (used by the kanban orchestrator for routing). |
+| `describe` | Read or set a profile's description. |
 | `delete` | Delete a profile. |
 | `show` | Show details about a profile. |
 | `alias` | Regenerate the shell alias for a profile. |
@@ -84,7 +84,7 @@ Creates a new profile.
 | `--clone-all` | Copy everything (config, memories, skills, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints — and cron jobs, which stay bound to the source profile (a clone that inherited them would fire every job twice). When the source is the default profile, the machine-scoped local-model trees (`models/`, `runtimes/`, `node/`) are also skipped — the same trees `hermes backup` excludes. |
 | `--clone-from <profile>` | Clone config/skills/SOUL from a specific profile instead of the current one. Implies `--clone` unless paired with `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
-| `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
+| `--description "<text>"` | One- or two-sentence description of what this profile is good at. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
 | `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-bundled-skills` marker into the profile so future `hermes update` runs won't re-seed the bundled set, and refuses to combine with `--clone`, `--clone-from`, or `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. To toggle this on an already-created profile (including the default `~/.hermes`), use `hermes skills opt-out` / `hermes skills opt-in`. |
 | `--read-only` | Make the profile's **file tools read-only**: the `file_readonly` toolset (`read_file`, `search_files`) replaces `file`, so `write_file` and `patch` never reach the model. Writes a `platform_toolsets` selection into the profile's `config.yaml` — for `cli` on a fresh create, or for every platform the (cloned) config already had a saved list for; a bare composite entry such as `hermes-discord` is expanded so it can't re-import the write tools implicitly. Composes with `--clone`/`--clone-from`/`--clone-all`, `--no-skills`, and `--no-alias`. Only file tools are affected — `terminal` and `code_execution` stay as they were. To go back, run `hermes -p <name> tools enable file` (which swaps the read-only variant back out). |
 
@@ -118,7 +118,7 @@ hermes profile create researcher --read-only
 hermes profile describe [<name>] [options]
 ```
 
-Read or set a profile's description. The description is consumed by the kanban orchestrator to route tasks based on what each profile is good at, rather than guessing from the profile name alone. Persisted in `<profile_dir>/profile.yaml` so it survives reboots and is shared with the gateway.
+Read or set a profile's description. Persisted in `<profile_dir>/profile.yaml` so it survives reboots and is shared with the gateway.
 
 With no flags, prints the current description (or `(no description set for '<name>')` if empty).
 

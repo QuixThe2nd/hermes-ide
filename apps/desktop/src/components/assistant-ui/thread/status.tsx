@@ -167,7 +167,7 @@ function useThreadSessionStatus() {
   const providerWait = useStore(useMemo(() => sessionProviderWait(sessionId), [sessionId]))
   // A pending clarify / approval / sudo / secret means the turn is paused on the
   // user, not working — so don't resurrect the "thinking" timer while they
-  // decide (matches the pet's awaitingInput pose taking priority over busy).
+  // decide; user input takes priority over the busy indicator.
   const awaitingInput = useStore(useMemo(() => sessionAwaitingInput(sessionId), [sessionId]))
 
   return {

@@ -73,29 +73,13 @@ Hermes 将自身注册为 MCP server，以便 Codex 能够回调获取 Codex 自
 - **`session_search`** — 跨会话搜索
 - **`todo`** — Hermes 的待办存储（Codex 的 `update_plan` 是运行时内的等效工具）
 
-## 工作流功能（`/goal`、kanban、cron）
+## 工作流功能（`/goal`、cron）
 
 ### `/goal`（Ralph 循环）
 
 **在此运行时上可用。** 目标以会话 id 为键持久化在 `state_meta` 中，续接提示通过 `run_conversation()` 作为普通用户消息回传，Codex 原生执行下一轮次。目标判断器通过辅助客户端运行（在 config.yaml 中通过 `auxiliary.goal_judge` 配置），与当前活跃的运行时无关。判断器的"受阻，需要用户输入"裁决是 Codex 卡在审批时的干净退出路径。
 
 **需要注意的一点：** 每个续接提示都是一次全新的 Codex 轮次，这意味着 Codex 会从头重新评估命令审批策略。如果你在执行包含大量写操作的长期目标，预期会看到比单次会话内任务更多的审批提示。设置 `default_permissions = ":workspace"`（启用运行时时 Hermes 会自动设置）可避免简单的工作区写操作触发提示。
-
-### Kanban（多 agent 工作树分发）
-
-**在此运行时上可用，但有一个细微依赖。** Kanban 分发器将每个 worker 生成为独立的 `hermes chat -q` 子进程，该子进程读取用户配置——这意味着如果全局设置了 `model.openai_runtime: codex_app_server`，worker 也会在 Codex 运行时上启动。
-
-Codex 运行时 worker 内可用的功能：
-- Codex 完整工具集（shell、apply_patch、update_plan、view_image、web_search）——worker 原生完成实际任务
-- 已迁移的 Codex 插件——Linear、GitHub 等
-- 用于 browser_*、vision、image_gen、技能、TTS 的 Hermes 工具回调
-
-通过 MCP 回调同样可用的功能：
-- **`kanban_complete` / `kanban_block` / `kanban_comment` / `kanban_heartbeat`** — worker 交接工具。这些工具从环境变量中读取 `HERMES_KANBAN_TASK`（由分发器设置），正确进行访问控制，并写入由 `HERMES_KANBAN_DB` 固定的每个看板 SQLite 数据库。若回调中没有这些工具，此运行时上的 worker 可以完成任务但无法汇报，会一直挂起直到分发器超时。
-- **`kanban_show` / `kanban_list`** — 只读看板查询，供 worker 检查自身上下文。
-- **`kanban_create` / `kanban_unblock` / `kanban_link`** — 仅限编排器的操作。供运行在 Codex 运行时上、需要分发新任务的编排器 agent 使用。
-
-Kanban 工具通过分发器设置的 `HERMES_KANBAN_TASK` 环境变量进行访问控制——该变量会传播到 Codex 子进程（Codex 继承环境变量），再从那里传播到生成的 `hermes-tools` MCP server 子进程。因此工具能看到正确的任务 id 并正确进行访问控制。对于 Codex app-server worker，当 `HERMES_KANBAN_TASK` 存在时，Hermes 还会传入精细的 app-server 沙箱覆盖配置：保持 `workspace-write` 沙箱，将**看板数据库目录以及分发器固定的所有 Kanban 路径**作为额外可写根目录添加（`HERMES_KANBAN_WORKSPACES_ROOT`、`HERMES_KANBAN_WORKSPACE`、旧版 `HERMES_KANBAN_ROOT`——去重，数据库目录优先），并默认禁用网络。这避免了脆弱的 `:danger-no-sandbox` 变通方案，同时允许 `kanban_complete` / `kanban_block` 更新看板数据库，**并且**允许 worker 在数据库目录之外的工作区挂载点下写入报告/产物（例如独立驱动器上的 `/media/.../kanban-workspaces/...`——[issue #27941](https://github.com/NousResearch/hermes-agent/issues/27941)）。
 
 ### Cron 任务
 
@@ -123,8 +107,6 @@ Kanban 工具通过分发器设置的 `HERMES_KANBAN_TASK` 环境变量进行访
 | 记忆 + 技能审查（后台） | 是 | 是（通过事件投影） |
 | 多轮对话 | 是 | 是 |
 | `/goal`（Ralph 循环） | 是 | 是 |
-| Kanban worker 分发 | 是 | 是（通过回调） |
-| Kanban 编排器工具 | 是 | 是（通过回调） |
 | 所有 gateway 平台 | 是 | 是 |
 | 非 OpenAI 提供商 | 是 | 不适用——仅限 OpenAI/Codex |
 

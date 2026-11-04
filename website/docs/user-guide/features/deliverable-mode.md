@@ -76,28 +76,6 @@ plain text in the reply. The gateway does the rest. Paths inside
 fenced code blocks or backticks are ignored so code samples are never
 mutilated.
 
-## Kanban: artifacts ride completion notifications
-
-If you use Hermes' kanban multi-agent workflow, workers can attach
-deliverable files to their `kanban_complete` call:
-
-```python
-kanban_complete(
-    summary="rendered Q3 revenue chart and report",
-    artifacts=[
-        "~/.hermes/cache/scratch/q3-revenue.png",
-        "~/.hermes/cache/scratch/q3-report.pdf",
-    ],
-)
-```
-
-When the gateway notifier delivers the "task completed" message to whoever
-subscribed to the task in Slack/Telegram/etc., it also uploads each artifact
-as a native attachment to that chat. The human gets the deliverable and the
-summary in one place.
-
-Files that don't exist on disk when the notifier runs are silently skipped.
-
 ## Connecting more services with MCP
 
 Beyond the artifact-delivery pipeline, the agent can reach into other

@@ -787,7 +787,7 @@ describe('pluginSocket', () => {
   it('scopes the connection to the active profile, like pluginRest', async () => {
     setApiRequestProfile('work')
 
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const dispose = pluginSocket('example-plugin', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
     expect(getConnection).toHaveBeenCalledWith('work')
@@ -796,7 +796,7 @@ describe('pluginSocket', () => {
   })
 
   it('passes null when no profile is scoped (single-profile / primary)', async () => {
-    const dispose = pluginSocket('kanban', '/events', () => {})
+    const dispose = pluginSocket('example-plugin', '/events', () => {})
 
     await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
     expect(getConnection).toHaveBeenCalledWith(null)

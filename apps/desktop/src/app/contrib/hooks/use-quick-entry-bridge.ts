@@ -46,7 +46,7 @@ function sessionOptions(): QuickEntrySessionOption[] {
  *
  * Handlers register ONCE through refs tracking the latest callbacks —
  * re-registering on identity churn leaves a nulled-handler window that can drop
- * a submit (the same bug shape use-pet-bridge guards). Primary window only: a
+ * a submit. Primary window only: a
  * secondary session window must not also claim the global capture channel, or
  * one keystroke would send N prompts.
  */

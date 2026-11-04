@@ -6,12 +6,6 @@ import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
-import type {
-  PetOverlayBounds,
-  PetOverlayControl,
-  PetOverlayOpenRequest,
-  PetOverlayStatePayload
-} from './store/pet-overlay'
 import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
 
 export {}
@@ -105,20 +99,6 @@ declare global {
         getState: () => Promise<WakeIndicatorState>
         setState: (state: WakeIndicatorState) => void
         onState: (callback: (state: WakeIndicatorState) => void) => () => void
-      }
-      // The pop-out pet overlay: a transparent always-on-top window hosting only
-      // the mascot. The main renderer drives it (open/close/drag + state push);
-      // the overlay sends control messages back (pop-in, composer submit).
-      petOverlay: {
-        open: (request: PetOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: PetOverlayBounds }>
-        close: () => Promise<{ ok: boolean }>
-        setBounds: (bounds: PetOverlayBounds) => void
-        setIgnoreMouse: (ignore: boolean) => void
-        setFocusable: (focusable: boolean) => void
-        pushState: (payload: PetOverlayStatePayload) => void
-        control: (payload: PetOverlayControl) => void
-        onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
-        onControl: (callback: (payload: PetOverlayControl) => void) => () => void
       }
       // Intro reveal: the full-screen first-run brand sequence. The main
       // renderer owns the phase; the overlay window (`?win=intro`) owns

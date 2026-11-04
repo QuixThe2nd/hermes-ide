@@ -1246,8 +1246,8 @@ class GatewayConfig:
     # (off-loop write + two-witness probe), so raising it would only delay recovery.
     # On by default; set gateway.loop_watchdog: false in config.yaml to disable. Telegram/Discord reconnect
     # doing synchronous socket I/O during a network blip — so a short block does not force exit code 75 and
-    # trigger a restart churn that stalls cron dispatch (recurring fleet incidents on 2026-08-17, kanban
-    # t_0f76430f/t_70483f23). A genuine wedge (event loop frozen for the full tolerance window) still
+    # trigger a restart churn that stalls cron dispatch (recurring fleet incidents on 2026-08-17).
+    # A genuine wedge (event loop frozen for the full tolerance window) still
     # escalates to a supervised restart. See #69089.
     loop_watchdog: bool = True
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S

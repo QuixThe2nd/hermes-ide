@@ -152,25 +152,6 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
 _ENV_DETECT_CACHE: Dict[str, bool] = {}
 
 
-def _detect_kanban() -> bool:
-    # Mirror tools/kanban_tools.py: a dispatcher-spawned worker (env vars, but
-    # only when this execution OWNS the task — delegate_agent children / in-process
-    # cron see the worker's vars) or a profile opted into the kanban toolset.
-    if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
-        try:
-            from agent.delegation_context import is_dispatcher_owned_worker_context
-            owned = is_dispatcher_owned_worker_context()
-        except Exception:
-            owned = True
-        if owned:
-            return True
-    try:
-        from tools.kanban_tools import _profile_has_kanban_toolset
-        return bool(_profile_has_kanban_toolset())
-    except Exception:
-        return False
-
-
 def _detect_docker() -> bool:
     try:
         from hermes_constants import is_container
@@ -180,17 +161,15 @@ def _detect_docker() -> bool:
 
 
 _ENV_DETECTORS: Dict[str, Callable[[], bool]] = {
-    "kanban": _detect_kanban, "docker": _detect_docker,
+    "docker": _detect_docker,
     "s6": lambda: os.path.isdir("/run/s6") or os.path.isdir("/package/admin/s6-overlay"),  # s6-overlay is PID 1 in the image
 }
 
 
 def _detect_environment(env: str) -> bool:
     """True when the named runtime environment is active (unknown => True).
-    Cached per process EXCEPT ``kanban``: that verdict is context-dependent
-    (delegate children / in-process cron see the worker's vars), so a
-    process-wide cache would leak the first asker's answer to the others."""
-    if env != "kanban" and env in _ENV_DETECT_CACHE:
+    Detection is cached per process."""
+    if env in _ENV_DETECT_CACHE:
         return _ENV_DETECT_CACHE[env]
     detector = _ENV_DETECTORS.get(env)
     result = detector() if detector else True

@@ -57,7 +57,7 @@ function renderSubmenu(opts: {
 // The submenu is PURE: it reports edits and never writes to a session, a
 // preset store, or the gateway. That's the invariant that lets the same
 // component drive a live chat session AND a detached per-task override — if it
-// ever writes directly again, picking an effort for a kanban card would reach
+// ever writes directly again, picking an effort for a detached task would reach
 // over and change the user's live chat.
 describe('ModelEditSubmenu reports edits without performing them', () => {
   it('param fast: reports the toggle', () => {

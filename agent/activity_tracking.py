@@ -4,7 +4,6 @@
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import logging
-import os
 import threading
 import time
 from contextlib import suppress
@@ -45,13 +44,11 @@ class ActivityTrackingMixin:
         """Update the last-activity timestamp and description (thread-safe).
 
         Bumps a monotonic generation under the activity lock so the watchdog can bind a stall observation to
-        the exact ``(generation, timestamp)`` it sampled. Also bridges (rate-limited, best-effort) to the
-        kanban heartbeat when this is a dispatcher-spawned worker, and to the durable SessionDB activity
+        the exact ``(generation, timestamp)`` it sampled, and maintains the durable SessionDB activity
         projection. ``provenance`` names special writers (compression); ``force_persist`` bypasses the
         SessionDB rate limit. Module-level lock helper, not ``self._liveness_activity_lock()``: doubles bind
         only ``_touch_activity`` (tests/agent/test_session_activity_persist.py).
 
-        Bridge is rate-limited (60s) and best-effort — it never raises into the agent loop. See #31752.
         See #72016, #72039.
         """
         from agent.session_activity import (
@@ -69,15 +66,6 @@ class ActivityTrackingMixin:
             # Real progress invalidates a reserved abort claim; an in-flight watchdog interrupt must abandon
             # itself at the final mutation edge.
             self._turn_liveness_abort_claim = None
-        if os.environ.get("HERMES_KANBAN_TASK"):
-            # Never let the bridge break the loop; this guard covers import-time failures.
-            with suppress(Exception):
-                from tools.kanban_tools import (
-                    heartbeat_current_worker_from_env, inject_new_comments_from_env
-                )
-                heartbeat_current_worker_from_env()
-                # Fold new operator notes into the running turn (OUT-OF-BAND steer).
-                inject_new_comments_from_env(self)
         if force_persist:
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()

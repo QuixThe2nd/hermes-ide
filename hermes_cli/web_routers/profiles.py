@@ -912,7 +912,7 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
 
 @router.put("/api/profiles/{name}/description")
 async def update_profile_description_endpoint(name: str, body: ProfileDescriptionUpdate):
-    """Set or clear a profile's role description (kanban routing signal), stored as
+    """Set or clear a profile's role description, stored as user-authored
     user-authored (``description_auto: false``) so the auto-describer won't overwrite it."""
     from hermes_cli import profiles as profiles_mod
     profile_dir = _resolve_profile_dir(name)

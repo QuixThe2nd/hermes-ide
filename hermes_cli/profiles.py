@@ -551,7 +551,6 @@ class ProfileInfo:
     distribution_version: Optional[str] = None
     distribution_source: Optional[str] = None
     # 1-2 sentence role description from ``profile.yaml``; empty when never described.
-    # Surfaced to the kanban decomposer so it routes work by role rather than name.
     description: str = ""
     # True when ``description`` was LLM-generated and not yet user-confirmed (dashboard
     # shows a "review" badge).
@@ -742,7 +741,7 @@ def _cached_skill_count(profile_dir: Path) -> int:
 # profile.yaml — per-profile metadata (description, role, etc.)
 # Deliberately tiny and separate from ``config.yaml`` (user-facing Hermes config, ~5000
 # lines of defaults): this is metadata ABOUT the profile. Missing file -> empty defaults,
-# never an error; the kanban decomposer falls back to the profile name.
+# never an error; callers fall back to the profile name.
 
 
 def read_profile_meta(profile_dir: Path) -> dict:

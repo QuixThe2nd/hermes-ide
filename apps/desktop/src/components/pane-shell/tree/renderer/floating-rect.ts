@@ -75,8 +75,7 @@ export function anchoredRect(
 /**
  * Re-clamp on viewport resize. A pane anchored to a right/bottom edge TRACKS
  * that edge (shrinking the window keeps it in the corner) instead of being
- * dragged inward only when it would fall off — matching how the pet and every
- * OS HUD behave.
+ * dragged inward only when it would fall off — matching OS HUD behavior.
  */
 export function reflowRect(
   rect: FloatingRect,

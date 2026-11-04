@@ -1485,7 +1485,7 @@ class TestResolveGatewayLiveness:
 
         assert result.running is False
         # probe_error distinguishes "down" from "couldn't tell" for callers
-        # that must fail OPEN (the kanban dispatcher warning).
+        # that must fail OPEN.
         assert result.probe_error is True
 
 

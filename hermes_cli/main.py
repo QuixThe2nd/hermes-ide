@@ -19,7 +19,7 @@ except ModuleNotFoundError:
 
 # Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
 # imports — it shells out ``cmd /c ver`` and flashes a console when this
-# process is windowless (pythonw gateway, kanban workers). No-op on POSIX.
+# process is windowless (pythonw gateway, automation workers). No-op on POSIX.
 from hermes_cli._subprocess_compat import suppress_platform_ver_console
 
 suppress_platform_ver_console()
@@ -281,7 +281,7 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
 
     Precedence: ``--cli`` wins, then ``--tui``/``HERMES_TUI=1``, then a
     real-TTY gate, then ``display.interface``. The TTY gate is load-bearing
-    for headless spawners (kanban workers, cron, pipes running ``chat -q``):
+    for headless spawners (automation workers, cron, pipes running ``chat -q``):
     a ``display.interface: tui`` default used to boot the TUI here, whose
     no-TTY bail-out exits 0 without doing the task. An explicit ``--tui``
     still reaches that informative bail-out.
@@ -399,7 +399,6 @@ from hermes_cli.subcommands.migrate import build_migrate_parser
 from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
 from hermes_cli.subcommands.bundles import build_bundles_parser
 from hermes_cli.subcommands.curator import build_curator_parser
-from hermes_cli.subcommands.pets import build_pets_parser
 from hermes_cli.subcommands.journey import build_journey_parser
 from hermes_cli.subcommands.computer_use import build_computer_use_parser
 from hermes_cli.subcommands.sessions import build_sessions_parser
@@ -478,7 +477,7 @@ def _scan_profile_flag(argv: list) -> tuple:
     resolve_profile_env never sys.exits on it; the rejection is explained (exit 2)
     only when the flag comes BEFORE the first subcommand token under a real
     ``hermes`` run — after a subcommand, ``-p`` may belong to that subcommand or a
-    plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:cacheprovider``,
+    plugin (`hermes example ... -p 8080`), and option-looking values (``no:cacheprovider``,
     ``--flag``) are always a silent skip.
     """
     from hermes_cli._parser import top_level_value_flag_sets
@@ -839,7 +838,6 @@ from hermes_cli.main_web_build import (  # frozen updater surface: update_cmd*.p
 )
 from hermes_cli.main_tui_launch import (
     _launch_tui,
-    _pin_kanban_board_env,
     _resolve_use_tui,
     _sync_bundled_skills_quietly,
 )
@@ -1749,7 +1747,6 @@ def cmd_chat(args):
         # runs must keep it (see run_agent._session_source_for_agent).
         os.environ["HERMES_SESSION_SOURCE_EXPLICIT"] = "1"
 
-    _pin_kanban_board_env()
     _confirm_startup_expensive_model_override(args)
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
@@ -1823,7 +1820,7 @@ def _forward_command(name: str, module: str, attr: str, *, forward_return: bool 
 
     Imports at CALL time so fast paths never pay for it and
     ``patch("<module>.<attr>")`` keeps intercepting. ``forward_return``
-    surfaces the return code to ``main()`` (kanban/project/mcp propagate).
+    surfaces the return code to ``main()`` (project/mcp propagate).
     """
 
     def _cmd(args):
@@ -1844,7 +1841,6 @@ cmd_auth = _forward_command("cmd_auth", "hermes_cli.auth_commands", "auth_comman
 cmd_status = _forward_command("cmd_status", "hermes_cli.status", "show_status", doc='Show status of all components.')
 cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", "cron_command", forward_return=True, doc='Cron job management.')
 cmd_webhook = _forward_command("cmd_webhook", "hermes_cli.webhook", "webhook_command", doc='Webhook subscription management.')
-cmd_kanban = _forward_command("cmd_kanban", "hermes_cli.kanban", "kanban_command", forward_return=True, doc='Multi-profile collaboration board.')
 cmd_project = _forward_command("cmd_project", "hermes_cli.projects_cmd", "projects_command", forward_return=True, doc='Manage projects (named, multi-folder workspaces).')
 cmd_hooks = _forward_command("cmd_hooks", "hermes_cli.hooks", "hooks_command", doc='Shell-hook inspection and management.')
 cmd_doctor = _forward_command("cmd_doctor", "hermes_cli.doctor", "run_doctor", doc='Check configuration and dependencies.')
@@ -2705,9 +2701,9 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "gui", "desktop", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "pm", "portal", "profile",
+        "model", "monitoring", "pairing", "pause", "peer", "plugins", "pm", "portal", "profile",
         "project", "proxy",
         "prompt-size",
         "resume",
@@ -3320,9 +3316,6 @@ def _build_cli_parser():
     from hermes_cli.portal_cli import add_parser as _add_portal_parser
     _add_portal_parser(subparsers)
 
-    from hermes_cli.kanban import build_parser as _build_kanban_parser
-    _build_kanban_parser(subparsers).set_defaults(func=cmd_kanban)
-
     from hermes_cli.projects_cmd import build_parser as _build_project_parser
     _build_project_parser(subparsers).set_defaults(func=cmd_project)
 
@@ -3348,7 +3341,6 @@ def _build_cli_parser():
     _register_plugin_cli_commands(subparsers)
 
     build_curator_parser(subparsers)
-    build_pets_parser(subparsers)
     build_journey_parser(subparsers)
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
     build_tools_parser(subparsers, cmd_tools=cmd_tools)

@@ -268,7 +268,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   // A contributed full page (`extension`) yields the fixed clusters only while
   // it actually projects chrome into the band — page-mounted `titleBar.*` slots
-  // like kanban's board switcher. A page that mounts no titlebar chrome keeps
+  // such as a view switcher. A page that mounts no titlebar chrome keeps
   // the app's controls; an empty claim would leave a bare strip on every plugin
   // route. Contributed `titleBar.tools` items keep rendering here too, so a
   // chrome-owning page never silently drops a registered item.

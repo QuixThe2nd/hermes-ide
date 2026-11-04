@@ -21,7 +21,7 @@ from tools.registry import tool_error
 
 # NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
 # (the agent must not fire cross-platform messages on its own); cron delivery, the
-# ``hermes send`` CLI, the kanban notifier and the opt-in MCP server import the helpers.
+# ``hermes send`` CLI and the opt-in MCP server import the helpers.
 
 
 def prepare_send_message_platforms() -> None:

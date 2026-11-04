@@ -199,8 +199,8 @@ _SYNC_FALLBACK_NOTES = {
     "no_async": (
         "background=true is not available in this session — it cannot "
         "receive a detached subagent result after the turn ends (a "
-        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
-        "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
+        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, "
+        "or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
     "at_capacity": (
         "The background delegation pool was at capacity (delegation.max_concurrent_children), so the subagent(s) ran "
@@ -231,7 +231,7 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
 
     try:
         # Finite sessions cannot route a detached subagent result back to the agent after their turn/process
-        # ends. This includes stateless HTTP requests (#10760) and one-shot Kanban workers (#63169). Fall
+        # ends. This includes stateless HTTP requests and other one-shot runners. Fall
         # back to SYNCHRONOUS execution so the result returns in this same turn instead of handing out a
         # handle with no durable consumer. Mirrors the pool-at-capacity inline fallback below.
         from gateway.session_context import async_delivery_supported

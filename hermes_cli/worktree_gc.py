@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Branches never considered for deletion, in any mode.
 _PROTECTED_BRANCHES = {"main", "master", "develop", "dev", "trunk"}
 
-# Trees owned by another lifecycle (kanban dispatcher gc) — never touched.
+# Legacy trees owned by another lifecycle — never touched.
 _KANBAN_RE = re.compile(r"^t_[0-9a-f]+$")
 
 # Bounded cherry probe: a branch this far ahead of upstream is a stale-base
@@ -125,7 +125,7 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     """Return (verdict, reason, untracked) for one tree under ``.worktrees/``."""
     path = str(entry)
     if _KANBAN_RE.match(entry.name):
-        return "keep", "kanban task tree (owned by kanban gc)", []
+        return "keep", "kanban task tree (legacy ownership)", []
     if _ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
         return "keep", "in use by a running hermes session", []
     tracked_dirty, untracked = _dirty_split(path)

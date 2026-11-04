@@ -14,7 +14,6 @@ import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
-import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
@@ -276,17 +275,6 @@ export function FloatingOverlays({
             sessionId={sid}
             t={theme}
           />
-        </FloatBox>
-      )
-    })
-  }
-
-  if (overlay.petPicker) {
-    widgets.push({
-      id: 'pet-picker',
-      render: width => (
-        <FloatBox color={theme.color.border}>
-          <PetPicker gw={gw} maxWidth={width} onClose={() => patchOverlayState({ petPicker: false })} t={theme} />
         </FloatBox>
       )
     })

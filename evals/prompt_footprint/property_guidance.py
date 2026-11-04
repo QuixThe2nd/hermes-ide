@@ -27,7 +27,7 @@ def main():
         agent = SimpleNamespace(
             load_soul_identity=False, skip_context_files=True, valid_tool_names=[],
             _task_completion_guidance=False, _tool_use_enforcement=False,
-            _environment_probe=False, _kanban_worker_guidance="", _memory_store=None,
+            _environment_probe=False, _memory_store=None,
             _memory_manager=None, model="", provider="", platform="desktop",
             pass_session_id=False, session_id="", _emit_status=lambda *args: None,
         )

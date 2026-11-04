@@ -679,7 +679,7 @@ _DESCRIBE_SUBJECT_BUILDERS: dict[str, Callable[[str, dict], str | None]] = {
 }
 
 
-# ── describe: action-style tools (skill/cron/process/memory/discord/kanban) ──
+# ── describe: action-style tools (skill/cron/process/memory/discord) ──
 # Same posture as the builders above: fixed verb tables validated against each
 # tool's known action enum (never reflected from the raw argument), with only
 # allowlisted safe fields as subjects — IDs, names, targets, domains. Payloads
@@ -1107,15 +1107,6 @@ def _describe_clarify_phrase(_tool_name: str, _args: dict) -> str | None:
     return "Asking a clarifying question"  # question body never renders
 
 
-_KANBAN_STATUS_ENUM = frozenset({"triage", "todo", "ready", "running", "blocked", "done", "archived"})
-
-
-def _describe_kanban_list_phrase(_tool_name: str, args: dict) -> str | None:
-    status = _describe_arg(args, "status")
-    status = status if status in _KANBAN_STATUS_ENUM else None  # enum-validated, never reflected
-    return f"Listing Kanban tasks with status {status}" if status else "Listing Kanban tasks"
-
-
 # ── describe: fixed action-only labels for opaque/private payloads ──
 # Browser interactions, agent/research delegation, Hindsight, media: subjects
 # are keystrokes, prompts, credentials or generated content — all payload. The
@@ -1148,13 +1139,6 @@ def _describe_terminal_phrase(_tool_name: str, args: dict) -> str | None:
 def _describe_x_search_phrase(_tool_name: str, args: dict) -> str | None:
     query = _describe_safe_str(args.get("query"))
     return f"Searching X for {query}" if query else "Searching X"
-
-
-def _describe_kanban_task_phrase(label: str):
-    def _build(_tool_name: str, args: dict) -> str | None:
-        task_id = _describe_arg(args, "task_id")
-        return f"{label} {task_id}" if task_id else label
-    return _build
 
 
 _DESCRIBE_SUBJECT_BUILDERS.update({
@@ -1208,16 +1192,6 @@ _DESCRIBE_SUBJECT_BUILDERS.update({
     "discord_history": _describe_discord_history_phrase,
     "web_extract": _describe_web_extract_phrase,
     "clarify": _describe_clarify_phrase,
-    "kanban_list": _describe_kanban_list_phrase,
-    "kanban_show": _describe_kanban_task_phrase("Reading Kanban task"),
-    "kanban_complete": _describe_kanban_task_phrase("Completing Kanban task"),
-    "kanban_block": _describe_kanban_task_phrase("Blocking Kanban task"),
-    "kanban_heartbeat": _describe_kanban_task_phrase("Sending Kanban heartbeat for"),
-    "kanban_request_review": _describe_kanban_task_phrase("Requesting review of Kanban task"),
-    "kanban_request_changes": _describe_kanban_task_phrase("Requesting changes on Kanban task"),
-    "kanban_comment": _describe_kanban_task_phrase("Commenting on Kanban task"),
-    "kanban_attach": _describe_kanban_task_phrase("Attaching a file to Kanban task"),
-    "kanban_attach_url": _describe_kanban_task_phrase("Attaching a URL to Kanban task"),
 })
 
 # The Discord MCP server exposes operation-in-name tools with camelCase fields

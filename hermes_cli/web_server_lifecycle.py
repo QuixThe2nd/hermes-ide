@@ -349,7 +349,7 @@ def _start_parent_death_watchdog() -> None:
 # a bare ERROR + exit 1, indistinguishable from a crash for the Desktop spawn.
 # We probe the exact bind first and emit ONE machine-readable stdout line plus a
 # distinct exit code. 75 == BSD EX_TEMPFAIL, the codebase's "transient
-# environmental condition" convention (gateway/restart.py, kanban_db.py).
+# environmental condition" convention (gateway/restart.py).
 PORT_IN_USE_EXIT_CODE = 75
 _PORT_IN_USE_SENTINEL = "BACKEND_PORT_IN_USE port={port}"
 

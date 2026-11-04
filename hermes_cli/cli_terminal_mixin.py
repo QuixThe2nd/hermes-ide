@@ -56,10 +56,6 @@ class CLITerminalMixin:
         if getattr(self, "_terminal_io_broken", False):
             return
         self._terminal_io_broken = True
-        try:
-            self._pet_stop_anim()
-        except Exception:
-            pass
         logger.warning(
             "Terminal I/O broken%s — freezing UI paints to avoid redraw storm (#81521)",
             f" ({reason})" if reason else "")
@@ -132,7 +128,6 @@ class CLITerminalMixin:
         if getattr(self, "_terminal_io_broken", False):
             return
         _replay_output_history()
-        self._pet_queue_kitty_frame()
         self._app_invalidate(app, "force_full_redraw", swallow=True)
 
     def _schedule_focus_regain_redraw(self, min_interval: float = 1.0) -> None:
@@ -250,8 +245,6 @@ class CLITerminalMixin:
                 pass
         if new_width is not None:
             self._last_resize_width = new_width
-        if width_changed:
-            self._pet_queue_kitty_frame()
         original_on_resize()
         self._schedule_status_bar_unsuppress(app)
 

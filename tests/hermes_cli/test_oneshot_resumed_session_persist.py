@@ -9,8 +9,8 @@ state.db): the one-shot path had no end-of-run durable retry and never
 finalized the session row, unlike the interactive CLI (which retries on the
 next turn and ends the session with ``cli_close`` on quit).
 
-The fix routes every one-shot exit (quiet ``-Q -q``, human ``-q``, and the
-kanban SIGTERM path) through ``cli._flush_one_shot_session_store``: a final
+The fix routes every one-shot exit (quiet ``-Q -q``, human ``-q``, and
+SIGTERM) through ``cli._flush_one_shot_session_store``: a final
 ``_persist_session`` retry (idempotent via the per-message persisted
 markers), a token-count drain, and ``end_session(..., "cli_close")``.
 """

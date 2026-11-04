@@ -11,7 +11,7 @@ metadata:
     tags: [video, presenter, avatar, lipsync, tts, captions, creative]
     category: creative
     homepage: https://github.com/cclank/lanshu-create-ai-presenter-video
-    related_skills: [hyperframes, kanban-video-orchestrator, comfyui]
+    related_skills: [hyperframes, comfyui]
 ---
 
 # AI Presenter Video

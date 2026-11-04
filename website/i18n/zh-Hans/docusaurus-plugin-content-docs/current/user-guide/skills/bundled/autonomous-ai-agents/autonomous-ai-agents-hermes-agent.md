@@ -299,7 +299,6 @@ hermes uninstall            Uninstall Hermes
 /reload-mcp          Reload MCP servers
 /cron                Manage cron jobs (CLI)
 /curator [sub]       Background skill maintenance (status, run, pin, archive, …)
-/kanban [sub]        Multi-profile collaboration board (tasks, links, comments)
 /plugins             List plugins (CLI)
 ```
 
@@ -432,7 +431,6 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 | `clarify` | 向用户提问澄清 |
 | `messaging` | 跨平台消息发送 |
 | `todo` | 会话内任务规划和跟踪 |
-| `kanban` | 多 agent 工作队列工具（仅限 worker） |
 | `debugging` | 额外的内省/调试工具（默认关闭） |
 | `safe` | 最小化、低风险工具集，用于受限会话 |
 | `spotify` | Spotify 播放和播放列表控制 |
@@ -661,17 +659,6 @@ agent 创建的 skill 的后台维护。跟踪使用情况，将闲置 skill 标
 
 配置：`curator.*`（`enabled`、`interval_hours`、`min_idle_hours`、`stale_after_days`、`archive_after_days`、`backup.*`）。
 用户文档：https://hermes-agent.nousresearch.com/docs/user-guide/features/curator
-
-### Kanban（多 agent 工作队列）
-
-用于多 profile/多 worker 协作的持久化 SQLite 看板（kanban）。用户通过 `hermes kanban <verb>` 驱动；调度器生成的 worker 看到由 `HERMES_KANBAN_TASK` 控制的专注 `kanban_*` toolset，orchestrator profile 可以选择加入更广泛的 `kanban` toolset。普通会话除非配置，否则没有任何 `kanban_*` schema 占用。
-
-- **CLI 动词（常用）：** `init`、`create`、`list`（别名 `ls`）、`show`、`assign`、`link`、`unlink`、`comment`、`complete`、`block`、`unblock`、`archive`、`tail`。不常用：`watch`、`stats`、`runs`、`log`、`dispatch`、`daemon`、`gc`。
-- **Worker/orchestrator toolset：** `kanban_show`、`kanban_complete`、`kanban_block`、`kanban_heartbeat`、`kanban_comment`、`kanban_create`、`kanban_link`；在调度器生成的任务之外显式启用 `kanban` toolset 的 profile 还可获得 `kanban_list` 和 `kanban_unblock` 用于看板路由。
-- **调度器** 默认在 gateway 内运行（`kanban.dispatch_in_gateway: true`）——回收过期认领、推进就绪任务、原子认领、生成已分配的 profile。在配置的 `kanban.failure_limit` 次连续非成功尝试后自动阻塞任务（默认：2）。
-- **隔离：** 看板是硬边界（worker 在环境中固定 `HERMES_KANBAN_BOARD`）；租户是看板内用于工作区路径和记忆键隔离的软命名空间。
-
-用户文档：https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban
 
 ---
 

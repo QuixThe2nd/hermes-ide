@@ -373,75 +373,6 @@ export interface MessageReaction {
   seen?: boolean | null
   [key: string]: unknown
 }
-export interface PetCancelParams {
-  profile?: string | null
-  token?: string | null
-}
-export interface PetCancelResult {
-  ok: boolean
-}
-export interface PetGenerateStatusResult {
-  available: boolean
-  providers: PetGenProvider[]
-}
-/** ``agent/pet/generate/imagegen.py::list_sprite_providers`` row. */
-export interface PetGenProvider {
-  name: string
-  label: string
-  default: boolean
-}
-/** ``prompt`` or a ``referenceImage`` data URL is required (the handler answers 4004 without one). */
-export interface PetGenerateParams {
-  profile?: string | null
-  prompt?: string | null
-  referenceImage?: string | null
-  count?: number | null
-  style?: string | null
-  provider?: string | null
-}
-export interface PetGenerateResult {
-  ok: boolean
-  token: string
-  drafts: PetDraft[]
-}
-export interface PetDraft {
-  index: number
-  dataUri: string
-}
-export interface PetHatchParams {
-  profile?: string | null
-  token: string
-  name: string
-  cancelToken?: string | null
-  index?: number | null
-  description?: string | null
-  prompt?: string | null
-  style?: string | null
-  provider?: string | null
-}
-/** The hatched pet is installed but NOT active (``pet.select`` adopts, ``pet.remove`` discards). */
-export interface PetHatchResult {
-  ok: boolean
-  slug: string
-  displayName: string
-  warnings?: unknown[]
-  pet: PetSpritePayload
-}
-export interface PetSpritePayload {
-  slug?: string | null
-  displayName?: string | null
-  mime?: string | null
-  spritesheetBase64?: string | null
-  spritesheetRevision?: string | null
-  frameW?: number | null
-  frameH?: number | null
-  framesPerState?: number | null
-  framesByState?: Record<string, number> | null
-  framesByRow?: Record<string, number> | null
-  loopMs?: number | null
-  scale?: number | null
-  stateRows?: string[] | null
-}
 export interface ProjectFactsParams {
   profile?: string | null
   cwd?: string | null
@@ -1550,7 +1481,7 @@ export interface ProfileSessionPreview {
   last_active?: number
   message_count?: number
 }
-/** Newest kanban/tool worker row, so rosters can show a profile as working. */
+/** Newest tool-worker row, so rosters can show a profile as working. */
 export interface ProfileWorkerSession {
   id: string
   source?: string
@@ -1884,7 +1815,6 @@ export interface ProjectInfo {
   description?: string | null
   icon?: string | null
   color?: string | null
-  board_slug?: string | null
   primary_path?: string | null
   archived?: boolean
   created_at: number
@@ -1915,7 +1845,6 @@ export interface ProjectsCreateParams {
   description?: string | null
   icon?: string | null
   color?: string | null
-  board_slug?: string | null
   use?: boolean
 }
 export interface OptionalProjectResult {
@@ -1929,7 +1858,6 @@ export interface ProjectsUpdateParams {
   description?: string | null
   icon?: string | null
   color?: string | null
-  board_slug?: string | null
 }
 export interface ProjectsAddFolderParams {
   profile?: string | null
@@ -2046,13 +1974,12 @@ export interface ProjectTreeRepo {
   groups?: ProjectTreeLane[]
   sessionCount?: number
 }
-/** One branch / worktree / kanban lane inside a repo; ``sessions`` is empty unless hydrated. */
+/** One branch / worktree lane inside a repo; ``sessions`` is empty unless hydrated. */
 export interface ProjectTreeLane {
   id: string
   label: string
   path?: string | null
   isMain?: boolean
-  isKanban?: boolean
   sessions?: ProjectTreeSession[]
 }
 /** ``methods_projects._project_tree_row`` + ``project_tree.stamp_profile``: the minimal row the sidebar renders, stamped with the profile it belongs to. */
@@ -2093,115 +2020,6 @@ export interface ProjectsProjectSessionsParams {
 }
 export interface ProjectsProjectSessionsResult {
   project?: ProjectTreeNode | null
-}
-/** ``knownRevision``: the spritesheet revision the caller already holds (send-once bytes). */
-export interface PetInfoParams {
-  profile?: string | null
-  knownRevision?: string | null
-}
-/** ``server._pet_sprite_payload`` behind ``enabled``; every sprite field is absent when the pet display is off, ``spritesheetBase64`` is elided when ``spritesheetUnchanged``. */
-export interface PetInfoResult {
-  enabled: boolean
-  slug?: string | null
-  displayName?: string | null
-  mime?: string | null
-  spritesheetBase64?: string | null
-  spritesheetRevision?: string | null
-  spritesheetUnchanged?: boolean | null
-  frameW?: number | null
-  frameH?: number | null
-  framesPerState?: number | null
-  framesByState?: Record<string, number> | null
-  framesByRow?: Record<string, number> | null
-  loopMs?: number | null
-  scale?: number | null
-  stateRows?: string[] | null
-  [key: string]: unknown
-}
-export interface PetInfoMetaResult {
-  enabled: boolean
-  slug?: string | null
-  displayName?: string | null
-  scale?: number | null
-  spritesheetRevision?: string | null
-}
-/** ``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width. */
-export interface PetCellsParams {
-  profile?: string | null
-  state?: string | null
-  cols?: number | null
-  graphics?: boolean
-}
-/** Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics`` set): ``frames`` are transmit escapes and ``placeholder`` the text grid. */
-export interface PetCellsResult {
-  enabled: boolean
-  slug?: string | null
-  displayName?: string | null
-  state?: string | null
-  cols?: number | null
-  frameMs?: number | null
-  frames?: number[][][][] | string[] | null
-  scale?: number | null
-  graphics?: string | null
-  imageId?: number | null
-  color?: string | null
-  rows?: number | null
-  placeholder?: string[] | null
-}
-export interface PetGalleryParams {
-  profile?: string | null
-  localOnly?: boolean
-}
-export interface PetGalleryResult {
-  enabled: boolean
-  active?: string
-  pets?: PetGalleryEntry[]
-}
-export interface PetGalleryEntry {
-  slug: string
-  displayName: string
-  installed: boolean
-  spritesheetUrl?: string
-  curated?: boolean | null
-  generated?: boolean
-}
-export interface PetSlugParams {
-  profile?: string | null
-  slug: string
-}
-export interface PetSlugResult {
-  ok: boolean
-  slug: string
-  displayName?: string | null
-}
-export interface PetRenameParams {
-  profile?: string | null
-  slug: string
-  name: string
-}
-export interface PetExportResult {
-  ok: boolean
-  filename: string
-  zipBase64: string
-}
-/** ``url``: spritesheet source for a not-yet-installed pet. */
-export interface PetThumbParams {
-  profile?: string | null
-  slug: string
-  url?: string | null
-}
-export interface PetThumbResult {
-  ok: boolean
-  slug: string
-  dataUri?: string | null
-}
-export interface PetScaleParams {
-  profile?: string | null
-  scale?: unknown
-}
-export interface PetScaleResult {
-  ok: boolean
-  scale: number
 }
 /** ``text`` is normally a string; the relay / hosted paths may hand a structured (parts list) payload, and the busy path renders it. Truncation (rewind / edit / regenerate) needs explicit consent: ``confirm_truncate`` plus one durable target (``truncate_before_row_id`` preferred, ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``). */
 export interface PromptSubmitParams {
@@ -4263,33 +4081,7 @@ export interface WakeDetectedPayload {
   profile?: string | null
   start_new_session: boolean
 }
-/** ``change_watcher._pet_changed_payload`` — ``pet.info.meta``-shaped; ``{enabled: false}`` when off. */
-export interface PetChangedPayload {
-  enabled: boolean
-  slug?: string | null
-  displayName?: string | null
-  scale?: number | null
-  spritesheetRevision?: string | null
-  [key: string]: unknown
-}
-/** ``methods_session`` pet.generate: token-only init frame, then one per draft. */
-export interface PetGenerateProgressPayload {
-  token: string
-  count: number
-  index?: number | null
-  dataUri?: string | null
-  [key: string]: unknown
-}
-/** ``methods_session`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form. */
-export interface PetHatchProgressPayload {
-  event: string
-  detail?: string | null
-  state?: string | null
-  done?: string | null
-  total?: string | null
-  [key: string]: unknown
-}
-/** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed. */
+/** ``change_watcher._CHANGE_WATCHES`` payload fn — currently ``{}`` for every watch. */
 export type ChangeSignalPayload = Record<string, unknown>
 export interface RequestCancelPayload {
   id: string
@@ -4497,36 +4289,6 @@ export interface RpcMethods {
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
   'pdf.attach': { params: PdfAttachParams; result: PdfAttachResult }
-  /** Stop an in-flight pet generate/hatch by token (idempotent). */
-  'pet.cancel': { params: PetCancelParams; result: PetCancelResult }
-  /** Half-block cell frames (or a kitty placement) for one pet state. */
-  'pet.cells': { params: PetCellsParams; result: PetCellsResult }
-  /** Turn the pet display off from the desktop picker. */
-  'pet.disable': { params: ProfileParams; result: OkResult }
-  /** Export an installed pet as a re-importable .zip. */
-  'pet.export': { params: PetSlugParams; result: PetExportResult }
-  /** Petdex gallery + local install state (installed-only offline); localOnly skips the remote manifest. */
-  'pet.gallery': { params: PetGalleryParams; result: PetGalleryResult }
-  /** Candidate base looks for a new pet (draft step); drafts also stream via pet.generate.progress. */
-  'pet.generate': { params: PetGenerateParams; result: PetGenerateResult }
-  /** Whether pet generation is possible (a reference-capable image backend) and which providers. */
-  'pet.generate.status': { params: ProfileParams; result: PetGenerateStatusResult }
-  /** Turn a base draft into a full spritesheet pet; progress streams via pet.hatch.progress. */
-  'pet.hatch': { params: PetHatchParams; result: PetHatchResult }
-  /** Active pet for sprite renderers: spritesheet (base64) + frame geometry + state-row taxonomy. */
-  'pet.info': { params: PetInfoParams; result: PetInfoResult }
-  /** Cheap active-pet metadata used to avoid full payload refreshes. */
-  'pet.info.meta': { params: ProfileParams; result: PetInfoMetaResult }
-  /** Uninstall a pet (delete its directory); if it was active, turn the display off. */
-  'pet.remove': { params: PetSlugParams; result: PetSlugResult }
-  /** Rename a pet's display name + realign its slug/dir; follows the active slug in config. */
-  'pet.rename': { params: PetRenameParams; result: PetSlugResult }
-  /** Persist display.pet.scale (clamped to engine bounds) from the desktop slider. */
-  'pet.scale': { params: PetScaleParams; result: PetScaleResult }
-  /** Adopt a pet: install (if needed) + activate; writes display.pet.* to config. */
-  'pet.select': { params: PetSlugParams; result: PetSlugResult }
-  /** Idle-frame PNG data URI for the picker (desktop CSP breaks CDN <img>). */
-  'pet.thumb': { params: PetThumbParams; result: PetThumbResult }
   /** Cheapest liveness probe; answered on the WS reader thread even while every agent is mid-turn. */
   ping: { params: PingParams; result: PingResult }
   /** Loaded plugin manager entries (legacy flat view); the Plugins Hub uses plugins.manage list. */
@@ -4641,7 +4403,7 @@ export interface RpcMethods {
   'session.history': { params: SessionHistoryParams; result: SessionHistoryResult }
   /** Stop the running turn (and streaming TTS); retires the crash-recovery marker. */
   'session.interrupt': { params: SessionInterruptParams; result: SessionInterruptResult }
-  /** Human-facing stored sessions, most recent first (sub-agent / kanban sources denied). */
+  /** Human-facing stored sessions, most recent first (internal worker sources denied). */
   'session.list': { params: SessionListParams; result: SessionListResult }
   /** Most recent human-facing session; errors fold into a null session_id. */
   'session.most_recent': { params: SessionMostRecentParams; result: SessionMostRecentResult }
@@ -4851,21 +4613,6 @@ export const RPC_METHODS = [
   'model.save_key',
   'paste.collapse',
   'pdf.attach',
-  'pet.cancel',
-  'pet.cells',
-  'pet.disable',
-  'pet.export',
-  'pet.gallery',
-  'pet.generate',
-  'pet.generate.status',
-  'pet.hatch',
-  'pet.info',
-  'pet.info.meta',
-  'pet.remove',
-  'pet.rename',
-  'pet.scale',
-  'pet.select',
-  'pet.thumb',
   'ping',
   'plugins.list',
   'plugins.manage',
@@ -5089,12 +4836,6 @@ export interface BackendGatewayEventMap {
   'pairing.changed': ChangeSignalPayload
   /** Focus / reveal a named desktop pane. */
   'pane.reveal': PaneRevealPayload
-  /** The active pet / its spritesheet changed (watcher). */
-  'pet.changed': PetChangedPayload
-  /** Pet base-draft generation progress. */
-  'pet.generate.progress': PetGenerateProgressPayload
-  /** Pet hatch (row drawing) progress. */
-  'pet.hatch.progress': PetHatchProgressPayload
   /** gateway_state.json moved; refetch platform status. */
   'platforms.changed': ChangeSignalPayload
   /** Close the preview pane or one tab. */
@@ -5205,9 +4946,6 @@ export const GATEWAY_EVENT_TYPES = [
   'notification.show',
   'pairing.changed',
   'pane.reveal',
-  'pet.changed',
-  'pet.generate.progress',
-  'pet.hatch.progress',
   'platforms.changed',
   'preview.close',
   'preview.open',

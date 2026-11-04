@@ -3144,7 +3144,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries = [e for e in _target_node_entries if e not in path_entries] + path_entries
         user_home = Path(home_dir)
         identity_lines = f"User={username}\nGroup={group_name}\n"
-        # Restart-safe cron/Kanban workers cross `systemd-run --user`, which needs this user's manager;
+        # Restart-safe cron workers cross `systemd-run --user`, which needs this user's manager;
         # without the ordering the gateway and user@<uid>.service race at boot and the one-shot bus
         # adoption in run_gateway() can miss (#104893).
         ordering_lines = f"After=user@{uid}.service\nWants=user@{uid}.service\n"
@@ -3407,7 +3407,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
 def _print_linger_enable_warning(username: str, detail: str | None = None, *, system: bool = False) -> None:
     print()
     if system:
-        print(f"⚠ Linger not enabled for {username} — cron and Kanban workers cannot start (no user D-Bus).")
+        print(f"⚠ Linger not enabled for {username} — cron workers cannot start (no user D-Bus).")
     else:
         print("⚠ Linger not enabled — gateway may stop when you close this terminal.")
     if detail:
@@ -3427,7 +3427,7 @@ def _ensure_linger_enabled(username: str | None = None, *, system: bool = False)
 
     A user unit needs linger so the gateway survives logout. A system unit (``system=True``) needs
     it for its ``User=`` so ``user@<uid>.service`` provides the D-Bus that ``systemd-run --user
-    --scope`` — every restart-safe cron/Kanban worker — connects to (#104893). Returns True only
+    --scope`` — every restart-safe cron worker — connects to (#104893). Returns True only
     when linger was enabled by this call.
     """
     if is_termux() or not is_linux():
@@ -3454,7 +3454,7 @@ def _ensure_linger_enabled(username: str | None = None, *, system: bool = False)
         return False
 
     if system:
-        print(f"Enabling linger for {username} so cron and Kanban workers can reach systemd-run --user...")
+        print(f"Enabling linger for {username} so cron workers can reach systemd-run --user...")
     else:
         print("Enabling linger so the gateway survives SSH logout...")
     try:
@@ -3483,7 +3483,7 @@ def _ensure_system_service_linger(username: str) -> None:
     import pwd
     uid = pwd.getpwnam(username).pw_uid  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
     if _wait_for_target_user_bus(uid):
-        print(f"✓ /run/user/{uid}/bus is up — cron and Kanban workers can use systemd-run --user")
+        print(f"✓ /run/user/{uid}/bus is up — cron workers can use systemd-run --user")
     else:
         print(f"⚠ /run/user/{uid}/bus did not appear within 5s.")
         print(f"  Start the user manager: sudo systemctl start user@{uid}.service")
@@ -5153,8 +5153,8 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
 
 def _guard_supervised_gateway_conflict(force: bool = False) -> None:
     """Refuse a foreground gateway when a service manager already supervises one: a shell-launched run
-    becomes a second dispatcher that escapes the cgroup, survives ``systemctl restart``, and writes the
-    shared kanban DB concurrently (multi-writer SQLite WAL corruption). ``--force`` starts anyway.
+    becomes a second gateway that escapes the cgroup, survives ``systemctl restart``, and competes for
+    the same sessions and platform connections. ``--force`` starts anyway.
 
     See #35240.
     """
@@ -5170,9 +5170,9 @@ def _guard_supervised_gateway_conflict(force: bool = False) -> None:
 
     print_error(f"A gateway is already running under {snapshot.manager} for this profile.")
     print(
-        "  Starting another one from a shell leaves an orphan dispatcher that\n"
-        "  escapes the service, survives restarts, and writes to the same kanban\n"
-        "  DB concurrently — which can corrupt it. Restart the supervised gateway\n"
+        "  Starting another one from a shell leaves an orphan gateway that\n"
+        "  escapes the service, survives restarts, and competes for the same\n"
+        "  sessions and platform connections. Restart the supervised gateway\n"
         "  instead:"
     )
     print()
@@ -5643,7 +5643,7 @@ def _platform_status(platform: dict) -> str:
 # Operator wording for the out-of-loop watchdog exit reasons stamped by gateway/shutdown_watchdog.py.
 _WATCHDOG_EXIT_REASONS = {
     "loop_liveness_watchdog": (
-        "event loop stopped dispatching (housekeeping, cron and the kanban dispatcher froze); "
+        "event loop stopped dispatching (housekeeping and cron froze); "
         f"the liveness watchdog exited with code {GATEWAY_SERVICE_RESTART_EXIT_CODE} for the supervisor to restart it"
     ),
     "shutdown_watchdog": "shutdown drain wedged; the shutdown watchdog forced the exit (see logs/gateway-shutdown-watchdog.log)",
@@ -5687,7 +5687,7 @@ def _runtime_health_lines() -> list[str]:
             )
             return lines
         # PID alive but housekeeping stopped re-stamping the file: the reporter's "not a crash" case
-        # (#113372) — the process looks 'running' while housekeeping/cron/kanban dispatch are frozen.
+        # (#113372) — the process looks 'running' while housekeeping/cron are frozen.
         age = runtime_status_heartbeat_age_s(state)
         if gateway_state != "draining" and age is not None:
             lines.append(
@@ -5699,7 +5699,7 @@ def _runtime_health_lines() -> list[str]:
         lines.append(f"⚠ Last startup issue: {exit_reason}")
     elif gateway_state == "degraded" and exit_reason:
         # An out-of-loop watchdog hard-exited the process (#113372): the loop stopped dispatching, so
-        # housekeeping/cron/kanban froze together. Without this arm the file would read 'running'.
+        # housekeeping/cron froze together. Without this arm the file would read 'running'.
         lines.append(f"⚠ Gateway exited degraded: {_WATCHDOG_EXIT_REASONS.get(exit_reason, exit_reason)}")
     elif gateway_state == "draining":
         action = "restart" if state.get("restart_requested") else "shutdown"

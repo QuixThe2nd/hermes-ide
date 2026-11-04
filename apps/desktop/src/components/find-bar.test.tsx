@@ -927,7 +927,7 @@ describe('FindBar', () => {
 
   it('does not render on overlay routes (settings, command center, …)', () => {
     // Match isOverlayView: agents, command-center, cron, profiles, settings,
-    // starmap, webhooks. Test with the most commonly hit one.
+    // webhooks. Test with the most commonly hit one.
     openFindBar()
     renderFindBar('/settings')
 

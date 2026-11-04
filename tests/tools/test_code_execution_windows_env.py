@@ -309,7 +309,7 @@ class TestPosixEquivalence:
         "HERMES_PROFILE": "default",                 # allowlisted → kept
         "HERMES_INTERACTIVE": "1",                   # not allowlisted → dropped
         "HERMES_BASE_URL": "https://api.internal",   # not allowlisted → dropped
-        "HERMES_KANBAN_DB": "postgres://u:p@h/db",   # not allowlisted → dropped
+        "HERMES_CUSTOM_DB": "postgres://u:p@h/db",    # not allowlisted → dropped
         # Secret-substring blocks
         "OPENAI_API_KEY": "sk-xxx",
         "GITHUB_TOKEN": "ghp_xxx",

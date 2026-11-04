@@ -758,7 +758,7 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
 def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float) -> list:
     """Phase 1, stat-only age filter -> ``[(entry, mtime, force)]`` for trees past their soft cutoff.
 
-    Kanban trees (``t_<hex>``) belong to the kanban gc. ``hermes-*`` trees age on *max_age_hours*,
+    Legacy Kanban trees (``t_<hex>``) are never collected here. ``hermes-*`` trees age on *max_age_hours*,
     deliberately named trees at 3x; *force* marks the hard (3x) tier.
     """
     kanban_re = re.compile(r"^t_[0-9a-f]+$")

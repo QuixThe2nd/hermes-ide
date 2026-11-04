@@ -49,7 +49,6 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes login` / `logout` | **已弃用** — 请改用 `hermes auth`。 |
 | `hermes status` | 显示 agent、auth 和平台状态。 |
 | `hermes cron` | 检查并触发 cron 调度器。 |
-| `hermes kanban` | 多 profile 协作看板（任务、链接、调度器）。 |
 | `hermes webhook` | 管理用于事件驱动激活的动态 webhook 订阅。 |
 | `hermes hooks` | 检查、审批或删除 `config.yaml` 中声明的 shell 脚本 hook。 |
 | `hermes doctor` | 诊断配置和依赖问题。 |
@@ -378,73 +377,6 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `remove` | 删除调度任务。 |
 | `status` | 检查 cron 调度器是否正在运行。 |
 | `tick` | 运行到期任务一次后退出。 |
-
-## `hermes kanban`
-
-```bash
-hermes kanban [--board <slug>] <action> [options]
-```
-
-多 profile、多项目协作看板。每个安装可托管多个看板（每个项目、仓库或领域一个）；每个看板是独立的队列，拥有自己的 SQLite 数据库和调度器作用域。新安装从名为 `default` 的单个看板开始，其数据库为 `~/.hermes/kanban.db`（向后兼容）；其他看板位于 `~/.hermes/kanban/boards/<slug>/kanban.db`。嵌入在 gateway 中的调度器每次 tick 扫描所有看板。
-
-**全局标志（适用于以下所有操作）：**
-
-| 标志 | 用途 |
-|------|---------|
-| `--board <slug>` | 操作特定看板。默认为当前看板（通过 `hermes kanban boards switch`、`HERMES_KANBAN_BOARD` 环境变量或 `default` 设置）。 |
-
-**这是人工/脚本操作界面。** 调度器生成的 agent worker 通过专用的 `kanban_*` [toolset](../user-guide/features/kanban.md#how-workers-interact-with-the-board)（`kanban_show`、`kanban_complete`、`kanban_block`、`kanban_create`、`kanban_link`、`kanban_comment`、`kanban_heartbeat`；编排器 profile 还可使用 `kanban_list` 和 `kanban_unblock`）驱动看板，而非调用 `hermes kanban`。Worker 的环境中固定了 `HERMES_KANBAN_BOARD`，因此物理上无法看到其他看板。
-
-| 操作 | 用途 |
-|--------|---------|
-| `init` | 如果缺少则创建 `kanban.db`。幂等操作。 |
-| `boards list` / `boards ls` | 列出所有看板及任务数量。支持 `--json`、`--all`（包含已归档）。 |
-| `boards create <slug>` | 创建新看板。标志：`--name`、`--description`、`--icon`、`--color`、`--switch`（设为活跃）。Slug 为 kebab-case，自动转小写。 |
-| `boards switch <slug>` / `boards use` | 将 `<slug>` 持久化为活跃看板（写入 `~/.hermes/kanban/current`）。 |
-| `boards show` / `boards current` | 打印当前活跃看板的名称、数据库路径和任务数量。 |
-| `boards rename <slug> "<name>"` | 更改看板的显示名称。Slug 不可变。 |
-| `boards rm <slug>` | 归档（默认）或硬删除看板。`--delete` 跳过归档步骤。已归档看板移至 `boards/_archived/<slug>-<ts>/`。`default` 看板拒绝此操作。 |
-| `create "<title>"` | 在活跃看板上创建新任务。标志：`--body`、`--assignee`、`--parent`（可重复）、`--workspace scratch\|worktree\|dir:<path>`、`--tenant`、`--priority`、`--triage`、`--idempotency-key`、`--max-runtime`、`--max-retries`、`--skill`（可重复）。 |
-| `list` / `ls` | 列出活跃看板上的任务。可用 `--mine`、`--assignee`、`--status`、`--tenant`、`--archived`、`--json` 过滤。 |
-| `show <id>` | 显示任务及其评论和事件。`--json` 用于机器输出。 |
-| `assign <id> <profile>` | 分配或重新分配。使用 `none` 取消分配。任务运行时拒绝此操作。 |
-| `link <parent> <child>` | 添加依赖关系。检测循环依赖。两个任务必须在同一看板上。 |
-| `unlink <parent> <child>` | 删除依赖关系。 |
-| `claim <id>` | 原子性地认领就绪任务。打印已解析的工作区路径。 |
-| `comment <id> "<text>"` | 追加评论。下一个认领该任务的 worker 会在其 `kanban_show()` 响应中读取到它。 |
-| `complete <id>` | 将任务标记为完成。标志：`--result`、`--summary`、`--metadata`。 |
-| `block <id> "<reason>"` | 将任务标记为等待人工输入。同时将原因追加为评论。 |
-| `schedule <id> "<reason>"` | 将时间延迟/后续工作停放到 `scheduled` 状态，使其不显示为人工阻塞项。 |
-| `unblock <id>` | 将已阻塞或已调度的任务返回就绪状态（如果依赖仍未完成则返回 `todo`）。 |
-| `archive <id>` | 从默认列表中隐藏。`gc` 将删除 scratch 工作区。 |
-| `tail <id>` | 跟踪任务的事件流。 |
-| `dispatch` | 对活跃看板执行一次调度器扫描。标志：`--dry-run`、`--max N`、`--failure-limit N`、`--json`。 |
-| `context <id>` | 打印 worker 将看到的完整上下文（标题 + 正文 + 父任务结果 + 评论）。 |
-| `specify <id>` / `specify --all` | 通过辅助 LLM 将 triage 列中的任务细化为具体规格（标题 + 包含目标、方案、验收标准的正文），然后将其提升到 `todo`。标志：`--tenant`（将 `--all` 限定到一个 tenant）、`--author`、`--json`。在 `config.yaml` 的 `auxiliary.triage_specifier` 下配置模型。 |
-| `decompose <id>` / `decompose --all` | 将 triage 列中的任务按描述拆分为子任务图，路由到专业 profile（编排器驱动路径）。当 LLM 判断任务不适合拆分时，回退到 specify 风格的单任务提升。与 `specify` 相同的标志。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 下配置模型。当 `kanban.auto_decompose: true`（默认）时，每次调度器 tick 也会自动运行。参见 [自动与手动编排](../user-guide/features/kanban.md#auto-vs-manual-orchestration)。 |
-| `gc` | 删除已归档任务的 scratch 工作区。 |
-
-示例：
-
-```bash
-# 创建第二个看板并在不切换的情况下向其添加任务。
-hermes kanban boards create atm10-server --name "ATM10 Server" --icon 🎮
-hermes kanban --board atm10-server create "Restart server" --assignee ops
-
-# 切换活跃看板以供后续调用使用。
-hermes kanban boards switch atm10-server
-hermes kanban list                  # 显示 atm10-server 的任务
-
-# 归档看板（可恢复）或硬删除。
-hermes kanban boards rm atm10-server
-hermes kanban boards rm atm10-server --delete
-```
-
-看板解析顺序（优先级从高到低）：`--board <slug>` 标志 → `HERMES_KANBAN_BOARD` 环境变量 → `~/.hermes/kanban/current` 文件 → `default`。
-
-所有操作也可作为 gateway 中的斜杠命令使用（`/kanban …`），参数界面相同——包括 `boards` 子命令和 `--board` 标志。
-
-完整设计——与 Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise 的对比、八种协作模式、四个用户故事、并发正确性证明——请参阅 [Kanban 用户指南](../user-guide/features/kanban.md)。
 
 ## `hermes webhook`
 

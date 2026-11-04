@@ -306,7 +306,6 @@ import { AppInstallerStrategy } from './updater/app-installer'
 import { ExternalStrategy } from './updater/external'
 import { resolveUpdaterMechanism } from './updater'
 import { writePendingRelaunch, consumePendingRelaunch } from './updater/relaunch'
-import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
   recordDismissed as recordPluginCompatDismissed
@@ -1098,7 +1097,7 @@ function writePersistedTranslucency(state) {
 let translucencyState = readPersistedTranslucency()
 
 // Chat windows whose webContents backing follows translucency (primary,
-// instance peers, session windows). The HUD / pet overlay / quick entry /
+// instance peers, session windows). The HUD / quick entry / wake indicator are
 // wake indicator are `transparent: true` windows that own their backgrounds —
 // painting a themed backing onto them would turn them into opaque rectangles.
 const translucencyBackedWindows = new WeakSet()
@@ -1185,7 +1184,7 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
 // themed anti-flash backing.
 //
 // Call sites also register the window in translucencyBackedWindows so a live
-// toggle can re-apply. The HUD, pet overlay, quick entry and wake indicator
+// toggle can re-apply. The HUD, quick entry and wake indicator
 // are `transparent: true` windows that own their backgrounds and are
 // deliberately not chat windows.
 function chatWindowSurfaceOptions() {
@@ -5596,7 +5595,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
 }
 
 // Assemble a single-file multipart/form-data body (FastAPI `UploadFile`
-// endpoints, e.g. kanban attachments). Hand-rolled because node's http has no
+// endpoints, e.g. plugin attachments). Hand-rolled because node's http has no
 // FormData and the payload is one file — a dependency would be overkill.
 function multipartBody(upload) {
   const boundary = `----hermes-${crypto.randomBytes(12).toString('hex')}`
@@ -13443,10 +13442,7 @@ async function runHermesStart() {
 // stays confined to the dev server / packaged file URL, and the preview /
 // devtools / zoom / context-menu affordances behave identically everywhere.
 //
-// `zoom` is opt-out for the pet overlay: it sizes its own OS window to fit the
-// sprite in unzoomed CSS px (overlayWindowSize -> setBounds) and has its own
-// Alt+wheel scale, so inheriting the global UI zoom would render the mascot
-// larger than its window and crop it. Chat windows keep zoom on.
+// `zoom` is opt-out for fixed-size helper windows; chat windows keep zoom on.
 function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
@@ -13737,7 +13733,7 @@ function createBrowserWindow(tabId) {
 // command). Unlike the compact session windows they carry no `?win` flag; a
 // separate `peer=1` marker prevents them from replaying app-launch source
 // restoration after joining that shared backend. The primary mainWindow stays
-// the notification / deep-link / pet-overlay anchor and
+// the notification / deep-link anchor and
 // is NOT tracked here. The set holds a strong reference so an open peer isn't
 // garbage-collected, and drops it on close.
 const instanceWindows = new Set<any>()
@@ -13861,7 +13857,7 @@ const introRevealController = createIntroRevealWindowController({
     mainWindow.show()
     mainWindow.focus()
   },
-  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('petOverlay'))
+  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('introReveal'))
 })
 
 registerChatOnboardingWindow({
@@ -13869,155 +13865,13 @@ registerChatOnboardingWindow({
   mainWindow: () => mainWindow
 })
 
-// The pet overlay: a single transparent, frameless, always-on-top window that
-// hosts ONLY the floating mascot. Shift-clicking the in-window pet "pops it out"
-// here so it can leave the app's bounds and stay visible while Hermes is
-// minimized (Codex-style task-completion glance). It carries no gateway
-// connection of its own — the main renderer is the single source of truth and
-// pushes pet state over IPC (hermes:pet-overlay:state); the overlay just renders
-// it. Control flows back (pop-in, composer submit) via hermes:pet-overlay:control.
-let petOverlayWindow = null
-
-function petOverlayUrl() {
-  if (DEV_SERVER) {
-    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=overlay#/`
-  }
-
-  return `${pathToFileURL(resolveRendererIndex()).toString()}?win=overlay#/`
-}
-
-function spawnPetOverlayWindow(bounds) {
-  const win = new BrowserWindow({
-    width: Math.max(80, Math.round(bounds?.width || 220)),
-    height: Math.max(80, Math.round(bounds?.height || 220)),
-    x: Number.isFinite(bounds?.x) ? Math.round(bounds.x) : undefined,
-    y: Number.isFinite(bounds?.y) ? Math.round(bounds.y) : undefined,
-    frame: false,
-    transparent: true,
-    resizable: false,
-    movable: true,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    // Windows/Linux need this so the helper window does not get its own
-    // taskbar/alt-tab entry. On macOS, cmd-tab is app-level and this can make
-    // the whole app look like it vanished when the only newly-created visible
-    // window is a frameless overlay. Use NSPanel + Mission Control hiding below
-    // instead, leaving the main Hermes app as the Dock/cmd-tab anchor.
-    skipTaskbar: !IS_MAC,
-    hasShadow: false,
-    alwaysOnTop: true,
-    // macOS panels are non-activating helper windows and can float over full
-    // screen spaces without becoming the app's main switcher window.
-    type: IS_MAC ? 'panel' : undefined,
-    hiddenInMissionControl: IS_MAC,
-    // Non-activating: the overlay must never become the app's key/main window,
-    // or it (a frameless, taskbar-skipping panel) becomes the app's switcher
-    // anchor and the Hermes icon drops out of cmd/alt-tab — especially when the
-    // main window is minimized. We flip this on only while the composer needs
-    // the keyboard (see hermes:pet-overlay:set-focusable).
-    focusable: false,
-    show: false,
-    // Fully transparent — the renderer paints only the sprite + bubble.
-    backgroundColor: '#00000000',
-    webPreferences: {
-      preload: PRELOAD_PATH,
-      contextIsolation: true,
-      sandbox: true,
-      nodeIntegration: false,
-      devTools: true,
-      // Keep the sprite animating + bubble updating while the main window is
-      // minimized/blurred — the whole point of the overlay.
-      backgroundThrottling: false
-    }
-  })
-
-  // Float above other apps and follow the user across desktops so the pet is
-  // always reachable. `floating` + `type: panel` is the macOS NSPanel path; the
-  // more aggressive `screen-saver` level can interfere with normal app/window
-  // switching semantics.
-  win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
-  win.setHiddenInMissionControl?.(true)
-
-  try {
-    // Electron docs: macOS may transform process type on each
-    // setVisibleOnAllWorkspaces() call unless skipTransformProcessType=true,
-    // which briefly hides the Dock/cmd-tab presence. Keep Hermes in the normal
-    // ForegroundApplication class so shift-clicking the pet never drops the app
-    // out of app switchers.
-    win.setVisibleOnAllWorkspaces(
-      true,
-      IS_MAC ? { visibleOnFullScreen: true, skipTransformProcessType: true } : undefined
-    )
-  } catch {
-    // Not supported everywhere — best effort.
-  }
-
-  // Pet overlay opts out of global UI zoom (see zoomWiringForWindowKind): it
-  // owns its window-fit + scale, and inheriting zoom would crop the sprite.
-  wireCommonWindowHandlers(win, zoomWiringForWindowKind('petOverlay'))
-
-  wireWindowReveal(win, { show: () => win.showInactive() })
-
-  // Log-only renderer lifecycle (#81290): a dead overlay must never resurrect
-  // itself over the app, but its loss belongs in desktop.log.
-  installWindowRendererLifecycle(win, { kind: 'overlay', callbacks: { log: rememberLog } })
-
-  win.on('closed', () => {
-    if (petOverlayWindow === win) {
-      petOverlayWindow = null
-    }
-
-    // If the overlay went away on its own (e.g. ⌘W), tell the main renderer to
-    // pop the pet back in so it doesn't stay hidden. Harmless echo when we're
-    // the ones who closed it (popInPet already cleared the active flag).
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'pop-in' })
-    }
-  })
-
-  attachRendererConsoleCapture(win, 'pet-overlay', rememberLog)
-  loadWindowUrl(win, petOverlayUrl(), 'Pet overlay')
-
-  return win
-}
-
-function openPetOverlay(bounds) {
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
-    if (bounds) {
-      petOverlayWindow.setBounds({
-        x: Math.round(bounds.x),
-        y: Math.round(bounds.y),
-        width: Math.max(80, Math.round(bounds.width)),
-        height: Math.max(80, Math.round(bounds.height))
-      })
-    }
-
-    petOverlayWindow.showInactive()
-
-    return petOverlayWindow
-  }
-
-  petOverlayWindow = spawnPetOverlayWindow(bounds)
-
-  return petOverlayWindow
-}
-
-function closePetOverlay() {
-  if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
-    petOverlayWindow.close()
-  }
-
-  petOverlayWindow = null
-}
-
 // ── HUD mode ────────────────────────────────────────────────────────────────
 //
 // The chrome-free floating chat: a transparent, frameless, always-on-top
 // window showing only the composer and its scrollback, so Hermes can be driven
 // while the user works in another app.
 //
-// Unlike the pet overlay / quick entry, this is a FULL app renderer with its
+// Unlike quick entry, this is a FULL app renderer with its
 // own gateway — the same thing createInstanceWindow() spawns, reshaped. That
 // is deliberate: the HUD renders the real chat surface, so its composer is the
 // app's composer (slash commands, attachments, queue, voice) instead of a
@@ -14346,8 +14200,7 @@ function spawnHudWindow(sessionId, profile) {
     // window grows a few px every drag (worse at >100% DPI scaling). The
     // composer drag calls setPosition, which must move the window, not resize
     // it. Resizing is done by the renderer's edge/corner handles through
-    // `hermes:hud:set-bounds`, which flips resizable on for the call — the
-    // same pattern the pet overlay uses for its wheel-scale.
+    // `hermes:hud:set-bounds`, which flips resizable on for the call.
     resizable: false,
     // macOS AppKit's constrainFrameRect clamps setBounds to the current
     // display unless this is on. The HUD is moved by renderer-driven
@@ -14597,9 +14450,9 @@ function spawnQuickEntryWindow() {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
-    // Same rationale as the pet overlay: on Windows/Linux keep the helper out
-    // of the taskbar/alt-tab list; on macOS use an NSPanel so the frameless
-    // capture window never becomes the app's cmd-tab anchor.
+    // On Windows/Linux keep the helper out of the taskbar/alt-tab list; on
+    // macOS use an NSPanel so the frameless capture window never becomes the
+    // app's cmd-tab anchor.
     skipTaskbar: !IS_MAC,
     hasShadow: true,
     alwaysOnTop: true,
@@ -14628,8 +14481,8 @@ function spawnQuickEntryWindow() {
     // Not supported everywhere — best effort.
   }
 
-  // Opts out of global UI zoom for the same reason as the pet overlay: it sizes
-  // its own OS window and a zoomed composer would overflow it.
+  // Opts out of global UI zoom: it sizes its own OS window and a zoomed
+  // composer would overflow it.
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('quickEntry'))
 
   // Log-only renderer lifecycle (#81290): a dead quick-entry window must never
@@ -14867,7 +14720,6 @@ function createWindow() {
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
-    closePetOverlay()
     wakeIndicatorController.close()
     introRevealController.destroy()
 
@@ -15334,14 +15186,6 @@ ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
   }
 
   setAndPersistZoomLevel(window, percentToZoomLevel(Number(percent)))
-})
-
-// --- Pet overlay (pop-out mascot) — see pet-overlay-ipc.ts. ---------------
-registerPetOverlayIpc({
-  getMainWindow: () => mainWindow,
-  getPetOverlayWindow: () => petOverlayWindow,
-  openPetOverlay,
-  closePetOverlay
 })
 
 // --- HUD mode (chrome-free floating chat) — see hud-ipc.ts. ---------------
@@ -17321,7 +17165,7 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
 
   // Repaint the native (Windows/Linux) titlebar overlay on every open chat
   // window, not just the primary — instance peers and session windows share the
-  // one app theme. applyTitleBarOverlay no-ops on the frameless pet overlay.
+  // one app theme.
   for (const win of BrowserWindow.getAllWindows()) {
     applyTitleBarOverlay(win)
   }
@@ -18701,9 +18545,6 @@ app.on('before-quit', event => {
     }
   }
 
-  // The always-on-top overlay isn't a "real" app window; close it so a stray
-  // pet can't keep the process alive or float over a quit app.
-  closePetOverlay()
   wakeIndicatorController.close()
   introRevealController.destroy()
 

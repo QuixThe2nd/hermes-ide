@@ -22,7 +22,7 @@ export const fmtDayTime = new Intl.DateTimeFormat(undefined, {
 // Medium date + short time (command center session detail).
 export const fmtDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-// Date only, "5 Jun 2026" (starmap tooltip).
+// Date only, "5 Jun 2026".
 export const fmtDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 
 // Month name alone / with year — session-list date-bucket dividers ("September",

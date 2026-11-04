@@ -53,11 +53,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # conftest is imported before any test module, so setting it here closes that
 # window. The per-test fixture still applies for everything after import.
 #
-# ORDER MATTERS: the kanban write guard's deny-list (further down) must know
-# the REAL Hermes root — capture it BEFORE the sandbox rewires HERMES_HOME,
-# otherwise the deny-list would point at the throwaway tempdir and the guard
-# would silently stop protecting the operator's actual ~/.hermes (#69385).
-_PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
+# Capture the pre-sandbox root for the live-state write guard below.
 _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
 
 
@@ -318,19 +314,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
     "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
-    # Kanban path/board pins must never leak from a developer shell or
-    # dispatched worker into tests; otherwise tests can write fake tasks to
-    # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.
-    "HERMES_KANBAN_DB",
-    "HERMES_KANBAN_BOARD",
-    "HERMES_KANBAN_HOME",
-    "HERMES_KANBAN_WORKSPACES_ROOT",
-    "HERMES_KANBAN_LOGS_ROOT",
-    "HERMES_KANBAN_TASK",
-    "HERMES_KANBAN_WORKSPACE",
-    "HERMES_KANBAN_RUN_ID",
-    "HERMES_KANBAN_CLAIM_LOCK",
-    "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
     # Pytest is routinely launched from a delegated worker.  The worker
     # lineage marker must not make parent-state tests run as delegated
     # children; tests that exercise child behavior set it explicitly.
@@ -548,28 +531,6 @@ def _isolate_hermes_home(_hermetic_environment):
 
 
 @pytest.fixture(autouse=True)
-def _neutralize_kanban_memory_guard(request, monkeypatch):
-    """Pin the kanban dispatcher's memory guard to "no data" for every test.
-
-    The dispatcher consults live system memory before spawning (OOF-30/
-    OOF-77: memory-derived default cap + pressure-based spawn restriction).
-    Left un-patched, dispatch tests would pass or fail based on how loaded
-    the CI runner happens to be. Defaulting the sample to ``{}`` makes the
-    derived cap ``None`` and the pressure level ``"unknown"`` — i.e. the
-    pre-guard behaviour every existing test was written against. Tests that
-    exercise the guard itself opt out with
-    ``@pytest.mark.real_memory_guard`` or patch the seam directly.
-    """
-    if request.node.get_closest_marker("real_memory_guard"):
-        return
-    try:
-        from hermes_cli import kanban_db_dispatch as _kbd_mod
-    except Exception:
-        return
-    monkeypatch.setattr(_kbd_mod, "_system_memory_sample", lambda: {}, raising=False)
-
-
-@pytest.fixture(autouse=True)
 def _neutralize_git_safe_directory_read(request, monkeypatch):
     """Skip the ``git config --get-all safe.directory`` pre-read in ``noninteractive_git_env()``.
 
@@ -693,104 +654,7 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
     return None
 
 
-# ── Kanban write guard (#69283) ─────────────────────────────────────────────
-# When hermetic isolation is bypassed (stale checkout, wrong rootdir, direct
-# invocation), kanban writes silently pollute the real ~/.hermes. This autouse
-# fixture patches ``kanban_db_connect.connect`` to refuse writes whose resolved DB
-# path lands under the REAL kanban root (captured at import time, before any
-# fixture rewires the environment). A deny-list is used instead of an
-# allow-list because test-level fixtures legitimately move HERMES_HOME to
-# sibling directories — an allow-list captured at setup time would see the
-# stale autouse-set value and falsely reject hermetic tests (#69385 review).
-
-
-def _capture_real_kanban_root() -> Path:
-    """Resolve the REAL kanban root from the pre-test environment.
-
-    Uses the pre-sandbox environment snapshot taken at the very top of this
-    file (before the session HERMES_HOME sandbox rewired the env), so the
-    deny-list keeps pointing at the operator's actual root. Mirrors
-    ``kanban_db.kanban_home()`` resolution order:
-    1. ``HERMES_KANBAN_HOME`` env var when set and non-empty
-    2. the real (pre-sandbox) Hermes root otherwise
-    """
-    if _PRE_SANDBOX_KANBAN_OVERRIDE:
-        return Path(_PRE_SANDBOX_KANBAN_OVERRIDE).expanduser().resolve()
-    if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
-        _PRE_SANDBOX_HERMES_HOME
-    ):
-        # HERMES_HOME was genuinely set to a CUSTOM root before the sandbox
-        # (production-pointing values are sandboxed away above, in which case
-        # the env still holds the tempdir and the resolver would be wrong) —
-        # honor it via the normal resolver (it may be a profile dir whose
-        # root matters).
-        from hermes_constants import get_default_hermes_root
-        return get_default_hermes_root().resolve()
-    # No pre-existing HERMES_HOME: the real root is the platform default,
-    # NOT the sandbox tempdir now sitting in the env.
-    return (Path.home() / ".hermes").resolve()
-
-
-_REAL_KANBAN_ROOT = _capture_real_kanban_root()
-
-
-@pytest.fixture(autouse=True)
-def _kanban_write_guard(_hermetic_environment, monkeypatch):
-    """Fail-closed guard: refuse kanban writes that target the REAL root.
-
-    Uses a **deny-list**: only blocks writes where the resolved DB path
-    (explicit ``db_path`` or ``kanban_db_path()``) lands under the real
-    ``~/.hermes`` captured at import time. Hermetic tests that legitimately
-    move HERMES_HOME to sibling tempdirs are unaffected.
-
-    Only patches when ``hermes_cli.kanban_db_connect`` is *already imported*
-    — a ``sys.modules`` probe, not an import — so the guard never drags the
-    kanban module into unrelated test processes.
-
-    Uses ``monkeypatch.setattr`` so pytest restores ``connect`` automatically
-    after each test (no stacked wrappers or state leakage across tests).
-    """
-    _kdb = sys.modules.get("hermes_cli.kanban_db")
-    _kdbc = sys.modules.get("hermes_cli.kanban_db_connect")
-    if _kdb is None or _kdbc is None:
-        return
-
-    # The sys.modules probe can observe the module MID-IMPORT: a fixture
-    # boundary firing while another test's lazy `import hermes_cli.kanban_db`
-    # is still executing sees a partially initialized module whose `connect`
-    # doesn't exist yet (AttributeError flake, caught in a full-suite run).
-    # A half-imported module has no callers yet either — nothing to guard
-    # this round; the next test's fixture will patch the completed module.
-    _orig_connect = getattr(_kdbc, "connect", None)
-    if _orig_connect is None or getattr(_kdb, "kanban_db_path", None) is None:
-        return
-
-    def _guarded_connect(db_path=None, *args, **kwargs):
-        if db_path is not None:
-            resolved = Path(db_path).expanduser().resolve()
-        else:
-            resolved = (
-                _kdb.kanban_db_path(board=kwargs.get("board"))
-                .expanduser()
-                .resolve()
-            )
-        try:
-            resolved.relative_to(_REAL_KANBAN_ROOT)
-        except ValueError:
-            # Resolved path is NOT under the real root — safe to write.
-            return _orig_connect(db_path, *args, **kwargs)
-        raise RuntimeError(
-            f"kanban_write_guard: kanban DB path resolved to {resolved}, "
-            f"which is under the REAL kanban root ({_REAL_KANBAN_ROOT}). "
-            f"Hermetic isolation has been bypassed — refusing to write "
-            f"to the real ~/.hermes. See #69283."
-        )
-
-    monkeypatch.setattr(_kdbc, "connect", _guarded_connect)
-
-
 # ── Live state.db write guard ───────────────────────────────────────────────
-# Companion to the kanban guard above, for the MAIN state database.
 # ``hermes_state._ensure_test_isolation`` (the single choke point every
 # ``SessionDB()`` construction goes through) refuses, under pytest, any DB
 # path that resolves inside the REAL Hermes root. This fixture wires the
@@ -798,8 +662,7 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
 #   • honors ``@pytest.mark.live_system_guard_bypass`` (the established
 #     escape-hatch marker) by disabling the state-db guard for that test;
 #   • injects the pre-sandbox CUSTOM production root (Docker/portable
-#     installs where HERMES_HOME is not ~/.hermes) into the guard's
-#     deny-list, mirroring the kanban deny-list capture above.
+#     installs where HERMES_HOME is not ~/.hermes) into the guard's deny-list.
 # The guard itself is env-activated (PYTEST_CURRENT_TEST / PYTEST_VERSION),
 # so subprocess children that import hermes_state directly are covered even
 # without this fixture.
@@ -1414,12 +1277,6 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "require_symlinks: skip the test if symbolic links cannot be "
         "created in the current environment (needs admin/developer mode "
         "on Windows).",
-    )
-    config.addinivalue_line(
-        "markers",
-        "real_memory_guard: bypass the autouse fixture that pins the kanban "
-        "dispatcher's memory guard to 'no data' — only for tests that "
-        "exercise the guard itself with their own patched samples.",
     )
     # NOTE: platforms("linux") / platforms("macos") / platforms("windows") are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the
@@ -2062,16 +1919,14 @@ def _moa_caches_isolated():
 # remain: (a) code hardcoding Path.home()/".hermes" (the exact restatement
 # class AGENTS.md bans — the Path.home()/.hermes/profiles bug the 2026-09-03
 # deployment review caught in pm/plugins_state.py), and (b) imports freezing
-# real-home paths before fixtures run. The kanban guard (#69283) covers one
-# subsystem; this covers EVERY file operation: any open()/mkdir/stat-family
-# call resolving under the REAL hermes root fails the test immediately
-# with a message naming the path — reads AND writes (a read of production
+# real-home paths before fixtures run. This guard covers EVERY file operation:
+# any open()/mkdir/stat-family call resolving under the REAL hermes root fails
+# the test immediately with a message naming the path — reads AND writes (a read of production
 # state is as much a leak as a write: it drags fixture rows and real config
 # into test assertions).
 #
 # The real root is captured at conftest import (pre-sandbox), honoring a
-# genuinely-custom pre-set HERMES_HOME exactly like the kanban deny-list
-# (_hermes_home_points_at_production governs which values count).
+# genuinely-custom pre-set HERMES_HOME via _hermes_home_points_at_production.
 _REAL_HERMES_ROOT_CANDIDATES: list[Path] = []
 
 

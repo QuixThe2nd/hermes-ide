@@ -245,7 +245,7 @@ async def test_internal_root_telegram_dm_event_bypasses_topic_lobby(
     )
 
     event = MessageEvent(
-        text="[SYSTEM: kanban task completed]",
+        text="[SYSTEM: background task completed]",
         source=_make_source(thread_id=thread_id),
         message_id="wake-1",
         internal=True,

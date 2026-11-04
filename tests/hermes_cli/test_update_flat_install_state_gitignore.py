@@ -31,7 +31,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "state.db.retired-wal-20260914T000000Z-1234/manifest.json",
     # Dot-suffixed `<db>.db.*` runtime artifacts (#112974): cross-process lock
     # files from hermes_state_dbfile / hermes_state_repair / hermes_state_common /
-    # hermes_cli/kanban_db_*, the repair-attempts ledger and malformed backups.
+    # hermes_cli legacy board stores, the repair-attempts ledger and malformed backups.
     "state.db.quarantine.lock",
     "state.db.repair.lock",
     "state.db.fts_rebuild.lock",

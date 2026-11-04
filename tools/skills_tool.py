@@ -112,7 +112,7 @@ def _skill_utils_delegate(attr: str):
 
 
 skill_matches_platform = _skill_utils_delegate("skill_matches_platform")
-# Offer-time relevance gate (kanban/docker/s6), NOT hard compatibility; explicit loads bypass it.
+# Offer-time relevance gate (docker/s6), NOT hard compatibility; explicit loads bypass it.
 skill_matches_environment = _skill_utils_delegate("skill_matches_environment")
 _parse_frontmatter = _skill_utils_delegate("parse_frontmatter")
 _get_disabled_skill_names = _skill_utils_delegate("get_disabled_skill_names")

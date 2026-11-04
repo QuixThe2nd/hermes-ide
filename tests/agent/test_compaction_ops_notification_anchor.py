@@ -1,6 +1,6 @@
 """Operational notifications must not anchor compaction or auto-focus (#92703).
 
-Kanban/background completion wakes are persisted as ``role="user"`` rows typed
+Background completion wakes are persisted as ``role="user"`` rows typed
 with ``display_kind="internal_notification"`` (run.py -- the synthetic-wake
 path). The model-payload builder already strips ``display_kind`` before the
 request, and ``is_user_originated_turn`` already ignores it, but the compaction
@@ -32,7 +32,7 @@ def _compressor() -> ContextCompressor:
 
 
 def _ops_notice(text: str) -> dict:
-    """A Kanban/background completion wake, as persisted by the wake path."""
+    """A background completion wake, as persisted by the wake path."""
     return {
         "role": "user",
         "content": text,
@@ -52,7 +52,7 @@ def _transcript_with_n_ops(n: int, human_text: str = "Actually deploy the fix") 
     """1,000 operational notifications with a single real human turn at the end."""
     msgs: list = [{"role": "system", "content": "sys"}]
     for i in range(n):
-        msgs.append(_ops_notice(f"✔ Kanban T-{i} done — worker summary line {i}"))
+        msgs.append(_ops_notice(f"✔ Background job{i} done — worker summary line {i}"))
         msgs.append(_assistant(f"Noted task {i} completion."))
     msgs.append(_human(human_text))
     msgs.append(_assistant("On it."))
@@ -61,7 +61,7 @@ def _transcript_with_n_ops(n: int, human_text: str = "Actually deploy the fix") 
 
 def test_ops_notice_is_not_actionable_user_turn():
     cc = _compressor()
-    assert cc._is_actionable_user_turn(_ops_notice("✔ Kanban T-1 done")) is False
+    assert cc._is_actionable_user_turn(_ops_notice("✔ Background job1 done")) is False
     # A real human turn still is.
     assert cc._is_actionable_user_turn(_human("deploy the fix")) is True
 
@@ -88,7 +88,7 @@ def test_ops_notices_do_not_become_auto_focus_source():
     assert "Q3 roadmap" in focus, (
         f"auto-focus derived from operational traffic instead of the user: {focus!r}"
     )
-    assert "Kanban T-" not in focus, (
+    assert "Background job" not in focus, (
         f"auto-focus leaked an operational notification: {focus!r}"
     )
 

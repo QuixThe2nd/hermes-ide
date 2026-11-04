@@ -35,7 +35,7 @@ class TestExpandParentToolsets(unittest.TestCase):
         self.assertNotIn("hermes-cli", expanded)
 
     def test_composites_with_allowed_included_tools_are_not_stripped(self):
-        toolsets = ["safe", "hermes-gateway", "hermes-cli", "delegation", "kanban"]
+        toolsets = ["safe", "hermes-gateway", "hermes-cli", "delegation"]
 
         self.assertEqual(
             _strip_blocked_tools(toolsets),

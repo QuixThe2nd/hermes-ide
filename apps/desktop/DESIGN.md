@@ -51,9 +51,9 @@ one-off at the call site.
   remain in shell chrome. Do not hide a distinct product noun inside an
   unrelated page.
 - **Route overlays are short tasks.** Settings, Command Center, Cron, Profiles,
-  Agents, and Starmap render as `OverlayView` cards and return to the previous
-  route on close. Model/session pickers and dialogs layer above the current
-  surface; they are not navigation stacks.
+  and Agents render as `OverlayView` cards and return to the previous route on
+  close. Model/session pickers and dialogs layer above the current surface;
+  they are not navigation stacks.
 - **Panes are working context.** Preview, files, review, and terminal remain
   attached to the current task. Their state survives temporary hiding and chat
   switches where the underlying tool is meant to persist.

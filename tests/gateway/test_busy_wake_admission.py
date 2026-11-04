@@ -8,9 +8,6 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-from gateway.wake import deliver_wake
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
 
 
 class WakeAdapter(BasePlatformAdapter):
@@ -38,35 +35,6 @@ class WakeAdapter(BasePlatformAdapter):
 
 async def unused_handler(event):
     raise AssertionError("busy event must not start a concurrent turn")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("human_pending", [False, True])
-async def test_completed_board_wake_is_admitted_without_changing_human_input(tmp_path, monkeypatch, human_pending):
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
-    kb.init_db()
-    with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="wake receipt", assignee="worker")
-        kb.complete_task(conn, tid, summary="completed result")
-        task = kb.get_task(conn, tid)
-    assert task is not None and task.status == "done"
-    text = f"[Kanban task completed] {task.result}"
-    adapter, runner, source, key = busy_gateway()
-    human = MessageEvent(text="human follow-up", message_type=MessageType.TEXT, source=source)
-    if human_pending:
-        adapter._pending_messages[key] = human
-    assert runner._is_user_authorized(source) is False
-    await deliver_wake(adapter, source=source, text=text)
-    if human_pending:
-        assert adapter._pending_messages[key] is human
-        assert human.text == "human follow-up"
-        wake = runner._overflow_queue(key)[0]
-    else:
-        wake = adapter._pending_messages[key]
-    assert wake.internal and wake.source.user_id is None
-    assert wake.text == text
-    assert not adapter.sent
-    assert not adapter._active_sessions[key].is_set()
 
 
 def busy_gateway():

@@ -20,8 +20,7 @@ _ARG_SYNONYMS = {
 _HERMES_TOOLS_CALLBACK_NOTE = (
     "Hermes tool callback registered: codex can now use "
     "web_search, web_extract, browser_*, vision_analyze, "
-    "image_generate, skill_view, skills_list, text_to_speech, "
-    "kanban_* (worker + orchestrator) via MCP.",
+    "image_generate, skill_view, skills_list, text_to_speech via MCP.",
     "  (delegate_agent, memory, session_search, todo run "
     "only on the default Hermes runtime — they need the "
     "agent loop context.)")
@@ -66,7 +65,7 @@ def get_current_runtime(config: dict) -> str:
 def get_configured_codex_binary(config: dict) -> str:
     """``model.codex_bin`` (one argv element, never shell-parsed) or bare ``codex`` from PATH.
 
-    Gateway/service/Kanban-worker processes often run with a minimal PATH that lacks the codex
+    Gateway/service/automation processes often run with a minimal PATH that lacks the codex
     CLI (e.g. a desktop-bundled ``.../Codex.app/Contents/Resources/codex``), so users need a
     config-level override for every codex spawn site (#61360)."""
     model_cfg = config.get("model") if isinstance(config, dict) else None

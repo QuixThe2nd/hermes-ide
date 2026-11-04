@@ -1,4 +1,4 @@
-"""Skin + config-change watcher: on-disk signatures for skin/pet/cron/sessions/platforms/
+"""Skin + config-change watcher: on-disk signatures for skin/cron/sessions/platforms/
 pairing/bot-relay state and the broadcast loop that pushes *.changed events. Bodies are
 rebound onto server.py's globals at install time (method_ctx.bind_module)."""
 
@@ -82,39 +82,6 @@ def _broadcast_skin_if_changed() -> None:
         _broadcast_global_event("skin.changed", resolve_skin())
 
 
-def _active_pet():
-    """(pet, scale) when an enabled pet with an existing sheet is selected, else None."""
-    enabled, pet, scale = _pet_active_selection()
-    return (pet, scale) if enabled and pet is not None and pet.exists else None
-
-
-def _pet_sig() -> tuple:
-    """(slug, spritesheet revision, scale) of the active pet — ("off",) when none."""
-    display = _load_cfg().get("display") or {}
-    pet_cfg = display.get("pet") if isinstance(display.get("pet"), dict) else {}
-    if not pet_cfg or not is_truthy_value(pet_cfg.get("enabled"), default=False):
-        return ("off",)
-    try:
-        if active := _active_pet():
-            pet, scale = active
-            return (pet.slug, _pet_sheet_revision(pet.spritesheet), scale)
-    except Exception:  # noqa: BLE001 - cosmetic, never break the watcher
-        pass
-    return ("off",)
-
-
-def _pet_changed_payload() -> dict:
-    """``pet.info.meta``-shaped payload so the renderer can decide whether to refetch sprites."""
-    try:
-        if active := _active_pet():
-            pet, scale = active
-            return {"enabled": True, "slug": pet.slug, "displayName": pet.display_name,
-                    "scale": scale, "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)}
-    except Exception:  # noqa: BLE001 - cosmetic, never break the watcher
-        pass
-    return {"enabled": False}
-
-
 def _sessions_sig():
     """Newest mtime across state.db + WAL: the one thing messaging-gateway turns and cron runs
     all move. Served sibling profile homes are probed too, else a routed Bot Chat never refreshes.
@@ -191,11 +158,10 @@ def _bot_relay_outbox_sig():
 
 
 # event → (check interval, signature fn, payload fn). Signatures are stat-cheap; the interval
-# keeps pricier probes (pet resolves the sheet off disk) off the 0.5s tick. cron/jobs.json
+# keeps pricier probes off the 0.5s tick. cron/jobs.json
 # moves on edits AND scheduler ticks; gateway_state.json is where the messaging gateway
 # persists platform connect/disconnect/health (the Messaging page's status signal).
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
-    "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
     "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
     "sessions.changed": (0.5, _sessions_sig, lambda: {}),
     "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),

@@ -304,7 +304,7 @@ class RestartSafeScopeUnavailable(RuntimeError):
 
     Host-level (no user D-Bus / no ``systemd-run``), never a property of the
     child being launched: callers that keep per-job retry budgets must not
-    charge it (a kanban card parked ``blocked`` for an unreachable bus, #114720).
+    charge it for an unreachable bus.
     """
 
 
@@ -378,11 +378,11 @@ def restart_safe_gateway_child_argv(
     Hosts with no user systemd session (containers, LXCs without linger) cannot
     create one; hard-failing there is a silent cron outage, so callers state the
     policy: ``require_restart_safe_scope=True`` raises
-    :class:`RestartSafeScopeUnavailable` (kanban's long-lived workers), ``False``
+    :class:`RestartSafeScopeUnavailable` for long-lived workers, ``False``
     degrades to a direct external subprocess with a once-per-process warning
     (cron, behind ``cron.require_restart_safe_scope``).
 
-    ``outlives_parent=True`` (fire-and-forget kanban workers): any *other*
+    ``outlives_parent=True`` (fire-and-forget workers): any *other*
     systemd unit — a ``Type=oneshot`` dispatch timer, an operator's sequencer
     service — tears its cgroup down when it exits, so the child is scope-wrapped
     there too (#113612). Whether that unit actually kills its children

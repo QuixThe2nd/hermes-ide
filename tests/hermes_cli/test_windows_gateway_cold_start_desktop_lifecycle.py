@@ -59,9 +59,9 @@ def test_control_plane_classifier_is_token_based_not_substring():
     py = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main"
     # "dashboard" as a FLAG VALUE, real subcommand is chat
     assert update_cmd._looks_like_desktop_control_plane(f"{py} -m dashboard chat") is False
-    # "--preserve-cache" contains "serve"; real subcommand is kanban
+    # "--preserve-cache" contains "serve"; real subcommand is chat
     assert (
-        update_cmd._looks_like_desktop_control_plane(f"{py} kanban --preserve-cache")
+        update_cmd._looks_like_desktop_control_plane(f"{py} chat --preserve-cache")
         is False
     )
     # profile selector before the real subcommand still classifies correctly

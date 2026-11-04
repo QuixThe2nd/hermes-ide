@@ -9,7 +9,7 @@ the entire value of these tests is exercising actual git verdicts):
 - unique unpushed commits          → keep
 - patch-equivalent commits (rebase/squash-merge leak) → reap
 - live-locked tree                 → keep
-- kanban t_<hex> tree              → keep (owned by kanban gc)
+- legacy kanban t_<hex> tree       → keep (old user worktree safety)
 - branch GC: merged branch deleted, unique-commit branch kept,
   checked-out branch kept, protected names kept
 - reclaim operates ONLY on the frozen audit list (concurrent-session trap)

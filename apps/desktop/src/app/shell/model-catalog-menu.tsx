@@ -47,7 +47,7 @@ import type { LocalModelLoadProgress } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
-// Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
+// Lets a host dropdown (model-pill, a contributed field trigger, …) hand the panel
 // a way to dismiss itself so clicking a model row commits + closes, while the
 // hover-revealed edit submenu (reasoning/fast) stays open to play with (its
 // items preventDefault on select).
@@ -65,7 +65,7 @@ export interface ModelChoice {
 /**
  * What a surface DOES with the catalog. The menu renders and navigates; the
  * controller owns meaning — the composer writes through to a live session,
- * the kanban override just holds a value in dialog state.
+ * while a detached override just holds a value in dialog state.
  *
  * `presetFor` supplies the remembered settings shown on a non-active row.
  * Returning `{}` is fine — the row then shows Hermes' defaults.

@@ -97,13 +97,13 @@ class TestRepairScope:
 
 
     def test_repairs_readonly_parent_directory(self, hermes_home):
-        sub = hermes_home / "kanban"
+        sub = hermes_home / "projects"
         sub.mkdir()
-        db = sub / "kanban.db"
+        db = sub / "projects.db"
         _make_db(db)
         os.chmod(sub, 0o555)
         try:
-            preflight_db_writability(db, db_label="kanban.db")
+            preflight_db_writability(db, db_label="projects.db")
             assert os.access(sub, os.W_OK)
         finally:
             os.chmod(sub, 0o755)

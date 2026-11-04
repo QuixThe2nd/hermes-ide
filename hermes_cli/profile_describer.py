@@ -1,12 +1,12 @@
 """Profile describer — auto-generate ``description`` for a profile.
 
-Mirrors ``hermes_cli/kanban_specify.py``: lazy aux client import, lenient response parse,
-never raises on expected failure modes. Reads at most ``MAX_SKILLS_FOR_PROMPT`` skill
-names to keep the prompt bounded.
+Uses the auxiliary client and a lenient response parser. Reads at most
+``MAX_SKILLS_FOR_PROMPT`` skill names to keep the prompt bounded.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -22,12 +22,11 @@ logger = logging.getLogger(__name__)
 MAX_SKILLS_FOR_PROMPT = 60
 
 
-_SYSTEM_PROMPT = """You are a profile-describer for the Hermes Agent kanban board.
+_SYSTEM_PROMPT = """You are a profile-describer for Hermes Agent.
 
 A user runs multiple "profiles" — distinct agent identities, each with their
-own skills, model, and configuration. The kanban board's orchestrator routes
-work to whichever profile best fits each task. To do that well, every
-profile needs a short, concrete description of what it's good at.
+own skills, model, and configuration. A short, concrete description helps
+people and automation choose the right profile for a task.
 
 You are given a profile's:
   - Name
@@ -41,8 +40,8 @@ Produce a single JSON object with exactly one key:
   }
 
 Rules:
-  - The description is what an orchestrator will read to decide whether to
-    route a task here. Lead with the profile's strongest capability.
+  - The description should communicate where this profile is most useful.
+    Lead with its strongest capability.
   - Stay concrete. Bad: "an AI agent that helps users."
                   Good: "Reads and modifies Python codebases — runs tests,
                          refactors functions, opens GitHub PRs."
@@ -105,8 +104,19 @@ def _sample_skills(names: list[str]) -> list[str]:
 
 
 def _extract_json_blob(raw: str) -> Optional[dict]:
-    from hermes_cli.kanban_specify import _extract_json_blob as _extract
-    return _extract(raw, _FENCE_RE)
+    """Extract the first-brace-to-last-brace JSON object, tolerating code fences."""
+    if not raw:
+        return None
+    stripped = _FENCE_RE.sub("", raw.strip())
+    first = stripped.find("{")
+    last = stripped.rfind("}")
+    if first == -1 or last == -1 or last <= first:
+        return None
+    try:
+        value = json.loads(stripped[first:last + 1])
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Optional[int] = None) -> DescribeOutcome:

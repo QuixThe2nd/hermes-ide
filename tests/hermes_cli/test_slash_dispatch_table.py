@@ -13,9 +13,9 @@ from cli import HermesCLI
 OLD_CHAIN_COMMANDS = [
     "exit", "quit", "help", "palette", "whoami", "profile", "tools", "toolsets",
     "config", "redraw", "clear", "history", "title", "handoff", "new", "resume",
-    "sessions", "model", "codex-runtime", "personality", "pet", "hatch", "retry",
+    "sessions", "model", "codex-runtime", "personality", "retry",
     "prompt", "undo", "branch", "worktree", "save", "cron", "suggestions",
-    "blueprint", "curator", "kanban", "skills", "learn", "init", "memory",
+    "blueprint", "curator", "skills", "learn", "init", "memory",
     "platforms", "status", "context", "egress", "statusbar", "diff", "battery",
     "timestamps", "verbose", "focus", "footer", "yolo", "approvals", "reasoning",
     "fast", "compress", "usage", "subscription", "topup", "insights", "copy",

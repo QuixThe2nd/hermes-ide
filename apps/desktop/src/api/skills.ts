@@ -4,8 +4,7 @@ import type {
   SkillHubScanResult,
   SkillHubSearchResponse,
   SkillHubSourcesResponse,
-  SkillInfo,
-  StarmapGraph
+  SkillInfo
 } from '@/types/hermes'
 import type { ActionResponse } from '@/types/hermes'
 
@@ -40,15 +39,6 @@ export function setSkillEnabled(
     path: '/api/skills/toggle',
     method: 'PUT',
     body: { name, enabled }
-  })
-}
-
-export function getStarmapGraph(): Promise<StarmapGraph> {
-  return hermesApi<StarmapGraph>({
-    ...profileScoped(),
-    // Backend REST contract — stays /api/learning even though the UI feature is
-    // now "star map". Renaming this would break against an un-upgraded backend.
-    path: '/api/learning/graph'
   })
 }
 

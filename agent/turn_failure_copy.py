@@ -66,8 +66,8 @@ def provider_label_for(provider: Any) -> str:
 class ExitFailure(NamedTuple):
     """Verdict for a loop exit. ``fails_turn`` False = advisory: the descriptor fields are
     stamped so Desktop/TUI show a specific code, but ``failed``/``completed`` keep the values
-    the loop chose — cron silence, the kanban dispatcher breaker and gateway transcript
-    persistence all key on ``failed`` and must not change because a code was added."""
+    the loop chose — cron silence and gateway transcript persistence both key
+    on ``failed`` and must not change because a code was added."""
 
     reason: str
     retryable: bool
@@ -81,7 +81,7 @@ _EXIT_REASON_FAILURES: Tuple[Tuple[str, str, bool, bool], ...] = (
     ("empty_response_exhausted", "empty_response", True, False),
     ("all_retries_exhausted_no_response", FailoverReason.server_error.value, True, True),
     ("interpreter_shutdown", "interpreter_shutdown", False, True),
-    # Advisory: a deterministic local bug is not a task failure for the kanban breaker.
+    # Advisory: a deterministic local bug is not a task failure for automation.
     ("local_processing_error", "loop_error", False, False),
     ("repeated_outer_errors", "loop_error", True, True),
     ("error_near_max_iterations", "loop_error", True, True),

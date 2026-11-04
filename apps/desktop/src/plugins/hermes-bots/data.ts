@@ -164,9 +164,9 @@ export function clearBotAttention(key: string) {
   $botAttention.set(next)
 }
 
-/** The persisted record adds two keys the shared domain model deliberately
- *  omits: `chat`, the dead canonical-chat pointer that mergeServerMeta strips
- *  on sight, and `pet`, the extracted pet icon that stays local and is never
+/** The persisted record adds two local-only keys the shared domain model
+ *  deliberately omits: `chat`, the dead canonical-chat pointer that
+ *  mergeServerMeta strips on sight, and legacy `pet` metadata that is never
  *  sent to the server. */
 interface StoredBotMeta extends BotMeta {
   chat?: unknown

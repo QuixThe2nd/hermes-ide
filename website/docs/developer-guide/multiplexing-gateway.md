@@ -131,7 +131,7 @@ process environment (`#88441`).
 
 `hermes_constants.py` holds a context-local override consulted by
 `get_hermes_home()` before the `HERMES_HOME` env var. Everything that resolves
-paths through it — config, `state.db`, skills, memory, SOUL, sessions, kanban,
+paths through it — config, `state.db`, skills, memory, SOUL, sessions,
 goals, plugin discovery, MCP startup — follows the active profile
 automatically. `get_process_hermes_home()` exists for the few machine-level
 assets that must not follow the override. `hermes_home_key()` gives

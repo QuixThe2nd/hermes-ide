@@ -641,22 +641,6 @@ async def run_curator():
     return _spawn_action(["curator", "run"], "curator-run", "Failed to run curator")
 
 
-@router.get("/api/learning/graph")
-async def get_learning_graph(profile: Optional[str] = None):
-    """Learning graph for the desktop panel: profile-scoped learned skills + memory chunks."""
-    def _run():
-        from agent.learning_graph import build_learning_graph
-        return build_learning_graph()
-
-    try:
-        # _profile_scope takes _SKILLS_PROFILE_LOCK and the graph build reads skills/memories
-        # from disk — keep it off the event loop.
-        return await scoped_to_thread(profile, _run)
-    except Exception:
-        _log.exception("GET /api/learning/graph failed")
-        raise HTTPException(status_code=500, detail="Failed to build learning graph")
-
-
 async def _learning_mutation(profile: Optional[str], fn, status: int, fallback: str):
     """Run a learning_mutations call under ``_profile_scope`` off-loop; a non-ok result
     becomes ``HTTPException(status, message)``."""

@@ -327,8 +327,8 @@ test('chat windows opt into zoom', () => {
   assert.deepEqual(zoomWiringForWindowKind('chat'), { zoom: true })
 })
 
-test('pet overlay opts out of zoom', () => {
-  assert.deepEqual(zoomWiringForWindowKind('petOverlay'), { zoom: false })
+test('intro reveal opts out of zoom', () => {
+  assert.deepEqual(zoomWiringForWindowKind('introReveal'), { zoom: false })
 })
 
 test('wake indicator opts out of zoom', () => {

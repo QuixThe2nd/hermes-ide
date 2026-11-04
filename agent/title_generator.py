@@ -17,7 +17,6 @@ from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
-from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
@@ -595,29 +594,6 @@ def _session_is_untitled(session_db, session_id: str) -> bool:
         return False
 
 
-def _kanban_task_title() -> Optional[str]:
-    """Kanban worker: the card's title, or ``Kanban task <id>`` when the board can't be read; None elsewhere
-    (including delegate_task children of the worker, which inherit the env var but are not the card)."""
-    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-    if not task_id or not is_dispatcher_owned_worker_context():
-        return None
-    try:
-        from hermes_cli import kanban_db, kanban_db_connect
-        from hermes_state import SessionDB
-        with kanban_db_connect.connect_closing() as conn:
-            task = kanban_db.get_task(conn, task_id)
-        title = " ".join((task.title or "").split()) if task is not None else ""
-        # Cards have no length cap; the title store rejects past MAX_TITLE_LENGTH (and the ``#N``
-        # retry suffix needs room), which would leave the worker nameless.
-        cap = SessionDB.MAX_TITLE_LENGTH - 4
-        if len(title) > cap:
-            title = title[: cap - 1].rstrip() + "…"
-    except Exception:
-        logger.debug("Kanban task %s unreadable; naming the session after its id", task_id, exc_info=True)
-        title = ""
-    return title or f"Kanban task {task_id}"
-
-
 def maybe_auto_title(
     session_db,
     session_id: str,
@@ -642,16 +618,6 @@ def maybe_auto_title(
         _has_upgraded_title(session_db, session_id)
         or (user_msg_count > 3 and not _session_is_untitled(session_db, session_id))
     ):
-        return
-    kanban_title = _kanban_task_title()
-    if kanban_title:
-        # The card already carries a human-written name; an auxiliary model call per spawned worker
-        # only competes with the worker for capacity (#111166). Final (``llm``) authority: nothing
-        # upgrades it later, and a manual ``/title`` still wins inside ``set_auto_title``.
-        with suppress(Exception):
-            persisted = _persist_session_title(session_db, session_id, kanban_title, source="llm")
-            if persisted:
-                _notify_title(title_callback, persisted, "llm", "Kanban task title")
         return
     if not is_titleable_user_message(user_message):
         return

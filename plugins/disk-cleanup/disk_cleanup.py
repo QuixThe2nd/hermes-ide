@@ -88,7 +88,7 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "patches", "projects", "skins", "themes", "contributors",
     # Per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
     "workspace", "plans", "home",
-    # Kanban owns its own lifecycle (workspaces GC'd at terminal state, attachments live with the task).
+    # Legacy Kanban data has its own lifecycle; never treat it as disposable plugin state.
     "kanban"})
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
@@ -106,7 +106,7 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     # per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
     "patches", "projects", "skins", "themes", "contributors",
     "profiles", "backups", "optional-skills", "workspace", "plans", "home",
-    # Kanban task attachments/workspaces have their own lifecycle; test_* staging files there are
+    # Legacy Kanban task attachments/workspaces have their own lifecycle; test_* staging files there are
     # not disposable (#114552).
     "kanban"})
 

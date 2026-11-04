@@ -292,7 +292,7 @@ _YAML_ASSIGN_RE = re.compile(
 # it. Concatenations match via explicit alternatives (``authtoken``, ``apikey``).
 # The side effect: ordinary prose/document words that merely CONTAIN a keyword also matched — ``Secretary:
 # J.Smith`` (secret), ``tokenizer: cl100k_base`` (token), ``author=Smith`` (auth) — mangling legitimate
-# content on the surfaces that run these passes (browser snapshots, log lines, kanban summaries, CLI-echoed
+# content on the surfaces that run these passes (browser snapshots, log lines, automation summaries, CLI-echoed
 # command output). Ported from nearai/ironclaw#6129, where the same substring false positive ("Secretary of
 # the Treasury" matching the ``secret`` marker) scrubbed legitimate tool results from the replayed
 # transcript and sent the model into a re-fetch loop. Common concatenated compounds keep matching via

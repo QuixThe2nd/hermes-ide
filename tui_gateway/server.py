@@ -152,7 +152,7 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # stays inline so fast-path ordering stays sane (write_json is _stdout_lock-guarded). Why each is slow:
 # billing/subscription/usage = blocking portal (+Stripe) round-trips; complete.* = git ls-files /
 # prompt_toolkit import + skill scan; model.options = credential pool + pricing + provider probe;
-# pet.* = network or PNG decode (generate = several image-model round-trips); reload.mcp /
+# reload.mcp /
 # mcp.servers.* = rediscovery, cold npx spawn, ~30s OAuth wait; profiles.* = skill-tree walk + state.db
 # open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.* / session.active_list =
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
@@ -163,7 +163,6 @@ _LONG_HANDLERS = frozenset({
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
-    "pet.cells", "pet.gallery", "pet.generate", "pet.hatch", "pet.info", "pet.select", "pet.thumb",
     "learning.frames", "plugins.manage", "reload.mcp", "mcp.servers.test", "mcp.servers.oauth.start",
     "process.list", "profiles.configure", "profiles.create", "profiles.describe", "profiles.get_asset",
     "profiles.list", "profiles.set_asset", "bot_relay.roster.sync", "bot_relay.outbox.drain",
@@ -551,7 +550,7 @@ _served_profile_homes: set[Path] = set()
 
 
 def _profile_scoped(handler):
-    """Bind ``params['profile']``'s HERMES_HOME around a handler (pets/projects resolve via
+    """Bind ``params['profile']``'s HERMES_HOME around a handler (projects resolve via
     ``get_hermes_home``, so app-global remote mode still hits the focused profile). No-op for launch.
 
     Secondary-profile adapters are constructed inside ``_profile_runtime_scope`` (secret scope installed +
@@ -1979,7 +1978,8 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
-        return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else None
+        # Empty resolved set is fail-closed (no toolsets), never None=unrestricted.
+        return sorted(enabled | _gui_surface_toolsets(session_platform))
     except Exception:
         if fallback_notice is not None:
             _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")
@@ -2422,7 +2422,7 @@ def _rederive_per_model_route(model: str, runtime: dict) -> None:
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     """Config ephemeral system prompt + HERMES_TUI_SKILLS preload block. Hard-fails only when EVERY requested
-    skill is missing (cli.py parity): a typo'd name must not auto-block the Kanban task."""
+    skill is missing (cli.py parity): a typo'd name must not abort the one-shot turn."""
     from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
     startup_skills = _parse_tui_skills_env()
@@ -2969,207 +2969,6 @@ def _main_runtime_from_agent(agent) -> dict | None:
         elif field == "api_key" and callable(value):
             runtime[field] = value
     return runtime or None
-
-
-# Pet helpers are fail-open throughout: a decode hiccup degrades to a static fallback rather than
-# breaking the (cosmetic) pet surface.
-_pet_payload_cache_lock = threading.Lock()
-_pet_payload_cache: dict[tuple, dict] = {}
-
-
-def _pet_sheet_revision(spritesheet) -> str:
-    """Stable revision id for one spritesheet file."""
-    with contextlib.suppress(Exception):
-        stat = spritesheet.stat()
-        return f"{stat.st_mtime_ns}:{stat.st_size}"
-    return "0:0"
-
-
-def _clone_pet_payload(payload: dict) -> dict:
-    """Shallow-clone cached payloads so callers can't mutate shared state."""
-    out = dict(payload)
-    for key, kind in (("framesByState", dict), ("framesByRow", dict), ("stateRows", list)):
-        if isinstance(payload.get(key), kind):
-            out[key] = kind(payload[key])
-    return out
-
-
-def _pet_row_frame_counts(spritesheet) -> dict:
-    """Real frame count per concrete spritesheet row name."""
-    with contextlib.suppress(Exception):
-        from PIL import Image
-        from agent.pet import constants, render
-        with Image.open(spritesheet) as opened:
-            image = opened.convert("RGBA")
-        W, H = constants.FRAME_W, constants.FRAME_H
-        cols = max(1, image.width // W)
-        row_count = max(1, image.height // H)
-        rows = constants.state_rows_for_grid(row_count)
-        out: dict[str, int] = {}
-        for row_idx, name in enumerate(rows[:row_count]):
-            top = row_idx * H
-            blank = lambda col: render._frame_is_blank(image.crop((col * W, top, col * W + W, top + H)))
-            out[name] = next((col for col in range(cols) if blank(col)), cols)  # frames before the first blank cell
-        return out
-    return {}
-
-
-def _pet_cfg() -> dict:
-    """``display.pet`` from the canonical config ({} on any failure)."""
-    with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config
-        display = load_config().get("display")
-        pet = display.get("pet") if isinstance(display, dict) else None
-        return pet if isinstance(pet, dict) else {}
-    return {}
-
-
-def _pet_config_scale() -> float:
-    """Configured ``display.pet.scale`` (or the engine default), never raises."""
-    from agent.pet import constants
-    with contextlib.suppress(Exception):
-        return float(_pet_cfg().get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
-    return constants.DEFAULT_SCALE
-
-
-def _pet_sprite_payload(pet, *, scale: float) -> dict:
-    """Renderer payload (spritesheet bytes + geometry) for *pet* — one shape for ``pet.info`` (active
-    mascot) and ``pet.hatch`` (unadopted preview)."""
-    import base64
-    from agent.pet import constants
-    try:
-        stat = pet.spritesheet.stat()
-        cache_key = (str(pet.spritesheet), stat.st_mtime_ns, stat.st_size, pet.slug, pet.display_name, round(scale, 4))
-    except Exception:  # noqa: BLE001
-        cache_key = None
-    if cache_key is not None:
-        with _pet_payload_cache_lock:
-            cached = _pet_payload_cache.get(cache_key)
-        if cached is not None:
-            return _clone_pet_payload(cached)
-    try:  # real (padding-trimmed) frame count per state; {} → the canvas uses the static framesPerState
-        from agent.pet import render
-        frames_by_state = render.state_frame_counts(str(pet.spritesheet))
-    except Exception:  # noqa: BLE001
-        frames_by_state = {}
-    raw = pet.spritesheet.read_bytes()
-    mime = "image/png" if pet.spritesheet.suffix.lower() == ".png" else "image/webp"
-    payload = {
-        "slug": pet.slug, "displayName": pet.display_name, "mime": mime,
-        "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
-        "spritesheetRevision": _pet_sheet_revision(pet.spritesheet), "frameW": constants.FRAME_W,
-        "frameH": constants.FRAME_H, "framesPerState": constants.FRAMES_PER_STATE,
-        "framesByState": frames_by_state,
-        "framesByRow": _pet_row_frame_counts(pet.spritesheet), "loopMs": constants.LOOP_MS,
-        "scale": scale, "stateRows": _pet_state_rows(pet.spritesheet),
-    }
-    if cache_key is not None:
-        with _pet_payload_cache_lock:
-            _pet_payload_cache[cache_key] = payload
-            while len(_pet_payload_cache) > 8:
-                _pet_payload_cache.pop(next(iter(_pet_payload_cache)))
-    return _clone_pet_payload(payload)
-
-
-def _pet_active_selection():
-    """Resolve configured active pet + scale from config."""
-    from agent.pet import constants, store
-    pet_cfg = _pet_cfg()
-    enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
-    pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or "")) if enabled else None
-    return enabled, pet, float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
-
-
-def _pet_state_rows(spritesheet) -> list[str]:
-    """Row taxonomy for the concrete sheet (legacy 8-row or current 9-row atlas), in the renderer's `PetState` names."""
-    from agent.pet import constants
-    with contextlib.suppress(Exception):
-        from PIL import Image
-        with Image.open(spritesheet) as image:
-            row_count = max(1, image.height // constants.FRAME_H)
-        return list(constants.state_rows_for_grid(row_count))
-    return list(constants.STATE_ROWS)
-
-
-def _pet_gen_root():
-    """Profile-scoped staging dir for in-progress generation drafts."""
-    root = get_hermes_home() / "cache" / "pet-gen"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _pet_gen_sweep(root, *, max_age_s: float = 3600.0) -> None:
-    """Drop stale draft staging dirs so cache never grows unbounded."""
-    import shutil
-    try:
-        now = time.time()
-        for child in (c for c in root.iterdir() if c.is_dir() and now - c.stat().st_mtime > max_age_s):
-            shutil.rmtree(child, ignore_errors=True)
-    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
-        logger.debug("pet-gen sweep failed: %s", exc)
-
-
-def _pet_png_data_uri(path, *, max_px: int = 160) -> str:
-    """Downscaled PNG data URI for a draft image (small preview payload)."""
-    import base64, io
-    from PIL import Image
-    with Image.open(path) as opened:
-        img = opened.convert("RGBA")
-    img.thumbnail((max_px, max_px), Image.LANCZOS)
-    img.save(buf := io.BytesIO(), format="PNG")
-    return "data:image/png;base64," + base64.standard_b64encode(buf.getvalue()).decode("ascii")
-
-
-# Cooperative cancellation for pet generation: Stop aborts the RPC, but the pool job keeps running unless
-# pet.cancel flips its token (polled between provider calls).
-_pet_cancel_lock = threading.Lock()
-_pet_cancelled: set[str] = set()
-_PET_REFERENCE_MIME_EXT = {"png": "png", "jpeg": "jpg", "jpg": "jpg", "webp": "webp", "gif": "gif"}
-try:
-    _PET_REFERENCE_MAX_BYTES = max(1, int(os.environ.get("HERMES_PET_REFERENCE_MAX_BYTES") or str(16 * 1024 * 1024)))
-except (TypeError, ValueError):
-    _PET_REFERENCE_MAX_BYTES = 16 * 1024 * 1024
-
-
-def _pet_reference_images_from_data_url(ref_raw: str, stage) -> list:
-    """Decode + validate a reference-image data URL into the stage dir."""
-    import base64, binascii
-    import re as _re
-    match = _re.match(r"^data:image/([a-zA-Z0-9.+-]+);base64,(.*)$", ref_raw, _re.DOTALL)
-    if not match:
-        raise ValueError("invalid reference image format")
-    if (ext := _PET_REFERENCE_MIME_EXT.get(match.group(1).lower())) is None:
-        raise ValueError("unsupported reference image type")
-    payload = "".join(match.group(2).split())
-    if (len(payload) * 3) // 4 > _PET_REFERENCE_MAX_BYTES:
-        raise ValueError("reference image too large")
-    try:
-        raw = base64.b64decode(payload, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError("invalid reference image data") from exc
-    if len(raw) > _PET_REFERENCE_MAX_BYTES:
-        raise ValueError("reference image too large")
-    (ref_path := stage / f"reference.{ext}").write_bytes(raw)
-    return [ref_path]
-
-
-def _pet_cancel_arm(token: str) -> None:
-    """Clear a stale cancel flag at the start of a generate/hatch run."""
-    with _pet_cancel_lock:
-        _pet_cancelled.discard(token)
-
-
-_pet_cancel_release = _pet_cancel_arm
-
-
-def _pet_cancel_request(token: str) -> None:
-    with _pet_cancel_lock:
-        _pet_cancelled.add(token)
-
-
-def _pet_is_cancelled(token: str) -> bool:
-    with _pet_cancel_lock:
-        return token in _pet_cancelled
 
 
 # ── Spawn-tree snapshots: the TUI owns subagent state (/agents overlay; registry in tools/delegate_tool), posts

@@ -193,22 +193,6 @@ class TestSigkillFallback:
         assert result == 15
 
 
-    @pytest.mark.parametrize(
-        "module_path, line_pattern",
-        [
-            ("hermes_cli.kanban_db_dispatch", 'getattr(signal, "SIGKILL", signal.SIGTERM)'),
-        ],
-    )
-    def test_module_uses_getattr_fallback(self, module_path, line_pattern):
-        """Source-level check that our modules use the safe fallback."""
-        rel = module_path.replace(".", "/") + ".py"
-        root = Path(__file__).resolve().parents[2]
-        source = (root / rel).read_text(encoding="utf-8")
-        assert line_pattern in source, (
-            f"{rel} must use the getattr fallback pattern on its SIGKILL site"
-        )
-
-
 # ---------------------------------------------------------------------------
 # OSError widening on liveness probes
 #
@@ -538,45 +522,6 @@ class TestTuiGatewayEntrySignalGuards:
             if mod.startswith("tui_gateway"):
                 del sys.modules[mod]
         import tui_gateway.entry  # noqa: F401  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# hermes_cli/kanban_db_dispatch.py waitpid guard
-# ---------------------------------------------------------------------------
-
-
-class TestKanbanWaitpidWindowsGuard:
-    """os.WNOHANG doesn't exist on Windows — the dispatcher tick reap loop
-    must be gated behind a Windows check (``os.name != "nt"`` or the
-    monkeypatchable ``_kb._IS_WINDOWS`` flag from ``kanban_db``)."""
-
-    def test_source_gates_waitpid_loop(self):
-        root = Path(__file__).resolve().parents[2]
-        source = (root / "hermes_cli" / "kanban_db_dispatch.py").read_text(encoding="utf-8")
-        # Find the waitpid call and confirm it's inside a POSIX gate.
-        idx = source.find("os.waitpid(-1, os.WNOHANG)")
-        assert idx > 0, "waitpid call must exist"
-        # Look backwards up to 600 chars for the gate (the Windows branch
-        # that polls Popen handles sits between the guard and the waitpid
-        # loop). Accept any of:
-        #   `if os.name != "nt":` (run iff POSIX),
-        #   `if os.name == "nt": return []` (early-return guard), or
-        #   `if _kb._IS_WINDOWS: ... return reaped` (early-return via the
-        #   kanban_db flag, which tests flip instead of faking sys.platform).
-        # All keep the waitpid loop off Windows; the early-return forms are
-        # stronger because the rest of the function never runs.
-        preamble = source[max(0, idx - 600):idx]
-        guard_patterns = (
-            'os.name != "nt"',
-            "os.name != 'nt'",
-            'os.name == "nt"',  # early-return guard
-            "os.name == 'nt'",
-            "_kb._IS_WINDOWS",  # early-return guard via kanban_db flag
-        )
-        assert any(p in preamble for p in guard_patterns), (
-            "os.waitpid(-1, os.WNOHANG) must sit behind a Windows guard "
-            f"(checked patterns: {guard_patterns})"
-        )
 
 
 # ---------------------------------------------------------------------------

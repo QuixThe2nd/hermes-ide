@@ -151,30 +151,14 @@ class TestBrowserPassthroughPattern:
 
 
 class TestDelegatedChildMarker:
-    def test_delegated_child_context_scrubs_parent_kanban_keys_and_sets_marker(self):
+    def test_delegated_child_context_sets_marker(self):
         from agent.delegation_context import delegated_child_context
 
-        with patch.dict(
-            os.environ,
-            {
-                **_SAFE_SAMPLE,
-                "HERMES_KANBAN_TASK": "t_parent",
-                "HERMES_KANBAN_RUN_ID": "123",
-                "HERMES_KANBAN_DB": "/tmp/parent-kanban.db",
-                "HERMES_KANBAN_WORKSPACE": "/tmp/parent-workspace",
-            },
-            clear=True,
-        ):
+        with patch.dict(os.environ, _SAFE_SAMPLE, clear=True):
             with delegated_child_context():
                 env = hermes_subprocess_env(inherit_credentials=True)
 
         assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
-        # Worker identity is scrubbed; board location and workspace routing survive so the
-        # fenced descendant can still read the board it belongs to.
-        assert "HERMES_KANBAN_TASK" not in env
-        assert "HERMES_KANBAN_RUN_ID" not in env
-        assert env["HERMES_KANBAN_DB"] == "/tmp/parent-kanban.db"
-        assert env["HERMES_KANBAN_WORKSPACE"] == "/tmp/parent-workspace"
         assert env["MY_APP_VAR"] == "keep-me"
 
 
