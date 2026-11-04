@@ -1,9 +1,8 @@
 """Generate canonical install-stamp.json for packaged Hermes builds.
 
-All packagers (Docker, Nix, desktop) call this script to produce the same
-``install-stamp.json`` file. Runtime surfaces (CLI, TUI, desktop) read the
-stamp through ``hermes_cli.version_info`` — no env vars, no separate
-docker/nix code paths.
+All packagers (Docker, Nix) call this script to produce the same
+``install-stamp.json`` file. Runtime surfaces read the stamp through
+``hermes_cli.version_info`` — no env vars, no separate docker/nix code paths.
 
 Usage::
 
@@ -31,13 +30,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Bootstrap the repo root onto sys.path so the canary tag shape can come
-# from hermes_cli.update_channel — the single authority — instead of a
-# re-typed regex (hermes_cli/__init__.py is import-light).
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from hermes_cli import update_channel  # noqa: E402
-
 STAMP_SCHEMA_VERSION = 2
 _REPO_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -45,11 +37,9 @@ _REPO_ROOT = Path(__file__).parent.parent.resolve()
 # stamp readers hard-fail a stamp without it.
 #   self             — `hermes update` owns the tree (installer-created
 #                      source checkouts).
-#   electron-updater — the in-app updater replaces the artifact (NSIS,
-#                      mac .app, AppImage).
 #   external         — something else replaces the artifact wholesale
-#                      (nix, docker, MSIX / app stores).
-UPDATE_MECHANISMS = ("self", "electron-updater", "external")
+#                      (nix, docker).
+UPDATE_MECHANISMS = ("self", "external")
 
 # Hermes's historical tags use a four-digit calendar year as their major
 # component (for example v2026.7.20). Restrict release majors to three digits
@@ -145,7 +135,6 @@ def build_stamp(
     commit_date: int | None = None,
     source: str = "local",
     distribution: str | None = None,
-    runtime_dir: str | None = None,
 ) -> dict:
     """Build a stamp dict from explicit args, filling gaps from git/env.
 
@@ -153,15 +142,6 @@ def build_stamp(
     ``source`` identifies where the stamp came from (``ci``, ``local``,
     ``docker``, ``nix``, ``fallback``). ``update_mechanism`` is required:
     every stamp names who applies the next update (see UPDATE_MECHANISMS).
-
-    ``runtime_dir`` is a path RELATIVE to the stamp file's directory, naming
-    where the pm store (the managed tool bytes) lives. A sealed desktop-app
-    payload stages its runtime dir as a sibling of ``repo/`` (the install
-    root), so the value is ``..``. The Python boot path reads this instead
-    of deriving ``<install_root>/.hermes-runtime``, which is wrong for that
-    layout: the runtime dir is the payload dir, not a child of the install
-    root. ``..`` keeps it relocatable — an absolute path would break under
-    MSIX translocation.
     """
     if update_mechanism not in UPDATE_MECHANISMS:
         raise SystemExit(
@@ -208,43 +188,6 @@ def build_stamp(
     elif dirty and distance is None:
         display_version = f"{display_version}+?"
 
-    # The desktop artifact kind, from the one build-time selector
-    # HERMES_DESKTOP_VARIANT. Every stamp carries it:
-    #   bootstrap — no runtime in the artifact; first launch bootstraps a
-    #               local install. The default (variable unset/empty; also
-    #               the value for non-desktop stamps, where it is inert).
-    #   bundled   — the agent runtime ships inside the artifact resources.
-    #   light     — NO runtime at all, remote connections only. A Python
-    #               process must never read a light stamp: the artifact
-    #               contains no Python (the stamp readers raise on it).
-    #   store     — a Store-submission build: the SAME bundled payload, but a
-    #               different MSIX packaging identity. Stamps as 'bundled'
-    #               so the bundled shape logic (shared userData, steward-
-    #               owned updates, no in-app updater) holds for it too.
-    # bundled, light and store all pin a release tag: electron-updater keys on
-    # it, so a tagless artifact of either kind cannot update itself.
-    variant = os.environ.get("HERMES_DESKTOP_VARIANT", "").strip()
-    if variant not in ("", "bootstrap", "bundled", "light", "store"):
-        raise SystemExit(
-            f"write_install_stamp: unknown HERMES_DESKTOP_VARIANT {variant!r} "
-            "(expected unset, 'bootstrap', 'bundled', 'light', or 'store')"
-        )
-    payload = "bundled" if variant == "store" else (variant or "bootstrap")
-    tag = os.environ.get("HERMES_PAYLOAD_TAG") or None
-    # Stable (vX.Y.Z) and canary (vX.Y.<any patch>-canary.<YYYYMMDDHHMMSS>,
-    # or the legacy date-only shape) tags are both release-feed keys; anything
-    # else cannot update itself and refuses. The canary shape is validated by
-    # hermes_cli.update_channel — the single authority — so it accepts the
-    # patch+1 form scripts/release.py's canary_tag_for_date produces.
-    _stable_tag = re.compile(r"^v(0|[1-9]\d{0,2})\.\d+\.\d+$")
-    if payload != "bootstrap" and not (
-        tag and (_stable_tag.match(tag) or update_channel.is_canary_tag(tag))
-    ):
-        raise SystemExit(
-            f"write_install_stamp: HERMES_DESKTOP_VARIANT={payload} requires "
-            f"HERMES_PAYLOAD_TAG=vX.Y.Z or vX.Y.<n>-canary.YYYYMMDDHHMMSS (got {tag!r})"
-        )
-
     stamp = {
         "schemaVersion": STAMP_SCHEMA_VERSION,
         "commit": commit,
@@ -258,11 +201,7 @@ def build_stamp(
         "baseVersion": base_version,
         "displayVersion": display_version,
         "distance": distance,
-        "payload": payload,
-        "tag": tag if payload != "bootstrap" else None,
     }
-    if runtime_dir is not None:
-        stamp["runtimeDir"] = runtime_dir
     return stamp
 
 
@@ -287,23 +226,15 @@ def main() -> int:
     parser.add_argument("--source", default="local", help="Stamp source label")
     parser.add_argument(
         "--distribution",
-        choices=("docker", "nix", "desktop-app"),
+        choices=("docker", "nix"),
         help="Package distribution (the steward that replaces this tree)",
     )
     parser.add_argument(
         "--update-mechanism",
         required=True,
         choices=UPDATE_MECHANISMS,
-        help="Who applies the next update: 'self' (hermes update), "
-        "'electron-updater' (in-app updater), 'external' (nix/docker/store)",
-    )
-    parser.add_argument(
-        "--runtime-dir",
-        default=None,
-        help="Path RELATIVE to the stamp file's directory, naming where the "
-        "pm store (the managed tool bytes) lives. A sealed desktop-app "
-        "payload passes '..' (the payload dir is the install root's "
-        "parent). Omitted for source/docker/nix stamps.",
+        help="Who applies the next update: 'self' (hermes update) or "
+        "'external' (nix/docker)",
     )
     args = parser.parse_args()
 
@@ -318,7 +249,6 @@ def main() -> int:
         commit_date=args.commit_date,
         source=args.source,
         distribution=args.distribution,
-        runtime_dir=args.runtime_dir,
     )
 
     commit_short = stamp["commit"][:12]

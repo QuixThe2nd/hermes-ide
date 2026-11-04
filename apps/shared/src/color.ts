@@ -1,12 +1,10 @@
 /**
- * THE sRGB color primitive for every TypeScript surface (desktop themes, the
+ * THE sRGB color primitive for every TypeScript surface (the web dashboard and
  * Ink TUI). Parse, mix, measure and fix colors here so tone ladders, contrast
- * floors and one-off UI needs share one set of semantics — and so the two
- * surfaces can never drift apart on what "readable" means again.
+ * floors and one-off UI needs share one set of semantics — and so the surfaces
+ * cannot drift apart on what "readable" means.
  *
- * Mixing is an sRGB lerp — deliberately, for byte parity with the desktop's
- * `color-mix(in srgb, ...)` ladder in styles.css. Perceptual (OKLCH) math is
- * desktop-only and lives in `apps/desktop/src/themes/color.ts`.
+ * Mixing is an sRGB lerp, matching CSS `color-mix(in srgb, ...)` semantics.
  *
  * Everything that measures returns `null` for unparseable input rather than 0:
  * a silent 0 makes `ansi256(245)` look like pure black and passes garbage

@@ -41,7 +41,7 @@ def test_parent_reexecs_tail_on_pulled_tree_and_relays_exit_code(monkeypatch, tm
         return SimpleNamespace(wait=lambda timeout=None: 7)
 
     monkeypatch.setattr(update_handoff.subprocess, "Popen", fake_popen)
-    update_receipt._current = None
+    update_receipt._current.set(None)
     update_receipt.begin_update_receipt()
     update_receipt.record_step("pre_update_backup", True, "snapshot=s1")
     plan = UpdatePlan(expected_sha="a" * 40, runtimes=[RuntimeRecord(kind="gateway", profile="default", pid=4, code_sha="a" * 40)])
@@ -51,7 +51,7 @@ def test_parent_reexecs_tail_on_pulled_tree_and_relays_exit_code(monkeypatch, tm
     with pytest.raises(SystemExit) as exit_info:
         update_cmd._hand_off_post_swap(
             args, swap="git", branch="main", pre_pull_sha="a" * 40, opts=_opts(),
-            gateway_mode=False, had_desktop_app_before_update=True, pre_update_snapshot_id="s1",
+            gateway_mode=False, pre_update_snapshot_id="s1",
             _pre_update_plan=plan, _windows_gateway_resume=token)
 
     assert exit_info.value.code == 7
@@ -68,7 +68,7 @@ def test_parent_reexecs_tail_on_pulled_tree_and_relays_exit_code(monkeypatch, tm
     # The child owns the Windows resume: its copy still says resume_needed, the parent's does not.
     assert payload["windows_gateway_resume"]["resume_needed"] is True and token["resume_needed"] is False
     # Detached: the parent's command-boundary finalize is a no-op — the child writes the receipt.
-    assert update_receipt._current is None
+    assert update_receipt._current.get() is None
     assert update_receipt.finalize_pending_update_receipt(7) is None
 
 
@@ -80,17 +80,16 @@ def test_parent_records_failure_when_child_cannot_start(monkeypatch, tmp_path):
     monkeypatch.setattr(update_handoff.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no python")))
     marker = {}
     monkeypatch.setattr(update_cmd._m(), "_write_update_incomplete_marker", lambda: marker.setdefault("written", True))
-    update_receipt._current = None
+    update_receipt._current.set(None)
     update_receipt.begin_update_receipt()
 
     with pytest.raises(SystemExit) as exit_info:
         update_cmd._hand_off_post_swap(
-            SimpleNamespace(), swap="git", branch="main", opts=_opts(), gateway_mode=False,
-            had_desktop_app_before_update=False)
+            SimpleNamespace(), swap="git", branch="main", opts=_opts(), gateway_mode=False)
 
     assert exit_info.value.code == 1 and marker == {"written": True}
-    assert [s["name"] for s in update_receipt._current.data["steps"]] == ["post_swap_handoff"]
-    update_receipt._current = None
+    assert [s["name"] for s in update_receipt._current.get().data["steps"]] == ["post_swap_handoff"]
+    update_receipt._current.set(None)
 
 
 def test_child_resumes_receipt_and_runs_git_tail_from_payload(monkeypatch, tmp_path):
@@ -98,7 +97,7 @@ def test_child_resumes_receipt_and_runs_git_tail_from_payload(monkeypatch, tmp_p
     handoff = tmp_path / "post_swap.json"
     handoff.write_text(json.dumps({
         "swap": "git", "branch": "main", "pre_pull_sha": "a" * 40,
-        "gateway_mode": False, "had_desktop_app_before_update": True, "pre_update_snapshot_id": "s1",
+        "gateway_mode": False, "pre_update_snapshot_id": "s1",
         "pre_update_version": "0.21.3", "active_lazy_features": ["voice"], "active_tool_dependencies": {},
         "plan": UpdatePlan(expected_sha="a" * 40, runtimes=[RuntimeRecord(kind="gateway", profile="work", pid=9)]).to_dict(),
         "windows_gateway_resume": None, "sibling_snapshots": {"work": "snap-w"},
@@ -114,13 +113,13 @@ def test_child_resumes_receipt_and_runs_git_tail_from_payload(monkeypatch, tmp_p
     monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda args, gateway_mode: update_cmd._UpdateOptions(
         active_lazy_features=None, active_tool_dependencies=None, pre_update_version="NEW", gw_input_fn=None,
         assume_yes=True, keep_stash=False, switch_branch=False, discard_local_changes=False))
-    update_receipt._current = None
+    update_receipt._current.set(None)
 
     update_cmd._run_post_swap_phase(SimpleNamespace(post_swap=str(handoff), yes=True), gateway_mode=False)
 
-    assert update_receipt._current.data["started_at"] == started
-    assert update_receipt._current.data["post_swap_pid"] == os.getpid()
-    assert [s["name"] for s in update_receipt._current.data["steps"]] == ["pre_update_backup"]
+    assert update_receipt._current.get().data["started_at"] == started
+    assert update_receipt._current.get().data["post_swap_pid"] == os.getpid()
+    assert [s["name"] for s in update_receipt._current.get().data["steps"]] == ["pre_update_backup"]
     git_cmd, branch, pre_pull_sha, opts = seen["args"]
     assert (git_cmd, branch, pre_pull_sha) == (["git"], "main", "a" * 40)
     # Pre-update snapshots come from the payload, never re-read from the new tree.
@@ -130,4 +129,4 @@ def test_child_resumes_receipt_and_runs_git_tail_from_payload(monkeypatch, tmp_p
     assert plan.runtimes[0].profile == "work" and "is_fork" not in seen["kw"]
     assert cfg._LAST_SIBLING_SNAPSHOTS == {"work": "snap-w"}
     assert not handoff.exists()  # consumed: nothing left to leak
-    update_receipt._current = None
+    update_receipt._current.set(None)

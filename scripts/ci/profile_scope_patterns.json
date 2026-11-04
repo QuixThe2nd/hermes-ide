@@ -122,14 +122,14 @@
       "id": "P25",
       "class": "C12",
       "pattern_regex": "fetch\\(\\s*[`'\"]/api/(gateway|status|mcp|cron|sessions)[^`'\"]*[`'\"]\\s*[,)]|apiFetch\\([^)]*\\)(?!.*profile)|profilePickConnectionId\\(|resolveNewChatOwnerRoute\\(",
-      "scope_hint": "apps/desktop/src and web/src: every lifecycle/status/settings request against a pooled local backend must carry ?profile= (or the profile param) and every new-session tile must record an owner route.",
+      "scope_hint": "web/src: every lifecycle/status/settings request against a pooled local backend must carry ?profile= (or the profile param) and every new-session tile must record an owner route.",
       "why": "A pooled local backend routed lifecycle to the ambient profile (served profiles showed stopped); tab-strip + on a named local profile minted a session with no owner metadata so session.control.read failed closed."
     },
     {
       "id": "P27",
       "class": "C11",
       "pattern_regex": "def start\\(self\\).*\\n(?:.*\\n){0,15}?.*(recover_interrupted|record_ticker_heartbeat)|record_ticker_heartbeat\\(",
-      "scope_hint": "cron/scheduler_provider.py and the Desktop desktop-cron-ticker: all pre-loop work inside the BaseException guard; publish the profile list only after the gate filtered it; housekeeping respawns a dead ticker.",
+      "scope_hint": "cron/scheduler_provider.py: all pre-loop work inside the BaseException guard; publish the profile list only after the gate filtered it; housekeeping respawns a dead ticker.",
       "why": "A corrupt executions.db killed the ticker thread before the guarded loop; gateway stayed up, heartbeat frozen, no jobs, no error marker."
     },
     {

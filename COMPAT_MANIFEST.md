@@ -1166,7 +1166,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `check_fail` | restored-def | `(deleted; BASE body restored)` |
 | `check_macos_full_disk_access` | moved-lazy | `hermes_cli.doctor_platform` |
 | `check_macos_tcc_anchor` | moved-lazy | `hermes_cli.doctor_platform` |
-| `check_macos_tcc_grants` | moved-lazy | `hermes_cli.doctor_platform` |
 | `check_ok` | restored-def | `(deleted; BASE body restored)` |
 | `check_warn` | restored-def | `(deleted; BASE body restored)` |
 | `collect_deprecated_config_keys` | moved-lazy | `hermes_cli.doctor_config` |

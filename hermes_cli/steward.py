@@ -8,25 +8,22 @@ facts this branch already ships:
   / updater may mutate.
 * The build stamp (``install-stamp.json``, written by
   ``scripts/write_install_stamp.py``) names the steward in
-  ``distribution`` (``desktop-app``, ``docker``, ``nix``, or a future
-  package manager) for sealed trees.
+  ``distribution`` (``docker``, ``nix``, or a future package manager) for
+  sealed trees.
 
 A sealed tree (no ``.git``) belongs to a steward: only the steward removes
 or replaces its code. The refusal messages below always leave the user a
-working next step for their data (``hermes uninstall --data`` / the
-desktop app's Settings -> About page).
+working next step for their data (``hermes uninstall --data``).
 """
 
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 
 BUILD_INFO_NAME = "install-stamp.json"
 
-STEWARD_DESKTOP = "desktop-app"
 STEWARD_DOCKER = "docker"
 STEWARD_NIX = "nix"
 
@@ -35,13 +32,6 @@ STEWARD_NIX = "nix"
 # this build does not know (a newer package-manager value read by older
 # code).
 STEWARD_UPDATE_MESSAGES = {
-    STEWARD_DESKTOP: (
-        "✗ This Hermes runs from inside the desktop app bundle.\n"
-        "\n"
-        "Manage updates from within the desktop app.\n"
-        "Prefer a self-managed source install? See:\n"
-        "  https://hermes-agent.nousresearch.com/docs/user-guide/switching-to-source"
-    ),
     STEWARD_NIX: (
         "✗ This Hermes runs from the Nix store.\n"
         "\n"
@@ -58,12 +48,9 @@ _STEWARD_UPDATE_FALLBACK = (
 )
 
 # What the uninstaller says when it refuses to remove code from a sealed
-# tree. The steward put the code there; the steward removes it. The
-# desktop-app message is per-OS because each OS owns app removal
-# differently.
+# tree. The steward put the code there; the steward removes it.
 _STEWARD_DELETE_DATA_PREAMBLE = "To delete your Hermes data (chats, configuration, etc),\n"
 _STEWARD_DELETE_DATA_CLI = "run:\n$ hermes uninstall --data\n"
-_STEWARD_DELETE_DATA_DESKTOP = "Open Hermes Desktop, go to Settings -> About, and delete your data from there.\n"
 
 _STEWARD_UNINSTALL_MESSAGES = {
     STEWARD_DOCKER: (
@@ -87,42 +74,12 @@ _STEWARD_UNINSTALL_MESSAGES = {
     ),
 }
 
-_STEWARD_MANAGED_BY_DESKTOP = "✗ Hermes is managed by the desktop app.\n"
-
-_STEWARD_DESKTOP_UNINSTALL_BY_PLATFORM = {
-    "win32": (
-        _STEWARD_MANAGED_BY_DESKTOP +
-        "\n"
-        "Remove the app from Windows Settings → Apps → Installed apps.\n" +
-        _STEWARD_DELETE_DATA_PREAMBLE +
-        _STEWARD_DELETE_DATA_DESKTOP
-    ),
-    "darwin": (
-        _STEWARD_MANAGED_BY_DESKTOP +
-        "\n"
-        "Quit the app and drag Hermes.app from Applications to the Trash.\n" +
-        _STEWARD_DELETE_DATA_PREAMBLE +
-        _STEWARD_DELETE_DATA_DESKTOP
-    ),
-}
-
-_STEWARD_DESKTOP_UNINSTALL_DEFAULT = (
-    _STEWARD_MANAGED_BY_DESKTOP +
-    "\n"
-    "Delete the Hermes AppImage (or app directory) from wherever you\n"
-    "saved it.\n" +
-    _STEWARD_DELETE_DATA_PREAMBLE +
-    _STEWARD_DELETE_DATA_DESKTOP
-)
-
 _STEWARD_UNINSTALL_FALLBACK = (
     "✗ Hermes is managed by {steward}.\n"
     "\n"
     "The tree has no git checkout, so the uninstaller will not remove it.\n"
     "Remove it with the tool that installed it.\n"
     "\n" +
-    # A generic package-manager steward has no desktop app, and this
-    # refusal prints in a CLI context — point at the CLI data path.
     _STEWARD_DELETE_DATA_PREAMBLE +
     _STEWARD_DELETE_DATA_CLI
 )
@@ -138,9 +95,6 @@ def steward_update_message(steward: str) -> str:
 
 def steward_uninstall_message(steward: str, platform: "str | None" = None) -> str:
     """The uninstall refusal text for a sealed tree."""
-    if steward == STEWARD_DESKTOP:
-        key = platform if platform is not None else sys.platform
-        return _STEWARD_DESKTOP_UNINSTALL_BY_PLATFORM.get(key, _STEWARD_DESKTOP_UNINSTALL_DEFAULT)
     message = _STEWARD_UNINSTALL_MESSAGES.get(steward)
     if message is not None:
         return message
@@ -163,21 +117,6 @@ def read_install_stamp(project_root: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def is_bundled_payload(project_root: Path) -> bool:
-    """True when ``project_root`` is a bundled desktop payload's ``repo/``.
-
-    THE shape predicate for the sealed-bundle branch, and a mirror of the
-    Electron shell's ``installShape() === 'bundled'``: the build stamp is
-    the authority, so filesystem coincidences (a sibling ``bin/``, a
-    surviving ``apps/desktop/package.json``) can never promote a checkout
-    into it. A missing, foreign, or unreadable stamp means NOT bundled.
-    """
-    try:
-        return read_install_stamp(Path(project_root)).get("payload") == "bundled"
-    except Exception:  # noqa: BLE001 — a bad stamp must not take a caller down
-        return False
-
-
 def sealed_steward(project_root: Path) -> Optional[str]:
     """The steward owning the sealed tree at ``project_root``, or ``None``.
 
@@ -198,8 +137,8 @@ def classify_install(project_root: Path) -> "tuple[str, bool]":
     """(steward, code_removal_allowed) for the tree at ``project_root``.
 
     A git checkout reports ``("git", True)``; a sealed tree reports its
-    steward and ``False``. Used by ``gui_install_summary`` so the desktop
-    UI can gate its destructive options on the same ladder the CLI uses.
+    steward and ``False`` so callers can gate destructive options on the
+    same ladder the CLI uses.
     """
     steward = sealed_steward(project_root)
     if steward is None:

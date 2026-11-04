@@ -1,8 +1,8 @@
 """Post-swap hand-off: finish ``hermes update`` in an interpreter born on the pulled code.
 
 ``hermes update`` starts in an interpreter that imported the PRE-pull tree. Once ``git merge``
-(or the ZIP swap) has replaced the checkout, every later phase — dependency sync, Node/web/
-Desktop builds, maintenance, fleet restart, verification, receipt — used to keep running in
+(or the ZIP swap) has replaced the checkout, every later phase — dependency sync, Node/web
+work, maintenance, fleet restart, verification, receipt — used to keep running in
 that stale process and lazily import NEW source into an OLD ``sys.modules`` graph. Any rename
 between the two commits then surfaced as an ``ImportError``/``AttributeError`` inside the
 updater itself, after the code swap had already succeeded (#87134, #112465, #112558, #112604
@@ -109,7 +109,7 @@ def post_swap_child_env() -> dict[str, str]:
     """Environment for the child. ``HERMES_UPDATE_REEXEC`` marks it as already off the Windows
     shim (no second re-exec at the sync boundary; ``cmd_update`` hard-exits it when its receipt
     is durable instead of waiting on a leftover non-daemon thread). The lock hand-off pid is
-    only claimed when nobody upstream (Tauri/Electron updater) already named theirs."""
+    only claimed when nobody upstream (an external updater) already named theirs."""
     from hermes_cli.main_install_repair import _UPDATE_REEXEC_ENV
     from hermes_cli.update_lock import HANDOFF_PID_ENV
 

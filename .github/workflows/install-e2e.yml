@@ -10,22 +10,16 @@ name: Install & Update E2E
 #   Matrix: linux     the real curl|bash install one-liner, isolated by a
 #                     git URL redirect to a local bare clone
 #                     (install-e2e-run.yml)
-#   Matrix: windows   the real desktop user flow: website Hermes-Setup.exe
-#                     clicked by AutoHotkey, update via the app, Playwright
-#                     clicking "Update now" (install-e2e-windows-run.yml)
-#   Matrix: macos     script installs on the shared OS-agnostic driver,
-#                     plus the real desktop user flow: website
-#                     Hermes-Setup.dmg mounted and run, updates via the
-#                     app under Playwright (install-e2e-macos-run.yml)
+#   Matrix: windows   the real irm|iex install one-liner and CLI updater
+#                     (install-e2e-windows-run.yml)
+#   Matrix: macos     the real curl|bash install one-liner and CLI updater
+#                     (install-e2e-macos-run.yml)
 #
 # Every combination is dispatched to its OS's run workflow; the run
-# workflow natively skips (grey) what its driver cannot run yet -- an
-# unimplemented method pair, or a starting tag that predates the surface
-# under test (pick-releases annotates each tag with what its tree ships,
-# e.g. whether the desktop app exists yet). Capability knowledge lives
-# next to each driver, never here and never in the generator: declaring a
-# method is a spec edit, implementing one is flipping the run workflow's
-# gate.
+# workflow natively skips (grey) what its driver cannot run yet.
+# Capability knowledge lives next to each driver, never here and never in
+# the generator: declaring a method is a spec edit, implementing one is
+# flipping the run workflow's gate.
 #
 # The starting versions are chosen at runtime from the repo's release tags
 # (scripts/sandbox/pick-release-tags.sh): newest, oldest, and a spread
@@ -47,11 +41,11 @@ on:
   workflow_dispatch:
     inputs:
       route:
-        description: 'Which combinations to run. all = every OS; both/update/installer = the linux legs; windows-desktop = the windows legs; macos-desktop = the macos legs.'
+        description: 'Which combinations to run. all = every OS; both/update/installer = the linux legs; windows = the windows legs; macos = the macos legs.'
         required: false
         type: choice
         default: all
-        options: [all, both, update, installer, windows-desktop, macos-desktop]
+        options: [all, both, update, installer, windows, macos]
       tag-count:
         description: 'How many release tags to sample (newest, oldest, and a spread between).'
         required: false
@@ -79,9 +73,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Which released versions do we test updating FROM? Resolved once,
-  # annotated with what each tag's own tree supports, and shared by every
-  # OS's matrix so all combos cover the same set.
+  # Which released versions do we test updating FROM? Resolved once and
+  # shared by every OS's matrix so all combos cover the same set.
   pick-releases:
     name: Pick release tags
     runs-on: ubuntu-latest
@@ -104,8 +97,8 @@ jobs:
           # Dispatch inputs never touch shell syntax directly: TAG_COUNT
           # arrives via the environment and is validated decimal-only (bash
           # arithmetic reads a leading zero as octal). GitHub's 256-job cap
-          # applies to each per-OS matrix separately; at 10 tags the largest
-          # is windows at 180 (first over the cap at 15 tags = 270).
+          # applies to each per-OS matrix separately; each OS has two legs per
+          # tag, so even the maximum 10-tag run has only 20 entries per OS.
           TAG_COUNT: ${{ inputs.tag-count || 2 }}
           INSTALL_REF: ${{ inputs.install-ref }}
         run: |
@@ -119,17 +112,7 @@ jobs:
             tags="$(scripts/sandbox/pick-release-tags.sh --count "$TAG_COUNT")"
           fi
           echo "Testing updates from: $tags"
-          # Annotate each tag with what its own tree supports, so run
-          # workflows can natively skip surfaces the starting version does
-          # not have. Today: does the release ship the desktop app
-          # (apps/desktop, #20059)? Cheaper here -- the tags are already
-          # fetched -- than a probe job per leg.
-          enriched="$(for t in $(echo "$tags" | jq -r '.[]'); do
-            if git ls-tree -d "$t" apps/desktop | grep -q .; then d=true; else d=false; fi
-            echo "{\"ref\":\"$t\",\"desktop\":$d}"
-          done | jq -sc .)"
-          echo "Annotated: $enriched"
-          echo "tags=$enriched" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
 
   # Expand the support matrix against the picked tags: one leg per
   # {os, install-method, update-method, tag}, split into a matrix per OS.
@@ -179,12 +162,11 @@ jobs:
       install-method: ${{ matrix.install_method }}
       update-method: ${{ matrix.update_method }}
       install-ref: ${{ matrix.install_ref }}
-      tag-has-desktop: ${{ matrix.tag_has_desktop }}
       leg-id: ${{ matrix.leg_id }}
 
   windows:
     name: ${{ matrix.name }}
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "windows-desktop"]'), inputs.route)
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "windows"]'), inputs.route)
     needs: generate-matrix
     strategy:
       fail-fast: false
@@ -194,24 +176,20 @@ jobs:
       install-method: ${{ matrix.install_method }}
       update-method: ${{ matrix.update_method }}
       install-ref: ${{ matrix.install_ref }}
-      tag-has-desktop: ${{ matrix.tag_has_desktop }}
       leg-id: ${{ matrix.leg_id }}
 
   macos:
     name: ${{ matrix.name }}
-    if: github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "macos-desktop"]'), inputs.route)
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "macos"]'), inputs.route)
     needs: generate-matrix
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.generate-matrix.outputs.macos) }}
-    # Two driver arms: the OS-agnostic script driver (shared with linux)
-    # and the published-dmg GUI driver; the run workflow routes.
     uses: ./.github/workflows/install-e2e-macos-run.yml
     with:
       install-method: ${{ matrix.install_method }}
       update-method: ${{ matrix.update_method }}
       install-ref: ${{ matrix.install_ref }}
-      tag-has-desktop: ${{ matrix.tag_has_desktop }}
       leg-id: ${{ matrix.leg_id }}
 
   # The leg player: one static HTML for the whole run. Uploaded BEFORE the
@@ -264,13 +242,11 @@ jobs:
           {
             echo "OS jobs: linux ${{ needs.linux.result }}, windows ${{ needs.windows.result }}, macos ${{ needs.macos.result }}"
             echo
-            # The tag annotations let the chart say WHY a cell skipped
-            # (pre-desktop vs declared TODO) instead of a flat "skip".
             gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
               --paginate --jq '.jobs[] | {name, conclusion}' > /tmp/e2e-jobs.ndjson
             gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=100" \
               --paginate --jq '.artifacts[] | {name, id}' > /tmp/e2e-artifacts.ndjson
-            echo 'Legend: ✅ upgrade passed · known [n] = exact historical failure, see footnote · ❌ unexpected failure · pre-desktop / TODO = why a leg skipped · 📼 opens the leg player (recording + synced logs)'
+            echo 'Legend: ✅ upgrade passed · known [n] = exact historical failure, see footnote · ❌ unexpected failure · TODO = declared but no driver arm · 📼 opens the leg player (recording + synced logs)'
             echo
             node scripts/sandbox/generate-e2e-matrix.mjs --format results \
               --tags '${{ needs.pick-releases.outputs.tags }}' \

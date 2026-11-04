@@ -14,9 +14,9 @@ One of the two separately-invocable, stdlib-only-at-import halves of
     clone converge on one authority. For a foreign ``--project-root``
     (installer bootstrapping a clone it has not exec'd into yet), uv is
     driven directly with pm's pinned binary and sanitized env.
-  - **sealed** (desktop bundle, nix, docker): the interpreter tree is a
-    build artifact — syncing it is not possible and not meaningful.
-    Exit 0 with ``{"state": "sealed"}``, cleanly.
+  - **sealed** (nix, docker): the interpreter tree is a build artifact —
+    syncing it is not possible and not meaningful. Exit 0 with
+    ``{"state": "sealed"}``, cleanly.
 
 Stdlib-only at import is a hard contract: this runs on freshly-cloned
 trees where the venv does not exist yet, and after tree swaps where the
@@ -59,24 +59,13 @@ def _project_root() -> Path:
 def _runtime_dir(project_root: Path) -> Path:
     """Where per-install runtime state lives for ``project_root``.
 
-    Mirrors pm.paths.store_root()'s ladder (HERMES_RUNTIME_DIR, then the
-    install stamp's runtimeDir) but stays stdlib-local and falls back to
-    ``<root>/.hermes-runtime`` instead of the machine-global tool store:
-    the venv-sync stamp is per-install, and two checkouts sharing the
-    default store must not share a currency claim.
+    ``HERMES_RUNTIME_DIR`` overrides the per-install default. The fallback is
+    ``<root>/.hermes-runtime`` instead of the machine-global tool store: two
+    checkouts sharing the default store must not share a currency claim.
     """
     env = os.environ.get("HERMES_RUNTIME_DIR")
     if env:
         return Path(env)
-    try:
-        data = json.loads(
-            (project_root / "install-stamp.json").read_text(encoding="utf-8-sig")
-        )
-        stamped = data.get("runtimeDir") if isinstance(data, dict) else None
-        if stamped:
-            return Path(stamped)
-    except (OSError, ValueError):
-        pass
     return project_root / ".hermes-runtime"
 
 
@@ -125,10 +114,10 @@ def _is_sealed(project_root: Path) -> bool:
         return False
     if not (isinstance(data, dict) and bool(data)):
         return False
-    if data.get("updateMechanism") not in ("self", "electron-updater", "external"):
+    if data.get("updateMechanism") not in ("self", "external"):
         raise RuntimeError(
             f"install-stamp.json at {project_root} is missing a valid "
-            "'updateMechanism' (one of self, electron-updater, external). The "
+            "'updateMechanism' (one of self, external). The "
             "build lane that wrote this stamp must pass --update-mechanism to "
             "scripts/write_install_stamp.py."
         )

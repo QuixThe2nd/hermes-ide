@@ -94,7 +94,6 @@ def isolated_update_runtime(monkeypatch, tmp_path, request):
 
     checkout = tmp_path / "isolated-update-checkout"
     (checkout / ".git").mkdir(parents=True)
-    (checkout / "apps" / "desktop").mkdir(parents=True)
     monkeypatch.setattr(main, "PROJECT_ROOT", checkout)
     if hasattr(request.module, "PROJECT_ROOT"):
         monkeypatch.setattr(request.module, "PROJECT_ROOT", checkout)

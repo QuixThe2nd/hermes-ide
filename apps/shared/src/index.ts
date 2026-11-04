@@ -1,5 +1,4 @@
 export { hasAnsi, sanitizeAnsiForRender, stripAnsi } from './ansi'
-export { backendScopeKey, backendScopePrefix, LOCAL_CONNECTION_ID, registryBackendScopeKey } from './backend-scope'
 export {
   BILLING_REFUSAL_POLICY,
   type BillingRecovery,
@@ -135,38 +134,6 @@ export {
   type ThemePresetName,
   type ThemePresetPalette
 } from './theme-presets'
-export {
-  backgroundMaterialFor,
-  clampIntensity,
-  DEFAULT_GLASS_MATERIAL,
-  DEFAULT_GLASS_SCOPE,
-  GLASS_MATERIALS,
-  GLASS_SCOPES,
-  glassActive,
-  type GlassMaterial,
-  glassMaterialForPicker,
-  glassMaterialsFor,
-  type GlassScope,
-  glassSupportedOn,
-  glassSurfaceKeep,
-  normalizeMaterial,
-  normalizeMode,
-  normalizeScope,
-  normalizeState,
-  TRANSLUCENCY_CURVE,
-  TRANSLUCENCY_MAX,
-  TRANSLUCENCY_MIN,
-  TRANSLUCENCY_OPACITY_FLOOR,
-  TRANSLUCENCY_STEP,
-  type TranslucencyMode,
-  type TranslucencyState,
-  translucencySupportedOn,
-  vibrancyFor,
-  windowOpacityFor,
-  WINDOWS_BACKGROUND_MATERIALS,
-  WINDOWS_GLASS_MIN_BUILD,
-  type WindowsBackgroundMaterial
-} from './translucency'
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,

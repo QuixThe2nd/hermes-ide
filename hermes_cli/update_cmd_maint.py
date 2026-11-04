@@ -284,7 +284,7 @@ def _finish_dashboard_update_cleanup(
 
 def _print_update_completion(message: str) -> None:
     """Print the outcome (with branch @ sha so drift is visible) plus, when launched by the
-    dashboard with an action id, a receipt line the Desktop matches after restart.
+    dashboard with an action id, the completion receipt line its update action matches.
 
     See #47359, #58764.
     """
@@ -368,36 +368,29 @@ def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
         db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
 
 
-def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:
-    """Final banner. A failed Desktop rebuild is non-fatal but must not print ``✓ Update complete!``.
-
-    See #88251.
-    """
+def _print_update_summary(*, node_failures: list, pre_update_version: str | None) -> bool:
+    """Print the final banner and return the generic runtime-health verdict."""
     from hermes_cli.update_cmd import _post_update_sqlite_runtime_status, _update_complete_message
     sqlite_runtime_ok, sqlite_info = _post_update_sqlite_runtime_status()
     if sqlite_info is None:
         # Grace path: only a POSITIVE vulnerable probe demotes success to partial.
         sqlite_runtime_ok = True
     print()
-    if node_failures or not desktop_build_ok or not sqlite_runtime_ok:
+    if node_failures or not sqlite_runtime_ok:
         parts = []
         if node_failures:
             parts.append(f"Node.js dependencies for {', '.join(node_failures)} did not refresh")
-        if not desktop_build_ok:
-            parts.append("the desktop app was not rebuilt and is still on the previous build")
         if parts:
             print("⚠ Update partially complete — " + "; ".join(parts) + ".")
         if node_failures:
             print("  Code and Python deps are updated, but the dashboard/TUI may")
             print("  be in a mixed state until the Node deps are rebuilt.")
-        if not desktop_build_ok:
-            print("  Run `hermes desktop` to retry the desktop rebuild.")
         if not sqlite_runtime_ok:
             for line in _sqlite_partial_completion_lines(sqlite_info.sqlite_version_string):
                 print(line)
     else:
         _print_update_completion(_update_complete_message(pre_update_version))
-    return desktop_build_ok and sqlite_runtime_ok
+    return sqlite_runtime_ok
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
@@ -909,29 +902,13 @@ def _migrate_relay_exporter_env() -> None:
 
 
 def _run_post_update_maintenance(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update, node_failures, desktop_build_ok,
+    *, assume_yes, gateway_mode, pre_update_snapshot_id, node_failures,
     pre_update_version, deferred_defects=None,
 ) -> bool:
     """Post-pull housekeeping: state.db restore, catalog/skills/profile syncs, config migration,
     the update summary (verdict returned), and best-effort notices/self-heals. Every step is
     isolated so none can fail the update."""
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
-    # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
-    # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
-    # With the post-#73681 identifier-pinned DR, new grants survive rebuilds — but a grant made to a pre-fix
-    # binary stays stale: the System Settings toggle shows ON while macOS re-prompts on every capture, and
-    # the modern prompt has no Allow button, so users loop. One line of guidance after update tells affected
-    # users how to complete the one-time re-grant.
-    if sys.platform == "darwin" and had_desktop_app_before_update:
-        print()
-        print(
-            "  ℹ macOS: if Hermes re-prompts for permissions you already "
-            "granted (toggle shows ON), the stored grant is stale — run "
-            "`tccutil reset ScreenCapture com.nousresearch.hermes` (repeat "
-            "per affected service), toggle it ON in System Settings, then "
-            "fully quit & relaunch once."
-        )
-
     # macOS TCC interpreter anchor; boot-gated — a failed probe leaves the venv untouched.
     try:
         # See #95596.
@@ -968,7 +945,7 @@ def _run_post_update_maintenance(
     )
 
     update_complete = _print_update_summary(
-        node_failures=node_failures, desktop_build_ok=desktop_build_ok, pre_update_version=pre_update_version,
+        node_failures=node_failures, pre_update_version=pre_update_version,
     )
 
     _print_post_update_notices_and_self_heals()

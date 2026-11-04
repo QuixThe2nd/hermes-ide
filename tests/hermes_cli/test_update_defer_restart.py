@@ -410,9 +410,6 @@ _REQUIRED_STEP_FAILURES = {
     "web_build": lambda mp: mp.setattr(
         hermes_main, "_build_web_ui", lambda *a, **k: False
     ),
-    "desktop_build": lambda mp: mp.setattr(
-        update_cmd, "_rebuild_desktop_after_update", lambda *a, **k: False
-    ),
     "skill_sync": lambda mp: mp.setattr(
         "tools.skills_sync.sync_skills",
         lambda **kw: (_ for _ in ()).throw(RuntimeError("disk full")),
@@ -452,9 +449,6 @@ def test_deferred_unselected_optional_work_still_prepares(monkeypatch, tmp_path)
     _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
     _forbid_restart_paths(monkeypatch)
     monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
-    monkeypatch.setattr(
-        update_cmd, "_rebuild_desktop_after_update", lambda *a, **k: True
-    )
 
     hermes_main.cmd_update(_update_args(defer_restart=True))
 

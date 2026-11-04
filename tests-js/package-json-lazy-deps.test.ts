@@ -23,11 +23,6 @@
  *   own cache warm, preserving the "available before any session starts"
  *   property #27055 cared about without re-entangling the dependency.
  *
- * - ``@streamdown/math`` is NOT a root dependency either. It's imported only
- *   by desktop's own TS code (``apps/desktop/src/...``), so it belongs in
- *   ``apps/desktop/package.json`` (alongside its sibling ``@streamdown/code``)
- *   — not root, where it was subject to the exact same pruning risk.
- *
  * - ``@askjo/camofox-browser`` is NOT eager. It is an explicit opt-in
  *   alternative browser backend, selected by the user via
  *   ``hermes tools`` → Browser Automation → Camofox, and only used at
@@ -52,7 +47,6 @@ import { test } from 'vitest'
 const REPO_ROOT = path.resolve(__dirname, '..')
 const ROOT_PKG = path.join(REPO_ROOT, 'package.json')
 const ROOT_LOCK = path.join(REPO_ROOT, 'package-lock.json')
-const DESKTOP_PKG = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
 
 function rootPackageJson(): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(ROOT_PKG, 'utf-8'))
@@ -80,31 +74,6 @@ test('agent-browser is not in root dependencies (resolves via npx, #43564)', () 
       'warm_agent_browser_npx_cache). Putting it back in root ' +
       'dependencies re-entangles it with the ui-tui/web workspace ' +
       'install graph and reintroduces #43564.'
-  )
-})
-
-test('@streamdown/math is not in root dependencies (desktop-only import)', () => {
-  const deps = (rootPackageJson().dependencies ?? {}) as Record<string, string>
-  assert.ok(
-    !('@streamdown/math' in deps),
-    '@streamdown/math is only imported by apps/desktop\'s own TS code ' +
-      '(markdown-text.tsx, katex-memo.ts) — it belongs in ' +
-      'apps/desktop/package.json alongside its sibling @streamdown/code, ' +
-      'not root, where it\'s subject to the same workspace-pruning risk ' +
-      'agent-browser had (#43564).'
-  )
-})
-
-test('@streamdown/math is in desktop dependencies', () => {
-  const deps = (JSON.parse(fs.readFileSync(DESKTOP_PKG, 'utf-8')).dependencies ??
-    {}) as Record<string, string>
-
-  assert.ok(
-    '@streamdown/math' in deps,
-    '@streamdown/math is imported by apps/desktop\'s own TS code ' +
-      '(markdown-text.tsx, katex-memo.ts) and must be declared in ' +
-      'apps/desktop/package.json now that it is no longer a root ' +
-      'dependency.'
   )
 })
 

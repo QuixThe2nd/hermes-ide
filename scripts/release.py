@@ -42,8 +42,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 UV_LOCK_FILE = REPO_ROOT / "uv.lock"
-DESKTOP_PKG_FILE = REPO_ROOT / "apps" / "desktop" / "package.json"
-PKG_LOCK_FILE = REPO_ROOT / "package-lock.json"
 
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
@@ -2154,72 +2152,6 @@ def list_remotes() -> list[str]:
     return [name for name in result.stdout.split() if name]
 
 
-def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
-    """Start the desktop bundled build for ``tag``. Returns True on success.
-
-    This is how EVERY release of either kind gets its installers. The
-    workflow takes workflow_dispatch only, because that is one of the two
-    events GITHUB_TOKEN is allowed to raise: the scheduled canary pushes
-    its tag as github-actions[bot], and a bot-pushed tag starts no
-    workflow run at all. A tag-push trigger would therefore work for a
-    hand-cut stable release and silently do nothing for the canary.
-
-    Called after the draft release exists — its body is where the
-    builds-pending / builds-table jobs splice the download tables (the
-    binaries themselves go to the R2 bucket; the release carries notes
-    only). The workflow FILE is taken from the repo's DEFAULT BRANCH (not
-    the tag): a tag-dispatched run scopes actions/cache under
-    refs/heads/refs/tags/<tag> — a mangled per-tag scope that can never be
-    restored by a later canary, so every canary rebuilt from cold. On a
-    branch ref the caches scope to refs/heads/<branch> and persist across
-    canaries. The build CODE still comes from the tag via the `tag` input
-    (the workflow checks out ${{ inputs.tag }}), so an old-tag rebuild
-    builds the old snapshot with the current workflow.
-    """
-    cmd = [
-        "gh", "workflow", "run", "desktop-bundled-release.yml",
-        "--ref", "main",  # placeholder — replaced after the which-guard below
-        "-f", f"tag={tag}",
-        "-f", "upload_release=true",
-    ]
-    if gh_repo:
-        cmd += ["--repo", gh_repo]
-
-    if not shutil.which("gh"):
-        print("  ✗ Cannot start the desktop build: `gh` CLI not found.")
-        print(f"    Start it manually: {' '.join(cmd)}")
-        return False
-
-    dispatch_ref = _default_branch(gh_repo) or "main"
-    cmd[cmd.index("--ref") + 1] = dispatch_ref
-
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", cwd=str(REPO_ROOT),
-    )
-    if result.returncode != 0:
-        print(f"  ✗ Could not start the desktop build: {result.stderr.strip()}")
-        print(f"    Start it manually: {' '.join(cmd)}")
-        return False
-
-    print(f"  ✓ Desktop build started for {tag} (workflow from {dispatch_ref})")
-    return True
-
-
-def _default_branch(gh_repo: str | None) -> str | None:
-    """The repo's default branch, resolved via gh. None on any failure."""
-    cmd = ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
-    if gh_repo:
-        cmd += ["--repo", gh_repo]
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", cwd=str(REPO_ROOT),
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
-
-
 def resolve_push_remote(requested: str | None) -> str:
     """Pick the remote that receives the release push (and the GitHub
     release). One configured remote: use it. More than one: the release
@@ -2371,31 +2303,6 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
     )
     PYPROJECT_FILE.write_text(pyproject, encoding="utf-8")
 
-    # Keep the desktop Electron app's package.json version in lockstep with the
-    # Python package version. The desktop About panel reads the live Hermes
-    # version at runtime, but app.getVersion()/packaging metadata still come
-    # from this field, so it must track pyproject to avoid drift.
-    pkg_text = DESKTOP_PKG_FILE.read_text(encoding="utf-8-sig")
-    pkg_text = re.sub(
-        r'("version"\s*:\s*)"[^"]+"',
-        rf'\g<1>"{semver}"',
-        pkg_text,
-        count=1,
-    )
-    DESKTOP_PKG_FILE.write_text(pkg_text, encoding="utf-8")
-
-    # npm mirrors each workspace package's version into the root lockfile.
-    # Update the apps/desktop entry so `npm ci`/`npm install` do not see the
-    # lockfile as out of date and rewrite it (or fail in CI) after a bump.
-    lock_text = PKG_LOCK_FILE.read_text(encoding="utf-8-sig")
-    lock_text = re.sub(
-        r'("apps/desktop"\s*:\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"version"\s*:\s*)"[^"]+"',
-        rf'\g<1>"{semver}"',
-        lock_text,
-        count=1,
-    )
-    PKG_LOCK_FILE.write_text(lock_text, encoding="utf-8")
-
     # uv.lock records the editable root package's version from pyproject.
     # Update it in place so a post-release `uv sync`/`uv lock` is a no-op.
     uv_text = UV_LOCK_FILE.read_text(encoding="utf-8-sig")
@@ -2407,72 +2314,12 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
     )
     UV_LOCK_FILE.write_text(uv_text, encoding="utf-8")
 
-    # Keep the bootstrap installer (Hermes-Setup.dmg CFBundleShortVersionString)
-    # in lockstep with the Python package version. Tauri reads `version` from
-    # package.json + tauri.conf.json; a hardcoded 0.0.1 ships in the DMG.
-    installer_pkg = REPO_ROOT / "apps" / "bootstrap-installer" / "package.json"
-    if installer_pkg.exists():
-        pkg_text = installer_pkg.read_text(encoding="utf-8")
-        pkg_text = re.sub(
-            r'("version"\s*:\s*)"[^"]+"',
-            rf'\g<1>"{semver}"',
-            pkg_text,
-            count=1,
-        )
-        installer_pkg.write_text(pkg_text, encoding="utf-8")
-
-    installer_tauri = (
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
-    )
-    if installer_tauri.exists():
-        pkg_text = installer_tauri.read_text(encoding="utf-8")
-        pkg_text = re.sub(
-            r'("version"\s*:\s*)"[^"]+"',
-            rf'\g<1>"{semver}"',
-            pkg_text,
-            count=1,
-        )
-        installer_tauri.write_text(pkg_text, encoding="utf-8")
-
-    installer_cargo = (
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml"
-    )
-    if installer_cargo.exists():
-        cargo_text = installer_cargo.read_text(encoding="utf-8")
-        cargo_text = re.sub(
-            r'^version\s*=\s*"[^"]+"',
-            f'version = "{semver}"',
-            cargo_text,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        installer_cargo.write_text(cargo_text, encoding="utf-8")
-
-    return [
-        str(VERSION_FILE),
-        str(PYPROJECT_FILE),
-        str(DESKTOP_PKG_FILE),
-        str(PKG_LOCK_FILE),
-        str(UV_LOCK_FILE),
-    ] + [
-        str(extra)
-        for extra in (installer_pkg, installer_tauri, installer_cargo)
-        if extra.exists()
-    ]
+    return [str(VERSION_FILE), str(PYPROJECT_FILE), str(UV_LOCK_FILE)]
 
 
 def version_files_to_stage() -> list[str]:
     """Return version-bearing files that exist and should be `git add`ed after a bump."""
-    candidates = [
-        VERSION_FILE,
-        PYPROJECT_FILE,
-        PKG_LOCK_FILE,
-        UV_LOCK_FILE,
-        REPO_ROOT / "apps" / "desktop" / "package.json",
-        REPO_ROOT / "apps" / "bootstrap-installer" / "package.json",
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json",
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml",
-    ]
+    candidates = [VERSION_FILE, PYPROJECT_FILE, UV_LOCK_FILE]
     return [str(path) for path in candidates if path.exists()]
 
 
@@ -2637,17 +2484,6 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     lines.append("")
     lines.append(f"**Release Date:** {date_str}")
     lines.append("")
-    # The builds-pending job in desktop-bundled-release.yml replaces this
-    # marker with a "builds in progress" link to the run as soon as the
-    # workflow starts. The builds-table job then replaces the link with
-    # the download tables once every matrix leg has uploaded its
-    # artifacts to the R2 bucket (real object names, never predicted
-    # ones; the release body links point at the R2 public URL). A release
-    # whose matrix never finishes keeps the link — visibly unfinished,
-    # and it points at the run that stopped.
-    lines.append("<!-- HERMES_BUILDS_TABLE -->")
-    lines.append("")
-
     if first_release:
         lines.append("> 🎉 **First official release!** This marks the beginning of regular weekly releases")
         lines.append("> for Hermes Agent. See below for everything included in this initial release.")
@@ -2739,27 +2575,8 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     return "\n".join(lines)
 
 
-def _canary_timestamp(tag: str) -> str | None:
-    """The YYYYMMDD[HHMMSS] UTC stamp embedded in a canary tag, or None."""
-    if not _CANARY_TAG_RE.fullmatch(tag):
-        return None
-    return tag.split("-canary.", 1)[1]
-
-
-def _stamp_epoch(stamp: str) -> int | None:
-    """Epoch seconds for a YYYYMMDD or YYYYMMDDHHMMSS UTC stamp."""
-    try:
-        if len(stamp) == 14:
-            return int(datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp())
-        if len(stamp) == 8:
-            return int(datetime.strptime(stamp, "%Y%m%d").replace(tzinfo=timezone.utc).timestamp())
-    except ValueError:
-        pass
-    return None
-
-
 def cmd_canary(args) -> None:
-    """--canary: tag + draft today's canary prerelease.
+    """--canary: tag and publish today's canary prerelease.
 
     Owns ALL the tag math (the workflow passes only --publish/--remote):
     next-MINOR over the newest stable tag, dated suffix, changelog since
@@ -2767,13 +2584,8 @@ def cmd_canary(args) -> None:
     bump, no commit — the tag points at HEAD as-is, and the stamp's
     displayVersion carries the canary version from the tag.
 
-    Created as a DRAFT prerelease, for the same reason the stable path
-    drafts: a published release with no installers attached is a release
-    users can reach and cannot use. The desktop matrix attaches the
-    installers to this draft by tag, and the canary workflow's publish
-    job flips it to published only after that matrix is green. A failed
-    bundle therefore leaves an inspectable draft rather than a broken
-    canary.
+    Published as a prerelease with source notes; no bundled application
+    artifacts are produced.
 
     Exits 0 with "nothing to do" when HEAD is already tagged by the last
     canary — the skip-if-no-new-commits gate lives HERE, not in workflow
@@ -2793,25 +2605,6 @@ def cmd_canary(args) -> None:
         print(f"✓ {tag_name} already exists — nothing to do.")
         return
 
-    # The canary MSIX build number is minutes-since-the-last-stable (see
-    # msix-shared.mjs). Two canaries of the same LINE cut within the SAME
-    # minute would share a build number → identical MSIX version → App
-    # Installer refuses the second over the first. Refuse the second cut
-    # loudly instead of shipping an uninstallable equal-version package.
-    # (A same-minute cut on a NEW line — after a fresh stable — is fine: the
-    # patch bump already outversions the old line, so no collision.)
-    prev_ts = _canary_timestamp(prev_canary) if prev_canary else None
-    same_line = bool(prev_canary) and prev_canary.split("-canary.", 1)[0] == tag_name.split("-canary.", 1)[0]
-    prev_min = _stamp_epoch(prev_ts) // 60 if prev_ts and _stamp_epoch(prev_ts) is not None else None
-    cur_min = _stamp_epoch(date_utc) // 60 if _stamp_epoch(date_utc) is not None else None
-    if same_line and prev_min is not None and prev_min == cur_min:
-        print(
-            f"✗ {tag_name} is in the same minute as {prev_canary} — they would "
-            "share an MSIX build number (minutes since the last stable). Wait a "
-            "minute and re-run."
-        )
-        return
-
     if prev_canary:
         head = git("rev-parse", "HEAD")
         if head and head == git("rev-parse", f"{prev_canary}^{{commit}}"):
@@ -2822,23 +2615,6 @@ def cmd_canary(args) -> None:
     if not commits:
         print(f"✓ No new commits since {since} — nothing to do.")
         return
-
-    # MSIX version components are 16-bit (makeappx rejects >65535). The
-    # canary build number is minutes-since-the-last-stable, which crosses
-    # the cap at 45.5 days. A canary cut on a stable base older than 45
-    # days cannot carry a legal build number — fail loudly, never clamp (a
-    # clamped number would break monotonicity and the update path).
-    stable_epoch = git("log", "-1", "--format=%ct", stable_tag)
-    canary_epoch = _stamp_epoch(date_utc)
-    if stable_epoch.isdigit() and canary_epoch is not None:
-        days_old = (canary_epoch - int(stable_epoch)) / 86400
-        if days_old > 45:
-            print(
-                f"✗ {stable_tag} is {days_old:.1f} days old — a canary cut now "
-                "would overflow the 16-bit MSIX build number (minutes since "
-                "this stable). Cut a stable release first."
-            )
-            sys.exit(1)
 
     version = tag_name.lstrip("v")
     print(f"Canary: {tag_name} ({len(commits)} commits since {since})")
@@ -2870,7 +2646,6 @@ def cmd_canary(args) -> None:
     changelog_file.write_text(changelog, encoding="utf-8")
     gh_cmd = [
         "gh", "release", "create", tag_name,
-        "--draft",
         "--prerelease",
         # Abort rather than let gh invent a tag: without this it creates a
         # missing tag from the default branch's tip, which would silently
@@ -2890,13 +2665,9 @@ def cmd_canary(args) -> None:
         print(f"    Notes kept at {changelog_file}; tag {tag_name} is pushed.")
         sys.exit(1)
     changelog_file.unlink(missing_ok=True)
-    print(f"✓ Canary prerelease drafted: {result.stdout.strip()}")
-    # The build stages the installers to the R2 bucket and, for a canary
-    # tag, publishes it when the whole matrix is green.
-    dispatch_desktop_build(tag_name, gh_repo)
-    # Record the tag for any workflow step that wants it. release.py
-    # starts the build itself, so nothing consumes this today; it stays
-    # because a step output is the cheap, conventional handle for "which
+    print(f"✓ Canary prerelease published: {result.stdout.strip()}")
+    # Record the tag for any workflow step that wants the conventional
+    # handle for "which
     # tag did this run cut".
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
@@ -3093,13 +2864,7 @@ def main():
             print("    Continue manually after fixing access:")
             print(f"    git push {push_remote} HEAD --tags")
 
-        # Create the GitHub release as a DRAFT (it carries the notes only),
-        # then start the desktop build. The build stages the installers and
-        # feed files to the R2 bucket and the finalize job publishes the
-        # feeds; the builds-table job renders the download links into this
-        # draft's body. Publishing now would expose an artifact-less
-        # release; a stable release is published by hand once the matrix
-        # is green.
+        # Create the GitHub source release as a draft for manual review.
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog, encoding="utf-8")
 
@@ -3131,10 +2896,8 @@ def main():
         if result and result.returncode == 0:
             changelog_file.unlink(missing_ok=True)
             print(f"  ✓ GitHub draft release created: {result.stdout.strip()}")
-            dispatch_desktop_build(tag_name, gh_repo)
             print(f"\n  🎉 Release v{new_version} ({tag_name}) drafted!")
-            print("     The Desktop Bundled Release workflow stages installers to the R2 bucket.")
-            print("     Publish once it is green:")
+            print("     Publish when ready:")
             repo_flag = f" --repo {gh_repo}" if gh_repo else ""
             print(f"     gh release edit {tag_name}{repo_flag} --draft=false")
         else:

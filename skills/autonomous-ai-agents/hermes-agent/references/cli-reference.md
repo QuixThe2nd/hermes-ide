@@ -116,7 +116,6 @@ Multiple credentials per provider form a pool that rotates automatically and ski
 ### Other
 
 ```
-hermes desktop / gui        Native desktop app
 hermes dashboard            Web admin panel + embedded chat (--stop / --status)
 hermes proxy                OpenAI-compatible local proxy backed by an OAuth provider
 hermes portal               Quick setup / sign in via Nous Portal

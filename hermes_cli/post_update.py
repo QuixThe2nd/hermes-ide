@@ -349,19 +349,6 @@ def step_expose_cli() -> dict:
 
     root = _install_root()
 
-    # Shape FIRST, capability second. The stamp is the shape authority: a
-    # bundled desktop payload never gets installer-written wrappers — its
-    # launchers SHIP in agent-payload/bin as prebuilt signed shims. macOS
-    # is the one platform where nothing at install time can expose them
-    # (a dragged .app runs no installer), so there — and only there —
-    # link the user's bin dir at the bundle's own shims. A Linux AppImage
-    # mounts at a transient path a symlink to which would dangle the
-    # moment the app exits.
-    if _is_bundled_payload(root):
-        if sys.platform == "darwin":
-            return _symlink_sealed_launchers(root.parent / "bin")
-        return {"ok": True, "skipped": "bundle-owns-launchers"}
-
     # pm-store-managed install: the launchers are owned by
     # hermes_cli._launchers (staged by install.ps1 / _install_repair —
     # boot the STORE python with a repo-first PYTHONPATH, never
@@ -436,64 +423,6 @@ def step_expose_cli() -> dict:
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": True, "written": written}
-
-
-def _is_bundled_payload(root: Path) -> bool:
-    """Is ``root`` a desktop bundle's agent payload? The stamp is the
-    authority (payload marker / desktop-app distribution), never a
-    sibling-directory sniff; a .git tree is a dev checkout regardless."""
-    if (root / ".git").exists():
-        return False
-    from hermes_cli.steward import STEWARD_DESKTOP, read_install_stamp
-
-    stamp = read_install_stamp(root)
-    if not stamp:
-        return False
-    return bool(stamp.get("payload")) or stamp.get("distribution") == STEWARD_DESKTOP
-
-
-def _symlink_sealed_launchers(payload_bin) -> dict:
-    """Link ~/.local/bin/{hermes,hermes-agent} at a sealed
-    bundle's own prebuilt shims (macOS only).
-
-    Symlinks, not copies: the shims are signed as part of the app bundle,
-    and a copy would both orphan the signature's context and go stale on
-    every app update — a symlink into the .app follows the bundle's
-    content wherever Squirrel.Mac swaps it.
-
-    Ownership guard mirrors step_expose_cli's wrapper logic: an existing
-    entry is replaced only when it is ours — a symlink into THIS app
-    bundle's payload — or missing/broken. A user's own `hermes` (pipx,
-    another checkout's wrapper) is never touched.
-    """
-    link_dir = Path.home() / ".local" / "bin"
-    payload_root = payload_bin.parent
-    written: list[str] = []
-    try:
-        link_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("hermes", "hermes-agent"):
-            source = payload_bin / name
-            if not source.is_file():
-                continue
-            target = link_dir / name
-            if target.is_symlink():
-                current = os.readlink(target)
-                if current == str(source):
-                    continue  # already ours and current
-                # Ours if it points into this payload (stale app path from
-                # a previous version counts — resolve() of a dangling link
-                # still yields the old path text) — or dangling entirely.
-                points_into_payload = str(Path(current)).startswith(str(payload_root) + os.sep)
-                if not points_into_payload and target.exists():
-                    continue  # a live foreign link — user's arrangement
-            elif target.exists():
-                continue  # a real file we did not write — never clobber
-            target.unlink(missing_ok=True)
-            target.symlink_to(source)
-            written.append(name)
-    except OSError as exc:
-        return {"ok": False, "error": str(exc)}
-    return {"ok": True, "written": written, "mode": "sealed-symlinks"}
 
 
 # ---------------------------------------------------------------------------

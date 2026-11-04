@@ -158,6 +158,22 @@ def _wire_uv(monkeypatch, tmp_path: Path, exit_code: int = 0) -> Path:
     return record
 
 
+def test_retired_stamp_runtime_dir_does_not_redirect_dependency_state(tmp_path, monkeypatch):
+    root = tmp_path / "install"
+    root.mkdir()
+    (root / "install-stamp.json").write_text(
+        json.dumps({"commit": "abc", "runtimeDir": str(tmp_path / "retired-store")})
+    )
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+
+    from hermes_cli import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "get_default_hermes_root", lambda: tmp_path / "default-home")
+
+    assert venv_sync._runtime_dir(root) == root / ".hermes-runtime"
+    assert runtime_paths.store_root(root) == tmp_path / "default-home" / "tools"
+
+
 class TestCheckoutSync:
     def test_a_stale_checkout_syncs_frozen_against_its_own_venv(
         self, tmp_path, monkeypatch
@@ -258,12 +274,17 @@ class TestCheckoutSync:
 
 
 class TestSealedTrees:
-    def test_a_sealed_tree_is_a_clean_noop(self, tmp_path, monkeypatch):
-        """The desktop payload and nix bundle must not fail, must not sync."""
+    @pytest.mark.parametrize("distribution", ["docker", "nix"])
+    def test_a_sealed_tree_is_a_clean_noop(self, tmp_path, monkeypatch, distribution):
+        """Docker and Nix bundles must not fail or attempt a sync."""
         root = tmp_path / "sealed"
         root.mkdir()
         (root / "install-stamp.json").write_text(
-            json.dumps({"commit": "abc123", "payload": "full", "updateMechanism": "electron-updater"})
+            json.dumps({
+                "commit": "abc123",
+                "distribution": distribution,
+                "updateMechanism": "external",
+            })
         )
         record = _wire_uv(monkeypatch, tmp_path)
 
@@ -277,7 +298,7 @@ class TestSealedTrees:
     ):
         root = _checkout(tmp_path)
         (root / "install-stamp.json").write_text(
-            json.dumps({"commit": "abc", "updateMechanism": "electron-updater"})
+            json.dumps({"commit": "abc", "updateMechanism": "self"})
         )
         _wire_uv(monkeypatch, tmp_path)
 
@@ -290,6 +311,15 @@ class TestSealedTrees:
         with pytest.raises(RuntimeError, match="updateMechanism"):
             venv_sync.sync(root)
 
+    def test_retired_electron_update_mechanism_is_a_build_lane_bug(self, tmp_path):
+        root = tmp_path / "sealed"
+        root.mkdir()
+        (root / "install-stamp.json").write_text(
+            json.dumps({"commit": "abc", "updateMechanism": "electron-updater"})
+        )
+        with pytest.raises(RuntimeError, match="one of self, external"):
+            venv_sync.sync(root)
+
 
 class TestCliContract:
     def test_json_output_and_exit_codes(self, tmp_path):
@@ -297,7 +327,7 @@ class TestCliContract:
         root = tmp_path / "sealed"
         root.mkdir()
         (root / "install-stamp.json").write_text(
-            json.dumps({"commit": "x", "updateMechanism": "electron-updater"})
+            json.dumps({"commit": "x", "distribution": "docker", "updateMechanism": "external"})
         )
 
         proc = subprocess.run(

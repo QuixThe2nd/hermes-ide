@@ -41,13 +41,7 @@ The `curl | bash` installer manages Python, Node, and dependencies itself. The N
 No clone needed. Nix fetches, builds, and runs everything:
 
 ```bash
-# Run the desktop app
-nix run github:NousResearch/hermes-agent#desktop
-
-# Or install persistently
-nix profile install github:NousResearch/hermes-agent#desktop
-
-# run the tui
+# Run the TUI
 nix run github:NousResearch/hermes-agent -- setup
 nix run github:NousResearch/hermes-agent -- --tui
 
@@ -345,7 +339,7 @@ Quick reference for the most common things Nix users want to customize:
 | Add API keys | `environmentFiles` | `[ config.sops.secrets."hermes-env".path ]` |
 | Give the agent an identity | `hermesHomeFiles."SOUL.md"` | `"You are a terse ops assistant."` |
 | Add project context to the workspace | `documents."AGENTS.md"` | `./documents/AGENTS.md` |
-| Run the backend for the desktop app or the dashboard | `backend.mode` | `"serve"` or `"dashboard"` |
+| Run the headless backend or the dashboard | `backend.mode` | `"serve"` or `"dashboard"` |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
 | Enable Discord/Telegram/Slack | `extraDependencyGroups` | `[ "messaging" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
@@ -605,7 +599,6 @@ The option set is the same set that the NixOS module uses. It is `services.herme
 | State directory | `stateDir` and `/.hermes` | `hermesHome`, set directly. The default is `~/.hermes`. |
 | Service | `systemd.services` | `systemd.user.services` on Linux, `launchd.agents` on macOS |
 | CLI on the PATH | `addToSystemPackages`, which exports `HERMES_HOME` for the full system | `programs.hermes-agent.enable`, which exports it for your session only |
-| Desktop application | not supported, because a system service cannot own a user session | `programs.hermes-agent.desktop.enable` |
 | Container mode | supported | not supported, because it needs root and the Docker socket |
 
 ### Add the Flake Input
@@ -654,9 +647,9 @@ sudo loginctl enable-linger your-username
 macOS has no equivalent option. A `launchd` agent with `RunAtLoad` starts at login and continues to run.
 :::
 
-### Running the Desktop / Dashboard Backend
+### Running the Backend / Dashboard
 
-`gateway.enable` runs the messaging gateway for Telegram, Discord, Slack and the other platforms. Hermes Desktop and the web dashboard connect to a *different* process, which is `hermes serve` or `hermes dashboard`. `backend.mode` runs that process with the gateway:
+`gateway.enable` runs the messaging gateway for Telegram, Discord, Slack and the other platforms. Remote JSON-RPC clients and the web dashboard connect to a *different* process, which is `hermes serve` or `hermes dashboard`. `backend.mode` runs that process with the gateway:
 
 ```nix
 {
@@ -669,7 +662,7 @@ macOS has no equivalent option. A `launchd` agent with `RunAtLoad` starts at log
 }
 ```
 
-`serve` runs without a user interface. It gives the `/api/ws` and `/api/pty` sockets that Hermes Desktop connects to, and it does not build the web application. `dashboard` gives all of that, and also serves the browser admin panel. Both processes use one `HERMES_HOME` with the gateway. Thus the sessions, the skills, the memory and the cron jobs are the same for all of them. `backend.mode` works in the same way on the NixOS module, but not in container mode.
+`serve` runs without a user interface. It gives the `/api/ws` and `/api/pty` sockets to remote clients, and it does not build the web application. `dashboard` gives all of that, and also serves the browser admin panel. Both processes use one `HERMES_HOME` with the gateway. Thus the sessions, the skills, the memory and the cron jobs are the same for all of them. `backend.mode` works in the same way on the NixOS module, but not in container mode.
 
 :::warning Binding to an address other than loopback
 The default address is `127.0.0.1`. Each other address starts the authentication gate of the dashboard. The server also refuses each request with a `Host` header that is different from the address that the server bound to. This is a defence against DNS rebinding. Bind to the name or the address that your client uses.
@@ -1022,7 +1015,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 
 ### Backend (`hermes serve` / `hermes dashboard`)
 
-This option runs the process that Hermes Desktop and the web dashboard connect to, with the gateway. You cannot use it with `container.enable`.
+This option runs the headless backend or web dashboard with the gateway. You cannot use it with `container.enable`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -1049,32 +1042,22 @@ daemons. `programs.hermes-agent` installs what you use, and reads
 |---|---|---|---|
 | `enable` | `bool` | `false` | Add the `hermes` CLI to `home.packages`, and export `HERMES_HOME` for your shells |
 | `package` | `package` | `services.hermes-agent.package` | The package to install. The default applies `extraPythonPackages` and `extraDependencyGroups` from the services, so both are one build. |
-| `desktop.enable` | `bool` | `false` | Add the Hermes Desktop application, with a launcher entry on Linux |
-| `desktop.package` | `package` | `package.hermesDesktop` | The desktop package. The default follows `package`, so the application and the services run one Hermes runtime. |
 
 ```nix
 programs.hermes-agent = {
   enable = true;
-  desktop.enable = true;
 };
 
 services.hermes-agent = {
   enable = true;
   backend.mode = "serve";
-  backend.sessionTokenFile = config.sops.secrets."hermes/desktop-token".path;
+  backend.sessionTokenFile = config.sops.secrets."hermes/backend-token".path;
 };
 ```
 
-The launcher carries `HERMES_HOME` itself. A desktop menu reads no shell
-profile, so the value that `programs.hermes-agent.enable` exports with
-`home.sessionVariables` reaches an interactive shell only. Without the
-value in the launcher, the application opens `~/.hermes` while the
-services use `hermesHome`, and you see no sessions and no keys.
-
-With `backend.sessionTokenFile`, the application connects to the backend
-of the service instead of starting one of its own. Both sides read the
-file at start time, so the token enters no Nix store path. Without the
-option, each side runs its own backend.
+With `backend.sessionTokenFile`, clients can authenticate to the backend
+without storing its token in the Nix store. Both sides read the file at start
+time. Without the option, each side runs its own backend.
 
 `services.hermes-agent.installPackage` was removed by this split. A
 configuration that still sets it gets an error that names the

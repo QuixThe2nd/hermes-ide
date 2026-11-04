@@ -1,6 +1,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_cli.version_info import (
     VersionInfo,
     _derived_version,
@@ -58,6 +60,35 @@ def test_stamp_version_info_preserves_ci_provenance_and_docker_distribution(tmp_
 
     assert info.source == "ci"
     assert info.distribution == "docker"
+
+
+def test_stamp_version_info_rejects_retired_electron_update_mechanism(tmp_path, monkeypatch):
+    stamp = {"commit": "c" * 40, "updateMechanism": "electron-updater"}
+    stamp_file = tmp_path / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp))
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+
+    with pytest.raises(RuntimeError, match="one of self, external"):
+        _stamp_version_info()
+
+
+def test_stamp_version_info_ignores_retired_desktop_distribution_and_light_payload(tmp_path, monkeypatch):
+    stamp = {
+        "commit": "c" * 40,
+        "source": "ci",
+        "distribution": "desktop-app",
+        "updateMechanism": "self",
+        "payload": "light",
+    }
+    stamp_file = tmp_path / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp))
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+
+    info = _stamp_version_info()
+
+    assert info is not None
+    assert info.source == "ci"
+    assert info.distribution is None
 
 
 def test_stamp_version_info_preserves_missing_branch(tmp_path, monkeypatch):

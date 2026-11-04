@@ -30,25 +30,11 @@ describe('known install failures', () => {
 
   it.each([
     { platform: 'linux' }, { phase: 'install' }, { commit: 'v2026.3.12' },
-    { commit: 'f'.repeat(40) }, { installMethod: 'desktop-installer@latest' },
+    { commit: 'f'.repeat(40) }, { installMethod: 'unknown' },
     { updateMethod: 'installer-script' }, { error: 'E2E ASSERTION FAILED: update marker cleaned up' },
     { logs: {} },
   ])('rejects a different case or missing evidence: %j', change => {
     expect(matchKnownFailure({ ...base, ...change })).toBeNull()
-  })
-
-  it('matches manual-only app updates only for the three proven July script cases', () => {
-    const sample = {
-      ...base, commit: '7c1a029553d87c43ecff8a3821336bc95872213b',
-      updateMethod: 'hermes-desktop-app-update',
-      error: 'E2E ASSERTION FAILED: app driven via captured hermes desktop spec; update completed',
-      logs: { desktop: '[hermes] [updates] no staged updater; surfacing manual `hermes update` for CLI install at C:/install\n[hermes] [updates] manual: hermes update\n' },
-    }
-
-    expect(matchKnownFailure(sample)?.id).toBe('windows-july-manual-app-update')
-    expect(matchKnownFailure({ ...sample, installMethod: 'desktop-installer@latest' })).toBeNull()
-    expect(matchKnownFailure({ ...sample, error: 'onboarding timed out' })).toBeNull()
-    expect(matchKnownFailure({ ...sample, logs: { desktop: '[updates] manual: hermes update' } })).toBeNull()
   })
 
   it('CLI writes a receipt and exits zero only on a confirmed match', () => {
@@ -74,11 +60,11 @@ it('renders known receipts as footnotes, without suppressing a red job', async (
   const { renderMarkdownResults, legId } = await import(/* @vite-ignore */ modulePath)
   const name = 'windows: installer-script -> hermes-update (v2026.3.12 -> HEAD)'
   const artifacts = new Map([[`install-e2e-known-${rules[0].id}--${legId(name)}`, 42]])
-  const known = renderMarkdownResults([{ name: name + ' / e2e', conclusion: 'success' }], [], artifacts)
+  const known = renderMarkdownResults([{ name: name + ' / e2e', conclusion: 'success' }], artifacts)
   expect(known).toContain('0 passed, 0 failed, 1 known failures')
   expect(known).toContain('known [^1]')
   expect(known).toContain(`[^1]: **${rules[0].title}.**`)
-  const failed = renderMarkdownResults([{ name: name + ' / e2e', conclusion: 'failure' }], [], artifacts)
+  const failed = renderMarkdownResults([{ name: name + ' / e2e', conclusion: 'failure' }], artifacts)
   expect(failed).toContain('0 passed, 1 failed, 0 known failures')
   expect(failed).not.toContain('known [^1]')
   const passed = renderMarkdownResults([{ name: name + ' / e2e', conclusion: 'success' }])

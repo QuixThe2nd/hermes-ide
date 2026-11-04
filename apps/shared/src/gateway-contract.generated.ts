@@ -3588,7 +3588,6 @@ export interface AgentPluginRow {
   status: string
   portable: boolean
   install_dir: string
-  has_desktop_half: boolean
   catalog_name?: string | null
   catalog_tier?: string | null
   installed_sha?: string | null

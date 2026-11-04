@@ -32,9 +32,8 @@ class TestParseReleaseTag:
         """Historical CalVer tags (v2026.7.20) must not win a numeric sort.
 
         The major component is capped at three digits, the same rule as
-        _SEMVER_TAG_RE in scripts/write_install_stamp.py and
-        latestReleaseFromLsRemote in apps/desktop. A four-digit year would
-        rank above every SemVer release forever.
+        _SEMVER_TAG_RE in scripts/write_install_stamp.py. A four-digit year
+        would rank above every SemVer release forever.
         """
         assert _parse_release_tag("v2026.7.20") is None
         assert _parse_release_tag("v1000.0.0") is None

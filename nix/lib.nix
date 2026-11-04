@@ -6,7 +6,7 @@
 #
 # Source filters (pythonSrc, per-package npm srcs) reduce rebuild scope so
 # that e.g. a .tsx change doesn't trigger a Python venv rebuild, and a .py
-# change doesn't trigger a TUI/Web/Desktop rebuild.  Each derivation gets a
+# change doesn't trigger a TUI/Web rebuild.  Each derivation gets a
 # filtered src that only includes files it actually needs, while keeping
 # the repo-root directory layout intact for buildNpmPackage /
 # npmConfigHook workspace resolution.
@@ -94,14 +94,14 @@ let
 
   # Top-level directory of each workspace member, deduplicated.  Used to
   # exclude JS/TS workspace trees from the Python source filter.  E.g.
-  # apps/desktop + apps/shared + ui-tui + web → [ "apps" "ui-tui" "web" ].
+  # apps/shared + ui-tui + web → [ "apps" "ui-tui" "web" ].
   jsWorkspaceTopDirs = lib.unique (
     map (d: builtins.head (lib.splitString "/" d)) workspaceMemberDirs
   );
 
   # ── Source filters for reducing rebuild scope ──────────────────────
   # Changing a .tsx/.mjs file should NOT trigger a Python venv rebuild,
-  # and changing a .py file should NOT trigger a TUI/Web/Desktop rebuild.
+  # and changing a .py file should NOT trigger a TUI/Web rebuild.
 
   # Python source: everything except JS/TS/docs/infra directories.
   pythonSrc = lib.cleanSourceWith {
@@ -232,11 +232,11 @@ let
   # its first entry is the package's own folder (→ packageJsonPath), and
   # all entries scope the filtered src.  Packages that import source from
   # another workspace member (file: deps) must list that member's dir too,
-  # e.g. apps/desktop depends on apps/shared.
+  # e.g. ui-tui depends on apps/shared.
   #
   # Usage:
   #   hermesNpmLib.buildNpmPackage {
-  #     dirs = [ "apps/desktop" "apps/shared" ];
+  #     dirs = [ "ui-tui" "apps/shared" ];
   #     buildPhase = '' ... '';
   #     installPhase = '' ... '';
   #   }
@@ -260,7 +260,6 @@ let
         src = mkNpmSrc dirs;
         npmConfigHook = patchedNpmConfigHook;
         npmRoot = ".";
-        ELECTRON_SKIP_BINARY_DOWNLOAD = 1;
         passthru = {
           packageJsonPath = "${folder}/package.json";
         };
@@ -303,7 +302,7 @@ in
 
     # importNpmLock reads hashes from the lockfile itself — rebuild every
     # npm package to verify the new lockfile resolves offline.
-    nix build .#tui .#web .#desktop
+    nix build .#tui .#web
     echo "Lockfile updated and all npm packages built."
   '';
 

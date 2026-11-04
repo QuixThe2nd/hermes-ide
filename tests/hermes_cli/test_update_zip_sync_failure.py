@@ -37,5 +37,5 @@ def test_pull_dependency_failure_keeps_recovery_marker(tmp_path, monkeypatch):
     with pytest.raises(pm.InstallError, match="sync stopped"):
         update_cmd_deps._sync_python_dependencies_after_pull(
             ["git"], "main", "a" * 40, active_lazy_features=[], active_tool_dependencies=[],
-            _windows_gateway_resume=[], desktop_dir=tmp_path, had_desktop_app_before_update=False,
+            _windows_gateway_resume=[],
         )

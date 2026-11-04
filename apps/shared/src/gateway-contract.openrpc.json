@@ -3967,10 +3967,6 @@
             "title": "Install Dir",
             "type": "string"
           },
-          "has_desktop_half": {
-            "title": "Has Desktop Half",
-            "type": "boolean"
-          },
           "catalog_name": {
             "anyOf": [
               {
@@ -4064,8 +4060,7 @@
           "source",
           "status",
           "portable",
-          "install_dir",
-          "has_desktop_half"
+          "install_dir"
         ],
         "title": "AgentPluginRow",
         "type": "object"

@@ -1,9 +1,8 @@
 """Cross-process mutual exclusion for in-flight Hermes updates.
 
 The marker file the Tauri updater writes (``UpdateMarkerGuard`` in
-``apps/bootstrap-installer/src-tauri/src/update.rs``) and the Electron desktop reads
-(``electron/update-marker.ts``) is the single lock for **all** update entrypoints.
-Format and location are byte-compatible with both readers.
+``apps/bootstrap-installer/src-tauri/src/update.rs``) is the single lock for
+**all** update entrypoints. Format and location are byte-compatible with its reader.
 """
 
 from __future__ import annotations
@@ -17,9 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Keep in sync with UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts:
-# a shorter ceiling here would let Python steal a lock Electron still considers live.
-# A full update (git pull + uv sync + desktop rebuild) is minutes.
+# The ceiling covers a full update (git pull + dependency sync + Node/web work), which can take minutes.
 UPDATE_MARKER_MAX_AGE_SECONDS = 20 * 60
 
 MARKER_NAME = ".hermes-update-in-progress"

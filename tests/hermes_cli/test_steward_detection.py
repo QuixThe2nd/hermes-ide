@@ -6,7 +6,7 @@ mutation). That is a fact about the INSTALL, so it comes from the two
 facts the tree itself carries: ``.git`` (a checkout we own) and the
 install stamp that ships with the code (``install-stamp.json``, written by
 ``scripts/write_install_stamp.py`` with a required ``updateMechanism`` of
-``self``/``electron-updater``/``external``).
+``self``/``external``).
 """
 
 import json
@@ -14,7 +14,6 @@ import json
 import pytest
 
 from hermes_cli.steward import (
-    STEWARD_DESKTOP,
     STEWARD_DOCKER,
     STEWARD_NIX,
     classify_install,
@@ -37,7 +36,6 @@ class TestStampDrivenDetection:
         [
             (STEWARD_NIX, "external"),
             (STEWARD_DOCKER, "external"),
-            (STEWARD_DESKTOP, "electron-updater"),
         ],
     )
     def test_sealed_tree_names_its_steward(self, tmp_path, distribution, mechanism):
@@ -92,16 +90,6 @@ class TestUpdateAdmission:
         import hermes_cli.image_provenance as ip
 
         monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", tmp_path / "absent.json")
-
-    def test_desktop_app_stamp_refuses_update(self, tmp_path, monkeypatch):
-        from hermes_cli.update_contract import evaluate_update_admission
-
-        root = tmp_path / "payload"
-        _stamp(root, mechanism="electron-updater", distribution=STEWARD_DESKTOP)
-        refusal = evaluate_update_admission(root)
-        assert refusal is not None
-        assert refusal.code == STEWARD_DESKTOP
-        assert "desktop app" in refusal.message
 
     def test_nix_stamp_refuses_update(self, tmp_path):
         from hermes_cli.update_contract import evaluate_update_admission

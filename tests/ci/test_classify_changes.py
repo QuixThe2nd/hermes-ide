@@ -41,15 +41,12 @@ DEFAULT = {
     "uv_lock": True,
     "npm_lock": True,
     "installer": True,
-    "desktop_updater": True,
-    "bootstrap": True,
-    "rust": True,
     "mcp_catalog": False,
     "ci_review": True,
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, desktop_updater=False, bootstrap=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -71,9 +68,6 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "uv_lock": uv_lock,
         "npm_lock": npm_lock,
         "installer": installer,
-        "desktop_updater": desktop_updater,
-        "bootstrap": bootstrap,
-        "rust": rust,
         "mcp_catalog": mcp_catalog,
         "ci_review": ci_review,
     }
@@ -82,11 +76,10 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
 CASES = {
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
-    # pyproject.toml declares the pytest markers the OS lanes select on, so it
-    # also re-arms the desktop_updater integration tests (fail-open).
-    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, uv_lock=True, desktop_updater=True)),
+    # pyproject.toml declares the pytest markers the OS lanes select on.
+    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, uv_lock=True)),
     "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True)),
-    "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
+    "ts package → frontend": (["apps/shared/src/index.ts"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
     "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True)),
@@ -100,7 +93,7 @@ CASES = {
         ["website/docs/developer-guide/plugins/index.md"],
         _lanes(python=True, site=True),
     ),
-    "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
+    "frontend → no uv_lock": (["web/src/App.tsx"], _lanes(frontend=True)),
     # Cross-language contract JSON under apps/: the pytest that pins it against
     # the Python side must run even when nothing else in the PR is Python.
     "generated gateway contract → python + frontend": (
@@ -109,10 +102,6 @@ CASES = {
     ),
     "gateway OpenRPC document → python + frontend": (
         ["apps/shared/src/gateway-contract.openrpc.json"],
-        _lanes(python=True, frontend=True),
-    ),
-    "desktop slash-registry JSON → python + frontend": (
-        ["apps/desktop/src/lib/desktop-slash-registry.json"],
         _lanes(python=True, frontend=True),
     ),
     # The published CIMD document is asserted about by the Python suite, so a
@@ -161,64 +150,20 @@ CASES = {
         _lanes(python=True, installer=True),
     ),
     "python source alone → no installer lane": (["run_agent.py"], _lanes(python=True, scan=True)),
-    # The Windows desktop-update hand-off is a PowerShell integration surface:
-    # its tests spawn the real script and poll its loopback server. They run
-    # when the script, the Electron side that launches it, or their own test
-    # files change — not on every hermes_state.py PR.
-    "windows.ps1 → desktop_updater": (
-        ["scripts/desktop-update/windows.ps1"],
-        _lanes(python=True, desktop_updater=True),
-    ),
-    # The shipped updater page is exercised by the desktop Electron suite;
-    # a page-only change must run that suite as well as the server tests.
-    "updater ui.html → frontend + desktop_updater": (
-        ["scripts/desktop-update/ui.html"],
-        _lanes(python=True, frontend=True, desktop_updater=True),
-    ),
-    "desktop-update test → desktop_updater": (
-        ["tests/scripts/desktop_update/test_desktop_update_windows_progress.py"],
-        _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),
-    ),
-    "updater-process.ts → desktop_updater": (
-        ["apps/desktop/electron/updater-process.ts"],
-        _lanes(frontend=True, desktop_updater=True),
-    ),
-    "python source alone → no desktop_updater lane": (["hermes_state.py"], _lanes(python=True, scan=True)),
-    # `.rs` lives under apps/, so it matches `frontend` too. That lane builds
-    # TypeScript and cannot notice a Rust error — before `rust` existed it was
-    # the ONLY lane a Rust change ran, and the crate's tests never executed.
-    "rust source → rust": (
-        ["apps/bootstrap-installer/src-tauri/src/powershell.rs"],
-        _lanes(frontend=True, bootstrap=True, rust=True),
-    ),
-    "cargo lockfile → rust": (
-        ["apps/bootstrap-installer/src-tauri/Cargo.lock"],
-        _lanes(frontend=True, bootstrap=True, rust=True),
-    ),
-    # Non-.rs files in the crate still change what cargo builds.
-    "tauri config → rust": (
-        ["apps/bootstrap-installer/src-tauri/tauri.conf.json"],
-        _lanes(frontend=True, bootstrap=True, rust=True),
-    ),
-    "ts source alone → no rust lane": (
-        ["apps/bootstrap-installer/src/main.tsx"],
-        _lanes(frontend=True, bootstrap=True),
-    ),
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
     "mixed docs+python → python": (["README.md", "agent/x.py"], _lanes(python=True, scan=True)),
-    "mixed docs+frontend → frontend": (["README.md", "apps/x.tsx"], _lanes(frontend=True)),
-    # tests-only diffs: pytest lanes stay ON, product jobs (Desktop E2E,
-    # Docker) gate on python_prod and skip.
+    "mixed docs+frontend → frontend": (["README.md", "ui-tui/src/entry.ts"], _lanes(frontend=True)),
+    # tests-only diffs: pytest lanes stay ON, product jobs (the Docker image)
+    # gate on python_prod and skip.
     "tests-only → python without python_prod": (
         ["tests/agent/test_foo.py"],
         _lanes(python=True, python_prod=False, scan=True),
     ),
-    # conftest.py owns the _OS_MARKS skip logic, so it re-arms the
-    # desktop_updater integration tests too (fail-open).
-    "conftest → python + desktop_updater": (
+    # conftest.py owns the _OS_MARKS skip logic but is never packaged.
+    "conftest → python without python_prod": (
         ["tests/conftest.py"],
-        _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),
+        _lanes(python=True, python_prod=False, scan=True),
     ),
     "tests + prod source → both lanes": (
         ["tests/agent/test_foo.py", "agent/x.py"],
@@ -244,8 +189,8 @@ CASES = {
         _lanes(python=True, scan=True, mcp_catalog=True),
     ),
     # CI-sensitive files require explicit review label.
-    "eslint config → ci_review": (
-        ["apps/desktop/eslint.config.mjs"],
+    "nested eslint config → ci_review": (
+        ["apps/shared/src/eslint.config.mjs"],
         _lanes(frontend=True, ci_review=True),
     ),
     "shared eslint config → ci_review": (
@@ -264,10 +209,6 @@ CASES = {
         ["apps/shared/eslint.config.mjs"],
         _lanes(frontend=True, ci_review=True),
     ),
-    "bootstrap-installer eslint config → ci_review": (
-        ["apps/bootstrap-installer/eslint.config.mjs"],
-        _lanes(frontend=True, bootstrap=True, ci_review=True),
-    ),
     "prettier config → ci_review": (
         [".prettierrc"],
         _lanes(python=True, ci_review=True),
@@ -276,27 +217,23 @@ CASES = {
         [".github/workflows/typecheck.yml"],
         DEFAULT,
     ),
-    # The bootstrap installer lane: shell installer, dev-checkout wrapper,
-    # and the Tauri app's non-Rust sources.
-    "install.sh → bootstrap lane": (
+    # The POSIX installer and dev-checkout wrapper stay Python-relevant through
+    # the classifier's fail-open rule for unrecognized executable files.
+    "install.sh → python": (
         ["scripts/install.sh"],
-        _lanes(python=True, bootstrap=True, python_prod=True),
+        _lanes(python=True),
     ),
-    "setup-hermes.sh → bootstrap lane": (
+    "setup-hermes.sh → python": (
         ["setup-hermes.sh"],
-        _lanes(python=True, bootstrap=True, python_prod=True),
-    ),
-    "tauri installer source → bootstrap + rust": (
-        ["apps/bootstrap-installer/src-tauri/src/lib.rs"],
-        _lanes(frontend=True, bootstrap=True, rust=True),
+        _lanes(python=True),
     ),
     "composite action → ci_review (also fail-open all)": (
         [".github/actions/retry/action.yml"],
         DEFAULT,
     ),
-    # Normal desktop source doesn't trigger ci_review.
-    "desktop src → no ci_review": (
-        ["apps/desktop/src/app.tsx"],
+    # Normal shared-package source doesn't trigger ci_review.
+    "shared src → no ci_review": (
+        ["apps/shared/src/index.ts"],
         _lanes(frontend=True),
     ),
     # Fail open: CI-config / empty / blank diffs run everything.
@@ -333,10 +270,10 @@ def test_ci_jobs_only_gate_on_detect_outputs_that_detect_actually_declares():
     """An ``if`` that reads an undeclared output resolves to the empty string.
 
     The lane then reports "skipping" on every PR, forever, and nothing goes red
-    — there is no error for referencing an output a job never declared. That is
-    exactly how the ``rust`` lane shipped dead: the classifier emitted it and
-    the composite action re-exported it, but ci.yaml's ``detect`` job did not,
-    so ``needs.detect.outputs.rust`` was never anything but "".
+    — there is no error for referencing an output a job never declared. A lane
+    can otherwise ship dead even when the classifier emits its output and the
+    composite action re-exports it, because ``needs.detect.outputs.<lane>``
+    never resolves to anything but "".
     """
     ci = _yaml(".github/workflows/ci.yaml")
     declared = set(ci["jobs"]["detect"]["outputs"])
@@ -363,13 +300,13 @@ def _iter_if_expressions(job: object):
 
 def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
     assert ci_review_files([
-        "apps/desktop/src/app.tsx",
+        "apps/shared/src/index.ts",
         ".github/workflows/ci.yml",
-        "apps/desktop/eslint.config.mjs",
+        "ui-tui/eslint.config.mjs",
         ".github/workflows/ci.yml",
     ]) == [
         ".github/workflows/ci.yml",
-        "apps/desktop/eslint.config.mjs",
+        "ui-tui/eslint.config.mjs",
     ]
 
 

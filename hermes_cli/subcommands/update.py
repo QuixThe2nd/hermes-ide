@@ -41,8 +41,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Do NOT re-apply local changes after the update. Uncommitted "
             "changes are still stashed so the update can proceed, but they "
             "stay parked in git stash instead of being restored onto the "
-            "updated code. Used by the desktop updater so local source edits "
-            "never silently ride along across updates.")
+            "updated code.")
     update_parser.add_argument(
         "--branch", default=None, metavar="NAME",
         help="Update against this branch instead of the default (main). "
@@ -88,7 +87,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     )
     update_parser.add_argument(
         "--force-venv", action="store_true", default=False,
-        help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
+        help="Windows: mutate the venv even while other processes are running from its interpreter (serve backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
     update_parser.add_argument(
         "--no-gateway-restart", action="store_true", default=False,
@@ -106,9 +105,8 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "--set-channel", default=None, choices=("main", "stable", "canary"), metavar="CHANNEL",
         help="Persist the update channel for THIS install (recorded per install in config.yaml "
              "under update.installs). 'stable' tracks tagged releases, 'main' the git main branch, "
-             "'canary' the canary prereleases (desktop bundles only; source installs normalize "
-             "canary to main). Installs whose updates an external steward owns (nix, docker, app "
-             "stores) have no channel.",
+             "'canary' normalizes to main for source installs. Installs whose "
+             "updates an external steward owns (nix, docker) have no channel.",
     )
     update_parser.add_argument(
         "--install-id", action="store_true", default=False,

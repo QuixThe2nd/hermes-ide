@@ -23,7 +23,7 @@ from hermes_cli import main_install_repair, update_handoff, update_lock
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Runs ``cmd_update`` as the detached child would, with every phase past the hand-off boundary
-# stubbed; the first thing after the Windows pause step (``_desktop_app_present``) reports what
+# stubbed; the first generic git-preparation phase after the Windows pause step reports what
 # the child saw and stops the run.
 _CHILD = r"""
 import atexit, json, os, sys
@@ -59,7 +59,7 @@ atexit.register = _capture
 class Stop(Exception):
     pass
 
-def _phase(desktop_dir):
+def _phase():
     try:
         seen["parent_status"] = psutil.Process(parent_pid).status()
     except psutil.NoSuchProcess:
@@ -72,7 +72,7 @@ def _phase(desktop_dir):
     seen["env_left"] = [k for k in (update_handoff.SHIM_PARENT_PID_ENV, update_handoff.GATEWAY_RESUME_ENV) if k in os.environ]
     raise Stop
 
-update_cmd._desktop_app_present = _phase
+update_cmd._prepare_git_command = _phase
 
 Path(os.environ["HERMES_TEST_READY"]).touch()
 try:

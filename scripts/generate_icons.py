@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate every app icon in the repo from a single master SVG.
+"""Generate the website and dashboard icons from a single master SVG.
 
 Usage (from repo root):
     .venv/Scripts/python.exe scripts/generate_icons.py           # write
@@ -25,22 +25,7 @@ Deps:
     Pillow (core dependency), resvg-py (dev extra):
     uv sync --extra dev
 
-Outputs (23 files, all measured against the originals):
-  apps/desktop/assets/icon.png                   1024x1024 squircle
-  apps/desktop/assets/icon.ico                    16,24,32,48,64,128,256
-  apps/desktop/assets/icon.icns                   16..1024 (real ICNS)
-  apps/desktop/assets/appx/Wide310x150Logo.png    310x150, squircle 100 centered
-  apps/desktop/assets/appx/StoreLogo.png          50x50 squircle
-  apps/desktop/assets/appx/Square44x44Logo.png    44x44 squircle
-  apps/desktop/assets/appx/Square150x150Logo.png  150x150 squircle
-  apps/desktop/public/apple-touch-icon.png        1024x1024 squircle
-  apps/desktop/public/nous-girl.jpg               256x256 JPEG on white
-  apps/bootstrap-installer/src-tauri/icons/32x32.png       32x32
-  apps/bootstrap-installer/src-tauri/icons/128x128.png     128x128
-  apps/bootstrap-installer/src-tauri/icons/128x128@2x.png  256x256
-  apps/bootstrap-installer/src-tauri/icons/icon.ico        16,32,64,128,256
-  apps/bootstrap-installer/src-tauri/icons/icon.icns       16..1024
-  apps/bootstrap-installer/public/nous-girl.jpg   256x256 JPEG on white
+Outputs (8 files, all measured against the originals):
   website/static/img/logo.png                     1772x1799 black-frame wordmark
   website/static/img/nous-logo.png                150x150 on white (opaque)
   website/static/img/favicon-16x16.png            16x16
@@ -82,21 +67,6 @@ PLACEHOLDER = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024
 
 # (relpath, kind, arg)
 TARGETS: list[tuple[str, str, object]] = [
-    ("apps/desktop/assets/icon.png", "png", 1024),
-    ("apps/desktop/assets/icon.ico", "ico", [16, 24, 32, 48, 64, 128, 256]),
-    ("apps/desktop/assets/icon.icns", "icns", None),
-    ("apps/desktop/assets/appx/Wide310x150Logo.png", "wide", (310, 150)),
-    ("apps/desktop/assets/appx/StoreLogo.png", "png", 50),
-    ("apps/desktop/assets/appx/Square44x44Logo.png", "png", 44),
-    ("apps/desktop/assets/appx/Square150x150Logo.png", "png", 150),
-    ("apps/desktop/public/apple-touch-icon.png", "png", 1024),
-    ("apps/desktop/public/nous-girl.jpg", "jpg_white", 256),
-    ("apps/bootstrap-installer/src-tauri/icons/32x32.png", "png", 32),
-    ("apps/bootstrap-installer/src-tauri/icons/128x128.png", "png", 128),
-    ("apps/bootstrap-installer/src-tauri/icons/128x128@2x.png", "png", 256),
-    ("apps/bootstrap-installer/src-tauri/icons/icon.ico", "ico", [16, 32, 64, 128, 256]),
-    ("apps/bootstrap-installer/src-tauri/icons/icon.icns", "icns", None),
-    ("apps/bootstrap-installer/public/nous-girl.jpg", "jpg_white", 256),
     ("website/static/img/logo.png", "logo", None),
     ("website/static/img/nous-logo.png", "png_white", 150),
     ("website/static/img/favicon-16x16.png", "png", 16),
@@ -126,12 +96,6 @@ def render(size: int, *, background: str | None = None) -> Image.Image:
         svg_path=str(MASTER), width=size, height=size, background=background
     )
     return Image.open(io.BytesIO(data)).convert("RGBA")
-
-
-def paste_centered(canvas: Image.Image, img: Image.Image) -> None:
-    x = (canvas.width - img.width) // 2
-    y = (canvas.height - img.height) // 2
-    canvas.alpha_composite(img, (x, y))
 
 
 def build_logo_image() -> Image.Image:
@@ -171,21 +135,9 @@ def target_bytes(kind: str, arg: object) -> bytes:
         render(arg).save(buf, "PNG")
     elif kind == "png_white":
         render(arg, background="#ffffff").save(buf, "PNG")
-    elif kind == "jpg_white":
-        # JPEG has no alpha: flatten the squircle onto white.
-        render(arg, background="#ffffff").convert("RGB").save(buf, "JPEG", quality=90)
     elif kind == "ico":
         img = render(max(arg))
         img.save(buf, format="ICO", sizes=[(s, s) for s in arg])
-    elif kind == "icns":
-        img = render(1024)
-        frames = [img.resize((s, s), Image.LANCZOS) for s in (16, 32, 64, 128, 256, 512, 1024)]
-        img.save(buf, format="ICNS", append_images=frames[1:])
-    elif kind == "wide":
-        w, h = arg
-        canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        paste_centered(canvas, render(100))
-        canvas.save(buf, "PNG")
     elif kind == "logo":
         build_logo_image().save(buf, "PNG")
     else:
@@ -223,8 +175,6 @@ def cmd_write() -> None:
                 except Exception:
                     sizes = [im.size]
                 print(f"  {rel}: ICO {sorted(set(sizes))}")
-            elif kind == "icns":
-                print(f"  {rel}: ICNS {im.size} (container)")
             else:
                 print(f"  {rel}: {im.format} {im.size}")
         except Exception as exc:

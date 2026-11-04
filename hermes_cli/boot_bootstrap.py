@@ -1,7 +1,7 @@
 """Boot-time post-update bootstrap.
 
-Every install kind (git checkout, desktop bundled payload, docker, nix)
-compares two per-install facts at boot:
+Every install kind (git checkout, docker, nix) compares two per-install
+facts at boot:
 
 * current identity — the commit this install IS: ``install-stamp.json``
   for sealed trees, git HEAD for checkouts. Reading it is a couple of
@@ -133,10 +133,8 @@ def current_install_identity(project_root: Path) -> str | None:
     commit = stamp.get("commit")
     if isinstance(commit, str) and len(commit) >= 7:
         return commit
-    # A tagless/commitless stamp is a broken artifact; the tag alone is
-    # accepted as a weaker identity (bundled artifacts always carry one).
-    tag = stamp.get("tag")
-    return tag if isinstance(tag, str) and tag else None
+    # A commitless stamp is a broken artifact; a tag is not a code identity.
+    return None
 
 
 # ---------------------------------------------------------------------------

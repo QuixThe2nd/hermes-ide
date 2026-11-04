@@ -3,24 +3,17 @@
  *
  * React validates at import time that ``react`` and ``react-dom`` come from the
  * same installed copy. When they don't, it throws "Minified React error #527"
- * *before* the first paint — the Electron window just stays blank white, with
- * the only clue buried in the devtools console of a packaged build.
+ * before the first paint.
  *
- * npm never warns about this. ``apps/desktop`` pins both packages to one exact
- * version, but a root dependency whose react peer is a loose range (e.g.
- * ``^18.0.0 || ^19.0.0``, and with no react-dom peer to keep the two in step)
- * makes npm hoist the newest react to the monorepo root while react-dom stays
- * at the pinned version. react-dom's own peer range is a caret, so the newer
- * react still "satisfies" it and the install reports success.
- *
- * ``apps/desktop/vite.config.ts`` used to alias both packages to a hardcoded
- * ``../../node_modules/<pkg>`` — i.e. straight into the split — so the bundle
- * shipped the mismatched pair. It now resolves them from the workspace itself,
- * where npm guarantees the declared versions are reachable.
+ * npm never warns about this. A root dependency whose react peer is a loose
+ * range (e.g. ``^18.0.0 || ^19.0.0``, with no react-dom peer to keep the two in
+ * step) can make npm hoist the newest react to the monorepo root while react-dom
+ * stays at a workspace's pinned version. react-dom's own peer range is a caret,
+ * so the newer react still "satisfies" it and the install reports success.
  *
  * This is a *contract* test: it asserts no specific version, only that the two
- * halves of the pair can never drift apart again — neither through a loosened
- * manifest spec, nor by re-pinning the bundler at the hoisted copy.
+ * halves of the pair can never drift apart again through a loosened manifest
+ * spec.
  */
 
 import assert from 'node:assert/strict'
@@ -30,7 +23,6 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const DESKTOP_VITE_CONFIG = path.join(REPO_ROOT, 'apps', 'desktop', 'vite.config.ts')
 
 interface Manifest {
   dependencies?: Record<string, string>
@@ -94,17 +86,5 @@ test('workspaces declaring react and react-dom pin them to the same exact versio
     'react and react-dom must be pinned to the same exact version per workspace, ' +
       'otherwise npm can hoist a newer react next to the older react-dom and React ' +
       `throws error #527 (blank window): ${offenders.join('; ')}`
-  )
-})
-
-test('the desktop bundler does not alias react at the hoisted root copy', () => {
-  const config = fs.readFileSync(DESKTOP_VITE_CONFIG, 'utf-8')
-
-  assert.ok(
-    !config.includes('node_modules/react'),
-    'apps/desktop/vite.config.ts hardcodes a node_modules path for react/react-dom. ' +
-      'That pins the bundle to the hoisted copies, which npm is free to resolve to a ' +
-      'different version than the pinned react-dom. Resolve both from the workspace ' +
-      "instead (see this test's module docstring)."
   )
 })
