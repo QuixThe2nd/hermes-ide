@@ -1,6 +1,5 @@
-"""Models-category behavior: score-based channel ordering (same policy as
-fallback_quota_reorder), the retired OpenRouter row staying absent, and
-backward-compatible config."""
+"""Models-category behavior: score-based channel ordering, the retired
+OpenRouter row staying absent, and backward-compatible config."""
 
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from plugins.fallback_quota_reorder.reliability import ReliabilityRates
+from plugins.quota_channels.reliability import ReliabilityRates
 from plugins.quota_channels import core as core
 from plugins.quota_channels.core import (
     PROVIDER_SPECS,
@@ -132,7 +131,7 @@ class TestModelsCategoryNaming:
 
 
 # ---------------------------------------------------------------------------
-# Score ordering (shared fallback policy)
+# Score ordering
 # ---------------------------------------------------------------------------
 
 

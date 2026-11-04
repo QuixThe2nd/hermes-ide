@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from plugins.fallback_quota_reorder.core import (
+from plugins.quota_channels.scoring import (
     QuotaReading,
     is_low_quota,
     score_provider,

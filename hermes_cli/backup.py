@@ -1752,7 +1752,7 @@ def create_pre_update_snapshots_all_profiles(
 
 
 # Primary model routing and its fallback chain are ONE coupled bundle: a
-# promotion-style rewrite (e.g. the fallback_quota_reorder plugin) moves a
+# promotion-style rewrite (for example, an automated routing plugin) moves a
 # fallback entry into model.provider/model.default and the displaced primary
 # into fallback_providers in a single atomic save. Restoring only the
 # model.* half of that swap strands the promoted route in neither list, so
@@ -1831,7 +1831,7 @@ def _restore_model_route_bundle(
     The primary slot and the fallback list are halves of one routing
     decision: a promotion swaps them together, so a restore that reconciles
     only ``model.*`` leaves the promoted route in neither list (observed
-    when an unattended update's rewrite raced a fallback_quota_reorder
+    when an unattended update's rewrite raced an automated primary-route
     promotion). When any bundle member differs from the snapshot, the whole
     bundle is restored from it — a route key the update introduced that the
     snapshot did not have is dropped, not kept (missing-key semantics).

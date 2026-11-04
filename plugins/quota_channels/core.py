@@ -16,20 +16,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
-# The voice-channel ordering policy is owned by fallback_quota_reorder; this
-# module reuses its score math, thresholds, and reliability ledger instead of
-# copying divergent formulas. The import is acyclic — fallback_quota_reorder
-# only touches quota_channels lazily inside its precise-state loaders.
-from plugins.fallback_quota_reorder.core import (
-    CHANNEL_KEY_TO_PROVIDER as _FALLBACK_CHANNEL_KEY_TO_PROVIDER,
+from plugins.quota_channels.reliability import (
+    ReliabilityRates,
+    rates_for_providers,
+)
+from plugins.quota_channels.scoring import (
+    CHANNEL_KEY_TO_PROVIDER as _CHANNEL_KEY_TO_PROVIDER,
     QuotaReading,
     is_low_quota,
     sanitize_reset_expiry_horizons,
     score_provider,
-)
-from plugins.fallback_quota_reorder.reliability import (
-    ReliabilityRates,
-    rates_for_providers,
 )
 
 HttpFn = Callable[[urllib.request.Request, float], Tuple[int, bytes]]
@@ -91,9 +87,9 @@ STATE_FILENAME = "quota_channels_state.json"
 CATEGORY_PREFIX = "Models"
 
 # Quota key -> routing provider slug, used to load per-provider reliability
-# from the fallback ledger. Mirrors fallback_quota_reorder's channel map.
+# from the ledger shared with existing installations.
 QUOTA_KEY_TO_PROVIDER: Dict[str, str] = {
-    **_FALLBACK_CHANNEL_KEY_TO_PROVIDER,
+    **_CHANNEL_KEY_TO_PROVIDER,
 }
 
 # Display ranks are `bucket * stride - score`; the stride must exceed any
@@ -353,7 +349,7 @@ class ResetCredits(NamedTuple):
     count: int
     expiry_secs: Optional[float] = None
     # each counted credit's own future expiry horizon, earliest first. This is
-    # the per-credit state the fallback score spends on — one full wallet per
+    # the per-credit state the spendability score uses — one full wallet per
     # horizon, never the earliest clock times the count. ``expiry_secs`` stays
     # the single display clock (the earliest horizon) and empty means no
     # per-credit detail exists, so the legacy count + one-clock shape applies.
@@ -1914,8 +1910,8 @@ def quota_display_ranks(
 ) -> Dict[str, float]:
     """Display rank per quota key: ascending rank = display order (best first).
 
-    Exactly the fallback_quota_reorder ordering policy, expressed as a single
-    ascending sort key for plan_position_moves: healthy entries by descending
+    The quota_channels ordering policy, expressed as a single ascending sort
+    key for plan_position_moves: healthy entries by descending
     score_provider() (quota_frac * 168/hours_remaining, plus one full wallet
     per pending usage-limit reset on its own expiry clock, all times the
     uptime factors from the shared reliability ledger), entries the shared

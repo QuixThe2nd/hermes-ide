@@ -1,7 +1,7 @@
-"""Rolling per-provider API success ledger used by fallback ranking.
+"""Rolling per-provider API success ledger used by quota-channel ranking.
 
-Hooks append one compact event per provider request. Ranking reads the last
-24h and last 1h windows. The file is JSONL so a crash mid-write loses at
+The ledger stores one compact event per provider request. Ranking reads the
+last 24h and last 1h windows. The file is JSONL so a crash mid-write loses at
 most one event; prune keeps it bounded.
 """
 

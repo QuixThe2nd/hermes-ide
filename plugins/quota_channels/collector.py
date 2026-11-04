@@ -330,7 +330,7 @@ def _bind_zai_alias(
     *,
     authoritative_empty: bool,
 ) -> None:
-    from plugins.fallback_quota_reorder.reliability import rates_for_providers
+    from plugins.quota_channels.reliability import rates_for_providers
 
     active_ids = {wallet.entry_id for wallet in wallets}
     wallet_readings = {
