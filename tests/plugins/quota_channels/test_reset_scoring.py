@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from plugins.fallback_quota_reorder.core import REFERENCE_HOURS
+from plugins.quota_channels.scoring import REFERENCE_HOURS
 from plugins.quota_channels import core as core
 from plugins.quota_channels.core import (
     ResetCredits,
@@ -401,7 +401,7 @@ class TestRunTickWritesResetReadings:
         assert result["success"] is True
         state = json.loads(state_path().read_text(encoding="utf-8"))
         # the real reset-credit expiry rides into the persisted reading the
-        # fallback reorder scores from: the earliest as the display clock plus
+        # the spendability score uses: the earliest as the display clock plus
         # the per-credit horizons list
         assert state["readings"]["codex"] == {
             "pct": 100,
@@ -417,7 +417,7 @@ class TestRunTickWritesResetReadings:
 
     def test_codex_per_credit_horizons_reach_state(self, monkeypatch, tmp_path):
         # two credits expiring in 3d and 9d: state keeps both clocks for the
-        # fallback score, while reset_expiry_seconds keeps only the earliest
+        # spendability score, while reset_expiry_seconds keeps only the earliest
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _write_codex_auth(tmp_path)
         monkeypatch.setattr(core, "discord_headers", lambda: {"Authorization": "Bot x"})

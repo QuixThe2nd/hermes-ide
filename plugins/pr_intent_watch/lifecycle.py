@@ -1,7 +1,6 @@
 """Self-install of the pr_intent_watch systemd user timer.
 
-Mirrors ``plugins/fallback_quota_reorder/lifecycle.py`` (itself mirroring
-``plugins/auto_update``): on gateway start, write the oneshot+timer pair
+Mirrors ``plugins/auto_update``: on gateway start, write the oneshot+timer pair
 into ``~/.config/systemd/user``, daemon-reload when the content changed,
 and enable --now the timer — Linux with a reachable systemd **user**
 manager only. Everything else logs once and stays out of the way;

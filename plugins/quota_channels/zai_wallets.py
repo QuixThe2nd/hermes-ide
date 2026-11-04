@@ -8,12 +8,12 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from plugins.fallback_quota_reorder.core import (
+from plugins.quota_channels.reliability import ReliabilityRates
+from plugins.quota_channels.scoring import (
     QuotaReading,
     is_low_quota,
     score_provider,
 )
-from plugins.fallback_quota_reorder.reliability import ReliabilityRates
 
 HttpFn = Callable[[urllib.request.Request, float], Tuple[int, bytes]]
 

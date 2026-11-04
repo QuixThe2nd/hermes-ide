@@ -2130,14 +2130,14 @@ class TestRestoreConfigModelSettingsIfRewritten:
 
 # ---------------------------------------------------------------------------
 # Model route bundle: primary + fallbacks restore as one coupled unit
-# (fallback_quota_reorder promotion racing the update safety net)
+# (automated route promotion racing the update safety net)
 # ---------------------------------------------------------------------------
 
 class TestModelRouteBundleRestore:
     """The primary route and its fallback chain are ONE bundle.
 
-    The fallback_quota_reorder plugin atomically promotes a fallback entry
-    into model.provider/model.default and moves the displaced primary into
+    An automated routing plugin may atomically promote a fallback entry
+    into model.provider/model.default and move the displaced primary into
     fallback_providers. The update safety net used to restore only the
     model.* half of that swap, leaving the post-promotion fallback list —
     so the promoted route ended up in NEITHER list. The restore must

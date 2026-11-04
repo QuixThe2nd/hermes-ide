@@ -1,10 +1,10 @@
-"""Reliability ledger contracts for fallback ranking."""
+"""Reliability ledger contracts for quota-channel ranking."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from plugins.fallback_quota_reorder.reliability import (
+from plugins.quota_channels.reliability import (
     MIN_SAMPLES_1H,
     MIN_SAMPLES_24H,
     NEUTRAL_RATE,
