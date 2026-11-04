@@ -168,7 +168,13 @@ def admits_owned_work(runner: Any, source: Any) -> bool:
     if adapter is None:
         return False
     predicate = getattr(adapter, "admits_owned_work_while_draining", None)
-    return bool(callable(predicate) and predicate(source))
+    if not callable(predicate) or not predicate(source):
+        return False
+    session_key_for_source = getattr(runner, "_session_key_for_source", None)
+    if not callable(session_key_for_source):
+        return False
+    session_key = session_key_for_source(source)
+    return (getattr(runner, "_running_agents", None) or {}).get(session_key) is not None
 
 
 def _iter_adapters(runner: Any):
