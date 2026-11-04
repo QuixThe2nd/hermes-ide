@@ -177,7 +177,7 @@ _Platform__bundled_plugin_names: Optional[set] = None  # cached outside the enum
 
 class Platform(Enum):
     """Supported messaging platforms. Plugin platforms are dynamic members created on
-    demand by ``_missing_`` and cached so ``Platform("irc") is Platform("irc")`` holds."""
+    demand by ``_missing_`` and cached so ``Platform("photon") is Platform("photon")`` holds."""
     LOCAL = "local"
     TELEGRAM = "telegram"
     DISCORD = "discord"
@@ -185,18 +185,14 @@ class Platform(Enum):
     WHATSAPP_CLOUD = "whatsapp_cloud"
     SLACK = "slack"
     SIGNAL = "signal"
-    MATTERMOST = "mattermost"
     MATRIX = "matrix"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
     SMS = "sms"
-    DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
     MSGRAPH_WEBHOOK = "msgraph_webhook"
     FEISHU = "feishu"
-    WECOM = "wecom"
-    WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
@@ -252,8 +248,8 @@ _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.value
 # profile's port-binder is built in shared-listener mode and served at /p/<profile>/<path> on the
 # default's listener (gateway/platforms/shared_ingress.py); api_server/webhook are mirrored there.
 PORT_BINDING_PLATFORM_VALUES = frozenset({
-    "webhook", "api_server", "msgraph_webhook", "feishu", "wecom_callback",
-    "bluebubbles", "sms", "whatsapp_cloud", "line", "teams",
+    "webhook", "api_server", "msgraph_webhook", "feishu",
+    "bluebubbles", "sms", "whatsapp_cloud",
 })
 # Platforms that only bind in one connection mode (Feishu's default websocket mode is outbound).
 PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
@@ -952,7 +948,6 @@ PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
     Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
     Platform.DISCORD: "DISCORD_BOT_TOKEN",
     Platform.SLACK: "SLACK_BOT_TOKEN",
-    Platform.MATTERMOST: "MATTERMOST_TOKEN",
     Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
     Platform.WEIXIN: "WEIXIN_TOKEN",
 }
@@ -1511,10 +1506,6 @@ def load_gateway_config() -> GatewayConfig:
         config_loader.load_yaml_layer(_home, gw_data)
     except Exception as e:
         logger.warning(
-            # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.
-            # Mattermost config bridge moved into plugins/platforms/mattermost/
-            # adapter.py::_apply_yaml_config — see #25443 (apply_yaml_config_fn).
             # Matrix settings → env vars: migrated to the matrix plugin's apply_yaml_config_fn hook
             # (plugins/platforms/matrix/adapter.py). #41112 / #3823.
             # Feishu settings → env vars: migrated to the feishu plugin's apply_yaml_config_fn hook

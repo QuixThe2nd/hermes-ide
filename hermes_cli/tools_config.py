@@ -76,7 +76,6 @@ CONFIGURABLE_TOOLSETS = [
     ("moa",             "🧠 Mixture of Agents",        "moa_ask, moa_debate"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
-    ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
@@ -134,7 +133,7 @@ def gui_toolset_label(label: str) -> str:
 # that explicitly enable it (`hermes tools` → Skills List (model-facing), or
 # listing `skills_list` in platform_toolsets). Listing skills without it is
 # always available via the `hermes skills list` CLI command.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly", "skills_list"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly", "skills_list"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
@@ -395,10 +394,6 @@ TOOL_CATEGORIES = {
                            _key("HASS_URL", "Home Assistant URL", default="http://homeassistant.local:8123")]),
         ],
     },
-    "spotify": {
-        "name": "Spotify", "icon": "🎵",
-        "providers": [_row("Spotify Web API", tag="PKCE OAuth — opens the setup wizard", post_setup="spotify")],
-    },
     "computer_use": {
         "name": "Computer Use (macOS/Windows/Linux)", "icon": "🖱️",
         # Runtime backends ship for macOS, Windows, Linux (X11; Wayland via XWayland). Gaps surface via `computer-use doctor`.
@@ -551,7 +546,7 @@ def _explicit_toolsets(
     toolset_names: List[str], explicit_known_keys: Set[str], config: dict, platform: str,
     explicitly_configured: bool) -> Set[str]:
     """Enabled set when the saved list names configurable/plugin keys directly (subset inference over
-    ``hermes-cli`` would re-enable disabled toolsets). A mixed list (``[hermes-cli, spotify]``) still expands the
+    ``hermes-cli`` would re-enable disabled toolsets). A mixed list (``[hermes-cli, homeassistant]``) still expands the
     composite; _DEFAULT_OFF_TOOLSETS applies to that implicit expansion only."""
     from toolsets import resolve_toolset, TOOLSETS
 
@@ -600,7 +595,7 @@ def _composite_toolsets(
 
 
 def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: List[str], plugin_ts_keys: Set[str]) -> Set[str]:
-    """Plugin toolsets: on by default unless default-off (bundled spotify) or "known" for this platform
+    """Plugin toolsets: on by default unless default-off or "known" for this platform
     (``known_plugin_toolsets``, written on every save) and absent from the saved list."""
     known_for_platform = set((config.get("known_plugin_toolsets", {}) or {}).get(platform, []) or [])
     return {

@@ -173,7 +173,7 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 # Sessions that are not human conversations (historical kanban workers, third-party tool integrations, finite one-shot
 # runs): every human picker — TUI/Desktop session lists, ``/sessions`` in the CLI, ``sessions list`` in the
 # console — excludes them. A deny-list, so new interactive platforms surface automatically.
-INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot")
+INTERNAL_LISTING_SOURCES = ("tool", "oneshot")
 
 SESSION_STATUS_COMPLETE = "complete"
 SESSION_STATUS_INTERRUPTED = "interrupted"

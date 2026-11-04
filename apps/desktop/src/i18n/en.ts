@@ -2128,8 +2128,6 @@ export const en: Translations = {
         label: 'Allow all iMessage users',
         help: 'When true, skip the BlueBubbles allowlist.'
       },
-      MATTERMOST_ALLOW_ALL_USERS: { label: 'Allow all Mattermost users' },
-      MATTERMOST_HOME_CHANNEL: { label: 'Home channel' },
       QQ_ALLOW_ALL_USERS: { label: 'Allow all QQ users' },
       QQBOT_HOME_CHANNEL: { label: 'QQ home channel', help: 'Default channel or group for cron delivery.' },
       QQBOT_HOME_CHANNEL_NAME: { label: 'QQ home channel name' },
@@ -2144,12 +2142,6 @@ export const en: Translations = {
         placeholder: 'Paste Slack app token'
       },
       SLACK_ALLOWED_USERS: { label: 'Allowed Slack user IDs', help: 'Recommended. Comma-separated Slack user IDs.' },
-      MATTERMOST_URL: { label: 'Server URL', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: 'Bot token' },
-      MATTERMOST_ALLOWED_USERS: {
-        label: 'Allowed user IDs',
-        help: 'Recommended. Comma-separated Mattermost user IDs.'
-      },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'Access token' },
       MATRIX_USER_ID: { label: 'Bot user ID', placeholder: '@hermes:example.org' },

@@ -8,7 +8,7 @@ profile's own allowlists (fail-closed no-replies) and (b) leak the default
 profile's ``GATEWAY_ALLOW_ALL_USERS`` / allowlists into secondary profiles
 (fail-open admissions).
 
-Covers the scoped env helpers of weixin / yuanbao / signal / wecom plus the
+Covers the scoped env helpers of weixin / yuanbao / signal plus the
 ``_open_dm_opted_in`` gates built on them. Canonical shape reference:
 QQ's ``_resolve_qq_secret``.
 """
@@ -40,8 +40,6 @@ def profile_scope():
             "WEIXIN_ALLOW_ALL_USERS": "",
             "YUANBAO_DM_POLICY": "open",
             "SIGNAL_ALLOWED_USERS": "sig-bob",
-            "WECOM_DM_POLICY": "allowlist",
-            "WECOM_ALLOWED_USERS": "wecom-carol",
         }
     ):
         yield
@@ -58,7 +56,6 @@ def profile_scope():
         ("gateway.platforms.weixin", "_wx_secret", "WEIXIN_ALLOWED_USERS"),
         ("gateway.platforms.yuanbao", "_yb_secret", "YUANBAO_DM_POLICY"),
         ("gateway.platforms.signal", "_sig_secret", "SIGNAL_ALLOWED_USERS"),
-        ("plugins.platforms.wecom.adapter", "_get_scoped_secret", "WECOM_ALLOWED_USERS"),
     ],
 )
 def test_helper_reads_profile_scope_first(module_path, helper_name, var, monkeypatch):
@@ -89,7 +86,6 @@ def multiplex_on(monkeypatch):
         ("gateway.platforms.weixin", "_wx_secret"),
         ("gateway.platforms.yuanbao", "_yb_secret"),
         ("gateway.platforms.signal", "_sig_secret"),
-        ("plugins.platforms.wecom.adapter", "_get_scoped_secret"),
     ],
 )
 def test_helper_does_not_leak_default_env_into_scoped_miss(
@@ -104,7 +100,6 @@ def test_helper_does_not_leak_default_env_into_scoped_miss(
     monkeypatch.setenv("WEIXIN_ALLOW_ALL_USERS", "true")
     monkeypatch.setenv("YUANBAO_ALLOW_ALL_USERS", "true")
     monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "*")
-    monkeypatch.setenv("WECOM_ALLOW_ALL_USERS", "true")
 
     module = __import__(module_path, fromlist=[helper_name])
     helper = getattr(module, helper_name)
@@ -112,7 +107,6 @@ def test_helper_does_not_leak_default_env_into_scoped_miss(
     with _scope({}):  # scope installed, keys absent
         assert helper("WEIXIN_ALLOW_ALL_USERS", "") == ""
         assert helper("YUANBAO_ALLOW_ALL_USERS", "") == ""
-        assert helper("WECOM_ALLOW_ALL_USERS", "") == ""
         # signal's "*" default means open at adapter level — the scoped
         # read must still not see the unscoped value:
         assert helper("SIGNAL_ALLOWED_USERS", "restricted-default") == "restricted-default"
@@ -124,7 +118,6 @@ def test_helper_does_not_leak_default_env_into_scoped_miss(
         ("gateway.platforms.weixin", "_wx_secret", "WEIXIN_ALLOWED_USERS"),
         ("gateway.platforms.yuanbao", "_yb_secret", "YUANBAO_DM_POLICY"),
         ("gateway.platforms.signal", "_sig_secret", "SIGNAL_ALLOWED_USERS"),
-        ("plugins.platforms.wecom.adapter", "_get_scoped_secret", "WECOM_ALLOWED_USERS"),
     ],
 )
 def test_helper_falls_back_to_environ_without_scope(module_path, helper_name, var, monkeypatch):
@@ -168,15 +161,6 @@ def test_yuanbao_access_policy_gate_ignores_default_env(profile_scope, multiplex
         dm_policy="open", dm_allow_from=[], group_policy="pairing", group_allow_from=[]
     )
     assert policy._open_dm_opted_in() is False
-
-
-def test_wecom_open_gate_ignores_default_env_under_scope(profile_scope, multiplex_on, monkeypatch):
-    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-
-    from plugins.platforms.wecom.adapter import WeComAdapter
-
-    adapter = WeComAdapter.__new__(WeComAdapter)
-    assert adapter._open_dm_opted_in() is False
 
 
 def test_startup_guard_uses_scoped_gateway_flag(multiplex_on):

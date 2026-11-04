@@ -128,7 +128,6 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
         "long_running_notifications": False,
         "busy_ack_detail": False,
     },
-    "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,
     # Buzz (Nostr relay via buzz-cli): messages can be edited in place
@@ -156,15 +155,6 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "photon":          _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
-    # WeCom is technically non-editable but exposes a native streaming
-    # transport (msgtype: "stream" via aibot_respond_msg) that the gateway
-    # consumer routes mid-stream content through. Enable streaming by default
-    # so the WeCom client renders the typing animation and cumulative content
-    # updates instead of a single one-shot markdown drop.
-    "wecom":           {**_TIER_LOW, "streaming": True},
-    "wecom_callback":  _TIER_LOW,
-    "dingtalk":        _TIER_LOW,
-
     # Tier 4 — batch or non-interactive delivery
     "email":           _TIER_MINIMAL,
     "sms":             _TIER_MINIMAL,

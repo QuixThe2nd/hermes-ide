@@ -117,9 +117,7 @@ _PLATFORMS = {  # name -> token env var
     "Discord": "DISCORD_BOT_TOKEN", "WhatsApp": "WHATSAPP_ENABLED",
     "Signal": "SIGNAL_HTTP_URL",
     "Slack": "SLACK_BOT_TOKEN", "Email": "EMAIL_ADDRESS",
-    "SMS": "TWILIO_ACCOUNT_SID", "DingTalk": "DINGTALK_CLIENT_ID",
-    "Feishu": "FEISHU_APP_ID", "WeCom": "WECOM_BOT_ID",
-    "WeCom Callback": "WECOM_CALLBACK_CORP_ID", "Weixin": "WEIXIN_ACCOUNT_ID",
+    "SMS": "TWILIO_ACCOUNT_SID",    "Feishu": "FEISHU_APP_ID", "Weixin": "WEIXIN_ACCOUNT_ID",
     "BlueBubbles": "BLUEBUBBLES_SERVER_URL", "QQBot": "QQ_APP_ID",
     "Yuanbao": "YUANBAO_APP_ID"}
 

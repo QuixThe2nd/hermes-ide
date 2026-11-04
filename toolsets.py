@@ -400,16 +400,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    "spotify": {
-        "description": "Native Spotify playback, search, playlist, album, and library tools",
-        "tools": [
-            "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
-            "spotify_playlists", "spotify_albums", "spotify_library",
-        ],
-        "includes": []
-    },
-
-
     # Scenario-specific toolsets
     
     "debugging": {
@@ -427,7 +417,7 @@ TOOLSETS = {
     # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
     # code workspace; see agent/coding_context.py. Keeps everything you reach
     # for while pairing on code and drops the rest (messaging, tts, image_gen,
-    # spotify, home-assistant, cron, computer-use).
+    # home-assistant, cron, computer-use).
     #
     # The GUI pane/browser affordances are NOT listed here: they belong to the
     # client surface, not the posture, so the GUI gateway folds `desktop_ui`
@@ -465,26 +455,6 @@ TOOLSETS = {
     # outside the agent loop (cron delivery and the `hermes send` CLI), not by
     # the model deciding to send on its own.
     # ==========================================================================
-
-    "hermes-acp": {
-        "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
-        "tools": [
-            "web_search", "web_extract",
-            "terminal", "process_manage",
-            "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
-            "skill_view", "skill_manage",
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "browser_exec",
-            "todo_list", "memory",
-            "session_search",
-            "execute_code", "delegate_agent",
-        ],
-        "includes": []
-    },
 
     "hermes-api-server": {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
@@ -589,20 +559,8 @@ TOOLSETS = {
         "includes": []
     },
 
-    "hermes-mattermost": {
-        "description": "Mattermost bot toolset - self-hosted team messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
     "hermes-matrix": {
         "description": "Matrix bot toolset - decentralized encrypted messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-dingtalk": {
-        "description": "DingTalk bot toolset - enterprise messaging platform (full access)",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
@@ -627,18 +585,6 @@ TOOLSETS = {
 
     "hermes-qqbot": {
         "description": "QQBot toolset - QQ messaging via Official Bot API v2 (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-wecom": {
-        "description": "WeCom bot toolset - enterprise WeChat messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-wecom-callback": {
-        "description": "WeCom callback toolset - enterprise self-built app messaging (full access)",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
@@ -671,7 +617,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-matrix", "hermes-feishu", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
     }
 }
 

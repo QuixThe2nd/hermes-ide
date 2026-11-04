@@ -325,48 +325,6 @@ class TestSlackMultiImage:
         kwargs = client.files_upload_v2.await_args.kwargs
         assert len(kwargs["file_uploads"]) == 3
 
-
-# ---------------------------------------------------------------------------
-# Mattermost
-# ---------------------------------------------------------------------------
-
-
-from plugins.platforms.mattermost.adapter import MattermostAdapter  # noqa: E402
-
-
-class TestMattermostMultiImage:
-    @pytest.fixture
-    def adapter(self):
-        config = PlatformConfig(enabled=True, token="fake")
-        # Minimal construction via object.__new__ to avoid full setup
-        a = object.__new__(MattermostAdapter)
-        a._base_url = "https://mm.example.com"
-        a._token = "fake"
-        a._session = MagicMock()
-        a._reply_mode = "thread"
-        a._api_post = AsyncMock(return_value={"id": "post123"})
-        a._upload_file = AsyncMock(side_effect=lambda *args, **kwargs: f"fid_{a._upload_file.await_count}")
-        return a
-
-    def test_local_files_uploaded_and_single_post(self, adapter, tmp_path):
-        """3 local images → 3 uploads + 1 post with 3 file_ids."""
-        paths = []
-        for i in range(3):
-            p = tmp_path / f"img_{i}.png"
-            p.write_bytes(b"\x89PNG" + b"\x00" * 20)
-            paths.append(p)
-
-        images = [(f"file://{p}", "") for p in paths]
-        _run(adapter.send_multiple_images("channel123", images))
-
-        assert adapter._upload_file.await_count == 3
-        adapter._api_post.assert_awaited_once()
-        payload = adapter._api_post.await_args.args[1]
-        assert payload["channel_id"] == "channel123"
-        assert len(payload["file_ids"]) == 3
-
-
-# ---------------------------------------------------------------------------
 # Email
 # ---------------------------------------------------------------------------
 

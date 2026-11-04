@@ -1,6 +1,6 @@
 """Tests for config-driven platform access policies at the gateway layer.
 
-Background (#34515): WeCom, Weixin, Yuanbao, QQBot, and WhatsApp expose a
+Background (#34515): Weixin, Yuanbao, QQBot, and WhatsApp expose a
 documented config-driven access surface (``dm_policy`` / ``group_policy`` /
 ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra``) and enforce
 it at intake —
@@ -36,7 +36,6 @@ from gateway.session import SessionSource
 
 # Platforms whose adapters own their access policy at intake.
 _OWN_POLICY_PLATFORMS = [
-    Platform.WECOM,
     Platform.WEIXIN,
     Platform.YUANBAO,
     Platform.QQBOT,
@@ -46,7 +45,6 @@ _OWN_POLICY_PLATFORMS = [
 
 def _clear_auth_env(monkeypatch) -> None:
     for key in (
-        "WECOM_ALLOWED_USERS",
         "WEIXIN_ALLOWED_USERS",
         "YUANBAO_ALLOWED_USERS",
         "QQ_ALLOWED_USERS",
@@ -55,7 +53,6 @@ def _clear_auth_env(monkeypatch) -> None:
         "TELEGRAM_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
-        "WECOM_ALLOW_ALL_USERS",
         "WEIXIN_ALLOW_ALL_USERS",
         "YUANBAO_ALLOW_ALL_USERS",
         "QQ_ALLOW_ALL_USERS",
@@ -108,7 +105,6 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
 @pytest.mark.parametrize(
     "module_path, class_name",
     [
-        ("plugins.platforms.wecom.adapter", "WeComAdapter"),
         ("gateway.platforms.weixin", "WeixinAdapter"),
         ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
         ("gateway.platforms.qqbot.adapter", "QQAdapter"),
@@ -243,7 +239,6 @@ def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, pla
     "module_path, class_name, dm_helper",
     [
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter", "_is_dm_allowed"),
-        ("plugins.platforms.wecom.adapter", "WeComAdapter", "_is_dm_allowed"),
         ("gateway.platforms.weixin", "WeixinAdapter", "_is_dm_allowed"),
         ("gateway.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
     ],
@@ -279,35 +274,11 @@ def test_yuanbao_pairing_dm_intake_denies_blank_principal(monkeypatch, blank_sen
     assert policy.is_dm_intake_allowed("user-1") is True
 
 
-def test_wecom_open_group_with_per_group_sender_allowlist_is_authorized(monkeypatch):
-    """WeCom ``groups.<id>.allow_from`` is an adapter-enforced restriction.
-
-    The top-level group policy is still ``open`` for the chat ID, but the
-    adapter has already checked the sender allowlist before dispatching to the
-    gateway. That is not the fail-open case and must not be double-denied.
-    """
-    _clear_auth_env(monkeypatch)
-    config = GatewayConfig(
-        platforms={
-            Platform.WECOM: PlatformConfig(
-                enabled=True,
-                extra={
-                    "group_policy": "open",
-                    "groups": {"some-chat": {"allow_from": ["some-user"]}},
-                },
-            )
-        }
-    )
-    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
-
-    assert runner._is_user_authorized(_source(Platform.WECOM, chat_type="group")) is True
-
-
 # ---------------------------------------------------------------------------
 # Layer 2b: `dm_policy: pairing` is NOT blanket-trusted
 # ---------------------------------------------------------------------------
 #
-# Regression: WeCom/Weixin document ``dm_policy: pairing`` and declare
+# Regression: Weixin documents ``dm_policy: pairing`` and declare
 # ``enforces_own_access_policy=True``, but their intake helper only special-cases
 # ``disabled`` / ``allowlist`` — ``pairing`` falls through and forwards the DM so
 # the gateway can run its pairing handshake. With no env allowlist, the
@@ -333,20 +304,20 @@ def test_unauthorized_dm_behavior_follows_config_dm_policy(monkeypatch, dm_polic
     """A restrictive dm_policy drops unauthorized DMs; pairing opts back in."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
-        platforms={Platform.WECOM: PlatformConfig(enabled=True, extra={"dm_policy": dm_policy})}
+        platforms={Platform.WEIXIN: PlatformConfig(enabled=True, extra={"dm_policy": dm_policy})}
     )
-    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
+    runner, _adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
 
-    assert runner._get_unauthorized_dm_behavior(Platform.WECOM) == expected
+    assert runner._get_unauthorized_dm_behavior(Platform.WEIXIN) == expected
 
 
 def test_unauthorized_dm_behavior_open_policy_keeps_default(monkeypatch):
     """``dm_policy: open`` is not restrictive → falls through to the default."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
-        platforms={Platform.WECOM: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+        platforms={Platform.WEIXIN: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
     )
-    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
+    runner, _adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
 
     # No allowlist + no restrictive policy → open-gateway pairing default.
-    assert runner._get_unauthorized_dm_behavior(Platform.WECOM) == "pair"
+    assert runner._get_unauthorized_dm_behavior(Platform.WEIXIN) == "pair"

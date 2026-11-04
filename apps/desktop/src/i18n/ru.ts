@@ -1942,8 +1942,6 @@ export const ru = defineLocale({
         label: 'Разрешить всех пользователей iMessage',
         help: 'Если true, allowlist BlueBubbles пропускается.'
       },
-      MATTERMOST_ALLOW_ALL_USERS: { label: 'Разрешить всех пользователей Mattermost' },
-      MATTERMOST_HOME_CHANNEL: { label: 'Домашний канал' },
       QQ_ALLOW_ALL_USERS: { label: 'Разрешить всех пользователей QQ' },
       QQBOT_HOME_CHANNEL: { label: 'Домашний канал QQ', help: 'Канал или группа по умолчанию для доставки cron.' },
       QQBOT_HOME_CHANNEL_NAME: { label: 'Название домашнего канала QQ' },
@@ -1960,12 +1958,6 @@ export const ru = defineLocale({
       SLACK_ALLOWED_USERS: {
         label: 'Разрешённые ID пользователей Slack',
         help: 'Рекомендуется. ID пользователей Slack через запятую.'
-      },
-      MATTERMOST_URL: { label: 'URL сервера', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: 'Токен бота' },
-      MATTERMOST_ALLOWED_USERS: {
-        label: 'Разрешённые ID пользователей',
-        help: 'Рекомендуется. ID пользователей Mattermost через запятую.'
       },
       MATRIX_HOMESERVER: { label: 'URL homeserver', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'Токен доступа' },

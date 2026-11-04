@@ -585,45 +585,6 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 
-def _ensure_acp_launcher() -> None:
-    r"""Self-heal a ``hermes-acp`` launcher next to ``hermes`` (mirrors install.sh): ACP hosts
-    resolve it on the login-shell PATH but the console script lives in the venv. The shim
-    delegates to the sibling ``hermes acp``, correct for every layout.
-
-    No-op on Windows (install.ps1 stages launchers into ``$HermesHome\bin``, never
-    ``venv\Scripts`` which would shadow the user's python; launcher repair lives in
-    _install_repair) and where it already exists. Unwritable dirs are skipped. Idempotent.
-
-    ``/usr/local/bin`` as non-root) are skipped silently. See #83797.
-    """
-    from hermes_cli.update_cmd import _m
-    if _m().sys.platform == "win32":
-        return
-    for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
-        hermes_cmd = bin_dir / "hermes"
-        acp_cmd = bin_dir / "hermes-acp"
-        try:
-            if not (hermes_cmd.is_file() or hermes_cmd.is_symlink()):
-                continue
-            # is_symlink() catches broken symlinks exists() misses; never follow-and-overwrite.
-            # Already present — a console script (pip/pipx install), an earlier shim, or a symlink.
-            # is_symlink() catches broken symlinks that exists() would miss; never follow-and-overwrite (the
-            # #21454 failure mode).
-            if acp_cmd.exists() or acp_cmd.is_symlink():
-                continue
-            shim = (
-                "#!/usr/bin/env bash\n"
-                "# Hermes Agent — ACP launcher (written by `hermes update`).\n"
-                "# ACP hosts (Zed, JetBrains, Buzz) resolve the agent by this\n"
-                "# command name on the login-shell PATH.\n"
-                f'exec "{hermes_cmd}" acp "$@"\n'
-            )
-            acp_cmd.write_text(shim, encoding="utf-8")
-            acp_cmd.chmod(acp_cmd.stat().st_mode | 0o755)
-        except OSError:
-            continue
-        print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
-
 
 _BACKUP_MODE_ALIASES = {
     "off": "off", "false": "off", "none": "off", "disabled": "off",
@@ -927,7 +888,6 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('Curator first-run notice failed: %s', _print_curator_first_run_notice),
         ('Curator recent-run notice failed: %s', _print_curator_recent_run_notice),
         ('FHS PATH guard check failed: %s', _ensure_fhs_path_guard),
-        ('hermes-acp launcher self-heal failed: %s', _ensure_acp_launcher),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),

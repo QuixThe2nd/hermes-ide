@@ -21,20 +21,12 @@ DEFAULT_ENV = {
     "MATRIX_HOMESERVER": "https://default.matrix.example", "MATRIX_USER_ID": "@default:example",
     "MATRIX_DEVICE_ID": "DEFAULTDEV", "MATRIX_ACCESS_TOKEN": "default-matrix-token",
     "HASS_URL": "http://default-ha.example:8123", "HASS_TOKEN": "default-ha-token",
-    "TEAMS_CLIENT_ID": "default-client-id", "TEAMS_TENANT_ID": "default-tenant",
-    "TEAMS_CLIENT_SECRET": "default-teams-secret", "TEAMS_HOME_CHANNEL": "default-conv",
-    "DINGTALK_CLIENT_ID": "default-ding-id", "DINGTALK_CLIENT_SECRET": "default-ding-secret",
-    "DINGTALK_WEBHOOK_URL": "https://oapi.dingtalk.com/robot/send?access_token=DEFAULT",
     "TELEGRAM_WEBHOOK_URL": "https://default.example/tg",
 }
 SECONDARY = {
     "MATRIX_HOMESERVER": "https://bot2.matrix.example", "MATRIX_USER_ID": "@bot2:example",
     "MATRIX_DEVICE_ID": "BOT2DEV", "MATRIX_ACCESS_TOKEN": "bot2-matrix-token",
     "HASS_URL": "http://bot2-ha.example:8123", "HASS_TOKEN": "bot2-ha-token",
-    "TEAMS_CLIENT_ID": "bot2-client-id", "TEAMS_TENANT_ID": "bot2-tenant",
-    "TEAMS_CLIENT_SECRET": "bot2-teams-secret", "TEAMS_HOME_CHANNEL": "bot2-conv",
-    "DINGTALK_CLIENT_ID": "bot2-ding-id", "DINGTALK_CLIENT_SECRET": "bot2-ding-secret",
-    "DINGTALK_WEBHOOK_URL": "https://oapi.dingtalk.com/robot/send?access_token=BOT2",
     "TELEGRAM_WEBHOOK_URL": "https://bot2.example/tg",
 }
 
@@ -115,50 +107,6 @@ async def test_homeassistant_standalone_send_targets_scoped_url(secondary_scope,
     monkeypatch.setattr(aiohttp, "ClientSession", _Sess)
     await ha._standalone_send(PlatformConfig(enabled=True), "x", "hi")
     assert seen["url"].startswith(SECONDARY["HASS_URL"] + "/")
-
-
-def test_teams_credentials_pair_scoped_secret_with_scoped_app_identity(secondary_scope):
-    teams = load_plugin_adapter("teams")
-    assert teams._credentials(PlatformConfig(enabled=True)) == (
-        SECONDARY["TEAMS_CLIENT_ID"], SECONDARY["TEAMS_CLIENT_SECRET"], SECONDARY["TEAMS_TENANT_ID"])
-    # extra (per-profile config.yaml) must win over any env value.
-    assert teams._credentials(PlatformConfig(enabled=True, extra={"client_id": "yaml-id"}))[0] == "yaml-id"
-
-
-def test_teams_env_enablement_seeds_scoped_identity_and_home_channel(secondary_scope):
-    teams = load_plugin_adapter("teams")
-    seed = teams._env_enablement()
-    assert seed["client_id"] == SECONDARY["TEAMS_CLIENT_ID"]
-    assert seed["home_channel"]["chat_id"] == SECONDARY["TEAMS_HOME_CHANNEL"]
-
-
-def test_dingtalk_client_id_follows_the_scoped_secret(secondary_scope):
-    from plugins.platforms.dingtalk.adapter import _credentials
-
-    assert _credentials(None) == (SECONDARY["DINGTALK_CLIENT_ID"], SECONDARY["DINGTALK_CLIENT_SECRET"])
-
-
-@pytest.mark.asyncio
-async def test_dingtalk_standalone_send_posts_to_scoped_robot_webhook(secondary_scope, monkeypatch):
-    import httpx
-    from plugins.platforms.dingtalk import adapter as ding
-
-    posted = []
-
-    class _Resp:
-        def raise_for_status(self): pass
-        def json(self): return {"errcode": 0}
-
-    class _Client:
-        def __init__(self, *a, **k): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, url, **kw): posted.append(url); return _Resp()
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    result = await ding._standalone_send(PlatformConfig(enabled=True), "c", "hi")
-    assert result.get("success") is True
-    assert posted == [SECONDARY["DINGTALK_WEBHOOK_URL"]]
 
 
 @pytest.mark.asyncio

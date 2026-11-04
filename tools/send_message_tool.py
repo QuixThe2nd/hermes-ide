@@ -510,8 +510,7 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
     runner, adapter = _live_adapter(platform)
     if adapter is not None:
         try:
-            metadata = {**({"thread_id": thread_id} if thread_id else {}),
-                        **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {})} or None
+            metadata = {**({"thread_id": thread_id} if thread_id else {})} or None
             if media_files:  # always a dict result, returned as-is below
                 make_coro = lambda: _send_live_adapter_media(  # noqa: E731
                     adapter, chat_id, chunk, media_files, thread_id=thread_id, metadata=metadata,
@@ -634,14 +633,13 @@ _CHUNKED_ROUTES = {
     "signal": (True, [], lambda p, pc, cid, chunk, media, tid, fd: _send_signal(
         pc.extra, cid, chunk, media_files=media)),
     "yuanbao": (True, None, lambda p, pc, cid, chunk, media, tid, fd: _send_yuanbao(cid, chunk, media_files=media)),
-    "slack": (False, [], _via_adapter_route),
-    "wecom": (True, None, _via_adapter_route)}
+    "slack": (False, [], _via_adapter_route)}
 
 # Text-only senders for built-in platforms (generic path; media is dropped with a
 # warning). Signature: (pconfig, chat_id, chunk, thread_id) -> result.
 _TEXT_SENDERS = {
     **{name: partial(_registry_standalone_send, name)
-       for name in ("whatsapp", "email", "sms", "dingtalk", "feishu", "wecom")},
+       for name in ("whatsapp", "email", "sms", "feishu")},
     "signal": lambda pc, cid, chunk, tid: _send_signal(pc.extra, cid, chunk),
     "bluebubbles": lambda pc, cid, chunk, tid: _send_bluebubbles(pc.extra, cid, chunk),
     "qqbot": lambda pc, cid, chunk, tid: _send_qqbot(pc, cid, chunk),

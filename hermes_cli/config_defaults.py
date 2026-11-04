@@ -999,8 +999,6 @@ DEFAULT_CONFIG = {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
             "slack": {"streaming": False},
-            # WeCom native streaming (msgtype "stream" via aibot_respond_msg).
-            "wecom": {"streaming": True},
         },
         # Gateway runtime footer on the FINAL message, e.g. `model · 68% · ~/projects/hermes`.
         # Per-platform: display.platforms.<platform>.runtime_footer.
@@ -1718,13 +1716,6 @@ DEFAULT_CONFIG = {
             # set True on an unaffected client to get native rich tables for CJK.
             "allow_cjk_rich_messages": False,
         },
-    },
-
-    "mattermost": {
-        "require_mention": True,  # require @mention to respond in channels
-        "free_response_channels": "",  # comma-separated channel IDs answered without mention
-        "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
-        "channel_prompts": {},  # per-channel ephemeral system prompts
     },
 
     "matrix": {
@@ -3032,18 +3023,6 @@ OPTIONAL_ENV_VARS = {
         "https://api.slack.com/apps",
         help=("In Slack, open your profile, choose More or the three-dot menu, then Copy member "
         "ID. Add multiple IDs comma-separated.")),
-    "MATTERMOST_URL": _msg("Mattermost server URL (e.g. https://mm.example.com)",
-        "Mattermost server URL", "https://mattermost.com/deploy/"),
-    "MATTERMOST_TOKEN": _msg("Mattermost bot token or personal access token",
-        "Mattermost bot token", None, password=True),
-    "MATTERMOST_ALLOWED_USERS": _msg("Comma-separated Mattermost user IDs allowed to use the bot",
-        "Allowed Mattermost user IDs (comma-separated)", None),
-    "MATTERMOST_REQUIRE_MENTION": _msg(
-        "Require @mention in Mattermost channels (default: true). Set to false to respond to "
-        "all messages.", "Require @mention in channels", None),
-    "MATTERMOST_FREE_RESPONSE_CHANNELS": _msg(
-        "Comma-separated Mattermost channel IDs where bot responds without @mention",
-        "Free-response channel IDs (comma-separated)", None),
     "MATRIX_HOMESERVER": _msg("Matrix homeserver URL (e.g. https://matrix.example.org)",
         "Matrix homeserver URL", "https://matrix.org/ecosystem/servers/"),
     "MATRIX_ACCESS_TOKEN": _msg("Matrix access token (preferred over password login)",
@@ -3093,13 +3072,6 @@ OPTIONAL_ENV_VARS = {
         "Allow All QQ Users", password=None),
     "QQ_SANDBOX": _msg("Enable QQ sandbox mode for development testing (true/false)",
         "QQ Sandbox Mode", password=None),
-    "IRC_SERVER": _msg("IRC server hostname (e.g. irc.libera.chat)", "IRC server", None),
-    "IRC_CHANNEL": _msg("IRC channel to join (e.g. #hermes)", "IRC channel", None),
-    "IRC_NICKNAME": _msg("Bot nickname on IRC (default: hermes-bot)", "IRC nickname", None),
-    "IRC_SERVER_PASSWORD": _msg("IRC server password (if required)", "IRC server password", None,
-        password=True, advanced=True),
-    "IRC_NICKSERV_PASSWORD": _msg("NickServ password for nick identification", "NickServ password",
-        None, password=True, advanced=True),
     "GATEWAY_ALLOW_ALL_USERS": _msg(
         "Allow all users to interact with messaging bots (true/false). Default: false.",
         "Allow all users (true/false)", None, advanced=True),

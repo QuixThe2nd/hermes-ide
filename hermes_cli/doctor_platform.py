@@ -38,12 +38,9 @@ def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
 
 
 def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
-    """(display name, path) pairs for Hermes-managed SQLite databases: backup.py's per-profile store list + per-board kanban.db."""
+    """(display name, path) pairs for Hermes-managed SQLite databases from backup.py's per-profile store list."""
     from hermes_cli.backup import _QUICK_STATE_FILES
-    entries = [(name, hermes_home / name) for name in _QUICK_STATE_FILES if name.endswith(".db")]
-    for board_db in sorted((hermes_home / "kanban" / "boards").glob("*/kanban.db")):
-        entries.append((str(board_db.relative_to(hermes_home)), board_db))
-    return entries
+    return [(name, hermes_home / name) for name in _QUICK_STATE_FILES if name.endswith(".db")]
 
 
 _SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"

@@ -22,14 +22,14 @@ const RELS = {
   relRepo: '../hermes-agent'
 }
 
-test('three launcher specs mirror [project.scripts] in pyproject.toml', () => {
+test('launcher specs mirror [project.scripts] in pyproject.toml', () => {
   assert.deepEqual(
     CLI_LAUNCHER_SPECS.map(s => s.name),
-    ['hermes', 'hermes-agent', 'hermes-acp']
+    ['hermes', 'hermes-agent']
   )
   assert.deepEqual(
     CLI_LAUNCHER_SPECS.map(s => `${s.module}:${s.func}`),
-    ['hermes_cli.main:main', 'run_agent:main', 'acp_adapter.entry:main']
+    ['hermes_cli.main:main', 'run_agent:main']
   )
 })
 
@@ -38,7 +38,7 @@ const scripts = posixTrampolineScripts(RELS)
 test('one POSIX trampoline per entry, named plainly (no suffix)', () => {
   assert.deepEqual(
     scripts.map(s => s.name),
-    ['hermes', 'hermes-agent', 'hermes-acp']
+    ['hermes', 'hermes-agent']
   )
 })
 
@@ -81,7 +81,7 @@ test('trampoline fails loudly (exit 2) when the bundled interpreter is missing',
 
 test('each trampoline execs its own entry module', () => {
   const modules = scripts.map(s => /exec "\$PYTHON" -m (\S+) "\$@"/.exec(s.text)?.[1])
-  assert.deepEqual(modules, ['hermes_cli.main', 'run_agent', 'acp_adapter.entry'])
+  assert.deepEqual(modules, ['hermes_cli.main', 'run_agent'])
 })
 
 test('win wrapper substitution bakes the entry module and payload layout facts', () => {

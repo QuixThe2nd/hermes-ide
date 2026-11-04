@@ -14,7 +14,6 @@ from plugins.platforms.buzz.adapter import BuzzAdapter
 from plugins.platforms.discord.adapter import DiscordAdapter
 from plugins.platforms.google_chat.adapter import GoogleChatAdapter
 from plugins.platforms.matrix.adapter import MatrixAdapter
-from plugins.platforms.wecom.adapter import WeComAdapter
 
 
 @pytest.fixture(params=[None, False, True, "override"])
@@ -26,7 +25,7 @@ def policy(request, tmp_path, monkeypatch):
         if setting == "override":
             display["platforms"] = {
                 name: {"suppress_warning_notifications": True}
-                for name in ("matrix", "google_chat", "discord", "wecom", "buzz", "mattermost", "feishu", "telegram")
+                for name in ("matrix", "google_chat", "discord", "buzz", "feishu", "telegram")
             }
         (tmp_path / "config.yaml").write_text(json.dumps({"display": display}))
     return setting is True or setting == "override"
@@ -127,22 +126,6 @@ async def test_discord_rejected_media_preserves_caption_without_fake_receipt(pol
 
 
 @pytest.mark.asyncio
-async def test_wecom_rejected_media_keeps_caption_and_failed_result(policy):
-    adapter = WeComAdapter(PlatformConfig())
-    frames = []
-
-    async def record(command, body, **kwargs):
-        frames.append(body)
-        return {"errcode": 0, "headers": {"req_id": "sent"}}
-
-    adapter._send_request = record
-    adapter._prepare_outbound_media = AsyncMock(return_value={"rejected": True, "reject_reason": "fixture rejection"})
-    result = await adapter.send_document("chat", "fixture.pdf", caption="Error: requested caption")
-    assert not result.success and result.error == "fixture rejection"
-    assert [f["markdown"]["content"] for f in frames] == (["Error: requested caption"] if policy else ["⚠️ fixture rejection"])
-
-
-@pytest.mark.asyncio
 async def test_buzz_missing_upload_fallback_and_real_upload_receipts(policy, tmp_path):
     adapter = BuzzAdapter(PlatformConfig(extra={"cli_path": "fixture-buzz"}))
     adapter._mention_pubkeys_for = AsyncMock(return_value=[])
@@ -193,25 +176,6 @@ async def test_discord_truncation_warning_covers_send_and_final_edit(policy, lan
 
 
 @pytest.mark.asyncio
-async def test_wecom_downgrade_preserves_native_upload_and_caption(policy):
-    adapter = WeComAdapter(PlatformConfig())
-    frames = []
-
-    async def record(cmd, body, **kwargs):
-        frames.append((cmd, body))
-        return {"errcode": 0, "body": {"upload_id": "upload", "media_id": "media"}, "headers": {"req_id": "sent"}}
-
-    adapter._send_request = record
-    adapter._load_outbound_media = AsyncMock(return_value=(b"fixture", "audio/ogg", "voice.ogg"))
-    result = await adapter.send_voice("chat", "voice.ogg", caption="Error: user caption")
-    assert result.success
-    assert any(body.get("file", {}).get("media_id") == "media" for _, body in frames)
-    text = [body["markdown"]["content"] for _, body in frames if "markdown" in body]
-    assert text[0] == "Error: user caption"
-    assert len(text) == (1 if policy else 2)
-
-
-@pytest.mark.asyncio
 async def test_google_chat_revoked_oauth_fallback_uses_same_policy(policy, tmp_path, monkeypatch, caplog):
     from plugins.platforms.google_chat import adapter as google
 
@@ -242,33 +206,6 @@ async def test_google_chat_revoked_oauth_fallback_uses_same_policy(policy, tmp_p
     assert "owner" not in adapter._user_chat_api_by_email
     assert "media.upload auth failure" in caplog.text
     assert frames[0]["text"] == "requested caption" if policy else "/setup-files" in frames[0]["text"]
-
-
-@pytest.mark.asyncio
-async def test_mattermost_thread_fallback_keeps_requested_result(policy, caplog):
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
-
-    adapter = MattermostAdapter(PlatformConfig(extra={"reply_mode": "thread"}))
-    frames = []
-
-    async def api(method, path, payload=None):
-        frames.append(dict(payload))
-        if "root_id" in payload:
-            adapter._last_post_status = 404
-            adapter._last_post_error = "root_id not found"
-            return {}
-        return {"id": "sent"}
-
-    adapter._api = api
-    adapter._resolve_root_id = AsyncMock(return_value="root")
-    result = await adapter.send("chat", "Error: requested result", metadata={"thread_id": "root", "notify": True})
-    assert result.success
-    assert frames[0]["root_id"] == "root" and "root_id" not in frames[1]
-    expected = "Error: requested result"
-    if not policy:
-        expected = "⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n" + expected
-    assert frames[1]["message"] == expected
-    assert "falling back to flat channel" in caplog.text
 
 
 @pytest.mark.asyncio

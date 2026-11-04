@@ -535,7 +535,7 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     only; POSIX shims are plain scripts replaced atomically."""
     if not _is_windows():
         return []
-    names = set(_load_console_script_names()) or {"hermes", "hermes-agent", "hermes-acp"}
+    names = set(_load_console_script_names()) or {"hermes", "hermes-agent"}
     # Not a [project.scripts] entry point, but older update/install paths still
     # rewrite and quarantine it.
     names.add("hermes-gateway")

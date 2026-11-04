@@ -18,10 +18,8 @@ from gateway.config import PlatformConfig
 
 _DEFAULT_ENV = {
     "GATEWAY_ALLOW_ALL_USERS": "true", "GATEWAY_ALLOWED_USERS": "default-admin",
-    "TEAMS_ALLOW_ALL_USERS": "true", "TEAMS_ALLOWED_USERS": "default-admin",
     "MATRIX_ALLOWED_USERS": "@default-admin:example.org", "MATRIX_IGNORE_USER_PATTERNS": r"^@spam:.*",
     "WHATSAPP_ALLOWED_USERS": "+15550001111", "SLACK_ALLOW_BOTS": "all", "SLACK_API_HUMAN_USERS": "U0DEFAULT",
-    "LINE_ALLOW_ALL_USERS": "true", "LINE_ALLOWED_USERS": "Udefault", "DINGTALK_ALLOWED_USERS": "default-admin",
 }
 
 
@@ -65,20 +63,6 @@ def _slack():
     return adapter
 
 
-def _dingtalk():
-    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
-
-    adapter = DingTalkAdapter.__new__(DingTalkAdapter)
-    adapter.config = PlatformConfig(enabled=True, extra={})
-    return adapter
-
-
-def _line():
-    from plugins.platforms.line.adapter import LineAdapter
-
-    return LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "t", "channel_secret": "s"}))
-
-
 # (label, opt-in the SECONDARY scope grants, gate(scope) -> observed value, closed value, open value)
 _GATES = [
     ("email.allow_all", {"GATEWAY_ALLOW_ALL_USERS": "true"},
@@ -96,10 +80,6 @@ _GATES = [
     ("whatsapp.live_allow_from", {"WHATSAPP_ALLOWED_USERS": "+15559998888"},
      lambda: __import__("gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._live_dm_allow_from(_whatsapp()),
      set(), {"+15559998888"}),
-    ("teams.card_action", {"TEAMS_ALLOWED_USERS": "clicker"},
-     lambda: __import__("plugins.platforms.teams.adapter", fromlist=["TeamsAdapter"]).TeamsAdapter._card_action_denied(
-         SimpleNamespace(aad_object_id="clicker")) is None,
-     False, True),
     ("matrix.authorized_user", {"MATRIX_ALLOWED_USERS": "@bot2-admin:example.org"},
      lambda: _matrix()._is_authorized_user("@bot2-admin:example.org"),
      False, True),
@@ -109,10 +89,6 @@ _GATES = [
     ("slack.allow_bots", {"SLACK_ALLOW_BOTS": "mentions"}, lambda: _slack()._slack_allow_bots(), "none", "mentions"),
     ("slack.api_human_users", {"SLACK_API_HUMAN_USERS": "U0BOT2"},
      lambda: set(_slack()._slack_api_human_users()), set(), {"U0BOT2"}),
-    ("line.allow_all", {"LINE_ALLOW_ALL_USERS": "true"}, lambda: _line().allow_all, False, True),
-    ("line.allowed_users", {"LINE_ALLOWED_USERS": "Ubot2"}, lambda: _line().allowed_users, set(), {"Ubot2"}),
-    ("dingtalk.allowed_users", {"DINGTALK_ALLOWED_USERS": "Bot2Admin"},
-     lambda: {u.lower() for u in _dingtalk()._csv_setting("allowed_users", "DINGTALK_ALLOWED_USERS")}, set(), {"bot2admin"}),
 ]
 
 

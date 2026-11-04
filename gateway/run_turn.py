@@ -1589,12 +1589,9 @@ class GatewayTurnMixin:
             _show_reasoning_effective = _resolve_gateway_display_bool(
                 _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
                 default=bool(getattr(self, "_show_reasoning", False)), platform=source.platform,
-                require_platform_override_for={Platform.MATTERMOST},
             )
         except Exception:
-            _show_reasoning_effective = (
-                False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
-            )
+            _show_reasoning_effective = getattr(self, "_show_reasoning", False)
         last_reasoning = agent_result.get("last_reasoning")
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
             return response
@@ -3016,11 +3013,11 @@ class GatewayTurnMixin:
         # Interim assistant messages and thinking_progress are independent of tool progress (same
         # queue). Mattermost requires a per-platform opt-in: scratch text leaks into public threads.
         interim_assistant_messages_mode = _display_surface_mode(
-            "interim_assistant_messages", default=True, require_platform_override_for={Platform.MATTERMOST},
+            "interim_assistant_messages", default=True,
         )
         interim_assistant_messages_enabled = not is_webhook and interim_assistant_messages_mode != "off"
         _thinking_enabled = _display_surface_mode(
-            "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
+            "thinking_progress", default=False,
         ) != "off"
         # Slack-native task cards need the progress queue even with text tool_progress off.
         # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
@@ -3194,7 +3191,7 @@ class GatewayTurnMixin:
         # Buzz has no native thread_id: thread via reply-to unless the user opted out.
         _progress_reply_to = (
             event_message_id
-            if (source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id)
+            if (source.platform in (Platform.FEISHU, ) and source.thread_id and event_message_id)
             or (is_buzz and event_message_id and _progress_reply_in_thread)
             or _relay_prospective_thread_id
             else None

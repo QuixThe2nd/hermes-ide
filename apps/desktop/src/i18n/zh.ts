@@ -2278,8 +2278,6 @@ export const zh = defineLocale({
       DISCORD_HOME_CHANNEL: { label: '主页频道 ID', help: 'bot 主动发送消息的频道（cron 输出、提醒等）。' },
       DISCORD_HOME_CHANNEL_NAME: { label: '主页频道名称', help: '日志和状态输出中显示的主页频道名称。' },
       BLUEBUBBLES_ALLOW_ALL_USERS: { label: '允许所有 iMessage 用户', help: '为 true 时跳过 BlueBubbles 允许列表。' },
-      MATTERMOST_ALLOW_ALL_USERS: { label: '允许所有 Mattermost 用户' },
-      MATTERMOST_HOME_CHANNEL: { label: '主页频道' },
       QQ_ALLOW_ALL_USERS: { label: '允许所有 QQ 用户' },
       QQBOT_HOME_CHANNEL: { label: 'QQ 主页频道', help: 'cron 投递的默认频道或群组。' },
       QQBOT_HOME_CHANNEL_NAME: { label: 'QQ 主页频道名称' },
@@ -2294,9 +2292,6 @@ export const zh = defineLocale({
         placeholder: '粘贴 Slack app 令牌'
       },
       SLACK_ALLOWED_USERS: { label: '允许的 Slack 用户 ID', help: '推荐。逗号分隔的 Slack 用户 ID。' },
-      MATTERMOST_URL: { label: '服务器 URL', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: 'Bot 令牌' },
-      MATTERMOST_ALLOWED_USERS: { label: '允许的用户 ID', help: '推荐。逗号分隔的 Mattermost 用户 ID。' },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: '访问令牌' },
       MATRIX_USER_ID: { label: 'Bot 用户 ID', placeholder: '@hermes:example.org' },
@@ -2318,7 +2313,6 @@ export const zh = defineLocale({
       discord:
         '打开 Discord 开发者门户，创建应用，添加 Bot，然后复制其令牌。用正确的权限范围把机器人邀请到你的服务器。',
       slack: '创建 Slack 应用，启用 Socket Mode，安装到你的工作区，然后复制 bot 令牌和 app 级令牌。',
-      mattermost: '在你的 Mattermost 服务器上，创建机器人账户或个人访问令牌，然后在此粘贴服务器 URL 和令牌。',
       matrix: '用机器人账户登录你的 homeserver，然后复制访问令牌、用户 ID 和 homeserver URL。',
       signal: '在可访问的位置运行 signal-cli REST 桥接，然后把 Hermes 指向该 URL 和已注册的电话号码。',
       whatsapp: '启动 Hermes 自带的 WhatsApp 桥接，首次运行时扫描二维码，然后启用该平台。',
@@ -2327,10 +2321,7 @@ export const zh = defineLocale({
       homeassistant: '在 Home Assistant 中打开你的个人资料并创建长期访问令牌。把它连同你的 HA URL 一起粘贴到这里。',
       email: '使用专用邮箱。对于 Gmail/Workspace,创建应用专用密码并使用 imap.gmail.com / smtp.gmail.com。',
       sms: '从 Twilio 控制台获取你的 Account SID 和 Auth Token，以及一个可发送短信的电话号码。',
-      dingtalk: '在开发者控制台创建钉钉应用，然后在此复制 Client ID(App key) 和 Client Secret。',
       feishu: '创建飞书 / Lark 应用，配置机器人能力，复制 App ID、App secret 和事件加密密钥。',
-      wecom: '在企业微信中添加群机器人，复制其 webhook key 作为 WECOM_BOT_ID。仅可发送——双向请用企业微信 (应用) 选项。',
-      wecom_callback: '设置一个企业微信自建应用，暴露其回调 URL，并提供 corp ID、secret、agent ID 和 AES key。',
       weixin:
         '运行 `hermes gateway setup`，选择 Weixin，然后使用个人微信账号扫描并确认二维码。Hermes 会通过腾讯 iLink Bot API 连接并保存凭据。',
       qqbot: '在 QQ 开放平台 (q.qq.com) 注册一个应用，复制 App ID 和 Client Secret。',

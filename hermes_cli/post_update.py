@@ -327,7 +327,7 @@ def step_expose_cli() -> dict:
     stale or missing launchers that nothing repairs until a full
     reinstall. This step makes the POST-UPDATE side own the recurring
     maintenance: rewrite the three wrappers (hermes, hermes-agent,
-    hermes-acp) whenever their recorded shape drifts from what this
+    hermes-agent) whenever their recorded shape drifts from what this
     tree would write today. First-time PATH bootstrapping (shell-rc
     edits, Windows registry) stays installer-side on purpose — a
     boot-time step must not edit rc files on every update.
@@ -390,7 +390,6 @@ def step_expose_cli() -> dict:
     wrappers = {
         "hermes": f'exec "{venv_python}" "{entrypoint}" "$@"',
         "hermes-agent": f'exec "{venv_python}" "{root / "run_agent.py"}" "$@"',
-        "hermes-acp": f'exec "{venv_python}" "{entrypoint}" acp "$@"',
     }
 
     written: list[str] = []
@@ -454,7 +453,7 @@ def _is_bundled_payload(root: Path) -> bool:
 
 
 def _symlink_sealed_launchers(payload_bin) -> dict:
-    """Link ~/.local/bin/{hermes,hermes-agent,hermes-acp} at a sealed
+    """Link ~/.local/bin/{hermes,hermes-agent} at a sealed
     bundle's own prebuilt shims (macOS only).
 
     Symlinks, not copies: the shims are signed as part of the app bundle,
@@ -472,7 +471,7 @@ def _symlink_sealed_launchers(payload_bin) -> dict:
     written: list[str] = []
     try:
         link_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("hermes", "hermes-agent", "hermes-acp"):
+        for name in ("hermes", "hermes-agent"):
             source = payload_bin / name
             if not source.is_file():
                 continue

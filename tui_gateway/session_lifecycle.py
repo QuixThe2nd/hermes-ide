@@ -312,7 +312,7 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
 # Sources the TUI backend itself creates ("tui", plus whatever a client passes as its own ``source``) and
 # the CLI's own sessions are NOT gateway-owned. See #60609.
 _NON_GATEWAY_SOURCES = frozenset({
-    "", "tui", "cli", "webui", "desktop", "cron", "kanban", "subagent", "test",
+    "", "tui", "cli", "webui", "desktop", "cron", "subagent", "test",
     "local", "acp", "webhook", "api_server", "msgraph_webhook"})
 
 

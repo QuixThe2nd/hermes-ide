@@ -684,8 +684,8 @@ class TestMigratedPlatformWiring:
     @_pytest.mark.parametrize(
         "platform_name",
         [
-            "teams", "telegram", "discord", "slack",
-            "matrix", "dingtalk", "feishu", "wecom_callback",
+            "telegram", "discord", "slack",
+            "matrix", "feishu",
             "google_chat",
         ],
     )
@@ -695,8 +695,6 @@ class TestMigratedPlatformWiring:
         discover_plugins()
         from gateway.platform_registry import platform_registry
 
-        # Materialize deferred loaders (wecom_callback is registered by the
-        # "wecom" manifest's loader; a cold get() by its own name misses).
         platform_registry.plugin_entries()
         entry = platform_registry.get(platform_name)
         assert entry is not None, f"{platform_name} not registered"

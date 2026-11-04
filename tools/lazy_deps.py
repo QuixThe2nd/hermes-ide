@@ -137,19 +137,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "aiohttp-socks==0.11.0",
         "aiohttp==3.14.3",
     ),
-    "platform.dingtalk": (
-        "dingtalk-stream==0.24.3",
-        "alibabacloud-dingtalk==2.2.42",
-        "qrcode==7.4.2",
-    ),
     "platform.feishu": (
         "lark-oapi==1.6.8",
         "qrcode==7.4.2",
     ),
-    # WeCom callback adapter parses untrusted XML POST bodies -> defusedxml.
-    "platform.wecom_callback": ("defusedxml==0.7.1",),
-    # Teams pulls a heavy tree (msal, dependency-injector); also the `teams` extra.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),
     # Google Chat — Pub/Sub + Chat API. Not in [all]; Docker bakes `--extra google-chat`
     # so hosted/immutable images do not have to write the sealed venv.
     "platform.google_chat": (
@@ -180,8 +171,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
     # ─── Tools ─────────────────────────────────────────────────────────────
-    # ACP adapter (VS Code / Zed / JetBrains)
-    "tool.acp": ("agent-client-protocol==0.9.0",),
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",

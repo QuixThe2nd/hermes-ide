@@ -105,13 +105,11 @@ _PLATFORM_PARSERS = {
     "matrix": _parse_matrix,
     "weixin": _parse_regex_groups(_WEIXIN_TARGET_RE, thread_group=False),
     "yuanbao": _parse_yuanbao,
-    "ntfy": _parse_nonempty,
     "email": _parse_regex_stripped(_EMAIL_TARGET_RE),
     # Native WhatsApp JIDs pass through verbatim; E.164 numbers use the phone rule.
     "whatsapp": _parse_regex_stripped(_WHATSAPP_JID_RE),
     "buzz": _parse_regex_stripped(_BUZZ_UUID_RE),
     "signal": _parse_signal,
-    "wecom": _parse_nonempty,
     # Photon DM GUIDs are adapter-native ids (mirrors the react handler).
     "photon": _parse_regex_stripped(_PHOTON_DM_GUID_RE)}
 

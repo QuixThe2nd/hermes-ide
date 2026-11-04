@@ -5452,31 +5452,6 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 # Built-in per-platform setup config (env vars, instructions, prompts). Telegram, WhatsApp, Email,
 # SMS, etc. live in plugins/platforms/<name>/ and are discovered via the platform registry.
 _PLATFORMS = [
-    {
-        "key": "mattermost", "label": "Mattermost", "emoji": "💬", "token_var": "MATTERMOST_TOKEN",
-        "setup_instructions": [
-            "1. In Mattermost: Integrations → Bot Accounts → Add Bot Account",
-            "   (System Console → Integrations → Bot Accounts must be enabled)",
-            "2. Give it a username (e.g. hermes) and copy the bot token",
-            "3. Works with any self-hosted Mattermost instance — enter your server URL",
-            "4. To find your user ID: click your avatar (top-left) → Profile",
-            "   Your user ID is displayed there — click it to copy.",
-            "   ⚠ This is NOT your username — it's a 26-character alphanumeric ID.",
-            "5. To get a channel ID: click the channel name → View Info → copy the ID",
-        ],
-        "vars": [
-            {"name": "MATTERMOST_URL", "prompt": "Server URL (e.g. https://mm.example.com)",
-             "password": False, "help": "Your Mattermost server URL. Works with any self-hosted instance."},
-            {"name": "MATTERMOST_TOKEN", "prompt": "Bot token", "password": True,
-             "help": "Paste the bot token from step 2 above."},
-            {"name": "MATTERMOST_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)",
-             "password": False, "is_allowlist": True, "help": "Your Mattermost user ID from step 4 above."},
-            {"name": "MATTERMOST_REPLY_MODE",
-             "prompt": "Reply mode — 'off' for flat messages, 'thread' for threaded replies (default: off)",
-             "password": False,
-             "help": "off = flat channel messages, thread = replies nest under your message."},
-        ],
-    },
     {"key": "signal", "label": "Signal", "emoji": "📡", "token_var": "SIGNAL_HTTP_URL"},
     {"key": "weixin", "label": "Weixin / WeChat", "emoji": "💬", "token_var": "WEIXIN_ACCOUNT_ID"},
     {

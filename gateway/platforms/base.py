@@ -755,7 +755,7 @@ _ROOT_CREDENTIAL_PATHS = (
     # Whole conversation history (every secret ever pasted into a chat) and the copied browser
     # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
     # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
-    "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
+    "sessions", "browser-profile", *_sqlite_files("state.db"))
 
 
 def _profile_cache_roots() -> List[Path]:
@@ -788,29 +788,7 @@ def _credential_home_roots() -> List[Path]:
     return list(dict.fromkeys((get_hermes_home(), _HERMES_ROOT, *_profile_dirs())))
 
 
-def _kanban_root() -> Path:
-    """Legacy Kanban data was root-shared across profiles by design."""
-    return Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
 
-
-def _kanban_board_dirs() -> List[Path]:
-    """Every directory under ``<root>/kanban/boards`` (lax on purpose: the DENY side must catch a
-    board whatever its name; the allow side filters further)."""
-    with contextlib.suppress(OSError):
-        return [p for p in (_kanban_root() / "kanban" / "boards").iterdir() if p.is_dir()]
-    return []
-
-
-def _kanban_attachment_roots() -> List[Path]:
-    """Return durable legacy Kanban attachment roots without importing the retired runtime."""
-    override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
-    if override:
-        return [Path(override).expanduser()]
-    roots = [_kanban_root() / "kanban" / "attachments"]
-    roots.extend(path / "attachments" for path in _kanban_board_dirs()
-                 if not path.is_symlink() and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", path.name)
-                 and (path / "kanban.db").is_file())
-    return roots
 
 
 def _media_delivery_allowed_roots() -> List[Path]:
@@ -821,7 +799,7 @@ def _media_delivery_allowed_roots() -> List[Path]:
         for raw_root in chunk.split(",")
         if (root := Path(os.path.expanduser(raw_root.strip()))).is_absolute())
     return [*map(Path, MEDIA_DELIVERY_SAFE_ROOTS), *_profile_cache_roots(),
-            *_kanban_attachment_roots(), *operator_roots]
+            *operator_roots]
 
 
 def _media_delivery_recency_seconds() -> float:
@@ -834,19 +812,13 @@ def _media_delivery_recency_seconds() -> float:
     return _or_default(lambda: max(0.0, float(custom)) if custom else default, default)
 
 
-def _kanban_board_db_paths() -> List[Path]:
-    """Named-board ``kanban.db`` stores (+ sidecars): they sit beside the ATTACHMENTS dir
-    ``_kanban_attachment_roots`` allowlists and hold every task, comment and run transcript."""
-    return [board / name for board in _kanban_board_dirs() for name in _sqlite_files("kanban.db")]
-
 
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
-            *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
-            *_kanban_board_db_paths()]
+            *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS)]
 
 
 def _resolve_path(path: Path, *, strict: bool = False, expand: bool = False) -> Optional[Path]:

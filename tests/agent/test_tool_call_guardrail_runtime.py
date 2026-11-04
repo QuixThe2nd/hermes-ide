@@ -262,7 +262,6 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
     observed = {
         "plugin": [],
         "guardrail": [],
-        "approval": [],
         "checkpoint": [],
         "start": [],
         "dispatch": [],
@@ -282,10 +281,6 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
         del kwargs
         observed["plugin"].append((name, dict(args)))
         return (None, None)
-
-    def observe_approval(name, args):
-        observed["approval"].append((name, dict(args)))
-        return None
 
     def dispatch(name, args, task_id, **kwargs):
         del task_id, kwargs
@@ -310,10 +305,6 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
             side_effect=observe_plugin,
         ),
         patch.object(agent._tool_guardrails, "before_call", side_effect=observe_guardrail),
-        patch(
-            "acp_adapter.edit_approval.maybe_require_edit_approval",
-            side_effect=observe_approval,
-        ),
         patch("model_tools.registry.dispatch", side_effect=dispatch),
     ):
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
@@ -321,7 +312,6 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
     expected = [("write_file", final_args)]
     assert observed["plugin"] == expected
     assert observed["guardrail"] == expected
-    assert observed["approval"] == expected
     assert observed["start"] == expected
     assert observed["dispatch"] == expected
     assert observed["checkpoint"] == [

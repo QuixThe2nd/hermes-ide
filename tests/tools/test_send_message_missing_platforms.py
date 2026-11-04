@@ -1,26 +1,16 @@
-"""Tests for _send_mattermost, _send_matrix, _send_homeassistant, _send_dingtalk."""
+"""Tests for _send_matrix, _send_homeassistant."""
 
 import asyncio
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-# ``_send_dingtalk`` and ``_send_matrix`` moved into their bundled plugins
-# (``plugins/platforms/<x>/adapter.py::_standalone_send``) in #41112. Keep
-# thin pre-migration-shaped shims so existing test bodies work unchanged.
-from plugins.platforms.dingtalk.adapter import (
-    _standalone_send as _dingtalk_standalone_send,
-)
+# ``_send_matrix`` moved into the bundled plugin
+# (``plugins/platforms/matrix/adapter.py::_standalone_send``) in #41112. Keep
+# a thin pre-migration-shaped shim so existing test bodies work unchanged.
 from plugins.platforms.matrix.adapter import (
     _standalone_send as _matrix_standalone_send,
 )
-
-
-async def _send_dingtalk(extra, chat_id, message):
-    """Pre-migration ``(extra, chat_id, message)`` shim around the dingtalk
-    plugin's ``_standalone_send(pconfig, chat_id, message)``."""
-    pconfig = SimpleNamespace(token=None, extra=extra or {})
-    return await _dingtalk_standalone_send(pconfig, chat_id, message)
 
 
 async def _send_matrix(token, extra, chat_id, message):
@@ -29,26 +19,8 @@ async def _send_matrix(token, extra, chat_id, message):
     pconfig = SimpleNamespace(token=token, extra=extra or {})
     return await _matrix_standalone_send(pconfig, chat_id, message)
 
-# ``_send_mattermost`` moved into the mattermost plugin
-# (``plugins/platforms/mattermost/adapter.py::_standalone_send``).  Keep a
-# thin ``(token, extra, chat_id, message)``-shaped wrapper so existing test
-# bodies continue to work without rewriting every signature.
-from plugins.platforms.mattermost.adapter import (
-    _standalone_send as _mattermost_standalone_send,
-)
-
-
-async def _send_mattermost(token, extra, chat_id, message):
-    """Pre-migration ``(token, extra, chat_id, message)`` shim around the
-    plugin's ``_standalone_send(pconfig, chat_id, message)``.
-    """
-    pconfig = SimpleNamespace(token=token, extra=extra or {})
-    return await _mattermost_standalone_send(pconfig, chat_id, message)
-
-
 # ``_send_homeassistant`` moved into the homeassistant plugin
-# (``plugins/platforms/homeassistant/adapter.py::_standalone_send``).  Same
-# shim pattern as ``_send_mattermost`` above.
+# (``plugins/platforms/homeassistant/adapter.py::_standalone_send``).
 from plugins.platforms.homeassistant.adapter import (
     _standalone_send as _homeassistant_standalone_send,
 )
@@ -90,43 +62,6 @@ def _make_aiohttp_session(resp):
     session_ctx.__aenter__ = AsyncMock(return_value=session)
     session_ctx.__aexit__ = AsyncMock(return_value=False)
     return session_ctx, session
-
-
-# ---------------------------------------------------------------------------
-# _send_mattermost
-# ---------------------------------------------------------------------------
-
-
-class TestSendMattermost:
-    def test_success(self):
-        resp = _make_aiohttp_resp(201, json_data={"id": "post123"})
-        session_ctx, session = _make_aiohttp_session(resp)
-
-        with patch("aiohttp.ClientSession", return_value=session_ctx), \
-             patch.dict(os.environ, {"MATTERMOST_URL": "", "MATTERMOST_TOKEN": ""}, clear=False):
-            extra = {"url": "https://mm.example.com"}
-            result = asyncio.run(_send_mattermost("tok-abc", extra, "channel1", "hello"))
-
-        assert result == {"success": True, "platform": "mattermost", "chat_id": "channel1", "message_id": "post123"}
-        session.post.assert_called_once()
-        call_kwargs = session.post.call_args
-        assert call_kwargs[0][0] == "https://mm.example.com/api/v4/posts"
-        assert call_kwargs[1]["headers"]["Authorization"] == "Bearer tok-abc"
-        assert call_kwargs[1]["json"] == {"channel_id": "channel1", "message": "hello"}
-
-
-    def test_env_var_fallback(self):
-        resp = _make_aiohttp_resp(200, json_data={"id": "p99"})
-        session_ctx, session = _make_aiohttp_session(resp)
-
-        with patch("aiohttp.ClientSession", return_value=session_ctx), \
-             patch.dict(os.environ, {"MATTERMOST_URL": "https://mm.env.com", "MATTERMOST_TOKEN": "env-tok"}, clear=False):
-            result = asyncio.run(_send_mattermost("", {}, "ch", "hi"))
-
-        assert result["success"] is True
-        call_kwargs = session.post.call_args
-        assert "https://mm.env.com" in call_kwargs[0][0]
-        assert call_kwargs[1]["headers"]["Authorization"] == "Bearer env-tok"
 
 
 # ---------------------------------------------------------------------------
@@ -225,76 +160,3 @@ class TestSendHomeAssistant:
         assert result["success"] is True
         url = session.post.call_args[0][0]
         assert "hass.env.com" in url
-
-
-# ---------------------------------------------------------------------------
-# _send_dingtalk
-# ---------------------------------------------------------------------------
-
-
-class TestSendDingtalk:
-    def _make_httpx_resp(self, status_code=200, json_data=None):
-        resp = MagicMock()
-        resp.status_code = status_code
-        resp.json = MagicMock(return_value=json_data or {"errcode": 0, "errmsg": "ok"})
-        resp.raise_for_status = MagicMock()
-        return resp
-
-    def _make_httpx_client(self, resp):
-        client = AsyncMock()
-        client.post = AsyncMock(return_value=resp)
-        client_ctx = MagicMock()
-        client_ctx.__aenter__ = AsyncMock(return_value=client)
-        client_ctx.__aexit__ = AsyncMock(return_value=False)
-        return client_ctx, client
-
-    def test_success(self):
-        resp = self._make_httpx_resp(json_data={"errcode": 0, "errmsg": "ok"})
-        client_ctx, client = self._make_httpx_client(resp)
-
-        with patch("httpx.AsyncClient", return_value=client_ctx):
-            extra = {"webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=abc"}
-            result = asyncio.run(_send_dingtalk(extra, "ignored", "hello dingtalk"))
-
-        assert result == {"success": True, "platform": "dingtalk", "chat_id": "ignored"}
-        client.post.assert_awaited_once()
-        call_kwargs = client.post.await_args
-        assert call_kwargs[0][0] == "https://oapi.dingtalk.com/robot/send?access_token=abc"
-        assert call_kwargs[1]["json"] == {"msgtype": "text", "text": {"content": "hello dingtalk"}}
-
-
-    def test_http_error_redacts_access_token_in_exception_text(self):
-        token = "supersecret-access-token-123456789"
-        resp = self._make_httpx_resp(status_code=401)
-        resp.raise_for_status = MagicMock(
-            side_effect=Exception(
-                f"POST https://oapi.dingtalk.com/robot/send?access_token={token} returned 401"
-            )
-        )
-        client_ctx, _ = self._make_httpx_client(resp)
-
-        with patch("httpx.AsyncClient", return_value=client_ctx):
-            result = asyncio.run(
-                _send_dingtalk(
-                    {"webhook_url": f"https://oapi.dingtalk.com/robot/send?access_token={token}"},
-                    "ch",
-                    "hi",
-                )
-            )
-
-        assert "error" in result
-        assert token not in result["error"]
-        assert "access_token=***" in result["error"]
-
-
-    def test_env_var_fallback(self):
-        resp = self._make_httpx_resp(json_data={"errcode": 0, "errmsg": "ok"})
-        client_ctx, client = self._make_httpx_client(resp)
-
-        with patch("httpx.AsyncClient", return_value=client_ctx), \
-             patch.dict(os.environ, {"DINGTALK_WEBHOOK_URL": "https://oapi.dingtalk.com/robot/send?access_token=env"}, clear=False):
-            result = asyncio.run(_send_dingtalk({}, "ch", "hi"))
-
-        assert result["success"] is True
-        call_kwargs = client.post.await_args
-        assert "access_token=env" in call_kwargs[0][0]

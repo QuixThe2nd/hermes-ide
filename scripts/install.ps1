@@ -3334,7 +3334,7 @@ function Install-HermesCommandLaunchers {
     if (Test-Path -LiteralPath $pyvenvCfg) {
         $venvRelocatable = [bool](Select-String -Path $pyvenvCfg -Pattern '^\s*relocatable\s*=\s*true\s*$' -Quiet)
     }
-    foreach ($launcher in @("hermes", "hermes-acp")) {
+    foreach ($launcher in @("hermes")) {
         $src = Join-Path $scriptsDir "$launcher.exe"
         if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
         if ($venvRelocatable) {

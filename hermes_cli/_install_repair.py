@@ -93,7 +93,7 @@ def _venv_scripts_dir(root: Path) -> Path | None:
 #: managed binary dir (the default Hermes root's ``bin``, next to uv.exe)
 #: on the user PATH. Keep in lockstep with WINDOWS_BIN_LAUNCHERS in
 #: hermes_cli/_launchers.py and scripts/install.ps1.
-_WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
+_WINDOWS_BIN_LAUNCHERS = ("hermes",)
 
 
 def _normalize_windows_path(value) -> str:
@@ -389,7 +389,7 @@ def _quarantine_running_hermes_exe(
     if not _is_windows():
         return []
     names = set(_load_console_script_names(scripts_dir.parent.parent)) or {
-        "hermes", "hermes-agent", "hermes-acp"}
+        "hermes", "hermes-agent"}
     names.add("hermes-gateway")
     moved: list[tuple[Path, Path]] = []
     for name in sorted(names):
