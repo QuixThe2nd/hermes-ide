@@ -4,7 +4,7 @@ Watches `QuixThe2nd/hermes-ide` for newly opened pull requests and posts one **i
 
 It reviews the **objective, not the code**. The model never sees the diff: the GitHub adapter strips the `patch` field from file payloads before anything leaves it, so the review works from title, body, author, labels, base/head, commit subject lines, and file names + churn only. It is not a code review bot and never requests code changes.
 
-Default-on (`default_enabled: true`), hook-only backend plugin — no model tools, no skill, no system-prompt surface.
+Opt-in backend plugin (`default_enabled: true` keeps it loaded so gateway start can retire leftover timers; the feature is gated by config). Hook-only — no model tools, no skill, no system-prompt surface.
 
 ## How a tick runs
 
@@ -29,11 +29,11 @@ The posted comment is exactly:
 
 ## Configuration
 
-Section in `HERMES_HOME/config.yaml` (all keys optional):
+Section in `HERMES_HOME/config.yaml` (all keys optional except you must opt in to watch):
 
 ```yaml
 pr_intent_watch:
-  enabled: true            # false disables the plugin AND retires the timer
+  enabled: false           # set true to watch PRs and install the timer
   repo: QuixThe2nd/hermes-ide
   poll_seconds: 300        # timer cadence, floored at 60
   skip_drafts: false
@@ -43,16 +43,16 @@ pr_intent_watch:
   max_commits: 20
 ```
 
-Disable either way: `pr_intent_watch.enabled: false` or `plugins.disabled: [pr_intent_watch]` — both stop and disable a previously installed timer.
+Turn on watching with `pr_intent_watch.enabled: true`. Disable with `enabled: false` or `plugins.disabled: [pr_intent_watch]` — both stop and disable a previously installed timer on the next gateway start (absent config also retires an existing timer).
 
 ## Token
 
-Resolved in this order, never printed: `GH_TOKEN`, `GITHUB_TOKEN`, `gh auth token` (subprocess, 5s timeout). No token → a warning is logged and the tick exits 0, so default-on never fails CI or tokenless hosts.
+Resolved in this order, never printed: `GH_TOKEN`, `GITHUB_TOKEN`, `gh auth token` (subprocess, 5s timeout). No token → a warning is logged and the tick exits 0, so a disabled or tokenless host never fails CI.
 
 ## State and scheduler
 
 - State: `HERMES_HOME/state/pr_intent_watch.json` (`repo`, `seen` map of PR number → `{head_sha, commented, skipped}`, `baseline_complete`), written atomically. The `seen` map is capped at the 500 newest PR numbers.
-- systemd user units (Linux with a user manager only; elsewhere reconciled once and skipped with a log line): `~/.config/systemd/user/hermes-pr-intent-watch.service` (oneshot, no `[Install]`) + `hermes-pr-intent-watch.timer` (`Persistent=true`, `AccuracySec=1s`, `OnCalendar` derived from `poll_seconds` — 300 → every 5 minutes). Reconciled on gateway start; the timer never runs from `run.py`.
+- systemd user units (Linux with a user manager only; elsewhere reconciled once and skipped with a log line): `~/.config/systemd/user/hermes-pr-intent-watch.service` (oneshot, no `[Install]`) + `hermes-pr-intent-watch.timer` (`Persistent=true`, `AccuracySec=1s`, `OnCalendar` derived from `poll_seconds` — 300 → every 5 minutes). Reconciled on gateway start when enabled; the timer never runs from `run.py`.
 - A rate limit (HTTP 403/429) ends the tick cleanly: already-posted PRs stay marked, unprocessed ones retry next tick.
 
 ## Running

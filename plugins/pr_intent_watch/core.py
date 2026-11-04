@@ -37,7 +37,7 @@ class PrIntentWatchError(Exception):
 
 @dataclass(frozen=True)
 class WatchConfig:
-    enabled: bool = True
+    enabled: bool = False
     repo: str = DEFAULT_REPO
     poll_seconds: int = DEFAULT_POLL_SECONDS
     skip_drafts: bool = DEFAULT_SKIP_DRAFTS
@@ -138,7 +138,7 @@ def watch_config_from_raw(raw: Mapping[str, Any] | None) -> WatchConfig:
         repo = DEFAULT_REPO
 
     return WatchConfig(
-        enabled=_bool("enabled", True) and not plugin_disabled_in_raw(raw),
+        enabled=_bool("enabled", False) and not plugin_disabled_in_raw(raw),
         repo=repo,
         poll_seconds=poll_seconds,
         skip_drafts=_bool("skip_drafts", DEFAULT_SKIP_DRAFTS),
@@ -303,7 +303,7 @@ def run_tick(*, config_path: Path | None = None, dry_run: bool = False) -> dict:
     try:
         raw = load_config_section(config_path)
     except PrIntentWatchError as exc:
-        # Default-on must not fail odd hosts; unreadable config = defaults.
+        # Unreadable config → defaults (watch off); tick must not fail odd hosts.
         logger.warning("pr_intent_watch could not read config (%s); using defaults", exc)
         raw = {}
     config = watch_config_from_raw(raw)

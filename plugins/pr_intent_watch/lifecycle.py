@@ -245,6 +245,21 @@ def _reconcile(
             skip_reason="plugin explicitly disabled", warnings=tuple(warnings)
         )
 
+    if not watch_config_from_raw(raw if isinstance(raw, Mapping) else {}).enabled:
+        _log_skip_once("watch disabled in config")
+        warnings = []
+        timer_unit = (unit_dir or default_unit_dir()) / TIMER_NAME
+        try:
+            leftover = timer_unit.is_file()
+        except OSError:
+            leftover = False
+        if leftover:
+            runner = run_systemctl or default_systemctl_runner
+            warnings.extend(_stop_timer(runner))
+        return ReconcileResult(
+            skip_reason="watch disabled in config", warnings=tuple(warnings)
+        )
+
     if not is_linux():
         _log_skip_once("not Linux (systemd user timer unavailable)")
         return ReconcileResult(skip_reason="not Linux")

@@ -30,7 +30,10 @@ def home(monkeypatch, tmp_path):
 
 
 def _run(home, fake, monkeypatch, *, section=None, result=...):
-    config_path = write_config(home, section)
+    merged: dict = {"enabled": True}
+    if section is not None:
+        merged.update(section)
+    config_path = write_config(home, merged)
     install_fake_github(monkeypatch, fake)
     captured = install_fake_review(
         monkeypatch, make_review() if result is ... else result
@@ -66,7 +69,9 @@ def test_baseline_dry_run_writes_no_state(home, monkeypatch):
     fake = FakeGitHub([make_pull(3)])
     install_fake_github(monkeypatch, fake)
     install_fake_review(monkeypatch, make_review())
-    summary = run_tick(config_path=write_config(home), dry_run=True)
+    summary = run_tick(
+        config_path=write_config(home, {"enabled": True}), dry_run=True
+    )
 
     assert summary["baseline"] is True
     assert not (home / "state" / "pr_intent_watch.json").exists()
@@ -244,7 +249,9 @@ def test_dry_run_posts_nothing_and_writes_no_state(home, monkeypatch):
     fake = FakeGitHub([make_pull(1), make_pull(5)])
     install_fake_github(monkeypatch, fake)
     install_fake_review(monkeypatch, make_review())
-    summary = run_tick(config_path=write_config(home), dry_run=True)
+    summary = run_tick(
+        config_path=write_config(home, {"enabled": True}), dry_run=True
+    )
 
     assert summary["reviewed"] == 1
     assert summary["commented"] == 0
@@ -291,6 +298,19 @@ def test_rate_limit_on_listing_posts_nothing_and_keeps_state(home, monkeypatch):
 # ── gating ─────────────────────────────────────────────────────────────────
 
 
+def test_absent_enabled_skips_tick_without_github_or_state(home, monkeypatch):
+    fake = FakeGitHub([make_pull(5)])
+    config_path = write_config(home)
+    install_fake_github(monkeypatch, fake)
+    install_fake_review(monkeypatch, make_review())
+    summary = run_tick(config_path=config_path)
+
+    assert summary["disabled"] is True
+    assert fake.calls == []
+    assert fake.posted == []
+    assert not (home / "state").exists()
+
+
 def test_disabled_tick_makes_no_github_calls(home, monkeypatch):
     fake = FakeGitHub([make_pull(5)])
     summary, captured = _run(
@@ -325,7 +345,7 @@ def test_no_token_skips_tick_cleanly(home, monkeypatch):
     monkeypatch.setattr(gh, "resolve_token", lambda: None)
     install_fake_review(monkeypatch, make_review())
 
-    summary = run_tick(config_path=write_config(home))
+    summary = run_tick(config_path=write_config(home, {"enabled": True}))
 
     assert summary["no_token"] is True
     assert summary["commented"] == 0
