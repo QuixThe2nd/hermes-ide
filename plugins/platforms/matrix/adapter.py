@@ -3082,8 +3082,10 @@ def _is_connected(config) -> bool:
 
 
 def register(ctx) -> None:
+    from plugins.platforms.matrix.hub_client import MatrixHubClientAdapter
+
     ctx.register_platform(
-        name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
+        name="matrix", label="Matrix", adapter_factory=MatrixHubClientAdapter, check_fn=matrix_deps_present,
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",

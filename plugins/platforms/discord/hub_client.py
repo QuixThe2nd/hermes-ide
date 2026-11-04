@@ -136,6 +136,7 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             self._read_task = asyncio.create_task(self._read_loop())
             from hermes_cli.config_effective import load_user_config_effective
             from gateway.platforms._shared import platform_gate_env
+            from gateway.overlap_restart import overlap_attachment
             profile_routes = (load_user_config_effective().get("gateway") or {}).get("profile_routes") or []
             # connect() runs inside the owning profile's runtime scope, so this is
             # the one place THIS profile's judge key can be resolved. The hub-side
@@ -149,6 +150,7 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
                 "profile_routes": profile_routes,
                 "config": self.config.to_dict(),
                 "gate_credential": gate_credential,
+                **overlap_attachment(),
             })
             self.hub_pid = int(result["pid"])
             self._token_key = str(result.get("token_key") or "")
@@ -371,7 +373,7 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
     def _value(data: Any) -> Any:
         return data.get("value") if isinstance(data, dict) and set(data) == {"value"} else data
 
-    def _sync_rpc(self, method: str, *args: Any, **kwargs: Any) -> Any:
+    def _sync_rpc(self, method: str, *args: Any, platform: str = "discord", **kwargs: Any) -> Any:
         """Answer a synchronous adapter query without driving the attached event loop reentrantly."""
         payload = {
             "id": uuid.uuid4().hex,
@@ -379,6 +381,7 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             "params": {
                 "token_key": self._token_key,
                 "method": method,
+                "platform": platform,
                 "args": list(args),
                 "kwargs": kwargs,
             },

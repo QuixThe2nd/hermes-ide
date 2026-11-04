@@ -39,13 +39,16 @@ class DiscordSessionRouter:
     no usable generation the complete event is retained for explicit replay.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, transport: str = "Discord",
+                 version_field: str = "_discord_hub_version") -> None:
         self._clients: "OrderedDict[str, Delivery]" = OrderedDict()
         self._owners: Dict[str, str] = {}
         self._versions: Dict[str, int] = {}
         self._current: Optional[str] = None
         self._undelivered: list[Dict[str, Any]] = []
         self._lock = asyncio.Lock()
+        self._transport = transport
+        self._version_field = version_field
 
     @property
     def current_generation(self) -> Optional[str]:
@@ -87,18 +90,18 @@ class DiscordSessionRouter:
             generation = owner if owner in self._clients else self._current
             if generation is None:
                 self._undelivered.append(record)
-                logger.warning("Discord hub retained an event for %s: no Hermes client is attached", session_key)
+                logger.warning("%s hub retained an event for %s: no Hermes client is attached", self._transport, session_key)
                 return None
             try:
                 version = self._versions.get(session_key, 0) + 1
                 self._versions[session_key] = version
                 delivered_record = dict(record)
-                delivered_record["_discord_hub_version"] = version
+                delivered_record[self._version_field] = version
                 await self._clients[generation](session_key, delivered_record)
             except Exception:
                 # Do not send a possibly-received event to a second generation.
                 self._undelivered.append(record)
-                logger.exception("Discord hub retained an event for %s after delivery failed", session_key)
+                logger.exception("%s hub retained an event for %s after delivery failed", self._transport, session_key)
                 return None
             self._owners[session_key] = generation
             return generation
@@ -137,6 +140,7 @@ _SYNC_RPC_METHODS = frozenset({
     "get_voice_channel_info",
     "get_voice_channel_context",
 })
+_MATRIX_SYNC_RPC_METHODS = frozenset({"get_diagnostics"})
 _PICKER_CALLBACK_KWARGS = {
     "send_model_picker": "on_model_selected",
     "send_choice_picker": "on_choice_selected",
@@ -170,6 +174,7 @@ class _Client:
     write_lock: asyncio.Lock
     controls: Dict[str, asyncio.Future]
     token_key: str = ""
+    platform: str = "discord"
     router: Optional[DiscordSessionRouter] = None
     processing_reactions: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
 
@@ -183,9 +188,12 @@ class _Client:
 
 
 class DiscordHubServer:
-    """Unix JSON-RPC server hosting one discord.py adapter per bot token."""
+    """Host shared Discord and Matrix transports for attached gateways."""
 
     def __init__(self, socket_path: Optional[Path] = None) -> None:
+        from gateway.overlap_registry import OverlapSuccessorRegistry
+        from plugins.platforms.matrix.hub import MatrixHub
+
         self.socket_path = Path(socket_path or default_socket_path())
         self.router = DiscordSessionRouter()
         self._routers: Dict[str, DiscordSessionRouter] = {}
@@ -198,6 +206,8 @@ class DiscordHubServer:
         self._adapter_routes: Dict[str, list] = {}
         self._raw_messages: "OrderedDict[str, Any]" = OrderedDict()
         self._prompt_owners: Dict[str, str] = {}
+        self._successors = OverlapSuccessorRegistry()
+        self.matrix = MatrixHub(self)
         self._stopping = False
 
     def _router_for(self, token_key: str) -> DiscordSessionRouter:
@@ -236,6 +246,7 @@ class DiscordHubServer:
             await adapter.disconnect()
         self._adapters.clear()
         self._adapter_tokens.clear()
+        await self.matrix.stop()
         self.socket_path.unlink(missing_ok=True)
 
     async def _disconnect_adapter_with_deadline(self, adapter: Any, context: str) -> None:
@@ -397,13 +408,40 @@ class DiscordHubServer:
                             raise ValueError("generation_id is already attached")
                         client = _Client(generation, reader, writer, asyncio.Lock(), {})
                         config_data = params.get("config") or {}
-                        token_key = _token_key(str(config_data.get("token") or ""))
-                        await self._attach_adapter(
-                            generation, config_data, str(params.get("profile") or "default"),
-                            params.get("profile_routes") or [],
-                            params.get("gate_credential"))
+                        platform_name = str(params.get("platform") or "discord")
+                        peercred = writer.get_extra_info("peercred")
+                        peer_pid = int(peercred[0]) if peercred else None
+                        gateway_pid = int(params.get("gateway_pid") or 0)
+                        if peer_pid is not None and gateway_pid and gateway_pid != peer_pid:
+                            raise RuntimeError("attached gateway PID does not match the socket peer")
+                        if platform_name == "matrix":
+                            token_key, router = await self.matrix.attach(
+                                config_data=config_data,
+                                profile=str(params.get("profile") or "default"),
+                                profile_routes=params.get("profile_routes") or [],
+                                hermes_home=str(params.get("hermes_home") or ""),
+                                secret_scope=params.get("secret_scope") or {},
+                            )
+                            client.platform = "matrix"
+                        elif platform_name == "discord":
+                            token_key = _token_key(str(config_data.get("token") or ""))
+                            await self._attach_adapter(
+                                generation, config_data, str(params.get("profile") or "default"),
+                                params.get("profile_routes") or [],
+                                params.get("gate_credential"))
+                            router = self._router_for(token_key)
+                        else:
+                            raise ValueError(f"unknown hub platform: {platform_name}")
+                        if params.get("overlap_predecessor_pid"):
+                            self._successors.attach(
+                                pid=gateway_pid,
+                                start_time=int(params.get("gateway_start_time") or 0),
+                                gateway_home=str(params.get("gateway_home") or ""),
+                                generation_id=generation,
+                                peer_pid=peer_pid,
+                            )
                         client.token_key = token_key
-                        client.router = self._router_for(token_key)
+                        client.router = router
                         self._clients[generation] = client
                         client.router.attach(generation, client.deliver)
                         await client.send({"id": request_id, "result": {
@@ -412,8 +450,8 @@ class DiscordHubServer:
                         }})
                         await client.router.replay_undelivered()
                         continue
-                    if client is None and method != "sync_rpc":
-                        raise RuntimeError("attach is required before Discord RPC")
+                    if client is None and method not in {"sync_rpc", "overlap_successors"}:
+                        raise RuntimeError("attach is required before hub RPC")
                     result = await self._dispatch(client, str(request.get("method") or ""), params)
                     if client is None:
                         await self._write_response(writer, {"id": request_id, "result": result})
@@ -428,7 +466,10 @@ class DiscordHubServer:
             logger.exception("Discord hub client connection failed")
         finally:
             if client is not None:
-                await self._reap_client_processing_reactions(client)
+                if client.platform == "matrix":
+                    self.matrix.detach(client)
+                else:
+                    await self._reap_client_processing_reactions(client)
                 self._clients.pop(client.generation_id, None)
                 (client.router or self.router).detach(client.generation_id)
                 for future in client.controls.values():
@@ -447,6 +488,12 @@ class DiscordHubServer:
         await writer.drain()
 
     async def _dispatch(self, client: _Client, method: str, params: Dict[str, Any]) -> Any:
+        if method == "overlap_successors":
+            return {"successors": self._successors.snapshot()}
+        if method == "register_matrix_prompt":
+            if client is None or client.platform != "matrix":
+                raise ValueError("an attached Matrix generation is required")
+            return self.matrix.register_prompt(client, str(params.get("event_id") or ""))
         if method == "unregister":
             version = params.get("version")
             return (client.router or self.router).unregister(
@@ -460,13 +507,19 @@ class DiscordHubServer:
         if method == "spawn_gateway":
             return await self._spawn_gateway(params)
         if method == "rpc":
+            if client is not None and client.platform == "matrix":
+                return await self.matrix.rpc(client, params)
             return await self._adapter_rpc(client, params)
         if method == "sync_rpc":
             requested = str(params.get("method") or "")
+            if params.get("platform") == "matrix":
+                if requested not in _MATRIX_SYNC_RPC_METHODS:
+                    raise ValueError(f"Matrix adapter method is not synchronous: {requested}")
+                return await self.matrix.rpc(client, params)
             if requested not in _SYNC_RPC_METHODS:
                 raise ValueError(f"Discord adapter method is not synchronous: {requested}")
             return await self._adapter_rpc(client, params)
-        raise ValueError(f"unknown Discord hub method: {method}")
+        raise ValueError(f"unknown hub method: {method}")
 
     async def _reap_client_processing_reactions(self, client: _Client) -> None:
         """Remove processing 👀 reactions owned by a detaching gateway generation."""
@@ -641,6 +694,7 @@ class DiscordHubServer:
             return subprocess.Popen(argv, **kwargs)
 
         process = await asyncio.to_thread(spawn_replacement_gateway, project_root, popen=_popen)
+        self._successors.record_spawn(process.pid, home, predecessor_pid)
         return {"pid": process.pid}
 
     async def serve_forever(self) -> None:
@@ -687,7 +741,7 @@ def main() -> None:
     import argparse
     from hermes_logging import setup_logging
 
-    parser = argparse.ArgumentParser(description="Own Discord websockets for attached Hermes gateways")
+    parser = argparse.ArgumentParser(description="Own shared platform transports for attached Hermes gateways")
     parser.add_argument("--socket", type=Path, default=default_socket_path())
     args = parser.parse_args()
     setup_logging()

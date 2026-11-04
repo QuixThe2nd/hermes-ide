@@ -699,7 +699,8 @@ class GatewayInboundMixin:
                 return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
-        if self._draining:
+        from gateway.overlap_restart import admits_owned_work
+        if self._draining and not admits_owned_work(self, event.source):
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
                 self._queue_or_replace_pending_event(_quick_key, event)
@@ -1029,7 +1030,8 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
-        if self._draining:
+        from gateway.overlap_restart import admits_owned_work
+        if self._draining and not admits_owned_work(self, event.source):
             return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
