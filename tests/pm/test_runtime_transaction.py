@@ -18,6 +18,11 @@ def test_sync_commits_only_a_successful_candidate(tmp_path, monkeypatch, failure
     ensure = importlib.import_module("pm.ensure")
     root = tmp_path / "repo"
     root.mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname = \"test\"\nversion = \"0\"\n"
+        "[project.optional-dependencies]\nbase = []\nnew-extra = []\n",
+        encoding="utf-8",
+    )
     (root / "uv.lock").write_text("initial-lock")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(paths, "repo_root", lambda: root)

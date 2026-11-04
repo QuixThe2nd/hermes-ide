@@ -384,6 +384,8 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
             facts = Facts(paths.runtime_facts_path())
             fact = facts.get("venv") or _facts().get("venv") or {}
             enabled = sorted(set(fact.get("extras", [])) | set(extras or []))
+            from pm.features import declared_extras
+            enabled = sorted(set(enabled) & set(declared_extras(paths.repo_root())))
             stamp = package.expected_stamp(enabled, **inputs)
             if not explicit and not lazy_installs_allowed() and not _runtime_state_matches(fact, stamp):
                 raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
