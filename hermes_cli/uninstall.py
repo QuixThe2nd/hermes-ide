@@ -67,6 +67,14 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 
+def code_removal_refusal() -> "str | None":
+    """Why this install's code must be left to its steward, or ``None`` for a git checkout."""
+    from hermes_cli.steward import classify_install, steward_uninstall_message
+
+    steward, allowed = classify_install(get_project_root())
+    return None if allowed else steward_uninstall_message(steward)
+
+
 _SHELL_RC_NAMES = (".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile")
 
 
@@ -419,9 +427,46 @@ def _uninstall_profile(profile) -> None:
     _rmtree_step(profile.path, indent="  ", fully=False)
 
 
+def run_data_uninstall(args):
+    """Remove Hermes user data while preserving both standard and running code checkouts."""
+    hermes_home = get_hermes_home()
+    if not bool(getattr(args, "yes", False)):
+        print(color("This permanently deletes Hermes configs, secrets, sessions, and logs.", Colors.RED))
+        if not _confirm_yes("to delete all Hermes user data"):
+            return
+
+    def path_key(path: Path) -> str:
+        return os.path.normcase(os.path.abspath(path))
+
+    code_roots = {path_key(hermes_home / "hermes-agent"), path_key(get_project_root())}
+
+    def remove_data_entry(path: Path) -> bool:
+        if path_key(path) in code_roots:
+            return False
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        return True
+
+    log_info("Removing Hermes user data (keeping installed code)...")
+    candidates = list(hermes_home.iterdir()) if hermes_home.is_dir() else ()
+    removed = _remove_each(candidates, remove_data_entry)
+    for path in removed:
+        log_success(f"Removed {path}")
+    if not removed:
+        log_info("No Hermes user data found to remove")
+    log_success("Installed code was left intact")
+
+
 def run_uninstall(args):
     """Interactive/``--yes`` uninstall: full removes code and ``~/.hermes/``; keep-data removes only
     the code so configs, data and logs survive a reinstall."""
+    refusal = code_removal_refusal()
+    if refusal is not None:
+        print(refusal)
+        raise SystemExit(1)
+
     project_root = get_project_root()
     hermes_home = get_hermes_home()
 
@@ -666,15 +711,18 @@ class _UninstallArgs:
 
 
 def main(argv=None) -> int:
-    """``python -m hermes_cli.uninstall --mode <lite|full>``. Imports only stdlib +
+    """``python -m hermes_cli.uninstall --mode <lite|full|data>``. Imports only stdlib +
     ``hermes_constants`` + ``hermes_cli.colors``, so it runs under a bare system Python (no venv)."""
     import argparse
     parser = argparse.ArgumentParser(prog="python -m hermes_cli.uninstall")
     parser.add_argument(
-        "--mode", choices=["lite", "full"], required=True,
-        help="lite = agent only, keep data; full = everything")
-    args = _UninstallArgs(mode=parser.parse_args(argv).mode)
-    run_uninstall(args)
+        "--mode", choices=["lite", "full", "data"], required=True,
+        help="lite = agent only, keep data; full = everything; data = user data only")
+    args = parser.parse_args(argv)
+    if args.mode == "data":
+        run_data_uninstall(_UninstallArgs(mode=args.mode))
+    else:
+        run_uninstall(_UninstallArgs(mode=args.mode))
     return 0
 
 

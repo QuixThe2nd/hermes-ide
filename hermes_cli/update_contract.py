@@ -61,7 +61,20 @@ def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
     except Exception as exc:
         logger.debug("Image provenance check failed (using heuristics): %s", exc)
 
-    # Layer 2: pre-existing filesystem heuristics, verbatim semantics.
+    # Layer 2: the code-scoped install stamp names the steward that owns a sealed tree.
+    # Unknown stays heuristic-only: a gitless source tree was historically admitted.
+    try:
+        from hermes_cli.steward import sealed_steward, steward_update_message
+
+        steward = sealed_steward(project_root)
+        if steward is not None and steward != "unknown":
+            return _refusal(
+                steward, steward, lambda _command: steward_update_message(steward)
+            )
+    except Exception as exc:
+        logger.debug("Install-stamp admission check failed (using heuristics): %s", exc)
+
+    # Layer 3: pre-existing filesystem heuristics, verbatim semantics.
     try:
         from hermes_cli.config import detect_install_method, is_nix_install_method
 

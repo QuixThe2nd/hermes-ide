@@ -2180,9 +2180,14 @@ def cmd_version(args):
 
 
 def cmd_uninstall(args):
-    """Uninstall Hermes Agent."""
+    """Uninstall Hermes Agent, or only its user data with ``--data``."""
     if not getattr(args, "yes", False):
         _require_tty("uninstall")
+    if getattr(args, "data", False):
+        from hermes_cli.uninstall import run_data_uninstall
+
+        run_data_uninstall(args)
+        return
     from hermes_cli.uninstall import run_uninstall
 
     run_uninstall(args)

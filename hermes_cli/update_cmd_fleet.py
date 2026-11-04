@@ -762,23 +762,6 @@ def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
         return
     print()
     _warn_pending_fleet_restart()
-    # A manual `/restart` (or `hermes gateway restart`) brings the fleet onto
-    # the current code without consuming this marker. Probe the real live
-    # fleet first so that case clears the marker instead of restarting a
-    # fleet that is already current. Anything stale, down, unknown, missing,
-    # or unverifiable falls through to the real restart — never cleared on a
-    # failed inspection.
-    try:
-        from hermes_cli.update_receipt import collect_fleet_versions
-
-        fleet = collect_fleet_versions()
-    except Exception as exc:
-        logger.debug("Pending fleet inspection failed: %s", exc)
-        fleet = None
-    if fleet is not None and _origin()._live_fleet_already_serves_checkout(fleet):
-        print("→ Live gateways already run the current code — clearing the pending restart.")
-        _clear_fleet_restart_pending_marker()
-        return
     print("→ Running the pending fleet restart...")
     if _run_pending_fleet_restart() and not _pending_fleet_restart_needed():
         return

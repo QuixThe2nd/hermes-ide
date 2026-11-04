@@ -733,7 +733,7 @@
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/DisplayObserveParams"
+            "$ref": "#/components/schemas/DisplayLeaseReleaseParams"
           }
         }
       ],
@@ -805,7 +805,7 @@
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
+            "$ref": "#/components/schemas/DisplayStopParams"
           }
         }
       ],
@@ -813,6 +813,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/DisplayStopResult"
+        }
+      }
+    },
+    {
+      "name": "display.thumbnail",
+      "summary": "One JPEG frame, or null when stopped or suppressed while a human has control.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplayThumbnailResult"
         }
       }
     },
@@ -10112,6 +10130,18 @@
             ],
             "default": null,
             "title": "Install Command"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
           }
         },
         "required": [
@@ -10424,6 +10454,10 @@
             "title": "Reason",
             "type": "string"
           },
+          "epoch": {
+            "title": "Epoch",
+            "type": "integer"
+          },
           "pending_handoff": {
             "anyOf": [
               {
@@ -10435,11 +10469,24 @@
             ],
             "default": null,
             "title": "Pending Handoff"
+          },
+          "viewer_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Viewer Hash"
           }
         },
         "required": [
           "holder",
-          "since"
+          "since",
+          "epoch"
         ],
         "title": "DisplayLease",
         "type": "object"
@@ -10500,6 +10547,42 @@
           "lease"
         ],
         "title": "DisplayLeasePayload",
+        "type": "object"
+      },
+      "DisplayLeaseReleaseParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "viewer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Viewer Id"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          }
+        },
+        "title": "DisplayLeaseReleaseParams",
         "type": "object"
       },
       "DisplayLeaseResult": {
@@ -10624,6 +10707,18 @@
             "default": null,
             "title": "Install Command"
           },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
           "profile_key": {
             "title": "Profile Key",
             "type": "string"
@@ -10658,6 +10753,117 @@
           "viewer_id"
         ],
         "title": "DisplayObserveResult",
+        "type": "object"
+      },
+      "DisplayStatusPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "profile_key",
+          "lease"
+        ],
+        "title": "DisplayStatusPayload",
         "type": "object"
       },
       "DisplayStatusResult": {
@@ -10739,6 +10945,18 @@
             "default": null,
             "title": "Install Command"
           },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
           "profile_key": {
             "title": "Profile Key",
             "type": "string"
@@ -10758,6 +10976,30 @@
           "lease"
         ],
         "title": "DisplayStatusResult",
+        "type": "object"
+      },
+      "DisplayStopParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          }
+        },
+        "title": "DisplayStopParams",
         "type": "object"
       },
       "DisplayStopResult": {
@@ -10838,6 +11080,18 @@
             "default": null,
             "title": "Install Command"
           },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
           "profile_key": {
             "title": "Profile Key",
             "type": "string"
@@ -10862,6 +11116,39 @@
           "stopped"
         ],
         "title": "DisplayStopResult",
+        "type": "object"
+      },
+      "DisplayThumbnailResult": {
+        "additionalProperties": false,
+        "properties": {
+          "data_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Url"
+          },
+          "suppressed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Suppressed"
+          }
+        },
+        "required": [
+          "data_url"
+        ],
+        "title": "DisplayThumbnailResult",
         "type": "object"
       },
       "EmptyRequestParams": {
@@ -32956,6 +33243,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/DisplayLeasePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "display.status",
+      "summary": "An out-of-process runtime transition; carries the full fresh display snapshot.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/DisplayStatusPayload"
           }
         }
       ]

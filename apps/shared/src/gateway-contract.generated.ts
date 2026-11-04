@@ -401,6 +401,7 @@ export interface DisplayStatusResult {
   socket?: string | null
   geometry: string
   install_command?: string | null
+  browser?: string | null
   profile_key: string
   lease: DisplayLease
 }
@@ -410,10 +411,20 @@ export interface DisplayLease {
   viewer_id?: string | null
   since: number
   reason?: string
+  epoch: number
   pending_handoff?: string | null
+  viewer_hash?: string | null
 }
 /** ``tools/bot_desktop/lease.py``: the agent by default, exactly one human viewer after Take over. */
 export type DisplayLeaseHolder = 'agent' | 'human'
+export interface DisplayThumbnailResult {
+  data_url: string | null
+  suppressed?: string | null
+}
+export interface DisplayStopParams {
+  profile?: string | null
+  force?: boolean
+}
 export interface DisplayStopResult {
   profile: string
   supported: boolean
@@ -425,6 +436,7 @@ export interface DisplayStopResult {
   socket?: string | null
   geometry: string
   install_command?: string | null
+  browser?: string | null
   profile_key: string
   lease: DisplayLease
   stopped: boolean
@@ -444,6 +456,7 @@ export interface DisplayObserveResult {
   socket?: string | null
   geometry: string
   install_command?: string | null
+  browser?: string | null
   profile_key: string
   lease: DisplayLease
   ticket: string
@@ -467,6 +480,11 @@ export interface DisplayLeaseAcquireParams {
 }
 export interface DisplayLeaseResult {
   lease: DisplayLease
+}
+export interface DisplayLeaseReleaseParams {
+  profile?: string | null
+  viewer_id?: string | null
+  force?: boolean
 }
 export interface ConnectionOperationParams {
   profile?: string | null
@@ -3710,6 +3728,21 @@ export interface TourStep {
   side?: string | null
   [key: string]: unknown
 }
+export interface DisplayStatusPayload {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
+  browser?: string | null
+  profile_key: string
+  lease: DisplayLease
+}
 export interface DisplayLeasePayload {
   profile_key: string
   lease: DisplayLease
@@ -3735,6 +3768,7 @@ export interface DesktopRuntimeStatus {
   socket?: string | null
   geometry: string
   install_command?: string | null
+  browser?: string | null
 }
 /** ``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
 export interface ConnectionUpdatePayload {
@@ -4171,7 +4205,7 @@ export interface RpcMethods {
   /** Take over: hand control of the screen to one human viewer. */
   'display.lease.acquire': { params: DisplayLeaseAcquireParams; result: DisplayLeaseResult }
   /** Hand back (or release the current holder when no ``viewer_id`` is given). */
-  'display.lease.release': { params: DisplayObserveParams; result: DisplayLeaseResult }
+  'display.lease.release': { params: DisplayLeaseReleaseParams; result: DisplayLeaseResult }
   /** Mint the single-use, 30 s RFB ticket the viewer redeems on ``/api/display/ws``. */
   'display.observe': { params: DisplayObserveParams; result: DisplayObserveResult }
   /** Start this profile's headless Xvnc/Xfce session; returns the fresh snapshot. */
@@ -4179,7 +4213,9 @@ export interface RpcMethods {
   /** Runtime + lease snapshot of a profile's Bot Desktop (the pane's state authority). */
   'display.status': { params: ProfileParams; result: DisplayStatusResult }
   /** Stop the headless session (releasing any lease first); ``stopped`` is the teardown verdict. */
-  'display.stop': { params: ProfileParams; result: DisplayStopResult }
+  'display.stop': { params: DisplayStopParams; result: DisplayStopResult }
+  /** One JPEG frame, or null when stopped or suppressed while a human has control. */
+  'display.thumbnail': { params: ProfileParams; result: DisplayThumbnailResult }
   /** Stage a non-image file into the session workspace and hand back its @file: ref. */
   'file.attach': { params: FileAttachParams; result: FileAttachResult }
   /** Mark the one-time availability notice as shown on the free-tier identity. */
@@ -4558,6 +4594,7 @@ export const RPC_METHODS = [
   'display.start',
   'display.status',
   'display.stop',
+  'display.thumbnail',
   'file.attach',
   'free_tier.ack_notice',
   'free_tier.provision',
@@ -4801,6 +4838,8 @@ export interface BackendGatewayEventMap {
   'display.install.log': DisplayInstallLogPayload
   /** A lease transition every connected client repaints from (bot-row badge, viewer border). */
   'display.lease': DisplayLeasePayload
+  /** An out-of-process runtime transition; carries the full fresh display snapshot. */
+  'display.status': DisplayStatusPayload
   /** A session-level failure outside a turn (agent init, model switch, compression, resume). */
   error: ErrorPayload
   /** First frame of a connection: the resolved skin, the change-event capability and the replay epoch. */
@@ -4928,6 +4967,7 @@ export const GATEWAY_EVENT_TYPES = [
   'display.install.done',
   'display.install.log',
   'display.lease',
+  'display.status',
   'error',
   'gateway.ready',
   'layout.apply',

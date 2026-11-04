@@ -29,7 +29,9 @@ class DisplayLease(Result):
     viewer_id: str | None = None
     since: float
     reason: str = ""
+    epoch: int
     pending_handoff: str | None = None
+    viewer_hash: str | None = None
 
 
 class DesktopRuntimeStatus(Result):
@@ -45,6 +47,7 @@ class DesktopRuntimeStatus(Result):
     socket: str | None = None
     geometry: str
     install_command: str | None = None
+    browser: str | None = None
 
 
 class DisplayStatusResult(DesktopRuntimeStatus):
@@ -57,15 +60,28 @@ class DisplayStatusResult(DesktopRuntimeStatus):
 
 method("display.status", params=ProfileParams, result=DisplayStatusResult,
        doc="Runtime + lease snapshot of a profile's Bot Desktop (the pane's state authority).")
+
+
+class DisplayThumbnailResult(Result):
+    data_url: str | None
+    suppressed: str | None = None
+
+
+method("display.thumbnail", params=ProfileParams, result=DisplayThumbnailResult,
+       doc="One JPEG frame, or null when stopped or suppressed while a human has control.")
 method("display.start", params=ProfileParams, result=DisplayStatusResult,
        doc="Start this profile's headless Xvnc/Xfce session; returns the fresh snapshot.")
+
+
+class DisplayStopParams(ProfileParams):
+    force: bool = False
 
 
 class DisplayStopResult(DisplayStatusResult):
     stopped: bool
 
 
-method("display.stop", params=ProfileParams, result=DisplayStopResult,
+method("display.stop", params=DisplayStopParams, result=DisplayStopResult,
        doc="Stop the headless session (releasing any lease first); ``stopped`` is the teardown verdict.")
 
 
@@ -105,17 +121,41 @@ class DisplayLeaseAcquireParams(ProfileParams):
     reason: str = ""
 
 
+class DisplayLeaseReleaseParams(DisplayObserveParams):
+    force: bool = False
+
+
 class DisplayLeaseResult(Result):
     lease: DisplayLease
 
 
 method("display.lease.acquire", params=DisplayLeaseAcquireParams, result=DisplayLeaseResult,
        doc="Take over: hand control of the screen to one human viewer.")
-method("display.lease.release", params=DisplayObserveParams, result=DisplayLeaseResult,
+method("display.lease.release", params=DisplayLeaseReleaseParams, result=DisplayLeaseResult,
        doc="Hand back (or release the current holder when no ``viewer_id`` is given).")
 
 
 # ── events ────────────────────────────────────────────────────────────────────────────────────
+
+
+class DisplayStatusPayload(Payload):
+    profile: str
+    supported: bool
+    installed: bool
+    missing: list[str]
+    running: bool
+    pid: int | None = None
+    display: str | None = None
+    socket: str | None = None
+    geometry: str
+    install_command: str | None = None
+    browser: str | None = None
+    profile_key: str
+    lease: DisplayLease
+
+
+event("display.status", DisplayStatusPayload,
+      doc="An out-of-process runtime transition; carries the full fresh display snapshot.")
 
 
 class DisplayLeasePayload(Payload):
