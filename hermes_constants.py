@@ -1503,7 +1503,7 @@ def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
 # First-party roots: an ImportError naming one means our own tree is inconsistent. The
 # update post-probe shares this set so the guard that BLOCKS and the hint that EXPLAINS agree.
 FIRST_PARTY_MODULE_ROOTS = frozenset({
-    "agent", "acp_adapter", "cli", "cron", "gateway", "model_tools", "plugins",
+    "agent", "cli", "cron", "gateway", "model_tools", "plugins",
     "providers", "tools", "toolsets", "run_agent", "tui_gateway", "utils",
 })
 

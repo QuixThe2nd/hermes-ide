@@ -12,7 +12,6 @@ const SOURCE_LABELS: Record<string, string> = {
   kanban: 'Kanban',
   local: 'Local',
   matrix: 'Matrix',
-  mattermost: 'Mattermost',
   oneshot: 'One-shot',
   photon: 'Photon',
   qqbot: 'QQ',
@@ -54,7 +53,6 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'telegram',
   'discord',
   'slack',
-  'mattermost',
   'matrix',
   'signal',
   'whatsapp',
@@ -66,10 +64,8 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'webhook',
   'api_server',
   'weixin',
-  'wecom',
   'qqbot',
   'yuanbao',
-  'dingtalk',
   'feishu'
 ]
 const MESSAGING_SOURCE_IDS = new Set(MESSAGING_SESSION_SOURCE_IDS)

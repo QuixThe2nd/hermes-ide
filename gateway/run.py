@@ -1726,7 +1726,7 @@ def _resolve_progress_thread_id(
         return str(source_thread_id) if source_thread_id else None
     if source_thread_id:
         return str(source_thread_id)
-    if platform_key in {"slack", "mattermost", "buzz"} and event_message_id:
+    if platform_key in {"slack", "buzz"} and event_message_id:
         return str(event_message_id)
     return None
 
@@ -4066,7 +4066,6 @@ _DRAIN_ALLOWED_COMMANDS = frozenset({
 
 
 _OWN_POLICY_OPEN_ENV = {
-    Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
     Platform.YUANBAO: ("YUANBAO_DM_POLICY", "YUANBAO_GROUP_POLICY", "YUANBAO_ALLOW_ALL_USERS"),
     Platform.QQBOT: (None, None, "QQ_ALLOW_ALL_USERS"),
@@ -18425,11 +18424,9 @@ class GatewayRunner(
             "TELEGRAM_GROUP_ALLOWED_USERS",
             "TELEGRAM_GROUP_ALLOWED_CHATS",
             "EMAIL_ALLOWED_USERS",
-            "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
-            "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
+            "SMS_ALLOWED_USERS",
+            "MATRIX_ALLOWED_USERS",
             "FEISHU_ALLOWED_USERS",
-            "WECOM_ALLOWED_USERS",
-            "WECOM_CALLBACK_ALLOWED_USERS",
             "WEIXIN_ALLOWED_USERS",
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
@@ -18441,11 +18438,9 @@ class GatewayRunner(
             "WHATSAPP_ALLOW_ALL_USERS", "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
             "SLACK_ALLOW_ALL_USERS",
             "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
-            "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
-            "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
+            "SMS_ALLOW_ALL_USERS",
+            "MATRIX_ALLOW_ALL_USERS",
             "FEISHU_ALLOW_ALL_USERS",
-            "WECOM_ALLOW_ALL_USERS",
-            "WECOM_CALLBACK_ALLOW_ALL_USERS",
             "WEIXIN_ALLOW_ALL_USERS",
             "BLUEBUBBLES_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
@@ -28093,14 +28088,9 @@ class GatewayRunner(
                         "show_reasoning",
                         default=bool(getattr(self, "_show_reasoning", False)),
                         platform=source.platform,
-                        require_platform_override_for={Platform.MATTERMOST},
                     )
                 except Exception:
-                    _show_reasoning_effective = (
-                        False
-                        if source.platform == Platform.MATTERMOST
-                        else getattr(self, "_show_reasoning", False)
-                    )
+                    _show_reasoning_effective = getattr(self, "_show_reasoning", False)
                 if _show_reasoning_effective and response and not _intentional_silence:
                     last_reasoning = agent_result.get("last_reasoning")
                     if last_reasoning:
@@ -31760,8 +31750,7 @@ class GatewayRunner(
     _UPDATE_ALLOWED_PLATFORMS = frozenset({
         Platform.TELEGRAM, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATRIX,
-        Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.EMAIL, Platform.SMS, Platform.FEISHU, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })
 
 
@@ -35867,7 +35856,6 @@ class GatewayRunner(
         interim_assistant_messages_mode = _display_surface_mode(
             "interim_assistant_messages",
             default=True,
-            require_platform_override_for={Platform.MATTERMOST},
         )
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
@@ -35880,7 +35868,6 @@ class GatewayRunner(
         _thinking_mode = _display_surface_mode(
             "thinking_progress",
             default=False,
-            require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
         # Slack-native task cards (#29483): when the Slack adapter's opt-in
@@ -36150,7 +36137,7 @@ class GatewayRunner(
         _progress_reply_to = (
             event_message_id
             if (
-                source.platform in (Platform.FEISHU, Platform.MATTERMOST)
+                source.platform in (Platform.FEISHU, )
                 and source.thread_id
                 and event_message_id
             )

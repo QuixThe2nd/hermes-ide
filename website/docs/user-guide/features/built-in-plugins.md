@@ -59,8 +59,6 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
-| `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
-| `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
 | `image_gen/openai` | image backend | OpenAI GPT Image 2 and 2.5 Flare/Sunburst generation and editing (API key) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
@@ -266,39 +264,6 @@ gateway:
 | `max_turns` | `0` | Rotate after every N completed turns; `0` disables the cap. |
 
 Both defaults preserve one session scope for the full session. Rotated spans retain the same `session_id` and add `hermes.session.segment` plus `hermes.session.segment_reason` (`compaction` or `max_turns`).
-
-### google_meet
-
-Lets the agent **join, transcribe, and participate in Google Meet calls** — take notes on a meeting, summarize the back-and-forth after, follow up on specific points, and (optionally) speak replies back into the call via TTS.
-
-**What it adds:**
-
-- A headless virtual participant that joins a Meet URL using browser automation
-- Live transcription derived from Meet's own live captions (the bot never decodes the meeting audio, so no STT billing — and captions are lossy and English-biased)
-- A `meet_join` / `meet_status` / `meet_transcript` / `meet_leave` / `meet_say` toolset the agent invokes to join calls, poll the live transcript, and act on what it heard
-- Post-meeting artifacts (transcript, status) saved under `~/.hermes/workspace/meetings/<meeting_id>/`
-
-**Setup:**
-
-```bash
-hermes plugins enable google_meet
-hermes meet setup   # preflight: playwright, chromium, auth file
-hermes meet auth    # opens a browser to sign into Google and saves session state —
-                    # needs a Google account with Meet access. Host approval may be
-                    # required if the meeting enforces "only invited participants can join".
-```
-
-Usage from chat:
-
-> "Join meet.google.com/abc-defg-hij and take notes. After the call, send me a summary with action items."
-
-The agent kicks off the meeting join, streams the transcription back into its context as the call proceeds, and produces a structured summary when the meeting ends (or when you tell it to stop).
-
-**Realtime mode (`mode='realtime'`) is speak-only on the audio side.** The bot's replies are synthesized by OpenAI Realtime and played into the call through a virtual microphone; what it *hears* is still the caption stream, not the meeting audio — nothing from the call is sent to the Realtime session. `meet_status` reports `micState` (`unmuted`, `unmuted_clicked` when the bot had to unmute itself after admission, or `unknown` when Meet's toggle was not found) so a silent bot can be diagnosed.
-
-**When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
-
-**Disabling:** `hermes plugins disable google_meet`. Any saved transcripts stay in `~/.hermes/workspace/meetings/` until you remove them.
 
 ### hermes-achievements
 

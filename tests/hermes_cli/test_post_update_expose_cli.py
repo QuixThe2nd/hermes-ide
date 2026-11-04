@@ -67,12 +67,12 @@ def test_registered_as_a_home_step():
 
 @posix_only
 class TestExposeCli:
-    def test_writes_all_three_wrappers_fresh(self, fake_install):
+    def test_writes_both_wrappers_fresh(self, fake_install):
         home, root = fake_install
         result = post_update.step_expose_cli()
         assert result["ok"] is True
-        assert sorted(result["written"]) == ["hermes", "hermes-acp", "hermes-agent"]
-        for name in ("hermes", "hermes-agent", "hermes-acp"):
+        assert sorted(result["written"]) == ["hermes", "hermes-agent"]
+        for name in ("hermes", "hermes-agent"):
             wrapper = home / ".local" / "bin" / name
             body = wrapper.read_text()
             assert str(root) in body
@@ -104,7 +104,7 @@ class TestExposeCli:
         assert (wrapper_dir / "hermes").read_text() == foreign
         assert "hermes" not in result["written"]
         # The other two had no file at all — those ARE written.
-        assert sorted(result["written"]) == ["hermes-acp", "hermes-agent"]
+        assert sorted(result["written"]) == ["hermes-agent"]
 
     def test_config_gate_disables(self, fake_install, monkeypatch):
         monkeypatch.setattr(
@@ -131,7 +131,7 @@ class TestExposeCli:
         (payload / "bin").mkdir(parents=True)
         (payload / "repo").mkdir()
         _write_bundled_stamp(payload / "repo")
-        for name in ("hermes", "hermes-agent", "hermes-acp"):
+        for name in ("hermes", "hermes-agent"):
             (payload / "bin" / name).write_text("\x7fELF fake shim\n")
         monkeypatch.setenv("HERMES_INSTALL_ROOT", str(payload / "repo"))
         result = post_update.step_expose_cli()
@@ -184,16 +184,16 @@ class TestSymlinkSealedLaunchers:
         monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
         payload_bin = tmp_path / "Hermes.app" / "Contents" / "Resources" / "agent-payload" / "bin"
         payload_bin.mkdir(parents=True)
-        for name in ("hermes", "hermes-agent", "hermes-acp"):
+        for name in ("hermes", "hermes-agent"):
             (payload_bin / name).write_text("fake mach-o shim\n")
         return home, payload_bin
 
-    def test_links_all_three_fresh(self, payload):
+    def test_links_both_fresh(self, payload):
         home, payload_bin = payload
         result = post_update._symlink_sealed_launchers(payload_bin)
         assert result["ok"] is True
-        assert sorted(result["written"]) == ["hermes", "hermes-acp", "hermes-agent"]
-        for name in ("hermes", "hermes-agent", "hermes-acp"):
+        assert sorted(result["written"]) == ["hermes", "hermes-agent"]
+        for name in ("hermes", "hermes-agent"):
             link = home / ".local" / "bin" / name
             assert link.is_symlink()
             assert os.readlink(link) == str(payload_bin / name)
@@ -229,4 +229,4 @@ class TestSymlinkSealedLaunchers:
         result = post_update._symlink_sealed_launchers(payload_bin)
         assert (link_dir / "hermes").read_text() == "#!/bin/sh\n# pipx launcher\n"
         assert os.readlink(link_dir / "hermes-agent") == str(other)
-        assert sorted(result["written"]) == ["hermes-acp"]
+        assert result["written"] == []

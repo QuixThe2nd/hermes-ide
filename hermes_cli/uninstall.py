@@ -120,7 +120,7 @@ def remove_wrapper_script():
     candidates = (
         bin_dir / name
         for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin"))
-        for name in ("hermes", "hermes-acp", "hermes-agent"))
+        for name in ("hermes", "hermes-agent"))
     return _remove_each((w for w in candidates if w.exists()), _unlink_ours)
 
 

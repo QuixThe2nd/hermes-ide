@@ -5151,7 +5151,7 @@ async function createActiveBackend(backendArgs) {
  * NOT get this: the AppExecutionAlias is the mechanism there.
  */
 function provisionPosixCliOnPath(payload: PayloadInfo): void {
-  const names = ['hermes', 'hermes-agent', 'hermes-acp']
+  const names = ['hermes', 'hermes-agent']
   try {
     const binDir = path.join(os.homedir(), '.local', 'bin')
     fs.mkdirSync(binDir, { recursive: true })

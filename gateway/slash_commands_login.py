@@ -32,7 +32,7 @@ class _SignInAttempt:
 
 # These adapters use "dm" for a broadcast topic, a channel, or an agent peer. Sending a consent
 # link and sign-in code there would publish them rather than deliver them to one person.
-_LOGIN_BLOCKED_PLATFORMS = frozenset({"ntfy", "raft", "a2a"})
+_LOGIN_BLOCKED_PLATFORMS = frozenset({"raft", "a2a"})
 
 
 class GatewayLoginCommandsMixin:

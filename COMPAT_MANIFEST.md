@@ -48,52 +48,10 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 ## Names by old module
 
 
-### `acp_adapter.auth`
 
-| name | kind | new location |
-|---|---|---|
-| `has_provider` | restored-def | `(deleted; BASE body restored)` |
 
-### `acp_adapter.edit_approval`
 
-| name | kind | new location |
-|---|---|---|
-| `FutureTimeout` | import | `concurrent.futures` |
-| `clear_edit_approval_requester` | restored-def | `(deleted; BASE body restored)` |
-| `get_edit_approval_requester` | restored-def | `(deleted; BASE body restored)` |
 
-### `acp_adapter.events`
-
-| name | kind | new location |
-|---|---|---|
-| `json` | import | `json` |
-
-### `acp_adapter.server`
-
-| name | kind | new location |
-|---|---|---|
-| `ACP_MAX_MODELS_PER_PROVIDER` | moved-lazy | `acp_adapter.model_catalog` |
-| `AgentThoughtChunk` | import | `acp.schema` |
-| `AudioContentBlock` | import | `acp.schema` |
-| `AvailableCommand` | import | `acp.schema` |
-| `AvailableCommandsUpdate` | import | `acp.schema` |
-| `BlobResourceContents` | import | `acp.schema` |
-| `EmbeddedResourceContentBlock` | import | `acp.schema` |
-| `ImageContentBlock` | import | `acp.schema` |
-| `Path` | import | `pathlib` |
-| `ResourceContentBlock` | import | `acp.schema` |
-| `TextResourceContents` | import | `acp.schema` |
-| `UnstructuredCommandInput` | import | `acp.schema` |
-| `base64` | import | `base64` |
-| `json` | import | `json` |
-| `unquote` | import | `urllib.parse` |
-| `urlparse` | import | `urllib.parse` |
-
-### `acp_adapter.session`
-
-| name | kind | new location |
-|---|---|---|
-| `Lock` | import | `threading` |
 
 ### `agent`
 
@@ -2259,31 +2217,9 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `os` | import | `os` |
 | `secrets` | import | `secrets` |
 
-### `plugins.google_meet.audio_bridge`
 
-| name | kind | new location |
-|---|---|---|
-| `chrome_fake_audio_flags` | restored-def | `(deleted; BASE body restored)` |
 
-### `plugins.google_meet.meet_bot`
 
-| name | kind | new location |
-|---|---|---|
-| `SAY_PCM_FILENAME` | restored-def | `(deleted; BASE body restored)` |
-| `SAY_QUEUE_FILENAME` | restored-def | `(deleted; BASE body restored)` |
-| `json` | import | `json` |
-
-### `plugins.google_meet.node.cli`
-
-| name | kind | new location |
-|---|---|---|
-| `Any` | import | `typing` |
-
-### `plugins.google_meet.node.registry`
-
-| name | kind | new location |
-|---|---|---|
-| `json` | import | `json` |
 
 ### `plugins.image_gen.deepinfra`
 
@@ -2442,13 +2378,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `TypedDict` | import | `typing` |
 
-### `plugins.platforms.dingtalk.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `DINGTALK_TYPE_MAPPING` | moved-lazy | `plugins.platforms.dingtalk.inbound` |
-| `EXT_MAP` | restored-def | `(deleted; BASE body restored)` |
-| `MessageType` | moved-lazy | `gateway.platforms.event` |
 
 ### `plugins.platforms.discord.adapter`
 
@@ -2471,17 +2400,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `secrets` | import | `secrets` |
 | `subprocess` | import | `subprocess` |
 
-### `plugins.platforms.irc.adapter`
 
-| name | kind | new location |
-|---|---|---|
-| `os` | import | `os` |
-
-### `plugins.platforms.line.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `field` | import | `dataclasses` |
 
 ### `plugins.platforms.matrix.adapter`
 
@@ -2493,11 +2412,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `_MATRIX_CAPABILITIES` | restored-helper | `(deleted; restored as a dependency of get_matrix_capabilities)` |
 | `get_matrix_capabilities` | restored-def | `(deleted; BASE body restored)` |
 
-### `plugins.platforms.ntfy.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `os` | import | `os` |
 
 ### `plugins.platforms.photon.adapter`
 
@@ -2526,13 +2440,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `asyncio` | import | `asyncio` |
 
-### `plugins.platforms.teams.adapter`
-
-| name | kind | new location |
-|---|---|---|
-| `TeamsSummaryWriter` | moved-lazy | `plugins.platforms.teams.summary_writer` |
-| `html` | import | `html` |
-| `quote` | import | `urllib.parse` |
 
 ### `plugins.platforms.telegram.adapter`
 
@@ -2548,65 +2455,9 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `telegram_chat_id_key` | restored-def | `(deleted; BASE body restored)` |
 
-### `plugins.platforms.wecom.adapter`
 
-| name | kind | new location |
-|---|---|---|
-| `ABSOLUTE_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `APP_CMD_UPLOAD_MEDIA_CHUNK` | moved-lazy | `plugins.platforms.wecom.media` |
-| `APP_CMD_UPLOAD_MEDIA_FINISH` | moved-lazy | `plugins.platforms.wecom.media` |
-| `APP_CMD_UPLOAD_MEDIA_INIT` | moved-lazy | `plugins.platforms.wecom.media` |
-| `FILE_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `IMAGE_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `MAX_INTERMEDIATE_FRAMES` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `MAX_UPLOAD_CHUNKS` | moved-lazy | `plugins.platforms.wecom.media` |
-| `Path` | import | `pathlib` |
-| `ReplyFrame` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `STREAM_EXPIRED_ERRCODE` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `STREAM_REQUEST_EXPIRED_ERRCODE` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `STREAM_VERSION_CONFLICT_ERRCODE` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `UPLOAD_CHUNK_SIZE` | moved-lazy | `plugins.platforms.wecom.media` |
-| `VIDEO_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `VOICE_MAX_BYTES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `VOICE_SUPPORTED_MIMES` | moved-lazy | `plugins.platforms.wecom.media` |
-| `WeComStreamExpiredError` | moved-lazy | `plugins.platforms.wecom.streaming` |
-| `base64` | import | `base64` |
-| `cache_document_from_bytes_async` | moved-lazy | `gateway.platforms.base` |
-| `cache_image_from_bytes_async` | moved-lazy | `gateway.platforms.base` |
-| `dataclass` | import | `dataclasses` |
-| `deque` | import | `collections` |
-| `hashlib` | import | `hashlib` |
-| `mimetypes` | import | `mimetypes` |
-| `os` | import | `os` |
-| `unquote` | import | `urllib.parse` |
-| `urlparse` | import | `urllib.parse` |
 
-### `plugins.spotify`
 
-| name | kind | new location |
-|---|---|---|
-| `SPOTIFY_ALBUMS_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_DEVICES_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_LIBRARY_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_PLAYBACK_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_PLAYLISTS_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_QUEUE_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-| `SPOTIFY_SEARCH_SCHEMA` | moved-lazy | `plugins.spotify.tools` |
-
-### `plugins.spotify.client`
-
-| name | kind | new location |
-|---|---|---|
-| `compact_json` | restored-def | `(deleted; BASE body restored)` |
-| `json` | restored-import | `json` |
-| `json` | import | `json` |
-
-### `plugins.spotify.tools`
-
-| name | kind | new location |
-|---|---|---|
-| `SpotifyAPIError` | moved-lazy | `plugins.spotify.client` |
-| `SpotifyAuthRequiredError` | moved-lazy | `plugins.spotify.client` |
 
 ### `plugins.teams_pipeline.cli`
 

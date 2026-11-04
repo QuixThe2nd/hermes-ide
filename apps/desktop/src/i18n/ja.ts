@@ -1730,8 +1730,6 @@ export const ja = defineLocale({
         label: 'すべての iMessage ユーザーを許可',
         help: 'true にすると BlueBubbles の許可リストをスキップします。'
       },
-      MATTERMOST_ALLOW_ALL_USERS: { label: 'すべての Mattermost ユーザーを許可' },
-      MATTERMOST_HOME_CHANNEL: { label: 'ホームチャンネル' },
       QQ_ALLOW_ALL_USERS: { label: 'すべての QQ ユーザーを許可' },
       QQBOT_HOME_CHANNEL: { label: 'QQ ホームチャンネル', help: 'Cron 配信のデフォルトチャンネルまたはグループ。' },
       QQBOT_HOME_CHANNEL_NAME: { label: 'QQ ホームチャンネル名' },
@@ -1748,12 +1746,6 @@ export const ja = defineLocale({
       SLACK_ALLOWED_USERS: {
         label: '許可する Slack ユーザー ID',
         help: '推奨。カンマ区切りの Slack ユーザー ID。'
-      },
-      MATTERMOST_URL: { label: 'サーバー URL', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: 'ボットトークン' },
-      MATTERMOST_ALLOWED_USERS: {
-        label: '許可するユーザー ID',
-        help: '推奨。カンマ区切りの Mattermost ユーザー ID。'
       },
       MATRIX_HOMESERVER: { label: 'ホームサーバー URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'アクセストークン' },

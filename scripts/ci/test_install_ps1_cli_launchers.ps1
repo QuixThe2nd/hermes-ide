@@ -124,7 +124,7 @@ try {
 
     Stage-Path | Out-Null
 
-    foreach ($name in @('hermes', 'hermes-acp')) {
+    foreach ($name in @('hermes')) {
         $exe = Join-Path $binDir "$name.exe"
         $cmd = Join-Path $binDir "$name.cmd"
         if (Test-Path -LiteralPath $exe) {

@@ -173,7 +173,7 @@ class TestPlatformDefaults:
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
+        for plat in ("signal", "bluebubbles", "weixin", "whatsapp_cloud"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
 
@@ -279,31 +279,6 @@ class TestStreamingPerPlatform:
             }
         }
         assert resolve_display_setting(config, "telegram", "streaming") is False
-
-    def test_wecom_default_is_streaming_enabled(self):
-        """WeCom has a native streaming transport (msgtype: stream) so its
-        built-in default opts into streaming even though it sits in the
-        non-editable tier."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "wecom", "streaming") is True
-
-    def test_wecom_callback_default_remains_off(self):
-        """The legacy callback adapter has no stream protocol — keep off."""
-        from gateway.display_config import resolve_display_setting
-
-        assert resolve_display_setting({}, "wecom_callback", "streaming") is False
-
-    def test_wecom_user_can_still_disable_streaming(self):
-        """Per-platform override beats the built-in default."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {"wecom": {"streaming": False}},
-            }
-        }
-        assert resolve_display_setting(config, "wecom", "streaming") is False
 
 
 # ---------------------------------------------------------------------------

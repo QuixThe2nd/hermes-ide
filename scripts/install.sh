@@ -2331,31 +2331,6 @@ EOF
     chmod +x "$command_link_dir/hermes-agent"
     log_success "Installed hermes-agent launcher → $command_link_display_dir/hermes-agent"
 
-    # Also expose `hermes-acp`. ACP hosts (Zed, JetBrains, Buzz) resolve the
-    # agent by command name on the login-shell PATH, and the `hermes-acp`
-    # console script lives inside the venv, which is not on that PATH. Without
-    # this launcher those hosts report Hermes as not installed. (#21454 applies
-    # here too: clear the path first so `cat >` cannot follow an old symlink
-    # into the venv and overwrite the console script.)
-    rm -f "$command_link_dir/hermes-acp"
-    if [ "$USE_VENV" = true ]; then
-        cat > "$command_link_dir/hermes-acp" <<EOF
-#!/usr/bin/env bash
-unset PYTHONPATH
-unset PYTHONHOME
-exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" acp "\$@"
-EOF
-    else
-        cat > "$command_link_dir/hermes-acp" <<EOF
-#!/usr/bin/env bash
-unset PYTHONPATH
-unset PYTHONHOME
-exec "$HERMES_BIN" acp "\$@"
-EOF
-    fi
-    chmod +x "$command_link_dir/hermes-acp"
-    log_success "Installed hermes-acp launcher → $command_link_display_dir/hermes-acp"
-
     # Also install the bundled claude-glm wrapper: delegate_claude_agent drives
     # Claude Code through it (z.ai anthropic-compatible endpoint, GLM primary +
     # flash fallback) and discovers it via CLAUDE_GLM_BIN → this dir → PATH, so

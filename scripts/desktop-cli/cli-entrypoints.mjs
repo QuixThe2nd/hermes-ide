@@ -1,8 +1,8 @@
 /**
  * cli-entrypoints.mjs — the bundled payload's CLI entrypoint generators.
  *
- * The bundled payload ships three CLI entrypoints (hermes / hermes-agent /
- * hermes-acp — mirrors [project.scripts] in pyproject.toml) staged into
+ * The bundled payload ships two CLI entrypoints (hermes / hermes-agent —
+ * mirrors [project.scripts] in pyproject.toml) staged into
  * agent-payload/bin/. They are fully self-relative, so a bundled artifact
  * works wherever it lands (and read-only, MSIX included):
  *
@@ -28,11 +28,10 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
-/** The three CLI entrypoints, mirroring [project.scripts] in pyproject.toml. */
+/** The CLI entrypoints, mirroring [project.scripts] in pyproject.toml. */
 export const CLI_LAUNCHER_SPECS = [
   { name: 'hermes', module: 'hermes_cli.main', func: 'main' },
-  { name: 'hermes-agent', module: 'run_agent', func: 'main' },
-  { name: 'hermes-acp', module: 'acp_adapter.entry', func: 'main' }
+  { name: 'hermes-agent', module: 'run_agent', func: 'main' }
 ]
 
 /**

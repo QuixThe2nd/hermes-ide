@@ -31,8 +31,7 @@ logger = logging.getLogger("cron.scheduler")
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
-    "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
+    "matrix", "homeassistant", "feishu", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot", "yuanbao"})
 
 # Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response

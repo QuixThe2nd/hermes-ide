@@ -156,14 +156,13 @@ discover_builtin_tools()
 
 # MCP discovery is deliberately NOT run here: it blocks up to 120 s and the
 # gateway lazy-imports this module inside its event loop; each entry point
-# (gateway/run.py, cli.py, tui_gateway, acp_adapter) runs it at startup.
+# (gateway/run.py, cli.py, tui_gateway) runs it at startup.
 try:  # plugin tool discovery (user/project/pip plugins)
     # MCP tool discovery (external MCP servers from config) used to run here as a module-level side effect.
     # It was removed because discover_mcp_tools() internally uses a blocking future.result(timeout=120)
     # wait, and the gateway lazy-imports this module from inside the asyncio event loop on the first user
     # message — freezing Discord/Telegram heartbeats for up to 120s whenever any configured MCP server was
     # slow or unreachable (#16856). - gateway/run.py            -> start_gateway() uses run_in_executor -
-    # acp_adapter/server.py     -> asyncio.to_thread on session init
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
 except Exception as e:
@@ -823,17 +822,6 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
         if block_message is not None:
             return function_args, (tool_error(block_message), "plugin_block", block_message)
 
-    # ACP/Zed edit approval before any file mutation. The requester is bound
-    # via ContextVar only for ACP sessions, so CLI/gateway paths are unaffected.
-    try:
-        from acp_adapter.edit_approval import maybe_require_edit_approval
-        edit_block_message = maybe_require_edit_approval(function_name, function_args)
-        if edit_block_message is not None:
-            return function_args, (edit_block_message, "edit_approval_denied", None)
-    except Exception as _edit_approval_err:
-        logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
-        if function_name in {"write_file", "patch"}:
-            return function_args, (tool_error("Edit approval denied: approval guard failed"), "edit_approval_error", None)
     return function_args, None
 
 

@@ -5,7 +5,6 @@ Covers:
 - gateway/platforms/base.py:       cache_image_from_url
 - gateway/platforms/slack.py:      SlackAdapter._download_slack_file
                                     SlackAdapter._download_slack_file_bytes
-- gateway/platforms/mattermost.py: MattermostAdapter._send_url_as_file
 
 All async tests use asyncio.run() directly — pytest-asyncio is not installed
 in this environment.
@@ -477,88 +476,4 @@ class TestSlackDownloadSlackFileBytes:
 
         result = asyncio.run(run())
         assert result == b"raw bytes here"
-
-
-# ---------------------------------------------------------------------------
-# MattermostAdapter._send_url_as_file
-# ---------------------------------------------------------------------------
-
-def _make_mm_adapter():
-    """Build a minimal MattermostAdapter with mocked internals."""
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
-    config = PlatformConfig(
-        enabled=True, token="mm-token-fake",
-        extra={"url": "https://mm.example.com"},
-    )
-    adapter = MattermostAdapter(config)
-    adapter._session = MagicMock()
-    adapter._upload_file = AsyncMock(return_value="file-id-123")
-    adapter._api_post = AsyncMock(return_value={"id": "post-id-abc"})
-    adapter.send = AsyncMock(return_value=MagicMock(success=True))
-    return adapter
-
-
-def _make_aiohttp_resp(status: int, content: bytes = b"file bytes",
-                       content_type: str = "image/jpeg"):
-    """Build a context-manager mock for an aiohttp response."""
-    resp = MagicMock()
-    resp.status = status
-    resp.content_type = content_type
-    resp.read = AsyncMock(return_value=content)
-    resp.__aenter__ = AsyncMock(return_value=resp)
-    resp.__aexit__ = AsyncMock(return_value=False)
-    return resp
-
-
-@patch("tools.url_safety.is_safe_url", return_value=True)
-class TestMattermostSendUrlAsFile:
-    """Tests for MattermostAdapter._send_url_as_file"""
-
-
-    def test_retries_on_429_then_succeeds(self, _mock_safe):
-        """429 on first attempt is retried; 200 on second attempt succeeds."""
-        adapter = _make_mm_adapter()
-
-        resp_429 = _make_aiohttp_resp(429)
-        resp_200 = _make_aiohttp_resp(200)
-        adapter._session.get = MagicMock(side_effect=[resp_429, resp_200])
-
-        mock_sleep = AsyncMock()
-
-        async def run():
-            with patch("asyncio.sleep", mock_sleep):
-                return await adapter._send_url_as_file(
-                    "C123", "http://cdn.example.com/img.png", None, None
-                )
-
-        result = asyncio.run(run())
-        assert result.success
-        assert adapter._session.get.call_count == 2
-        mock_sleep.assert_called_once()
-
-
-    def test_falls_back_on_client_error(self, _mock_safe):
-        """aiohttp.ClientError on every attempt falls back to send() with URL."""
-        import aiohttp
-
-        adapter = _make_mm_adapter()
-
-        error_resp = MagicMock()
-        error_resp.__aenter__ = AsyncMock(
-            side_effect=aiohttp.ClientConnectionError("connection refused")
-        )
-        error_resp.__aexit__ = AsyncMock(return_value=False)
-        adapter._session.get = MagicMock(return_value=error_resp)
-
-        async def run():
-            with patch("asyncio.sleep", new_callable=AsyncMock):
-                return await adapter._send_url_as_file(
-                    "C123", "http://cdn.example.com/img.png", None, None
-                )
-
-        asyncio.run(run())
-
-        adapter.send.assert_called_once()
-        text_arg = adapter.send.call_args[0][1]
-        assert "http://cdn.example.com/img.png" in text_arg
 

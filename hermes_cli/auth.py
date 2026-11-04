@@ -6,7 +6,7 @@
   only I/O primitives (cross-process flock, atomic 0o600 writes).
 - ``resolve_provider()`` picks the active provider via the documented priority chain.
 - ``OAUTH_PROVIDER_FLOWS`` maps each OAuth provider to its resolver/status builder; the flows live in
-  ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_spotify``/``auth_openrouter`` and are
+  ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_openrouter`` and are
   re-imported here so ``hermes_cli.auth.<name>`` stays the public/patchable surface."""
 
 from __future__ import annotations
@@ -79,9 +79,6 @@ from hermes_cli.auth_codex import (  # noqa: F401  re-exported
     _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens,
     _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
     refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
-from hermes_cli.auth_spotify import (  # noqa: F401  re-exported
-    _refresh_spotify_oauth_state, get_spotify_auth_status, login_spotify_command,
-    resolve_spotify_runtime_credentials)
 from hermes_cli.auth_openrouter import _openrouter_pkce_login  # noqa: F401  re-exported
 from hermes_cli.auth_qwen import (  # noqa: F401  re-exported
     _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
@@ -1896,7 +1893,6 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
 # auth_type-keyed fallbacks below.
 _BESPOKE_STATUS_FUNCTIONS: Dict[str, str] = {
     **{pid: flow.status_fn for pid, flow in OAUTH_PROVIDER_FLOWS.items()},
-    "spotify": "get_spotify_auth_status",
     "azure-foundry": "_get_azure_foundry_auth_status"}
 _STATUS_BY_AUTH_TYPE: Dict[str, str] = {
     "external_process": "get_external_process_provider_status",

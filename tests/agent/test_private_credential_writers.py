@@ -51,7 +51,6 @@ def _writers(home: Path, monkeypatch):
     from hermes_cli import auth as auth_mod, copilot_auth
     from hermes_cli import process_identity
     from tools import mcp_oauth
-    from plugins.google_meet.node.server import NodeServer
     from plugins.platforms.photon import adapter as photon_adapter
 
     photon_record = home / "runtime" / "photon.json"
@@ -60,7 +59,6 @@ def _writers(home: Path, monkeypatch):
     monkeypatch.setattr(process_identity, "_ledger_path", lambda: ledger)
     cache = DiskCache("probe.json", key_serializer=str)
     vault = VaultStore(home / "vault")
-    meet_node = NodeServer(token_path=home / "meetings" / "node_token.json")
     return [
         ("auth.json", lambda: auth_mod._save_auth_store({"version": auth_mod.AUTH_STORE_VERSION, "providers": {}}),
          auth_mod._auth_file_path()),
@@ -77,7 +75,6 @@ def _writers(home: Path, monkeypatch):
         ("pairing", lambda: pairing._save_json_file(home / "pairing" / "p.json", {"a": 1}), home / "pairing" / "p.json"),
         ("vault blob", lambda: vault._write_all([]), vault._vault_path),
         ("spawn ledger", lambda: process_identity.register_self("probe"), ledger),
-        ("meet node token", meet_node.ensure_token, meet_node.token_path),
     ]
 
 

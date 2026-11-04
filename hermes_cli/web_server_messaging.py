@@ -41,13 +41,6 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "env_vars": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"),
         "required_env": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
     },
-    "mattermost": {
-        "name": "Mattermost",
-        "description": "Connect Hermes to Mattermost channels and direct messages.",
-        "docs_url": "https://mattermost.com/deploy/",
-        "env_vars": ("MATTERMOST_URL", "MATTERMOST_TOKEN", "MATTERMOST_ALLOWED_USERS"),
-        "required_env": ("MATTERMOST_URL", "MATTERMOST_TOKEN"),
-    },
     "matrix": {
         "name": "Matrix", "description": "Use Hermes in Matrix rooms and direct messages.",
         "docs_url": "https://matrix.org/ecosystem/servers/",
@@ -89,12 +82,6 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "env_vars": ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
         "required_env": ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
     },
-    "dingtalk": {
-        "name": "DingTalk", "description": "Connect Hermes to DingTalk groups (钉钉).",
-        "docs_url": "https://open.dingtalk.com/document/orgapp/the-robot-development-process",
-        "env_vars": ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
-        "required_env": ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
-    },
     "feishu": {
         "name": "Feishu / Lark", "description": "Use Hermes inside Feishu / Lark.",
         "docs_url": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/intro",
@@ -106,22 +93,6 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     "google_chat": {
         "name": "Google Chat", "description": "Connect Hermes to Google Chat via Cloud Pub/Sub.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat",
-    },
-    "wecom": {
-        "name": "WeCom (group bot)", "description": "Send-only WeCom group bot via webhook.",
-        "docs_url": "https://developer.work.weixin.qq.com/document/path/91770",
-        "env_vars": ("WECOM_BOT_ID", "WECOM_SECRET"), "required_env": ("WECOM_BOT_ID",),
-    },
-    "wecom_callback": {
-        "name": "WeCom (app)", "description": "Two-way WeCom integration via callback app.",
-        "docs_url": "https://developer.work.weixin.qq.com/document/path/90930",
-        "env_vars": (
-            "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
-            "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
-        ),
-        "required_env": (
-            "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
-        ),
     },
     "weixin": {
         "name": "Weixin / WeChat (Personal)",
@@ -148,25 +119,9 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     # Teams ships as a platform plugin, so its name/env vars come from the
     # plugin registry. Only the docs link needs an override here so the
     # Channels page can point at the Microsoft Teams setup guide.
-    "teams": {
-        "description": "Connect Hermes to Microsoft Teams chats via the Bot Framework.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
-    },
     # Bundled platform plugins: name comes from the plugin registry label;
     # give each a human description (the registry's install_hint is a
     # dependency note, not a description) and a docs link.
-    "irc": {
-        "description": "Relay messages between an IRC channel (or DMs) and Hermes.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/irc",
-    },
-    "line": {
-        "description": "Use Hermes from LINE via the LINE Messaging API webhook.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/line",
-    },
-    "ntfy": {
-        "description": "Chat with Hermes over ntfy push topics (ntfy.sh or self-hosted).",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/ntfy",
-    },
     "photon": {
         "description": "Use Hermes through iMessage via Photon's managed Spectrum platform.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/photon",
@@ -174,10 +129,6 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     "raft": {
         "description": "Join a Raft workspace as an external agent.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/raft",
-    },
-    "simplex": {
-        "description": "Talk to Hermes over SimpleX Chat via a local simplex-chat daemon.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/simplex",
     },
     "yuanbao": {
         "name": "Yuanbao (元宝)", "description": "Connect Hermes to Tencent Yuanbao.", "docs_url": "",
@@ -220,8 +171,8 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
 # Display order: well-known platforms surface first; unknown plugins fall to
 # the end alphabetically.
 _PLATFORM_ORDER: tuple[str, ...] = (
-    "telegram", "discord", "slack", "mattermost", "matrix", "whatsapp", "signal", "bluebubbles",
-    "homeassistant", "email", "sms", "dingtalk", "feishu", "google_chat", "wecom", "wecom_callback",
+    "telegram", "discord", "slack", "matrix", "whatsapp", "signal", "bluebubbles",
+    "homeassistant", "email", "sms", "feishu", "google_chat",
     "weixin", "qqbot", "yuanbao", "api_server", "webhook",
 )
 

@@ -46,8 +46,8 @@ _PROFILE_REJECTED = object()
 _UNPARSEABLE = object()
 
 _BUILTIN_DELIVER_PLATFORMS = {
-    "telegram", "discord", "slack", "signal", "sms", "whatsapp", "matrix", "mattermost",
-    "homeassistant", "email", "dingtalk", "feishu", "wecom", "wecom_callback", "weixin",
+    "telegram", "discord", "slack", "signal", "sms", "whatsapp", "matrix",
+    "homeassistant", "email", "feishu", "weixin",
     "bluebubbles", "qqbot", "yuanbao"}
 
 # ``None`` → aiohttp binds BOTH address families. "0.0.0.0" is IPv4-only (unreachable on IPv6-only

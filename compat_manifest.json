@@ -3,138 +3,6 @@
  "note": "Plugin-compat pointers kept for external plugins; removed on schedule by reverting the commit that added them. scripts/check_compat_pointers.py forbids in-tree use.",
  "entries": [
   {
-   "facade": "acp_adapter.auth",
-   "name": "has_provider",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "acp_adapter.edit_approval",
-   "name": "FutureTimeout",
-   "kind": "import",
-   "target": "concurrent.futures"
-  },
-  {
-   "facade": "acp_adapter.edit_approval",
-   "name": "clear_edit_approval_requester",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "acp_adapter.edit_approval",
-   "name": "get_edit_approval_requester",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "acp_adapter.events",
-   "name": "json",
-   "kind": "import",
-   "target": "json"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "ACP_MAX_MODELS_PER_PROVIDER",
-   "kind": "moved-lazy",
-   "target": "acp_adapter.model_catalog"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "AgentThoughtChunk",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "AudioContentBlock",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "AvailableCommand",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "AvailableCommandsUpdate",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "BlobResourceContents",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "EmbeddedResourceContentBlock",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "ImageContentBlock",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "Path",
-   "kind": "import",
-   "target": "pathlib"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "ResourceContentBlock",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "TextResourceContents",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "UnstructuredCommandInput",
-   "kind": "import",
-   "target": "acp.schema"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "base64",
-   "kind": "import",
-   "target": "base64"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "json",
-   "kind": "import",
-   "target": "json"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "unquote",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "acp_adapter.server",
-   "name": "urlparse",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "acp_adapter.session",
-   "name": "Lock",
-   "kind": "import",
-   "target": "threading"
-  },
-  {
    "facade": "agent.agent_init",
    "name": "ToolGuardrailDecision",
    "kind": "moved-lazy",
@@ -3085,18 +2953,6 @@
    "name": "DashboardAuthProvider",
    "kind": "moved-lazy",
    "target": "hermes_cli.dashboard_auth.base"
-  },
-  {
-   "facade": "hermes_cli.dingtalk_auth",
-   "name": "logger",
-   "kind": "moved-lazy",
-   "target": "hermes_cli.auth"
-  },
-  {
-   "facade": "hermes_cli.dingtalk_auth",
-   "name": "logging",
-   "kind": "import",
-   "target": "logging"
   },
   {
    "facade": "hermes_cli.doctor",
@@ -7365,42 +7221,6 @@
    "target": "secrets"
   },
   {
-   "facade": "plugins.google_meet.audio_bridge",
-   "name": "chrome_fake_audio_flags",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.google_meet.meet_bot",
-   "name": "SAY_PCM_FILENAME",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.google_meet.meet_bot",
-   "name": "SAY_QUEUE_FILENAME",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.google_meet.meet_bot",
-   "name": "json",
-   "kind": "import",
-   "target": "json"
-  },
-  {
-   "facade": "plugins.google_meet.node.cli",
-   "name": "Any",
-   "kind": "import",
-   "target": "typing"
-  },
-  {
-   "facade": "plugins.google_meet.node.registry",
-   "name": "json",
-   "kind": "import",
-   "target": "json"
-  },
-  {
    "facade": "plugins.image_gen.deepinfra",
    "name": "ImageGenProvider",
    "kind": "moved-lazy",
@@ -7833,24 +7653,6 @@
    "target": "typing"
   },
   {
-   "facade": "plugins.platforms.dingtalk.adapter",
-   "name": "DINGTALK_TYPE_MAPPING",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.dingtalk.inbound"
-  },
-  {
-   "facade": "plugins.platforms.dingtalk.adapter",
-   "name": "EXT_MAP",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.dingtalk.adapter",
-   "name": "MessageType",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.event"
-  },
-  {
    "facade": "plugins.platforms.discord.adapter",
    "name": "env_int",
    "kind": "moved-lazy",
@@ -7887,18 +7689,6 @@
    "target": "subprocess"
   },
   {
-   "facade": "plugins.platforms.irc.adapter",
-   "name": "os",
-   "kind": "import",
-   "target": "os"
-  },
-  {
-   "facade": "plugins.platforms.line.adapter",
-   "name": "field",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
    "facade": "plugins.platforms.matrix.adapter",
    "name": "MAX_MESSAGE_LENGTH",
    "kind": "restored-def",
@@ -7915,12 +7705,6 @@
    "name": "get_matrix_capabilities",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.ntfy.adapter",
-   "name": "os",
-   "kind": "import",
-   "target": "os"
   },
   {
    "facade": "plugins.platforms.photon.adapter",
@@ -7965,24 +7749,6 @@
    "target": "asyncio"
   },
   {
-   "facade": "plugins.platforms.teams.adapter",
-   "name": "TeamsSummaryWriter",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.teams.summary_writer"
-  },
-  {
-   "facade": "plugins.platforms.teams.adapter",
-   "name": "html",
-   "kind": "import",
-   "target": "html"
-  },
-  {
-   "facade": "plugins.platforms.teams.adapter",
-   "name": "quote",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
    "facade": "plugins.platforms.telegram.adapter",
    "name": "atomic_replace",
    "kind": "moved-lazy",
@@ -8005,246 +7771,6 @@
    "name": "telegram_chat_id_key",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "ABSOLUTE_MAX_BYTES",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "APP_CMD_UPLOAD_MEDIA_CHUNK",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "APP_CMD_UPLOAD_MEDIA_FINISH",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "APP_CMD_UPLOAD_MEDIA_INIT",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "FILE_MAX_BYTES",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "IMAGE_MAX_BYTES",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "MAX_INTERMEDIATE_FRAMES",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.streaming"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "MAX_UPLOAD_CHUNKS",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "Path",
-   "kind": "import",
-   "target": "pathlib"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "ReplyFrame",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.streaming"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "STREAM_EXPIRED_ERRCODE",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.streaming"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "STREAM_REQUEST_EXPIRED_ERRCODE",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.streaming"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "STREAM_VERSION_CONFLICT_ERRCODE",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.streaming"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "UPLOAD_CHUNK_SIZE",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "VIDEO_MAX_BYTES",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "VOICE_MAX_BYTES",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "VOICE_SUPPORTED_MIMES",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.media"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "WeComStreamExpiredError",
-   "kind": "moved-lazy",
-   "target": "plugins.platforms.wecom.streaming"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "base64",
-   "kind": "import",
-   "target": "base64"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "cache_document_from_bytes_async",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "cache_image_from_bytes_async",
-   "kind": "moved-lazy",
-   "target": "gateway.platforms.base"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "dataclass",
-   "kind": "import",
-   "target": "dataclasses"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "deque",
-   "kind": "import",
-   "target": "collections"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "hashlib",
-   "kind": "import",
-   "target": "hashlib"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "mimetypes",
-   "kind": "import",
-   "target": "mimetypes"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "os",
-   "kind": "import",
-   "target": "os"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "unquote",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "plugins.platforms.wecom.adapter",
-   "name": "urlparse",
-   "kind": "import",
-   "target": "urllib.parse"
-  },
-  {
-   "facade": "plugins.spotify",
-   "name": "SPOTIFY_ALBUMS_SCHEMA",
-   "kind": "moved-lazy",
-   "target": "plugins.spotify.tools"
-  },
-  {
-   "facade": "plugins.spotify",
-   "name": "SPOTIFY_DEVICES_SCHEMA",
-   "kind": "moved-lazy",
-   "target": "plugins.spotify.tools"
-  },
-  {
-   "facade": "plugins.spotify",
-   "name": "SPOTIFY_LIBRARY_SCHEMA",
-   "kind": "moved-lazy",
-   "target": "plugins.spotify.tools"
-  },
-  {
-   "facade": "plugins.spotify",
-   "name": "SPOTIFY_PLAYBACK_SCHEMA",
-   "kind": "moved-lazy",
-   "target": "plugins.spotify.tools"
-  },
-  {
-   "facade": "plugins.spotify",
-   "name": "SPOTIFY_PLAYLISTS_SCHEMA",
-   "kind": "moved-lazy",
-   "target": "plugins.spotify.tools"
-  },
-  {
-   "facade": "plugins.spotify",
-   "name": "SPOTIFY_QUEUE_SCHEMA",
-   "kind": "moved-lazy",
-   "target": "plugins.spotify.tools"
-  },
-  {
-   "facade": "plugins.spotify",
-   "name": "SPOTIFY_SEARCH_SCHEMA",
-   "kind": "moved-lazy",
-   "target": "plugins.spotify.tools"
-  },
-  {
-   "facade": "plugins.spotify.client",
-   "name": "json",
-   "kind": "restored-import",
-   "target": "json"
-  },
-  {
-   "facade": "plugins.spotify.client",
-   "name": "compact_json",
-   "kind": "restored-def",
-   "target": "(deleted; BASE body restored)"
-  },
-  {
-   "facade": "plugins.spotify.client",
-   "name": "json",
-   "kind": "import",
-   "target": "json"
-  },
-  {
-   "facade": "plugins.spotify.tools",
-   "name": "SpotifyAPIError",
-   "kind": "moved-lazy",
-   "target": "plugins.spotify.client"
-  },
-  {
-   "facade": "plugins.spotify.tools",
-   "name": "SpotifyAuthRequiredError",
-   "kind": "moved-lazy",
-   "target": "plugins.spotify.client"
   },
   {
    "facade": "plugins.teams_pipeline.cli",

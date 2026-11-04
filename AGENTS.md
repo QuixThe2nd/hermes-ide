@@ -268,7 +268,6 @@ hermes-agent/
 ├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
 ├── tui_gateway/          # Python JSON-RPC backend for TUI + Desktop — server.py + methods_*.py
 ├── apps/desktop/         # Electron desktop app (+ apps/shared JSON-RPC client)   web/: dashboard SPA
-├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                 # jobs.py + scheduler.py (+ scheduler_*.py)
 ├── evals/                # Offline benchmarks (codebase_navigability/, compaction/, ...)
 ├── scripts/              # run_tests.sh, release.py, check_compat_pointers.py, ci/
@@ -1105,7 +1104,7 @@ Current toolset keys: `browser`, `clarify`, `code_execution`, `cronjob`,
 `debugging`, `delegation`, `discord`, `discord_admin`, `feishu_doc`,
 `feishu_drive`, `file`, `file_readonly`, `homeassistant`, `image_gen`,
 `memory`, `messaging`, `moa`, `rl`, `safe`, `search`, `session_search`, `skills`,
-`spotify`, `terminal`, `todo`, `tts`, `video`, `vision`, `web`, `yuanbao`.
+`terminal`, `todo`, `tts`, `video`, `vision`, `web`, `yuanbao`.
 
 Enable/disable per platform via `hermes tools` (the curses UI) or the
 `tools.<platform>.enabled` / `tools.<platform>.disabled` lists in

@@ -217,7 +217,7 @@ def get_session_env(name: str, default: str = "") -> str:
 # desktop bind HERMES_SESSION_SOURCE, so both are consulted).  Default-deny: an unrecognized
 # identity counts as messaging.  Mirrors LOCAL_SESSION_SOURCE_IDS in apps/desktop session-source.ts.
 NON_MESSAGING_SESSION_SURFACES = frozenset({
-    "", "api_server", "cli", "codex", "desktop", "gateway", "kanban", "local",
+    "", "api_server", "cli", "codex", "desktop", "gateway", "local",
     "msgraph_webhook", "tool", "tui", "webhook",
 })
 

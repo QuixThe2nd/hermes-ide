@@ -41,15 +41,11 @@ _ENV_ENABLE_CREDENTIALS: dict = {
     Platform.WHATSAPP: ("WHATSAPP_ENABLED",),
     Platform.WHATSAPP_CLOUD: ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
     Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
-    Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
     Platform.MATRIX: ("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),
     Platform.HOMEASSISTANT: ("HASS_TOKEN",),
     Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
     Platform.SMS: ("TWILIO_ACCOUNT_SID",),
-    Platform.DINGTALK: ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
     Platform.FEISHU: ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
-    Platform.WECOM: ("WECOM_BOT_ID", "WECOM_SECRET"),
-    Platform.WECOM_CALLBACK: ("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
     Platform.WEIXIN: ("WEIXIN_TOKEN", "WEIXIN_ACCOUNT_ID"),
     Platform.BLUEBUBBLES: ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
     Platform.QQBOT: ("QQ_APP_ID", "QQ_CLIENT_SECRET"),
@@ -468,11 +464,6 @@ _ENV_STEPS: tuple = (
         ),
     ),
     _Cred(
-        Platform.MATTERMOST, ("MATTERMOST_TOKEN",), token="MATTERMOST_TOKEN",
-        warn_missing=("MATTERMOST_URL", "MATTERMOST_TOKEN set but MATTERMOST_URL is missing"),
-        fixed=(("url", "MATTERMOST_URL"),),
-    ),
-    _Cred(
         Platform.MATRIX, (("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),), token="MATRIX_ACCESS_TOKEN",
         warn_missing=("MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN/MATRIX_PASSWORD set but MATRIX_HOMESERVER is missing"),
         fixed=(("homeserver", "MATRIX_HOMESERVER"),),
@@ -489,31 +480,12 @@ _ENV_STEPS: tuple = (
     _webhook,
     _msgraph_webhook,
     _Cred(
-        Platform.DINGTALK, ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
-        fixed=(("client_id", "DINGTALK_CLIENT_ID"), ("client_secret", "DINGTALK_CLIENT_SECRET"))
-    ),
-    _Cred(
         Platform.FEISHU, ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
         fixed=(
             ("app_id", "FEISHU_APP_ID"), ("app_secret", "FEISHU_APP_SECRET"),
             ("domain", "FEISHU_DOMAIN", "feishu"), ("connection_mode", "FEISHU_CONNECTION_MODE", "websocket"),
         ),
         optional=(("encrypt_key", "FEISHU_ENCRYPT_KEY"), ("verification_token", "FEISHU_VERIFICATION_TOKEN"))
-    ),
-    _Cred(
-        Platform.WECOM, ("WECOM_BOT_ID", "WECOM_SECRET"),
-        fixed=(("bot_id", "WECOM_BOT_ID"), ("secret", "WECOM_SECRET")),
-        optional=(("websocket_url", "WECOM_WEBSOCKET_URL"),)
-    ),
-    _Cred(
-        Platform.WECOM_CALLBACK, ("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
-        fixed=(
-            ("corp_id", "WECOM_CALLBACK_CORP_ID"), ("corp_secret", "WECOM_CALLBACK_CORP_SECRET"),
-            ("agent_id", "WECOM_CALLBACK_AGENT_ID"), ("token", "WECOM_CALLBACK_TOKEN"),
-            ("encoding_aes_key", "WECOM_CALLBACK_ENCODING_AES_KEY"),
-            # No host default: falsy extra.host lets the adapter's dual-stack DEFAULT_HOST=None bind v4+v6.
-            ("host", "WECOM_CALLBACK_HOST"), ("port", "WECOM_CALLBACK_PORT", "", _int_or(8645)),
-        ),
     ),
     # Weixin (personal WeChat via iLink Bot API)
     _Cred(

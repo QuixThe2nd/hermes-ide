@@ -5488,7 +5488,6 @@ class SessionDB(
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
         "cli",
         "cron",
-        "kanban",
         "acp",
         "api_server",
         "subagent",

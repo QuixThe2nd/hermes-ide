@@ -1,4 +1,4 @@
-"""Windows launcher staging: `hermes` / `hermes-acp` launchers that boot the
+"""Windows launcher staging: `hermes` launchers that boot the
 pm STORE python with ``PYTHONPATH=<repo>;<venv>/site-packages`` — never
 ``venv\\Scripts\\python.exe`` (pm work item 3, "no boot through the venv";
 ``pyvenv.cfg`` is inert dead config).
@@ -38,13 +38,12 @@ from hermes_cli.runtime_paths import site_packages, store_root
 
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Stage-Path and hermes_cli/_install_repair.py.
-WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
+WINDOWS_BIN_LAUNCHERS = ("hermes",)
 
 #: command name -> (entry module, callable) — mirrors pyproject.toml
 #: [project.scripts].
 ENTRY_POINTS = {
     "hermes": ("hermes_cli.main", "main"),
-    "hermes-acp": ("acp_adapter.entry", "main"),
 }
 
 
@@ -107,11 +106,9 @@ def exe_is_venv_bound(exe: Path, venv_dir: Path | None) -> bool:
     needles = set()
     for interpreter in (
         venv_dir / "Scripts" / "hermes.exe",
-        venv_dir / "Scripts" / "hermes-acp.exe",
         venv_dir / "Scripts" / "python.exe",
         venv_dir / "bin" / "python3",
         venv_dir / "bin" / "hermes",
-        venv_dir / "bin" / "hermes-acp",
     ):
         for enc in ("utf-8", "utf-16-le"):
             try:

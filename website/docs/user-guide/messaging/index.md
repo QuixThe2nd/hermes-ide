@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Raft, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Matrix, Yuanbao, Raft, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Matrix, Feishu/Lark, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](../features/voice-mode.md) and [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md).
 
@@ -42,24 +42,15 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | SMS | — | — | — | — | — | — | — |
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
 | Home Assistant | — | — | — | — | — | — | — |
-| Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WeCom | ✅ | ✅ | ✅ | — | — | — | — |
-| WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | Photon (iMessage) | ✅ | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
-| Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
-| LINE | — | ✅ | ✅ | — | — | ✅ | — |
-| ntfy | — | — | — | — | — | — | — |
 | Raft | — | — | — | — | — | — | — |
-| IRC | — | — | — | — | — | — | — |
 | Buzz | — | ✅ | — | ✅ | — | — | — |
-| SimpleX | ✅ | ✅ | ✅ | — | — | ✅ | — |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
@@ -82,17 +73,12 @@ flowchart TB
             sms[SMS]
             em[Email]
             ha[Home Assistant]
-            mm[Mattermost]
             mx[Matrix]
-            dt[DingTalk]
     fs[Feishu/Lark]
-    wc[WeCom]
-    wcb[WeCom Callback]
     wx[Weixin]
     bb[BlueBubbles]
     qq[QQ]
     yb[Yuanbao]
-    ms[Microsoft Teams]
     api["API Server<br/>(OpenAI-compatible)"]
     wh[Webhooks]
         end
@@ -111,17 +97,12 @@ flowchart TB
     sms --> store
     em --> store
     ha --> store
-    mm --> store
     mx --> store
-    dt --> store
     fs --> store
-    wc --> store
-    wcb --> store
     wx --> store
     bb --> store
     qq --> store
     yb --> store
-    ms --> store
     api --> store
     wh --> store
     store --> agent
@@ -702,17 +683,12 @@ Each platform has its own toolset:
 | SMS | `hermes-sms` | Full tools including terminal |
 | Email | `hermes-email` | Full tools including terminal |
 | Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
-| Mattermost | `hermes-mattermost` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
-| DingTalk | `hermes-dingtalk` | Full tools including terminal |
 | Feishu/Lark | `hermes-feishu` | Full tools including terminal |
-| WeCom | `hermes-wecom` | Full tools including terminal |
-| WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
-| Microsoft Teams | `hermes-teams` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 | Raft | `hermes-raft` | Wake-only channel; agent uses Raft CLI for message I/O |
@@ -938,23 +914,15 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)
 - [Home Assistant Integration](homeassistant.md)
-- [Mattermost Setup](mattermost.md)
 - [Matrix Setup](matrix.md)
-- [DingTalk Setup](dingtalk.md)
 - [Feishu/Lark Setup](feishu.md)
-- [WeCom Setup](wecom.md)
-- [WeCom Callback Setup](wecom-callback.md)
 - [Weixin Setup (WeChat)](weixin.md)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [Photon Setup (iMessage)](photon.md)
 - [QQBot Setup](qqbot.md)
 - [Yuanbao Setup](yuanbao.md)
-- [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)
 - [Microsoft Graph Webhook Listener](msgraph-webhook.md)
-- [LINE Setup](line.md)
-- [ntfy Setup](ntfy.md)
-- [SimpleX Chat Setup](simplex.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Raft Setup](raft.md)
 - [IRC Setup](irc.md)

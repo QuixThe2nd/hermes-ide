@@ -683,13 +683,6 @@ PLATFORM_HINTS = {
         "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .heic) appear "
         "as photos and other files arrive as attachments."
     ),
-    "mattermost": (
-        "You are in a Mattermost workspace communicating with your user. Mattermost renders standard "
-        "Markdown — headings, bold, italic, code blocks, and tables all work. You can send media files "
-        "natively: include MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, .webp) are "
-        "uploaded as photo attachments, audio and video as file attachments. Image URLs in markdown format "
-        "![alt](url) are rendered as inline previews automatically."
-    ),
     "matrix": (
         "You are in a Matrix room. Your markdown converts to HTML \u2014 bold, italic, code, headings, lists, "
         "blockquotes, and links render. Do NOT use tables (popular clients like Element X collapse them into run-on "
@@ -711,12 +704,6 @@ PLATFORM_HINTS = {
         "MEDIA:/absolute/path/to/file in your response. Images are sent as native photos, videos play inline when "
         "supported, and other files arrive as downloadable documents. You can also include image URLs in markdown "
         "format ![alt](url) and they will be downloaded and sent as native media when possible."
-    ),
-    "wecom": (
-        "You are on WeCom (\u4f01\u4e1a\u5fae\u4fe1). Markdown is supported. "
-        f"{_MEDIA_NATIVE}Images (.jpg, .png, .webp) send as photos (\u226410 MB), other files as documents (\u226420 MB), videos "
-        "(.mp4) play inline. Voice messages must be AMR \u2014 other audio formats send as file attachments. Image "
-        "URLs via ![alt](url) are downloaded and sent as photos. Never claim you lack file-sending."
     ),
     "qqbot": (
         "You are on QQ, a popular Chinese messaging platform. QQ supports markdown formatting "

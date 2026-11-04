@@ -1734,8 +1734,6 @@ export const zhHant = defineLocale({
         help: '記錄和狀態輸出中顯示的主頻道名稱。'
       },
       BLUEBUBBLES_ALLOW_ALL_USERS: { label: '允許所有 iMessage 使用者', help: '為 true 時略過 BlueBubbles 允許清單。' },
-      MATTERMOST_ALLOW_ALL_USERS: { label: '允許所有 Mattermost 使用者' },
-      MATTERMOST_HOME_CHANNEL: { label: '主頻道' },
       QQ_ALLOW_ALL_USERS: { label: '允許所有 QQ 使用者' },
       QQBOT_HOME_CHANNEL: { label: 'QQ 主頻道', help: 'cron 傳遞的預設頻道或群組。' },
       QQBOT_HOME_CHANNEL_NAME: { label: 'QQ 主頻道名稱' },
@@ -1750,9 +1748,6 @@ export const zhHant = defineLocale({
         placeholder: '貼上 Slack app Token'
       },
       SLACK_ALLOWED_USERS: { label: '允許的 Slack 使用者 ID', help: '建議設定。逗號分隔的 Slack 使用者 ID。' },
-      MATTERMOST_URL: { label: '伺服器 URL', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: 'Bot Token' },
-      MATTERMOST_ALLOWED_USERS: { label: '允許的使用者 ID', help: '建議設定。逗號分隔的 Mattermost 使用者 ID。' },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: '存取 Token' },
       MATRIX_USER_ID: { label: 'Bot 使用者 ID', placeholder: '@hermes:example.org' },

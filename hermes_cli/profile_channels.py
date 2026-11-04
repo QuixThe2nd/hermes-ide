@@ -261,7 +261,7 @@ class ChannelKeyIndex:
         self.shared_active = _shared_adapters_active(source_dir)
         self._prefixes: List[Tuple[str, str]] = sorted(
             ((prefix, pid) for pid in self.platforms for prefix in platform_env_prefixes(pid)),
-            key=lambda item: -len(item[0]),  # longest prefix wins: WECOM_CALLBACK_ before WECOM_
+            key=lambda item: -len(item[0]),  # longest prefix wins: WEIXIN_GROUP_ before WEIXIN_
         )
 
     def platform_for(self, key: str) -> Optional[str]:

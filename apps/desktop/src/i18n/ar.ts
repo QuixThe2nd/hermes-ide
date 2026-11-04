@@ -1413,12 +1413,6 @@ export const ar = defineLocale({
         label: 'السماح لكل مستخدمي iMessage',
         help: 'عند التفعيل، يتم تخطي قائمة سماح BlueBubbles.'
       },
-      MATTERMOST_ALLOW_ALL_USERS: {
-        label: 'السماح لكل مستخدمي Mattermost'
-      },
-      MATTERMOST_HOME_CHANNEL: {
-        label: 'القناة الرئيسية'
-      },
       QQ_ALLOW_ALL_USERS: {
         label: 'السماح لكل مستخدمي QQ'
       },
@@ -1442,17 +1436,6 @@ export const ar = defineLocale({
       SLACK_ALLOWED_USERS: {
         label: 'معرّفات مستخدمي Slack المسموح بهم',
         help: 'موصى به. معرّفات مستخدمي Slack مفصولة بفواصل.'
-      },
-      MATTERMOST_URL: {
-        label: 'رابط الخادم',
-        placeholder: 'https://mattermost.example.com'
-      },
-      MATTERMOST_TOKEN: {
-        label: 'رمز البوت (token)'
-      },
-      MATTERMOST_ALLOWED_USERS: {
-        label: 'معرّفات المستخدمين المسموح بهم',
-        help: 'موصى به. معرّفات مستخدمي Mattermost مفصولة بفواصل.'
       },
       MATRIX_HOMESERVER: {
         label: 'رابط Homeserver',

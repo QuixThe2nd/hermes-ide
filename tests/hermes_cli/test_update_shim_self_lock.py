@@ -27,7 +27,7 @@ from hermes_cli import main as cli_main
 from hermes_cli import update_cmd
 from hermes_cli import main_install_repair
 
-SHIM_NAMES = ["hermes.exe", "hermes-agent.exe", "hermes-acp.exe", "hermes-gateway.exe"]
+SHIM_NAMES = ["hermes.exe", "hermes-agent.exe", "hermes-gateway.exe"]
 
 
 @pytest.fixture

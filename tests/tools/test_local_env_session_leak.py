@@ -140,7 +140,7 @@ def test_explicit_empty_thread_id_overrides_stale_value(monkeypatch):
 
     tokens = set_session_vars(
         session_key="mm:chan",
-        platform="mattermost",
+        platform="telegram",
         chat_id="chan",
         thread_id="",  # explicitly no thread
     )

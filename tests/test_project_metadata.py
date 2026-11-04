@@ -65,7 +65,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "voice",  # faster-whisper / sounddevice / numpy (composes stt-whisper + audio-io)
         "stt-whisper",
         "modal", "daytona", "vercel",
-        "messaging", "slack", "matrix", "dingtalk", "feishu",
+        "messaging", "slack", "matrix", "feishu",
         "telegram", "discord",
         "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "wake-tflite",
         "google-chat",
@@ -98,8 +98,6 @@ def _exact_pins(specs):
     return pins
 
 
-
-
 def test_extras_pin_each_package_at_one_version():
     """One package, one version, across every extra.
 
@@ -126,23 +124,6 @@ def test_extras_pin_each_package_at_one_version():
         "extras pin the same package at different versions — uv sync would "
         f"resolve whichever wins and silently downgrade the other: {drift}"
     )
-
-
-
-
-
-
-def test_dingtalk_extra_includes_qrcode_for_qr_auth():
-    """DingTalk's QR-code device-flow auth (hermes_cli/dingtalk_auth.py)
-    needs the qrcode package."""
-    optional_dependencies = _load_optional_dependencies()
-
-    dingtalk_extra = optional_dependencies["dingtalk"]
-    assert any(dep.startswith("qrcode") for dep in dingtalk_extra)
-
-
-
-
 
 
 def _uv_lock_version(package: str) -> str:

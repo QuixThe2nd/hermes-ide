@@ -830,7 +830,7 @@ class TestDeleteProfile:
         hermes-notes.py, hermes-unrelated-tool) must NOT be misidentified as
         the console-script shim just because argv[0] is a python interpreter
         and argv[1]'s basename starts with "hermes" -- only the actual known
-        console-script entry points (hermes, hermes-agent, hermes-acp) count.
+        console-script entry points (hermes, hermes-agent) count.
         """
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")
@@ -872,10 +872,9 @@ class TestDeleteProfile:
         assert pids == []
 
     def test_backend_scan_matches_all_known_console_script_shims(self, profile_env, monkeypatch):
-        """The other two real console-script entry points (hermes-agent,
-        hermes-acp -- see pyproject.toml [project.scripts]) must also be
-        recognized via the shebang-exec path, not just the primary "hermes"
-        shim.
+        """The hermes-agent console-script entry point (see pyproject.toml
+        [project.scripts]) must also be recognized via the shebang-exec path,
+        not just the primary "hermes" shim.
         """
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")
@@ -898,8 +897,6 @@ class TestDeleteProfile:
         procs = [
             FakeProc(401, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-agent",
                             "--profile", "coder", "serve"]),
-            FakeProc(402, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-acp",
-                            "--profile", "coder", "serve"]),
         ]
 
         fake_psutil = types.SimpleNamespace(
@@ -912,7 +909,7 @@ class TestDeleteProfile:
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
-        assert set(pids) == {401, 402}
+        assert set(pids) == {401}
 
 
 # ===================================================================

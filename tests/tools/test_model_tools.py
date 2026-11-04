@@ -182,47 +182,6 @@ class TestHandleFunctionCall:
         assert post_call[1]["error_type"] == "RuntimeError"
         assert post_call[1]["duration_ms"] >= 0
 
-    def test_acp_edit_denial_emits_blocked_terminal_tool_hook(self, monkeypatch):
-        from hermes_cli import lifecycle
-
-        hook_calls = []
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
-        monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "post_tool_call")
-        monkeypatch.setattr(
-            lifecycle,
-            "invoke_hook",
-            lambda name, **kwargs: hook_calls.append((name, kwargs)) or [],
-        )
-        monkeypatch.setattr(
-            "acp_adapter.edit_approval.maybe_require_edit_approval",
-            lambda *_args, **_kwargs: json.dumps({"error": "Edit approval denied"}),
-        )
-        monkeypatch.setattr(
-            "model_tools.registry.dispatch",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError("denied edit must not dispatch")
-            ),
-        )
-
-        result = json.loads(
-            handle_function_call(
-                "write_file",
-                {"path": "private.txt", "content": "private"},
-                task_id="task-1",
-                session_id="session-1",
-                tool_call_id="tool-1",
-            )
-        )
-
-        assert result == {"error": "Edit approval denied"}
-        [post_call] = [call for call in hook_calls if call[0] == "post_tool_call"]
-        assert post_call[1]["status"] == "blocked"
-        assert post_call[1]["error_type"] == "edit_approval_denied"
-
-
-# =========================================================================
-# Agent loop tools
-# =========================================================================
 
 class TestAgentLoopTools:
     def test_expected_tools_in_set(self):
