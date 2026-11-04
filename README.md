@@ -113,7 +113,7 @@ One model is usually enough. When it is not, `moa_ask` and `moa_debate` give you
 
 ## Matrix inbox conversations
 
-Matrix rooms can opt into one-private-chat-per-message routing with `matrix.inbox_rooms`. Each authorized new top-level text or media message creates a private room, invites the sender, carries the original event into that room's session, and keeps the answer and follow-ups there instead of creating a synthetic thread. The inbox gets a child-room link, while the child links back to the opening event. Existing sender and room allowlists still apply; edits, replies, commands, notices, bots, and unauthorized senders do not create rooms.
+Matrix rooms can opt into one-private-room-per-message routing with `matrix.inbox_rooms`. Each authorized new top-level text or media message creates an ordinary invite-only private room—not an `m.direct` direct message—invites the sender, carries the original event into that room's session, and keeps the answer and follow-ups there instead of creating a synthetic thread. The inbox gets a child-room link, while the child links back to the opening event. Existing sender and room allowlists still apply; edits, replies, commands, notices, bots, and unauthorized senders do not create rooms.
 
 ```yaml
 matrix:
@@ -122,7 +122,7 @@ matrix:
     "!requests:matrix.example.org": "!optional-space:matrix.example.org"
 ```
 
-Encrypted openings preserve encryption in the child or fail closed. Replay/restart recovery uses profile-scoped metadata and bot-owned Matrix account data without storing opening text. Parent-space linking is optional and permission-aware. See the [Matrix guide](website/docs/user-guide/messaging/matrix.md#inbox-rooms-one-private-chat-per-opening-message) for permissions, excluded events, and failure behavior.
+Encrypted openings preserve encryption in the child or fail closed. Replay/restart recovery uses profile-scoped metadata and bot-owned Matrix account data without storing opening text. Parent-space linking is optional and permission-aware. See the [Matrix guide](website/docs/user-guide/messaging/matrix.md#inbox-rooms-one-private-room-per-opening-message) for permissions, excluded events, and failure behavior.
 
 ## Memory and profiles
 

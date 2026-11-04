@@ -371,7 +371,7 @@ class MatrixInboxRouter:
                         "content": {"algorithm": algorithm},
                     }] if algorithm else None)
                     child_room_id = await self.adapter.create_room(
-                        name=_room_title(msgtype), invite=[sender], is_direct=True,
+                        name=_room_title(msgtype), invite=[sender], is_direct=False,
                         preset="private_chat", initial_state=initial_state)
                     if not child_room_id:
                         raise RuntimeError("room creation failed")
@@ -391,8 +391,6 @@ class MatrixInboxRouter:
                 self.adapter._dm_rooms[child_room_id] = True
                 self.adapter._invalidate_room_identities(child_room_id)
                 await self._mirror_best_effort(route)
-                # m.direct keeps clients and the existing DM allowlist exemption aligned.
-                await self.adapter._record_dm_room(child_room_id, sender)
         self._children[route.child_room_id] = route
         self.adapter._dm_rooms[route.child_room_id] = True
         if not route.origin_link_event_id:

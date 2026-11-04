@@ -129,7 +129,7 @@ Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@a
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
 :::
 
-### Inbox Rooms: One Private Chat Per Opening Message
+### Inbox Rooms: One Private Room Per Opening Message
 
 `matrix.inbox_rooms` opts specific rooms into email-style intake. Each authorized,
 new top-level text or media message opens one separate private room instead of a
@@ -154,7 +154,8 @@ not discard the private conversation.
 
 For each opening message, Hermes:
 
-- creates an invite-only direct room and invites the originating human;
+- creates an ordinary invite-only private room, not an `m.direct` direct message,
+  and invites the originating human;
 - gives it a generic label based only on the media kind, never message contents;
 - sends a link back to the original event in the child room, then acknowledges
   the opening message with the child-room link in the inbox;
