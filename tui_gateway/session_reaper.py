@@ -303,7 +303,7 @@ def _schedule_session_cap_enforcement() -> None:
 # The WS-orphan reaper is an in-process Timer: a gateway restart kills it before it fires, leaving the row
 # `ended_at IS NULL` forever. Scheduled once per process from both gateway entry points (stdio `entry.main`, WS
 # sidecar `handle_ws`). state.db is shared by sibling processes on the same profile, so eligibility is
-# conservative. Disable via `dashboard.startup_orphan_sweep: false`.
+# conservative. Disable via `gateway.startup_orphan_sweep: false`.
 # This is the startup complement every other resource type already has (docker_orphan_reaper, compression
 # orphans). See #65194.
 _ORPHAN_SWEEP_SOURCES = ("tui", "desktop", "subagent", "unknown")
@@ -312,12 +312,16 @@ _startup_orphan_sweep_lock = threading.Lock()
 
 
 def _session_orphan_reaper_enabled() -> bool:
-    """``dashboard.startup_orphan_sweep`` (default on). Fail-open on errors and on a missing key (raw yaml, no
-    DEFAULT_CONFIG merge on this loader)."""
+    """``gateway.startup_orphan_sweep`` (default on; the legacy ``dashboard.startup_orphan_sweep``
+    key from the removed web UI is still honored). Fail-open on errors and on a missing key (raw
+    yaml, no DEFAULT_CONFIG merge on this loader)."""
     try:
-        dashboard_cfg = (_load_cfg() or {}).get("dashboard") or {}
-        if isinstance(dashboard_cfg, dict) and "startup_orphan_sweep" in dashboard_cfg:
-            return is_truthy_value(dashboard_cfg.get("startup_orphan_sweep"), default=True)
+        cfg = _load_cfg() or {}
+        section = cfg.get("gateway")
+        if not (isinstance(section, dict) and "startup_orphan_sweep" in section):
+            section = cfg.get("dashboard")
+        if isinstance(section, dict) and "startup_orphan_sweep" in section:
+            return is_truthy_value(section.get("startup_orphan_sweep"), default=True)
     except Exception:
         pass
     return True
@@ -428,7 +432,7 @@ def _start_backend_heartbeat_refresher() -> None:
 def _schedule_startup_orphan_sweep() -> None:
     """Schedule the once-per-process startup orphan sweep, delayed by the WS-orphan grace window so a client
     reconnecting right after a restart can ``session.resume`` its row first. Grace 0 (park forever), TTL 0 and
-    ``dashboard.startup_orphan_sweep: false`` all suppress the sweep.
+    ``gateway.startup_orphan_sweep: false`` all suppress the sweep.
 
     See #65194.
     """

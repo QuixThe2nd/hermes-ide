@@ -2,7 +2,7 @@
 
 ``display.status`` reports runtime + lease; ``display.start`` / ``display.stop`` manage the Xvnc/Xfce
 process; ``display.observe`` mints a single-use ticket the renderer redeems on ``/api/display/ws``
-(``hermes_cli.web_routers.display``) to stream raw RFB; ``display.lease.acquire`` / ``release`` are
+to stream raw RFB; ``display.lease.acquire`` / ``release`` are
 Take over / Hand back. ``display.install`` runs the distro package install on the gateway host: sudo
 privilege is asked for through the masked ``display.install.sudo`` card (the shared server→client
 request bridge), stdout streams as ``display.install.log`` and the run ends with
@@ -165,7 +165,7 @@ def _(rid, params: dict) -> dict:
     the bridge dials THIS profile's RFB socket, and a server-minted viewer id (returned to the caller,
     who passes it to ``display.lease.acquire`` / ``release``) so the lease can name the holder."""
     from hermes_constants import get_hermes_home
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from tui_gateway.ws_tickets import mint_ticket
     from tools.bot_desktop import runtime as _bd_runtime
     try:
         if _bd_runtime.rfb_socket_path() is None:

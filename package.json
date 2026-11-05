@@ -7,7 +7,6 @@
     "apps/shared",
     "ui-tui",
     "ui-tui/packages/*",
-    "web",
     "tests-js"
   ],
   "scripts": {

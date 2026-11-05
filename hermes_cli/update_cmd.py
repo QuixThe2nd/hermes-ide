@@ -90,8 +90,7 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _refresh_active_memory_provider_dependencies, _refuse_update_if_venv_foreign_owned,
     _repair_node_deps_on_current_checkout, _sync_python_dependencies_after_pull,
     _update_node_dependencies, _validate_critical_modules_import,
-    _venv_core_imports_healthy, _venv_dependency_set_stale, _venv_foreign_owned_paths,
-    _web_build_toolchain_ready, _web_toolchain_roots)
+    _venv_core_imports_healthy, _venv_dependency_set_stale, _venv_foreign_owned_paths)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _assess_parked_branch_switch,
@@ -136,11 +135,10 @@ def _no_prompt_git_kwargs() -> dict:
     return {"stdin": subprocess.DEVNULL, "env": env}
 
 
-# CLI-startup files (+ web_server.py, launched by a fresh Windows Desktop install) that must
-# parse post-update; the syntax guard rolls back when one doesn't.
+# CLI-startup files that must parse post-update; the syntax guard rolls back when one doesn't.
 _UPDATE_CRITICAL_FILES = (
     "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
-    "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
+    "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
     "hermes_constants.py")
 
 
@@ -1652,10 +1650,6 @@ def _finish_pulled_update(
     if node_failures:
         deferred_defects.append(
             "Node.js dependency refresh incomplete: " + ", ".join(node_failures))
-    web_build_ok = _m()._build_web_ui(_m().PROJECT_ROOT / "web")
-    if web_build_ok is False:
-        deferred_defects.append("web UI build failed")
-
     print()
     print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
 

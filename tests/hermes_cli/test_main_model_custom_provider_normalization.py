@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from hermes_cli.web_server_config import _normalize_main_model_assignment
+from tui_gateway.profile_model import _normalize_main_model_assignment
 
 
 def _normalize(config, provider, model="vendor/model-a"):

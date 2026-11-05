@@ -170,7 +170,7 @@ class SessionGatewayMixin:
         if not sys.platform.startswith("linux") or psutil is None:
             return []
         try:
-            from hermes_cli.dashboard_procs import _is_ephemeral_port_zero_backend
+            from hermes_state_dbfile import _is_ephemeral_port_zero_backend
         except Exception:
             return []
         now = time.time()

@@ -146,7 +146,7 @@ class TestRecommendedDefaultEndpoint:
 
     def _call(self, monkeypatch):
         import hermes_cli.auth as auth_mod
-        from hermes_cli.web_routers.models import get_recommended_default_model
+        from hermes_cli.models import recommended_nous_default_model as get_recommended_default_model
 
         # Blocked first, so an unfiltered list would make it the silent
         # default — otherwise this passes whether or not the filter runs.
@@ -162,7 +162,7 @@ class TestRecommendedDefaultEndpoint:
             lambda ids, pricing, _portal: (list(ids), pricing),
         )
         monkeypatch.setattr(auth_mod, "get_provider_auth_state", lambda _p: {})
-        return get_recommended_default_model(provider="nous")
+        return get_recommended_default_model()
 
     def test_hidden_model_is_never_the_silent_default(self, monkeypatch, policy):
         assert self._call(monkeypatch)["model"] == "vendor/allowed"

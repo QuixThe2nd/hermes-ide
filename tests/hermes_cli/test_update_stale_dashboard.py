@@ -22,13 +22,13 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hermes_cli.main_dashboard import _find_stale_dashboard_pids
+from hermes_cli.dashboard_procs import _find_stale_dashboard_pids
 from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 from hermes_cli import dashboard_procs
-from hermes_cli import main_dashboard
+from hermes_cli import dashboard_procs as main_dashboard
 from hermes_cli import update_cmd
 from hermes_cli.update_cmd import _finish_dashboard_update_cleanup
-from hermes_cli.main_dashboard import _restart_managed_dashboard_service
+from hermes_cli.dashboard_procs import _restart_managed_dashboard_service
 from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes as _warn_stale_dashboard_processes
 
 
@@ -121,7 +121,7 @@ def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeyp
         return []
 
     with patch(
-        "hermes_cli.main_dashboard._find_stale_dashboard_pids",
+        "hermes_cli.dashboard_procs._find_stale_dashboard_pids",
         side_effect=assert_owned_pid_is_excluded,
     ):
         result = _kill_stale_dashboard_processes(restart_managed=True)
@@ -140,7 +140,7 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
         return []
 
     with patch(
-        "hermes_cli.main_dashboard._find_stale_dashboard_pids",
+        "hermes_cli.dashboard_procs._find_stale_dashboard_pids",
         side_effect=assert_owned_pid_is_not_excluded,
     ):
         result = _kill_stale_dashboard_processes(restart_managed=False)
@@ -204,7 +204,7 @@ class TestKillStaleDashboardPosix:
                 raise ProcessLookupError
             # SIGTERM itself: succeed silently.
 
-        with patch("hermes_cli.main_dashboard._find_stale_dashboard_pids",
+        with patch("hermes_cli.dashboard_procs._find_stale_dashboard_pids",
                    return_value=[12345, 12346]), \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
@@ -254,7 +254,7 @@ class TestKillStaleDashboardPosix:
             raise AssertionError(f"unexpected subprocess.run call: {args}")
 
         with patch("subprocess.run", side_effect=fake_run), \
-             patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", return_value=[]) as find_pids, \
+             patch("hermes_cli.dashboard_procs._find_stale_dashboard_pids", return_value=[]) as find_pids, \
              patch("os.kill") as kill:
             _kill_stale_dashboard_processes(restart_managed=True)
 
@@ -288,7 +288,7 @@ class TestKillStaleDashboardWindows:
             # taskkill returns 0 on success
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("hermes_cli.main_dashboard._find_stale_dashboard_pids",
+        with patch("hermes_cli.dashboard_procs._find_stale_dashboard_pids",
                    return_value=[12345, 12346]), \
              patch("gateway.status.get_process_start_time", return_value=123), \
              patch("hermes_cli._subprocess_compat.pid_is_hermes", return_value=True), \
@@ -871,20 +871,20 @@ class TestPostUpdateDashboardCleanupIsolation:
         import hermes_cli.update_receipt as ur
         from hermes_cli import update_cmd
 
-        ur._current = None
+        token = ur._current.set(None)
         try:
             ur.begin_update_receipt()
             with patch(
                 "hermes_cli.main._kill_stale_dashboard_processes",
                 side_effect=AttributeError(
-                    "module 'hermes_cli.main_dashboard' has no attribute '_loaded_launchd_backend_jobs'"
+                    "module 'hermes_cli.dashboard_procs' has no attribute '_loaded_launchd_backend_jobs'"
                 ),
             ):
                 update_cmd._finish_dashboard_update_cleanup([])  # must not raise
 
-            steps = {s["name"]: s for s in ur._current.data["steps"]}
+            steps = {s["name"]: s for s in ur._current.get().data["steps"]}
         finally:
-            ur._current = None
+            ur._current.reset(token)
 
         assert steps["dashboard_cleanup"]["ok"] is False
         assert "_loaded_launchd_backend_jobs" in steps["dashboard_cleanup"]["detail"]

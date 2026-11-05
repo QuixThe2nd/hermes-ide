@@ -364,7 +364,7 @@ def _poll_for_token(
         on_non_json_error=lambda _r: RuntimeError(
             "Token endpoint returned a non-JSON error response"),
         # Enriched at the SOURCE so the CLI login and the dashboard/desktop poller
-        # (web_server_oauth._nous_promotion_poller surfaces it to the UI) both inherit the guidance.
+        # (UI promotion pollers surface it) both inherit the guidance.
         on_timeout=lambda: TimeoutError(_nous_device_auth_timeout_message(portal_base_url)))
 
 

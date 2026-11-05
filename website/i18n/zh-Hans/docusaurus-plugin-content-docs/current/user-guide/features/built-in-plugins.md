@@ -62,7 +62,6 @@ hermes plugins disable disk-cleanup
 | `image_gen/openai` | 图像后端 | OpenAI `gpt-image-2` 图像生成后端（FAL 的替代方案） |
 | `image_gen/openai-codex` | 图像后端 | 通过 Codex OAuth 使用 OpenAI 图像生成 |
 | `image_gen/xai` | 图像后端 | xAI `grok-2-image` 后端 |
-| `hermes-achievements` | 仪表盘标签页 | Steam 风格的可收集徽章，根据你真实的 Hermes 会话历史生成 |
 
 内存提供者（`plugins/memory/*`）和上下文引擎（`plugins/context_engine/*`）在 [内存提供者](./memory-providers.md) 中单独列出——它们分别通过 `hermes memory` 和 `hermes plugins` 管理。以下是两个长期运行的基于 hook 的插件的详细说明。
 
@@ -198,71 +197,4 @@ agent 会启动会议加入流程，在通话进行时将转录内容流式传�
 **适用场景：** 需要机器人转录并为异步参与者总结的定期站会；需要结构化笔记的访谈式会议；任何原本需要 Fireflies / Otter / Grain 的场景。如果你不希望有 AI 在旁监听——请勿启用。
 
 **禁用：** `hermes plugins disable google_meet`。已缓存的转录和录音保留在 `~/.hermes/cache/google_meet/`，直到你手动删除。
-
-### hermes-achievements
-
-在仪表盘中添加一个 **Steam 风格的成就标签页**——60 多个可收集的分级徽章，根据你真实的 Hermes 会话历史生成。工具链成就、调试模式、vibe-coding 连击、技能/内存使用、模型/提供者多样性、生活方式特征（周末和夜间会话）。最初由 [@PCinkusz](https://github.com/PCinkusz) 作为外部插件编写；已并入仓库，以便与 Hermes 功能变更保持同步。
-
-**工作原理：**
-
-- 在仪表盘后端扫描你的整个 `~/.hermes/state.db` 会话历史
-- 每个会话的统计数据按 `(started_at, last_active)` 指纹缓存，因此后续扫描只重新分析新增或变更的会话
-- 首次扫描在后台线程中运行——即使数据库有数千个会话，仪表盘也不会阻塞等待
-- 解锁状态持久化到 `$HERMES_HOME/plugins/hermes-achievements/state.json`
-
-**等级进阶：** 铜 → 银 → 金 → 钻石 → 奥林匹斯。每张卡片都有"计算方式"部分，列出所追踪的确切指标。
-
-**成就状态：**
-
-| 状态 | 含义 |
-|---|---|
-| 已解锁 | 至少达到一个等级 |
-| 已发现 | 已知成就，进度可见，尚未获得 |
-| 隐藏 | 在 Hermes 检测到你历史中的第一个相关信号之前保持隐藏 |
-
-**API** — 路由挂载在 `/api/plugins/hermes-achievements/` 下：
-
-| 端点 | 用途 |
-|---|---|
-| `GET /achievements` | 完整目录，包含每个徽章的解锁状态（首次冷扫描运行期间返回待处理占位符） |
-| `GET /scan-status` | 后台扫描器状态：`idle` / `running` / `failed`，上次耗时，运行次数 |
-| `GET /recent-unlocks` | 最近解锁的 20 个徽章，最新的在前 |
-| `GET /sessions/{id}/badges` | 主要在某个特定会话中获得的徽章 |
-| `POST /rescan` | 手动同步重新扫描（阻塞；在用户点击重新扫描按钮时使用） |
-| `POST /reset-state` | 清除解锁历史和缓存快照 |
-
-**状态文件** — 位于 `$HERMES_HOME/plugins/hermes-achievements/`：
-
-| 文件 | 内容 |
-|---|---|
-| `state.json` | 解锁历史：你获得了哪些徽章以及获得时间。在 Hermes 更新间保持稳定。 |
-| `scan_snapshot.json` | 上次完成的扫描载荷（在仪表盘加载时立即提供） |
-| `scan_checkpoint.json` | 按指纹键控的每会话统计缓存（使热重扫描更快） |
-
-**性能说明：**
-
-- 约 8,000 个会话的冷扫描需要几分钟。它在首次仪表盘请求时在后台线程中运行；UI 显示待处理占位符并轮询 `/scan-status`。
-- **冷扫描期间的增量结果** — 扫描器每约 250 个会话发布一次部分快照，因此每次仪表盘刷新都会显示更多已解锁的徽章。不会出现盯着零数字等待一分钟的情况。
-- 热重扫描对每个 `started_at` + `last_active` 指纹与检查点匹配的会话复用每会话统计——即使在大型历史记录上也能在几秒内完成。
-- 内存快照 TTL 为 120 秒；过期请求立即提供旧快照并触发后台刷新。不会因为 TTL 过期就让你等待加载动画。
-
-**启用：** 无需启用——`hermes-achievements` 是一个仅限仪表盘的插件（无生命周期 hook，无模型可见工具）。它在 `hermes dashboard` 首次启动时自动注册为标签页。`plugins.enabled` 配置仅控制生命周期/工具插件；仪表盘插件完全通过其 `dashboard/manifest.json` 发现。
-
-**退出：** 删除或重命名 `plugins/hermes-achievements/dashboard/manifest.json`，或在 `~/.hermes/plugins/hermes-achievements/` 中用同名用户插件覆盖它（该插件不包含仪表盘）。`$HERMES_HOME/plugins/hermes-achievements/` 下的插件状态文件会保留——重新安装后你的解锁历史依然存在。
-
-## 添加内置插件
-
-内置插件的编写方式与其他 Hermes 插件完全相同——参见 [构建 Hermes 插件](../../developer-guide/plugins/index.md)。唯一的区别是：
-
-- 目录位于 `<repo>/plugins/<name>/`，而非 `~/.hermes/plugins/<name>/`
-- 在 `hermes plugins list` 中，manifest 来源显示为 `bundled`
-- 同名用户插件会覆盖内置版本
-
-以下情况适合将插件纳入内置：
-
-- 没有可选依赖项（或它们已经是 `pip install .[all]` 的依赖）
-- 该行为对大多数用户有益，且是默认启用、需要主动关闭的
-- 逻辑与生命周期 hook 紧密结合，否则 agent 需要记住手动调用
-- 在不扩展模型可见工具接口的前提下补充核心能力
-
-反例——应作为用户可安装插件而非内置插件的情况：需要 API 密钥的第三方集成、小众工作流、大型依赖树、任何会默认改变 agent 行为的内容。
+。

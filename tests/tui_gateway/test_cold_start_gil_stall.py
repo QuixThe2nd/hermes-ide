@@ -8,9 +8,6 @@ between ``HERMES_BACKEND_READY`` and the first prompt. Three fixes:
    subprocess when a Copilot env var is explicitly set (even if invalid).
 2. ``tui_gateway.ws.handle_ws`` runs ``resolve_skin()`` via
    ``asyncio.to_thread`` so the loop is not blocked by config/skin init.
-3. ``web_server_lifecycle._warm_gateway_module`` pre-imports the heavy module
-   chains that the first WS connection + RPC burst would otherwise
-   import on the loop thread.
 """
 
 import asyncio
@@ -19,7 +16,6 @@ import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
-import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 
 # ─── Fix 1: copilot_auth skips gh CLI when env var is set ──────────────
@@ -157,42 +153,3 @@ def test_handle_ws_ready_payload_wires_skin_through_to_thread():
     # resolve_skin() cannot slip past the behavioral stub above.
     source = inspect.getsource(ws_mod.handle_ws)
     assert "to_thread(server.resolve_skin)" in source
-
-
-# ─── Fix 3: _warm_gateway_module pre-imports heavy chains ──────────────
-
-
-def test_warm_gateway_module_imports_cold_start_chains():
-    """_warm_gateway_module must pre-import the module chains that the
-    first WS connection + RPC burst would otherwise import on the loop
-    thread (#60800).
-
-    Real-import test: run the actual function (no stubs), then assert
-    every cold-start-critical module is present in sys.modules. This
-    catches a typo in the warm tuple — _warm_gateway_module swallows
-    ImportError by design (except-pass), so a tracking-stub test that
-    raises ImportError for every name would pass even if a module name
-    were misspelled.
-    """
-    import sys
-
-    import hermes_cli.web_server as web_server_mod
-
-    required = {
-        "hermes_cli.gateway",
-        "hermes_cli.auth",
-        "hermes_cli.copilot_auth",
-        "hermes_cli.runtime_provider",
-        "hermes_cli.skin_engine",
-        "hermes_cli.inventory",
-        "hermes_cli.model_switch",
-    }
-
-    _web_server_lifecycle._warm_gateway_module()
-
-    missing = required - set(sys.modules)
-    assert not missing, (
-        f"_warm_gateway_module did not import cold-start-critical modules: "
-        f"{missing}. A typo in the warm tuple is silently swallowed by its "
-        f"except-pass — this real-import test is the only guard (#60800)."
-    )

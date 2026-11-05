@@ -37,7 +37,8 @@ def _lazy(module, name):
 
 
 def _pin_profile_model(profile_dir, provider, model) -> None:
-    _lazy("hermes_cli.web_routers.profiles", "_write_profile_model")(profile_dir, provider, model)
+    from tui_gateway.profile_model import write_profile_model
+    write_profile_model(profile_dir, provider, model)
 
 
 def _model_provider_params(params) -> tuple:

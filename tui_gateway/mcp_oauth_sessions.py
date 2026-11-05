@@ -115,7 +115,7 @@ def _probe_with_rollback(
 def _worker(
         session_id: str, hermes_home: str, server_name: str, cfg: dict, reconnect_live: bool) -> None:
     """Drive the interactive MCP OAuth probe under the shared dashboard bridge (same wrapping
-    as ``web_server._run_dashboard_mcp_oauth``), keyed to our session record."""
+    keyed to our session record."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     rec = _sessions.get(session_id)
     flow = rec["flow"] if rec else None

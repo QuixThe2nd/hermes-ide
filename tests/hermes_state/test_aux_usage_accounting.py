@@ -232,44 +232,6 @@ class TestAmbientAccountingContext:
 
 
 
-class TestAnalyticsAuxRows:
-    def test_aux_usage_rows_and_merge(self, db):
-        from hermes_cli.web_server_profiles import _aux_task_summary, _aux_usage_rows, _merge_aux_into_by_model
-
-        db.create_session("s1", source="cli")
-        db.update_token_counts(
-            "s1", input_tokens=1000, output_tokens=100,
-            model="main-model", billing_provider="nous", api_call_count=1,
-        )
-        db.record_auxiliary_usage(
-            "s1", "vision", model="vision-model",
-            billing_provider="gemini", input_tokens=300, output_tokens=30,
-        )
-        db.record_auxiliary_usage(
-            "s1", "compression", model="main-model",
-            billing_provider="nous", input_tokens=200, output_tokens=20,
-        )
-
-        aux = _aux_usage_rows(db, cutoff=0)
-        assert {r["task"] for r in aux} == {"vision", "compression"}
-
-        by_model = [{
-            "model": "main-model", "input_tokens": 1000, "output_tokens": 100,
-            "estimated_cost": 0, "sessions": 1, "api_calls": 1,
-        }]
-        merged = _merge_aux_into_by_model(by_model, aux)
-        by_name = {r["model"]: r for r in merged}
-        # vision-only model surfaces as its own entry
-        assert "vision-model" in by_name
-        assert by_name["vision-model"]["input_tokens"] == 300
-        # compression folded into the main model's totals
-        assert by_name["main-model"]["input_tokens"] == 1200
-        assert by_name["main-model"]["api_calls"] == 2
-
-        tasks = _aux_task_summary(aux)
-        assert {t["task"] for t in tasks} == {"vision", "compression"}
-
-
 class TestInsightsAuxTotals:
     def test_overview_totals_include_aux_usage(self, db):
         """`hermes insights` overview must count aux tokens, not just the

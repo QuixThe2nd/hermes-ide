@@ -1,5 +1,6 @@
 """Real WS/session.create/disconnect/timers/RPC integration; offline model boundary.
 Usage: python evals/liveness/ws_orphan_reconnect.py REPO [redetach]
+Dev-only: requires fastapi + uvicorn installed manually (not core deps).
 Seeds a post-interrupt queued envelope to reproduce the bypass-writer schedule,
 not the exact naturally arriving queue race. No lifecycle predicate is patched.
 """

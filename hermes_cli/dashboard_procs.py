@@ -1,11 +1,15 @@
-"""Dashboard process-hygiene helpers — extracted from ``hermes_cli/main.py``.
+"""Stale dashboard/serve process hygiene for ``hermes update`` and ``--stop``.
 
-Helpers defined in ``hermes_cli.main_dashboard`` / ``hermes_cli.main_install_repair`` are imported at
-call time so imports stay one-way (both of those modules import this one lazily).
+The dashboard web UI is removed from this checkout; this module remains so an
+update cleanly stops backends an older install left running. Helpers defined in
+``hermes_cli.main_install_repair`` are imported at call time so imports stay
+one-way.
 """
 
 import contextlib
 import os
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -138,7 +142,6 @@ def _hermes_home_for_pid(pid: int) -> str | None:
     env = _pid_environ(pid)
     if env is None:
         return None
-    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
     from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
     argv = _dashboard_cmdline_for_pid(pid) or []
     env_home = env.get("HERMES_HOME", "").strip()
@@ -568,20 +571,18 @@ def _kill_stale_dashboard_processes(
     function runs. Without excluding them, a Serve-only install's freshly restarted process is found again
     here and restarted a second time for no benefit (review on #83595).
     """
-    from hermes_cli import main_dashboard as _dash
 
-    if restart_managed and _dash._restart_managed_dashboard_service(reason):
+    if restart_managed and _restart_managed_dashboard_service(reason):
         # The dashboard unit is handled but other backends (e.g. hermes-serve.service) are not:
         # mark the unit handled so the filter below drops its PIDs, and keep going.
-        _dash_unit = getattr(_dash, "_DASHBOARD_SYSTEMD_UNIT", "hermes-dashboard.service")
         already_restarted_units = set(already_restarted_units or ()) | {
-            str(_dash_unit).removesuffix(".service")}
+            _DASHBOARD_SYSTEMD_UNIT.removesuffix(".service")}
     exclude = _exclude_pids_from_env()
     if restart_managed:
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
-    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
+    pids = _find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
@@ -595,18 +596,18 @@ def _kill_stale_dashboard_processes(
     # job then fails every KeepAlive restart with "port already in use", and the running backend
     # is left unsupervised. Snapshot the loaded jobs once, before the kill; ``--stop`` reads them
     # too, so it can say that a KeepAlive job will undo the stop.
-    launchd_jobs = _dash._loaded_launchd_backend_jobs() if sys.platform != "win32" else []
+    launchd_jobs = _loaded_launchd_backend_jobs() if sys.platform != "win32" else []
 
     def _launchd_owner(pid: int, cmdline: list[str] | None):
-        return _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
+        return _launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
 
     if restart_managed and sys.platform != "win32":
         for pid in pids:
-            pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
-            pid_service[pid] = _dash._get_systemd_service_for_pid(pid)
+            pid_cgroup[pid] = _get_pid_cgroup_path(pid)
+            pid_service[pid] = _get_systemd_service_for_pid(pid)
             if pid_service[pid]:
                 continue
-            cmdline = _dash._dashboard_cmdline_for_pid(pid)
+            cmdline = _dashboard_cmdline_for_pid(pid)
             if launchd_jobs and (job := _launchd_owner(pid, cmdline)):
                 pid_launchd[pid] = job
             elif cmdline:
@@ -623,7 +624,7 @@ def _kill_stale_dashboard_processes(
                 return _empty_result()
     elif launchd_jobs:
         for pid in pids:
-            if job := _launchd_owner(pid, _dash._dashboard_cmdline_for_pid(pid)):
+            if job := _launchd_owner(pid, _dashboard_cmdline_for_pid(pid)):
                 pid_launchd[pid] = job
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
     killed: list[int] = []
@@ -660,7 +661,6 @@ def _restart_killed_backends(
     # back after our clean SIGTERM, and the Desktop can't reconnect (#68934). Filtered so Desktop
     # ``serve|dashboard --port 0`` backends are not resurrected and duplicates collapse to one per profile
     # (#78821).
-    from hermes_cli import main_dashboard as _dash
     unrecovered: list[int] = []
     failed_restarts: list[tuple[str, str]] = []
     seen_services: set[str] = set()
@@ -672,7 +672,7 @@ def _restart_killed_backends(
             if svc_name in seen_services:
                 continue
             seen_services.add(svc_name)
-            if _dash._try_restart_systemd_service(svc_name, pid_cgroup.get(pid)):
+            if _try_restart_systemd_service(svc_name, pid_cgroup.get(pid)):
                 print(f"    ✓ restarted systemd service {svc_name}")
             else:
                 failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
@@ -686,7 +686,7 @@ def _restart_killed_backends(
             if target in seen_services:
                 continue
             seen_services.add(target)
-            if _dash._restart_launchd_job(domain, label, old_pid):
+            if _restart_launchd_job(domain, label, old_pid):
                 print(f"    ✓ restarted launchd job {target}")
             else:
                 # A LaunchDaemon (system domain) can only be kickstarted by root; the hint must
@@ -702,7 +702,7 @@ def _restart_killed_backends(
     for svc, err in failed_restarts:
         print(f"    ⚠ {svc}: {err}")
     respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
-    failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
+    failed_cmds = _respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
     if failed_cmds:
         unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
     if failed_restarts or unrecovered:
@@ -1012,3 +1012,381 @@ def _reap_orphaned_desktop_local_serves(
     with contextlib.suppress(Exception):
         print(f"⟲ Reaped {len(killed)} orphaned desktop-local serve backend(s) ({reason}): {killed or matched}")
     return {"matched": matched, "killed": killed, "failed": failed}
+
+
+# --- Moved from the removed ``hermes_cli/main_dashboard.py`` (this module owns
+# stale dashboard/serve process management for `hermes update` and `--stop`) ---
+
+
+_DASHBOARD_SYSTEMD_UNIT = "hermes-dashboard.service"
+
+_SYSTEMCTL_ERRORS = (FileNotFoundError, subprocess.TimeoutExpired, OSError)
+
+
+def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
+                               scope_home: str | None = None) -> list[int]:
+    """PIDs of running ``dashboard``/``serve`` backends the caller may stop.
+
+    *scope_home*: keep only backends whose resolved Hermes home (see
+    ``_hermes_home_for_pid``) is this home; unreadable ownership is spared, never guessed.
+    ``--stop`` and the post-update cleanup pass their own home so another install's or
+    profile's backend on the same machine is never a target (#113978).
+    """
+    from hermes_cli.dashboard_procs import (
+        _caller_ancestor_pids,
+        _is_caller_wrapper_shell,
+        _pids_owned_by_hermes_home,
+        _scan_dashboard_processes,
+    )
+    pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+    # The argv substring scan also selects the caller's own wrapper shell (``bash -c
+    # 'hermes dashboard --stop'``); killing it takes down the invoking terminal.
+    ancestors = _caller_ancestor_pids()
+    pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
+    return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
+
+
+def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
+    """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
+    mode = None
+    for candidate in ("dashboard", "serve"):
+        patterns = (f"hermes {candidate}", f"hermes_cli.main {candidate}", f"hermes_cli/main.py {candidate}")
+        if any(pattern in command for pattern in patterns):
+            mode = candidate
+            break
+    if mode is None:
+        return None
+
+    port = 9119
+    host = "127.0.0.1"
+
+    port_match = re.search(r"(?:^|\s)--port(?:=|\s+)(\d+)", command)
+    if port_match:
+        try:
+            port = int(port_match.group(1))
+        except ValueError:
+            return None
+
+    host_match = re.search(r"(?:^|\s)--host(?:=|\s+)(\"[^\"]+\"|'[^']+'|\S+)", command)
+    if host_match:
+        host = host_match.group(1).strip("\"'") or "127.0.0.1"
+
+    return mode, host, port
+
+
+def _dashboard_probe_host(host: str | None) -> str:
+    """Map wildcard binds to a loopback address suitable for local probing."""
+    normalized = (host or "127.0.0.1").strip().strip("[]")
+    if normalized in {"", "0.0.0.0", "::"}:
+        return "127.0.0.1"
+    return normalized
+
+
+def _run_probe(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
+    """Captured, text-decoded ``subprocess.run`` for short local probes (systemctl, ps)."""
+    return subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+
+
+def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTEMD_UNIT) -> bool:
+    """Restart a systemd-managed dashboard instead of raw-killing its PID.
+
+    True when a unit was found and handled (success or printed failure) — which
+    deliberately stops the caller's ``os.kill`` fallback: systemd treats a direct
+    SIGTERM as a clean stop, so ``Restart=on-failure`` won't bring it back.
+    """
+    if sys.platform == "win32":
+        return False
+
+    def _systemctl(*args: str, timeout: int = 10) -> subprocess.CompletedProcess:
+        return _run_probe(["systemctl", *args], timeout=timeout)
+
+    # User manager first (Hermes installs Linux services in the user scope by
+    # default), system manager only when the unit isn't there. Keep the selected
+    # scope for ALL probes and the restart — a user unit must never be restarted
+    # through the system manager (or raw-killed).
+    scope: tuple[str, ...] | None = None
+    for candidate in (("--user",), ()):
+        try:
+            result = _systemctl(*candidate, "list-unit-files", unit, "--no-legend", "--no-pager")
+        except _SYSTEMCTL_ERRORS:
+            continue
+        if result.returncode != 0:
+            continue
+        unit_rows = (result.stdout or "").splitlines()
+        if any(row.split()[0:1] == [unit] for row in unit_rows if row.split()):
+            scope = candidate
+            break
+
+    if scope is None:
+        return False
+
+    try:
+        active = _systemctl(*scope, "is-active", unit)
+        enabled = _systemctl(*scope, "is-enabled", unit)
+    except _SYSTEMCTL_ERRORS:
+        return False
+
+    active_state = (active.stdout or "").strip()
+    enabled_state = (enabled.stdout or "").strip()
+    if active_state != "active" and enabled_state not in {
+        "enabled", "enabled-runtime", "linked", "linked-runtime", "static", "generated",
+    }:
+        return False
+
+    print(f"\n⟲ Restarting managed dashboard service ({reason})")
+
+    scope_label = "systemctl --user" if scope else "sudo systemctl"
+    commands = [("systemctl", *scope, "restart", unit)]
+    if not scope:
+        # System units may require privilege escalation; user units must use
+        # the user manager directly and never prompt for sudo.
+        commands.append(("sudo", "-n", "systemctl", "restart", unit))
+
+    errors: list[str] = []
+    for command in commands:
+        try:
+            result = _run_probe(list(command), timeout=60)
+        except _SYSTEMCTL_ERRORS as e:
+            errors.append(f"{' '.join(command)}: {e}")
+            continue
+        if result.returncode == 0:
+            print(f"    ✓ restarted {unit}")
+            return True
+        errors.append(f"{' '.join(command)}: {(result.stderr or result.stdout or '').strip()}")
+
+    print(f"    ✗ failed to restart {unit}")
+    for err in errors:
+        if err.strip():
+            print(f"      {err}")
+    print(
+        "  Dashboard is managed by systemd; not raw-killing its PID because "
+        "systemd would treat that as a clean stop."
+    )
+    print(f"  Restart manually: {scope_label} restart {unit}")
+    return True
+
+
+def _pid_unified_cgroup_entries(pid: int):
+    """Yield the ``0::<path>`` cgroup paths from ``/proc/<pid>/cgroup``; nothing when unreadable."""
+    try:
+        cgroup_path = Path(f"/proc/{pid}/cgroup")
+        if not cgroup_path.is_file():
+            return
+        text = cgroup_path.read_text(encoding="utf-8-sig", errors="replace")
+    except (OSError, PermissionError):
+        return
+    for line in text.splitlines():
+        parts = line.strip().split("::", 1)
+        if len(parts) == 2:
+            yield parts[1]
+
+
+def _get_systemd_service_for_pid(pid: int) -> str | None:
+    """The systemd service unit name *pid* belongs to (``hermes-serve.service``), or None.
+
+    None when the PID isn't part of a service, the file is unreadable, or off Linux.
+    """
+    for cg_path in _pid_unified_cgroup_entries(pid):
+        if cg_path.endswith(".service"):
+            svc_name = cg_path.rsplit("/", 1)[-1]
+            if svc_name:
+                return svc_name
+    return None
+
+
+def _extract_scope_from_cgroup(cgroup_entry: str) -> str | None:
+    """``user`` / ``system`` from a cgroup path (``/user.slice/…`` vs ``/system.slice/…``), else None."""
+    if "/system.slice/" in cgroup_entry:
+        return "system"
+    if "/user.slice/" in cgroup_entry:
+        return "user"
+    return None
+
+
+def _get_pid_cgroup_path(pid: int) -> str | None:
+    """The unified (``0::``) cgroup path from ``/proc/<pid>/cgroup``, or None."""
+    return next(_pid_unified_cgroup_entries(pid), None)
+
+
+def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) -> bool:
+    """Restart *svc_name* via systemctl (``--user`` for user-scope units). True on success.
+
+    Unknown scope tries system first, then user.
+    """
+    scope = _extract_scope_from_cgroup(cgroup_path) if cgroup_path else None
+    system_cmd = ["systemctl", "restart", svc_name]
+    user_cmd = ["systemctl", "--user", "restart", svc_name]
+    candidates = {"user": [user_cmd], "system": [system_cmd]}.get(scope, [system_cmd, user_cmd])
+    for cmd in candidates:
+        try:
+            if _run_probe(cmd, timeout=15).returncode == 0:
+                return True
+        except _SYSTEMCTL_ERRORS:
+            continue
+    return False
+
+
+# launchd plist directories that can supervise a ``hermes dashboard`` / ``hermes serve`` backend on
+# macOS, with the launchctl domain their jobs load into (LaunchAgents: ``gui/<uid>`` or ``user/<uid>``,
+# probed per label like the gateway helpers; LaunchDaemons: ``system``). Both LaunchAgents dirs are
+# per-user domains, so they share the ``agent`` kind.
+
+
+def _launchd_plist_dirs() -> list[tuple[str, Path]]:
+    return [
+        ("agent", Path.home() / "Library" / "LaunchAgents"),
+        ("agent", Path("/Library/LaunchAgents")),
+        ("daemon", Path("/Library/LaunchDaemons")),
+    ]
+
+
+def _loaded_launchd_backend_jobs(
+    plist_dirs: list[tuple[str, Path]] | None = None,
+) -> list[tuple[str, str, list[str], int | None]]:
+    """``(domain, label, program_arguments, live_pid)`` for every LOADED launchd job whose
+    ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend. macOS only (empty
+    elsewhere). Reads the plists (unreadable/malformed ones are skipped) and asks ``launchctl print``
+    per candidate label — a job that is not loaded in any domain is not returned, so an operator's
+    stale plist never claims a process."""
+    if sys.platform != "darwin":
+        return []
+    import plistlib
+    from xml.parsers.expat import ExpatError
+
+    from hermes_cli.gateway import _launchd_print_service_pid
+    uid = os.getuid()  # windows-footgun: ok — darwin-only branch
+    jobs: list[tuple[str, str, list[str], int | None]] = []
+    for kind, plist_dir in (plist_dirs if plist_dirs is not None else _launchd_plist_dirs()):
+        try:
+            plists = sorted(plist_dir.glob("*.plist"))
+        except OSError:
+            continue
+        for plist_path in plists:
+            try:
+                with open(plist_path, "rb") as f:
+                    data = plistlib.load(f)
+            # ExpatError is NOT a ValueError: plistlib propagates it unwrapped for
+            # XML that is not well-formed (e.g. a hand-edited plist with a raw
+            # `&` in `ProgramArguments`), and one such operator file must skip —
+            # not abort — the whole post-pull cleanup scan.
+            except (OSError, ValueError, plistlib.InvalidFileException, ExpatError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            label = str(data.get("Label") or "").strip()
+            args = data.get("ProgramArguments")
+            if not label or not isinstance(args, list) or not args:
+                continue
+            argv = [str(a) for a in args]
+            if _parse_dashboard_runtime(shlex.join(argv)) is None:
+                continue
+            domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
+            for domain in domains:
+                try:
+                    loaded, live_pid = _launchd_print_service_pid(domain, label)
+                except _SYSTEMCTL_ERRORS:
+                    loaded, live_pid = False, None
+                if loaded:
+                    jobs.append((domain, label, argv, live_pid))
+                    break
+    return jobs
+
+
+def _launchd_job_owning_backend(
+    pid: int, cmdline: list[str] | None, jobs: list[tuple[str, str, list[str], int | None]],
+    ancestors: "list[int] | tuple[int, ...]" = (),
+) -> tuple[str, str, int | None] | None:
+    """``(domain, label, live_pid)`` of the loaded launchd job that owns *pid*: launchd reports *pid*
+    (or one of its *ancestors* — a plist may wrap the backend in ``/bin/sh -c …`` without ``exec``)
+    as the job's live process, OR the process runs the job's ``ProgramArguments`` — a detached copy
+    of a supervised backend (an earlier respawn) holds the port the job needs, and respawning it again
+    would only re-create that conflict. ``--no-open`` is ignored on both sides: the respawn path adds
+    it, so an earlier respawn's argv is the plist's plus that flag. None when no loaded job claims
+    the process."""
+    def _norm(argv: list[str]) -> list[str]:
+        return [a for a in argv if a != "--no-open"]
+
+    for domain, label, argv, live_pid in jobs:
+        if live_pid is not None and (live_pid == pid or live_pid in ancestors):
+            return (domain, label, live_pid)
+        if cmdline is not None and _norm(list(cmdline)) == _norm(argv):
+            return (domain, label, live_pid)
+    return None
+
+
+def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeout: float = 15.0) -> bool:
+    """Bring a launchd-supervised backend back after its process was stopped: ``launchctl kickstart
+    <domain>/<label>`` (no ``-k`` — a KeepAlive job may already have respawned it, and a kill would
+    take that fresh process down), then require launchd to report a live PID other than *old_pid*
+    within *timeout*. A kickstart that returns 0 only means "restart requested"; a job that is loaded
+    but never comes back on a fresh PID is a failure the operator must hear about."""
+    from hermes_cli.gateway import _wait_for_launchd_service_pid
+    try:
+        if _run_probe(["launchctl", "kickstart", f"{domain}/{label}"], timeout=30).returncode != 0:
+            return False
+        return _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=timeout, domain=domain)
+    except _SYSTEMCTL_ERRORS:
+        return False
+
+
+def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
+    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
+    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    if sys.platform == "win32":
+        return None
+    try:
+        cmdline_path = f"/proc/{pid}/cmdline"
+        if os.path.exists(cmdline_path):
+            with open(cmdline_path, "rb") as f:
+                raw = f.read()
+            argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
+            return argv or None
+        result = _run_probe(["ps", "-p", str(pid), "-o", "command="], timeout=10)
+        if result.returncode != 0:
+            return None
+        command = (result.stdout or "").strip()
+        if not command:
+            return None
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            argv = command.split()
+        return argv or None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
+    """Respawn manually-started dashboards after ``hermes update``, detached, logging to
+    ``logs/dashboard-restart.log``; returns the argvs that failed to spawn. Callers pre-filter via
+    ``_filter_dashboard_respawn_candidates`` (no Desktop ``--port 0`` backends, capped per profile).
+
+    See #78821.
+    """
+    from hermes_constants import get_hermes_home
+    respawned: list[list[str]] = []
+    failed: list[tuple[list[str], str]] = []
+    log_path = get_hermes_home() / "logs" / "dashboard-restart.log"
+    with contextlib.suppress(OSError):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    for command in commands:
+        try:
+            # Keep restarted dashboards headless; reopening a browser after a
+            # background update is noisy and fails in SSH/headless sessions.
+            if "dashboard" in command and "--no-open" not in command:
+                command = [*command, "--no-open"]
+            with open(log_path, "ab") as log_f:
+                subprocess.Popen(
+                    command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
+                    start_new_session=True, close_fds=True)
+            respawned.append(command)
+        except (OSError, ValueError) as exc:
+            failed.append((command, str(exc)))
+
+    for command in respawned:
+        print(f"    ✓ restarted: {shlex.join(command)}")
+    for command, err_msg in failed:
+        print(f"    ✗ failed to restart ({shlex.join(command)}): {err_msg}")
+    return [command for command, _ in failed]

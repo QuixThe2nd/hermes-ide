@@ -956,8 +956,8 @@ def test_recovery_module_reports_serve_units_in_a_real_process():
 
 
 def _stub_dashboard_helpers(monkeypatch, **helpers):
-    """Stub the ``hermes_cli.main_dashboard`` helpers the dashboard-cleanup path reads at call time."""
-    from hermes_cli import main_dashboard
+    """Stub the ``hermes_cli.dashboard_procs`` helpers the dashboard-cleanup path reads at call time."""
+    from hermes_cli import dashboard_procs as main_dashboard
 
     for name, value in helpers.items():
         monkeypatch.setattr(main_dashboard, name, value)

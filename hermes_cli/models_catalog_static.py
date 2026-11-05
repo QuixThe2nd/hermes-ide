@@ -485,7 +485,7 @@ PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.2"
 # otherwise silently bill the most expensive model (863 Opus requests before one user noticed).
 # Network-free (cache-only) on purpose — this is the hot resolution path. The *interactive* default
 # (GUI onboarding / ``hermes model``) uses the tier-aware ``get_recommended_default_model`` in
-# hermes_cli/web_server.py + ``partition_nous_models_by_tier``, which may hit the Portal.
+# callers that may hit the Portal.
 _SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
 
 

@@ -1222,7 +1222,7 @@ def _set_last_init_error(msg: Optional[str]) -> None:
     Thread-safe via _last_init_error_lock.  Callers pass a message to
     record a failure or None to clear.  SessionDB.__init__ only calls
     this to SET on failure — it deliberately does NOT clear on success,
-    because in a multi-threaded caller (e.g. gateway / web_server per-
+    because in a multi-threaded caller (e.g. gateway / a per-
     request SessionDB() instantiation), a concurrent successful open
     racing past a different thread's failure would erase the cause
     string that thread's /resume handler is about to format.  Explicit
@@ -7223,7 +7223,7 @@ class SessionDB(
         if not sys.platform.startswith("linux") or psutil is None:
             return []
         try:
-            from hermes_cli.dashboard_procs import _is_ephemeral_port_zero_backend
+            from hermes_state_dbfile import _is_ephemeral_port_zero_backend
         except Exception:
             return []
 

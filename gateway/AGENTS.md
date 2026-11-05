@@ -120,16 +120,12 @@ turn re-resolves the config and the credentials, and `_agent_config_signature` a
 rebuild when the route changes — so an in-place swap buys no cache warmth and an override would pin
 an expiring access token that nothing refreshes.
 
-## Gateway lifecycle vs. the Desktop app
+## Fleet version verification
 
-`hermes serve` (control plane, desktop-spawned child) dies with the app — by design. The messaging
-gateway (`gateway run`) SURVIVES the app: the serve backend's `/api/gateway/*` endpoints spawn it
-detached (`_spawn_hermes_action` — `start_new_session` / `DETACHED_PROCESS`), so `before-quit`'s
-SIGTERM never reaches it and bots keep running. The known breach is the Windows shim-unlock
-teardown (`taskkill /T /F` on venv-shim holders, #85265), which exists to let updates proceed and is
-replaced by #92091's `pause-for-update`. Do NOT "fix" gateway-dies-with-app by re-parenting the
-gateway under the backend, and do NOT "fix" update locks by widening the tree-kill. Gateways stamp
-`code_sha`/`code_version` into `gateway_state.json` (`status.py`) so the updater can verify a fleet.
+Gateways stamp `code_sha`/`code_version` into `gateway_state.json` (`status.py`) so the updater can
+verify a fleet. The Windows shim-unlock teardown (`taskkill /T /F` on venv-shim holders, #85265)
+exists to let updates proceed and is replaced by #92091's `pause-for-update`; do NOT "fix" update
+locks by widening the tree-kill.
 
 ## Profile scope (adapters, turns, and everything between turns)
 

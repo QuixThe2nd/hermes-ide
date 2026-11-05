@@ -62,7 +62,6 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `image_gen/openai` | image backend | OpenAI GPT Image 2 and 2.5 Flare/Sunburst generation and editing (API key) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
-| `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
 | `papercuts` | tool + CLI command | Structured workflow-friction journal (`papercuts` tool) plus an opt-in daily autofix cron installer (`hermes papercuts autofix install`) that turns small mechanical papercuts into PRs |
 
 Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.
@@ -264,57 +263,6 @@ gateway:
 | `max_turns` | `0` | Rotate after every N completed turns; `0` disables the cap. |
 
 Both defaults preserve one session scope for the full session. Rotated spans retain the same `session_id` and add `hermes.session.segment` plus `hermes.session.segment_reason` (`compaction` or `max_turns`).
-
-### hermes-achievements
-
-Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, tiered badges generated from your real Hermes session history. Tool-chain feats, debugging patterns, vibe-coding streaks, skill/memory usage, model/provider variety, lifestyle quirks (weekend and night sessions). Originally authored by [@PCinkusz](https://github.com/PCinkusz) as an external plugin; brought in-tree so it stays in lockstep with Hermes feature changes.
-
-**How it works:**
-
-- Scans your entire `~/.hermes/state.db` session history on the dashboard backend
-- Per-session stats are cached by `(started_at, last_active)` fingerprint, so only new or changed sessions re-analyze on subsequent scans
-- First-ever scan runs in a background thread — the dashboard never blocks waiting for it, even on databases with thousands of sessions
-- Unlock state is persisted to `$HERMES_HOME/plugins/hermes-achievements/state.json`
-
-**Tier progression:** Copper → Silver → Gold → Diamond → Olympian. Each card exposes a "What counts" section listing the exact metric being tracked.
-
-**Achievement states:**
-
-| State | Meaning |
-|---|---|
-| Unlocked | At least one tier achieved |
-| Discovered | Known achievement, progress visible, not yet earned |
-| Secret | Hidden until Hermes detects the first related signal in your history |
-
-**API** — routes mount under `/api/plugins/hermes-achievements/`:
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /achievements` | Full catalog with per-badge unlock state (returns a pending placeholder while the first cold scan is running) |
-| `GET /scan-status` | State of the background scanner: `idle` / `running` / `failed`, last duration, run count |
-| `GET /recent-unlocks` | Twenty most recently unlocked badges, newest first |
-| `GET /sessions/{id}/badges` | Badges earned primarily in one specific session |
-| `POST /rescan` | Manual synchronous rescan (blocks; use when the user clicks the rescan button) |
-| `POST /reset-state` | Clear unlock history and cached snapshot |
-
-**State files** — live under `$HERMES_HOME/plugins/hermes-achievements/`:
-
-| File | Contents |
-|---|---|
-| `state.json` | Unlock history: which badges you've earned and when. Stable across Hermes updates. |
-| `scan_snapshot.json` | Last completed scan payload (served immediately on dashboard load) |
-| `scan_checkpoint.json` | Per-session stats cache keyed by fingerprint (makes warm rescans fast) |
-
-**Performance notes:**
-
-- Cold scan on ~8,000 sessions takes a few minutes. It runs in a background thread on first dashboard request; the UI sees a pending placeholder and polls `/scan-status`.
-- **Incremental results during a cold scan** — the scanner publishes a partial snapshot every ~250 sessions so each dashboard refresh shows more badges unlocked as the scan progresses. No minute-long stare at zeros.
-- Warm rescan reuses per-session stats for every session whose `started_at` + `last_active` fingerprint matches the checkpoint — completes in seconds even on large histories.
-- The in-memory snapshot TTL is 120s; stale requests serve the old snapshot immediately and kick a background refresh. You never wait on a spinner just because TTL expired.
-
-**Enabling:** Nothing to enable — `hermes-achievements` is a dashboard-only plugin (no lifecycle hooks, no model-visible tools). It auto-registers as a tab in `hermes dashboard` on first launch. The `plugins.enabled` config only gates lifecycle/tool plugins; dashboard plugins are discovered purely via their `dashboard/manifest.json`.
-
-**Opting out:** Delete or rename `plugins/hermes-achievements/dashboard/manifest.json`, or override it with a user plugin of the same name in `~/.hermes/plugins/hermes-achievements/` that ships no dashboard. The plugin's state files under `$HERMES_HOME/plugins/hermes-achievements/` survive — reinstalling preserves your unlock history.
 
 ### papercuts
 

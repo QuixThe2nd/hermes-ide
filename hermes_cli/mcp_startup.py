@@ -182,7 +182,7 @@ def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float) ->
 
     Used by the Desktop ``serve`` backend after its socket is announced: the thread's first act is
     the ~350ms ``mcp`` SDK import, which would hold the GIL against the renderer's connect + first
-    hydration reads (or the web_server import) if started earlier.
+    hydration reads if started earlier.
     """
     global _mcp_discovery_deferred
     with _mcp_discovery_lock:

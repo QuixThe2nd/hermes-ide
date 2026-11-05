@@ -52,8 +52,6 @@ def test_moved_lazy_pointers_resolve_to_the_split_off_siblings_object():
     bad = []
     for e in _entries():
         facade, name = e["facade"], e["name"]
-        if sys.platform == "win32" and e["target"] == "hermes_cli.pty_bridge":
-            continue  # POSIX PTYs; Windows uses ConPTY, not this external bridge
         sibs = _sibling_modules(facade)
         if not sibs:
             continue

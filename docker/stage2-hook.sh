@@ -425,14 +425,14 @@ seed_one "SOUL.md" "docker/SOUL.md"
 # --- Ensure a gateway api_server key exists (loopback control plane) ---
 # The gateway's aiohttp api_server refuses to start without a strong
 # API_SERVER_KEY (>=16 chars; startup guard in gateway/platforms/api_server.py).
-# Hosted deployments need that listener on loopback so the dashboard — the
+# Hosted deployments need that listener on loopback so API clients — the
 # container's only public HTTP door — can forward Chronos cron fires into the
 # GATEWAY process, where the live platform adapters (relay, E2EE) live. The
 # cron-fire route itself is NAS-JWT-authed, not key-authed; the key gates the
 # rest of the api_server surface. Generate once, persist in .env (mounted
 # volume), never overwrite an operator-provided value. Loopback-only: the
 # default bind host is 127.0.0.1 and the Fly service only exposes the
-# dashboard's port, so this listener is never publicly reachable.
+# gateway's own ports, so this listener is never publicly reachable.
 #
 # CREATE .env when it is missing rather than requiring it to exist (OOF-285):
 # the first-boot seed above depends on /opt/hermes/.env.example being present
@@ -669,7 +669,7 @@ fi
 # registers the gateway-default s6 slot but leaves it DOWN — it only
 # auto-starts when the last recorded state was "running". That means a
 # freshly-provisioned container comes up with the gateway down until
-# someone starts it (e.g. from the dashboard). An orchestrator that
+# someone starts it. An orchestrator that
 # provisions a fresh volume and wants the gateway running from first boot
 # can set HERMES_GATEWAY_BOOTSTRAP_STATE=running; we seed the state file
 # here, BEFORE 02-reconcile-profiles runs (cont-init.d scripts run in
@@ -734,7 +734,7 @@ if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
     if [ -n "$browser_bin" ] && [ -x "$browser_bin" ]; then
         echo "[stage2] Using pinned agent-browser Chromium binary: $browser_bin"
         # Write to s6's container_environment so with-contenv picks it
-        # up for all supervised services (main-hermes, dashboard, etc.).
+        # up for all supervised services (main-hermes, etc.).
         # Idempotent: each boot overwrites with the current path.
         # Some container runtimes / s6-overlay versions do not create the
         # envdir before cont-init hooks run, so create it defensively.

@@ -31,13 +31,13 @@ explicitly allowlisted set.
 ┌─────────────────────────────────────────────┐
 │  Docker Network: internal (no internet)     │
 │                                             │
-│   ┌──────────────┐   ┌──────────────────┐   │
-│   │ hermes-agent │   │ hermes-dashboard │   │
-│   └──────┬───────┘   └────────┬─────────┘   │
-│          │                    │              │
-│          ▼                    │              │
-│   ┌──────────────┐            │              │
-│   │ hermes-gtw   │◄───────────┘              │
+│   ┌──────────────┐                           │
+│   │ hermes-agent │                           │
+│   └──────┬───────┘                           │
+│          │                                   │
+│          ▼                                   │
+│   ┌──────────────┐                           │
+│   │ hermes-gtw   │                           │
 │   └──────┬───────┘                           │
 │          │                                   │
 └──────────┼───────────────────────────────────┘
@@ -55,8 +55,8 @@ explicitly allowlisted set.
 
 Two Docker networks:
 
-- **`internal`** — no default route, no internet access. The agent, dashboard,
-  and gateway run here.
+- **`internal`** — no default route, no internet access. The agent and
+  gateway run here.
 - **`egress`** — has internet access. Only services that need to reach external
   APIs are attached to this network.
 
@@ -92,12 +92,7 @@ services:
       - internal
       - egress              # needs outbound for Telegram, LLM APIs
     ports:
-      - "127.0.0.1:9119:9119"   # dashboard proxy, localhost only
-
-  dashboard:
-    network_mode: ""
-    networks:
-      - internal            # internal only, no egress needed
+      - "127.0.0.1:8642:8642"   # gateway API server, localhost only
 ```
 
 ### With an Egress Proxy (Recommended)
@@ -124,12 +119,7 @@ services:
     environment:
       - HTTP_PROXY=http://egress-proxy:3128
       - HTTPS_PROXY=http://egress-proxy:3128
-      - NO_PROXY=hermes,hermes-dashboard,localhost
-
-  dashboard:
-    network_mode: ""
-    networks:
-      - internal
+      - NO_PROXY=hermes,localhost
 
   egress-proxy:
     image: ubuntu/squid:6.10-24.04_edge
@@ -166,10 +156,6 @@ After bringing up the stack, verify isolation:
 # From the agent container: this should FAIL (no egress)
 docker compose exec gateway \
   curl -sf --max-time 5 https://example.com && echo "FAIL: egress not blocked" || echo "OK: egress blocked"
-
-# From the agent container: this should SUCCEED (internal network)
-docker compose exec gateway \
-  curl -sf --max-time 5 http://hermes-dashboard:9119/health && echo "OK: internal reachable" || echo "FAIL"
 
 # If using egress proxy: this should SUCCEED (allowlisted)
 docker compose exec gateway \

@@ -6,7 +6,7 @@
 # ----------
 # The published image used to ship real `tini` as PID 1. After the
 # s6-overlay migration, PID 1 is `/init`. Downstream catalogs (Hostinger
-# Hermes WebUI, NAS "update" flows that preserve an old entrypoint, etc.)
+# NAS "update" flows that preserve an old entrypoint, etc.)
 # still pin entrypoints like:
 #
 #   ["/usr/bin/tini", "-g", "--"]

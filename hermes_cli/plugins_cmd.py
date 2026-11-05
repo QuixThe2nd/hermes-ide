@@ -1222,24 +1222,6 @@ def _admit_and_save_plugin_sets(
         raise
 
 
-_BASIC_AUTH_PLUGIN_KEYS = frozenset({"basic", "dashboard_auth/basic"})
-
-
-def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
-    """Drop the bundled basic dashboard-auth plugin from ``plugins.disabled`` in *cfg*.
-
-    ``hermes setup`` / ``hermes plugins disable basic`` can park it there while
-    ``dashboard.basic_auth`` is configured, and password auth then silently fails.
-    Returns True when modified.
-    """
-    plugins_cfg = cfg.get("plugins")
-    disabled = plugins_cfg.get("disabled") if isinstance(plugins_cfg, dict) else None
-    if not isinstance(disabled, list) or not (set(disabled) & _BASIC_AUTH_PLUGIN_KEYS):
-        return False
-    plugins_cfg["disabled"] = sorted(set(disabled) - _BASIC_AUTH_PLUGIN_KEYS)
-    return True
-
-
 def _discard_key_and_leaf(names: set, key: str) -> None:
     """Drop *key* and its bare leaf (``observability/langfuse`` -> ``langfuse``) from *names*, so a
     stale legacy bare-name entry can't keep vetoing the canonical key."""
@@ -2495,7 +2477,7 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
     plugins_dir = _plugins_dir()
     if any(n == name and src == "bundled" for n, _ver, _d, src, _path, _key in _discover_all_plugins()):
-        return {"ok": False, "error": "Bundled plugins cannot be removed from the dashboard."}
+        return {"ok": False, "error": "Bundled plugins cannot be removed."}
     target = _user_installed_plugin_dir(name)
     if target is None:
         return {"ok": False, "error": f"Plugin '{name}' was not found under {plugins_dir}."}

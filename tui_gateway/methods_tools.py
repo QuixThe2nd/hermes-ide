@@ -1239,7 +1239,7 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── MCP catalog + per-profile server lifecycle (mcp.servers.*) ─────────────
-# Gateway mirrors of the dashboard REST surface (hermes_cli/web_routers/mcp.py) so a
+# Gateway mirrors of the former dashboard REST surface so a
 # desktop plugin can manage MCP servers for ANY profile. Persistence: hermes_cli/mcp_config.py.
 @_scoped_rpc("mcp.catalog")
 def _(rid, params: dict) -> dict:

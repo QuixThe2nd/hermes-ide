@@ -446,19 +446,3 @@ class TestPreflightAndDashboardLanes:
             "id": "p3", "deliver": "ghost:C1", "failure_deliver": "ghost:C1",
         })
         assert seen == ["ghost"]
-
-    def test_dashboard_update_normalizes_failure_deliver(self, tmp_path):
-        """The dashboard update lane normalizes failure_deliver like
-        deliver: text stripped, empty clears (None) instead of
-        coalescing to a target."""
-        from hermes_cli.web_routers.cron import _normalize_dashboard_cron_updates
-
-        out = _normalize_dashboard_cron_updates(
-            {"failure_deliver": "  slack:D0ALERTS  "}, tmp_path
-        )
-        assert out["failure_deliver"] == "slack:D0ALERTS"
-
-        cleared = _normalize_dashboard_cron_updates(
-            {"failure_deliver": ""}, tmp_path
-        )
-        assert cleared["failure_deliver"] is None

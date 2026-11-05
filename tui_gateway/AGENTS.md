@@ -1,8 +1,7 @@
 # tui_gateway/ + ui-tui/ — the TUI and its JSON-RPC backend
 
 Applies on top of the root `AGENTS.md`. The TUI fully replaces the classic prompt_toolkit CLI;
-activate with `hermes --tui` or `HERMES_TUI=1`. `tui_gateway` is ALSO the backend the Desktop app
-and the dashboard `/chat` talk to — changes here have three consumers.
+activate with `hermes --tui` or `HERMES_TUI=1`.
 
 ## Process model
 
@@ -51,8 +50,7 @@ New event = `event("<type>", Payload)` in `contracts/events.py`; the emitter is 
 
 ## Profile scope in RPC methods
 
-One `serve` process may host sessions from several profile homes (Desktop pooled backends launch
-under a profile; the dashboard serves several). The launch profile is a profile: "default" means
+One process may host sessions from several profile homes. The launch profile is a profile: "default" means
 the launch home, never `~/.hermes`. The first non-launch home hosted flips
 `launch_profile_policy.py` → `set_multiplex_active(True)`; without it every fail-closed guard is
 silently off. Every method that reads or writes home-, config- or `.env`-derived state runs under
@@ -145,4 +143,3 @@ Python tests: `tests/tui_gateway/` via `scripts/run_tests.sh`. TS tests: vitest 
 Python test that asserts about `package.json` / `.ts` sources will not run on a JS-only PR — keep
 JS-side assertions in vitest (root testing rules). Root TypeScript style rules apply.
 
-Related: `web/AGENTS.md` (dashboard embeds this TUI over a PTY).

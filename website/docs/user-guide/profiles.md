@@ -306,46 +306,6 @@ If you want this profile to work in a specific project by default, also set its 
 coder config set terminal.cwd /absolute/path/to/project
 ```
 
-### From the dashboard
-
-The [web dashboard](features/web-dashboard.md#managing-multiple-profiles)
-is a machine-level surface that can manage **any** profile's config, API
-keys, skills, MCPs, and model via the profile switcher in its sidebar — no
-per-profile dashboard needed. `coder dashboard` routes to the machine
-dashboard with the `coder` profile preselected. The dashboard's Chat tab
-also follows the switcher, spawning a conversation under the selected
-profile's home.
-
-Note: "Set as active" on the dashboard's Profiles page is the sticky
-default for **future CLI/gateway runs** (same as `hermes profile use`) —
-to edit a profile from the dashboard, use the switcher instead.
-
-## Updating
-
-`hermes update` pulls code once (shared) and syncs new bundled skills to **all** profiles automatically:
-
-```bash
-hermes update
-# → Code updated (12 commits)
-# → Skills synced: default (up to date), coder (+2 new), assistant (+2 new)
-```
-
-User-modified skills are never overwritten.
-
-## Managing profiles
-
-```bash
-hermes profile list           # show all profiles with status
-hermes profile show coder     # detailed info for one profile
-hermes profile rename coder dev-bot   # rename (updates alias + service)
-hermes profile migrate-identity coder dev-bot   # retry a rename's identity migration
-hermes profile purge-identity dev-bot   # retry a delete's identity purge
-hermes profile export coder   # pack into coder.tar.gz (shareable; keys stripped)
-hermes profile import coder.tar.gz   # install an archive as a new profile
-```
-
-In chat, the same two live as `/export` and `/import` — and in the desktop app as **⌘K → Export/Import profile…**. See [Sharing a profile](#sharing-a-profile).
-
 ### Naming the default profile
 
 The default profile's internal ID is always `default` — it can't be truly

@@ -136,25 +136,6 @@ def _npm_bin_exists(bin_dir: Path, name: str) -> bool:
     return any((bin_dir / c).exists() for c in (name, f"{name}.cmd", f"{name}.ps1", f"{name}.exe"))
 
 
-def _web_build_toolchain_ready(*roots: Path) -> bool:
-    """True when ``tsc`` and ``vite`` shims are reachable from any of *roots*.
-    Callers must pass every root the build would search, or a healthy tree reads as broken."""
-    bin_dirs = [d for d in (root / "node_modules" / ".bin" for root in roots) if d.is_dir()]
-    return bool(bin_dirs) and all(
-        any(_npm_bin_exists(bin_dir, tool) for bin_dir in bin_dirs) for tool in ("tsc", "vite"))
-
-
-def _web_toolchain_roots(web_dir: Path) -> tuple[Path, ...]:
-    """Roots whose ``node_modules/.bin`` can satisfy the web build: ``npm run build`` searches the
-    package and each ancestor, so hoisted and package-local shims are equally valid.
-
-    ``npm run build`` prepends ``node_modules/.bin`` for the package and each of its ancestors, so shims
-    hoisted to the workspace root and shims nested under a package that owns its lockfile (#42973) are
-    equally valid.
-    """
-    return (web_dir, web_dir.parent)
-
-
 class PyprojectExtrasReadError(RuntimeError):
     """On-disk ``pyproject.toml`` optional-dependencies could not be read (fail closed)."""
 
@@ -369,11 +350,6 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     # Matching hash but no node_modules: cache was recorded by another checkout.
     if not (_m().PROJECT_ROOT / "node_modules").is_dir():
         return True
-    # Never skip when the web toolchain never landed, or later updates build on a half-installed tree.
-    web_dir = _m().PROJECT_ROOT / "web"
-    if (web_dir / "package.json").is_file() and not _web_build_toolchain_ready(
-        *_web_toolchain_roots(web_dir)):
-        return True
     try:
         cache_file = _npm_lock_cache_file(hermes_root)
         if not cache_file.exists():
@@ -420,15 +396,13 @@ def _repair_node_deps_on_current_checkout(
         print("    Fix npm and re-run `hermes update`.")
         print_completion("⚠ Checkout is current, but Node.js dependencies could not be repaired.")
         return False
-    # Pair with the web build like every other call site; it staleness-checks internally.
-    _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     _check_and_apply_config_migration(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id)
     return bool(print_completion(completion_message))
 
 
 def _update_node_dependencies() -> list[str]:
-    """Refresh Node deps for ui-tui and web. Returns labels whose npm install failed (empty on
+    """Refresh Node deps for ui-tui. Returns labels whose npm install failed (empty on
     success) so the caller reports a partial update instead of ``Update complete!``.
 
     See #30271.
@@ -444,14 +418,14 @@ def _update_node_dependencies() -> list[str]:
         from hermes_constants import is_wsl
         path_npm = shutil.which("npm")
         if is_wsl() and path_npm and _m()._is_windows_npm_path(path_npm):
-            # Name only the workspaces the CLI/TUI/web build actually requires.
+            # Name only the workspace the CLI/TUI build actually requires.
             print("→ Updating Node.js dependencies...")
             print("  ⚠ Skipped: only a Windows npm is reachable from this WSL shell.")
             print("    Install Node.js inside the WSL distro (nvm, or your distro's")
             print("    package manager), then re-run `hermes update`.")
             has_workspace = any(
-                (_m().PROJECT_ROOT / ws / "package.json").exists() for ws in ("ui-tui", "web"))
-            return ["ui-tui, web workspaces"] if has_workspace else []
+                (_m().PROJECT_ROOT / ws / "package.json").exists() for ws in ("ui-tui",))
+            return ["ui-tui workspace"] if has_workspace else []
         return []
 
     from hermes_constants import get_default_hermes_root
@@ -476,7 +450,7 @@ def _update_node_dependencies() -> list[str]:
     print("→ Updating Node.js dependencies...")
     install_args = [
         "--no-fund", "--no-audit", "--prefer-offline", "--progress=false",
-        "--workspace", "ui-tui", "--workspace", "web",
+        "--workspace", "ui-tui",
         # Root devDependencies (shared ESLint config) would otherwise be pruned by the
         # scoped install.
         "--include-workspace-root"]
@@ -490,7 +464,7 @@ def _update_node_dependencies() -> list[str]:
         npm, _m().PROJECT_ROOT, extra_args=tuple(install_args), capture_output=False, env=nixos_env)
     if result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
-        print("  ✓ ui-tui, web workspaces installed")
+        print("  ✓ ui-tui workspace installed")
         return []
     print("  ⚠ npm install failed")
     stderr = (result.stderr or "").strip()
@@ -500,7 +474,7 @@ def _update_node_dependencies() -> list[str]:
     print("  ⚠ Node.js dependency refresh did not complete cleanly; the")
     print("    installation may be in a mixed state (updated code, stale Node")
     print("    deps). Fix npm and re-run `hermes update`.")
-    return ["ui-tui, web workspaces"]
+    return ["ui-tui workspace"]
 
 
 def _venv_core_imports_healthy() -> tuple[bool, str]:

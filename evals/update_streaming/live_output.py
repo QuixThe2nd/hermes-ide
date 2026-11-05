@@ -29,7 +29,7 @@ def run_child(mode):
 
 
 def step(mode):
-    from hermes_cli.main_dashboard import _install_hangup_protection, _finalize_update_output
+    from hermes_cli.main_update_output import _install_hangup_protection, _finalize_update_output
     from hermes_cli.main import _run_logged_subprocess
     state = _install_hangup_protection(gateway_mode=True)
     try:
@@ -39,7 +39,7 @@ def step(mode):
 
 
 def probe():
-    from hermes_cli.main_dashboard import _install_hangup_protection, _finalize_update_output
+    from hermes_cli.main_update_output import _install_hangup_protection, _finalize_update_output
     from hermes_cli.main import _run_logged_subprocess
     receipts = []
     for gateway in (False, True):

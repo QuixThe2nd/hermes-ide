@@ -28,10 +28,8 @@ _ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
 # (so `_ZIP_PRESERVED_TOP_LEVEL` cannot shield them). The dirty-tree guard admits them and
 # `_stage_entries` grafts the live copies into the staged tree so the swap keeps them (#90495).
 _ZIP_PRESERVED_NESTED = {
-    "hermes_cli": ("web_dist",),
     "scripts": ("whatsapp-bridge/node_modules",),
     "ui-tui": ("dist", "node_modules", "packages/hermes-ink/dist"),
-    "web": ("node_modules",),
 }
 
 _STASH_HINT = "  Stash or commit your changes, then rerun `hermes update`."
@@ -480,7 +478,6 @@ def _finish_zip_update(
         print("  Re-run `hermes update` to complete it.")
         _m().sys.exit(1)
     node_failures = _update_node_dependencies()
-    _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     with suppress(Exception):
         print("→ Syncing bundled skills...")
         _print_bundled_skills_sync_report()

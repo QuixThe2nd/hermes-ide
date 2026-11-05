@@ -3,7 +3,7 @@
 tini (current PID 1) reaps zombies via its built-in subreaper behavior.
 s6-overlay's ``/init`` (Phase 2 PID 1) does the same. This invariant is
 required for long-running containers spawning subprocesses (subagents,
-dashboard, dynamic gateways) — otherwise the process table fills with
+dynamic gateways) — otherwise the process table fills with
 defunct entries and eventually exhausts the kernel PID space.
 
 Every ``docker exec`` here runs as the unprivileged ``hermes`` user
