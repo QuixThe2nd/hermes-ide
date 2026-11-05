@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import logging
 import os
+import re
 from pathlib import Path
 import sqlite3
 import threading
@@ -67,7 +68,21 @@ def _matrix_link(room_id: str, event_id: Optional[str] = None) -> str:
     return f"https://matrix.to/#/{quote(room_id, safe='')}{suffix}"
 
 
-def _room_title(msgtype: str) -> str:
+_MAX_DERIVED_TITLE_CHARS = 48  # mirrors agent/title_generator.MAX_DERIVED_TITLE_CHARS
+
+# Internal marker stamped on Hermes-created inbox child rooms (room account-data
+# style tag); never user-visible.
+_HERMES_INBOX_ROOM_TAG = "hermes-inbox-room"
+
+
+def _room_title(msgtype: str, body: Optional[str] = None) -> str:
+    """Deterministic instant title: the root message body when there is one, else the
+    msgtype map. Content-shaped only — the LLM title lands later via the rename lane."""
+    derived = re.sub(r"\s+", " ", str(body or "")).strip()
+    if derived:
+        derived = derived[:_MAX_DERIVED_TITLE_CHARS].rstrip()
+        if derived:
+            return derived
     return {
         "m.image": "Image conversation",
         "m.audio": "Audio conversation",
@@ -378,8 +393,9 @@ class MatrixInboxRouter:
                         "type": "m.room.encryption", "state_key": "",
                         "content": {"algorithm": algorithm},
                     }] if algorithm else None)
+                    initial_room_name = _room_title(msgtype, source_content.get("body"))
                     child_room_id = await self.adapter.create_room(
-                        name=_room_title(msgtype), invite=[sender], is_direct=False,
+                        name=initial_room_name, invite=[sender], is_direct=False,
                         preset="private_chat", initial_state=initial_state)
                     if not child_room_id:
                         raise RuntimeError("room creation failed")
@@ -398,6 +414,13 @@ class MatrixInboxRouter:
                 self._children[child_room_id] = route
                 self.adapter._dm_rooms[child_room_id] = True
                 self.adapter._invalidate_room_identities(child_room_id)
+                # Best-effort marker so the rename lane can recognize Hermes-created
+                # rooms even across process restarts; never fail room creation over it.
+                try:
+                    await self.adapter.set_room_account_data(
+                        child_room_id, _HERMES_INBOX_ROOM_TAG, {"tagged": True})
+                except Exception:
+                    logger.debug("Matrix: could not stamp the inbox-room tag on %s", child_room_id)
                 await self._mirror_best_effort(route)
         self._children[route.child_room_id] = route
         self.adapter._dm_rooms[route.child_room_id] = True

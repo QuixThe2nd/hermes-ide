@@ -27,6 +27,7 @@ def _attach(lane):
 
     runner = types.SimpleNamespace(
         _is_telegram_topic_lane=lambda src: lane == "telegram",
+        _is_matrix_inbox_room_lane=lambda src: lane == "matrix",
         _is_discord_auto_thread_lane=lambda src: lane == "discord",
         _is_relay_discord_channel_lane=lambda src: False,
         _schedule_telegram_topic_title_rename=(

@@ -2603,6 +2603,54 @@ class MatrixAdapter(BasePlatformAdapter):
             lambda: self._client.invite_user(RoomID(room_id), UserID(user_id)),
             ("Matrix: invited %s to %s", user_id, room_id), "Matrix: invite error: %s")
 
+    async def rename_room(
+        self, room_id: str, name: str, *, only_if_current_name: Optional[str] = None,
+    ) -> bool:
+        """Best-effort room rename (contract mirrors Discord's ``rename_thread``).
+
+        ``only_if_current_name`` is the no-clobber guard: a room whose current name
+        differs from the expected value (e.g. a human renamed it) is left alone.
+        Never raises; returns True only when the room name was (or already is) set.
+        """
+        try:
+            if not self._client or not isinstance(name, str) or not name.strip():
+                return False
+            cleaned = re.sub(r"\s+", " ", name).strip()
+            if not cleaned:
+                return False
+            current = await self._get_room_state_value(room_id, "m.room.name", "name")
+            if current == cleaned:
+                return True
+            if only_if_current_name is not None:
+                if current is not None and current != only_if_current_name:
+                    logger.info(
+                        "Matrix: declining rename of %s (current name %r != expected %r)",
+                        room_id, current, only_if_current_name)
+                    return False
+            elif current is not None:
+                # No expected value supplied: still refuse to clobber a named room.
+                logger.info("Matrix: declining rename of %s (unexpected current name %r)", room_id, current)
+                return False
+            await self._client.send_state_event(RoomID(room_id), EventType.ROOM_NAME, {"name": cleaned})
+            logger.info("Matrix: renamed room %s from %r to %r", room_id, current, cleaned)
+            return True
+        except Exception as exc:
+            logger.debug("Matrix: rename_room failed for %s: %s", room_id, exc)
+            return False
+
+    async def set_room_account_data(self, room_id: str, tag: str, content: dict) -> bool:
+        """Best-effort internal marker for Hermes-created rooms. mautrix 0.21.1 has no
+        per-room account-data PUT, so the tag is stored as private room state."""
+        try:
+            if not self._client:
+                return False
+            event_type = EventType(str(tag), EventType.Class.STATE)
+            await self._client.send_state_event(RoomID(room_id), event_type, dict(content or {}))
+            return True
+        except Exception as exc:
+            logger.debug("Matrix: set_room_account_data failed for %s/%s: %s", room_id, tag, exc)
+            return False
+
     _VALID_PRESENCE_STATES = frozenset(("online", "offline", "unavailable"))
 
     async def set_presence(self, state: str = "online", status_msg: str = "") -> bool:
