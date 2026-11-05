@@ -111,6 +111,7 @@ class InboxRoute:
     space_link_state: str = "pending"
     failure_notice_sent: bool = False
     last_error: Optional[str] = None
+    initial_room_name: Optional[str] = None
 
     def account_data(self) -> dict[str, Any]:
         return {
@@ -166,6 +167,7 @@ class _InboxStore:
                             space_link_state TEXT NOT NULL DEFAULT 'pending',
                             failure_notice_sent INTEGER NOT NULL DEFAULT 0,
                             last_error TEXT,
+                            initial_room_name TEXT,
                             created_at REAL NOT NULL,
                             updated_at REAL NOT NULL
                         );
@@ -174,6 +176,11 @@ class _InboxStore:
                             WHERE child_room_id IS NOT NULL;
                         """
                     )
+                    try:
+                        # CREATE TABLE IF NOT EXISTS does not migrate an existing DB.
+                        conn.execute("ALTER TABLE matrix_inbox_routes ADD COLUMN initial_room_name TEXT")
+                    except sqlite3.OperationalError:
+                        pass
                     self._schema_ready = True
         return conn
 
@@ -197,7 +204,8 @@ class _InboxStore:
             acknowledgement_event_id=row["acknowledgement_event_id"],
             dispatch_accepted=bool(row["dispatch_accepted"]),
             space_link_state=row["space_link_state"],
-            failure_notice_sent=bool(row["failure_notice_sent"]), last_error=row["last_error"])
+            failure_notice_sent=bool(row["failure_notice_sent"]), last_error=row["last_error"],
+            initial_room_name=row["initial_room_name"])
 
     def lookup(self, root_key: str) -> Optional[InboxRoute]:
         with self._connection() as conn:
@@ -229,10 +237,13 @@ class _InboxStore:
             raise RuntimeError("Matrix inbox route disappeared during update")
         return self._route(row)
 
-    def mark_ready(self, root_key: str, child_room_id: str, encrypted: bool) -> InboxRoute:
+    def mark_ready(self, root_key: str, child_room_id: str, encrypted: bool,
+                   initial_room_name: Optional[str] = None) -> InboxRoute:
         return self._update(
-            root_key, "child_room_id = ?, encrypted = ?, state = 'ready', last_error = NULL",
-            (child_room_id, int(encrypted)))
+            root_key,
+            "child_room_id = ?, encrypted = ?, state = 'ready', last_error = NULL, "
+            "initial_room_name = ?",
+            (child_room_id, int(encrypted), initial_room_name))
 
     def mark_failed(self, root_key: str, error: str) -> InboxRoute:
         return self._update(root_key, "state = 'failed', last_error = ?", (error,))
@@ -406,7 +417,9 @@ class MatrixInboxRouter:
                     await self._notify_failure_once(route, reason)
                     return
                 try:
-                    route = await asyncio.to_thread(self._store.mark_ready, root_key, child_room_id, route.encrypted)
+                    route = await asyncio.to_thread(
+                        self._store.mark_ready, root_key, child_room_id, route.encrypted,
+                        initial_room_name)
                 except Exception as exc:
                     logger.warning("Matrix: could not persist the new inbox room: %s", type(exc).__name__)
                     await self._notify_failure_once(route, "state")
@@ -461,10 +474,12 @@ class MatrixInboxRouter:
             return
         if msgtype in ("m.image", "m.audio", "m.video", "m.file"):
             event = await self.adapter._handle_media_message(
-                route.child_room_id, sender, event_id, event_ts, source_content, relates_to, msgtype)
+                route.child_room_id, sender, event_id, event_ts, source_content, relates_to, msgtype,
+                initial_room_name=route.initial_room_name)
         else:
             event = await self.adapter._handle_text_message(
-                route.child_room_id, sender, event_id, event_ts, source_content, relates_to, batch=False)
+                route.child_room_id, sender, event_id, event_ts, source_content, relates_to, batch=False,
+                initial_room_name=route.initial_room_name)
         if event is None or not getattr(event, "_gateway_accepted", False):
             await self._notify_failure_once(route, "dispatch")
             return

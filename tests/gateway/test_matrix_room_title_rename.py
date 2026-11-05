@@ -148,11 +148,12 @@ async def test_matrix_lane_rename_passes_initial_name_guard():
         def _delivery_adapter_for(self, source):
             return self.adapters[source.platform]
 
+    # Child rooms carry the room id in chat_id; thread_id stays None.
     source = types.SimpleNamespace(
         platform=Platform.MATRIX,
-        chat_id="!room:example.org",
+        chat_id="!child:example.org",
         chat_type="dm",
-        thread_id="!child:example.org",
+        thread_id=None,
         auto_thread_created=True,
         auto_thread_initial_name="Initial words",
     )
@@ -169,3 +170,167 @@ def test_rename_room_hub_rpc_reachable():
     assert "only_if_current_name" in sig.parameters
     assert sig.parameters["only_if_current_name"].default is None
     assert not MatrixAdapter.rename_room.__name__.startswith("_")
+
+
+# ── source stamping through the real resolution path ──────────────────────────────────────
+
+
+def _bare_context_adapter(is_child_room) -> MatrixAdapter:
+    """A MatrixAdapter built via object.__new__ with just enough stubs for
+    ``_resolve_message_context`` on a DM room."""
+    from plugins.platforms.matrix.adapter import MatrixRoomIdentity
+
+    adapter = object.__new__(MatrixAdapter)
+    adapter.platform = Platform.MATRIX
+    adapter.gateway_runner = None
+    adapter.get_bot_display_name = lambda **kw: "Bot"
+    identity = MatrixRoomIdentity(
+        room_id="!child:example.org", room_name="Initial words", room_topic=None,
+        canonical_alias=None, server_name="example.org", joined_member_count=2,
+        is_direct_account_data=False, display_name="Initial words",
+        has_explicit_name=True, chat_type="dm")
+
+    async def _identity(room_id, *, force_refresh=False):
+        return identity
+
+    async def _dm(room_id):
+        return True
+
+    async def _display_name(room_id, sender):
+        return "Tester"
+
+    adapter._resolve_room_identity = _identity
+    adapter._is_dm_room = _dm
+    adapter._is_bot_mentioned = lambda *a, **k: False
+    adapter._get_display_name = _display_name
+    adapter._threads = types.SimpleNamespace(mark=lambda tid: None)
+    adapter._dm_mention_threads = False
+    adapter._dm_auto_thread = False
+    adapter._background_read_receipt = lambda *a: None
+    adapter._inbox_router = types.SimpleNamespace(is_child_room=is_child_room)
+    return adapter
+
+
+@pytest.mark.anyio
+async def test_resolve_message_context_stamps_inbox_child_markers():
+    adapter = _bare_context_adapter(lambda rid: rid == "!child:example.org")
+    ctx = await adapter._resolve_message_context(
+        "!child:example.org", "@tester:example.org", "$e1", "hi", {"body": "hi"}, {},
+        initial_room_name="Initial words")
+    assert ctx is not None
+    source = ctx[5]
+    assert source.auto_thread_created is True
+    assert source.auto_thread_initial_name == "Initial words"
+    assert source.thread_id is None  # child rooms are rooms, not threads
+
+
+@pytest.mark.anyio
+async def test_resolve_message_context_plain_dm_not_stamped():
+    # A caller-supplied name can never mark a normal DM: is_child_room is the gate.
+    adapter = _bare_context_adapter(lambda rid: False)
+    ctx = await adapter._resolve_message_context(
+        "!child:example.org", "@tester:example.org", "$e1", "hi", {"body": "hi"}, {},
+        initial_room_name="Initial words")
+    assert ctx is not None
+    assert ctx[5].auto_thread_created is False
+    assert not ctx[5].auto_thread_initial_name
+
+
+@pytest.mark.anyio
+async def test_resolve_message_context_child_without_name_not_stamped():
+    adapter = _bare_context_adapter(lambda rid: True)
+    ctx = await adapter._resolve_message_context(
+        "!child:example.org", "@tester:example.org", "$e1", "hi", {"body": "hi"}, {})
+    assert ctx is not None
+    assert ctx[5].auto_thread_created is False
+    assert not ctx[5].auto_thread_initial_name
+
+
+# ── hub client rename proxy ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_hub_client_rename_room_proxy():
+    from plugins.platforms.matrix.hub_client import MatrixHubClientAdapter
+
+    adapter = object.__new__(MatrixHubClientAdapter)
+    calls: list = []
+
+    async def _rpc(method, *args, **kwargs):
+        calls.append((method, args, kwargs))
+        return True
+
+    adapter._rpc = _rpc
+    ok = await adapter.rename_room(
+        "!child:example.org", "Semantic Title", only_if_current_name="Initial words")
+    assert ok is True
+    assert calls == [(
+        "rename_room", ("!child:example.org", "Semantic Title"),
+        {"only_if_current_name": "Initial words"})]
+
+
+# ── InboxStore persistence of the initial room name ────────────────────────────────────────
+
+
+def _old_schema_sql() -> str:
+    return """
+        CREATE TABLE matrix_inbox_routes (
+            root_key TEXT PRIMARY KEY,
+            inbox_room_id TEXT NOT NULL,
+            root_event_id TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            encrypted INTEGER NOT NULL,
+            parent_space_id TEXT,
+            child_room_id TEXT,
+            state TEXT NOT NULL,
+            origin_link_event_id TEXT,
+            acknowledgement_event_id TEXT,
+            dispatch_accepted INTEGER NOT NULL DEFAULT 0,
+            space_link_state TEXT NOT NULL DEFAULT 'pending',
+            failure_notice_sent INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+    """
+
+
+def test_inbox_store_persists_initial_room_name(tmp_path):
+    from plugins.platforms.matrix.adapter_inbox import InboxRoute, _InboxStore
+
+    db = tmp_path / "inbox.db"
+    store = _InboxStore(db)
+    store.begin(InboxRoute(
+        root_key="rk", inbox_room_id="!inbox:example.org", root_event_id="$e1",
+        sender="@tester:example.org", encrypted=False))
+    store.mark_ready("rk", "!child:example.org", False, initial_room_name="Initial words")
+
+    reopened = _InboxStore(db)
+    routes = reopened.ready_routes()
+    assert len(routes) == 1
+    assert routes[0].child_room_id == "!child:example.org"
+    assert routes[0].initial_room_name == "Initial words"
+
+
+def test_inbox_store_migrates_old_schema(tmp_path):
+    import sqlite3
+
+    from plugins.platforms.matrix.adapter_inbox import _InboxStore
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_old_schema_sql())
+    conn.execute(
+        """INSERT INTO matrix_inbox_routes
+           (root_key, inbox_room_id, root_event_id, sender, encrypted, child_room_id,
+            state, created_at, updated_at)
+           VALUES ('rk', '!inbox:example.org', '$e1', '@tester:example.org', 0,
+                   '!child:example.org', 'ready', 1.0, 1.0)""")
+    conn.commit()
+    conn.close()
+
+    store = _InboxStore(db)
+    routes = store.ready_routes()  # opening the store runs the defensive ALTER
+    assert len(routes) == 1
+    assert routes[0].child_room_id == "!child:example.org"
+    assert routes[0].initial_room_name is None

@@ -2018,7 +2018,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _resolve_message_context(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
-        relates_to: dict) -> Optional[tuple]:
+        relates_to: dict, initial_room_name: Optional[str] = None) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
         display_name, source) or None when the message should be dropped."""
         identity = await self._resolve_room_identity(room_id)
@@ -2076,6 +2076,12 @@ class MatrixAdapter(BasePlatformAdapter):
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+        if initial_room_name and self._inbox_router.is_child_room(room_id):
+            # Mark Hermes-created inbox child rooms so the session-title rename lane can
+            # distinguish them from a plain DM; is_child_room is the safety gate — a
+            # caller-supplied name can never mark a normal DM.
+            source.auto_thread_created = True
+            source.auto_thread_initial_name = initial_room_name
         if thread_id:
             self._threads.mark(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
@@ -2099,13 +2105,15 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, initial_room_name: Optional[str] = None, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
         downloading); resolving it twice would double the read receipt / thread mark."""
         if ctx is None:
-            ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+            ctx = await self._resolve_message_context(
+                room_id, sender, event_id, body, source_content, relates_to,
+                initial_room_name=initial_room_name)
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
@@ -2127,12 +2135,14 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, *, batch: bool = True) -> Optional[MessageEvent]:
+        relates_to: dict, *, batch: bool = True,
+        initial_room_name: Optional[str] = None) -> Optional[MessageEvent]:
         body = source_content.get("body", "") or ""
         if not body:
             return None
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
+            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to,
+            initial_room_name=initial_room_name)
         if msg_event is None:
             return None
         if batch and msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -2143,7 +2153,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, msgtype: str) -> Optional[MessageEvent]:
+        relates_to: dict, msgtype: str, *,
+        initial_room_name: Optional[str] = None) -> Optional[MessageEvent]:
         body = source_content.get("body", "") or ""
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
@@ -2172,7 +2183,9 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
         # non-allowlisted room must not pull media onto the host only to drop it.
-        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        ctx = await self._resolve_message_context(
+            room_id, sender, event_id, body, source_content, relates_to,
+            initial_room_name=initial_room_name)
         if ctx is None:
             return
         # Cache locally so downstream tools get a real file path.
@@ -2189,7 +2202,8 @@ class MatrixAdapter(BasePlatformAdapter):
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
-            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
+            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype,
+            initial_room_name=initial_room_name)
         if msg_event is not None:
             await self.handle_message(msg_event)
         return msg_event

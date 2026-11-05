@@ -427,7 +427,7 @@ class GatewayTopicThreadsMixin:
         return (
             source.platform == Platform.MATRIX and source.chat_type == "dm"
             and bool(getattr(source, "auto_thread_created", False))
-            and bool(source.thread_id)
+            and bool(getattr(source, "chat_id", None))
             and bool(getattr(source, "auto_thread_initial_name", None))
         )
 
@@ -458,13 +458,13 @@ class GatewayTopicThreadsMixin:
             return
         room_name = self._sanitize_matrix_room_title(title)
         logger.info(
-            "matrix inbox-room rename: room=%s new_title=%r", str(source.thread_id), room_name)
+            "matrix inbox-room rename: room=%s new_title=%r", str(source.chat_id), room_name)
         try:
             renamed = await rename_room(
-                str(source.thread_id), room_name,
+                str(source.chat_id), room_name,
                 only_if_current_name=getattr(source, "auto_thread_initial_name", None))
             logger.info(
-                "matrix inbox-room rename result: room=%s applied=%s", str(source.thread_id), bool(renamed))
+                "matrix inbox-room rename result: room=%s applied=%s", str(source.chat_id), bool(renamed))
         except TypeError:
             logger.warning(
                 "Matrix room rename raised TypeError (adapter=%s)", type(adapter).__name__, exc_info=True)
