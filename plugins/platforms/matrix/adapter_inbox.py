@@ -311,8 +311,16 @@ class MatrixInboxRouter:
             logger.warning("Matrix: refusing inbox routing for an event without an event ID")
             return True
         # A room is a credentialed side effect: unknown authorization is not approval.
+        # Since the hub transport migration the sync loop runs in the hub process, where
+        # no runner authorization callback is registered, so the gate falls back to the
+        # adapter's own intake allowlist (fail-closed when that admits no one either).
         authorized = self.adapter._is_sender_authorized(sender, "group", room_id)
-        if authorized is not True:
+        if authorized is None:
+            if self.adapter._inbox_sender_authorized(sender) is not True:
+                logger.info("Matrix: inbox message did not pass the existing sender authorization gate")
+                return True
+            logger.info("Matrix: inbox sender admitted via adapter allowlist (no runner authorization callback on this side)")
+        elif authorized is not True:
             logger.info("Matrix: inbox message did not pass the existing sender authorization gate")
             return True
         root_key = self._root_key(room_id, event_id)

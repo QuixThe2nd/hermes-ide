@@ -2469,6 +2469,12 @@ class MatrixAdapter(BasePlatformAdapter):
         return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
+    def _inbox_sender_authorized(self, sender: str) -> bool:
+        """Hub-side inbox gate: the adapter's own intake allowlist (``matrix.allowed_users``
+        / MATRIX_ALLOWED_USERS, plus the same GATEWAY_ALLOW_ALL_USERS opt-in the intake path
+        honors). Fail-closed: an empty allowlist admits no one unless allow-all is active."""
+        return self._is_authorized_user(sender)
+
     async def _validate_matrix_prompt_reactor(
         self, room_id: str, target_event_id: str, sender: str, prompt: Any, prompt_label: str) -> bool:
         if not self._is_authorized_user(sender):
