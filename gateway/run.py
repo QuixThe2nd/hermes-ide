@@ -1031,6 +1031,198 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+# Provider-proxy finals sometimes embed interim-assistant scaffolding (memory
+# injection cards, reasoning dumps, tool-progress fences) that never belonged
+# in the human-visible reply.
+_SCAFFOLD_FULLWIDTH_RULE_RE = re.compile(r"^[\s]*═{3,}[\s]*$")
+_SCAFFOLD_INJECTING_HEADER_RE = re.compile(
+    r"^[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U00002300-\U000023FF\U0001F900-\U0001F9FF"
+    r"\U0001F3FB-\U0001F3FF\U0000200D\U0000FE0F]+\s*Injecting\b"
+)
+_SCAFFOLD_REASONING_HEADER_RE = re.compile(r"^💭")
+_SCAFFOLD_PROGRESS_BULLET_RE = re.compile(
+    r"^[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U00002300-\U000023FF\U0001F900-\U0001F9FF"
+    r"\U0001F3FB-\U0001F3FF\U0000200D\U0000FE0F]*\s+"
+    r"(?:Reading|Editing|Updating|Searching|Confirming|Scheduling|Listing|Checking|Wait|Merge|Publish|Verify)\b"
+)
+_SCAFFOLD_TRUNCATION_RE = re.compile(r"^_\.\.\.\s*\(\d+\s+more\s+lines\)_\s*$", re.IGNORECASE)
+_SCAFFOLD_SERVED_FOOTER_RE = re.compile(
+    r"^[\w.\-/]+\s+·\s+\d+%\s+·\s+~\s+·\s+(?:\d+m)?\d+s\s+·\s+\d+\s+calls?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _scaffold_fence_line(line: str) -> bool:
+    """True when a non-empty line inside a fence is provider scaffolding."""
+    body = line.strip()
+    if not body:
+        return True
+    if _SCAFFOLD_FULLWIDTH_RULE_RE.match(body):
+        return True
+    if _SCAFFOLD_INJECTING_HEADER_RE.match(body):
+        return True
+    if body.startswith("§") or body.startswith("[SKILL_PRUNED]"):
+        return True
+    if "MEMORY PROVIDER:" in body or "USER PROFILE" in body:
+        return True
+    if body.startswith("MEMORY (your personal notes)"):
+        return True
+    if body.lstrip().startswith("Reasoning:") or _SCAFFOLD_REASONING_HEADER_RE.match(body):
+        return True
+    if _SCAFFOLD_PROGRESS_BULLET_RE.match(body):
+        return True
+    if _SCAFFOLD_TRUNCATION_RE.match(body):
+        return True
+    if _SCAFFOLD_SERVED_FOOTER_RE.match(body):
+        return True
+    return False
+
+
+def _scaffold_standalone_line(line: str) -> bool:
+    """True for interim-assistant header / rule lines outside fences."""
+    body = line.strip()
+    if not body:
+        return False
+    if _SCAFFOLD_FULLWIDTH_RULE_RE.match(body):
+        return True
+    if _SCAFFOLD_INJECTING_HEADER_RE.match(body):
+        return True
+    if _SCAFFOLD_REASONING_HEADER_RE.match(body):
+        return True
+    return False
+
+
+def _fence_body_is_scaffold_only(body_lines: list[str]) -> bool:
+    if not body_lines:
+        return False
+    saw_content = False
+    for line in body_lines:
+        if not line.strip():
+            continue
+        saw_content = True
+        if not _scaffold_fence_line(line):
+            return False
+    return saw_content
+
+
+def _partition_outside_and_fences(lines: list[str]) -> list[tuple[str, list[str]]]:
+    """Split flat line lists into preserved fence blocks vs editable outside text."""
+    segments: list[tuple[str, list[str]]] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith("```"):
+            j = i + 1
+            while j < len(lines) and not lines[j].strip().startswith("```"):
+                j += 1
+            if j < len(lines):
+                segments.append(("fence", lines[i : j + 1]))
+                i = j + 1
+                continue
+        start = i
+        while i < len(lines) and not lines[i].strip().startswith("```"):
+            i += 1
+        if start < i:
+            segments.append(("outside", lines[start:i]))
+    return segments
+
+
+def _collapse_outside_blank_runs(chunk: str) -> str:
+    return re.sub(r"\n{3,}", "\n\n", chunk)
+
+
+def _finalize_scaffold_stripped_output(
+    out: list[str], *, has_scaffold: bool
+) -> str:
+    """Post-process removed scaffold without mutating preserved code fences."""
+    segments = _partition_outside_and_fences(out)
+    pieces: list[str] = []
+    for kind, seg_lines in segments:
+        if kind == "fence":
+            pieces.append("\n".join(seg_lines))
+            continue
+        filtered = seg_lines
+        if has_scaffold:
+            filtered = [
+                ln
+                for ln in seg_lines
+                if not _SCAFFOLD_SERVED_FOOTER_RE.match(ln.strip() or "")
+            ]
+        chunk = "\n".join(filtered)
+        pieces.append(_collapse_outside_blank_runs(chunk))
+    result = "\n".join(pieces)
+    result = result.strip("\n")
+    while result.startswith("\n"):
+        result = result[1:]
+    return result.strip()
+
+
+def _strip_provider_scaffolding(text: str) -> str:
+    """Remove interim-assistant scaffolding leaked into finals by the provider proxy.
+
+    The inference proxy accumulates memory injection, reasoning, and tool-progress
+    frames into the assistant message stream; on human chat surfaces those read as
+    raw bot spam unless we peel them off here.
+    """
+    if not text:
+        return text
+    if text.count("```") % 2 != 0:
+        return text
+
+    lines = text.split("\n")
+    out: list[str] = []
+    removed = False
+    has_scaffold = False
+    i = 0
+
+    while i < len(lines):
+        if lines[i].strip().startswith("```"):
+            open_line = lines[i]
+            j = i + 1
+            body: list[str] = []
+            while j < len(lines) and not lines[j].strip().startswith("```"):
+                body.append(lines[j])
+                j += 1
+            if j >= len(lines):
+                return text
+
+            close_line = lines[j]
+            prev_line = lines[i - 1] if i > 0 else ""
+            reasoning_pair = i > 0 and _SCAFFOLD_REASONING_HEADER_RE.match(prev_line.strip() or "")
+
+            if reasoning_pair:
+                has_scaffold = True
+                removed = True
+                i = j + 1
+                continue
+
+            if _fence_body_is_scaffold_only(body):
+                has_scaffold = True
+                removed = True
+                i = j + 1
+                continue
+
+            out.append(open_line)
+            out.extend(body)
+            out.append(close_line)
+            i = j + 1
+            continue
+
+        line = lines[i]
+        if _scaffold_standalone_line(line):
+            has_scaffold = True
+            removed = True
+            i += 1
+            continue
+
+        out.append(line)
+        i += 1
+
+    if not removed:
+        return text
+
+    return _finalize_scaffold_stripped_output(out, has_scaffold=has_scaffold)
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
@@ -1063,6 +1255,8 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     # this sentinel; chat surfaces should too (#7921).
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
+
+    text = _strip_provider_scaffolding(text)
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
