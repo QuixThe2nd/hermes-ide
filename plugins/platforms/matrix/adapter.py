@@ -2018,7 +2018,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _resolve_message_context(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
-        relates_to: dict) -> Optional[tuple]:
+        relates_to: dict, initial_room_name: Optional[str] = None) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
         display_name, source) or None when the message should be dropped."""
         identity = await self._resolve_room_identity(room_id)
@@ -2076,6 +2076,12 @@ class MatrixAdapter(BasePlatformAdapter):
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+        if initial_room_name and self._inbox_router.is_child_room(room_id):
+            # Mark Hermes-created inbox child rooms so the session-title rename lane can
+            # distinguish them from a plain DM; is_child_room is the safety gate — a
+            # caller-supplied name can never mark a normal DM.
+            source.auto_thread_created = True
+            source.auto_thread_initial_name = initial_room_name
         if thread_id:
             self._threads.mark(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
@@ -2099,13 +2105,15 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, initial_room_name: Optional[str] = None, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
         downloading); resolving it twice would double the read receipt / thread mark."""
         if ctx is None:
-            ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+            ctx = await self._resolve_message_context(
+                room_id, sender, event_id, body, source_content, relates_to,
+                initial_room_name=initial_room_name)
         if ctx is None:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
@@ -2127,12 +2135,14 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, *, batch: bool = True) -> Optional[MessageEvent]:
+        relates_to: dict, *, batch: bool = True,
+        initial_room_name: Optional[str] = None) -> Optional[MessageEvent]:
         body = source_content.get("body", "") or ""
         if not body:
             return None
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
+            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to,
+            initial_room_name=initial_room_name)
         if msg_event is None:
             return None
         if batch and msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -2143,7 +2153,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, msgtype: str) -> Optional[MessageEvent]:
+        relates_to: dict, msgtype: str, *,
+        initial_room_name: Optional[str] = None) -> Optional[MessageEvent]:
         body = source_content.get("body", "") or ""
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
@@ -2172,7 +2183,9 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
         # non-allowlisted room must not pull media onto the host only to drop it.
-        ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
+        ctx = await self._resolve_message_context(
+            room_id, sender, event_id, body, source_content, relates_to,
+            initial_room_name=initial_room_name)
         if ctx is None:
             return
         # Cache locally so downstream tools get a real file path.
@@ -2189,7 +2202,8 @@ class MatrixAdapter(BasePlatformAdapter):
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
-            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
+            media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype,
+            initial_room_name=initial_room_name)
         if msg_event is not None:
             await self.handle_message(msg_event)
         return msg_event
@@ -2602,6 +2616,54 @@ class MatrixAdapter(BasePlatformAdapter):
         return await self._client_op(
             lambda: self._client.invite_user(RoomID(room_id), UserID(user_id)),
             ("Matrix: invited %s to %s", user_id, room_id), "Matrix: invite error: %s")
+
+    async def rename_room(
+        self, room_id: str, name: str, *, only_if_current_name: Optional[str] = None,
+    ) -> bool:
+        """Best-effort room rename (contract mirrors Discord's ``rename_thread``).
+
+        ``only_if_current_name`` is the no-clobber guard: a room whose current name
+        differs from the expected value (e.g. a human renamed it) is left alone.
+        Never raises; returns True only when the room name was (or already is) set.
+        """
+        try:
+            if not self._client or not isinstance(name, str) or not name.strip():
+                return False
+            cleaned = re.sub(r"\s+", " ", name).strip()
+            if not cleaned:
+                return False
+            current = await self._get_room_state_value(room_id, "m.room.name", "name")
+            if current == cleaned:
+                return True
+            if only_if_current_name is not None:
+                if current is not None and current != only_if_current_name:
+                    logger.info(
+                        "Matrix: declining rename of %s (current name %r != expected %r)",
+                        room_id, current, only_if_current_name)
+                    return False
+            elif current is not None:
+                # No expected value supplied: still refuse to clobber a named room.
+                logger.info("Matrix: declining rename of %s (unexpected current name %r)", room_id, current)
+                return False
+            await self._client.send_state_event(RoomID(room_id), EventType.ROOM_NAME, {"name": cleaned})
+            logger.info("Matrix: renamed room %s from %r to %r", room_id, current, cleaned)
+            return True
+        except Exception as exc:
+            logger.debug("Matrix: rename_room failed for %s: %s", room_id, exc)
+            return False
+
+    async def set_room_account_data(self, room_id: str, tag: str, content: dict) -> bool:
+        """Best-effort internal marker for Hermes-created rooms. mautrix 0.21.1 has no
+        per-room account-data PUT, so the tag is stored as private room state."""
+        try:
+            if not self._client:
+                return False
+            event_type = EventType(str(tag), EventType.Class.STATE)
+            await self._client.send_state_event(RoomID(room_id), event_type, dict(content or {}))
+            return True
+        except Exception as exc:
+            logger.debug("Matrix: set_room_account_data failed for %s/%s: %s", room_id, tag, exc)
+            return False
 
     _VALID_PRESENCE_STATES = frozenset(("online", "offline", "unavailable"))
 

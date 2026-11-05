@@ -443,6 +443,11 @@ class MatrixHubClientAdapter(MatrixAdapter):
     async def invite_user(self, room_id: str, user_id: str) -> bool:
         return bool(self._value(await self._rpc("invite_user", room_id, user_id)))
 
+    async def rename_room(self, room_id: str, name: str, *,
+                          only_if_current_name: Optional[str] = None) -> bool:
+        return bool(self._value(await self._rpc(
+            "rename_room", room_id, name, only_if_current_name=only_if_current_name)))
+
     async def set_presence(self, state: str = "online", status_msg: str = "") -> bool:
         return bool(self._value(await self._rpc("set_presence", state, status_msg)))
 

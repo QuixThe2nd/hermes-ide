@@ -7837,6 +7837,16 @@ class TurnRunner:
                         source, session_id, title,
                     )
                 )
+            elif self._runner._is_matrix_inbox_room_lane(source):
+                # Matrix inbox child rooms get the same treatment as Discord
+                # auto-threads: one rate-limited state event per rename, so
+                # only the model's title is worth spending (see TitleCallback).
+                agent._on_session_title = lambda title, title_source: (
+                    title_source == "llm"
+                    and self._runner._schedule_matrix_room_title_rename(
+                        source, session_id, title,
+                    )
+                )
             elif self._runner._is_discord_auto_thread_lane(source) or (
                 self._runner._is_relay_discord_channel_lane(source)
             ):

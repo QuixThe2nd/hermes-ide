@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import logging
 import os
+import re
 from pathlib import Path
 import sqlite3
 import threading
@@ -67,7 +68,21 @@ def _matrix_link(room_id: str, event_id: Optional[str] = None) -> str:
     return f"https://matrix.to/#/{quote(room_id, safe='')}{suffix}"
 
 
-def _room_title(msgtype: str) -> str:
+_MAX_DERIVED_TITLE_CHARS = 48  # mirrors agent/title_generator.MAX_DERIVED_TITLE_CHARS
+
+# Internal marker stamped on Hermes-created inbox child rooms (room account-data
+# style tag); never user-visible.
+_HERMES_INBOX_ROOM_TAG = "hermes-inbox-room"
+
+
+def _room_title(msgtype: str, body: Optional[str] = None) -> str:
+    """Deterministic instant title: the root message body when there is one, else the
+    msgtype map. Content-shaped only — the LLM title lands later via the rename lane."""
+    derived = re.sub(r"\s+", " ", str(body or "")).strip()
+    if derived:
+        derived = derived[:_MAX_DERIVED_TITLE_CHARS].rstrip()
+        if derived:
+            return derived
     return {
         "m.image": "Image conversation",
         "m.audio": "Audio conversation",
@@ -96,6 +111,7 @@ class InboxRoute:
     space_link_state: str = "pending"
     failure_notice_sent: bool = False
     last_error: Optional[str] = None
+    initial_room_name: Optional[str] = None
 
     def account_data(self) -> dict[str, Any]:
         return {
@@ -151,6 +167,7 @@ class _InboxStore:
                             space_link_state TEXT NOT NULL DEFAULT 'pending',
                             failure_notice_sent INTEGER NOT NULL DEFAULT 0,
                             last_error TEXT,
+                            initial_room_name TEXT,
                             created_at REAL NOT NULL,
                             updated_at REAL NOT NULL
                         );
@@ -159,6 +176,11 @@ class _InboxStore:
                             WHERE child_room_id IS NOT NULL;
                         """
                     )
+                    try:
+                        # CREATE TABLE IF NOT EXISTS does not migrate an existing DB.
+                        conn.execute("ALTER TABLE matrix_inbox_routes ADD COLUMN initial_room_name TEXT")
+                    except sqlite3.OperationalError:
+                        pass
                     self._schema_ready = True
         return conn
 
@@ -182,7 +204,8 @@ class _InboxStore:
             acknowledgement_event_id=row["acknowledgement_event_id"],
             dispatch_accepted=bool(row["dispatch_accepted"]),
             space_link_state=row["space_link_state"],
-            failure_notice_sent=bool(row["failure_notice_sent"]), last_error=row["last_error"])
+            failure_notice_sent=bool(row["failure_notice_sent"]), last_error=row["last_error"],
+            initial_room_name=row["initial_room_name"])
 
     def lookup(self, root_key: str) -> Optional[InboxRoute]:
         with self._connection() as conn:
@@ -214,10 +237,13 @@ class _InboxStore:
             raise RuntimeError("Matrix inbox route disappeared during update")
         return self._route(row)
 
-    def mark_ready(self, root_key: str, child_room_id: str, encrypted: bool) -> InboxRoute:
+    def mark_ready(self, root_key: str, child_room_id: str, encrypted: bool,
+                   initial_room_name: Optional[str] = None) -> InboxRoute:
         return self._update(
-            root_key, "child_room_id = ?, encrypted = ?, state = 'ready', last_error = NULL",
-            (child_room_id, int(encrypted)))
+            root_key,
+            "child_room_id = ?, encrypted = ?, state = 'ready', last_error = NULL, "
+            "initial_room_name = ?",
+            (child_room_id, int(encrypted), initial_room_name))
 
     def mark_failed(self, root_key: str, error: str) -> InboxRoute:
         return self._update(root_key, "state = 'failed', last_error = ?", (error,))
@@ -378,8 +404,9 @@ class MatrixInboxRouter:
                         "type": "m.room.encryption", "state_key": "",
                         "content": {"algorithm": algorithm},
                     }] if algorithm else None)
+                    initial_room_name = _room_title(msgtype, source_content.get("body"))
                     child_room_id = await self.adapter.create_room(
-                        name=_room_title(msgtype), invite=[sender], is_direct=False,
+                        name=initial_room_name, invite=[sender], is_direct=False,
                         preset="private_chat", initial_state=initial_state)
                     if not child_room_id:
                         raise RuntimeError("room creation failed")
@@ -390,7 +417,9 @@ class MatrixInboxRouter:
                     await self._notify_failure_once(route, reason)
                     return
                 try:
-                    route = await asyncio.to_thread(self._store.mark_ready, root_key, child_room_id, route.encrypted)
+                    route = await asyncio.to_thread(
+                        self._store.mark_ready, root_key, child_room_id, route.encrypted,
+                        initial_room_name)
                 except Exception as exc:
                     logger.warning("Matrix: could not persist the new inbox room: %s", type(exc).__name__)
                     await self._notify_failure_once(route, "state")
@@ -398,6 +427,13 @@ class MatrixInboxRouter:
                 self._children[child_room_id] = route
                 self.adapter._dm_rooms[child_room_id] = True
                 self.adapter._invalidate_room_identities(child_room_id)
+                # Best-effort marker so the rename lane can recognize Hermes-created
+                # rooms even across process restarts; never fail room creation over it.
+                try:
+                    await self.adapter.set_room_account_data(
+                        child_room_id, _HERMES_INBOX_ROOM_TAG, {"tagged": True})
+                except Exception:
+                    logger.debug("Matrix: could not stamp the inbox-room tag on %s", child_room_id)
                 await self._mirror_best_effort(route)
         self._children[route.child_room_id] = route
         self.adapter._dm_rooms[route.child_room_id] = True
@@ -447,10 +483,12 @@ class MatrixInboxRouter:
             return
         if msgtype in ("m.image", "m.audio", "m.video", "m.file"):
             event = await self.adapter._handle_media_message(
-                route.child_room_id, sender, event_id, event_ts, source_content, relates_to, msgtype)
+                route.child_room_id, sender, event_id, event_ts, source_content, relates_to, msgtype,
+                initial_room_name=route.initial_room_name)
         else:
             event = await self.adapter._handle_text_message(
-                route.child_room_id, sender, event_id, event_ts, source_content, relates_to, batch=False)
+                route.child_room_id, sender, event_id, event_ts, source_content, relates_to, batch=False,
+                initial_room_name=route.initial_room_name)
         if event is None or not getattr(event, "_gateway_accepted", False):
             await self._notify_failure_once(route, "dispatch")
             return

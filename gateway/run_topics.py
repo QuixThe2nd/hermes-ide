@@ -418,6 +418,59 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("Failed to rename Discord auto-thread for generated session title", exc_info=True)
 
+    # ── Matrix inbox-room title rename lane ─────────────────────────────────────────────────
+
+    def _is_matrix_inbox_room_lane(self, source: SessionSource) -> bool:
+        """True for a Hermes-created Matrix inbox child room. Child rooms resolve as
+        ``chat_type="dm"`` (member count <= 2 in _resolve_room_identity), so the
+        auto-thread markers distinguish them from a plain DM."""
+        return (
+            source.platform == Platform.MATRIX and source.chat_type == "dm"
+            and bool(getattr(source, "auto_thread_created", False))
+            and bool(getattr(source, "chat_id", None))
+            and bool(getattr(source, "auto_thread_initial_name", None))
+        )
+
+    def _sanitize_matrix_room_title(self, title: str) -> str:
+        return _collapse_title(title)[:255].rstrip()
+
+    def _schedule_matrix_room_title_rename(self, source: SessionSource, session_id: str, title: str) -> None:
+        """Schedule a Matrix inbox-room rename from the auto-title background thread."""
+        if not title or not self._is_matrix_inbox_room_lane(source):
+            return
+        self._schedule_rename_from_title_thread(
+            source,
+            lambda copied: self._rename_matrix_room_for_session_title(copied, session_id, title),
+            "Matrix room title rename",
+        )
+
+    async def _rename_matrix_room_for_session_title(
+        self, source: SessionSource, session_id: str, title: str,
+    ) -> None:
+        """Best-effort rename of a newly created Matrix inbox child room."""
+        if not await asyncio.to_thread(self._is_matrix_inbox_room_lane, source):
+            return
+        if not source.chat_id:
+            return
+        adapter = self._delivery_adapter_for(source) if getattr(self, "adapters", None) else None
+        rename_room = getattr(adapter, "rename_room", None)
+        if rename_room is None:
+            return
+        room_name = self._sanitize_matrix_room_title(title)
+        logger.info(
+            "matrix inbox-room rename: room=%s new_title=%r", str(source.chat_id), room_name)
+        try:
+            renamed = await rename_room(
+                str(source.chat_id), room_name,
+                only_if_current_name=getattr(source, "auto_thread_initial_name", None))
+            logger.info(
+                "matrix inbox-room rename result: room=%s applied=%s", str(source.chat_id), bool(renamed))
+        except TypeError:
+            logger.warning(
+                "Matrix room rename raised TypeError (adapter=%s)", type(adapter).__name__, exc_info=True)
+        except Exception:
+            logger.debug("Failed to rename Matrix inbox room for generated session title", exc_info=True)
+
     # ── title-thread → loop rename scheduling ───────────────────────────────────────────────
 
     def _schedule_rename_from_title_thread(self, source: SessionSource, make_coro, label: str) -> None:

@@ -27,6 +27,7 @@ def _attach(lane):
 
     runner = types.SimpleNamespace(
         _is_telegram_topic_lane=lambda src: lane == "telegram",
+        _is_matrix_inbox_room_lane=lambda src: lane == "matrix",
         _is_discord_auto_thread_lane=lambda src: lane == "discord",
         _is_relay_discord_channel_lane=lambda src: False,
         _schedule_telegram_topic_title_rename=(
@@ -86,6 +87,11 @@ async def test_native_thread_rename_passes_only_the_initial_name_guard():
 
         def _delivery_adapter_for(self, source):
             return self.adapters[source.platform]
+
+        # The production lane resolves through the pre-rename compat alias,
+        # which forwards to _delivery_adapter_for on the real runner.
+        def _adapter_for_source(self, source):
+            return self._delivery_adapter_for(source)
 
     source = types.SimpleNamespace(
         platform=Platform.DISCORD,
