@@ -54,6 +54,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import plugins.platforms.discord.adapter as discord_adapter_module  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -136,5 +137,123 @@ async def test_stop_typing_cancels_registered_loop():
         assert task.done()
         assert "chan" not in adapter._typing_tasks
         assert len(http.requests) == 1
+    finally:
+        await _cancel_tasks(task)
+
+
+@pytest.mark.asyncio
+async def test_typing_loop_self_expires_without_refresh(monkeypatch):
+    """Without send_typing refresh, the loop exits and clears bookkeeping."""
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "TYPING_REFRESH_TIMEOUT_SECONDS",
+        0.25,
+        raising=False,
+    )
+    adapter, http = _make_typing_adapter()
+    task = None
+    try:
+        await adapter.send_typing("chan")
+        task = adapter._typing_tasks["chan"]
+        await asyncio.wait_for(http.request_started[0].wait(), timeout=2)
+        http.release.set()
+
+        await asyncio.sleep(1.5)
+
+        assert "chan" not in adapter._typing_tasks
+        assert task.done()
+    finally:
+        await _cancel_tasks(task)
+
+
+@pytest.mark.asyncio
+async def test_typing_loop_stays_alive_with_refresh_until_stop(monkeypatch):
+    """Refreshes before the deadline keep the loop alive until stop_typing."""
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "TYPING_REFRESH_TIMEOUT_SECONDS",
+        0.25,
+        raising=False,
+    )
+    adapter, http = _make_typing_adapter()
+    task = None
+    try:
+        await adapter.send_typing("chan")
+        task = adapter._typing_tasks["chan"]
+        await asyncio.wait_for(http.request_started[0].wait(), timeout=2)
+        http.release.set()
+
+        loop = asyncio.get_running_loop()
+        end = loop.time() + 0.6
+        while loop.time() < end:
+            await asyncio.sleep(0.1)
+            await adapter.send_typing("chan")
+
+        assert "chan" in adapter._typing_tasks
+        assert adapter._typing_tasks["chan"] is task
+        assert not task.done()
+
+        await adapter.stop_typing("chan")
+        assert task.done()
+        assert "chan" not in adapter._typing_tasks
+    finally:
+        await _cancel_tasks(task)
+
+
+@pytest.mark.asyncio
+async def test_typing_loop_self_expires_without_refresh(monkeypatch):
+    """Without send_typing refresh, the loop exits and clears bookkeeping."""
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "TYPING_REFRESH_TIMEOUT_SECONDS",
+        0.25,
+        raising=False,
+    )
+    adapter, http = _make_typing_adapter()
+    task = None
+    try:
+        await adapter.send_typing("chan")
+        task = adapter._typing_tasks["chan"]
+        await asyncio.wait_for(http.request_started[0].wait(), timeout=2)
+        http.release.set()
+
+        await asyncio.sleep(1.5)
+
+        assert "chan" not in adapter._typing_tasks
+        assert task.done()
+    finally:
+        await _cancel_tasks(task)
+
+
+@pytest.mark.asyncio
+async def test_typing_loop_stays_alive_with_refresh_until_stop(monkeypatch):
+    """Refreshes before the deadline keep the loop alive until stop_typing."""
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "TYPING_REFRESH_TIMEOUT_SECONDS",
+        0.25,
+        raising=False,
+    )
+    adapter, http = _make_typing_adapter()
+    task = None
+    try:
+        await adapter.send_typing("chan")
+        task = adapter._typing_tasks["chan"]
+        await asyncio.wait_for(http.request_started[0].wait(), timeout=2)
+        http.release.set()
+
+        loop = asyncio.get_running_loop()
+        end = loop.time() + 0.6
+        while loop.time() < end:
+            await asyncio.sleep(0.1)
+            await adapter.send_typing("chan")
+
+        assert "chan" in adapter._typing_tasks
+        assert adapter._typing_tasks["chan"] is task
+        assert not task.done()
+
+        await adapter.stop_typing("chan")
+        assert task.done()
+        assert "chan" not in adapter._typing_tasks
     finally:
         await _cancel_tasks(task)

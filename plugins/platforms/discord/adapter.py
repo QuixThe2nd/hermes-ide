@@ -36,6 +36,8 @@ from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
 
+TYPING_REFRESH_TIMEOUT_SECONDS = 90.0
+
 _DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
 _DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
@@ -1603,6 +1605,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._threads = ThreadParticipationTracker("discord")
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_deadlines: Dict[str, float] = {}
         self._bot_task: Optional[asyncio.Task] = None
         # Background task that runs post-connect housekeeping (command-menu registration + DM-topic setup)
         # off the connect path so a slow Bot API call (e.g. a set_my_commands stall for certain tokens)
@@ -6723,10 +6726,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
         if not self._client:
             return
-        if chat_id in self._typing_tasks:
-            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + TYPING_REFRESH_TIMEOUT_SECONDS
+        existing = self._typing_tasks.get(chat_id)
+        if existing is not None:
+            if not existing.done():
+                self._typing_deadlines[chat_id] = deadline
+                return
+            self._typing_tasks.pop(chat_id, None)
+            self._typing_deadlines.pop(chat_id, None)
 
         async def _typing_loop() -> None:
+            event_loop = asyncio.get_running_loop()
             try:
                 while True:
                     try:
@@ -6748,17 +6759,29 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             return
                         await asyncio.sleep(retry_after)
                         continue
-                    await asyncio.sleep(12)
+                    remaining = self._typing_deadlines.get(chat_id, event_loop.time()) - event_loop.time()
+                    if remaining <= 0:
+                        logger.info(
+                            "typing loop for %s expired after %.0fs without refresh; stopping",
+                            chat_id,
+                            TYPING_REFRESH_TIMEOUT_SECONDS,
+                        )
+                        return
+                    await asyncio.sleep(min(12, remaining))
             except asyncio.CancelledError:
                 pass
             finally:
                 if self._typing_tasks.get(chat_id) is asyncio.current_task():
                     self._typing_tasks.pop(chat_id, None)
+                    self._typing_deadlines.pop(chat_id, None)
+
+        self._typing_deadlines[chat_id] = deadline
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
     async def stop_typing(self, chat_id: str) -> None:
         """Stop the persistent typing indicator for a channel."""
         task = self._typing_tasks.pop(chat_id, None)
+        self._typing_deadlines.pop(chat_id, None)
         if task:
             task.cancel()
             try:
