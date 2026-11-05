@@ -840,7 +840,7 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
         )
 
     check = (
-        "import dotenv, fastapi, openai, prompt_toolkit, pydantic, rich, uvicorn, yaml\n"
+        "import dotenv, openai, prompt_toolkit, pydantic, rich, uvicorn, yaml\n"
         "import hermes_state\n"
     )
     env = dict(os.environ)

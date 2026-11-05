@@ -42,6 +42,43 @@ def _fake_venv_python(tmp_path, *, windows: bool = False):
     return py
 
 
+def test_venv_core_imports_probe_excludes_fastapi(tmp_path):
+    """PR #552 removed fastapi (dashboard web UI removal); the probe must not require it."""
+    from hermes_cli import update_cmd_deps
+
+    venv_python = _fake_venv_python(tmp_path)
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        cli_main, "_is_windows", return_value=False
+    ), patch.object(update_cmd_deps.subprocess, "run", fake_run):
+        healthy, detail = update_cmd_deps._venv_core_imports_healthy()
+        assert healthy is True
+        assert detail == ""
+
+    assert len(captured) == 1
+    probe_cmd = captured[0]
+    assert probe_cmd[0] == str(venv_python)
+    assert probe_cmd[1] == "-c"
+    check_src = probe_cmd[2]
+    assert "'fastapi'" not in check_src
+    for mod in ("'uvicorn'", "'pydantic'", "'openai'", "'yaml'"):
+        assert mod in check_src
+
+
+def test_sibling_candidate_venv_probes_exclude_fastapi():
+    """PR #552 removed fastapi (dashboard removal); the sibling candidate-venv smoke
+    probes in runtime_repair and managed_uv must not require it either."""
+    import inspect
+
+    from hermes_cli import managed_uv, runtime_repair
+
+    assert "fastapi" not in inspect.getsource(runtime_repair._smoke_candidate_venv)
+    assert "fastapi" not in inspect.getsource(managed_uv._smoke_candidate_venv)
 
 
 # ---------------------------------------------------------------------------
