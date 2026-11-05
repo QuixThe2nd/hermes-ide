@@ -3,7 +3,7 @@ a ``config_schema.py`` beside ``__init__.py``; one generic renderer and one
 ``GET/PUT /api/memory/providers/{name}/config`` pair drive the UI. Schema files are
 loaded by path, never imported as a package (plugin ``__init__`` pulls in the agent
 runtime, which must not load into the web server); they may import only this
-pure-data module. ``web_server`` owns read/write, dispatching on ``storage``.
+pure-data module; callers own read/write, dispatching on ``storage``.
 """
 
 from __future__ import annotations

@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from hermes_cli.dashboard_auth import ws_tickets
+from tui_gateway import ws_tickets
 
 
 def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch):

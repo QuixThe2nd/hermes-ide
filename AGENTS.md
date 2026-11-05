@@ -80,7 +80,7 @@ itself: preinstalled tooling and prebuilt pipelines are the point of this fork.
   `main`, points to the exact line where it manifests, and fixes the whole bug
   class — sibling call paths included — not just the one site the reporter hit.
 - **Expand reach at the edges.** New platform adapters, channels, providers,
-  models, and desktop/TUI/dashboard features are welcome and land routinely,
+  models, and desktop/TUI features are welcome and land routinely,
   including large ones (a new messaging channel, a session-cap feature, a
   Windows PTY bridge). Breadth in the product is a goal, not a footprint
   concern — as long as it integrates with the existing setup/config UX
@@ -257,7 +257,6 @@ hermes-agent/
 ├── batch_runner.py       # Parallel batch processing
 ├── agent/                # turn_*.py loop phases, providers, memory, compression, prompt builder
 ├── hermes_cli/           # CLI subcommands, setup, config, plugins loader, skins, updater
-│   └── web_routers/      # Dashboard FastAPI routers (one per surface); web_server.py mounts them
 ├── tools/                # Tool implementations, auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
 ├── gateway/              # run.py facade + run_*.py phases + session*.py + platforms/
@@ -267,7 +266,7 @@ hermes-agent/
 ├── skills/               # Built-in skills (by category)   optional-skills/: shipped, not active
 ├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
 ├── tui_gateway/          # Python JSON-RPC backend for TUI + Desktop — server.py + methods_*.py
-├── apps/desktop/         # Electron desktop app (+ apps/shared JSON-RPC client)   web/: dashboard SPA
+├── apps/shared/          # Framework-agnostic JSON-RPC client package
 ├── cron/                 # jobs.py + scheduler.py (+ scheduler_*.py)
 ├── evals/                # Offline benchmarks (codebase_navigability/, compaction/, ...)
 ├── scripts/              # run_tests.sh, release.py, check_compat_pointers.py, ci/
@@ -312,7 +311,7 @@ Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packag
 Every former god file is a **facade** (public entry points + the names other packages import)
 plus **siblings** `<stem>_<topic>.py` in the same directory, each owning one topic. Largest
 families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15),
-`hermes_cli/web_server.py` (13 + 24 routers), `hermes_cli/auth.py`
+`hermes_cli/auth.py`
 (12), `tools/browser_tool.py` (11), `cli.py` (12 `hermes_cli/cli_*_mixin.py`), `run_agent.py`
 (`agent/turn_*.py`, `agent_init.py`, `conversation_loop.py`).
 
@@ -516,34 +515,6 @@ npm run lint      # eslint
 npm run fmt       # prettier
 npm test          # vitest
 ```
-
-### TUI in the Dashboard (`hermes dashboard` → `/chat`)
-
-The dashboard embeds the real `hermes --tui` — **not** a rewrite.  See `hermes_cli/pty_bridge.py` + the `@app.websocket("/api/pty")` endpoint in `hermes_cli/web_server.py`.
-
-- Browser loads `web/src/pages/ChatPage.tsx`, which mounts xterm.js's `Terminal` with the WebGL renderer, `@xterm/addon-fit` for container-driven resize, and `@xterm/addon-unicode11` for modern wide-character widths.
-- `/api/pty?token=…` upgrades to a WebSocket; auth uses the same ephemeral `_SESSION_TOKEN` as REST, via query param (browsers can't set `Authorization` on WS upgrade).
-- The server spawns whatever `hermes --tui` would spawn, through `ptyprocess` (POSIX PTY — WSL works, native Windows does not).
-- Frames: raw PTY bytes each direction; resize via `\x1b[RESIZE:<cols>;<rows>]` intercepted on the server and applied with `TIOCSWINSZ`.
-
-**Do not re-implement the primary chat experience in React.** The main transcript, composer/input flow (including slash-command behavior), and PTY-backed terminal belong to the embedded `hermes --tui` — anything new you add to Ink shows up in the dashboard automatically. If you find yourself rebuilding the transcript or composer for the dashboard, stop and extend Ink instead.
-
-**Structured React UI around the TUI is allowed when it is not a second chat surface.** Sidebar widgets, inspectors, summaries, status panels, and similar supporting views (e.g. `ChatSidebar`, `ModelPickerDialog`, `ToolCall`) are fine when they complement the embedded TUI rather than replacing the transcript / composer / terminal. Keep their state independent of the PTY child's session and surface their failures non-destructively so the terminal pane keeps working unimpaired.
-
-### Electron Desktop Chat App (`apps/desktop/`)
-
-A **separate** chat surface from both the classic CLI and the dashboard's embedded TUI. It is an Electron + React + nanostore renderer (`@assistant-ui/react`) that talks to a `tui_gateway` backend over JSON-RPC (`requestGateway(method, params)`). The WebSocket/JSON-RPC transport lives in the framework-agnostic `apps/shared` package (`@hermes/shared` — `JsonRpcGatewayClient` + WS URL helpers), which the web dashboard (`web/`) also consumes; **desktop has no build/runtime dependency on the dashboard frontend** — it spawns a headless `hermes serve` backend server (the same gateway `dashboard` serves, minus the browser UI entirely: `serve` sets `headless_backend=True`, so `cmd_dashboard` skips `_build_web_ui` AND exports `HERMES_SERVE_HEADLESS=1` so `mount_spa()` disables the SPA even if a stray `web_dist/` exists — only the JSON-RPC/WS/API surface is reachable). `dashboard` and `serve` share `cmd_dashboard`/`start_server` but are independent surfaces — neither launches the other. The one exception is a backward-compat *fallback*: `serve` is newer, so the desktop spawn (`electron/backend-command.ts` + `backendSupportsServe()` in `electron/main.ts`) detects whether the resolved runtime registers `serve` and, only when it does not (an older managed install / PATH `hermes` the app hasn't updated yet), rewrites the argv to the legacy `dashboard --no-open`. Without that, a new app against an un-upgraded runtime would crash on an unknown subcommand and brick every mid-upgrade user. It does NOT embed `hermes --tui` — it has its own composer, transcript, and slash-command pipeline. For scoped Desktop architecture, state, resolver, transport, and testing rules, read `apps/desktop/AGENTS.md`.
-
-**Slash commands in the desktop app are curated client-side, then dispatched to the backend.** The pipeline:
-
-- **Backend already provides everything.** `tui_gateway/server.py` `commands.catalog` (empty-query list) and `complete.slash` (typed-query completions) both include built-in commands, user `quick_commands`, AND skill-derived commands (`scan_skill_commands()` / `get_skill_commands()`). The desktop app does not need a new RPC to see skills.
-- **The renderer curates via `apps/desktop/src/lib/desktop-slash-commands.ts`.** This is the load-bearing file. It holds `DESKTOP_COMMAND_SPECS` (the built-ins and their Desktop surfaces) plus `NO_DESKTOP_SURFACE` block-lists for terminal-only / messaging-only / picker-owned / settings-owned / advanced commands that should NOT clutter the desktop popover.
-  - `isDesktopSlashCommand(name)` — gates **execution**. Returns true for built-ins AND for any non-built-in (skill / quick command), so typed extension commands run.
-  - `isDesktopSlashSuggestion(name)` — gates **discovery/completion**. Used by BOTH completion paths in `app/chat/composer/hooks/use-slash-completions.ts` (empty-query catalog filter + typed-query `complete.slash` filter) and by `filterDesktopCommandsCatalog`.
-  - `isDesktopSlashExtensionCommand(name)` — true when the command is NOT a known Hermes built-in (i.e. a skill or user quick command). Both suggestion and catalog-filter paths allow extensions through so skill commands surface in the palette. (Added when fixing "skill commands missing from the desktop slash palette" — the curated allow-list was silently dropping every skill/quick command from completions even though they executed fine when typed.)
-- **Dispatch** lives in `app/session/hooks/use-prompt-actions/slash.ts` (`runSlash`): built-ins that the desktop owns (`/skin`, `/help`, `/new`, …) are handled locally or via `commands.catalog`; everything else goes to `slash.exec`, falling back to `command.dispatch` (which the gateway resolves into skill / alias / exec directives). A skill command resolves to `{type: "skill", message}` and is submitted as a normal prompt.
-
-**Rule:** the desktop slash palette's curation is about hiding noise (terminal-only / messaging-only built-ins), NOT about hiding user-activated extensions. Skill commands and `quick_commands` are extensions the backend surfaces — they belong in completions. If you tighten `desktop-slash-commands.ts`, keep `isDesktopSlashExtensionCommand` flowing into both the suggestion and catalog-filter paths. Tests: from `apps/desktop`, run `npx vitest run src/lib/desktop-slash-commands.test.ts` (workspace dependencies are installed at the repo root).
 
 ---
 
@@ -914,72 +885,6 @@ plug into `agent/context_engine.py`; image-gen providers into
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 companion repo, not in this tree.
 
-### Bot Mode (`apps/desktop/src/plugins/hermes-bots/`)
-
-The desktop "Bots" experience ships bundled in-tree. Each bot is a Hermes
-agent **profile** with a persistent identity. Its design rests on one settled
-invariant that has been regressed repeatedly, cost users real conversation
-history each time, and is not open for re-litigation in a routine PR:
-
-**One bot = ONE canonical forever-chat, identified by NAME.** The chat's one
-and only identity is **(profile, session titled exactly "Bot Chat")** — the
-state DB's UNIQUE(title) index makes that pair an exact registry of at most
-one row. The full lifecycle when a bot row is clicked:
-
-1. **Resolve the registry, every time.** Look up the profile's `Bot Chat`
-   session by exact title via `session.list {title, include_hidden: true}`
-   (indexed, window-free; hidden rows resolve because canonical chats are
-   always hidden; compression lineages resolve to the live tip). Row exists →
-   open it. That is the entire happy path.
-2. **No row → create it,** titled `Bot Chat`, born hidden, kicked off with
-   the bot's intro. Creation adopts-before-minting: it re-runs the registry
-   lookup first, so a concurrent or pre-existing row is opened, never forked.
-   (`set_session_title` silently drops conflicting titles — returns 0 rows —
-   which is how the 2026-08 infinite fork loop started; adopt-before-mint is
-   what kills it.)
-
-**There is NO session-id pin.** The previous design stored a pointer in
-`ui_meta['hermes-bots'].chat` and verified it per click; five hardening
-waves (#88690, #90732, #90751, the #91791 revert, #92042) each guarded a new
-way that pointer dangled or got stolen — rows[0] steals, `last_session`
-adoptions, transient clears, drifted-title welds (a pin re-anchored onto a
-cron session passed every guard). Name-as-identity removes the failure class:
-a name cannot dangle, and a corrupted historical pointer simply never gets
-read. Legacy `chat` keys in ui_meta are ignored and dropped from merges.
-
-Why recency must never win (the #91791 → #92042 lesson): canonical Bot
-Chats are **unconditionally hidden** from the Sessions sidebar, so the bot
-row is the ONLY door to the forever-chat. A "newest visible session wins"
-preference doesn't re-order two equivalent entry points — it walls the
-entire relationship off behind a row that previews one session and opens
-another, and any stray draft that catches a prompt captures the row.
-Side-chats started via "New chat with this agent" are not plumbing-titled,
-stay visible in the Sessions sidebar, and are reachable there; they are
-never the bot row's target.
-
-Corollaries for reviewers:
-
-- There is no per-bot session browser, by explicit design (removed in
-  #90732). Do not add one back.
-- Reject any PR that reintroduces a stored session-id pointer as canonical
-  identity — including "as a fallback tier" or "for verification". The
-  registry lookup is the whole contract; pointers are how every prior
-  incident started.
-- Reject any PR that consults recency, visibility, or "where the user left
-  off" for the bot row's target — reports that motivate such a change are
-  almost always about side-chats, and the fix belongs in the Sessions
-  sidebar (hide-sweep false positives), not in the bot row's target.
-- The gateway reports the registry row per profile as `canonical_session`
-  on `profiles.list` (resolved server-side by title); roster preview,
-  activity signals, and the `/new`→`/compact` guard all read it, so preview
-  identity and click identity are the same row by construction.
-
-Regression tests encoding this contract:
-`tests/canonical-chat-registry.test.mjs` (includes a tripwire asserting the
-open path never reads or writes a stored pointer),
-`tests/canonical-chat-creation.test.mjs`, `tests/hide-bot-chats.test.mjs`,
-and `tests/tui_gateway/test_profiles_list_canonical_session.py`.
-
 ---
 
 ## Skills
@@ -1247,10 +1152,8 @@ plan → snapshot → apply → restart-per-kind → verify → report
 - **Apply**: git pull, or the Windows ZIP fallback — which fires ONLY
   when git itself failed (`_should_zip_fallback_on_update_error`,
   argv-classified; a dependency-install failure must never trigger a
-  tree-clobbering re-download), REFUSES a dirty working tree
-  (`-uall`, plus a pre-swap TOCTOU re-check), and grafts the live
-  `apps/desktop/release/` into the staged swap (the GitHub source ZIP
-  has no built desktop app; without the graft the swap deletes it).
+  tree-clobbering re-download), and REFUSES a dirty working tree
+  (`-uall`, plus a pre-swap TOCTOU re-check).
 - **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE
   (every `hermes-gateway*` unit / `ai.hermes.gateway*` LaunchAgent),
   drain-first (SIGUSR1) with per-unit/per-label failure isolation.
@@ -1272,23 +1175,9 @@ plan → snapshot → apply → restart-per-kind → verify → report
   a bug: the refused/failed runs are the ones receipts exist for.
 
 Architecture direction: process-scan-based coordination between the
-updater, serve/dashboard, and the gateway is being replaced by a
+updater and the gateway is being replaced by a
 gateway-owned control socket (#92091). Do not add new scan heuristics
 without checking that design; scans are the fallback layer.
-
-### Gateway lifecycle vs. the Desktop app
-
-`hermes serve` (control plane, desktop-spawned child) dies with the app
-— by design. The messaging gateway (`gateway run`) SURVIVES the app: the
-serve backend's `/api/gateway/*` endpoints spawn it detached
-(`_spawn_hermes_action` — `start_new_session` / `DETACHED_PROCESS`), so
-`before-quit`'s backend SIGTERM never reaches it. Bots keep running
-when the user closes the app. The known breach of this contract is the
-Windows shim-unlock teardown (`taskkill /T /F` on venv-shim holders,
-#85265) — it exists to let updates proceed, and its replacement is
-#92091's `pause-for-update`. Do not "fix" gateway-dies-with-app reports
-by re-parenting the gateway under the backend, and do not "fix" update
-locks by widening the tree-kill.
 
 ---
 
@@ -1701,7 +1590,6 @@ extract, not to regex around it.
 | `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | Adding tools, registry, toolsets, delegation, cross-tool references, backends |
 | `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | Plugin kinds, native compat contract, in-tree policy, Sep-2026 compat window |
 | `tui_gateway/`, `ui-tui/` | `tui_gateway/AGENTS.md` | Process model, JSON-RPC transport, key surfaces, slash flow, dev commands |
-| `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | Dashboard embeds the real TUI; what React may and may not rebuild |
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | Frontmatter, HARDLINE authoring standards, curator |
 | `cron/` | `cron/AGENTS.md` | Scheduler invariants and job fields |
 | `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | Step-by-step adapter guide |

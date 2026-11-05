@@ -22,7 +22,7 @@ prefix and reassigned to openrouter, even though it isn't in
 
 from unittest.mock import patch
 
-from hermes_cli.web_server_config import _normalize_main_model_assignment
+from tui_gateway.profile_model import _normalize_main_model_assignment
 
 
 def _no_custom_providers_configured():

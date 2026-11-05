@@ -867,7 +867,6 @@ def test_curator_slot_is_canonical_aux_task():
     """
     from hermes_cli.config import DEFAULT_CONFIG
     from hermes_cli.main_provider_setup import _AUX_TASKS
-    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
 
     # 1. DEFAULT_CONFIG.auxiliary — schema source
     assert "curator" in DEFAULT_CONFIG["auxiliary"], \
@@ -880,13 +879,6 @@ def test_curator_slot_is_canonical_aux_task():
     # 2. hermes_cli/main.py _AUX_TASKS — CLI picker
     aux_keys = {k for k, _name, _desc in _AUX_TASKS}
     assert "curator" in aux_keys, "curator missing from _AUX_TASKS (CLI picker)"
-
-    # 3. hermes_cli/web_server.py _AUX_TASK_SLOTS — REST API allowlist
-    assert "curator" in _AUX_TASK_SLOTS, \
-        "curator missing from _AUX_TASK_SLOTS (dashboard REST API)"
-
-    # 4. web/src/pages/ModelsPage.tsx is checked at build time; the tsx
-    #    array and this tuple share a ``Must match _AUX_TASK_SLOTS`` comment.
 
 
 

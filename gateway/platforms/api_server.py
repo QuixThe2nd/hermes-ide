@@ -3596,7 +3596,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # and after the drain check (drain is transient shutdown, ESTOP is
             # operator override). 503 + Retry-After reschedules the job via NAS
             # retry or the misfire backstop rather than silently dropping it —
-            # matches _CRON_FIRE_RETRY_AFTER_SECONDS in web_routers/cron.py.
+            # matches the former dashboard cron router's _CRON_FIRE_RETRY_AFTER_SECONDS.
             with suppress(ImportError):
                 from agent.estop import check_paused as _estop_check_paused
                 if _estop_check_paused("cron-webhook", logger):

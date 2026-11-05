@@ -356,4 +356,4 @@ WSL2 stores its VM disk as a sparse VHDX under `%LOCALAPPDATA%\Packages\...`. It
 - **[Installation](../getting-started/installation.md)** — actual install steps (Linux/WSL2/Termux all use the same installer).
 - **[Integrations → Providers → WSL2 Networking](../integrations/providers.md#wsl2-networking-windows-users)** — the canonical networking deep-dive for local model servers.
 - **[MCP guide → WSL → Windows Chrome](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** — controlling your signed-in Windows Chrome from Hermes in WSL.
-- **[Tool Gateway](./features/tool-gateway.md)** and **[Web Dashboard](./features/web-dashboard.md)** — the long-lived services you'll most often want to expose from WSL to the rest of your network.
+- **[Tool Gateway](./features/tool-gateway.md)** — the long-lived service you'll most often want to expose from WSL to the rest of your network.

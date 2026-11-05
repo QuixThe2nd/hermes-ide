@@ -75,45 +75,6 @@ Both require an interactive terminal to the Hermes host. The rest of this skill
 is for when there is NO interactive TTY — Hermes running purely as a messaging
 gateway/bot where `/reload-mcp` triggers the flow with nobody at a prompt.
 
-## Preferred Front Door: the Hermes Dashboard (try this BEFORE manual token surgery)
-
-A remote Hermes gateway often also runs the **dashboard** web UI as a SEPARATE
-process (e.g. `hermes dashboard --host 0.0.0.0 --port <port>`; check with
-`ps aux | grep 'hermes dashboard'`). It exposes a connector/MCP console —
-endpoints like `/api/mcp/servers`, `/api/mcp/status`, and `/connectors` (all
-login-gated; a cookieless curl returning 401/302 confirms they exist).
-
-**Why the dashboard solves the core problem:** when the user drives OAuth from
-the dashboard *in their own browser*, the redirect lands in a context the
-dashboard can capture — sidestepping the `127.0.0.1`-callback failure that breaks
-the CLI/manual flow. So the correct escalation order for "add or re-auth an OAuth
-MCP server on a remote gateway" is:
-
-1. **Dashboard, in the user's browser** — the intended front door. Add servers, run OAuth, reload, all authenticated as the user. No copy-paste-callback dance, no hand-writing token files.
-2. **Manual token surgery (the rest of this skill)** — the FALLBACK for when there's no browser session to the dashboard (pure-chat/headless context).
-
-**Finding the dashboard's PUBLIC URL.** The dashboard binds internally to
-`0.0.0.0:<port>`, but the user needs the externally-reachable URL. Most deploy
-platforms inject it into the environment — grep for it rather than making the
-user hunt:
-
-```bash
-env | grep -iE "HERMES_DASHBOARD_PUBLIC_URL|RAILWAY_PUBLIC_DOMAIN|RAILWAY_STATIC_URL|RAILWAY_SERVICE_.*_URL|PUBLIC_URL|BASE_URL|DOMAIN" \
-  | sed -E 's/(TOKEN|SECRET|KEY|PASSWORD)=.*/\1=***REDACTED***/I'
-```
-
-`HERMES_DASHBOARD_PUBLIC_URL` is authoritative when present. On Railway also check
-`RAILWAY_PUBLIC_DOMAIN` / `RAILWAY_STATIC_URL` (the `*.up.railway.app` host) and
-`RAILWAY_SERVICE_*_URL` vars, which sometimes carry a friendlier custom domain.
-Hand the user the full `https://` URL and point them at the Connectors/MCP
-section. ALWAYS pipe through the `sed` redaction above — these env greps sit next
-to `*_TOKEN`/`*_SECRET` vars.
-
-**What the dashboard does NOT fix (still host-side / shell):** stdio servers that
-need shell auth state (a CLI `login` command whose credentials may not persist
-across restarts) and anything reading credentials from `$HERMES_HOME/.env`. Those
-are out of the dashboard's scope regardless.
-
 ## The Workaround
 
 Do the OAuth dance manually, then write the resulting tokens into the exact files

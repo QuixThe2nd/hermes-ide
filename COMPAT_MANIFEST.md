@@ -1133,13 +1133,11 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `Protocol` | import | `typing` |
 
-### `hermes_cli.dashboard_auth.audit`
 
 | name | kind | new location |
 |---|---|---|
 | `os` | import | `os` |
 
-### `hermes_cli.dashboard_auth.middleware`
 
 | name | kind | new location |
 |---|---|---|
@@ -1582,7 +1580,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Path` | import | `pathlib` |
 | `os` | import | `os` |
 
-### `hermes_cli.web_deps`
 
 | name | kind | new location |
 |---|---|---|
@@ -1591,19 +1588,16 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `has_valid_session_token` | restored-def | `(deleted; BASE body restored)` |
 | `late_attr` | restored-def | `(deleted; BASE body restored)` |
 
-### `hermes_cli.web_routers.cron`
 
 | name | kind | new location |
 |---|---|---|
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_routers.mcp`
 
 | name | kind | new location |
 |---|---|---|
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_routers.sessions`
 
 | name | kind | new location |
 |---|---|---|
@@ -1611,21 +1605,18 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `Dict` | import | `typing` |
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_routers.skills`
 
 | name | kind | new location |
 |---|---|---|
 | `LateState` | moved-lazy | `hermes_cli.web_deps` |
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_routers.tools`
 
 | name | kind | new location |
 |---|---|---|
 | `LateState` | moved-lazy | `hermes_cli.web_deps` |
 | `logging` | import | `logging` |
 
-### `hermes_cli.web_server`
 
 | name | kind | new location |
 |---|---|---|
@@ -2039,7 +2030,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `os` | import | `os` |
 | `tempfile` | import | `tempfile` |
 
-### `hermes_cli.win_pty_bridge`
 
 | name | kind | new location |
 |---|---|---|
@@ -2176,20 +2166,17 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `Optional` | import | `typing` |
 
-### `plugins.dashboard_auth.basic`
 
 | name | kind | new location |
 |---|---|---|
 | `Any` | import | `typing` |
 | `LoginStart` | moved-lazy | `hermes_cli.dashboard_auth` |
 
-### `plugins.dashboard_auth.drain`
 
 | name | kind | new location |
 |---|---|---|
 | `LoginStart` | moved-lazy | `hermes_cli.dashboard_auth` |
 
-### `plugins.dashboard_auth.nous`
 
 | name | kind | new location |
 |---|---|---|
@@ -2204,7 +2191,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `secrets` | import | `secrets` |
 | `urllib` | import | `urllib.parse` |
 
-### `plugins.dashboard_auth.self_hosted`
 
 | name | kind | new location |
 |---|---|---|

@@ -692,7 +692,7 @@ _select_plugin_image_gen_provider = partial(_select_plugin_gen_provider, "image_
 _select_plugin_video_gen_provider = partial(_select_plugin_gen_provider, "video_gen")
 
 # Per-provider STT model catalogs for the picker; keys are ``stt.<provider>`` sections, first entry is the
-# default. Kept in sync with the dashboard selects (web_server _CONFIG_FIELD_META) and the desktop settings
+# default. Kept in sync with the desktop settings
 # enums (apps/desktop/src/app/settings/constants.ts).
 STT_MODEL_CATALOG = {
     "local": ["base", "tiny", "small", "medium", "large-v3"],

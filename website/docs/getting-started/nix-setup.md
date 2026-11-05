@@ -339,7 +339,6 @@ Quick reference for the most common things Nix users want to customize:
 | Add API keys | `environmentFiles` | `[ config.sops.secrets."hermes-env".path ]` |
 | Give the agent an identity | `hermesHomeFiles."SOUL.md"` | `"You are a terse ops assistant."` |
 | Add project context to the workspace | `documents."AGENTS.md"` | `./documents/AGENTS.md` |
-| Run the headless backend or the dashboard | `backend.mode` | `"serve"` or `"dashboard"` |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
 | Enable Discord/Telegram/Slack | `extraDependencyGroups` | `[ "messaging" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
@@ -645,27 +644,6 @@ sudo loginctl enable-linger your-username
 ```
 
 macOS has no equivalent option. A `launchd` agent with `RunAtLoad` starts at login and continues to run.
-:::
-
-### Running the Backend / Dashboard
-
-`gateway.enable` runs the messaging gateway for Telegram, Discord, Slack and the other platforms. Remote JSON-RPC clients and the web dashboard connect to a *different* process, which is `hermes serve` or `hermes dashboard`. `backend.mode` runs that process with the gateway:
-
-```nix
-{
-  services.hermes-agent = {
-    enable = true;
-    gateway.enable = true;      # messaging platforms
-    backend.mode = "dashboard"; # + the browser dashboard on 127.0.0.1:9119
-    backend.port = 9119;
-  };
-}
-```
-
-`serve` runs without a user interface. It gives the `/api/ws` and `/api/pty` sockets to remote clients, and it does not build the web application. `dashboard` gives all of that, and also serves the browser admin panel. Both processes use one `HERMES_HOME` with the gateway. Thus the sessions, the skills, the memory and the cron jobs are the same for all of them. `backend.mode` works in the same way on the NixOS module, but not in container mode.
-
-:::warning Binding to an address other than loopback
-The default address is `127.0.0.1`. Each other address starts the authentication gate of the dashboard. The server also refuses each request with a `Host` header that is different from the address that the server bound to. This is a defence against DNS rebinding. Bind to the name or the address that your client uses.
 :::
 
 ### Verify It Works
@@ -1012,17 +990,6 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["hindsight"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | The systemd `Restart=` policy. macOS does not use it. |
 | `restartSec` | `int` | `5` | The systemd `RestartSec=` value. macOS does not use it. |
-
-### Backend (`hermes serve` / `hermes dashboard`)
-
-This option runs the headless backend or web dashboard with the gateway. You cannot use it with `container.enable`.
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `backend.mode` | `enum ["none" "serve" "dashboard"]` | `"none"` | `serve` runs without a user interface and gives `/api/ws` and `/api/pty`. `dashboard` also serves the browser panel. |
-| `backend.host` | `str` | `"127.0.0.1"` | The address to bind to. Each address other than loopback starts the authentication gate. |
-| `backend.port` | `port` | `9119` | The port to bind to |
-| `backend.extraArgs` | `listOf str` | `[]` | More arguments for the backend command |
 
 ### Home Manager only
 

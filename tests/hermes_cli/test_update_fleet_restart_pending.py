@@ -1660,7 +1660,7 @@ def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeyp
         json.dumps(
             {
                 "outcome": "failed", "exit_code": 1,
-                "stop_reason": "AttributeError: module 'hermes_cli.main_dashboard' has no attribute 'x'",
+                "stop_reason": "AttributeError: module 'hermes_cli.dashboard_procs' has no attribute 'x'",
                 "pre_update": {"sha": pre}, "post_update": {"sha": pulled},
                 "gateway_restart": {
                     "restarted_services": ["hermes-gateway"], "relaunched_profiles": [],

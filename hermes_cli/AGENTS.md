@@ -46,8 +46,7 @@ invalidation with `--now` opt-in (root invariant).
 ### Shared goal commands
 
 `hermes_cli/goal_command.py::dispatch_goal_command` owns `/goal` parsing and manager
-mutations. CLI, messaging gateway, TUI/Desktop/dashboard and Desktop goal controls
-all delegate there; adapters only resolve sessions, authorize gate creation, render
+mutations. CLI, messaging gateway, and TUI all delegate there; adapters only resolve sessions, authorize gate creation, render
 results, and schedule kickoff/continuation prompts. Async callers preserve ContextVars
 when running dispatch off-loop (drafting uses profile-scoped auxiliary credentials).
 Do not add a surface-specific goal parser. ACP has no goal command or goal loop yet.
@@ -122,12 +121,9 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   `hermes_agent.egg-info/`; tracked root entries stand in for the ZIP set before the download, the
   re-check gets the real one), a nested `__pycache__`/`node_modules`, or a `_ZIP_PRESERVED_NESTED`
   output is admitted; other ignored files under shipped dirs still block), and grafts the live nested
-  build outputs (`_ZIP_PRESERVED_NESTED`: `apps/desktop/{release,dist,node_modules,build}`,
-  `hermes_cli/web_dist`, `ui-tui/{dist,node_modules,packages/hermes-ink/dist}`, `web/node_modules`,
+  build outputs (`_ZIP_PRESERVED_NESTED`: `ui-tui/{dist,node_modules,packages/hermes-ink/dist}`,
   `scripts/whatsapp-bridge/node_modules`) into the staged swap by hardlink (the GitHub source ZIP has
-  none of them; without the graft the swap deletes them). Post-swap, the Desktop
-  rebuild decision also trusts the build stamp under HERMES_HOME, so an install that already lost
-  its artifacts in an earlier update is rebuilt instead of "forgotten" (#90495).
+  none of them; without the graft the swap deletes them).
 - **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE (every `hermes-gateway*` unit /
   `ai.hermes.gateway*` LaunchAgent), drain-first (SIGUSR1), with per-unit/per-label failure
   isolation. Restarting only the invoking profile's service leaves siblings on stale `sys.modules`
@@ -149,7 +145,7 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   checkout it stops, writes the hand-off payload (open receipt, pre-update plan, pre-update
   version/active features, Windows pause token) and re-executes
   `hermes update <same flags> --post-swap <file>` under the venv interpreter, which imports only the
-  pulled tree and owns the tail (deps, Node/web/Desktop, maintenance, config migration, fleet
+  pulled tree and owns the tail (deps, Node, maintenance, config migration, fleet
   restart, verification, receipt); the parent relays the exit code. Every "purge `sys.modules`" /
   "reload this list of modules" / "isolate this one step" fix was a symptom of the old shape and is
   gone — do not reintroduce one: a phase that needs new code runs in the child, full stop. Mocked
@@ -158,7 +154,7 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   `evals/update_pipeline/post_swap_handoff_ab.sh`. Post-update steps still isolate their own
   failures (a crashed notice must not abort the fleet matrix and receipt finalize that follow).
 
-Process-scan coordination between updater, serve/dashboard, and gateway is being replaced by a
+Process-scan coordination between the updater and the gateway is being replaced by a
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read
 #92091 before adding any heuristic. Process identity rules (never argv substrings; canonical
 matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87594): root
@@ -168,7 +164,7 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 
 `_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import for
 single-profile commands (`hermes -p x <cmd>`), so there `get_hermes_home()` scopes to the active
-profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead bind the active
+profile. The multiplex gateway instead binds the active
 profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch
 profile — a module constant or import-time read there freezes to the launch profile (rules in
 root). Profiles are independent
@@ -199,7 +195,7 @@ tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a sin
 `gateway_multiplex_mode.resolve_multiplex_mode` settles it once per boot (called from
 `load_gateway_config_for_runner`): default profile, >= 2 profiles, no standalone secondary gateway,
 no preflight blocker, migratable host → `True`; else `False` + a logged reason. Explicit values pass
-through. CLI/dashboard readers use `default_gateway_multiplexes` (live `served_profiles` record, then
+through. CLI readers use `default_gateway_multiplexes` (live `served_profiles` record, then
 the explicit flag) — never the merged default, which would guess a verdict only the gateway makes.
 Migration from per-profile gateways: `hermes_cli/gateway_migrate.py` (`hermes gateway migrate
 --multiplex|--standalone`, table-driven `_PREFLIGHT_CHECKS`, manifest `<default>/gateway_migration.json`);
@@ -218,7 +214,7 @@ every KeepAlive respawn, #110637).
 Service installs are a matrix, not a unit file: `gateway.py::generate_systemd_unit(system=,
 run_as_user=)` (user unit AND `--system` unit with `User=`; an unresolvable `User=` is a blocker,
 never a dir-owner fallback), `generate_launchd_plist` (`gui/<uid>` then `user/<uid>` domains, never a
-`~/Library/LaunchAgents` glob), Windows Scheduled Task and the Desktop-spawned backend all carry the
+`~/Library/LaunchAgents` glob), Windows Scheduled Task all carry the
 profile's `HERMES_HOME` (and `HOME` for the service user) explicitly — a supervisor starts with an
 empty environment, so the env override that makes `-p` work interactively does not exist there. A
 change to install/restart/status regenerates and diffs every kind; both user and system units are

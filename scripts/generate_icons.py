@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the website and dashboard icons from a single master SVG.
+"""Generate the website icons from a single master SVG.
 
 Usage (from repo root):
     .venv/Scripts/python.exe scripts/generate_icons.py           # write
@@ -25,7 +25,7 @@ Deps:
     Pillow (core dependency), resvg-py (dev extra):
     uv sync --extra dev
 
-Outputs (8 files, all measured against the originals):
+Outputs (7 files, all measured against the originals):
   website/static/img/logo.png                     1772x1799 black-frame wordmark
   website/static/img/nous-logo.png                150x150 on white (opaque)
   website/static/img/favicon-16x16.png            16x16
@@ -33,7 +33,6 @@ Outputs (8 files, all measured against the originals):
   website/static/img/apple-touch-icon.png         180x180
   website/static/img/favicon.ico                  16,32,48
   website/static/img/favicon.svg                  copy of the master
-  web/public/favicon.ico                          16,32,48
 """
 
 from __future__ import annotations
@@ -74,7 +73,6 @@ TARGETS: list[tuple[str, str, object]] = [
     ("website/static/img/apple-touch-icon.png", "png", 180),
     ("website/static/img/favicon.ico", "ico", [16, 32, 48]),
     ("website/static/img/favicon.svg", "svg_copy", None),
-    ("web/public/favicon.ico", "ico", [16, 32, 48]),
 ]
 
 

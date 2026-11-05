@@ -74,7 +74,6 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes sessions` | 浏览、导出、修剪、重命名和删除会话。 |
 | `hermes insights` | 显示 token/费用/活动分析。 |
 | `hermes claw` | OpenClaw 迁移辅助工具。 |
-| `hermes dashboard` | 启动用于管理配置、API 密钥和会话的 Web 控制台。 |
 | `hermes profile` | 管理 profile——多个隔离的 Hermes 实例。 |
 | `hermes completion` | 打印 shell 补全脚本（bash/zsh/fish）。 |
 | `hermes --version` | 显示版本信息。 |
@@ -1069,31 +1068,6 @@ hermes claw migrate --preset user-data --overwrite
 
 # 从自定义 OpenClaw 路径迁移
 hermes claw migrate --source /home/user/old-openclaw
-```
-
-## `hermes dashboard`
-
-```bash
-hermes dashboard [options]
-```
-
-启动 Web 控制台——基于浏览器的界面，用于管理配置、API 密钥和监控会话。需要 `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"`（FastAPI + Uvicorn）。内嵌浏览器 Chat 标签页始终可用，但额外需要 `pty` extra（`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`）以及 POSIX PTY 环境（如 Linux、macOS 或 WSL2）。完整文档请参阅 [Web 控制台](../user-guide/features/web-dashboard.md)。
-
-| 选项 | 默认值 | 说明 |
-|--------|---------|-------------|
-| `--port` | `9119` | Web 服务器运行端口 |
-| `--host` | `127.0.0.1` | 绑定地址 |
-| `--no-open` | — | 不自动打开浏览器 |
-| `--insecure` | 关闭 | **已弃用 / 无实际作用。** 此参数曾用于在非回环绑定上绕过鉴权；自 2026 年 6 月安全加固后，公网绑定始终需要用户名/密码或 OAuth 鉴权提供方。若需保持仅本地访问，请绑定 `127.0.0.1` 并通过隧道连接。 |
-| `--stop` | — | 停止正在运行的 `hermes dashboard` 进程并退出。 |
-| `--status` | — | 列出正在运行的 `hermes dashboard` 进程并退出。 |
-
-```bash
-# 默认——在浏览器中打开 http://127.0.0.1:9119
-hermes dashboard
-
-# 自定义端口，不打开浏览器
-hermes dashboard --port 8080 --no-open
 ```
 
 ## `hermes profile`

@@ -2,7 +2,7 @@
 
 Some inference tiers are cheap *because* the vendor trains on your prompts. A static rule table (not
 a ProviderProfile hook) because the guard runs inside core selection code (``auth.py`` /
-``web_server.py``), which never calls into the active provider profile.
+which never calls into the active provider profile.
 """
 
 from __future__ import annotations

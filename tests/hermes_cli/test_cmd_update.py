@@ -1020,7 +1020,7 @@ class TestNodeRuntimeNpmResolution:
             "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
         ):
             failed = update_cmd._update_node_dependencies()
-        assert failed == ["ui-tui, web workspaces"]
+        assert failed == ["ui-tui workspace"]
         out = capsys.readouterr().out
         assert "mixed state" in out
 
@@ -1116,8 +1116,8 @@ class TestUpdateNodeDependencies:
 
     @patch("subprocess.Popen")
     @patch("shutil.which", return_value="/usr/bin/npm")
-    def test_install_names_ui_tui_and_web_workspaces(self, _which, mock_popen, tmp_path, monkeypatch):
-        """Regression for #43564: install ui-tui + web directly."""
+    def test_install_names_ui_tui_workspace(self, _which, mock_popen, tmp_path, monkeypatch):
+        """Regression for #43564: install ui-tui directly."""
         from hermes_cli import main as hm
 
         (tmp_path / "package.json").write_text("{}")
@@ -1132,8 +1132,11 @@ class TestUpdateNodeDependencies:
         calls = self._popen_npm_calls(popen_calls)
         assert len(calls) == 1, f"expected exactly 1 npm call, got: {calls}"
         joined = " ".join(str(a) for a in calls[0])
-        assert "--workspace ui-tui" in joined and "--workspace web" in joined, (
-            f"expected ui-tui + web workspace selectors; actual: {calls[0]}"
+        assert "--workspace ui-tui" in joined, (
+            f"expected ui-tui workspace selector; actual: {calls[0]}"
+        )
+        assert "--workspace web" not in joined, (
+            f"the web workspace is removed; actual: {calls[0]}"
         )
         assert "--workspaces=false" not in joined, (
             f"no root-only deps remain to protect; --workspaces=false is unnecessary now; actual: {calls[0]}"

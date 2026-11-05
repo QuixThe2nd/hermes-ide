@@ -1237,24 +1237,6 @@ def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
         assert active == [_managed_image_row()["name"]], (model, active)
 
 
-def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monkeypatch):
-    import hermes_cli.tools_config as tools_config
-    from hermes_cli.web_routers.tools import _resolve_toolset_model_plugin, _toolset_model_catalog
-    from plugins.image_gen.krea import KREA_MODEL_IDS
-    from tools.image_generation_catalog import FAL_MODELS
-
-    paid = NousPortalAccountInfo(logged_in=True, source="jwt", fresh=False, paid_service_access=True)
-    monkeypatch.setattr(
-        tools_config, "get_nous_subscription_features",
-        lambda *args, **kwargs: SimpleNamespace(features={}, account_info=paid))
-    plugin = _resolve_toolset_model_plugin("image_gen", _managed_image_row())
-    catalog, default_model = _toolset_model_catalog("image_gen", plugin, {})
-
-    assert default_model in catalog and default_model in FAL_MODELS
-    assert KREA_MODEL_IDS <= set(catalog)
-    assert not any(mid.startswith("fal-ai/krea/") for mid in catalog), "Krea 2 must appear once, natively"
-
-
 def test_pool_only_account_is_offered_fal_models_only(monkeypatch):
     import hermes_cli.tools_config as tools_config
     from hermes_cli.tools_config_providers import _managed_image_catalog

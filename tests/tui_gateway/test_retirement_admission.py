@@ -27,7 +27,7 @@ class Transport:
 
 
 def test_queued_and_running_rpc_hold_admission_until_the_response(runtime, monkeypatch):
-    from hermes_cli.web_server_idle_proof import idle_proof
+    from hermes_cli.backend_retirement import idle_proof
 
     server, fence = runtime
     release_pool, entered, release_handler = (threading.Event() for _ in range(3))

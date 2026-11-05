@@ -12,7 +12,7 @@ from typing import Any, Dict
 def summarize_server(name: str, cfg: dict) -> Dict[str, Any]:
     """Serialize one server's config for a UI (no secret values).
 
-    Mirrors web_server._mcp_server_summary plus ``oauth_tokens_present`` so a UI can
+    Mirrors the MCP server summary shape plus ``oauth_tokens_present`` so a UI can
     tell an OAuth server that still needs authentication from one already authenticated.
     """
     from hermes_cli.mcp_config import _oauth_tokens_present

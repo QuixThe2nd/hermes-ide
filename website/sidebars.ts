@@ -130,8 +130,6 @@ const sidebars: SidebarsConfig = {
           type: 'category',
           label: 'Management',
           items: [
-            'user-guide/features/web-dashboard',
-            'user-guide/features/extending-the-dashboard',
             'user-guide/features/api-server',
             'user-guide/features/subscription-proxy',
           ],

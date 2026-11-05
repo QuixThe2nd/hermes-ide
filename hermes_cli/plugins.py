@@ -915,48 +915,6 @@ class PluginContext:
                      getattr(provider, "name", "?"))
 
     @_serialized_replacement
-    def register_dashboard_auth_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a :class:`hermes_cli.dashboard_auth.DashboardAuthProvider` for the dashboard
-        auth gate (non-loopback bind without ``--insecure``). Wrong type / duplicate name warn and
-        are ignored, never raised."""
-        from hermes_cli.dashboard_auth import DashboardAuthProvider
-        from hermes_cli.dashboard_auth.registry import register_global_provider, unregister_global_provider
-        if self._wrong_type(provider, DashboardAuthProvider, "dashboard-auth provider"):
-            return
-        launch_scope = hermes_home_key(get_process_hermes_home())
-        if self._manager.scope_key != launch_scope:
-            logger.warning(
-                "Plugin '%s' tried to register dashboard-auth provider %r "
-                "from profile scope %s; ignoring it because dashboard auth "
-                "is owned by launch scope %s.",
-                self.manifest.name,
-                provider.name,
-                self._manager.scope_key,
-                launch_scope,
-            )
-            return
-        registry_name = provider.name
-        # The auth registry is process-global (lifetime = web server). Disposing it on a routine
-        # per-home manager teardown emptied it for the WHOLE process and disabled sign-in until
-        # restart — so upsert and keep it out of reverse-order teardown (``persistent=True``).
-        try:
-            # A per-home manager is torn down routinely (profile-scoped dashboard activity, force
-            # re-discovery), and disposing this registration on that teardown emptied the auth registry for
-            # the WHOLE process, permanently disabling sign-in until restart (#91701). The handle still
-            # disposes explicitly (identity- conditional), and a forced re-discovery rotates the provider in
-            # place via the upsert.
-            register_global_provider(provider)
-        except (TypeError, ValueError) as e:
-            logger.warning("Plugin '%s' failed to register dashboard-auth provider %r: %s",
-                           self.manifest.name, getattr(provider, "name", "?"), e)
-            return
-        handle = self._track("dashboard_auth_provider", registry_name,
-                             lambda: unregister_global_provider(registry_name, provider), persistent=True)
-        logger.info("Plugin '%s' registered dashboard-auth provider: %s (%s)", self.manifest.name,
-                    registry_name, provider.display_name)
-        return handle
-
-    @_serialized_replacement
     def register_platform(
         self, name: str, label: str, adapter_factory: Callable, check_fn: Callable,
         validate_config: Callable | None = None, required_env: list | None = None,
@@ -1785,13 +1743,6 @@ def _reset_plugin_managers_for_tests() -> None:
                 logger.debug("test plugin-manager unload failed", exc_info=True)
         _plugin_managers_by_home.clear()
         _plugin_manager = None
-    # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate
-    # reset must clear that process-global registry explicitly or a test's provider leaks.
-    try:
-        from hermes_cli.dashboard_auth.registry import clear_providers
-        clear_providers()
-    except Exception:
-        logger.debug("dashboard-auth registry clear failed", exc_info=True)
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:

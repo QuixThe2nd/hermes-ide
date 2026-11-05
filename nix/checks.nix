@@ -179,7 +179,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               services = {
                 enable = true;
                 gateway.enable = true;
-                backend.mode = "serve";
                 settings.model.default = "test/model";
                 environment.HERMES_TEST = "1";
                 environmentFiles = [ "/run/secrets/hermes-env" ];
@@ -196,8 +195,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             };
             cfg = enabled.config;
 
-            # The gateway and the backend are two processes with one
-            # HERMES_HOME.
+            # The processes the module defines.
             processes =
               if pkgs.stdenv.hostPlatform.isDarwin then
                 lib.mapAttrs (_: agent: {
@@ -229,20 +227,13 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             failures =
               lib.optional (names != [
                 "hermes-agent"
-                "hermes-backend"
-              ]) "expected hermes-agent + hermes-backend processes, got: ${toString names}"
+              ]) "expected hermes-agent process, got: ${toString names}"
               ++ lib.optional (
                 !lib.hasInfix "bin/hermes gateway" (argvOf "hermes-agent")
               ) "gateway process does not run `hermes gateway`: ${argvOf "hermes-agent"}"
               ++ lib.optional (
-                !lib.hasInfix "bin/hermes serve" (argvOf "hermes-backend")
-              ) "backend process does not run `hermes serve`: ${argvOf "hermes-backend"}"
-              ++ lib.optional (
-                !lib.hasInfix "--no-open" (argvOf "hermes-backend")
-              ) "backend must pass --no-open so a service never opens a browser"
-              ++ lib.optional (
                 lib.any (n: !lib.hasInfix "/home/hermes-check/.hermes" (envOf n)) names
-              ) "gateway and backend must share one HERMES_HOME"
+              ) "processes must run under the managed HERMES_HOME"
               ++ lib.optional (
                 cfg.home.sessionVariables.HERMES_HOME or null != "/home/hermes-check/.hermes"
               ) "programs.hermes-agent.enable must export HERMES_HOME for interactive shells"
@@ -481,7 +472,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           let
             cfg = (evalNixosModule {
               enable = true;
-              backend.mode = "dashboard";
               settings.model.default = "test/model";
               environmentFiles = [ "/run/secrets/hermes-env" ];
               hermesHomeFiles."SOUL.md" = "test soul";
@@ -495,145 +485,21 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             failures =
               lib.optional (names != [
                 "hermes-agent"
-                "hermes-backend"
-              ]) "expected hermes-agent + hermes-backend units, got: ${toString names}"
+              ]) "expected hermes-agent unit, got: ${toString names}"
               ++ lib.optional (
                 !lib.hasInfix "bin/hermes gateway" (execOf "hermes-agent")
               ) "gateway unit does not run `hermes gateway`: ${execOf "hermes-agent"}"
               ++ lib.optional (
-                !lib.hasInfix "bin/hermes dashboard" (execOf "hermes-backend")
-              ) "backend unit does not run `hermes dashboard`: ${execOf "hermes-backend"}"
-              ++ lib.optional (
-                units.hermes-agent.environment.HERMES_HOME != units.hermes-backend.environment.HERMES_HOME
-              ) "gateway and backend must share one HERMES_HOME"
-              ++ lib.optional (
                 !lib.hasInfix "/var/lib/hermes/.hermes/SOUL.md" activation
               ) "hermesHomeFiles must install into HERMES_HOME";
 
-            # You cannot use container mode and the backend together. The
-            # module says so with an assertion. Without the assertion it
-            # makes a unit that never starts.
-            containerConflict = builtins.tryEval (
-              lib.deepSeq
-                (evalNixosModule {
-                  enable = true;
-                  container.enable = true;
-                  backend.mode = "serve";
-                }).config.system.build.toplevel.drvPath
-                true
-            );
           in
           pkgs.runCommand "hermes-nixos-module" { } (
             if failures != [ ] then
               throw "NixOS module check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
-            else if containerConflict.success then
-              throw "NixOS module check failed:\n  - an assertion must reject backend.mode with container.enable"
             else
               ''
                 echo "PASS: nixos module evaluates (${toString (lib.length names)} units)"
-                mkdir -p $out
-                echo "ok" > $out/result
-              ''
-          );
-
-        # ── How the backend waits for its bind target ────────────────────
-        # The backend binds to `host` immediately by default. A unit that
-        # starts at boot can lose the race against the daemon that supplies
-        # the address, such as tailscaled. `backend.waitFor` puts a poll in
-        # front of the bind. This check proves three properties: the default
-        # keeps the direct command line, each wait mode makes a launcher that
-        # polls and then execs hermes, and the assertions reject a
-        # configuration that cannot work.
-        backend-bind-wait =
-          let
-            execOf =
-              settings:
-              (evalNixosModule ({ enable = true; } // settings)).config.systemd.services.hermes-backend.serviceConfig.ExecStart;
-
-            direct = execOf { backend.mode = "serve"; };
-
-            hostnameWait = execOf {
-              backend = {
-                mode = "serve";
-                host = "host.example.ts.net";
-                waitFor = "hostname";
-              };
-            };
-
-            interfaceWait = execOf {
-              backend = {
-                mode = "dashboard";
-                waitFor = "interface";
-                interfaceName = "tailscale0";
-                waitTimeout = 30;
-              };
-            };
-
-            # The launcher is a store path. Read it to see what it runs.
-            hostnameScript = builtins.readFile hostnameWait;
-            interfaceScript = builtins.readFile interfaceWait;
-
-            evalFails =
-              settings:
-              !(builtins.tryEval (
-                lib.deepSeq
-                  (evalNixosModule ({ enable = true; } // settings)).config.system.build.toplevel.drvPath
-                  true
-              )).success;
-
-            failures =
-              # The default must not change.
-              lib.optional (!lib.hasInfix "bin/hermes serve --host 127.0.0.1" direct)
-                "without waitFor the backend must exec hermes directly, got: ${direct}"
-              ++ lib.optional (lib.hasInfix "hermes-backend-launch" direct)
-                "without waitFor the backend must not use the launcher"
-
-              # The hostname mode polls the resolver, then binds the name.
-              ++ lib.optional (!lib.hasInfix "hermes-backend-launch" hostnameWait)
-                "waitFor = hostname must run the launcher, got: ${hostnameWait}"
-              ++ lib.optional (!lib.hasInfix "getent hosts" hostnameScript)
-                "the hostname launcher must poll with getent"
-              ++ lib.optional (!lib.hasInfix "host.example.ts.net" hostnameScript)
-                "the hostname launcher must poll for backend.host"
-              ++ lib.optional (!lib.hasInfix "exec " hostnameScript)
-                "the launcher must exec hermes, so that it keeps the MainPID"
-              ++ lib.optional (!lib.hasInfix ''--host "$_target"'' hostnameScript)
-                "the launcher must bind the address that the poll resolved"
-
-              # The interface mode reads an address off the interface.
-              ++ lib.optional (!lib.hasInfix "tailscale0" interfaceScript)
-                "the interface launcher must poll backend.interfaceName"
-              ++ lib.optional (!lib.hasInfix "_timeout=30" interfaceScript)
-                "the launcher must use backend.waitTimeout"
-              ++ lib.optional (!lib.hasInfix "bin/hermes dashboard" interfaceScript)
-                "the launcher must keep backend.mode"
-
-              # The assertions reject what cannot work.
-              ++
-                lib.optional
-                  (!evalFails {
-                    backend = {
-                      mode = "serve";
-                      waitFor = "interface";
-                    };
-                  })
-                  "an assertion must reject waitFor = interface without interfaceName"
-              ++
-                lib.optional
-                  (!evalFails {
-                    backend = {
-                      mode = "serve";
-                      interfaceName = "tailscale0";
-                    };
-                  })
-                  "an assertion must reject interfaceName without waitFor = interface";
-          in
-          pkgs.runCommand "hermes-backend-bind-wait" { } (
-            if failures != [ ] then
-              throw "backend bind wait check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
-            else
-              ''
-                echo "PASS: backend bind wait (default, hostname, interface)"
                 mkdir -p $out
                 echo "ok" > $out/result
               ''
@@ -760,24 +626,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         service-argv =
           let
             common = import ./moduleCommon.nix { inherit lib; };
-            cfgFor = mode: {
+            cfg = {
               package = hermes-agent;
               extraPythonPackages = [ ];
               extraDependencyGroups = [ ];
               extraArgs = [ ];
-              backend = {
-                inherit mode;
-                host = "127.0.0.1";
-                port = 9119;
-                extraArgs = [ ];
-                waitFor = null;
-                interfaceName = null;
-                waitTimeout = 120;
-                # No token here: this case asserts the plain argv, which the
-                # module builds only when nothing must run before the
-                # backend. A token needs the launcher script instead.
-                sessionTokenFile = null;
-              };
             };
             sentinel = "--hermes-nix-argv-probe";
             probe = argv: lib.escapeShellArgs (argv ++ [ sentinel ]);
@@ -808,9 +661,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               esac
             }
 
-            check "gateway"   ${probe (common.gatewayArgv (cfgFor "none"))}
-            check "serve"     ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "serve"; })}
-            check "dashboard" ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "dashboard"; })}
+            check "gateway"   ${probe (common.gatewayArgv cfg)}
 
             mkdir -p $out
             echo "ok" > $out/result

@@ -250,18 +250,7 @@
                   opt = options.services.hermes-agent.workingDirectory;
                   optionPath = "services.hermes-agent";
                 }
-                ++ common.backendBindAssertions {
-                  inherit cfg;
-                  optionPath = "services.hermes-agent";
-                }
-                ++ [
-                  {
-                    # The interface poll reads `ip`, which iproute2 supplies on
-                    # Linux only.
-                    assertion = !isDarwin || cfg.backend.waitFor != "interface";
-                    message = "services.hermes-agent.backend.waitFor = \"interface\" works on Linux only. Use \"hostname\" on Darwin.";
-                  }
-                ];
+                ;
             }
 
             # The agent runs these tools, so they belong on the PATH of the
@@ -309,12 +298,6 @@
               };
             })
 
-            (lib.mkIf (isLinux && cfg.backend.mode != "none") {
-              systemd.user.services.hermes-backend = mkUnit {
-                description = common.backendDescription cfg;
-                argv = common.backendArgv { inherit pkgs cfg; };
-              };
-            })
 
             # ── Darwin: launchd agents ─────────────────────────────────────
             (lib.mkIf (isDarwin && cfg.gateway.enable) {
@@ -324,12 +307,6 @@
               };
             })
 
-            (lib.mkIf (isDarwin && cfg.backend.mode != "none") {
-              launchd.agents.hermes-backend = mkAgent {
-                argv = common.backendArgv { inherit pkgs cfg; };
-                logName = "hermes-backend";
-              };
-            })
           ]
         ))
       ];

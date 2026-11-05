@@ -56,7 +56,7 @@ pytest run.
 ### Desktop profile isolation and compaction generations
 
 Each named profile stores its transcript in its own `$HERMES_HOME/state.db`,
-including when one `hermes serve` process serves several profiles. In-session
+including when one multiplexed gateway process serves several profiles. In-session
 agent rebuilds (Bot Chat capability refresh and `tools.configure`) must retain
 that session's database handle and bind its profile home during construction.
 Releasing the outgoing agent must not close the handle inherited by its replacement.
@@ -196,9 +196,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
 ```
 
 `user_id` is the principal on the other end of the session: messaging adapters
-store the platform sender id, and `desktop` / dashboard sessions opened through
-an authenticated `hermes serve` (OAuth or the basic username/password provider)
-store the login as `<provider>:<user id>` (for example `basic:alice`). Sessions
+store the platform sender id. Sessions
 with nobody behind them — anonymous loopback use, `subagent`, and `cron`
 — keep it empty. The value is set when the row is created and never inferred
 later.

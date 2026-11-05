@@ -519,7 +519,7 @@ def pick_silent_default_model(model_ids: list[str], provider: str | None = None)
 # This is deliberately a network-free lookup for the hot resolution path
 # (cache-only catalog read). The *interactive* default (GUI onboarding /
 # ``hermes model``) uses the richer free/paid-tier-aware resolver — see
-# ``get_recommended_default_model`` in hermes_cli/web_server.py and
+# ``get_recommended_default_model`` (surface UIs) and
 # ``partition_nous_models_by_tier`` — which can hit the Portal.
 _SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset(
     {"nous", "openrouter", PREFERRED_SILENT_DEFAULT_PROVIDER}
