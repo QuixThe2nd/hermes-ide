@@ -402,9 +402,18 @@ class MatrixInboxRouter:
         self._children[route.child_room_id] = route
         self.adapter._dm_rooms[route.child_room_id] = True
         if not route.origin_link_event_id:
+            preview = source_content.get("body") or ""
+            link = _matrix_link(room_id, event_id)
+            if preview:
+                if len(preview) > 400:
+                    preview = preview[:397] + "..."
+                quoted = "\n".join(f"> {line}" for line in preview.splitlines())
+                origin_text = f"Started from [the original inbox message]({link}):\n\n{quoted}"
+            else:
+                origin_text = f"Started from [the original inbox message]({link})."
             result = await self.adapter.send(
                 route.child_room_id,
-                f"Started from [the original inbox message]({_matrix_link(room_id, event_id)}).")
+                origin_text)
             if not result.success or not result.message_id:
                 await self._notify_failure_once(route, "dispatch")
                 return
