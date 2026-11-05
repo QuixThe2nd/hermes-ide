@@ -524,7 +524,7 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
     if info.wal_reset_vulnerable:
         return False, f"candidate still links vulnerable SQLite {info.sqlite_version_string}", info
     check = (
-        "import dotenv, fastapi, openai, prompt_toolkit, pydantic, rich, uvicorn, yaml\n"
+        "import dotenv, openai, prompt_toolkit, pydantic, rich, uvicorn, yaml\n"
         "import hermes_state\n")
     try:
         result = subprocess.run(

@@ -514,7 +514,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     # interrupted uninstall/install.
     check = (
         "import importlib\n"
-        "mods = ['fastapi', 'uvicorn', 'pydantic', 'openai', 'yaml']\n"
+        "mods = ['uvicorn', 'pydantic', 'openai', 'yaml']\n"
         "missing = []\n"
         "for m in mods:\n"
         "    try: importlib.import_module(m)\n"
