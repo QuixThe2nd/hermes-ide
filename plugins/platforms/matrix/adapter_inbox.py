@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
+import re
 import sqlite3
 import threading
 import time
@@ -65,6 +66,29 @@ def _server_name_suffix(identifier: str) -> Optional[str]:
 def _matrix_link(room_id: str, event_id: Optional[str] = None) -> str:
     suffix = f"/{quote(event_id, safe='')}" if event_id else ""
     return f"https://matrix.to/#/{quote(room_id, safe='')}{suffix}"
+
+
+_ORIGIN_PREVIEW_LIMIT = 500
+
+_QUOTE_MARKER = re.compile(r"^\s*(?:>\s?)+")
+
+
+def _origin_link_text(room_id: str, event_id: str, source_content: dict) -> str:
+    """Origin-link one-liner, plus a blockquote preview of the original text."""
+    link = f"Started from [the original inbox message]({_matrix_link(room_id, event_id)})."
+    body = (source_content or {}).get("body")
+    if not isinstance(body, str):
+        return link
+    # Drop per-line "> " quote markers so a pre-quoted message doesn't nest,
+    # then flatten to one tidy paragraph of plain text (formatted_body stays out).
+    stripped_lines = (_QUOTE_MARKER.sub("", line) for line in body.splitlines())
+    text = " ".join(part for part in stripped_lines if part)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return link
+    if len(text) > _ORIGIN_PREVIEW_LIMIT:
+        text = text[:_ORIGIN_PREVIEW_LIMIT].rstrip() + "…"
+    return f"{link}\n\n> {text}"
 
 
 def _room_title(msgtype: str) -> str:
@@ -404,7 +428,7 @@ class MatrixInboxRouter:
         if not route.origin_link_event_id:
             result = await self.adapter.send(
                 route.child_room_id,
-                f"Started from [the original inbox message]({_matrix_link(room_id, event_id)}).")
+                _origin_link_text(room_id, event_id, source_content))
             if not result.success or not result.message_id:
                 await self._notify_failure_once(route, "dispatch")
                 return

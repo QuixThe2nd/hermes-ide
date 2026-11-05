@@ -87,3 +87,50 @@ class TestInboxHubAuth:
         router = _make_router(adapter)
         assert await _route(router) is True
         adapter.create_room.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+class TestOriginLinkPreview:
+    async def _origin_message(self, content, event_id="$evt1"):
+        adapter = _make_adapter(["@sender:example.org"])
+        router = _make_router(adapter)
+        assert await router.route_inbound(
+            INBOX_ROOM, "@sender:example.org", event_id, time.time(), content, {},
+            "m.text", is_command=False) is True
+        child_sends = [c for c in adapter.send.await_args_list if c.args[0] == "!child:example.org"]
+        return child_sends[0].args[1]
+
+    async def test_preview_quotes_body_text(self):
+        text = await self._origin_message({"body": "hello world", "msgtype": "m.text"})
+        assert text == (
+            "Started from [the original inbox message]"
+            "(https://matrix.to/#/%21inbox%3Aexample.org/%24evt1).\n\n> hello world")
+
+    async def test_no_body_sends_bare_link(self):
+        # Body-less events are filtered by intake before routing; assert the
+        # degradation directly on the link-text builder.
+        from plugins.platforms.matrix.adapter_inbox import _origin_link_text
+        link = ("Started from [the original inbox message]"
+                "(https://matrix.to/#/%21inbox%3Aexample.org/%24evt1).")
+        for content in ({"body": None}, {}, {"body": ""}, {"body": "   \n  "}):
+            assert _origin_link_text(INBOX_ROOM, "$evt1", content) == link
+
+    async def test_formatted_body_is_ignored(self):
+        text = await self._origin_message({
+            "body": "plain text", "format": "org.matrix.custom.html",
+            "formatted_body": "<b>plain text</b>"})
+        assert text.endswith("\n\n> plain text")
+
+    async def test_newlines_and_whitespace_collapse(self):
+        text = await self._origin_message({"body": "line one\n\nline   two\n\tthree"})
+        assert text.endswith("\n\n> line one line two three")
+
+    async def test_leading_quote_markers_are_stripped(self):
+        text = await self._origin_message({"body": "> quoted reply\n>> deeper\nown words"})
+        assert text.endswith("\n\n> quoted reply deeper own words")
+
+    async def test_long_body_is_capped(self):
+        text = await self._origin_message({"body": "x" * 600})
+        quote = text.rsplit("\n\n> ", 1)[1]
+        assert len(quote) == 501  # 500 chars + ellipsis
+        assert quote.endswith("…")
