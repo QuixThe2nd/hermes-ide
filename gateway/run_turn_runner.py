@@ -182,10 +182,12 @@ class TurnRunner(_TurnRunnerCore):
             or event_type != "tool.started"
             # The adapter's send_clarify IS the user-facing rendering (interactive buttons or the
             # numbered-text fallback), so a progress bubble is pure duplication — and in verbose mode it
-            # dumps the raw tool-call args JSON ({"question": ..., "choices": [...]}) into the chat. Because
+            # dumps the raw tool-call args JSON ({"question": ..., "choices": [...]}) into the chat. For
+            # ``restart`` the lifecycle notices own the user-facing presentation after the tool queues
+            # the shared drain, so a "♻️ restart" bubble is the same duplication (#52374, #529). Because
             # the progress queue drains on a background task, that raw JSON typically lands right underneath
-            # the rendered prompt (#52374).
-            or tool_name == "clarify"
+            # the rendered prompt.
+            or tool_name in {"clarify", "restart"}
             or self._agent_interrupted()
         ):
             return
@@ -1727,9 +1729,17 @@ class TurnRunner(_TurnRunnerCore):
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
         # sequences. Telegram observed=True rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
-        agent_history, observed_group_context = _build_gateway_agent_history(
+        agent_history, observed_group_context, cursor_recovery_note = _build_gateway_agent_history(
             ctx.history, channel_prompt=ctx.channel_prompt, inject_timestamps=_message_timestamps_enabled(ctx.user_config),
         )
+        if cursor_recovery_note:
+            # Observed-group cursor recovery is ordinary context machinery (not
+            # restart prose); mirror the facade resume path (run.py) so a note
+            # never drops on the normal turn path.
+            if isinstance(ctx.message, str) and ctx.message:
+                ctx.message = f"{cursor_recovery_note}\n\n{ctx.message}"
+            else:
+                ctx.message = cursor_recovery_note
         # FTS write-corruption guard: if persistence failed silently the reloaded transcript is stale
         # while the SAME cached agent still holds the live conversation (same-session amnesia). Only
         # for a reused agent bound to this exact session_id.
