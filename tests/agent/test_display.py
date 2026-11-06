@@ -215,6 +215,92 @@ class TestDescribeToolCallSkillAndDelegateDescription:
         assert phrase == "Delegated to Cursor agent: cloud fix"
 
 
+class TestDescribeToolCallDiscordDescription:
+    """describe_tool_call — optional description on discord / discord_admin (composed with derived label)."""
+
+    def test_discord_fetch_messages_composes_description(self):
+        phrase = describe_tool_call(
+            "discord",
+            {
+                "action": "fetch_messages",
+                "channel_id": "123",
+                "description": "find the deploy report",
+            },
+        )
+        assert phrase == (
+            "Fetching recent Discord messages in channel 123 to find the deploy report"
+        )
+
+    def test_discord_description_already_prefixed_with_to_not_doubled(self):
+        phrase = describe_tool_call(
+            "discord",
+            {
+                "action": "fetch_messages",
+                "channel_id": "123",
+                "description": "to find the deploy report",
+            },
+        )
+        assert phrase == (
+            "Fetching recent Discord messages in channel 123 to find the deploy report"
+        )
+
+    def test_discord_fetch_messages_without_description_unchanged(self):
+        phrase = describe_tool_call(
+            "discord", {"action": "fetch_messages", "channel_id": "123"}
+        )
+        assert phrase == "Fetching recent Discord messages in channel 123"
+
+    def test_discord_search_members_composes_description(self):
+        phrase = describe_tool_call(
+            "discord",
+            {
+                "action": "search_members",
+                "query": "deploy",
+                "description": "find the on-call engineer",
+            },
+        )
+        assert phrase == (
+            "Searching Discord members for deploy to find the on-call engineer"
+        )
+
+    def test_discord_create_thread_composes_description(self):
+        phrase = describe_tool_call(
+            "discord",
+            {
+                "action": "create_thread",
+                "name": "deploy-thread",
+                "description": "track the rollout",
+            },
+        )
+        assert phrase == "Creating Discord thread deploy-thread to track the rollout"
+
+    def test_discord_admin_pin_message_composes_description(self):
+        phrase = describe_tool_call(
+            "discord_admin",
+            {
+                "action": "pin_message",
+                "message_id": "456",
+                "description": "keep the report visible",
+            },
+        )
+        assert phrase == "Pinning a Discord message 456 to keep the report visible"
+
+    def test_discord_unknown_action_with_description_falls_back(self):
+        assert (
+            describe_tool_call(
+                "discord",
+                {"action": "bogus_action", "description": "check something"},
+            )
+            == "Check something"
+        )
+
+    def test_discord_missing_action_with_description_falls_back(self):
+        assert (
+            describe_tool_call("discord", {"description": "check something"})
+            == "Check something"
+        )
+
+
 class TestDescribeToolCallFileDescriptions:
     """patch/write_file describe the basename and purpose instead of exposing the full path."""
 

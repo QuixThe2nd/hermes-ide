@@ -476,6 +476,13 @@ _TOOL_DESCRIPTIONS = {
 }
 
 _SCHEMA_PROPERTIES: Dict[str, Any] = {
+    "description": {
+        "type": "string",
+        "description": (
+            "One short phrase (max ~80 chars) saying WHY you are calling this, e.g. 'find the last deploy "
+            "report'. Shown to the user as progress. Never put message content or secrets here."
+        ),
+    },
     "guild_id": {"type": "string", "description": "Discord server (guild) ID."},
     "channel_id": {"type": "string", "description": "Discord channel ID."},
     "user_id": {"type": "string", "description": "Discord user ID."},
