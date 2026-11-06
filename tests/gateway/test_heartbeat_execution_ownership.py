@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from evals.heartbeat_idle_wire import WireAdapter
+from tests.probes.heartbeat_idle_wire import WireAdapter
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore
