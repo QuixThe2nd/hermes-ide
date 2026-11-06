@@ -18,10 +18,9 @@ _SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
-_YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # E.164 phone recipients ("+1555..."): the '+' fails the isdigit() rule and the channel directory
 # cannot resolve a raw number, so keep the '+' and treat it as explicit.
-_PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"photon", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 _PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")  # mirrors _DM_CHAT_GUID_RE in the photon adapter
 # WhatsApp JIDs (@g.us, @s.whatsapp.net, @lid, broadcast/newsletter) and Buzz UUIDs are native targets
@@ -80,23 +79,6 @@ def _parse_matrix(ref):
     return (trimmed[:split_idx], trimmed[split_idx + 1:]) if split_idx > 0 else None
 
 
-def _parse_yuanbao(ref):
-    # "group:<code>" / "direct:<id>"; a bare number is a group code (never generic rules).
-    match = _YUANBAO_TARGET_RE.fullmatch(ref)
-    if match:
-        return match.group(1), None
-    return (f"group:{ref.strip()}", None) if ref.strip().isdigit() else _UNRESOLVED
-
-
-def _parse_signal(ref):
-    # "group:<id>" is a native group target; an empty id is not explicit.
-    stripped = ref.strip()
-    if not stripped.startswith("group:"):
-        return None
-    group_id = stripped[len("group:"):].strip()
-    return (f"group:{group_id}", None) if group_id else _UNRESOLVED
-
-
 _PLATFORM_PARSERS = {
     "telegram": _parse_telegram,
     "feishu": _parse_regex_groups(_FEISHU_TARGET_RE),
@@ -104,12 +86,10 @@ _PLATFORM_PARSERS = {
     "slack": _parse_slack,
     "matrix": _parse_matrix,
     "weixin": _parse_regex_groups(_WEIXIN_TARGET_RE, thread_group=False),
-    "yuanbao": _parse_yuanbao,
     "email": _parse_regex_stripped(_EMAIL_TARGET_RE),
     # Native WhatsApp JIDs pass through verbatim; E.164 numbers use the phone rule.
     "whatsapp": _parse_regex_stripped(_WHATSAPP_JID_RE),
     "buzz": _parse_regex_stripped(_BUZZ_UUID_RE),
-    "signal": _parse_signal,
     # Photon DM GUIDs are adapter-native ids (mirrors the react handler).
     "photon": _parse_regex_stripped(_PHOTON_DM_GUID_RE)}
 

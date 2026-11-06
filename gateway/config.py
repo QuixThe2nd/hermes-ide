@@ -248,11 +248,9 @@ _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.value
 # profile's port-binder is built in shared-listener mode and served at /p/<profile>/<path> on the
 # default's listener (gateway/platforms/shared_ingress.py); api_server/webhook are mirrored there.
 PORT_BINDING_PLATFORM_VALUES = frozenset({
-    "webhook", "api_server", "msgraph_webhook", "feishu",
-    "bluebubbles", "sms", "whatsapp_cloud",
+    "webhook", "api_server", "whatsapp_cloud",
 })
 # Platforms that only bind in one connection mode (Feishu's default websocket mode is outbound).
-PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
 # Port-binders whose /p/<profile>/ surface is a MIRROR served by the default's own adapter; a secondary
 # never gets an instance of these (api_server: /p/<profile>/v1/..., webhook: profile-bound routes).
 SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})

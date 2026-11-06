@@ -3294,9 +3294,8 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
 # where users may add fields DEFAULT_CONFIG doesn't enumerate: validate the FIRST segment only.
 _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     # Platform configs — PlatformConfig dataclass + dynamic extras
-    "discord", "telegram", "slack", "whatsapp", "signal",
-    "matrix", "feishu", "weixin", "bluebubbles", "qqbot", "yuanbao",
-    "email", "sms",
+    "discord", "whatsapp",
+    "matrix",
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
     # Plugin enable/disable lists + per-plugin entries; absent from DEFAULT_CONFIG.
