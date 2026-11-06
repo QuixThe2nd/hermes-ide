@@ -1,0 +1,152 @@
+{
+ "run_turn.py": [
+  {
+   "name": "GatewayRunner._resolve_session_agent_runtime",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._resolve_turn_agent_config",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._sync_session_model_from_agent",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._handle_message_with_agent",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._profile_scope_for_source",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._reset_notice_session_info",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._format_session_info",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._run_background_task",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._resolve_enabled_toolsets_for_source",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._run_background_task_inner",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._execute_mcp_reload",
+   "mixin_class": "GatewayTurnMixin"
+  },
+  {
+   "name": "GatewayRunner._run_agent_inner",
+   "mixin_class": "GatewayTurnMixin"
+  }
+ ],
+ "run_watchers.py": [
+  {
+   "name": "GatewayRunner._session_stall_timeout_seconds",
+   "mixin_class": "GatewaySessionWatchersMixin"
+  },
+  {
+   "name": "GatewayRunner._session_activity_for_stall",
+   "mixin_class": "GatewaySessionWatchersMixin"
+  },
+  {
+   "name": "GatewayRunner._check_session_stalls",
+   "mixin_class": "GatewaySessionWatchersMixin"
+  },
+  {
+   "name": "GatewayRunner._model_catalog_refresh_watcher",
+   "mixin_class": "GatewaySessionWatchersMixin"
+  },
+  {
+   "name": "GatewayRunner._session_stall_watcher",
+   "mixin_class": "GatewaySessionWatchersMixin"
+  }
+ ],
+ "run_inbound.py": [
+  {
+   "name": "GatewayRunner._hm_busy_interrupt",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._handle_message",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._restore_pending_one_turn_model_override",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._prepare_inbound_message_text",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._prepare_profile_scoped_inbound_message_text",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._prepare_clarify_reply_text",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._consume_pending_native_image_paths",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._mark_durable_active_turn",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._clear_durable_active_turn",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._install_plugin_message_injector",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._schedule_plugin_message_injection",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._dispatch_plugin_message_injection",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._decide_image_input_mode",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._enrich_message_with_vision",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._enrich_message_with_transcription",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._pending_event_audio_paths",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._transcribe_pending_audio_event_once",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._echo_pending_stt_transcripts_once",
+   "mixin_class": "GatewayInboundMixin"
+  },
+  {
+   "name": "GatewayRunner._transcribe_and_echo_pending_voice",
+   "mixin_class": "GatewayInboundMixin"
+  }
+ ]
+}

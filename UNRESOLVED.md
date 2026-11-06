@@ -30,3 +30,24 @@ Consolidation preserved live behavior verbatim; each deserves its own deliberate
    and `_note_unserved_secondary_platform` reporting whose absence the lane suites do not
    pin; revisit if unserved-secondary reporting regresses in the field.
 
+# Wave-2 lane 4 — unresolved pairs
+
+None. All 36 manifest pairs (`run_inbound.py` 19, `run_turn.py` 12, `run_watchers.py` 5) were
+resolved with decisive evidence (see lane-4 report): default sibling-win for AST-identical
+pairs, live facade-win for diverged pairs with post-restore merge history to `gateway/run.py`
+(Oct-02 `6b5950dc71a5` and earlier `#563`/`#564` consolidation context).
+
+## Follow-ups surfaced during triage (NOT acted on — would change live behavior)
+
+1. `GatewaySessionWatchersMixin._check_session_stalls` / `_session_stall_watcher` (now carrying
+   the live facade bodies): the **pre-restore** `run_watchers.py` had factored stall delivery
+   into `_notify_session_stall` plus `_stall_candidates()` (delivery adapter for overflow
+   queues, profile-scoped send via `present_notification`). The **live** facade implementation
+   inlined notify in `_check_session_stalls` and iterated adapters via `_iter_gateway_adapters`
+   (still on `GatewayRunner` in `run.py`, **not** duplicated). Consolidation **dropped** the dead
+   `_stall_candidates` / `_notify_session_stall` helpers from the mixin — they never executed at
+   runtime while the facade shadowed the mixin.
+
+2. `GatewaySessionWatchersMixin._session_stall_watcher`: the pre-restore sibling loop ended with
+   `await _interruptible_sleep(self, …)`; the live facade used an explicit 1-second stepped sleep.
+   The live facade body was placed verbatim.
