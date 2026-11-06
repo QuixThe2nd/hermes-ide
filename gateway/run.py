@@ -4146,6 +4146,7 @@ from gateway.session_state import (
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_voice import GatewayVoiceMixin
+from gateway.run_turn_runner import _TurnRunnerCore
 from gateway.run_claude_progress import (
     ClaudeDelegationDelivery,
     claude_delegation_single_status,
@@ -6081,7 +6082,7 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
     return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
 
 
-class TurnRunner:
+class TurnRunner(_TurnRunnerCore):
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
 
@@ -6092,10 +6093,6 @@ class TurnRunner:
     references (logger, cfg_get, BasePlatformAdapter, ...) resolve in this
     same module exactly as before.
     """
-
-    def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
-        self._runner = runner
-        self._ctx = ctx
 
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
@@ -11817,24 +11814,6 @@ class GatewayRunner(
         self._telegram_lobby_reminder_ts[key] = now
         return True
 
-    def _telegram_topic_root_lobby_message(self) -> str:
-        return (
-            "This main chat is reserved for system commands.\n\n"
-            "To start a new Hermes chat, open the All Messages topic at the top "
-            "of this bot interface and send any message there. Telegram will "
-            "create a new topic for that message; each topic works as an "
-            "independent Hermes session."
-        )
-
-    def _telegram_topic_root_new_message(self) -> str:
-        return (
-            "To start a new parallel Hermes chat, open the All Messages topic "
-            "at the top of this bot interface and send any message there. "
-            "Telegram will create a new topic for it.\n\n"
-            "Each topic is an independent Hermes session. Use /new inside an "
-            "existing topic only if you want to replace that topic's current session."
-        )
-
     def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
         if not self._is_telegram_topic_lane(source):
             return None
@@ -12540,11 +12519,6 @@ class GatewayRunner(
                 len(self._failed_platforms),
             )
 
-    def _request_clean_exit(self, reason: str) -> None:
-        self._exit_cleanly = True
-        self._exit_reason = reason
-        self._shutdown_event.set()
-
     def _running_agent_count(self) -> int:
         return len(self._running_agents)
 
@@ -12603,15 +12577,6 @@ class GatewayRunner(
             if strict:
                 raise
             return 0
-
-    def _retain_background_task(self, task: "asyncio.Task") -> "asyncio.Task":
-        """Register ``task`` in ``_background_tasks`` (created lazily for bare test runners)."""
-        tasks = getattr(self, "_background_tasks", None)
-        if not isinstance(tasks, set):
-            tasks = self._background_tasks = set()
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
-        return task
 
     def _pending_background_task_count(self) -> int:
         """Pending ``/bg``-style background tasks the restart must wait out.
@@ -13497,17 +13462,6 @@ class GatewayRunner(
             _q_state.conversation.queued_events = kept
         return removed
 
-    def _goal_still_active_for_session(self, session_id: str) -> bool:
-        """Best-effort fresh DB check before running a queued continuation."""
-        if not session_id:
-            return False
-        try:
-            from hermes_cli.goals import GoalManager
-            return GoalManager(session_id=session_id).is_active()
-        except Exception as exc:
-            logger.debug("goal continuation: active-state recheck failed: %s", exc)
-            return False
-
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         # ``active_work`` names each unit only while draining — that is when an observer (``hermes
         # update``) needs to know WHAT holds the gateway open; a per-turn write would be wasted I/O.
@@ -14095,18 +14049,6 @@ class GatewayRunner(
         input_modes[profile_name] = input_mode
         text_modes[profile_name] = text_mode
 
-    def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
-        """Return the routed profile whose busy policy applies, if any."""
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            return None
-        name = str(getattr(source, "profile", "") or "").strip()
-        if not name:
-            try:
-                name = str(self._profile_name_for_source(source) or "").strip()
-            except Exception:
-                name = ""
-        return name or None
-
     def _effective_busy_input_mode(self, source: SessionSource) -> str:
         """Resolve busy input mode from the routed profile startup snapshot."""
         fallback = getattr(self, "_busy_input_mode", "interrupt")
@@ -14453,110 +14395,6 @@ class GatewayRunner(
             logger.warning("Failed to claim active session slot: %s", exc)
             return None, None
 
-    @staticmethod
-    def _agent_has_active_subagents(running_agent: Any) -> bool:
-        """Return True when *running_agent* is currently driving subagents
-        via the ``delegate_agent`` tool.
-
-        Background (#30170): ``AIAgent.interrupt()`` cascades through the
-        parent's ``_active_children`` list and calls ``interrupt()`` on
-        every child synchronously, which aborts in-flight subagent work
-        and produces a fallback cascade with no actionable signal.
-        Demoting ``busy_input_mode='interrupt'`` to ``queue`` semantics
-        whenever this helper returns True protects subagent work from
-        conversational follow-ups while leaving the explicit ``/stop``
-        path (which goes through ``_interrupt_and_clear_session``)
-        untouched. Safe-by-default: returns False on any attribute or
-        lock error so a missing/broken parent never blocks the existing
-        interrupt path.
-        """
-        if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
-            return False
-        children = getattr(running_agent, "_active_children", None)
-        # AIAgent always initialises this as a concrete list (see
-        # agent/agent_init.py). Reject anything that isn't a real
-        # collection — this guards against ``MagicMock()._active_children``
-        # auto-creating a truthy stub in tests and triggering the demotion
-        # against an agent that doesn't actually have subagents.
-        if not isinstance(children, (list, tuple, set)):
-            return False
-        if not children:
-            return False
-        lock = getattr(running_agent, "_active_children_lock", None)
-        try:
-            if lock is not None:
-                with lock:
-                    return bool(children)
-            return bool(children)
-        except Exception:
-            return False
-
-    async def _session_has_compression_in_flight(self, session_key: str) -> bool:
-        """Return True when a compression lock is held for this session's id.
-
-        Context compression is interrupt-protected (#23975) but gateway
-        ``interrupt`` busy-input mode can still start a follow-up turn against
-        the pre-rotation parent while compression is mid-flight, producing
-        orphaned compression siblings (#56391). Callers demote interrupt to
-        queue when this returns True.
-
-        Both blocking sources — the ``session_store`` lock + JSON load, and the
-        SQLite ``get_compression_lock_holder`` SELECT — are offloaded to a
-        worker thread so a large state.db never freezes the event loop (#5).
-        """
-        session_store = getattr(self, "session_store", None)
-        if not session_key or session_store is None:
-            return False
-        try:
-            session_id = await asyncio.to_thread(
-                self._lookup_session_id_under_store_lock, session_store, session_key
-            )
-        except (AttributeError, TypeError):
-            return False
-        except Exception:
-            logger.warning(
-                "Compression in-flight check failed while reading session %s; "
-                "treating compression as active to avoid interrupting a possible "
-                "parent-session rotation",
-                session_key,
-                exc_info=True,
-            )
-            return True
-        if not session_id:
-            return False
-        session_db = getattr(self, "_session_db", None)
-        if session_db is None:
-            return False
-        raw_db = getattr(session_db, "_db", session_db)
-        try:
-            holder = await asyncio.to_thread(
-                raw_db.get_compression_lock_holder, str(session_id)
-            )
-            # Production returns Optional[str]. Reject non-strings so a
-            # MagicMock auto-attr (or any unexpected truthy) cannot look
-            # like a held lock and skip hygiene (#96953).
-            return isinstance(holder, str) and bool(holder)
-        except (AttributeError, TypeError):
-            return False
-        except Exception:
-            logger.warning(
-                "Compression in-flight check failed while reading lock holder "
-                "for session %s; treating compression as active to avoid "
-                "interrupting a possible parent-session rotation",
-                session_id,
-                exc_info=True,
-            )
-            return True
-
-    @staticmethod
-    def _lookup_session_id_under_store_lock(session_store, session_key: str):
-        """Sync helper run in the thread pool: read session_id under the store lock."""
-        # noqa: SLF001 — intentional private access; runs off the event loop.
-        with session_store._lock:  # noqa: SLF001
-            session_store._ensure_loaded_locked()  # noqa: SLF001
-            entry = session_store._entries.get(session_key)  # noqa: SLF001
-        return getattr(entry, "session_id", None) if entry is not None else None
-
     # Hard cap on per-session pending follow-ups for busy_input_mode=queue
     # (and the draining/steer-fallback/subagent-demotion paths that share
     # this entry point).  Without a cap, a stuck agent + a rapid-fire user
@@ -14726,28 +14564,6 @@ class GatewayRunner(
             f"{text}"
         )
 
-    @staticmethod
-    def _hm_text_only(event: "MessageEvent") -> bool:
-        return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
-
-    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> bool:
-        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics.
-
-        Returns whether the steer landed; the async caller (_hm_handle_running_session_message)
-        turns a True result into the same receipts the classic busy handler emits."""
-        steer_text = (event.text or "").strip()
-        steered = False
-        if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
-            try:
-                steered = bool(running_agent.steer(self._steer_text_with_origin(steer_text, event)))
-            except Exception as exc:
-                logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
-        if steered:
-            logger.debug("PRIORITY steer for session %s", _quick_key)
-            return True
-        logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-        self._queue_or_replace_pending_event(_quick_key, event)
-        return False
 
     async def _hm_busy_interrupt(
         self, event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
@@ -14785,73 +14601,6 @@ class GatewayRunner(
         demoted_for_compression: bool
         steered: bool
         redirected: bool
-
-    async def _resolve_busy_steer_or_redirect(
-        self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
-    ) -> "GatewayRunner._BusySteerOutcome":
-        """Apply interrupt->queue demotions, then attempt steer (steer mode) or redirect (interrupt mode)."""
-        # Steer injects mid-run via running_agent.steer(), falling back to queue (nothing lost) when
-        # the agent isn't running yet, lacks steer(), or the payload is empty. Interrupt is demoted
-        # to queue while subagents run (interrupt() would abort them); /stop and /new still cancel all.
-        demoted_for_subagents = (
-            effective_mode == "interrupt" and self._agent_has_active_subagents(running_agent)
-        )
-        if demoted_for_subagents:
-            effective_mode = self._demote_interrupt(session_key, "the running agent has active subagents (#30170)")
-        demoted_for_compression = (
-            effective_mode == "interrupt" and await self._session_has_compression_in_flight(session_key)
-        )
-        if demoted_for_compression:
-            effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
-        steered = redirected = False
-        agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
-        plain_text = (
-            event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
-        )
-        if effective_mode == "steer":
-            steer_text = await self._prepare_busy_steer_text(event)
-            # Steerable: plain text, OR every attachment is voice media folded into steer_text.
-            # A follow-up qualifies for steering when it is plain text, OR when every attachment is
-            # STT-eligible voice media whose transcript was just folded into steer_text — otherwise a voice
-            # note in steer mode silently degrades to queue mode (#58780).
-            _steer_media_urls = getattr(event, "media_urls", None) or []
-            _steer_all_voice = bool(_steer_media_urls) and (
-                len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
-            )
-            if steer_text and (plain_text or _steer_all_voice) and agent_live and hasattr(running_agent, "steer"):
-                steered = self._try_agent_verb(
-                    running_agent, "steer", steer_text, session_key, event=event
-                )
-            if not steered:
-                effective_mode = "queue"
-        elif (
-            effective_mode == "interrupt" and plain_text and agent_live
-            and getattr(running_agent, "_supports_active_turn_redirect", False) is True
-            and hasattr(running_agent, "redirect")
-        ):
-            redirected = self._try_agent_verb(
-                running_agent, "redirect", (event.text or "").strip(), session_key, event=event
-            )
-        return self._BusySteerOutcome(
-            effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
-            demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
-        )
-
-    @staticmethod
-    def _demote_interrupt(session_key: str, why: str) -> str:
-        logger.info("Demoting busy_input_mode 'interrupt' to 'queue' for session %s because %s", session_key, why)
-        return "queue"
-
-    def _try_agent_verb(
-        self, running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
-    ) -> bool:
-        """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
-        try:
-            call_text = self._steer_text_with_origin(text, event) if event else text
-            return bool(getattr(running_agent, verb)(call_text))
-        except Exception as exc:
-            logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
-            return False
 
     def _steer_delivered_ack_enabled(self, event: MessageEvent) -> bool:
         """Resolve the busy_steer_delivered_ack_enabled display setting.
@@ -18379,9 +18128,6 @@ class GatewayRunner(
             raise RuntimeError("Group Chat worker did not start")
         return service
 
-    async def _ensure_hosted_room_worker(self):
-        return await asyncio.to_thread(self._start_hosted_room_worker_sync)
-
     async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:
         """Keep the room worker alive for the messaging gateway lifetime."""
 
@@ -18428,13 +18174,6 @@ class GatewayRunner(
                 self._loop_heartbeat_task.add_done_callback(_bg.discard)
         except Exception:
             logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
-
-    @staticmethod
-    def _start_free_tier_bootstrap() -> None:
-        """One bootstrap per process. `run_bootstrap` already records its own failure in the boot record
-        and never raises, so this is a plain call; it exists as a method so tests can seam it."""
-        from hermes_cli.free_tier_bootstrap import run_bootstrap
-        run_bootstrap(announce=False)
 
     async def start(self) -> bool:
         """
@@ -21049,14 +20788,6 @@ class GatewayRunner(
         watchdog.ready("Hermes Gateway running")
         return True
 
-    async def _stop_systemd_watchdog(self) -> None:
-        """Stop heartbeats before any potentially long shutdown drain."""
-        watchdog = self._systemd_watchdog
-        if watchdog is None:
-            return
-        self._systemd_watchdog = None
-        await watchdog.stop()
-
     async def stop(
         self,
         *,
@@ -21865,10 +21596,6 @@ class GatewayRunner(
 
         self._stop_task = asyncio.create_task(_stop_impl())
         await self._stop_task
-
-    async def wait_for_shutdown(self) -> None:
-        """Wait for shutdown signal."""
-        await self._shutdown_event.wait()
 
     async def _start_secondary_profile_adapters(self) -> int:
         """Bring up adapters for every non-active profile this gateway serves.
@@ -23543,55 +23270,6 @@ class GatewayRunner(
         if depth <= 1:
             return "Queued for the next turn."
         return f"Queued for the next turn. ({depth} queued)"
-
-    async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
-        # /steer <prompt> — inject mid-run after the next tool call.
-        # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
-        # iterations inside the same agent run, by appending to the
-        # last tool result's content. No interrupt, no new user turn,
-        # no role-alternation violation.
-        steer_text = event.get_command_args().strip()
-        if not steer_text:
-            return "Usage: /steer <prompt>"
-        _steer_state = self._peek_session_state(quick_key)
-        running_agent = _steer_state.turn.agent if _steer_state else None
-        if running_agent is _AGENT_PENDING_SENTINEL:
-            # Agent hasn't started yet — queue as turn-boundary fallback.
-            adapter = self._adapter_for_source(source)
-            if adapter:
-                queued_event = MessageEvent(
-                    text=steer_text,
-                    message_type=MessageType.TEXT,
-                    source=event.source,
-                    message_id=event.message_id,
-                    channel_prompt=event.channel_prompt,
-                    channel_context=event.channel_context,
-                )
-                self._enqueue_fifo(quick_key, queued_event, adapter)
-            return "Agent still starting — /steer queued for the next turn."
-        if running_agent and hasattr(running_agent, "steer"):
-            try:
-                accepted = running_agent.steer(self._steer_text_with_origin(steer_text, event))
-            except Exception as exc:
-                logger.warning("Steer failed for session %s: %s", quick_key, exc)
-                return f"⚠️ Steer failed: {exc}"
-            if accepted:
-                preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-                return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
-            return "Steer rejected (empty payload)."
-        # Running agent is missing or lacks steer() — fall back to queue.
-        adapter = self._adapter_for_source(source)
-        if adapter:
-            queued_event = MessageEvent(
-                text=steer_text,
-                message_type=MessageType.TEXT,
-                source=event.source,
-                message_id=event.message_id,
-                channel_prompt=event.channel_prompt,
-                channel_context=event.channel_context,
-            )
-            self._enqueue_fifo(quick_key, queued_event, adapter)
-        return "No active agent — /steer queued for the next turn."
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # /goal is safe mid-run for status/pause/clear/wait (inspection
@@ -26009,12 +25687,6 @@ class GatewayRunner(
             self,
             self._schedule_plugin_message_injection,
         )
-
-    def _clear_plugin_message_injector(self) -> None:
-        """Remove this runner's scheduler without clobbering a newer owner."""
-        from hermes_cli.plugins import get_plugin_manager
-
-        get_plugin_manager().clear_gateway_message_injector(self)
 
     def _schedule_plugin_message_injection(
         self,
@@ -31297,28 +30969,6 @@ class GatewayRunner(
         self._telegram_capability_hint_ts[key] = now
         return True
 
-    def _telegram_topic_help_text(self) -> str:
-        return (
-            "/topic — enable multi-session DM mode (one bot, many parallel chats)\n"
-            "\n"
-            "Usage:\n"
-            "  /topic             Enable topic mode, or show status if already on\n"
-            "  /topic help        Show this message\n"
-            "  /topic off         Disable topic mode and clear topic bindings\n"
-            "  /topic <id>        Inside a topic: restore a previous session by ID\n"
-            "\n"
-            "How it works:\n"
-            "1. Run /topic once in this DM — Hermes checks BotFather Threads\n"
-            "   Settings are enabled and flips on multi-session mode.\n"
-            "2. Tap All Messages at the top of the bot and send any message.\n"
-            "   Telegram creates a new topic for that message; each topic is\n"
-            "   an independent Hermes session (fresh history, fresh context).\n"
-            "3. The root DM becomes a system lobby — send /topic, /status,\n"
-            "   /help, /usage there. Normal prompts go in a topic.\n"
-            "4. /new inside a topic resets just that topic's session.\n"
-            "5. /topic <id> inside a topic restores an old session into it."
-        )
-
     async def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
         """Cleanly disable topic mode for a chat via /topic off."""
         if not self._session_db:
@@ -35252,17 +34902,6 @@ class GatewayRunner(
             )
         return generation
 
-    def _current_session_run_generation(self, session_key: str) -> int:
-        """Current run generation for ``session_key`` (0 when the key tracks no run)."""
-        state = self._peek_session_state(session_key)
-        return int(state.persistent.run_generation) if state is not None else 0
-
-    def _is_session_run_current(self, session_key: str, generation: int) -> bool:
-        """Return True when ``generation`` is still current for ``session_key``."""
-        if not session_key:
-            return True
-        return self._current_session_run_generation(session_key) == int(generation)
-
     def _bind_adapter_run_generation(
         self,
         adapter: Any,
@@ -35437,12 +35076,6 @@ class GatewayRunner(
                         _cache[session_key] = (
                             cached[0], cached[1], _live, _snapshot_sid,
                         )
-
-    def _set_pending_turn_sidecar_notes(self, session_key: str, notes: List[str]) -> None:
-        """Stage per-turn must-deliver notes for the next agent run (one-shot)."""
-        if not session_key or not notes:
-            return
-        self._session_state(session_key).conversation.sidecar_notes = list(notes)
 
     def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[str]:
         if not session_key:
