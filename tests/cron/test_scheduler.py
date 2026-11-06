@@ -259,15 +259,12 @@ class TestResolveDeliveryTarget:
         }
 
 
-    def test_explicit_telegram_topic_target_overrides_cron_thread_id(self, monkeypatch):
-        """Explicit ``telegram:chat:thread`` targets bypass TELEGRAM_CRON_THREAD_ID."""
-        monkeypatch.setenv("TELEGRAM_CRON_THREAD_ID", "999")
-
-        job = {"deliver": "telegram:-1003724596514:17"}
+    def test_explicit_discord_thread_target_resolves(self):
+        job = {"deliver": "discord:1003724596514:123456789012345678"}
         assert _resolve_delivery_target(job) == {
-            "platform": "telegram",
-            "chat_id": "-1003724596514",
-            "thread_id": "17",
+            "platform": "discord",
+            "chat_id": "1003724596514",
+            "thread_id": "123456789012345678",
             "_resolved_from": "explicit",
         }
 
@@ -310,14 +307,14 @@ class TestResolveDeliveryTarget:
         resolve_send_target turned these into a warning plus a silently
         dropped delivery; pass_unresolved_references hands the raw id to the adapter
         again."""
-        job = {"deliver": "telegram:ops-room"}
+        job = {"deliver": "discord:ops-room"}
         with patch(
             "gateway.channel_directory.resolve_channel_name",
             return_value=None,
         ):
             result = _resolve_delivery_target(job)
         assert result == {
-            "platform": "telegram",
+            "platform": "discord",
             "chat_id": "ops-room",
             "thread_id": None,
             "_resolved_from": "explicit",
@@ -325,22 +322,22 @@ class TestResolveDeliveryTarget:
 
 
     def test_list_form_deliver_is_normalized(self, monkeypatch):
-        """deliver=['telegram:-4004'] (Python list) should resolve like the string form.
+        """deliver=['discord:ch:th'] (Python list) should resolve like the string form.
 
         Regression test for #17139: MCP clients / scripts that pass the deliver
         field as an array-shaped value used to fail with "no delivery target
-        resolved for deliver=['telegram']" because ``str(['telegram'])`` was
+        resolved for deliver=['discord']" because ``str(['discord'])`` was
         passed through to ``split(',')`` verbatim.
         """
         job = {
-            "deliver": ["telegram:-4004"],
+            "deliver": ["discord:111222333444555666:777888999000111222"],
             "origin": None,
         }
 
         assert _resolve_delivery_target(job) == {
-            "platform": "telegram",
-            "chat_id": "-4004",
-            "thread_id": None,
+            "platform": "discord",
+            "chat_id": "111222333444555666",
+            "thread_id": "777888999000111222",
             "_resolved_from": "explicit",
         }
 
@@ -840,16 +837,16 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
 
-    def test_run_job_preserves_slack_origin_thread_for_same_explicit_channel(self, tmp_path, monkeypatch):
+    def test_run_job_preserves_discord_origin_thread_for_same_explicit_channel(self, tmp_path, monkeypatch):
         job = {
-            "id": "slack-thread-job",
-            "name": "slack-thread",
+            "id": "discord-thread-job",
+            "name": "discord-thread",
             "prompt": "hello",
-            "deliver": "slack:C0B3KEP3SD6",
+            "deliver": "origin",
             "origin": {
-                "platform": "slack",
-                "chat_id": "C0B3KEP3SD6",
-                "thread_id": "1778485067.844139",
+                "platform": "discord",
+                "chat_id": "123456789012345678",
+                "thread_id": "987654321098765432",
             },
         }
         fake_db = MagicMock()
@@ -891,9 +888,9 @@ class TestRunJobSessionPersistence:
         assert final_response == "ok"
         assert "ok" in output
         assert seen == {
-            "platform": "slack",
-            "chat_id": "C0B3KEP3SD6",
-            "thread_id": "1778485067.844139",
+            "platform": "discord",
+            "chat_id": "123456789012345678",
+            "thread_id": "987654321098765432",
         }
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
@@ -1014,13 +1011,13 @@ class TestRunJobSessionPersistence:
                 "id": "threaded-job",
                 "name": "threaded",
                 "prompt": "hello",
-                "deliver": "telegram:-1001:42",
+                "deliver": "discord:1001:42",
             },
             {
                 "id": "threadless-job",
                 "name": "threadless",
                 "prompt": "hello again",
-                "deliver": "telegram:-2002",
+                "deliver": "discord:2002",
             },
         ]
         fake_db = MagicMock()
@@ -1068,13 +1065,13 @@ class TestRunJobSessionPersistence:
 
         assert seen == [
             {
-                "platform": "telegram",
-                "chat_id": "-1001",
+                "platform": "discord",
+                "chat_id": "1001",
                 "thread_id": "42",
             },
             {
-                "platform": "telegram",
-                "chat_id": "-2002",
+                "platform": "discord",
+                "chat_id": "2002",
                 "thread_id": None,
             },
         ]
@@ -2411,14 +2408,13 @@ class TestCronDeliveryMirror:
 
         with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
             _seed_cron_thread_session(
-                {"id": "j1"}, adapter, "telegram", "123", "9001",
+                {"id": "j1"}, adapter, "matrix", "123", "9001",
                 "Daily brief Task #2", chat_name="Ops",
             )
 
         # Session row created for the thread, then brief mirrored into it.
         store.get_or_create_session.assert_called_once()
         seeded_source = store.get_or_create_session.call_args[0][0]
-        # Telegram forum-topic replies key on the parent supergroup's ``group`` slot.
         assert seeded_source.chat_type == "group"
         assert seeded_source.thread_id == "9001"
         mirror_mock.assert_called_once()

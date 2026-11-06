@@ -71,7 +71,7 @@ class TestLineMatchesComponent:
         # bare ("gateway",), since the logger name no longer literally starts
         # with "gateway".
         from hermes_logging import COMPONENT_PREFIXES
-        line = "2026-04-11 10:23:45 INFO plugins.platforms.telegram.adapter: msg"
+        line = "2026-04-11 10:23:45 INFO plugins.platforms.discord.adapter: msg"
         assert _line_matches_component(line, COMPONENT_PREFIXES["gateway"])
 
 

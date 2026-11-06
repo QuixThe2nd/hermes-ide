@@ -5,10 +5,10 @@ cron thread seed created its session row with chat_type="thread", but a
 Slack DM thread reply arrives with chat_type="dm" — build_session_key puts
 them in different rows (agent:main:slack:thread:D...:<ts> vs
 agent:main:slack:dm:D...:<ts>), so the user's reply hit a session that had
-never seen the brief. Slack channel and Matrix room thread replies key on the
-PARENT chat's type (``group``), Discord on ``thread`` — the seed mirrors the
-adapter (``_THREAD_REPLY_CHAT_TYPE``); the DM lane is the unswept sibling of
-the flat-seed is_dm fix (dcca9d8cfe).
+never seen the brief. Matrix room thread replies key on the PARENT room's
+type (``group``), Discord on the thread itself (``thread``) — the seed mirrors
+the adapter (``_THREAD_REPLY_CHAT_TYPE`` / ``discord_keys_on_thread``); the DM
+lane is the unswept sibling of the flat-seed is_dm fix (dcca9d8cfe).
 
 Contract under test: the KEY of the seeded session equals the KEY the
 user's in-thread reply will build. Asserting on build_session_key output —
@@ -57,26 +57,26 @@ def test_dm_thread_seed_key_matches_dm_reply_key():
 
 
 def test_channel_thread_seed_key_matches_thread_reply_key():
-    """A Slack channel thread reply keys on the parent channel's type
-    (``group`` — the adapter's ``build_source`` shape, #111896), not on a
-    ``thread`` slot; the seed must match it."""
+    """A Discord channel thread reply keys on the thread itself — chat_id ==
+    thread_id with chat_type ``thread`` (the adapter's ``build_source`` shape)
+    — so the seed must key the same row (``discord_keys_on_thread``)."""
     store = MagicMock()
     adapter = MagicMock()
     adapter._session_store = store
 
     with patch("gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
-            {"id": "j2", "name": "digest"}, adapter, "slack",
-            "C0AAAAAAAA", "1787188000.000100", "Three bullets",
+            {"id": "j2", "name": "digest"}, adapter, "discord",
+            "1234567890", "9001", "Three bullets",
             chat_name="ops", is_dm=False,
         )
 
     reply_source = SessionSource(
-        platform=Platform.SLACK,
-        chat_id="C0AAAAAAAA",
-        chat_type="group",
-        user_id="U0B5F8EEYAD",
-        thread_id="1787188000.000100",
+        platform=Platform.DISCORD,
+        chat_id="9001",
+        chat_type="thread",
+        user_id="100200300",
+        thread_id="9001",
     )
     assert build_session_key(_seeded_source(store)) == build_session_key(
         reply_source
@@ -123,28 +123,6 @@ def test_dm_seed_default_is_backward_compatible():
     assert _seeded_source(store).chat_type == "thread"
 
 
-def test_telegram_forum_topic_seed_key_matches_topic_reply_key():
-    """The Telegram adapter types every supergroup message ``group`` (forum topics included), so a
-    forum-topic cron seed typed ``thread`` is a row no topic reply ever resolves to — the same
-    shape as the Matrix bug, on the sibling platform."""
-    store = MagicMock()
-    adapter = MagicMock()
-    adapter._session_store = store
-
-    with patch("gateway.mirror.mirror_to_session", return_value=True):
-        _seed_cron_thread_session(
-            {"id": "j8", "name": "digest"}, adapter, "telegram",
-            "-1001234567", "77", "Three bullets", chat_name="ops", is_dm=False,
-        )
-
-    reply_source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id="-1001234567", chat_type="group", user_id="42",
-        thread_id="77",
-    )
-    assert build_session_key(_seeded_source(store)) == build_session_key(reply_source)
-    assert build_session_key(_seeded_source(store)) == "agent:main:telegram:group:-1001234567:77"
-
-
 def test_scoped_dm_thread_seed_key_matches_scoped_reply_key():
     """Slack keys embed the workspace scope_id (build_session_key puts the
     team segment in every Slack dm/group/thread key). A seed built without
@@ -179,24 +157,27 @@ def test_scoped_dm_thread_seed_key_matches_scoped_reply_key():
 
 
 def test_scoped_channel_thread_seed_key_matches_scoped_reply_key():
+    """A guild-scoped (scope_id) Discord thread seed must still key the row the
+    in-thread reply resolves to — Discord keys deliberately omit the guild
+    scope, so passing one through must not corrupt the key (pass-through parity)."""
     store = MagicMock()
     adapter = MagicMock()
     adapter._session_store = store
 
     with patch("gateway.mirror.mirror_to_session", return_value=True):
         _seed_cron_thread_session(
-            {"id": "j5", "name": "digest"}, adapter, "slack",
-            "C0AAAAAAAA", "1787188000.000100", "Three bullets",
-            chat_name="ops", is_dm=False, scope_id="T0AAAA111",
+            {"id": "j5", "name": "digest"}, adapter, "discord",
+            "1234567890", "9001", "Three bullets",
+            chat_name="ops", is_dm=False, scope_id="42",
         )
 
     reply_source = SessionSource(
-        platform=Platform.SLACK,
-        chat_id="C0AAAAAAAA",
-        chat_type="group",
-        user_id="U0B5F8EEYAD",
-        thread_id="1787188000.000100",
-        scope_id="T0AAAA111",
+        platform=Platform.DISCORD,
+        chat_id="9001",
+        chat_type="thread",
+        user_id="100200300",
+        thread_id="9001",
+        scope_id="42",
     )
     assert build_session_key(_seeded_source(store)) == build_session_key(
         reply_source

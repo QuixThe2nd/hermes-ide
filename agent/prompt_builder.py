@@ -733,25 +733,6 @@ PLATFORM_HINTS = {
     # 'desktop' or 'tui'). If a real WebUI chat surface ships, write a hint from its actual renderer.
 }
 
-# Telegram rich-messages extension — injected only with
-# ``platforms.telegram.extra.rich_messages: true`` (gateway.* or top-level).
-# NOTE: a "webui" hint lived here until 2026-08-29. It was a ghost (verified in the all-platform hint audit,
-# PR #97873): no code path constructs platform="webui" — the dashboard chat resolves to 'desktop' or 'tui'
-# (tui_gateway/server.py:_resolve_session_platform), and the browser chat tab is an xterm.js PTY hosting the
-# TUI, not an HTML chat renderer. Its content (tables/LaTeX/Mermaid, MEDIA: rich previews incl. Excalidraw)
-# described a renderer that does not exist anywhere in web/. If a real WebUI chat surface ships, write a
-# hint from its actual renderer — do not resurrect this text.
-TELEGRAM_RICH_MESSAGES_HINT = (
-    "Telegram now supports rich Markdown, so lean into it: whenever it makes the answer clearer or easier to scan, "
-    "actively reach for real Markdown tables (pipe `| col | col |` syntax), bullet and numbered lists, task lists (`- "
-    "[ ]` / `- [x]`), headings, nested blockquotes, collapsible details, footnotes/references, math/formulas (`$...$`, "
-    "`$$...$$`), underline, subscript/superscript, marked (highlighted) text, and anchors. Default to structured "
-    "formatting over dense paragraphs for any comparison, set of steps, key/value summary, or tabular data. Prefer "
-    "real Markdown tables and task lists over hand-built bullet substitutes when presenting structured data; these "
-    "degrade gracefully (tables become readable bullet groups) when rich rendering is unavailable, but advanced "
-    "constructs like math and collapsible details may render as plain source text in that case. "
-)
-
 # Environment hints — the machine/OS the agent's tools actually run on
 # (PLATFORM_HINTS describe the messaging channel instead).
 WSL_ENVIRONMENT_HINT = (

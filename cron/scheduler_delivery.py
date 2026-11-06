@@ -30,9 +30,9 @@ logger = logging.getLogger("cron.scheduler")
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "telegram", "discord", "slack", "whatsapp", "signal",
-    "matrix", "homeassistant", "feishu", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot", "yuanbao"})
+    "discord", "whatsapp", "matrix", "webhook", "api_server", "whatsapp_cloud",
+    "local", "relay",
+})
 
 # Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response
 # only, ``send()`` is a stub) — a cron report can never reach them, so they are never a
@@ -45,8 +45,8 @@ def _resolve_cron_surface_mode(pconfig, logical_platform_name: str) -> str:
 
     Native: flat ``platforms.<p>.extra.cron_continuable_surface``. Relay-fronted:
     ``platforms.relay.extra.<logical>.cron_continuable_surface`` (same sub-block as the relay's
-    Slack knobs); the sub-block wins and is scoped to its logical platform. Unlike
-    _relay_slack_extra, a sub-block that omits the knob falls back to the flat key (deliberate —
+    per-logical settings); the sub-block wins and is scoped to its logical platform. Unlike
+    a relay-only flat+sub merge (see gateway/relay), a sub-block that omits the knob falls back to the flat key (deliberate —
     the flat key must keep working), so a flat value applies to EVERY platform the relay fronts.
     """
     with contextlib.suppress(Exception):
@@ -217,10 +217,9 @@ def _maybe_mirror_cron_delivery(
 
 
 # chat_type slot a platform's adapter puts on a NON-DM in-thread reply. Discord (and the default)
-# key the shared "thread" lane; Slack, Matrix and Telegram (forum topics: ``_build_message_event``
-# types every supergroup "group") keep the parent channel/room's "group" — a seed on the wrong slot
+# key the shared "thread" lane; Matrix keeps the parent room's "group" — a seed on the wrong slot
 # is a row no reply ever resolves to (#111896, #112918).
-_THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group", "telegram": "group"}
+_THREAD_REPLY_CHAT_TYPE = {"matrix": "group"}
 
 
 def _open_continuable_cron_thread(
@@ -257,7 +256,7 @@ def _seed_cron_session(
 ) -> bool:
     """Create the session row (so the mirror has a target) and mirror the brief as a USER turn.
     The seeded key must equal the reply's ``build_session_key``: chat_type, user_id, thread_id and
-    scope_id (Slack team id) are all part of it, so callers pass exactly what the reply carries."""
+    scope_id (workspace/server scope when present) are all part of it, so callers pass exactly what the reply carries."""
     from gateway.config import Platform
     from gateway.session import SessionSource
     from gateway.mirror import mirror_to_session
@@ -269,8 +268,8 @@ def _seed_cron_session(
         except (ValueError, KeyError):
             platform_enum = None
         if platform_enum is not None:
-            # Discord keys in-thread messages with chat_id == thread_id; Slack/Telegram use the
-            # parent channel.
+            # Discord keys in-thread messages with chat_id == thread_id; others use the
+            # parent channel/room.
             seed_chat_id = (
                 str(thread_id)
                 if discord_keys_on_thread and platform_enum == Platform.DISCORD
@@ -432,7 +431,7 @@ def _resolve_single_delivery_target(
 
     Only ``origin`` (with a captured origin), explicit ``platform:chat_id[:thread_id]``,
     ``thread:`` tokens, and ``bot-chat`` resolve. A bare platform token (e.g. ``deliver:
-    slack``) no longer resolves to anything — there is no per-platform default destination —
+    discord``) no longer resolves to anything — there is no per-platform default destination —
     and ``deliver=origin`` without a captured origin resolves to nothing either; both surface
     as a delivery error via ``_unresolved_delivery_outcome`` telling the operator to set an
     explicit target.
@@ -490,15 +489,6 @@ def _resolve_single_delivery_target(
         if resolution_error:
             logger.warning("Invalid cron delivery target '%s': %s", deliver_value, resolution_error)
             return None
-        if (
-            thread_id is None
-            and platform_key == "slack"
-            and origin
-            and str(origin.get("platform") or "").lower() == platform_key
-            and str(origin.get("chat_id")) == str(chat_id)
-            and origin.get("thread_id")
-        ):
-            thread_id = origin.get("thread_id")
         return {
             "platform": platform_name,
             "chat_id": chat_id,
@@ -573,7 +563,7 @@ def _format_failure_streams(result) -> str:
     """Exit code plus labeled, redacted stderr/stdout tails for a failed delivery turn.
 
     ``-Q`` reports the resume banner and ``session_id:`` while the response
-    rides stdout, so ``stderr or stdout`` discarded half the signal — and when
+    rides stdout, so ``stderr or stdout`` discarded half the diagnostic evidence — and when
     stderr is empty and stdout holds only the banner, the recorded error
     carried zero diagnostics (#104056). The banner lines are dropped from the
     stdout tail so what remains is the reason; the exit code is always named.
@@ -780,8 +770,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
 
 def _normalize_deliver_value(deliver) -> str:
     """Normalize ``deliver`` to its canonical comma-separated string; ``"local"`` when falsy.
-    Lists/tuples (MCP clients, hand-edited jobs.json) are flattened — ``str(["telegram"])`` would
-    yield ``"['telegram']"`` and fail resolution silently."""
+    Lists/tuples (MCP clients, hand-edited jobs.json) are flattened — ``str(["discord"])`` would
+    yield ``"['discord']"`` and fail resolution silently."""
     if deliver is None or deliver == "":
         return "local"
     if isinstance(deliver, (list, tuple)):
@@ -858,7 +848,7 @@ def _resolve_delivery_targets_detailed(
     job: dict, *, for_failure: bool = False
 ) -> tuple[List[dict], List[str]]:
     """``_resolve_delivery_targets`` plus the deliver tokens that resolved to nothing. A mixed
-    list (one token resolved, another skipped — e.g. ``discord,telegram:123``) must not report
+    list (one token resolved, another skipped — e.g. ``local,discord:123``) must not report
     success just because some target resolved: the caller (``_deliver_result``) folds the
     unresolved tokens into the delivery error alongside the per-target send errors."""
     deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
@@ -987,7 +977,7 @@ def _confirm_adapter_delivery(
     returns early without producing a ``SendResult``) must NOT be treated as success — doing so causes the
     scheduler to log ``"delivered to <chat> via live adapter"`` while the gateway never actually sees the
     message (#47056).
-    * No ``message_id`` and no ``raw_response`` means we have no positive evidence of a send. Telegram
+    * No ``message_id`` and no ``raw_response`` means we have no positive evidence of a send. Native
     ``SendResult`` objects carry ``message_id``; the dict-filter shape does not. See #77763.
     """
     if send_result is None:
@@ -1012,44 +1002,6 @@ def _confirm_adapter_delivery(
         if unverified is not None:
             unverified.append(True)
     return True
-
-
-def _is_channel_dm_topic(runtime_adapter: Any, chat_id: Any, loop: Any, job_id: str) -> bool:
-    """Is an ambiguous ``telegram:<positive_chat_id>:<numeric_thread_id>`` target a channel
-    Direct-Messages topic (``direct_messages_topic_id``) rather than a private-chat forum topic
-    (``message_thread_id``)? Shape cannot decide; signal is ``get_chat_info`` type == ``channel``.
-    Fails SAFE to False (thread routing) without a probe or on any probe error/timeout.
-
-    Callers gate this on the ambiguous shape first (``telegram:<positive_chat_id>:<numeric_thread_id>``) —
-    that shape is identical for both cases, so shape alone cannot decide (this was the #52060 regression).
-    Probe the live adapter's ``get_chat_info`` once and only return True when the chat is a channel.
-    See #22773.
-    """
-    # Resolve on the CLASS, not the instance: a MagicMock instance auto-creates a truthy
-    # ``get_chat_info``, so an instance-level probe would misclassify test doubles.
-    get_chat_info = getattr(type(runtime_adapter), "get_chat_info", None)
-    if not callable(get_chat_info):
-        return False
-    try:
-        from agent.async_utils import safe_schedule_threadsafe
-        coro = get_chat_info(runtime_adapter, str(chat_id))
-        future = safe_schedule_threadsafe(coro, loop)  # type: ignore[arg-type]
-        if future is None:
-            return False
-        # Metadata-only call, so a shorter bound than the send waits is intentional.
-        info = future.result(timeout=10)
-    except Exception:
-        logger.debug(
-            "Job '%s': get_chat_info probe failed for chat=%s — "
-            "defaulting to message_thread_id routing",
-            job_id, chat_id, exc_info=True)
-        return False
-    is_channel = isinstance(info, dict) and str(info.get("type") or "").lower() == "channel"
-    if is_channel:
-        logger.info(
-            "Job '%s': chat=%s is a channel — routing via direct_messages_topic_id",
-            job_id, chat_id)
-    return is_channel
 
 
 def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
@@ -1210,42 +1162,21 @@ def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
 
 def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]:
     """Compute ``(route_thread_id, route_metadata, media_metadata)`` for a live send, ONCE so text
-    and media agree. ``telegram:<positive_chat_id>:<numeric_thread_id>`` is ambiguous (private
-    forum topic vs channel DM topic need OPPOSITE routing) — see ``_is_channel_dm_topic``.
-    ``thread_id`` rides in ``route_metadata`` to bypass the router's private-chat anchor rule."""
-    from gateway.config import Platform
-    from gateway.delivery import _looks_like_int, looks_like_telegram_private_chat_id
+    and media agree."""
     job = t.job
     thread_id = t.thread_id
-    is_ambiguous_telegram_topic = (
-        t.platform == Platform.TELEGRAM
-        and thread_id is not None
-        and looks_like_telegram_private_chat_id(str(t.chat_id))
-        and _looks_like_int(str(thread_id))
-    )
-    if is_ambiguous_telegram_topic and _is_channel_dm_topic(
-        t.runtime_adapter, t.chat_id, t.loop, job["id"]):
-        # Channel DM topic: direct_messages_topic_id, no bare thread_id; media mirrors text.
-        # See #22773.
-        route_thread_id = None
-        route_metadata = {
-            "direct_messages_topic_id": str(thread_id), "job_id": job["id"],
-            "notify": t.notify_delivery,
-        }
-        media_metadata = {"direct_messages_topic_id": str(thread_id), "notify": t.notify_delivery}
-    else:
-        # Forum-style topic or non-topic target: message_thread_id.
-        # Put thread_id in *route_metadata* (not just the DeliveryTarget) deliberately — the
-        # DeliveryRouter's private-chat topic detection (gateway/delivery.py) demands a reply anchor when
-        # thread_id is absent from metadata; cron deliveries have no inbound reply anchor, so the metadata
-        # key bypasses that check and lets the adapter route via a plain message_thread_id. See #52060.
-        route_thread_id = str(thread_id) if thread_id is not None else None
-        route_metadata = {"job_id": job["id"], "notify": t.notify_delivery}
-        if route_thread_id:
-            route_metadata["thread_id"] = route_thread_id
-        media_metadata = {"notify": t.notify_delivery}
-        if thread_id:
-            media_metadata["thread_id"] = thread_id
+    # Forum-style topic or non-topic target: message_thread_id.
+    # Put thread_id in *route_metadata* (not just the DeliveryTarget) deliberately — the
+    # DeliveryRouter's private-chat topic detection (gateway/delivery.py) demands a reply anchor when
+    # thread_id is absent from metadata; cron deliveries have no inbound reply anchor, so the metadata
+    # key bypasses that check and lets the adapter route via a plain message_thread_id. See #52060.
+    route_thread_id = str(thread_id) if thread_id is not None else None
+    route_metadata = {"job_id": job["id"], "notify": t.notify_delivery}
+    if route_thread_id:
+        route_metadata["thread_id"] = route_thread_id
+    media_metadata = {"notify": t.notify_delivery}
+    if thread_id:
+        media_metadata["thread_id"] = thread_id
 
     # Relay egress needs metadata.scope_id (fail-closed tenant guard; scope cache is COLD after a
     # restart; router stamps HOME only). Origin targets only: a wrong fan-out scope is worse than
@@ -1268,8 +1199,6 @@ def _live_send_text(
     router = DeliveryRouter(t.config, t.target_adapters)
     route_target = DeliveryTarget(
         platform=t.platform, chat_id=str(t.chat_id), thread_id=route_thread_id, is_explicit=True)
-    # Thread routing goes via the target, not a bare metadata "thread_id": the router only applies
-    # its Telegram DM-topic detection when thread_id/message_thread_id are absent from metadata.
     future = safe_schedule_threadsafe(
         router._deliver_to_platform(route_target, text_to_send, route_metadata), t.loop)
     if future is None:
@@ -1414,7 +1343,7 @@ def _deliver_via_live_adapter(
     delivered = False
     try:
         # Send cleaned text (MEDIA tags stripped) through the gateway's DeliveryRouter so it gets
-        # the same platform routing as live messages (Telegram's three-mode topic routing).
+        # the same platform routing as live messages (thread/topic metadata and routing).
         text_to_send = cleaned_text.strip()
         adapter_ok, timed_out, delivered_message_id = True, False, None
         if not text_to_send and not media_files:
@@ -1493,8 +1422,8 @@ def _standalone_send(
     # raise "cannot schedule new futures after interpreter shutdown" — warn, not ERROR traceback.
     if _sched._interpreter_shutting_down():
         return _warned(shutdown_msg)
-    # The live lane failed closed on an empty payload; standalone senders don't (Telegram returns
-    # success=True for empty content WITHOUT an API call) — a phantom delivery would result.
+    # The live lane failed closed on an empty payload; some standalone senders accept empty
+    # content without a real post — a phantom delivery would result.
     if not content.strip() and not media_files:
         return _warned(f"standalone send skipped (empty text and no media) for {t.where}")
     coro = _send()
@@ -1586,7 +1515,7 @@ def _prepare_target_delivery(
     # Resolved for ANY origin match (not just mirror-enabled): the in_channel seed needs it too.
     origin_user_id = origin.get("user_id") if origin_target else None
 
-    # DM shape for BOTH the flatten gate and seed chat_type (Slack DM ids start with "D").
+    # DM shape for BOTH the flatten gate and seed chat_type (some platforms use a stable prefix for DMs).
     origin_chat_type = str(origin.get("chat_type") or "").lower()
     is_dm_target = origin_chat_type == "dm" or (
         not origin_chat_type and str(chat_id).startswith("D"))
@@ -1787,9 +1716,9 @@ def _deliver_result(
     with contextlib.suppress(Exception):
         user_cfg = _sched.load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
-    # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
+    # Mark live sends FINAL so the platform pushes them (some surfaces mute interim stubs otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
-    # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
+    # Targets acked with NO evidence (bare SendResult(success=True) — some adapters);
     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
     if wrap_response:

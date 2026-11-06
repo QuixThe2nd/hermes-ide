@@ -6210,24 +6210,21 @@ class GatewayTurnMixin:
 
         Returns ``(progress_metadata, progress_reply_to, status_thread_metadata)``; the latter is
         for status / approval / stream sends (Feishu topics need the triggering message id via the
-        reply API, so carry it as a fallback). Slack and Buzz honour the user's reply_in_thread
+        reply API, so carry it as a fallback). Slack honours the user's reply_in_thread
         opt-out: never synthesise a thread for progress, or every later reply inherits it."""
         from gateway.run import _non_conversational_metadata, _resolve_progress_thread_id
-        is_buzz = str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
         _progress_reply_in_thread = True
-        _adapter = self._delivery_adapter_for(source) if source.platform == Platform.SLACK or is_buzz else None
-        if _adapter is not None:
-            try:
-                if is_buzz:
-                    _progress_reply_in_thread = getattr(_adapter, "_reply_to_mode", "first") != "off"
-                else:
+        if source.platform == Platform.SLACK:
+            _adapter = self._delivery_adapter_for(source)
+            if _adapter is not None:
+                try:
                     # Relay lane: the adapter owns mode resolution; native lane: flat extra key.
                     _mode_fn = getattr(_adapter, "_effective_reply_in_thread", None)
                     _progress_reply_in_thread = bool(
                         _mode_fn() if callable(_mode_fn) else _adapter.config.extra.get("reply_in_thread", True)
                     )
-            except Exception:
-                _progress_reply_in_thread = True
+                except Exception:
+                    _progress_reply_in_thread = True
         _progress_thread_id = _resolve_progress_thread_id(
             source.platform, source.thread_id, event_message_id, reply_in_thread=_progress_reply_in_thread,
         )
@@ -6254,11 +6251,9 @@ class GatewayTurnMixin:
                 _progress_metadata.setdefault("slack_team_id", source.scope_id)
             if source.user_id:
                 _progress_metadata.setdefault("recipient_user_id", source.user_id)
-        # Buzz has no native thread_id: thread via reply-to unless the user opted out.
         _progress_reply_to = (
             event_message_id
             if (source.platform in (Platform.FEISHU, ) and source.thread_id and event_message_id)
-            or (is_buzz and event_message_id and _progress_reply_in_thread)
             or _relay_prospective_thread_id
             else None
         )
@@ -7374,6 +7369,7 @@ class GatewayTurnMixin:
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -7418,6 +7414,7 @@ class GatewayTurnMixin:
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                scheduled_heartbeat=scheduled_heartbeat,
             )
 
         from run_agent import AIAgent
@@ -7603,6 +7600,10 @@ class GatewayTurnMixin:
             source.platform == Platform.SLACK
             and _progress_adapter_for_native is not None
             and hasattr(_progress_adapter_for_native, "native_task_cards_enabled")
+            # Task cards ARE tool progress rendered natively: an operator's
+            # explicit ``off`` (not the tier default) disables the card lane
+            # too — otherwise "off" would keep publishing cards.
+            and not (_tool_progress_configured and progress_mode == "off")
         ):
             try:
                 _native_slack_task_cards = bool(
@@ -7613,6 +7614,16 @@ class GatewayTurnMixin:
         needs_progress_queue = (
             tool_progress_enabled or _thinking_enabled or _native_slack_task_cards
         )
+        if scheduled_heartbeat:
+            # A heartbeat is proactive work: tool chrome, drafts, thinking and
+            # periodic liveness notices would create a user-visible ping before
+            # its final result is known. Keep status callbacks intact for
+            # approvals and actionable failures.
+            tool_progress_enabled = False
+            interim_assistant_messages_enabled = False
+            _thinking_enabled = False
+            _native_slack_task_cards = False
+            needs_progress_queue = False
 
 
         # Queue for progress messages (thread-safe)
@@ -7747,6 +7758,7 @@ class GatewayTurnMixin:
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            scheduled_heartbeat=scheduled_heartbeat,
         )
         from gateway.run_turn_runner import TurnRunner
         turn_runner = TurnRunner(self, turn_ctx)
@@ -8027,6 +8039,7 @@ class GatewayTurnMixin:
         if (
             _stts_adapter is not None
             and _is_voice_input
+            and not scheduled_heartbeat
             and _stts_adapter._should_auto_tts_for_chat(source.chat_id)
         ):
             try:
@@ -8364,7 +8377,12 @@ class GatewayTurnMixin:
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
-        _notify_task = asyncio.create_task(_notify_long_running())
+        # A scheduled heartbeat is silent: no "still working" liveness bubbles.
+        _notify_task = (
+            None
+            if scheduled_heartbeat
+            else asyncio.create_task(_notify_long_running())
+        )
 
         def _stream_confirmed_final_delivery(
             consumer,
@@ -9195,7 +9213,8 @@ class GatewayTurnMixin:
             if log_task:
                 log_task.cancel()
             interrupt_monitor.cancel()
-            _notify_task.cancel()
+            if _notify_task:
+                _notify_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:

@@ -40,7 +40,8 @@ from typing import Any, Dict, Optional, Set
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    get_scoped_secret as _get_scoped_secret, send_error,
+    seed_extra_from_env as _seed_extra_from_env,
 )
 
 try:
@@ -3114,6 +3115,14 @@ def interactive_setup() -> None:
             print_success("Matrix allowlist configured")
         else:
             print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+
+
+def _env_enablement() -> dict:
+    return _seed_extra_from_env((
+        ("MATRIX_HOMESERVER", "homeserver", None),
+        ("MATRIX_ACCESS_TOKEN", "access_token", None),
+        ("MATRIX_PASSWORD", "password", None),
+    ))
 
 
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge

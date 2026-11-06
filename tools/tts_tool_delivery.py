@@ -101,7 +101,7 @@ def _resolve_max_text_length(provider: Optional[str], tts_config: Optional[Dict[
 # PCM output specs for Gemini TTS (fixed by the API): 24kHz mono 16-bit (L16).
 GEMINI_TTS_SAMPLE_RATE, GEMINI_TTS_CHANNELS, GEMINI_TTS_SAMPLE_WIDTH = 24000, 1, 2
 
-# ffmpeg args producing the Ogg/Opus voice-bubble encoding Telegram & co expect.
+# ffmpeg args producing the Ogg/Opus voice-bubble encoding some channels expect.
 _OPUS_VOICE_ARGS = [
     "-acodec", "libopus", "-ac", "1", "-b:a", "48k", "-vbr", "on",
     "-application", "voip", "-compression_level", "10"]
@@ -124,7 +124,6 @@ class AudioDeliveryProfile:
 
 _PLATFORM_AUDIO_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "discord": {"max_file_bytes": 10 * 1024 * 1024, "safety_ratio": 0.85},
-    "telegram": {"max_file_bytes": 50 * 1024 * 1024, "safety_ratio": 0.85},
     "default": {"max_file_bytes": 10 * 1024 * 1024, "safety_ratio": 0.85}}
 
 

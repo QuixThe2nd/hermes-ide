@@ -13,15 +13,15 @@ class TestToolProgressProvenance:
             ({}, None, ("off", False)),
             ({}, "all", ("all", True)),
             ({"tool_progress": None}, "all", ("all", True)),
-            ({"platforms": {"slack": {"tool_progress": None}}}, "off", ("off", True)),
-            ({"tool_progress_overrides": {"slack": None}}, "new", ("new", True)),
+            ({"platforms": {"whatsapp_cloud": {"tool_progress": None}}}, "off", ("off", True)),
+            ({"tool_progress_overrides": {"whatsapp_cloud": None}}, "new", ("new", True)),
             ({"tool_progress": False}, "all", ("off", True)),
-            ({"tool_progress": "all", "platforms": {"slack": {"tool_progress": None}}}, "off", ("all", True)),
-            ({"tool_progress": "off", "tool_progress_overrides": {"slack": "new"}}, "all", ("new", True)),
-            ({"tool_progress_overrides": {"slack": "off"}, "platforms": {"slack": {"tool_progress": "all"}}}, None, ("all", True)),
+            ({"tool_progress": "all", "platforms": {"whatsapp_cloud": {"tool_progress": None}}}, "off", ("all", True)),
+            ({"tool_progress": "off", "tool_progress_overrides": {"whatsapp_cloud": "new"}}, "all", ("new", True)),
+            ({"tool_progress_overrides": {"whatsapp_cloud": "off"}, "platforms": {"whatsapp_cloud": {"tool_progress": "all"}}}, None, ("all", True)),
         ]
         for display, env, expected in cases:
-            assert resolve_tool_progress({"display": display}, "slack", env) == expected
+            assert resolve_tool_progress({"display": display}, "whatsapp_cloud", env) == expected
 
 
 class TestResolveDisplaySetting:
@@ -160,43 +160,31 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Discord defaults to 'all'; Telegram defaults quiet for mobile."""
+        """Discord (tier_high) defaults to 'all'; matrix (tier_medium) to 'new'."""
         from gateway.display_config import resolve_display_setting
 
-        # Telegram: tier_high transport, but quiet mobile default.
-        assert resolve_display_setting({}, "telegram", "tool_progress") == "off"
         # Discord: pure tier_high.
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
+        # Matrix: tier_medium — editing support, but quieter default.
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "new"
 
 
     def test_low_tier_platforms(self):
-        """Signal, BlueBubbles, etc. default to 'off' tool progress."""
+        """No-edit / batch platforms default to 'off' (or minimal) tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("signal", "bluebubbles", "weixin", "whatsapp_cloud"):
+        for plat in ("whatsapp_cloud", "webhook"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
 
-    def test_telegram_mobile_chatter_defaults(self):
-        """Telegram keeps real mid-turn signal (interim commentary + heartbeats)
-        but skips the verbose busy-ack iteration counter by default."""
+    def test_discord_chatter_defaults(self):
+        """Discord keeps interim commentary and busy-ack detail on
+        (desktop-first, more vertical space), but its long-running
+        heartbeat defaults to the phase line ("⏳ terminal 1m42s" /
+        "⏳ grok-4.6 38s" / "⏳ packing 12s") rather than the raw
+        diagnostic join."""
         from gateway.display_config import resolve_display_setting
 
-        # Real model voice — keep on. Without this, Telegram users see
-        # "typing..." for the entire turn duration with no feedback.
-        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is True
-        # Periodic "Working — N min" heartbeat — keep on. Otherwise long
-        # turns appear completely silent.
-        assert resolve_display_setting({}, "telegram", "long_running_notifications") is True
-        # Verbose iteration counter in busy-ack and heartbeat — off by
-        # default on Telegram (mobile chat is cramped enough without
-        # "iteration 21/60" debug detail).
-        assert resolve_display_setting({}, "telegram", "busy_ack_detail") is False
-        # Discord keeps interim commentary and busy-ack detail on
-        # (desktop-first, more vertical space), but its long-running
-        # heartbeat defaults to the phase line ("⏳ terminal 1m42s" /
-        # "⏳ grok-4.6 38s" / "⏳ packing 12s") rather than the raw
-        # diagnostic join.
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
         assert resolve_display_setting({}, "discord", "long_running_notifications") == "phase"
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
@@ -215,13 +203,13 @@ class TestPlatformDefaults:
             == "generic"
         )
 
-    def test_slack_workspace_chatter_defaults(self):
-        """Slack should not leave permanent heartbeat/debug breadcrumbs in channels."""
+    def test_webhook_batch_chatter_defaults(self):
+        """Tier-minimal batch delivery (webhook) leaves no mid-turn breadcrumbs."""
         from gateway.display_config import resolve_display_setting
 
-        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
-        assert resolve_display_setting({}, "slack", "long_running_notifications") is False
-        assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
+        assert resolve_display_setting({}, "webhook", "tool_progress") == "off"
+        assert resolve_display_setting({}, "webhook", "long_running_notifications") is False
+        assert resolve_display_setting({}, "webhook", "busy_ack_detail") is False
 
 
 # ---------------------------------------------------------------------------

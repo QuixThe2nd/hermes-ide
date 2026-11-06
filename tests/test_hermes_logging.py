@@ -313,14 +313,14 @@ class TestGatewayMode:
         """gateway.log captures records from gateway.* loggers."""
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
 
-        gw_logger = logging.getLogger("plugins.platforms.telegram.adapter")
-        gw_logger.info("telegram connected")
+        gw_logger = logging.getLogger("plugins.platforms.discord.adapter")
+        gw_logger.info("discord connected")
 
         hermes_logging.flush_log_queue()
 
         gw_log = hermes_home / "logs" / "gateway.log"
         assert gw_log.exists()
-        assert "telegram connected" in gw_log.read_text()
+        assert "discord connected" in gw_log.read_text()
 
     def test_gateway_log_rejects_non_gateway_records(self, hermes_home):
         """gateway.log does NOT capture records from tools.*, agent.*, etc."""

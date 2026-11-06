@@ -21,7 +21,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
+    SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE,
     TOOL_CALL_NARRATION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
@@ -413,8 +413,6 @@ def _default_platform_hint(platform_key: str) -> str:
             hint = (_entry and _entry.platform_hint) or ""
         except Exception:
             pass
-    if platform_key == "telegram" and hint and _telegram_rich_messages_enabled():
-        hint = hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
     return hint
 
 
@@ -423,7 +421,7 @@ def _cron_delivery_hint(agent: Any) -> str:
 
     A cron agent runs as platform ``cron`` but its final response lands on the job's ``deliver``
     channel, so without this the model never learns that MEDIA: tags become Slack/Telegram
-    attachments or that tables do not render there — and a user's ``platform_hints.slack.append``
+    attachments or that tables do not render there — and a user's ``platform_hints.<platform>.append``
     never reached scheduled jobs at all. The scheduler publishes the primary auto-deliver target
     into the session ContextVar before the agent runs (same seam ``send_message`` routes by).
     """
@@ -436,8 +434,8 @@ def _cron_delivery_hint(agent: Any) -> str:
 
 
 def platform_hint(agent: Any) -> str:
-    """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
-    override + desktop TUI clarifier; cron agents also carry their delivery channel's hint."""
+    """Built-in/plugin platform hint + config override + desktop TUI clarifier;
+    cron agents also carry their delivery channel's hint."""
     platform_key = (agent.platform or "").lower().strip()
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_platform_hint(platform_key))
     if platform_key == "tui" and _effective_hint:
@@ -447,21 +445,6 @@ def platform_hint(agent: Any) -> str:
         if _delivery:
             _effective_hint = f"{_effective_hint}\n\n{_delivery}".strip()
     return _effective_hint
-
-
-def _telegram_rich_messages_enabled() -> bool:
-    """``rich_messages`` from the Telegram ``extra`` config; same precedence the
-    adapter uses (top-level ``platforms.telegram.extra`` overrides
-    ``gateway.platforms.telegram.extra`` at the leaf). False on any read failure."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        _cfg = load_config_readonly()
-        _gw = (((_cfg.get("gateway") or {}).get("platforms") or {}).get("telegram") or {}).get("extra")
-        _top = ((_cfg.get("platforms") or {}).get("telegram") or {}).get("extra")
-        merged = {**(_gw if isinstance(_gw, dict) else {}), **(_top if isinstance(_top, dict) else {})}
-        return bool(merged.get("rich_messages"))
-    except Exception:
-        return False
 
 
 def _zone_bits(now: Any, tz: Any) -> List[str]:

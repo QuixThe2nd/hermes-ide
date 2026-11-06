@@ -5,30 +5,15 @@ import re
 
 logger = logging.getLogger("tools.send_message_tool")
 
-_TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
-_NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE  # Discord snowflakes: numeric, same "<id>[:<thread>]" shape
-_FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
-# Slack conversation IDs: C (public), G (private/group), D (DM); uppercase alnum, 9+ chars. User IDs
-# (U...) become ``user:U...`` and are opened as D... conversations first (posting straight to a U/W
-# id fails); ``@handle`` -> ``user_name:...`` resolves via users.list.
-_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
-_SLACK_USER_ID_RE = re.compile(r"^\s*(U[A-Z0-9]{8,})\s*$")
-_SLACK_USER_NAME_RE = re.compile(r"^\s*@([A-Za-z0-9._-]{1,80})\s*$")
-_SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
-# Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
-_SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
-_WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
-_YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_NUMERIC_THREAD_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
+_NUMERIC_TOPIC_RE = _NUMERIC_THREAD_TARGET_RE
 # E.164 phone recipients ("+1555..."): the '+' fails the isdigit() rule and the channel directory
 # cannot resolve a raw number, so keep the '+' and treat it as explicit.
-_PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
-_PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")  # mirrors _DM_CHAT_GUID_RE in the photon adapter
-# WhatsApp JIDs (@g.us, @s.whatsapp.net, @lid, broadcast/newsletter) and Buzz UUIDs are native targets
+# WhatsApp JIDs (@g.us, @s.whatsapp.net, @lid, broadcast/newsletter) are native targets
 # the adapter accepts verbatim — explicit. A valid email address likewise.
 _WHATSAPP_JID_RE = re.compile(r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$", re.IGNORECASE)
-_BUZZ_UUID_RE = re.compile(r"^\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*$", re.IGNORECASE)
-_EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
 
 _UNRESOLVED = object()  # sentinel: stop parsing, target is NOT explicit (skip generic rules)
 
@@ -52,24 +37,7 @@ def _parse_nonempty(ref):
     return (stripped, None) if stripped else None
 
 
-def _parse_telegram(ref):
-    # "<chat_id>[:<topic_id>]" or an @username (usernames must not be force-int'd).
-    parsed = _parse_regex_groups(_TELEGRAM_TOPIC_TARGET_RE)(ref)
-    if parsed:
-        return parsed
-    from plugins.platforms.telegram.telegram_ids import parse_telegram_username_target
-    return _parse_nonempty(parse_telegram_username_target(ref) or "")
 
-
-# (regex, chat_id template, thread comes from group 2) — thread form before bare id.
-_SLACK_FORMS = ((_SLACK_THREAD_TARGET_RE, "{}", True), (_SLACK_TARGET_RE, "{}", False),
-                (_SLACK_USER_ID_RE, "user:{}", False), (_SLACK_MENTION_RE, "user:{}", False),
-                (_SLACK_USER_NAME_RE, "user_name:{}", False))
-
-
-def _parse_slack(ref):
-    return next(((template.format(m.group(1)), m.group(2) if has_thread else None)
-                 for regex, template, has_thread in _SLACK_FORMS if (m := regex.fullmatch(ref))), None)
 
 
 def _parse_matrix(ref):
@@ -80,38 +48,12 @@ def _parse_matrix(ref):
     return (trimmed[:split_idx], trimmed[split_idx + 1:]) if split_idx > 0 else None
 
 
-def _parse_yuanbao(ref):
-    # "group:<code>" / "direct:<id>"; a bare number is a group code (never generic rules).
-    match = _YUANBAO_TARGET_RE.fullmatch(ref)
-    if match:
-        return match.group(1), None
-    return (f"group:{ref.strip()}", None) if ref.strip().isdigit() else _UNRESOLVED
-
-
-def _parse_signal(ref):
-    # "group:<id>" is a native group target; an empty id is not explicit.
-    stripped = ref.strip()
-    if not stripped.startswith("group:"):
-        return None
-    group_id = stripped[len("group:"):].strip()
-    return (f"group:{group_id}", None) if group_id else _UNRESOLVED
-
-
 _PLATFORM_PARSERS = {
-    "telegram": _parse_telegram,
-    "feishu": _parse_regex_groups(_FEISHU_TARGET_RE),
     "discord": _parse_regex_groups(_NUMERIC_TOPIC_RE),  # "<channel>[:<thread>]" snowflakes
-    "slack": _parse_slack,
     "matrix": _parse_matrix,
-    "weixin": _parse_regex_groups(_WEIXIN_TARGET_RE, thread_group=False),
-    "yuanbao": _parse_yuanbao,
-    "email": _parse_regex_stripped(_EMAIL_TARGET_RE),
     # Native WhatsApp JIDs pass through verbatim; E.164 numbers use the phone rule.
     "whatsapp": _parse_regex_stripped(_WHATSAPP_JID_RE),
-    "buzz": _parse_regex_stripped(_BUZZ_UUID_RE),
-    "signal": _parse_signal,
-    # Photon DM GUIDs are adapter-native ids (mirrors the react handler).
-    "photon": _parse_regex_stripped(_PHOTON_DM_GUID_RE)}
+}
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):

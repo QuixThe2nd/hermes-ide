@@ -17,7 +17,7 @@ from gateway.status import read_runtime_status
         ("discord-bot-token_lock", True),
         ("whatsapp-session_lock", True),
         ("feishu_app_lock", True),
-        ("lock_conflict", True),             # buzz / irc / line identity conflicts
+        ("lock_conflict", True),             # generic identity-conflict shape
         ("telegram_connect_error", False),
         ("telegram_auth_error", False),
         ("relay_membership_required", False),

@@ -1,4 +1,4 @@
-"""Shared fixtures for gateway e2e tests (Telegram, Discord).
+"""Shared fixtures for gateway e2e tests (Discord).
 
 These tests exercise the full async message flow:
     adapter.handle_message(event)
@@ -27,35 +27,6 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 E2E_MESSAGE_SETTLE_DELAY = 0.3
 
 # Platform library mocks
-
-# Ensure telegram module is available (mock it if not installed)
-def _ensure_telegram_mock():
-    """Install mock telegram modules so TelegramAdapter can be imported."""
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return # Real library installed
-
-    telegram_mod = MagicMock()
-    telegram_mod.Update = MagicMock()
-    telegram_mod.Update.ALL_TYPES = []
-    telegram_mod.Bot = MagicMock
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.ext.Application = MagicMock()
-    telegram_mod.ext.Application.builder = MagicMock
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.ext.MessageHandler = MagicMock
-    telegram_mod.ext.CommandHandler = MagicMock
-    telegram_mod.ext.filters = MagicMock()
-    telegram_mod.request.HTTPXRequest = MagicMock
-
-    for name in (
-        "telegram",
-        "telegram.constants",
-        "telegram.ext",
-        "telegram.ext.filters",
-        "telegram.request",
-    ):
-        sys.modules.setdefault(name, telegram_mod)
-
 
 # Ensure discord module is available (mock it if not installed)
 def _ensure_discord_mock():
@@ -90,42 +61,10 @@ def _ensure_discord_mock():
     sys.modules.setdefault("discord.opus", discord_mod.opus)
 
 
-def _ensure_slack_mock():
-    """Install mock slack modules so SlackAdapter can be imported."""
-    if "slack_bolt" in sys.modules and hasattr(sys.modules["slack_bolt"], "__file__"):
-        return  # Real library installed
-
-    slack_bolt = MagicMock()
-    slack_bolt.async_app.AsyncApp = MagicMock
-    slack_bolt.adapter.socket_mode.async_handler.AsyncSocketModeHandler = MagicMock
-
-    slack_sdk = MagicMock()
-    slack_sdk.web.async_client.AsyncWebClient = MagicMock
-
-    for name, mod in [
-        ("slack_bolt", slack_bolt),
-        ("slack_bolt.async_app", slack_bolt.async_app),
-        ("slack_bolt.adapter", slack_bolt.adapter),
-        ("slack_bolt.adapter.socket_mode", slack_bolt.adapter.socket_mode),
-        ("slack_bolt.adapter.socket_mode.async_handler", slack_bolt.adapter.socket_mode.async_handler),
-        ("slack_sdk", slack_sdk),
-        ("slack_sdk.web", slack_sdk.web),
-        ("slack_sdk.web.async_client", slack_sdk.web.async_client),
-    ]:
-        sys.modules.setdefault(name, mod)
-
-
-_ensure_telegram_mock()
 _ensure_discord_mock()
-_ensure_slack_mock()
 
 import discord  # noqa: E402 — mocked above
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
-
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
-_slack_mod.SLACK_AVAILABLE = True
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 # Platform-generic factories
@@ -265,12 +204,8 @@ def make_adapter(platform: Platform, runner=None):
         with patch.object(ThreadParticipationTracker, "_load", return_value=set()):
             adapter = DiscordAdapter(config)
         platform_key = Platform.DISCORD
-    elif platform == Platform.SLACK:
-        adapter = SlackAdapter(config)
-        platform_key = Platform.SLACK
     else:
-        adapter = TelegramAdapter(config)
-        platform_key = Platform.TELEGRAM
+        raise ValueError(f"Unsupported e2e platform: {platform}")
 
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="e2e-resp-1"))
     adapter.send_typing = AsyncMock()
@@ -298,7 +233,7 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
 
 
 # Parametrized fixtures for platform-generic tests
-@pytest.fixture(params=[Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK], ids=["telegram", "discord", "slack"])
+@pytest.fixture(params=[Platform.DISCORD], ids=["discord"])
 def platform(request):
     return request.param
 

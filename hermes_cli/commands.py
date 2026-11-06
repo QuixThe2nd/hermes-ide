@@ -69,7 +69,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session", args_hint="[name]"),
-    CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
+    CommandDef("handoff", "Hand off this session to a messaging platform (Discord, Matrix, etc.)", "Session",
                args_hint="<platform>", cli_only=True, argument_mode="options"),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
@@ -669,9 +669,8 @@ def discord_skill_commands(
 ) -> tuple[list[tuple[str, str, str]], int]:
     """Return skill entries for Discord slash command registration.
 
-    Same priority and filtering logic as :func:`telegram_menu_commands`
-    (plugins > skills, hub excluded, per-platform disabled excluded), but
-    adapted for Discord's constraints:
+    Plugins > skills, hub excluded, per-platform disabled excluded, adapted for
+    Discord's constraints:
 
     - Hyphens are allowed in names (no ``-`` → ``_`` sanitization)
     - Descriptions capped at 100 chars (Discord's per-field max)
@@ -700,12 +699,6 @@ _PLUGIN_COMPAT_LAZY = {
     'SlashCommandAutoSuggest': ('hermes_cli.commands_completion', 'SlashCommandAutoSuggest'),
     'SlashCommandCompleter': ('hermes_cli.commands_completion', 'SlashCommandCompleter'),
     'discord_skill_commands_by_category': ('hermes_cli.commands_platforms', 'discord_skill_commands_by_category'),
-    'slack_app_manifest': ('hermes_cli.commands_platforms', 'slack_app_manifest'),
-    'slack_native_slashes': ('hermes_cli.commands_platforms', 'slack_native_slashes'),
-    'slack_subcommand_map': ('hermes_cli.commands_platforms', 'slack_subcommand_map'),
-    'telegram_bot_commands': ('hermes_cli.commands_platforms', 'telegram_bot_commands'),
-    'telegram_menu_commands': ('hermes_cli.commands_platforms', 'telegram_menu_commands'),
-    'telegram_menu_max_commands': ('hermes_cli.commands_platforms', 'telegram_menu_max_commands'),
 }
 
 

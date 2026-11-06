@@ -6243,10 +6243,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     async def _notify_unauthorized_slash(
         self, user_name: str, user_id: str, chan_id, guild_id, command_text: str, reason: str,
     ) -> None:
-        """Best-effort operator alert: TELEGRAM first, then SLACK; no-op without a notification channel.
+        """Best-effort operator alert on the configured Discord notification channel; no-op without one.
         A soft failure (``SendResult(success=False)``, e.g. rate-limit) continues the fallback chain.
         Under multiplex the alert stays inside THIS adapter's profile: its own adapter map (fail closed
-        when the profile has no Telegram/Slack bot) and its own notification channels — never the default
+        when the profile has no Discord bot) and its own notification channels — never the default
         profile's bot or channel, which is what a bare ``runner.adapters`` lookup resolves."""
         runner = getattr(self, "gateway_runner", None)
         if not runner:
@@ -6257,7 +6257,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:
             logger.debug("[Discord] Admin notify: profile %r resolution failed: %s", profile, e)
             return
-        for target in (Platform.TELEGRAM, Platform.SLACK):
+        for target in (Platform.DISCORD,):
             try:
                 adapter = adapters.get(target)
                 if not adapter:

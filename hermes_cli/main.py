@@ -350,7 +350,6 @@ from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser, build_whatsapp_cloud_parser
-from hermes_cli.subcommands.slack import build_slack_parser
 from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
@@ -753,7 +752,6 @@ from hermes_cli.main_agent_cmds import (
     cmd_tools,
 )
 from hermes_cli.main_platform_setup import (
-    cmd_slack,
     cmd_sync,
     cmd_whatsapp,
     cmd_whatsapp_cloud,
@@ -3009,7 +3007,6 @@ def _build_cli_parser():
     build_setup_parser(subparsers, cmd_setup=cmd_setup)
     build_whatsapp_parser(subparsers, cmd_whatsapp=cmd_whatsapp)
     build_whatsapp_cloud_parser(subparsers, cmd_whatsapp_cloud=cmd_whatsapp_cloud)
-    build_slack_parser(subparsers, cmd_slack=cmd_slack)
 
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)

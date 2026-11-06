@@ -472,7 +472,7 @@ class _ToolHandlers:
         platform, chat type, display name, and last activity time.
 
         Args:
-            platform: Filter by platform name (telegram, discord, slack, etc.)
+            platform: Filter by platform name (discord, matrix, webhook, etc.)
             limit: Maximum number of conversations to return (default 50)
             search: Optional text to filter conversations by name
         """
@@ -605,9 +605,9 @@ class _ToolHandlers:
         that will be resolved automatically.
 
         Examples:
-            target="telegram:6308981865"
+            target="discord:6308981865"
             target="discord:#general"
-            target="slack:#engineering"
+            target="matrix:!roomid:example.org"
 
         Args:
             target: Platform target in "platform:identifier" format
@@ -630,7 +630,7 @@ class _ToolHandlers:
         returned here can be used directly with the messages_send tool.
 
         Args:
-            platform: Filter by platform name (telegram, discord, slack, etc.)
+            platform: Filter by platform name (discord, matrix, webhook, etc.)
         """
         directory = _load_channel_directory()
         if not directory:
@@ -695,8 +695,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer"
         raise ImportError(f"MCP server requires the 'mcp' package. Install with: {sys.executable} -m pip install 'mcp'")
     mcp = MCPServer("hermes", instructions=(
         "Hermes Agent messaging bridge. Use these tools to interact with "
-        "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
-        "Matrix, and other connected platforms."
+        "conversations across Discord, Matrix, WhatsApp, webhook, and other connected platforms."
     ))
     handlers = _ToolHandlers(event_bridge or EventBridge())
     for name in _TOOL_NAMES:

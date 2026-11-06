@@ -75,10 +75,8 @@ CONFIGURABLE_TOOLSETS = [
     ("delegation",      "👥 Task Delegation",           "delegate_agent"),
     ("moa",             "🧠 Mixture of Agents",        "moa_ask, moa_debate"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
-    ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
     ("quota_channels",  "📊 Quota Channels",            "quota_channels_tick (Discord voice-channel quota display)"),
     ("assistant_handoff", "📤 Assistant Handoff",        "mission close or one-way escalation"),
@@ -133,7 +131,7 @@ def gui_toolset_label(label: str) -> str:
 # that explicitly enable it (`hermes tools` → Skills List (model-facing), or
 # listing `skills_list` in platform_toolsets). Listing skills without it is
 # always available via the `hermes skills list` CLI command.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "video", "video_gen", "x_search", "a2a", "quota_channels", "assistant_handoff", "file_readonly", "skills_list"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "video", "video_gen", "x_search", "quota_channels", "assistant_handoff", "file_readonly", "skills_list"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
@@ -156,15 +154,6 @@ def _xai_credentials_present() -> bool:
     except ImportError:  # pragma: no cover — secret_scope is in-repo
         get_secret = os.environ.get
     return bool(str(get_secret("XAI_API_KEY") or "").strip())
-
-
-def _homeassistant_credentials_present() -> bool:
-    """Return whether the active profile has a Home Assistant token."""
-    try:
-        from agent.secret_scope import get_secret
-        return bool((get_secret("HASS_TOKEN", "") or "").strip())
-    except Exception:
-        return False
 
 
 def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
@@ -425,8 +414,8 @@ TOOLSET_ENV_REQUIREMENTS = {"vision": [("OPENROUTER_API_KEY", "https://openroute
 
 # --- Platform / Toolset Helpers ---
 _PLATFORM_ENABLE_ENV_VARS = (
-    ("telegram", "TELEGRAM_BOT_TOKEN"), ("discord", "DISCORD_BOT_TOKEN"), ("slack", "SLACK_BOT_TOKEN"),
-    ("whatsapp", "WHATSAPP_ENABLED"), ("qqbot", "QQ_APP_ID"))
+    ("discord", "DISCORD_BOT_TOKEN"),
+    ("whatsapp", "WHATSAPP_ENABLED"))
 
 
 def _get_enabled_platforms() -> List[str]:
@@ -522,13 +511,6 @@ def _default_off_toolsets(platform: str, explicitly_configured: bool) -> Set[str
     default_off = set(_DEFAULT_OFF_TOOLSETS)
     if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
         default_off.remove(platform)
-    # Home Assistant is already runtime-gated by its check_fn (requires HASS_TOKEN to register any tools).
-    # When a user has configured HASS_TOKEN, they've explicitly opted in — don't also strip it via
-    # _DEFAULT_OFF_TOOLSETS, which would silently drop HA from platforms (e.g. cron) that run through
-    # _get_platform_tools without an explicit saved toolset list. Without this, Norbert's HA cron jobs
-    # regressed after #14798 made cron honor per-platform tool config.
-    if "homeassistant" in default_off and _homeassistant_credentials_present():
-        default_off.remove("homeassistant")
     if explicitly_configured:
         default_off -= {ts for ts in default_off if platform in (_TOOLSET_PLATFORM_RESTRICTIONS.get(ts) or ())}
     return default_off

@@ -513,8 +513,7 @@ _TOOL_CATEGORY_PREFIXES = (
     ("mcp", "mcp"),
     ("browser", "browser"),
     (("image", "tts", "video", "vision"), "media"),
-    ("homeassistant", "home_automation"),
-    (("discord", "email", "feishu", "hermes-yuanbao", "slack", "sms"), "communication"),
+    (("discord",), "communication"),
 )
 
 

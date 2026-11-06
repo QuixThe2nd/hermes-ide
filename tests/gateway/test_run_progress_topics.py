@@ -1283,32 +1283,11 @@ async def test_slack_operator_tool_progress_new_keeps_task_cards(monkeypatch, tm
     assert adapter.native_stops == 1
 
 
-@pytest.mark.asyncio
-async def test_slack_unsupported_card_destination_does_not_degrade_to_text_progress(
-    monkeypatch, tmp_path
-):
-    # Flat Slack DM, no operator config (tier default: tool_progress off). The connector cannot
-    # render a card without a thread anchor; that is a property of the destination, not a
-    # transient native failure, so the lane must NOT fall back to text tool progress the operator
-    # never asked for. Transient failures keep the fallback (see the test above).
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        DuplicateNativeToolsAgent,
-        session_id="sess-native-unsupported-dest",
-        platform=Platform.SLACK,
-        chat_id="D1",
-        chat_type="dm",
-        thread_id=None,
-        adapter_cls=UnsupportedDestinationTaskCardAdapter,
-        user_id="U1",
-        scope_id="T1",
-    )
-
-    assert result["final_response"] == "done"
-    assert len(adapter.native_updates) == 1
-    assert adapter.sent == []
-    assert adapter.edits == []
+# test_slack_unsupported_card_destination_does_not_degrade_to_text_progress was
+# removed: its premise (Slack's tier-default tool_progress "off" with no operator
+# config) died with the slack tier entry in gateway/display_config.py — an
+# unconfigured slack source now resolves the global "all", which is exactly the
+# scenario the surviving explicit-all sibling below covers.
 
 
 @pytest.mark.asyncio
@@ -1911,7 +1890,11 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     renders a bare fenced code block — no language tag (Slack mrkdwn would print
     'bash' as a literal first code line).  In non-verbose ("all"/"new") mode the
     command is collapsed to a single line capped at tool_preview_length so a long
-    or multi-line command doesn't render as a huge block (#42634)."""
+    or multi-line command doesn't render as a huge block (#42634).
+
+    Keyed on matrix: a tier platform with tool_preview_length 40 (telegram's
+    dedicated tier entry was removed with the adapter; untiered platforms
+    resolve preview 0 = unlimited and render the full block)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1923,14 +1906,14 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
     import tools.terminal_tool  # noqa: F401 - register terminal emoji
 
-    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    adapter = CodeBlockProgressAdapter(platform=Platform.MATRIX)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.MATRIX,
         chat_id="12345",
         chat_type="dm",
         thread_id=None,
@@ -1942,7 +1925,7 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
         history=[],
         source=source,
         session_id="sess-terminal-code-block",
-        session_key="agent:main:telegram:dm:12345",
+        session_key="agent:main:matrix:dm:12345",
     )
 
     assert result["final_response"] == "done"
@@ -2135,14 +2118,3 @@ class TestSlackReplyInThreadProgressRouting:
             event_message_id="1700000000.000100",
             reply_in_thread=False,
         ) is None
-
-    def test_buzz_uses_event_message_id_as_progress_thread(self):
-        """Buzz has no native thread_id; progress must reply-to the trigger."""
-        from gateway.run import _resolve_progress_thread_id
-
-        assert _resolve_progress_thread_id(
-            "buzz",
-            source_thread_id=None,
-            event_message_id="evt-trigger-001",
-            reply_in_thread=True,
-        ) == "evt-trigger-001"

@@ -527,7 +527,7 @@ class TestReadOnlyProfile:
 
     def test_read_only_fresh_writes_every_file_platform(self, profile_env):
         """A fresh --read-only profile has no platform_toolsets to rewrite;
-        every registry platform that resolves `file` (discord, telegram,
+        every registry platform that resolves `file` (discord, matrix,
         cron, …) must still get an explicit read-only list — an absent key
         keeps inheriting its composite, which carries the writable `file`."""
         from toolsets import resolve_multiple_toolsets
@@ -536,7 +536,7 @@ class TestReadOnlyProfile:
         profile_dir = create_profile("wide", no_alias=True, read_only=True)
 
         pts = self._saved_toolsets(profile_dir)
-        assert {"cli", "discord", "telegram", "cron"} <= set(pts)
+        assert {"cli", "discord", "matrix", "cron"} <= set(pts)
         for platform, entries in pts.items():
             assert "file_readonly" in entries, platform
             assert "file" not in entries, platform

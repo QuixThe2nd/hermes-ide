@@ -11,16 +11,6 @@ import pytest
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
-def _a2a_conversation(home):
-    from plugins.platforms.a2a import protocol
-    return protocol._conv_path("peer-x")
-
-
-def _photon_auth(home):
-    from plugins.platforms.photon import auth
-    return auth._auth_json_path()
-
-
 def _mem0_qdrant(home):
     from plugins.memory.mem0._oss_providers import vector_default_config
     return vector_default_config("qdrant")["path"]
@@ -31,8 +21,7 @@ def _openviking_log(home):
     return ov.get_hermes_home() / ov._OPENVIKING_SERVER_LOG_RELATIVE_PATH
 
 
-_RESOLVERS = {"a2a": _a2a_conversation, "photon": _photon_auth, "mem0-qdrant": _mem0_qdrant,
-              "openviking": _openviking_log}
+_RESOLVERS = {"mem0-qdrant": _mem0_qdrant, "openviking": _openviking_log}
 
 
 @pytest.mark.parametrize("name", sorted(_RESOLVERS))

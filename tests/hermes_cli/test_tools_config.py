@@ -102,7 +102,7 @@ def test_file_readonly_default_off_not_inferred_from_core_tools():
     composite reverse-mapping would mark it enabled on every stock install.
     It must stay opt-in: default-off, with `file` still resolving by default."""
     assert "file_readonly" in _DEFAULT_OFF_TOOLSETS
-    for platform in ("cli", "discord", "telegram", "cron"):
+    for platform in ("cli", "discord", "matrix", "cron"):
         enabled = _get_platform_tools({}, platform, include_default_mcp_servers=False)
         assert "file_readonly" not in enabled, platform
         assert "file" in enabled, platform
@@ -346,41 +346,6 @@ def test_scalar_platform_toolsets_fall_back_to_platform_default():
 
 
 
-def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):
-    """HA toolset is runtime-gated by check_fn (requires HASS_TOKEN).
-
-    When HASS_TOKEN is set, the user has explicitly opted in — _DEFAULT_OFF_TOOLSETS
-    shouldn't also strip HA from platforms (like cron) that run through
-    _get_platform_tools without an explicit saved toolset list.
-
-    Regression guard for Norbert's HA cron breakage after #14798 made cron
-    honor per-platform tool config.
-    """
-    monkeypatch.setenv("HASS_TOKEN", "fake-test-token")
-
-    cron_enabled = _get_platform_tools({}, "cron")
-    assert "homeassistant" in cron_enabled
-    # moa must stay off — the original goal of #14798
-    assert "moa" not in cron_enabled
-
-    cli_enabled = _get_platform_tools({}, "cli")
-    assert "homeassistant" in cli_enabled
-
-
-def test_get_platform_tools_homeassistant_uses_active_profile_token(monkeypatch):
-    from agent import secret_scope
-
-    monkeypatch.delenv("HASS_TOKEN", raising=False)
-    secret_scope.set_multiplex_active(True)
-    token = secret_scope.set_secret_scope({"HASS_TOKEN": "profile-token"})
-    try:
-        assert "homeassistant" in _get_platform_tools({}, "cron")
-        assert "homeassistant" in _get_platform_tools({}, "cli")
-    finally:
-        secret_scope.reset_secret_scope(token)
-        secret_scope.set_multiplex_active(False)
-
-
 # ─── #35527: platform-restricted default-off toolsets (discord/discord_admin)
 # are stripped by _DEFAULT_OFF_TOOLSETS even when the user explicitly opts in
 # via the platform's native composite. The composite ``hermes-discord``
@@ -392,8 +357,8 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
     """Layer 4 (guard): discord/discord_admin are platform-restricted — they
     must never appear on a non-discord platform even when that platform is
     explicitly configured."""
-    config = {"platform_toolsets": {"telegram": ["hermes-telegram", "discord"]}}
-    enabled = _get_platform_tools(config, "telegram")
+    config = {"platform_toolsets": {"matrix": ["hermes-matrix", "discord"]}}
+    enabled = _get_platform_tools(config, "matrix")
     assert "discord" not in enabled
     assert "discord_admin" not in enabled
 
@@ -1085,15 +1050,15 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
 # An explicit deselection must be both visible in the diff and durable in the
 # platform selection.
 def test_checklist_reports_and_persists_explicit_removal():
-    config = {"platform_toolsets": {"telegram": ["browser", "web", "terminal"]}}
-    current = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
-    universe = _checklist_toolset_keys("telegram")
+    config = {"platform_toolsets": {"matrix": ["browser", "web", "terminal"]}}
+    current = _get_platform_tools(config, "matrix", include_default_mcp_servers=False)
+    universe = _checklist_toolset_keys("matrix")
     new_enabled = current - {"browser"}
     assert ((current - new_enabled) & universe) == {"browser"}
     with patch("hermes_cli.tools_config.save_config"):
-        _save_platform_tools(config, "telegram", new_enabled)
-    assert "browser" not in _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
-    assert {"web", "terminal"} <= set(config["platform_toolsets"]["telegram"])
+        _save_platform_tools(config, "matrix", new_enabled)
+    assert "browser" not in _get_platform_tools(config, "matrix", include_default_mcp_servers=False)
+    assert {"web", "terminal"} <= set(config["platform_toolsets"]["matrix"])
 
 
 def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):

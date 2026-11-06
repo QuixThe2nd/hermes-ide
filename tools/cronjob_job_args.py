@@ -22,16 +22,6 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     if not async_delivery_supported():
         return None
     thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
-    # Slack stamps every TOP-LEVEL message's own id as the session thread (a per-message
-    # KEY, not a location); persisting it would pin all future deliveries inside an
-    # ephemeral thread, so thread == creating message id is synthetic and dropped.
-    if thread_id and origin_platform == "slack":
-        message_id = get_session_env("HERMES_SESSION_MESSAGE_ID") or None
-        if message_id and str(thread_id) == str(message_id):
-            logger.debug(
-                "Cron origin: dropping synthetic per-message Slack "
-                "thread_id=%s (== creation message id)", thread_id)
-            thread_id = None
     if thread_id:
         logger.debug(
             "Cron origin captured thread_id=%s for %s:%s",
@@ -41,7 +31,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
         "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None, "thread_id": thread_id,
         # Lets a delivery mirror resolve the participant's session in per-user-isolated groups.
         "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
-        # Workspace/server scope (Slack team, Discord guild...): Slack session keys embed it,
+        # Workspace/server scope (e.g. Discord guild): session keys may embed it,
         # so a continuable cron seed built without it would never resolve a scoped reply.
         "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,
     }
@@ -74,7 +64,7 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
                         f"job will report to the home channel {fallback[0]['platform']}:"
                         f"{fallback[0]['chat_id']} instead of back here.")
             return None
-    except Exception:  # resolution unavailable — fall back to the origin signal
+    except Exception:  # resolution unavailable — fall back to the origin stamp
         if job.get("origin"):
             return None
     return (
@@ -82,7 +72,7 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
         "cronjob(action='list')) but will NOT be delivered back into this "
         "session — CLI/TUI and stateless HTTP API sessions have no live-delivery channel. To be "
         "notified when it runs, recreate or update the job with deliver set to "
-        "an explicit platform target, e.g. deliver='telegram:-1001234567890'.")
+        "an explicit platform target, e.g. deliver='discord:999888777'.")
 
 
 def _mode_guidance_notes(job: Dict[str, Any], user_deliver: Optional[str]) -> List[str]:
@@ -186,7 +176,7 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
 
 def _normalize_deliver_param(value: Any) -> Optional[str]:
     """Canonical string form of ``deliver``; None for None/empty. MCP clients may pass a list
-    (``["telegram"]``) which the scheduler's ``str(deliver).split(",")`` would mangle."""
+    (``["discord"]``) which the scheduler's ``str(deliver).split(",")`` would mangle."""
     if value is None:
         return None
     if isinstance(value, (list, tuple)):

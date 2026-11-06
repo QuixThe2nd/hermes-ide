@@ -1,17 +1,8 @@
 """Shared fixtures for gateway tests.
 
-The ``_ensure_telegram_mock`` helper guarantees that a minimal mock of
-the ``telegram`` package is registered in :data:`sys.modules` **before**
-any test file triggers ``from plugins.platforms.telegram.adapter import ...``.
-
-Without this, pytest sessions that happen to collect
-``test_telegram_caption_merge.py`` (bare top-level import, no per-file
-mock) first will cache ``ChatType = None`` from the production
-ImportError fallback, causing 30+ downstream test failures wherever
-``ChatType.GROUP`` / ``ChatType.SUPERGROUP`` is accessed.
-
-Individual test files may still call their own ``_ensure_telegram_mock``
-— it short-circuits when the mock is already present.
+The ``_ensure_discord_mock`` helper guarantees that a minimal mock of
+the ``discord`` package is registered in :data:`sys.modules` **before**
+any test file triggers ``from plugins.platforms.discord.adapter import ...``.
 
 Plugin-adapter anti-pattern guard
 ---------------------------------
@@ -55,33 +46,6 @@ def _suppress_on_gateway_start_hook(monkeypatch):
     monkeypatch.setattr(lifecycle, "invoke_hook", invoke_hook)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _bind_lark_sdk_globals_when_installed():
-    """Bind the feishu adapter's lark SDK globals once per test session.
-
-    The adapter defers ``import lark_oapi`` to first use
-    (``_load_lark_oapi`` — called from connect()/probe_bot()/standalone
-    send), so the request-builder globals (``CreateMessageRequestBody``
-    etc.) stay ``None`` at module import time. Feishu tests across many
-    files inject a mock ``_client`` and skip connect() entirely, then call
-    send paths that reference those globals. Bind them eagerly when the
-    SDK is installed; when it isn't, the affected tests already skip via
-    their own ``skipUnless`` guards.
-    """
-    try:
-        import lark_oapi  # noqa: F401
-    except ImportError:
-        yield
-        return
-    try:
-        from plugins.platforms.feishu.adapter import _load_lark_oapi
-
-        _load_lark_oapi()
-    except Exception:
-        pass  # adapter not importable in this environment — tests will skip
-    yield
-
-
 def make_async_session_db(sync_mock=None):
     """Wrap a sync mock SessionDB in AsyncSessionDB so gateway code that awaits
     the facade works in tests. Returns (facade, sync_mock); configure return
@@ -89,104 +53,6 @@ def make_async_session_db(sync_mock=None):
     from hermes_state import AsyncSessionDB
     sync_mock = sync_mock if sync_mock is not None else MagicMock()
     return AsyncSessionDB(sync_mock), sync_mock
-
-
-class _FakeEnumMember(str):
-    """A python-telegram-bot-faithful stand-in for a ``StrEnum`` member.
-
-    PTB constants (``ParseMode``, ``ChatType``) are ``StrEnum`` members:
-    ``str(x)`` and equality give the *value* (``"supergroup"``) while
-    ``repr(x)`` shows the qualified *member name*
-    (``<ChatType.SUPERGROUP>``). Test stubs that pick only one of those
-    shapes break the other consumer: plain strings fail assertions like
-    ``"MARKDOWN_V2" in repr(parse_mode)``, while auto-generated MagicMock
-    attributes fail the adapter's ``str(chat.type)`` normalization
-    (``adapter.py`` ``_build_message_event``). This class satisfies both,
-    so every telegram test sees the same semantics regardless of which
-    file's mock installed first.
-    """
-
-    _qualname: str
-
-    def __new__(cls, enum_name: str, member_name: str, value: str):
-        obj = str.__new__(cls, value)
-        obj._qualname = f"{enum_name}.{member_name}"
-        return obj
-
-    def __repr__(self) -> str:  # pragma: no cover - trivial
-        return f"<{self._qualname}: {str.__repr__(self)}>"
-
-
-def _fake_str_enum(enum_name: str, **members: str):
-    """Build a ``SimpleNamespace``-like enum of :class:`_FakeEnumMember`."""
-    from types import SimpleNamespace
-
-    return SimpleNamespace(
-        **{name: _FakeEnumMember(enum_name, name, value) for name, value in members.items()}
-    )
-
-
-def _ensure_telegram_mock() -> None:
-    """Install a comprehensive telegram mock in sys.modules.
-
-    Idempotent — skips when the real library is already imported.
-    Uses ``sys.modules[name] = mod`` (overwrite) instead of
-    ``setdefault`` so it wins even if a partial/broken import
-    already cached a module with ``ChatType = None``.
-    """
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return  # Real library is installed — nothing to mock
-
-    mod = MagicMock()
-    mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    # One shared PTB-faithful enum namespace per constant, attached to BOTH
-    # access paths: ``sys.modules["telegram.constants"]`` is registered as
-    # the root mock below, so ``from telegram.constants import ParseMode``
-    # resolves ``mod.ParseMode`` — while config/docs-style access reads
-    # ``telegram.constants.ParseMode``. Binding the same object to both
-    # keeps every consumer comparing against identical members.
-    _parse_mode = _fake_str_enum(
-        "ParseMode", MARKDOWN="Markdown", MARKDOWN_V2="MarkdownV2", HTML="HTML"
-    )
-    _chat_type = _fake_str_enum(
-        "ChatType",
-        PRIVATE="private",
-        GROUP="group",
-        SUPERGROUP="supergroup",
-        CHANNEL="channel",
-    )
-    mod.ParseMode = _parse_mode
-    mod.constants.ParseMode = _parse_mode
-    mod.ChatType = _chat_type
-    mod.constants.ChatType = _chat_type
-
-    # Mirror PTB's exception hierarchy: BadRequest is a semantic API error,
-    # but inherits from NetworkError in python-telegram-bot 22.x.
-    mod.error.TelegramError = type("TelegramError", (Exception,), {})
-    mod.error.NetworkError = type("NetworkError", (mod.error.TelegramError,), {})
-    mod.error.TimedOut = type("TimedOut", (mod.error.NetworkError,), {})
-    mod.error.BadRequest = type("BadRequest", (mod.error.NetworkError,), {})
-    mod.error.Forbidden = type("Forbidden", (mod.error.TelegramError,), {})
-    mod.error.InvalidToken = type("InvalidToken", (mod.error.TelegramError,), {})
-
-    class RetryAfter(mod.error.TelegramError):
-        def __init__(self, retry_after=1):
-            self.retry_after = retry_after
-
-    mod.error.RetryAfter = RetryAfter
-    mod.error.Conflict = type("Conflict", (mod.error.TelegramError,), {})
-
-    # Update.ALL_TYPES used in start_polling()
-    mod.Update.ALL_TYPES = []
-
-    for name in (
-        "telegram",
-        "telegram.ext",
-        "telegram.constants",
-        "telegram.request",
-    ):
-        sys.modules[name] = mod
-    sys.modules["telegram.error"] = mod.error
 
 
 def _ensure_discord_mock() -> None:
@@ -373,7 +239,6 @@ def _ensure_discord_mock() -> None:
 
 
 # Run at collection time — before any test file's module-level imports.
-_ensure_telegram_mock()
 _ensure_discord_mock()
 
 

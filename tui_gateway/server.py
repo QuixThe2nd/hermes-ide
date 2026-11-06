@@ -558,7 +558,7 @@ def _profile_scoped(handler):
     ``get_hermes_home``, so app-global remote mode still hits the focused profile). No-op for launch.
 
     Secondary-profile adapters are constructed inside ``_profile_runtime_scope`` (secret scope installed +
-    multiplex active) — the same discriminator the Buzz/SimpleX adapters use for this bug class (#98738).
+    multiplex active) — the same discriminator plugin adapters use for this bug class (#98738).
     Once multiplexing is active, launch-profile *turns* bind their own terminal scope
     (``prompt_turn._prepare_turn_input``) so they never depend on ambient ``os.environ``
     that a secondary context might have poisoned (#107422). Single-profile processes stay

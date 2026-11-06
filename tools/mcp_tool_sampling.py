@@ -246,7 +246,7 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
 
 class ElicitationHandler:
     """``elicitation_callback`` for one MCP server. Form-mode routes through Hermes' approval system
-    (CLI, TUI, Telegram, ...); URL-mode is declined. Fail-closed: any timeout, exception or unexpected
+    (CLI, TUI, messaging surfaces, ...); URL-mode is declined. Fail-closed: any timeout, exception or unexpected
     state returns decline/cancel, never a silent accept."""
 
     # asyncio-side safety net over the approval's own input() timeout so the MCP loop never blocks
@@ -258,7 +258,7 @@ class ElicitationHandler:
     def __init__(self, server_name: str, config: dict,
                  call_context: Callable[[], Optional[Context]] = lambda: None):
         self.server_name = server_name
-        # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
+        # 5 min mirrors the gateway approval default so async surfaces can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
         # Returns the owning MCPServerTask's contextvars snapshot for the in-flight tool call (None
         # between calls). A thunk, not the task: mcp_tool_server_run imports this module, so

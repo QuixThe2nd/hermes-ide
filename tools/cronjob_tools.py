@@ -165,7 +165,7 @@ def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
     ``last_delivery_error`` so the summary never claims success over a failed delivery.
 
     Follows the refreshed job record (#83993): ``run_one_job`` writes ``last_delivery_error`` via
-    ``mark_job_run`` when the post-run delivery (telegram/discord/…) failed, and the summary must not claim
+    ``mark_job_run`` when the post-run delivery (cron/bot-chat/…) failed, and the summary must not claim
     success over that record — the calling agent relays this line to the user. Local jobs never deliver; an
     empty/missing error keeps the legacy wording byte-for-byte.
     """
@@ -231,7 +231,7 @@ def _run_heartbeat(job_name: str):
         # executes the job synchronously on the caller's thread, and a cron job is itself a full agent run
         # that routinely takes minutes. The calling turn emits no tool activity for that entire window, so
         # the gateway inactivity watchdog concludes the agent is hung and kills the parent turn (#76502).
-        # Fire a heartbeat into the caller's activity tracker (the same signal tool progress uses) while the
+        # Fire a heartbeat into the caller's activity tracker (the same heartbeat tool progress uses) while the
         # job runs, so the watchdog sees a working tool instead of a silent one — mirrors the delegate_task
         # heartbeat pattern. Best-effort: if no activity callback is registered (direct Python callers,
         # tests), behavior is unchanged.
@@ -1144,7 +1144,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "deliver": {
                 "type": "string",
-                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), 'inbox' or 'inbox:<guild_id>' (Discord: resolves to the provisioned inbox channel; on first delivery a job-named thread is auto-created under it and the token is persisted as discord:<inbox_id>:<thread_id>; 'inbox:<guild_id>' additionally validates the guild match; also valid in failure_deliver, where it resolves to the plain inbox channel without minting threads), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,local'. A bare platform name (e.g. 'slack') is NOT a valid target — there is no per-platform default destination; always give an explicit platform:chat_id."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), 'inbox' or 'inbox:<guild_id>' (Discord: resolves to the provisioned inbox channel; on first delivery a job-named thread is auto-created under it and the token is persisted as discord:<inbox_id>:<thread_id>; 'inbox:<guild_id>' additionally validates the guild match; also valid in failure_deliver, where it resolves to the plain inbox channel without minting threads), or platform:chat_id:thread_id (e.g. 'discord:999888777:555444333'). Comma-combine like 'origin,local'. A bare platform name (e.g. 'discord') is NOT a valid target — there is no per-platform default destination; always give an explicit platform:chat_id."
             },
             "failure_deliver": {
                 "type": "string",
