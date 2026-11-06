@@ -772,9 +772,8 @@ class TestRuntimeValidator:
 class TestModelSwitchMarkerNotTitleable:
     """Regression: a model-switch marker must never become the session title.
 
-    ``_append_model_switch_marker`` (tui_gateway/server.py) persists its notice
-    with ``role="user"`` because strict OpenAI-compatible providers reject a
-    system message that is not first (#48338). Titling therefore has to
+    The gateway persists its notice with ``role="user"`` because strict OpenAI-compatible
+    providers reject a system message that is not first (#48338). Titling therefore has to
     recognise it as machine-authored, or switching models before asking the
     first real question titles the session
     "[System: The active model for this chat has…".
@@ -786,14 +785,6 @@ class TestModelSwitchMarkerNotTitleable:
         "this runtime metadata when answering questions about what "
         "model/provider is active.]"
     )
-
-    def test_marker_prefix_matches_gateway_constant(self):
-        """The guard must stay in sync with the gateway's marker builder."""
-        from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
-        from agent.title_generator import _MACHINE_PREFIXES
-
-        assert _MODEL_SWITCH_MARKER_PREFIX in _MACHINE_PREFIXES
-        assert self.MARKER.startswith(_MODEL_SWITCH_MARKER_PREFIX)
 
     def test_marker_is_not_titleable(self):
         from agent.title_generator import is_titleable_user_message

@@ -9,7 +9,7 @@ the recomputed dollars match what THAT Hermes recorded, not an invoice.
 
 Usage from a lane script::
 
-    from evals.postmortem.forensics.common import Run
+    from tests.probes.forensics.common import Run
     run = Run.from_args()          # --db, --root, --out
     for sid in run.in_run:         # ordered session ids
         ...

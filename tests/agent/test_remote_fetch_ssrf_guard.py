@@ -80,8 +80,6 @@ SITES = {
         "plugins.image_gen.openai")._load_image_bytes(u),
     "image_gen/openai-codex::_remote_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
         "plugins.image_gen.openai-codex")._remote_image_to_data_url(u),
-    "tui_gateway/methods_images::_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
-        "tui_gateway.methods_images")._image_to_data_url(u, 1_000_000),
     "skills_hub_skillssh::_sitemap_catalog": lambda u, mp, tmp: _sitemap_catalog(u, mp),
 }
 
