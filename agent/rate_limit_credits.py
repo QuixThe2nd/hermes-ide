@@ -45,9 +45,6 @@ class RateLimitCreditsMixin:
         except Exception:
             pass  # Never let header parsing break the agent loop
 
-    def get_rate_limit_state(self):
-        """Return the last captured RateLimitState, or None."""
-        return self._rate_limit_state
 
     def _capture_nous_model_switch(self, http_response: Any) -> None:
         """Record the Nous gateway's ``x-nous-model-switch`` header (a named account asked for the
@@ -62,11 +59,6 @@ class RateLimitCreditsMixin:
         except Exception:
             pass  # Never let header parsing break the agent loop
 
-    def _capture_anthropic_response_headers(self, http_response: Any) -> None:
-        """Capture rate-limit + credits state from Anthropic Messages response headers (the SDK's
-        aggregated ``Message`` drops them). Fail-open."""
-        self._capture_rate_limits(http_response)
-        self._capture_credits(http_response)
 
     def _capture_credits(self, http_response: Any) -> None:
         """Parse x-nous-credits-* headers, cache CreditsState, fire threshold notices.
@@ -162,15 +154,7 @@ class RateLimitCreditsMixin:
         self._credits_notices_enabled_cache = enabled
         return enabled
 
-    def get_credits_state(self):
-        """Return the last captured CreditsState, or None."""
-        return self._credits_state
 
-    def get_credits_spent_micros(self):
-        """Session-cumulative micros spent = first_seen_remaining - current_remaining. None if no data."""
-        if self._credits_session_start_micros is None or self._credits_state is None:
-            return None
-        return self._credits_session_start_micros - self._credits_state.remaining_micros
 
     def _check_openrouter_cache_status(self, http_response: Any) -> None:
         """Log X-OpenRouter-Cache-Status; HITs count in ``_or_cache_hits``. Never raises."""

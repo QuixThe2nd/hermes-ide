@@ -70,40 +70,6 @@ class ActivityTrackingMixin:
             reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()
 
-    def _persist_session_activity_if_due(self) -> None:
-        """Best-effort durable activity heartbeat for SessionDB consumers.
-
-        Cadence pinned by ``SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS`` (config-independent). Fail-open:
-        a failed write never raises into the agent loop.
-        """
-        session_id = getattr(self, "session_id", None)
-        session_db = getattr(self, "_session_db", None)
-        if not session_id or session_db is None:
-            return
-        touch = getattr(session_db, "touch_session_activity", None)
-        if not callable(touch):
-            return
-        from agent.session_activity import (
-            SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS, normalize_activity_provenance
-        )
-
-        now_mono = time.monotonic()
-        last_mono = getattr(self, "_session_activity_last_persist_mono", 0.0)
-        if (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
-            return
-        self._session_activity_last_persist_mono = now_mono
-        try:
-            touch(
-                session_id,
-                getattr(self, "_last_activity_ts", None),
-                description=getattr(self, "_last_activity_desc", None),
-                provenance=normalize_activity_provenance(
-                    getattr(self, "_last_activity_provenance", None)
-                ),
-            )
-        except Exception:
-            # Heartbeat is observation-only; never let its I/O break the loop.
-            logger.debug("session activity heartbeat write failed (ignored)", exc_info=True)
 
     def _reset_activity_labels_after_turn(self) -> None:
         """Drop mid-turn activity labels once the turn is no longer running.

@@ -33,21 +33,6 @@ def _model_dump(value: Any) -> Any:
 class ApiRequestHooksMixin:
     """Hook payload sanitising + ``api_request_error`` dispatch (see module docstring)."""
 
-    def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
-        """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
-        if response is None:
-            return None
-        raw_usage = getattr(response, "usage", None)
-        if not raw_usage:
-            return None
-        from dataclasses import asdict
-
-        cu = normalize_usage(raw_usage, provider=self.provider, api_mode=self.api_mode)
-        summary = asdict(cu)
-        summary.pop("raw_usage", None)
-        summary["prompt_tokens"] = cu.prompt_tokens
-        summary["total_tokens"] = cu.total_tokens
-        return summary
 
     @staticmethod
     def _usage_cache_presence_for_hook(response: Any) -> Dict[str, Any]:
@@ -128,13 +113,6 @@ class ApiRequestHooksMixin:
                 _classify(f"{details_name}.cached_tokens", cached)
         return {"raw_usage_present": True, "cache_fields": fields}
 
-    @staticmethod
-    def _hook_payload_max_chars() -> int:
-        raw = os.getenv("HERMES_PLUGIN_PAYLOAD_MAX_CHARS", "50000")
-        try:
-            return max(1000, int(raw))
-        except (TypeError, ValueError):
-            return 50000
 
     @staticmethod
     def _is_sensitive_hook_key(key: Any) -> bool:
@@ -211,32 +189,7 @@ class ApiRequestHooksMixin:
             "_truncated": True, "original_type": type(value).__name__, "preview": encoded[:limit]
         }
 
-    def _api_request_payload_for_hook(self, api_kwargs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        body = {
-            key: value
-            for key, value in (api_kwargs or {}).items()
-            if key not in {"timeout", "http_client"}
-        }
-        return self._sanitize_hook_payload({"method": "POST", "body": body})
 
-    def _api_response_payload_for_hook(
-        self, response: Any, assistant_message: Any, *, finish_reason: Optional[str]
-    ) -> Dict[str, Any]:
-        # Raw provider SDK tool_call objects are handed to the sanitizer on purpose; `_hook_jsonable` must
-        # keep normalising them (model_dump / __dict__ / dataclass) or subscribers get str() blobs.
-        tool_calls = getattr(assistant_message, "tool_calls", None) or []
-        return self._sanitize_hook_payload(
-            {
-                "model": getattr(response, "model", None),
-                "finish_reason": finish_reason,
-                "assistant_message": {
-                    "role": getattr(assistant_message, "role", "assistant"),
-                    "content": getattr(assistant_message, "content", None),
-                    "tool_calls": tool_calls,
-                },
-                "usage": self._usage_summary_for_api_request_hook(response),
-            }
-        )
 
     def _invoke_api_request_error_hook(
         self, *, task_id: str, turn_id: str, api_request_id: str, api_call_count: int,
