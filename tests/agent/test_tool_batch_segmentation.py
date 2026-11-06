@@ -276,6 +276,47 @@ class TestPlanToolBatchSegments:
         segments = _plan_tool_batch_segments(calls)
         assert _flatten_ids(segments) == ["b1", "r1", "c1", "r2", "r3"]
 
+    # -- action-scoped admission: discord reads parallelize, writes stay barriers --
+
+    def test_two_discord_fetches_are_one_parallel_segment(self):
+        """Originating bug: two batched fetch_messages calls ran serially (~26s vs ~5s)."""
+        calls = [
+            _tc("discord", json.dumps({"action": "fetch_messages", "channel_id": "1"})),
+            _tc("discord", json.dumps({"action": "fetch_messages", "channel_id": "2"})),
+        ]
+        assert _kinds(_plan_tool_batch_segments(calls)) == ["parallel"]
+
+    def test_discord_admin_read_joins_discord_read(self):
+        calls = [
+            _tc("discord_admin", json.dumps({"action": "list_channels", "guild_id": "1"})),
+            _tc("discord", json.dumps({"action": "fetch_messages", "channel_id": "2"})),
+        ]
+        assert _kinds(_plan_tool_batch_segments(calls)) == ["parallel"]
+
+    def test_discord_write_action_is_a_barrier(self):
+        calls = [
+            _tc("discord", json.dumps({"action": "fetch_messages", "channel_id": "1"}), call_id="f1"),
+            _tc("discord", json.dumps({"action": "create_thread", "channel_id": "1", "name": "t"}), call_id="w1"),
+            _tc("discord", json.dumps({"action": "fetch_messages", "channel_id": "2"}), call_id="f2"),
+        ]
+        segments = _plan_tool_batch_segments(calls)
+        assert _flatten_ids(segments) == ["f1", "w1", "f2"]
+        for kind, seg in segments:
+            if any(tc.id == "w1" for tc in seg):
+                assert kind == "sequential"
+
+    def test_discord_admin_mutations_stay_sequential(self):
+        calls = [
+            _tc("discord_admin", json.dumps({"action": "delete_message", "channel_id": "1", "message_id": "a"})),
+            _tc("discord_admin", json.dumps({"action": "delete_message", "channel_id": "1", "message_id": "b"})),
+        ]
+        assert _kinds(_plan_tool_batch_segments(calls)) == ["sequential"]
+
+    @pytest.mark.parametrize("args", [{}, {"action": None}, {"action": ["fetch_messages"]}])
+    def test_discord_without_string_read_action_is_a_barrier(self, args):
+        calls = [_tc("discord", json.dumps(args)), _tc("discord", json.dumps(args))]
+        assert _kinds(_plan_tool_batch_segments(calls)) == ["sequential"]
+
 
 class TestReaderWriterPathRoles:
     """Reader/writer reservation semantics on path-scoped tools.
