@@ -607,7 +607,6 @@ RUN_POLL_SECONDS = 0.5
 # are deliberately absent: a paused question or approval must keep the
 # lease held (the session is busy mid-turn, the card is answerable).
 RUN_TERMINAL_STATES = ("completed", "failed", "cancelled", "interrupted")
-RUN_FAILED_STATES = ("failed", "cancelled", "interrupted")
 CLARIFY_MAX_BODY_BYTES = 64 * 1024
 # Presentation bounds mirrored from the core card contract (the core
 # already enforces them; these re-bound whatever actually arrives so a
@@ -973,9 +972,6 @@ UPDATE sessions SET archived = ? WHERE id = ?
 COUNT_THREAD_MISMATCH_SQL = """
 SELECT COUNT(*) FROM sessions
 WHERE source = 'discord' AND thread_id = ? AND archived != ?
-"""
-COUNT_ID_MISMATCH_SQL = """
-SELECT COUNT(*) FROM sessions WHERE id = ? AND archived != ?
 """
 DISCORD_RECENT_THREADS_SQL = """
 SELECT DISTINCT thread_id FROM sessions
@@ -8364,19 +8360,6 @@ def delegate_feed_items(now, parent_profile, cards):
             "html": render_delegate_card(now, parent_profile, card),
         })
     return items
-
-
-def next_subagent_control(first_child, parent_profile):
-    """The floating "Next sub-agent" pill as server-rendered HTML for a
-    page whose first inline child is `first_child` — a plain anchor to
-    that child's row, so it navigates even with JavaScript off. The
-    client re-points the anchor on every jump (and builds the pill
-    itself when the first child arrives through polling instead of the
-    initial render)."""
-    cprofile = str((first_child or {}).get("profile")
-                   or parent_profile or "default")
-    sid = str((first_child or {}).get("id") or "")
-    return next_subagent_pill(child_dom_key(cprofile, sid))
 
 
 def next_subagent_pill(dom_key):
