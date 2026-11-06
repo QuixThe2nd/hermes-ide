@@ -28,6 +28,7 @@ import sqlite3
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pytest
 
@@ -1966,6 +1967,27 @@ _REAL_HERMES_ROOT_CANDIDATES = _capture_real_hermes_root()
 def _path_hits_real_home(candidate) -> bool:
     """True when candidate resolves under any guarded real root."""
     try:
+        # SQLite accepts ``file:/abs/path/db?mode=ro`` — ``Path()`` treats that
+        # as a relative path and resolve() prefixes **cwd**, so the guard
+        # falsely matches anything under a repo checked out in ~/.hermes.
+        if isinstance(candidate, Path):
+            raw = str(candidate)
+        elif isinstance(candidate, (str, bytes)):
+            raw = os.fsdecode(candidate) if isinstance(candidate, bytes) else str(candidate)
+        else:
+            raw = None
+        if raw is not None:
+            st = raw.strip()
+            if st == ":memory:" or st.startswith("file::memory:"):
+                return False
+            if st.startswith("file:"):
+                parsed = urlparse(st)
+                path_part = unquote(parsed.path or "")
+                if path_part == ":memory:" or path_part.startswith(":memory:"):
+                    return False
+                candidate = path_part
+            elif isinstance(candidate, Path) and candidate.parts == (":memory:",):
+                return False
         resolved = Path(candidate).expanduser().resolve()
     except Exception:
         return False

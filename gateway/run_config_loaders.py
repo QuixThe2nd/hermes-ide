@@ -170,15 +170,28 @@ class GatewayConfigLoadersMixin:
         return value.strip().lower(), "--global" in tokens
 
     def _resolve_session_reasoning_config(
-        self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
         model: str = "",
     ) -> dict | None:
-        """Session ``/reasoning --session`` > per-model ``agent.reasoning_overrides`` > global.
+        """Resolve reasoning effort for a session, honoring session overrides.
 
-        ``model`` must be the session's *effective* model (session ``/model`` override included);
-        empty uses ``model.default``.
+        Priority: session-scoped ``/reasoning --session`` override >
+        per-model override (``agent.reasoning_overrides``) > global
+        ``agent.reasoning_effort``. ``model`` should be the session's
+        *effective* model (session ``/model`` override included) so
+        per-model overrides track what the session actually runs — when
+        empty, the config's ``model.default`` is used.
         """
-        resolved_session_key = self._resolve_session_key_or_none(source, session_key)
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
         if resolved_session_key:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
@@ -195,15 +208,31 @@ class GatewayConfigLoadersMixin:
             None if reasoning_config is None else dict(reasoning_config)
         )
 
-    def _resolve_session_service_tier(self, source=None, session_key: Optional[str] = None) -> Optional[str]:
-        """Effective service tier: a session-scoped /fast override beats the config default.
+    def _resolve_session_service_tier(
+        self,
+        source=None,
+        session_key: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve the effective service tier for a session.
 
-        The override stores "priority" or None (explicit normal), so presence — not truthiness — decides.
+        A session-scoped /fast override wins over the config default. The
+        override dict stores "priority" or None (explicit normal), so key
+        presence — not value truthiness — decides whether it applies.
         """
-        resolved_session_key = self._resolve_session_key_or_none(source, session_key)
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
         if resolved_session_key:
             _t_state = self._peek_session_state(resolved_session_key)
-            if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
+            if (
+                _t_state is not None
+                and _t_state.conversation.service_tier_override
+                is not _SERVICE_TIER_UNSET
+            ):
                 return _t_state.conversation.service_tier_override
         return self._load_service_tier()
 

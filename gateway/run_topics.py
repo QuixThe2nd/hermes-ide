@@ -354,23 +354,61 @@ class GatewayTopicThreadsMixin:
             return _as_thread_info(info_fn(str(source.chat_id)))
         return None
 
-    async def _await_relay_auto_thread_info(self, source: SessionSource) -> Optional[Tuple[str, str]]:
-        """``_relay_auto_thread_info``, waited out until this turn delivers (the legacy send-result
-        path can only answer once the reply is sent; the caller asks at title time, one turn early).
-        The timeout is only a backstop for a turn that never sends: the turn's own inactivity limit."""
+    async def _await_relay_auto_thread_info(
+        self, source: SessionSource
+    ) -> Optional[Tuple[str, str]]:
+        """``_relay_auto_thread_info``, waited out until this turn delivers.
+
+        A connector-stamped prospective id identifies the exact future thread,
+        but it is known before the reply exists. That path still waits for the
+        send result: a failed send must not rename a thread that was never
+        created, and a stale per-chat send cache must not target a sibling.
+        """
         from gateway.run import _as_thread_info, _float_env
-        # The connector-stamped prospective id is known at ingest, so most sessions answer here.
-        known = self._relay_auto_thread_info(source)
-        if known is not None:
-            return known
-        wait_fn = getattr(self._delivery_adapter_for(source), "wait_for_auto_thread_info", None)
-        if not callable(wait_fn) or not source.chat_id:
+
+        if not source.chat_id:
             return None
+        adapter = self._adapter_for_source(source)
+        prospective = getattr(source, "prospective_thread_id", None)
         # 0 means the operator disabled the turn limit; the backstop still needs one.
         timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800) or 1800
-        with suppress(Exception):
-            return _as_thread_info(await wait_fn(str(source.chat_id), timeout))
-        return None
+        if prospective:
+            prospective = str(prospective)
+            wait_send = getattr(adapter, "wait_for_next_send", None)
+            if not callable(wait_send):
+                return None
+            try:
+                if await wait_send(
+                    str(source.chat_id),
+                    timeout,
+                    expected_thread_id=prospective,
+                ):
+                    return (prospective, "")
+            except Exception:
+                return None
+            return None
+        wait_fn = getattr(adapter, "wait_for_auto_thread_info", None)
+        if not callable(wait_fn):
+            return None
+        expected_reply_to = getattr(source, "message_id", None)
+        try:
+            return _as_thread_info(
+                await wait_fn(
+                    str(source.chat_id),
+                    timeout,
+                    expected_reply_to=(
+                        str(expected_reply_to) if expected_reply_to else None
+                    ),
+                )
+            )
+        except TypeError:
+            # Compatibility with older relay adapters that predate correlation.
+            try:
+                return _as_thread_info(await wait_fn(str(source.chat_id), timeout))
+            except Exception:
+                return None
+        except Exception:
+            return None
 
     async def _rename_discord_auto_thread_for_session_title(
         self, source: SessionSource, session_id: str, title: str,
