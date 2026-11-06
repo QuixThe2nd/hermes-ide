@@ -532,12 +532,12 @@ class GatewayAuthorizationMixin:
         extra = _adapter_config_extra(adapter)
         adapter_allow = extra.get("group_allow_from" if is_group else "allow_from")
         if not adapter_allow:
-            # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
+            # Plugin platforms spell their env allowlist as ``extra.allowed_users``;
             # under multiplex only the default profile's list reaches the env (first-writer-wins
             # bridge), so read the live adapter's.
             entry = _registry_entry(source.platform)
             if entry and entry.allowed_users_env:
-                # Buzz) carry the same operator-configured allowlist in
+                # Plugin platforms carry the same operator-configured allowlist in
                 # ``PlatformConfig.extra.allowed_users``. An absent/empty entry changes nothing here — the
                 # default-deny below still applies. See #82871, #98738.
                 adapter_allow = extra.get("allowed_users")
@@ -546,7 +546,7 @@ class GatewayAuthorizationMixin:
         allowed = _coerce_allow_set(adapter_allow)
         normalize = getattr(adapter, "normalize_user_id", None)
         if callable(normalize):
-            # Ids and entries may spell the same principal differently (Buzz hex vs npub).
+            # Ids and entries may spell the same principal differently.
             allowed = {normalize(entry) or entry for entry in allowed}
         return _allows(allowed, user_id)
 

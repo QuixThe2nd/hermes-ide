@@ -647,21 +647,6 @@ Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other
 | `PHOTON_DASHBOARD_HOST` | Photon Dashboard API host (default `https://app.photon.codes`). |
 | `PHOTON_SPECTRUM_HOST` | Photon Spectrum API host (default `https://spectrum.photon.codes`). |
 
-### Buzz (Nostr communities)
-
-| Variable | Description |
-|----------|-------------|
-| `BUZZ_RELAY_URL` | Base URL of the Buzz community relay (e.g. `https://mycommunity.communities.buzz.xyz`) |
-| `BUZZ_PRIVATE_KEY` | Nostr private key for the agent's Buzz identity (nsec or hex) — the only Buzz secret |
-| `BUZZ_CREDENTIALS_FILE` | JSON credentials file holding the nsec (fallback when `BUZZ_PRIVATE_KEY` is unset) |
-| `BUZZ_CHANNELS` | Comma-separated channel UUIDs to watch (default: all joined channels) |
-| `BUZZ_ALLOWED_USERS` | Comma-separated npubs or hex pubkeys allowed to talk to the agent |
-| `BUZZ_ALLOW_ALL_USERS` | Allow any community member to talk to the agent (`true`/`false`) |
-| `BUZZ_TRANSPORT` | Inbound transport: `auto` (WebSocket w/ poll fallback, default), `websocket`, or `poll` |
-| `BUZZ_POLL_INTERVAL` | Seconds between inbound poll sweeps (default: `4`) |
-| `BUZZ_AUTH_TAG` | Optional NIP-OA owner-attestation auth tag JSON for NIP-42 WebSocket auth |
-| `BUZZ_CLI_PATH` | Path to the buzz CLI binary (default: `buzz` on PATH, then `~/bin/buzz`) |
-
 ### Microsoft Teams (adapter)
 
 The Microsoft Teams platform adapter (Bot Framework / Azure AD), distinct from the [Microsoft Graph (Teams Meetings)](#microsoft-graph-teams-meetings) integration above. See [the Teams messaging guide](../user-guide/messaging/teams.md).
