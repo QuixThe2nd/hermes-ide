@@ -17,7 +17,6 @@ import hermes_cli.setup_platforms as setup_platforms_mod
 
 # (plugin module, primary env var the shared gate keys on)
 _WIZARDS = [
-    ("plugins.platforms.buzz.adapter", "BUZZ_RELAY_URL"),
     ("plugins.platforms.discord.adapter", "DISCORD_BOT_TOKEN"),
     ("plugins.platforms.matrix.adapter", "MATRIX_PASSWORD"),
 ]

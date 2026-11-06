@@ -28,7 +28,6 @@ from agent import secret_scope as ss
 
 # (module path, representative credential env var owned by that adapter)
 MIGRATED_ADAPTER_MODULES = [
-    ("plugins.platforms.buzz.adapter", "BUZZ_PRIVATE_KEY"),
     ("gateway.platforms.api_server", "API_SERVER_KEY"),
 ]
 

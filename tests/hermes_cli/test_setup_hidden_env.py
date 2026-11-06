@@ -28,7 +28,7 @@ class TestIsSetupHiddenEnv:
         """Suffix matching is the point — unenumerated plugin platforms get this for free."""
         for key in (
             "PHOTON_ALLOW_ALL_USERS",
-            "BUZZ_REPLY_TO_MODE",
+            "MYPLUGIN_REPLY_TO_MODE",
             "RAFT_AUTO_THREAD",
             "GOOGLE_CHAT_ALLOW_ALL_USERS",
         ):

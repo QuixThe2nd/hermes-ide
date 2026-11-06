@@ -142,7 +142,7 @@ def test_extra_or_secret_scoped_miss_never_reads_launch_env(monkeypatch):
 
 
 def test_external_fallback_consults_profile_scope_only_when_unscoped(monkeypatch):
-    """Buzz's startup gate rung: a Bitwarden-managed key is visible through ``external_fallback`` before any
+    """Startup-gate rung: a Bitwarden-managed key is visible through ``external_fallback`` before any
     scope exists, but never overrides an installed (authoritative) scope."""
     monkeypatch.delenv("K", raising=False)
     monkeypatch.setattr(shared, "_UNSCOPED_PROFILE_SECRETS", {"K": "external"})

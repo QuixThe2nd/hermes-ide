@@ -477,7 +477,6 @@ class TestParseTargetRef:
             ("matrix", "149606612619433@lid"),      # a Signal LID is not a Matrix id
             ("discord", "C0B0QV5434G"),
             ("discord", "user@example.com"),
-            ("buzz", "user@example.com"),
         ]
         for platform, target in cases:
             assert _parse_target_ref(platform, target)[2] is False, f"{platform}:{target}"

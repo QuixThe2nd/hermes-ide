@@ -16,10 +16,9 @@ from gateway.platforms import helpers
 
 def _adapter_classes():
     from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
-    from plugins.platforms.buzz.adapter import BuzzAdapter
     from plugins.platforms.discord.adapter import DiscordAdapter
 
-    return [WhatsAppCloudAdapter, BuzzAdapter, DiscordAdapter]
+    return [WhatsAppCloudAdapter, DiscordAdapter]
 
 
 def test_no_adapter_redeclares_the_shared_utilities():
