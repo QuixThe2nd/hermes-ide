@@ -12,8 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource
 from plugins.platforms.matrix.adapter_inbox import MatrixInboxRouter, _matrix_link
+from plugins.platforms.matrix.hub import MatrixHub
 
 INBOX_ROOM = "!inbox:example.org"
 CHILD_ROOM = "!child:example.org"
@@ -123,3 +125,59 @@ class TestInboxHubAuth:
         await _route(router, event_id=event_id, body="")
         msg = _child_origin_link_text(adapter)
         assert msg == f"Started from [the original inbox message]({_matrix_link(INBOX_ROOM, event_id)})."
+
+
+@pytest.mark.asyncio
+class TestInboxDispatchAcceptance:
+    """End-to-end dispatch gate: the inbox router must accept a hub-routed turn.
+
+    Unlike the tests above, ``_handle_text_message`` is NOT stubbed here — the
+    real text path runs into a hub ``_deliver`` replacement of ``handle_message``
+    whose router has a live generation attached, exactly like a hub-process
+    sync loop. The route must be marked dispatched and no "could not start its
+    agent turn" notice may be sent.
+    """
+
+    def _hub_backed_router(self, adapter, generation, tmp_path):
+        router = MatrixInboxRouter(adapter, {INBOX_ROOM: None})
+        router._source_encryption_algorithm = AsyncMock(return_value=None)
+        adapter.create_room = AsyncMock(return_value=CHILD_ROOM)
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="$mid"))
+        adapter._invalidate_room_identities = MagicMock()
+        adapter.set_room_account_data = AsyncMock()
+
+        hub = MatrixHub(None)
+        hub.router = SimpleNamespace(route=AsyncMock(return_value=generation))
+        attachment = SimpleNamespace(
+            key="matrix-key", home=tmp_path, secrets={},
+            profiles={"default"}, routes=[], adapter=adapter)
+        adapter.handle_message = hub._make_inbound_handler(attachment)
+        adapter._resolve_message_context = AsyncMock(return_value=(
+            "hello", True, "dm", None, "Sender",
+            SessionSource(platform=Platform.MATRIX, chat_id=CHILD_ROOM,
+                          chat_type="dm", user_id="@sender:example.org")))
+        return router
+
+    async def test_hub_accepted_turn_marks_route_dispatched(self, tmp_path):
+        adapter = _make_adapter(["@sender:example.org"])
+        router = self._hub_backed_router(adapter, generation="gen-1", tmp_path=tmp_path)
+
+        assert await _route(router) is True
+
+        route = router._children[CHILD_ROOM]
+        assert route.dispatch_accepted is True
+        for call in adapter.send.await_args_list:
+            if call.args:
+                assert "could not start its agent turn" not in call.args[1]
+
+    async def test_unattached_generation_sends_dispatch_failure_notice(self, tmp_path):
+        adapter = _make_adapter(["@sender:example.org"])
+        router = self._hub_backed_router(adapter, generation=None, tmp_path=tmp_path)
+
+        assert await _route(router) is True
+
+        route = router._children[CHILD_ROOM]
+        assert route.dispatch_accepted is False
+        notices = [call.args[1] for call in adapter.send.await_args_list
+                   if call.args and "could not start its agent turn" in call.args[1]]
+        assert notices, "expected the dispatch failure notice when no generation is attached"

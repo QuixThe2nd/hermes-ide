@@ -173,11 +173,15 @@ class MatrixHub:
         async def _deliver(event: Any) -> None:
             from gateway.run_drain_queue import serialize_drain_event
 
+            # Same admission receipt as the base handle_message: True only when
+            # a live gateway generation took the record (scheduled/queued).
+            event._gateway_accepted = False
             with self._scope(attachment):
                 key = attachment.adapter._event_session_key(event)
                 record = serialize_drain_event(key, event)
                 record["matrix_transport_key"] = attachment.key
-            await self.router_for(attachment.key).route(key, record)
+            generation = await self.router_for(attachment.key).route(key, record)
+            event._gateway_accepted = generation is not None
         return _deliver
 
     @staticmethod
