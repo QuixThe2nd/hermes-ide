@@ -6210,24 +6210,21 @@ class GatewayTurnMixin:
 
         Returns ``(progress_metadata, progress_reply_to, status_thread_metadata)``; the latter is
         for status / approval / stream sends (Feishu topics need the triggering message id via the
-        reply API, so carry it as a fallback). Slack and Buzz honour the user's reply_in_thread
+        reply API, so carry it as a fallback). Slack honours the user's reply_in_thread
         opt-out: never synthesise a thread for progress, or every later reply inherits it."""
         from gateway.run import _non_conversational_metadata, _resolve_progress_thread_id
-        is_buzz = str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
         _progress_reply_in_thread = True
-        _adapter = self._delivery_adapter_for(source) if source.platform == Platform.SLACK or is_buzz else None
-        if _adapter is not None:
-            try:
-                if is_buzz:
-                    _progress_reply_in_thread = getattr(_adapter, "_reply_to_mode", "first") != "off"
-                else:
+        if source.platform == Platform.SLACK:
+            _adapter = self._delivery_adapter_for(source)
+            if _adapter is not None:
+                try:
                     # Relay lane: the adapter owns mode resolution; native lane: flat extra key.
                     _mode_fn = getattr(_adapter, "_effective_reply_in_thread", None)
                     _progress_reply_in_thread = bool(
                         _mode_fn() if callable(_mode_fn) else _adapter.config.extra.get("reply_in_thread", True)
                     )
-            except Exception:
-                _progress_reply_in_thread = True
+                except Exception:
+                    _progress_reply_in_thread = True
         _progress_thread_id = _resolve_progress_thread_id(
             source.platform, source.thread_id, event_message_id, reply_in_thread=_progress_reply_in_thread,
         )
@@ -6254,11 +6251,9 @@ class GatewayTurnMixin:
                 _progress_metadata.setdefault("slack_team_id", source.scope_id)
             if source.user_id:
                 _progress_metadata.setdefault("recipient_user_id", source.user_id)
-        # Buzz has no native thread_id: thread via reply-to unless the user opted out.
         _progress_reply_to = (
             event_message_id
             if (source.platform in (Platform.FEISHU, ) and source.thread_id and event_message_id)
-            or (is_buzz and event_message_id and _progress_reply_in_thread)
             or _relay_prospective_thread_id
             else None
         )

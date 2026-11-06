@@ -109,12 +109,6 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 
     # Tier 2 — edit support, often customer/workspace channels
     "matrix":          _TIER_MEDIUM,
-    # Buzz (Nostr relay via buzz-cli): messages can be edited in place
-    # (`buzz messages edit`), so grouped/accumulating progress works, but
-    # channels are shared community spaces — keep the medium tier. Without
-    # this entry Buzz inherited the verbose _GLOBAL_DEFAULTS and every
-    # interim update became a separate permanent channel post (#95841).
-    "buzz":            _TIER_MEDIUM,
 
     # Tier 3 — no edit support, progress messages are permanent
     "whatsapp":        _TIER_MEDIUM,  # Baileys bridge supports /edit

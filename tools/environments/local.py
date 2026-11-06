@@ -23,7 +23,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_terminal_first_party_env,
-    _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
+    _plugin_terminal_env_strip_keys, strip_profile_gate_env)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 
@@ -235,8 +235,7 @@ def _filter_secret_env(
     """Copy *items* into *out*, dropping Hermes-managed secrets. ``_HERMES_FORCE_<NAME>``
     unwraps to ``NAME`` when ``unwrap_force`` (caller extras / terminal env), else is
     dropped. Blocklisted names survive only via env_passthrough registration or as
-    context-entitled first-party ``BUZZ_*`` vars; the latter are used directly, never
-    scope-resolved (UnscopedSecretError under multiplex)."""
+    blocklisted names survive only via env_passthrough registration."""
     try:
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
     except Exception:
@@ -796,15 +795,7 @@ class LocalEnvironment(BaseEnvironment):
     is_local = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
-        """First-party ``BUZZ_*`` names present in the env, excluded from the shared
-        session snapshot. env_passthrough can never list them (it refuses blocklisted
-        names), so under a multiplexed gateway profile A's BUZZ_PRIVATE_KEY would land
-        in the snapshot and be sourced by profile B. Prefix-only and monotonic on
-        purpose: conservative even when the context-gated carve-out is inactive."""
-        merged = dict(os.environ | self.env)
-        return tuple(sorted(
-            name for name in merged
-            if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
+        return ()
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)

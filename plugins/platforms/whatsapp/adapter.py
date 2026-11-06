@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge,
+    extra_or_secret as _extra_or_secret,
+    get_scoped_secret,
+    seed_extra_from_env as _seed_extra_from_env,
+    send_error,
 )
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
@@ -1026,6 +1030,13 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS", "csv"), ("allow_from", "WHATSAPP_ALLOWED_USERS", "csv"),
     ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS", "csv"),
 )
+
+
+def _env_enablement() -> dict:
+    return _seed_extra_from_env((
+        ("WHATSAPP_ENABLED", "enabled_opt", None),
+        ("WHATSAPP_MODE", "mode", None),
+    ))
 
 
 def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:

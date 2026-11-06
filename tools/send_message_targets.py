@@ -11,10 +11,9 @@ _NUMERIC_TOPIC_RE = _NUMERIC_THREAD_TARGET_RE
 # cannot resolve a raw number, so keep the '+' and treat it as explicit.
 _PHONE_PLATFORMS = frozenset({"whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
-# WhatsApp JIDs (@g.us, @s.whatsapp.net, @lid, broadcast/newsletter) and Buzz UUIDs are native targets
+# WhatsApp JIDs (@g.us, @s.whatsapp.net, @lid, broadcast/newsletter) are native targets
 # the adapter accepts verbatim — explicit. A valid email address likewise.
 _WHATSAPP_JID_RE = re.compile(r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$", re.IGNORECASE)
-_BUZZ_UUID_RE = re.compile(r"^\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*$", re.IGNORECASE)
 
 _UNRESOLVED = object()  # sentinel: stop parsing, target is NOT explicit (skip generic rules)
 
@@ -54,7 +53,6 @@ _PLATFORM_PARSERS = {
     "matrix": _parse_matrix,
     # Native WhatsApp JIDs pass through verbatim; E.164 numbers use the phone rule.
     "whatsapp": _parse_regex_stripped(_WHATSAPP_JID_RE),
-    "buzz": _parse_regex_stripped(_BUZZ_UUID_RE),
 }
 
 

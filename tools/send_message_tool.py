@@ -620,9 +620,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return await _send_chunks(chunks, lambda chunk, is_last: sender(
             platform, pconfig, chat_id, chunk, media_files if is_last else empty_media, thread_id, force_document))
 
-    # Generic path: text only. Buzz delivers media natively via _send_via_adapter, so no warning.
     warning = None
-    if media_files and platform_name != "buzz":
+    if media_files:
         if not message.strip():
             return {"error": (f"send_message MEDIA delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}; "
                               f"target {platform_name} had only media attachments")}

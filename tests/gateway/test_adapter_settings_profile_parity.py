@@ -58,8 +58,8 @@ _SETTINGS = [
      lambda m: m._resolve_e2ee_mode({})),
     ("plugins.platforms.matrix.adapter", "MATRIX_ALLOW_PUBLIC_ROOMS", "true", "false",
      lambda m: m._env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS")),
-    ("plugins.platforms.buzz.adapter", "BUZZ_RELAY_URL", "wss://default.relay", "wss://secondary.relay",
-     lambda m: (m._env_enablement() or {}).get("relay_url")),
+    ("plugins.platforms.whatsapp.adapter", "WHATSAPP_MODE", "self-chat", "pair",
+     lambda m: (m._env_enablement() or {}).get("mode")),
     ("plugins.platforms.discord.adapter", "DISCORD_COMMAND_SYNC_POLICY", "full", "off",
      lambda m: _discord(m, "_get_discord_command_sync_policy")),
     ("plugins.platforms.discord.adapter", "DISCORD_ALLOW_MENTION_EVERYONE", "true", "false",
@@ -78,9 +78,9 @@ def _discord(mod, method):
                          ids=[f"{m.rsplit('.', 2)[-2]}:{v}" for m, v, *_ in _SETTINGS])
 def test_served_secondary_resolves_its_own_setting(monkeypatch, module, var, default_value, secondary_value, resolve):
     mod = importlib.import_module(module)
-    for name in (var, "BUZZ_PRIVATE_KEY"):
+    for name in (var, "WHATSAPP_ENABLED"):
         monkeypatch.delenv(name, raising=False)
-    creds = {"BUZZ_PRIVATE_KEY": "k"}
+    creds = {"WHATSAPP_ENABLED": "true"}
     standalone, served = _served(monkeypatch, {var: default_value, **creds}, {var: secondary_value, **creds},
                                  lambda: resolve(mod))
     assert served == standalone, f"{var}: served={served!r} standalone={standalone!r}"
