@@ -1383,7 +1383,7 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
 
 
 _BACKEND_TOKENS = frozenset({"serve", "dashboard", "gateway"})
-_HERMES_ARGV_MARKERS = ("hermes_cli.main", "hermes-gateway", "tui_gateway")
+_HERMES_ARGV_MARKERS = ("hermes_cli.main", "hermes-gateway")
 # python / python3 / python3.12 / pythonw(.exe): the interpreter basenames a
 # `#!/…/python3` console-script shim is exec'd through when something (e.g. Electron's
 # `findOnPath('hermes')`) spawns the shim by handing the interpreter its path — then the

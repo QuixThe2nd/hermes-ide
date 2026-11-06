@@ -118,10 +118,9 @@ def pending_human_input() -> Optional[int]:
     gateway approvals); ``None`` when a ledger cannot be read."""
     global _input_probe_failure_logged
     try:
-        from tui_gateway import server_requests
         from tools.approval import pending_gateway_approval_count
 
-        return server_requests.open_request_count() + pending_gateway_approval_count()
+        return pending_gateway_approval_count()
     except Exception:
         if not _input_probe_failure_logged:
             _input_probe_failure_logged = True
@@ -154,12 +153,6 @@ def idle_proof(turn_probe: Callable[[], "bool | str | None"] = None,
     return {"idle": True, "reason": None}
 
 
-def _session_work_in_flight(session: dict) -> bool:
-    if any(session.get(key) for key in ("running", "queued_prompt", "queued_prompts", "_auto_continue_scheduled")):
-        return True
-    return any(thread.is_alive() for key in ("_run_thread", "_agent_build_thread")
-               if (thread := session.get(key)) is not None)
-
 
 def busy_ledger() -> Optional[str]:
     """Name the ledger that holds work — ``"retirement_admission"``, ``"session:<id>"``,
@@ -167,21 +160,14 @@ def busy_ledger() -> Optional[str]:
     cannot be read. The idle probe reports this so a backend that will not retire says
     WHICH work it is protecting, instead of an opaque "turn in flight".
 
-    Session work lives on ``tui_gateway.server``. Cron runs live outside that table
-    (``cron.scheduler.get_running_job_ids``, the same ledger the gateway shutdown drain reads):
-    without it a daily job mid-run reported "no turn" and the exit killed it (#107485). None keeps
-    the backend alive forever, so the cause is logged once — a silent never-exits would be the
-    original bug with a new face."""
+    Cron runs live outside any session table (``cron.scheduler.get_running_job_ids``, the same
+    ledger the gateway shutdown drain reads): without it a daily job mid-run reported "no turn"
+    and the exit killed it (#107485). None keeps the backend alive forever, so the cause is
+    logged once — a silent never-exits would be the original bug with a new face."""
     global _probe_failure_logged
     try:
-        import tui_gateway.server as gateway
-
         if retirement.active_count():
             return "retirement_admission"
-        with gateway._sessions_lock:
-            busy_sessions = [sid for sid, s in gateway._sessions.items() if _session_work_in_flight(s)]
-        if busy_sessions:
-            return "session:" + ",".join(str(sid) for sid in busy_sessions)
         from tools.async_delegation import active_count
         from cron.scheduler import get_running_job_ids
         if active_count():

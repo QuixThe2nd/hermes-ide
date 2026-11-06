@@ -5122,7 +5122,7 @@ class GatewayTurnMixin:
         another profile home, then the launch profile's OWN runtime scope.
 
         A native hosted room running a second profile calls
-        ``tui_gateway.launch_profile_policy.activate_multi_profile_hosting`` inside the gateway process,
+        ``gateway.launch_profile_policy.activate_multi_profile_hosting`` inside the gateway process,
         so ``get_secret`` fails closed for every unscoped read afterwards — including the standalone
         gateway's ordinary turns, which never bound a scope because ``multiplex_profiles`` is off
         (#112878). The launch profile is a profile too: bind its ``.env`` over the env frozen at
@@ -5132,7 +5132,7 @@ class GatewayTurnMixin:
         if not is_multiplex_active():
             return nullcontext()
         from hermes_constants import get_process_hermes_home
-        from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
+        from gateway.launch_profile_policy import launch_profile_runtime_scope
         return launch_profile_runtime_scope(get_process_hermes_home())
 
     def _media_delivery_scope_for_source(self, source: SessionSource):
