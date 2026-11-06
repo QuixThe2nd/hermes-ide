@@ -37,7 +37,7 @@ _HERMES_CORE_TOOLS = [
     # deliberately NOT here, for the same reason as the `project` tools below:
     # they only work where a GUI renderer can answer them. They live in the
     # `desktop_ui` toolset and are enabled solely by the GUI gateway for a
-    # session whose SOURCE is the desktop app (tui_gateway/server.py::
+    # session whose SOURCE is the desktop app (
     # _load_enabled_toolsets) — never keyed on a process env var, which is
     # blind to a desktop client talking to a remote/cloud backend.
     # File manipulation
@@ -65,7 +65,7 @@ _HERMES_CORE_TOOLS = [
     # NOTE: the desktop Project tools (project_list/create/switch) are
     # deliberately NOT here. They only make sense where a GUI can follow the
     # move, so they live in the `project` toolset and are enabled solely by the
-    # GUI gateway (tui_gateway/server.py::_load_enabled_toolsets) — keeping them
+    # GUI session toolset resolver — keeping them
     # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
@@ -287,7 +287,7 @@ TOOLSETS = {
     # in-app browser, focus a pane, tapback a message.
     #
     # Enabled by the GUI gateway for a session whose SOURCE is the desktop app
-    # (tui_gateway/server.py::_load_enabled_toolsets), NOT by a process env var.
+    # by the session toolset resolver, NOT by a process env var.
     # The renderer is a CLIENT — it can be driving a local, SSH, URL, or cloud
     # backend — so "was this process spawned by Electron?" is the wrong
     # question and silently strips these tools from every remote gateway.
@@ -392,7 +392,7 @@ TOOLSETS = {
     # The GUI pane/browser affordances are NOT listed here: they belong to the
     # client surface, not the posture, so the GUI gateway folds `desktop_ui`
     # in alongside this selection for a desktop-sourced session (see
-    # tui_gateway/server.py::_load_enabled_toolsets).
+    # the session toolset resolver).
     "coding": {
         "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
         "tools": [

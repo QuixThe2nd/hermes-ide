@@ -19,7 +19,7 @@ def test_current_checkout_repairs_failed_node_deps(capsys):
     """A recorded failure surfaces the fix-npm hint, not 'Already up to date!'."""
     completion = MagicMock()
     with patch.object(
-        update_cmd, "_update_node_dependencies", return_value=["ui-tui, web workspaces"]
+        update_cmd, "_update_node_dependencies", return_value=["Node.js dependencies"]
     ), patch.object(update_cmd, "_m") as m:
         update_cmd._repair_node_deps_on_current_checkout(completion)
 
@@ -27,7 +27,7 @@ def test_current_checkout_repairs_failed_node_deps(capsys):
     completion.assert_called_once()
     assert "could not be repaired" in completion.call_args[0][0]
     out = capsys.readouterr().out
-    assert "Node.js refresh failed for: ui-tui, web workspaces" in out
+    assert "Node.js refresh failed for: Node.js dependencies" in out
     assert "Fix npm and re-run `hermes update`." in out
 
 

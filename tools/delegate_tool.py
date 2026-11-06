@@ -92,7 +92,7 @@ def _open_child_session_db(parent_agent) -> Any:
     # and can be closed while a fire-and-forget background child is still flushing on a daemon thread —
     # every subsequent flush then hits the closed handle and the child's transcript is silently dropped
     # (#81267). It MUST point at the same database FILE as the parent's handle: parents can hold non-default
-    # per-profile handles (tui_gateway opens SessionDB(db_path=<profile>/ state.db) for non-launch
+    # per-profile handles (a host can open SessionDB(db_path=<profile>/ state.db) for non-launch
     # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
     # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
     # .db_path via __getattr__, so this works through them.

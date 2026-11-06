@@ -165,7 +165,7 @@ COMPONENT_PREFIXES = {
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),
     "cron": ("cron",),
-    "gui": ("hermes_cli.desktop", "tui_gateway"),
+    "gui": ("hermes_cli.desktop",),
 }
 
 

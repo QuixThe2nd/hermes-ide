@@ -848,16 +848,10 @@ DEFAULT_CONFIG = {
         # Set false to restore the legacy c-j submit fallback on unusual POSIX
         # PTYs whose plain Enter arrives as LF instead of CR.
         "cli_multiline_shortcuts": True,
-        # Interface bare `hermes`/`hermes chat` launches: "cli" (prompt_toolkit REPL) | "tui" (Ink).
-        # Flags win: `--cli` forces the REPL, `--tui` / HERMES_TUI=1 forces the TUI.
+        # Interface bare `hermes`/`hermes chat` launches: "cli" (prompt_toolkit REPL).
         "interface": "cli",
-        # `hermes --tui` auto-resumes the most recent human-facing session (like `hermes -c`).
-        # HERMES_TUI_RESUME=<id> always wins.
-        "tui_auto_resume_recent": False,
         # Desktop reopens the last chat/page on cold start (also in Settings → Appearance).
         "resume_last_session": True,
-        # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.
-        "tui_agents_nudge": True,
         "bell_on_complete": False,
         # Native OS notification when an agent turn finishes — the
         # desktop-toast sibling of bell_on_complete, titled with the

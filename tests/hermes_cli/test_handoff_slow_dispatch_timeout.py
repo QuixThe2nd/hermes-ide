@@ -15,7 +15,6 @@ Fix under test:
      rows still in the given states.
   2. CLI _handle_handoff_command: 60s deadline applies only to PENDING;
      a RUNNING row gets a long (15 min) wait and is never failed by the CLI.
-  3. tui_gateway handoff.fail: only pending rows can be failed by Desktop.
 """
 
 from __future__ import annotations
@@ -205,55 +204,3 @@ class TestCLIWaitLoop:
         assert "Timed out waiting for the gateway" not in out
         assert host._should_exit is True
         assert db.get_handoff_state("cli-sess-c")["state"] == "completed"
-
-
-# ---------------------------------------------------------------------------
-# 3. Desktop handoff.fail RPC
-# ---------------------------------------------------------------------------
-
-class TestDesktopHandoffFail:
-    def _call(self, db, session_key):
-        """Invoke the handoff.fail handler body with server-global stand-ins."""
-        import contextlib
-
-        from tui_gateway import methods_session as ms
-
-        handler = None
-        for name, fn in ms._registry._pending:
-            if name == "handoff.fail":
-                handler = fn
-                break
-        assert handler is not None, "handoff.fail handler not registered"
-
-        session = {"session_key": session_key}
-
-        @contextlib.contextmanager
-        def fake_session_db(_s):
-            yield db
-
-        globs = dict(handler.__globals__)
-        globs["_sess_nowait"] = lambda p, r: (session, None)
-        globs["_session_db"] = fake_session_db
-        globs["_ok"] = lambda rid, result: {"ok": True, **result}
-        globs["_db_unavailable_error"] = lambda rid, code: {"error": code}
-        rebound = types.FunctionType(
-            handler.__code__, globs, handler.__name__,
-            handler.__defaults__, handler.__closure__,
-        )
-        return rebound("rid", {"error": "poll timeout"})
-
-    def test_desktop_fail_refuses_running_row(self, db):
-        db.ensure_session("d1", "desktop")
-        assert db.request_handoff("d1", "discord")
-        assert db.claim_handoff("d1")
-        res = self._call(db, "d1")
-        assert res["failed"] is False
-        assert res["state"] == "running"
-        assert db.get_handoff_state("d1")["state"] == "running"
-
-    def test_desktop_fail_still_fails_pending_row(self, db):
-        db.ensure_session("d2", "desktop")
-        assert db.request_handoff("d2", "discord")
-        res = self._call(db, "d2")
-        assert res["failed"] is True
-        assert db.get_handoff_state("d2")["state"] == "failed"

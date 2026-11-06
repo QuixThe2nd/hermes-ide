@@ -206,7 +206,7 @@ def _is_boundary(target: str, index: int) -> bool:
 
 def _token_score(orig: str, lower: str, token: str) -> float | None:
     """Score one token against a target; None if not a subsequence. Faithful port of ``fuzzyScore``
-    in ui-tui / web ``fuzzy.ts`` so all surfaces rank identically; matches run against ``lower``,
+    so all surfaces rank identically; matches run against ``lower``,
     boundary detection uses ``orig`` for camelCase."""
     score, prev = 0.0, -1
     positions: list[int] = []

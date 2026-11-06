@@ -1,13 +1,9 @@
 """Sibling-site regression tests for the #80216 bug class.
 
 #80216 fixed /retry destroying soft-archived (``active=0/compacted=1``)
-in-place-compaction rows because ``rewrite_transcript`` defaulted to a
-destructive full ``replace_messages``.  The same class existed at two more
-sites, fixed here:
-
-- ``tui_gateway/methods_prompt.py`` edit/regenerate truncation: bare
-  ``replace_messages`` deleted the archived transcript on every
-  edit/regenerate of a compacted session.  Now ``active_only=True``.
+  in-place-compaction rows because ``rewrite_transcript`` defaulted to a
+  destructive full ``replace_messages``.  The same class existed at two more
+  sites, fixed here (ACP persistence and related SessionDB contracts).
 
 Behavior contract on a fresh (never-compacted) session: every row is
 ``active=1``, so the active-only replace is identical to the full replace —
@@ -97,41 +93,6 @@ class TestAcpPersistPreservesArchives:
         ]
         assert [m["content"] for m in rows] == ["only"]
         assert _archived_count(state_db, sid) == 0
-
-
-class TestTuiPromptTruncationPreservesArchives:
-    def test_truncation_source_uses_active_only(self):
-        """The edit/regenerate persistence call must pass active_only=True."""
-        import inspect
-        import tui_gateway.methods_prompt as mp
-
-        src = inspect.getsource(mp)
-        # The truncation write is the only replace_messages call in the module;
-        # it must carry active_only=True.
-        import re
-        calls = re.findall(r"db\.replace_messages\([^)]*\)", src, re.S)
-        assert calls, "expected the truncation replace_messages call"
-        for call in calls:
-            assert "active_only=True" in call, (
-                f"bare replace_messages in methods_prompt — #80216 class: {call}"
-            )
-
-    def test_truncation_write_keeps_archived_rows(self, state_db):
-        """Drive the exact write shape methods_prompt now performs against a
-        compacted session and assert the archive survives."""
-        sid = "tui-compacted"
-        _seed_compacted_session(state_db, sid)
-        assert _archived_count(state_db, sid) == 4
-
-        truncated = [{"role": "user", "content": "kept head"}]
-        state_db.replace_messages(sid, truncated, active_only=True)
-
-        assert _archived_count(state_db, sid) == 4
-        live = [
-            m for m in state_db.get_messages_as_conversation(sid)
-            if m.get("role") in ("user", "assistant")
-        ]
-        assert [m["content"] for m in live] == ["kept head"]
 
 
 class TestArchiveDroppedIsRecoverable:

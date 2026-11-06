@@ -142,7 +142,7 @@ class UpdateReceipt:
             persisted["skipped"] = _str_records(
                 fresh_recovery.get("skipped", []), ("profile", "kind", "supervisor", "reason")
             )
-            # ``hermes serve`` hosts tui_gateway and is not a gateway profile, so neither the
+            # ``hermes serve`` is not a gateway profile, so neither the
             # per-profile buckets above nor the fleet-version matrix can describe it. Persist its
             # unit outcomes and any process that survived on the pre-update generation, or the
             # receipt keeps claiming a clean recovery the operator's box contradicts.

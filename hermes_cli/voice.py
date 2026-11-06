@@ -13,8 +13,8 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
-# Modifier aliases mirrored from the TUI parser (``ui-tui/src/lib/platform.ts`` ``_MOD_ALIASES``)
-# so one config value binds the same shortcut in both runtimes. ``super``/``win``/``windows`` are
+# Modifier aliases (``_MOD_ALIASES``) so one config value binds the same shortcut in every
+# runtime. ``super``/``win``/``windows`` are
 # deliberately absent: prompt_toolkit has no super/meta modifier, so those spellings are TUI-only
 # and normalize to the default (a silent fallback beats a hard startup crash; cli.py warns).
 _VOICE_MOD_ALIASES = {"ctrl": "c-", "control": "c-", "alt": "a-", "option": "a-", "opt": "a-"}
@@ -57,7 +57,7 @@ def voice_record_key_from_config(cfg: Any) -> Any:
 def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     """Coerce ``voice.record_key`` into prompt_toolkit's ``c-x`` / ``a-x`` format.
 
-    Mirrors the TUI parser contract (``ui-tui/src/lib/platform.ts``): non-string / empty / typo'd /
+    Contract kept from the former TUI parser: non-string / empty / typo'd /
     bare-char / multi-modifier / reserved ``ctrl+c|d|l`` / ``super``-family → the documented default
     ``c-b``; named keys collapse to canonical spelling (``ctrl+return`` → ``c-enter``). Exactly one
     modifier: multi-modifier chords bind different shortcuts in prompt_toolkit (a-c-r) and

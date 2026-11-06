@@ -2857,7 +2857,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # Recoverable-archive resurrection (#92687): a canonical Bot Chat archived by the ws-orphan
                 # reaper / older agent cleanup is invisible to list_sessions_rich (include_archived=False),
                 # which would fail `hermes peer dm` resolution and mint transient sessions — same accident
-                # the tui_gateway lookups heal.
+                # the stale lookups heal.
                 from tools.bot_mode_probe import BOT_CHAT_TITLE
 
                 def _resurrect() -> bool:

@@ -112,13 +112,11 @@ def _subagent_transport_matches(record, transport) -> bool:
     every reattach path (prompt.submit, queued drain, resume, activate, viewer failover) already
     mutates it; a per-record copy needed a matching registry sync at each of those sites and two
     were missed (#106663). Records whose owner is not a session dict keep the exact-object rule."""
-    from tui_gateway.transport import FanoutTransport
-
     if record.get("owner_transport") is None:
         return False
     owner = record.get("owner_session_record")
     bound = owner.get("transport") if isinstance(owner, dict) else record.get("owner_transport")
-    return bound is transport or (isinstance(bound, FanoutTransport) and bound.contains(transport))
+    return bound is transport
 
 
 def steer_subagent(
@@ -159,13 +157,10 @@ def steer_subagent(
 def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[Any, Any]:
     """Exact request transport + live session generation, if any — an in-process
     bridge, not a serializable capability. Non-gateway hosts get ``(None, None)``."""
-    if not owner_session_id:
-        return None, None
-    try:
-        from tui_gateway.server import _current_session_steer_authority
-        return _current_session_steer_authority(owner_session_id)
-    except Exception:
-        return None, None
+    # The serve backend that issued live session transports is gone; no in-process
+    # authority exists to capture.
+    del owner_session_id
+    return None, None
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
 _PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})

@@ -45,18 +45,9 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
                 return asyncio.run(runner._busy_goal_command(event, mgr.session_id, None))
             return asyncio.run(runner._handle_goal_command(event))
         return execute
-    from tui_gateway import server
-    server._sessions[mgr.session_id] = {'session_key': mgr.session_id}
-    def execute(arg):
-        result = server._methods['command.dispatch'](1, {
-            'session_id': mgr.session_id, 'name': 'goal', 'arg': arg})
-        if result.get('result', {}).get('type') == 'send':
-            prompts.append(result['result']['message'])
-        return result
-    return execute
 
 
-@pytest.mark.parametrize('surface', ['cli', 'gateway', 'tui'])
+@pytest.mark.parametrize('surface', ['cli', 'gateway'])
 @pytest.mark.parametrize('command', [
     'show', 'draft', 'draft build it', 'drafting docs', 'wait', 'wait nope',
     'wait {pid} build', 'unwait', 'gate add true', 'gate remove 1',
@@ -86,7 +77,7 @@ def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
     assert snapshots[0] == snapshots[1]
 
 
-@pytest.mark.parametrize('surface', ['cli', 'gateway', 'tui'])
+@pytest.mark.parametrize('surface', ['cli', 'gateway'])
 @pytest.mark.parametrize('draft_result', ['contract', 'unavailable', 'error'])
 def test_drafts_start_work_but_inspection_and_literal_prefixes_do_not_draft(
     surface, draft_result, monkeypatch,

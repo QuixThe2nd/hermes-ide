@@ -32,7 +32,7 @@ it with ``--print-baseline`` (``--strict-baseline`` turns those advisories into 
 
 Scope: every first-party ``.py .sh .ts .tsx .js .mjs .cjs .md .mdx .txt .yaml .yml .json .toml``
 file except tests (``tests/``, ``tests-js/``, ``__tests__/``, ``e2e/``, ``test_*.py``,
-``*.test.ts`` ...), ``evals/``, CI workflows (``.github/`` runs on Linux runners), container
+``*.test.ts`` ...), CI workflows (``.github/`` runs on Linux runners), container
 build files (``Dockerfile*``, ``docker/``), generated lockfiles and the translated docs mirror
 (``website/i18n/``, regenerated from the English source).
 
@@ -65,7 +65,7 @@ SCAN_SUFFIXES = {
 # Pruned at every depth.
 SKIP_DIRS = {
     ".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".worktrees",
-    "tests", "tests-js", "__tests__", "e2e", "evals", "docker", "MagicMock",
+    "tests", "tests-js", "__tests__", "e2e", "docker", "MagicMock",
     ".pytest_cache", ".ruff_cache", ".mypy_cache", "coverage", "target",
 }
 # Pruned only directly under the repo root.

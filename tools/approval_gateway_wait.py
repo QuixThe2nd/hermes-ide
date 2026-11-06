@@ -32,7 +32,7 @@ class _ApprovalEntry:
         self.data.setdefault("request_id", uuid.uuid4().hex)
         self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
-        # another client): the tui_gateway withdraws its open server→client request through it.
+        # another client): the host withdraws its open server→client request through it.
         self.settle = None
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".

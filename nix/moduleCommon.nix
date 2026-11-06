@@ -275,7 +275,7 @@ let
 
           The merge into the config.yaml on disk is also a deep merge. These
           keys replace the keys on disk. The module keeps all other keys,
-          which includes the keys that `hermes config set` and the TUI
+          which includes the keys that `hermes config set` and the CLI
           settings panes write at runtime.
         '';
         example = literalExpression ''

@@ -28,16 +28,15 @@ def test_context_provenance_follows_the_selected_number():
 
 
 def test_preflight_seed_does_not_label_actual_usage_estimated():
-    from tui_gateway.server import _get_usage
+    from agent.context_breakdown import context_usage_fields
     comp = ContextCompressor(model="fixture", config_context_length=100_000, quiet_mode=True)
-    agent = SimpleNamespace(context_compressor=comp, model="fixture")
     comp.maybe_seed_preflight_display_tokens(1234)
-    assert _get_usage(agent).get("context_estimated") is True
+    assert context_usage_fields(comp).get("context_estimated") is True
     comp.update_from_response({"prompt_tokens": 1234, "completion_tokens": 20})
-    assert _get_usage(agent).get("context_estimated") is False
-    assert _get_usage(agent)["context_used"] == 1234
+    assert context_usage_fields(comp).get("context_estimated") is False
+    assert context_usage_fields(comp)["context_used"] == 1234
     comp.last_prompt_tokens = -1
-    assert "context_used" not in _get_usage(agent)
+    assert "context_used" not in context_usage_fields(comp)
     from agent.context_breakdown import context_display_source
     # A cleared live gauge must not re-label a persisted provider fallback.
     assert context_display_source(comp) == "provider_usage"

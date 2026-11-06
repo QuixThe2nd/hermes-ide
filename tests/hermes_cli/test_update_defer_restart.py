@@ -407,7 +407,7 @@ _REQUIRED_STEP_FAILURES = {
         lambda _root: (False, "hermes_cli.gateway", "ImportError: nope"),
     ),
     "node_partial": lambda mp: mp.setattr(
-        update_cmd, "_update_node_dependencies", lambda: ["ui-tui, web workspaces"]
+        update_cmd, "_update_node_dependencies", lambda: ["Node.js dependencies"]
     ),
     "web_build": lambda mp: mp.setattr(
         hermes_main, "_build_web_ui", lambda *a, **k: False

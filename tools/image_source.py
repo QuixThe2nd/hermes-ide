@@ -154,7 +154,7 @@ def _is_local_terminal_backend() -> bool:
 # (gateway inbound media + the tools' own download temp dirs).
 _MEDIA_CACHE_SUBDIRS = (
     "cache",  # cache/images, cache/vision, cache/video(s), cache/audio
-    "images",  # desktop/clipboard/PDF uploads (tui_gateway)
+    "images",  # desktop/clipboard/PDF uploads
     "image_cache", "audio_cache", "video_cache", "temp_vision_images", "temp_video_files")
 
 

@@ -113,8 +113,8 @@ _TERMINAL_COMPRESSION_PROVENANCES = frozenset(
 _SPLIT_FAILURE_COOLDOWN_SECONDS = 60
 
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
-# status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
-# drivers like the desktop app can show an explicit "Summarizing…" indicator
+# status as ``kind="compacting"`` (matched by status consumers), so drivers
+# like a desktop app can show an explicit "Summarizing…" indicator
 # instead of the transcript appearing to silently reset. Keep the marker phrase
 # intact if you reword COMPACTION_STATUS. Idle/preflight/retry lines do not
 # contain this marker — ``is_compaction_progress_status`` covers those too.
@@ -237,8 +237,8 @@ ROUTINE_COMPRESSION_STATUS_SAMPLES = (
 def is_compaction_progress_status(text: str | None) -> bool:
     """True for in-progress auto-compaction lifecycle lines (not the done edge).
 
-    ``tui_gateway.server._status_update`` re-tags matching ``lifecycle``
-    statuses as ``kind="compacting"`` so TUI and desktop can show a summarizing
+    A status consumer re-tags matching ``lifecycle``
+    statuses as ``kind="compacting"`` so GUI clients can show a summarizing
     indicator for the whole pause. Matching only ``COMPACTION_STATUS_MARKER``
     left idle/preflight/retry lines looking like a hung turn (#97239).
 

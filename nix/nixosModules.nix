@@ -54,7 +54,7 @@
 
       # config.yaml mode: group-writable (0660) when interactive users share this
       # HERMES_HOME via addToSystemPackages, so they can save settings through the
-      # CLI/TUI without hitting EACCES; otherwise group-read-only (0640). Secrets
+      # CLI without hitting EACCES; otherwise group-read-only (0640). Secrets
       # (.env) stay 0640 regardless.
       configYamlMode = if cfg.addToSystemPackages then "0660" else "0640";
 

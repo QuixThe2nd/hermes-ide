@@ -10,7 +10,7 @@
 #   scripts/dev-minimal-sandbox.sh hermes --tui
 #   scripts/dev-minimal-sandbox.sh hermes dashboard
 #   scripts/dev-minimal-sandbox.sh --persistent hermes --tui
-#   scripts/dev-minimal-sandbox.sh -- npm run dev   # from ui-tui/ or web/
+#   scripts/dev-minimal-sandbox.sh -- <command>
 #
 # Seed the sandbox HERMES_HOME from an existing directory (e.g. your main
 # ~/.hermes) so config, sessions, skills, etc. are pre-populated:

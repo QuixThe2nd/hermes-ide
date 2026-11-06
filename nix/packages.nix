@@ -91,8 +91,6 @@
           extraDependencyGroups = [ "messaging" ];
         };
 
-        tui = full.hermesTui;
-
         update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
       }
       # Every pm lockfile tool as its own installable derivation:

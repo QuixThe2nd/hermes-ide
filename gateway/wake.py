@@ -116,9 +116,8 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
 
 
 def _delegation_display_metadata(evt: dict) -> dict:
-    """Display-only metadata for a persisted delegation delivery row. Mirrors
-    ``tui_gateway.server._async_delegation_display_metadata`` (same ``display_kind`` consumer
-    contract) without importing the TUI stack."""
+    """Display-only metadata for a persisted delegation delivery row (``display_kind``
+    consumer contract)."""
     raw_results = evt.get("results")
     results = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
     task_count = len(results) or 1

@@ -343,7 +343,7 @@ class CLITerminalMixin:
     def _write_osc52_clipboard(self, text: str) -> None:
         """Copy *text* to the terminal clipboard via OSC 52.
 
-        Wrapped for tmux/screen passthrough (mirrors ui-tui/src/lib/osc52.ts) — without
+        Wrapped for tmux/screen passthrough — without
         the DCS wrapper the multiplexer consumes the sequence and the copy is lost.
         """
         payload = base64.b64encode(text.encode("utf-8")).decode("ascii")

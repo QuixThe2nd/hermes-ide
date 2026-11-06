@@ -148,16 +148,3 @@ def test_missing_dashboard_deps_point_at_hermes_update():
     assert "hermes update" in text
     assert "-m pip install -e '.[all]'" in text
     assert "metadata" not in text
-
-
-def test_missing_node_message_names_cli_fallback(monkeypatch, capsys):
-    from hermes_cli import main_tui_launch as _tui
-
-    monkeypatch.setattr("hermes_constants.find_node_executable", lambda _b: None)
-    monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", lambda _n: False, raising=False)
-    monkeypatch.delenv("HERMES_NODE", raising=False)
-    with pytest.raises(SystemExit):
-        _tui._tui_node_bin("node")
-    text = capsys.readouterr().out
-    assert "hermes --cli" in text
-    assert "Node.js" in text

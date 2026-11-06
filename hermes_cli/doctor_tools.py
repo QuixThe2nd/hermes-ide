@@ -464,10 +464,10 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
 
 @doctor_check()
 def _check_npm_audit(should_fix: bool, f: Finding) -> None:
-    """npm audit per Node package tree (root, web/ui-tui workspaces, WhatsApp bridge).
+    """npm audit per Node package tree (root, WhatsApp bridge).
 
-    PROJECT_ROOT is audited with --workspaces=false so the apps/* glob (Electron, node-pty, ...) is never
-    resolved for a routine check; web and ui-tui via --workspace. The WhatsApp bridge may live under a writable
+    PROJECT_ROOT is audited with --workspaces=false so the workspace glob is never
+    resolved for a routine check. The WhatsApp bridge may live under a writable
     HERMES_HOME mirror rather than the (possibly read-only) Docker install tree, hence the shared resolver.
     """
     from hermes_cli.doctor import PROJECT_ROOT
@@ -475,8 +475,8 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
     if npm_bin:
         try:
             # Each entry: (cwd, label, extra_audit_args) PROJECT_ROOT is audited with --workspaces=false so
-            # that the apps/* glob (which pulls in Electron, node-pty, etc.) is never resolved for a routine
-            # security check. The web and ui-tui workspaces are audited separately via --workspace flags.
+            # that the workspace glob is never resolved for a routine security check. The web
+            # workspace is audited separately via --workspace flags.
             # See #38772. The WhatsApp bridge may live under a writable HERMES_HOME mirror instead of the
             # (possibly read-only) install tree in Docker — resolve it through the shared helper so we audit
             # the dir that actually holds node_modules. See #49561.
@@ -486,8 +486,6 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
             whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
         for npm_dir, label, audit_extra in (
             (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
-            (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
-            (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
             (whatsapp_bridge_dir, "WhatsApp bridge", []),
         ):
             # Workspace-scoped audits check the root node_modules; standalone dirs check their own.

@@ -8,7 +8,7 @@ pytest.importorskip(
     reason="MCP SDK 1.26.0+ required for device-flow coverage",
 )
 
-from evals.mcp_device_flow import DEVICE_GRANT, run_cli
+from tests.probes.mcp_device_flow import DEVICE_GRANT, run_cli
 
 
 @pytest.mark.parametrize("mode", ["success", "preregistered", "multi_issuer"])

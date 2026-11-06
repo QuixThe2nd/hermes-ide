@@ -73,8 +73,8 @@ def current_record() -> Optional[SetupRecord]:
 def wait_for_record(timeout: float = SETUP_READY_WAIT_SECONDS) -> Optional[SetupRecord]:
     """Block up to ``timeout`` seconds for a bootstrap that is IN FLIGHT, then return whatever it
     produced, reconciled with any provider configured since (:func:`reconcile_record`). Returns
-    None at once when no bootstrap ever started in this process (a bare ``tui_gateway`` under
-    test, an old serve without the boot hook): the caller falls back to its live probe instead of
+    None at once when no bootstrap ever started in this process (e.g. an old serve without
+    the boot hook): the caller falls back to its live probe instead of
     paying the wait for nothing."""
     if not _started:
         return None
@@ -278,11 +278,8 @@ def _bootstrap_then_retry() -> None:
 
 
 def _broadcast(record: SetupRecord) -> None:
-    try:
-        from tui_gateway.server import _broadcast_global_event
-        _broadcast_global_event(SETUP_READY_EVENT, record.as_payload())
-    except Exception as exc:  # no serve process (plain CLI): nobody to tell
-        logger.debug("setup.ready not broadcast: %s", exc)
+    # No serve backend in this deployment: nobody to tell.
+    logger.debug("setup.ready not broadcast: no backend listener")
 
 
 def start_background_bootstrap() -> threading.Thread:

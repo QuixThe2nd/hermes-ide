@@ -17,8 +17,65 @@ import time as _time
 
 from pathlib import Path
 from typing import Callable
-from hermes_cli.main_tui_launch import (
-    _npm_lifecycle_env, _termux_workspace_install_context, _workspace_root)
+def _workspace_root(dir: Path) -> Path:
+    """The npm workspace root for *dir*: its parent when *dir* has ``package.json`` but the
+    lockfile lives one level up (hoisted node_modules), else *dir* (standalone / prebuilt)."""
+    if (
+        (dir / "package.json").is_file()
+        and not (dir / "package-lock.json").is_file()
+        and (dir.parent / "package-lock.json").is_file()):
+        return dir.parent
+    return dir
+
+
+def _child_workspace_dirs(dir: Path):
+    """Sorted ``dir/packages/*`` subdirs that carry a ``package.json``."""
+    packages_dir = dir / "packages"
+    if not packages_dir.is_dir():
+        return
+    for child in sorted(packages_dir.iterdir()):
+        if child.is_dir() and (child / "package.json").is_file():
+            yield child
+
+
+def _termux_workspace_install_context(
+    dir: Path, *, include_child_workspaces: bool = False) -> tuple[Path, tuple[str, ...]]:
+    """Return Termux-only ``(cwd, npm_args)`` for installing deps for *dir* only."""
+    ws_root = _workspace_root(dir)
+    if ws_root == dir:
+        return dir, ()
+
+    try:
+        workspace = dir.relative_to(ws_root).as_posix()
+    except ValueError:
+        return ws_root, ()
+
+    workspace_args: list[str] = ["--workspace", workspace]
+    if include_child_workspaces:
+        for child in _child_workspace_dirs(dir):
+            workspace_args.extend(["--workspace", child.relative_to(ws_root).as_posix()])
+    workspace_args.append("--include-workspace-root=false")
+    return ws_root, tuple(workspace_args)
+
+
+def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a clean environment for the pinned UI toolchain lifecycle."""
+    run_env = {**os.environ, **(env or {}), "CI": "1"}
+    # esbuild treats this as an executable override. If a shell points it at a
+    # different release, the pinned package's postinstall rejects that binary.
+    run_env.pop("ESBUILD_BINARY_PATH", None)
+    # The repo-root ``.npmrc`` is git-tracked, so the updater's autostash parks
+    # any mirror/proxy line added there and every update reinstalls without it
+    # (restricted networks then prune optional native deps like get-windows and
+    # the rebuild fails). ``$HERMES_HOME`` lives outside the git tree and the
+    # update hand-off already carries ``HERMES_HOME`` down to every npm child.
+    # An explicit ``NPM_CONFIG_USERCONFIG`` wins (#106373).
+    from hermes_constants import get_hermes_home
+    npmrc = get_hermes_home() / "npmrc"
+    if npmrc.is_file():
+        run_env.setdefault("NPM_CONFIG_USERCONFIG", os.fspath(npmrc))
+    return run_env
+
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.main")
@@ -430,32 +487,28 @@ def _relay_npm_output(result: subprocess.CompletedProcess) -> None:
 def _web_npm_install_context(web_dir: Path) -> tuple[Path, tuple[str, ...]]:
     """``(cwd, workspace_args)`` for installing the web workspace's deps.
 
-    ``--workspace web`` keeps desktop (Electron + node-pty) out of a web build; no
+    ``--workspace web`` keeps sibling workspaces out of a web build; no
     args when ``web/`` has its own lockfile. From the root this must name the SAME
-    closure as ``hermes update``'s ``_update_node_dependencies()`` (ui-tui + web +
-    root): ``npm ci`` wipes node_modules first, so a narrower closure silently
-    prunes what update just installed. ui-tui is named only when present.
+    closure as ``hermes update``'s ``_update_node_dependencies()`` (web + root):
+    ``npm ci`` wipes node_modules first, so a narrower closure silently
+    prunes what update just installed.
     """
     from hermes_cli.main import _is_termux_startup_environment
     if _is_termux_startup_environment():
         return _termux_workspace_install_context(web_dir)
     npm_cwd = _workspace_root(web_dir)
-    # Scope the install to the web workspace only so that the full workspace graph (including apps/desktop
-    # with its Electron + node-pty deps) is never resolved here. Without --workspace the root package.json's
-    # apps/* glob would pull in desktop on every web build. See #38772. When web/ has its own
-    # package-lock.json, _workspace_root() returns web_dir itself and --workspace would fail. See #42973.
+    # Scope the install to the web workspace only so that the full workspace graph is
+    # never resolved here. When web/ has its own package-lock.json, _workspace_root()
+    # returns web_dir itself and --workspace would fail. See #42973.
     # When running from the workspace root, this must name the SAME closure as `hermes update`'s
-    # _update_node_dependencies() (ui-tui + web + --include-workspace-root): the helper prefers `npm ci`,
+    # _update_node_dependencies() (web + --include-workspace-root): the helper prefers `npm ci`,
     # which deletes node_modules before reifying the requested tree, so a narrower closure here silently
-    # prunes everything the update step just installed (root devDependencies and the ui-tui workspace) while
-    # still exiting 0 — and since the manifests digest was already recorded, later no-op updates skip the
+    # prunes everything the update step just installed (root devDependencies) while still exiting 0 —
+    # and since the manifests digest was already recorded, later no-op updates skip the
     # repair. See #43564/#64354.
     if npm_cwd == web_dir:
         return npm_cwd, ()
-    args: tuple[str, ...] = ("--workspace", "web", "--include-workspace-root")
-    if (npm_cwd / "ui-tui" / "package.json").exists():
-        args = ("--workspace", "ui-tui", *args)
-    return npm_cwd, args
+    return npm_cwd, ("--workspace", "web", "--include-workspace-root")
 
 
 def _report_web_build_failure(step: str, result: subprocess.CompletedProcess, *, fatal: bool) -> bool:

@@ -2799,9 +2799,8 @@ configure_browser_env_from_system_browser() {
 # Name the workspaces a CLI install needs instead of materializing every
 # workspace and its optional native dependencies (#38311, #38772).
 #
-# Naming ui-tui/web also includes their shared dependencies, and
 # --include-workspace-root keeps the root's own devDependencies (the shared
-# ESLint flat config each workspace imports) from being pruned by the scoped
+# ESLint flat config each workspace imports) from being pruned by a scoped
 # install — the same closure `hermes update` installs
 # (hermes_cli/main.py::_update_node_dependencies). Prebuilt/partial checkouts
 # can lack a workspace, and naming a missing one makes npm fail hard, so fall
@@ -2809,8 +2808,6 @@ configure_browser_env_from_system_browser() {
 node_deps_workspace_args() {
     local install_dir="$1"
     NODE_DEPS_WORKSPACE_ARGS=()
-    [ -f "$install_dir/ui-tui/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--workspace ui-tui)
-    [ -f "$install_dir/web/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--workspace web)
     if [ "${#NODE_DEPS_WORKSPACE_ARGS[@]}" -eq 0 ]; then
         NODE_DEPS_WORKSPACE_ARGS=(--workspaces=false)
         return 0
@@ -2951,30 +2948,6 @@ install_node_deps() {
         log_success "Browser engine setup complete"
     fi
 
-    # Install TUI dependencies
-    if [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
-        log_info "Installing TUI dependencies..."
-        cd "$INSTALL_DIR/ui-tui"
-        # Time-boxed: a stalled registry fetch would otherwise hang here (#39219).
-        # Report success only on actual success, same as node-deps above
-        # (#77003) — and fail the install outright (#85297).
-        # Capture npm output so failures are diagnosable (#87340).
-        local tui_npm_log
-        tui_npm_log="$(mktemp)"
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent \
-                >"$tui_npm_log" 2>&1; then
-            log_error "TUI npm install failed or timed out; TUI dependencies were not installed"
-            if [ -s "$tui_npm_log" ]; then
-                log_error "npm output:"
-                cat "$tui_npm_log" >&2
-            fi
-            rm -f "$tui_npm_log"
-            restore_dirty_lockfiles "$INSTALL_DIR"
-            return 1
-        fi
-        rm -f "$tui_npm_log"
-        log_success "TUI dependencies installed"
-    fi
 
     # Keep the checkout clean so `hermes update` doesn't autostash every run.
     restore_dirty_lockfiles "$INSTALL_DIR"

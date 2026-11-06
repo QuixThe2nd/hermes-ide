@@ -41,7 +41,7 @@ LOCKS_DIR = "locks"
 # Config fallbacks (real knobs: ``bot_mode.turn_wait_seconds`` / ``bot_mode.envelope_ttl_seconds``).
 TURN_WAIT_SECONDS_FALLBACK = 120
 DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 'queued_expired'
-# Per-attempt turn timeout and attempt ceiling for bot_relay.deliver (tui_gateway/methods_bot_relay.py).
+# Per-attempt turn timeout and attempt ceiling for bot_relay.deliver.
 TURN_ATTEMPT_TIMEOUT_SECONDS = 600
 TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
 # Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay.ts; both test suites pin it.
@@ -79,7 +79,7 @@ _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
 
 # Set by a dispatcher on the ONE policy-gated re-run of a failed delivery turn (``tools.bot_mode_dm``,
-# ``tui_gateway.methods_bot_relay``). The failed attempt's turn-start persist already left the DM as the
+# a dispatcher). The failed attempt's turn-start persist already left the DM as the
 # Bot Chat's unanswered tail row, and a fresh process cannot tell that from a new message on its own — so
 # the re-run is told to adopt that row instead of appending a second copy
 # (``hermes_cli.quiet_single_query.adopt_unanswered_turn``, which consumes the variable before the turn).

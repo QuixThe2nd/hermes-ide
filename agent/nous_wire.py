@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Flip to True only after the 20x6 concurrency probe (evals/postmortem/live_ab) is clean on a
+# Flip to True only after the 20x6 concurrency probe (postmortem live-AB) is clean on a
 # GMI-served anthropic/* id on the native wire. Until then ``auto`` is chat everywhere.
 GMI_NATIVE_WIRE_CLEARED = False
 

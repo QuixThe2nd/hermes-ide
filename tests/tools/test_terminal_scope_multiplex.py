@@ -171,20 +171,6 @@ def test_gateway_runtime_scope_resets_on_error(tmp_path):
     assert get_terminal_scope() is None
 
 
-def test_tui_and_cron_boundaries_bind_and_reset(tmp_path):
-    import tui_gateway.server as server
-    from tools.terminal_scope import install_and_reset_profile_terminal_scope
-
-    home = _profile(tmp_path, "dash", "terminal:\n  backend: local\n")
-    with server._session_profile_runtime_scope({"profile_home": str(home)}):
-        assert terminal_env("TERMINAL_ENV") == "local"
-        assert terminal_env("TERMINAL_SSH_HOST") == ""
-    assert get_terminal_scope() is None
-    with install_and_reset_profile_terminal_scope(home):  # cron fire helper
-        assert terminal_env("TERMINAL_ENV") == "local"
-    assert get_terminal_scope() is None
-
-
 def test_config_list_and_dict_values_are_json_not_repr(tmp_path):
     """config.yaml list/dict terminal keys must be JSON so terminal_tool's
     json.loads path succeeds. str() produces Python repr and drops the tool."""

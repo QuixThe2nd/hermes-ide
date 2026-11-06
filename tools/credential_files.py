@@ -250,7 +250,7 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
     ("cache/spillover", "cache/spillover"),  # oversized tool results; host side is canonical
-    # Flat top-level desktop staging dirs (tui_gateway attach RPCs; no legacy alias),
+    # Flat top-level desktop staging dirs (attach RPCs; no legacy alias),
     # mounted so vision/file tools in sandboxes reach uploads and dropped files.
     # Mount it so vision can reach uploads inside sandbox containers (#69575). No legacy alias exists, so
     # both tuple slots are ``images``.

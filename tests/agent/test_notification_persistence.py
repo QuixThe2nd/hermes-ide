@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from agent.notification_presentation import notification_turn
 from agent.session_persistence import _db_flush_collect
 from hermes_state import SessionDB
-from tui_gateway.server import _history_to_messages
 
 
 def test_muted_wake_preserves_history_and_new_evidence(tmp_path):
@@ -23,7 +22,7 @@ def test_muted_wake_preserves_history_and_new_evidence(tmp_path):
         db.append_messages_batch("session", rows)
         stored = db.get_messages("session")
     assert [row["content"] for row in stored] == ["worker failed", "model diagnostic echo"]
-    assert _history_to_messages(stored) == []
+    assert all(row["display_kind"] == "hidden" for row in stored)
     next_result = {"role": "assistant", "content": "requested result"}
     rows, _ = _db_flush_collect(agent, [next_result], [])
     assert rows[0]["display_kind"] is None

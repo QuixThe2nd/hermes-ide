@@ -484,47 +484,6 @@ class TestSubprocessCompatHelpers:
 
 
 # ---------------------------------------------------------------------------
-# tui_gateway/entry.py signal installation survives absent POSIX signals
-# ---------------------------------------------------------------------------
-
-
-class TestTuiGatewayEntrySignalGuards:
-    """Importing tui_gateway.entry must not crash when SIGPIPE/SIGHUP absent.
-
-    Linux has both signals, so this is mostly a source-level invariant check
-    (no bare ``signal.SIGPIPE`` at module level without a ``hasattr`` guard).
-    On Windows the import would have raised AttributeError before this fix.
-    """
-
-    def test_source_guards_each_signal_installation(self):
-        root = Path(__file__).resolve().parents[2]
-        source = (root / "tui_gateway" / "entry.py").read_text(encoding="utf-8")
-        # Every signal installation at module scope must be guarded against
-        # missing signals (Windows: SIGPIPE/SIGHUP absent).  Originally this
-        # was ``hasattr(signal, "SIGPIPE")`` inline; PR #72677 refactored to
-        # ``_install_signal("SIGPIPE", ...)`` which does the same guard via
-        # ``getattr(signal, signame, None)`` internally.  Either form is
-        # acceptable — what matters is no bare ``signal.signal(SIGPIPE)``
-        # at module scope without a guard.
-        for sig_name in ("SIGPIPE", "SIGHUP", "SIGTERM", "SIGINT"):
-            assert (
-                f'hasattr(signal, "{sig_name}")' in source
-                or f'_install_signal("{sig_name}"' in source
-            ), (
-                f"signal {sig_name} must be installed via a guarded path "
-                f"(hasattr or _install_signal), not bare signal.signal()"
-            )
-
-    def test_module_imports_cleanly(self):
-        """Importing the module must not raise — verifies the guards work."""
-        # Drop any cached import so the module re-initialises
-        for mod in list(sys.modules):
-            if mod.startswith("tui_gateway"):
-                del sys.modules[mod]
-        import tui_gateway.entry  # noqa: F401  # must not raise
-
-
-# ---------------------------------------------------------------------------
 # code_execution_tool TCP loopback on Windows
 # ---------------------------------------------------------------------------
 

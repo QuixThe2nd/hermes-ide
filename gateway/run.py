@@ -13528,19 +13528,6 @@ class GatewayRunner(
         self._install_plugin_message_injector()
         self._update_runtime_status("running")
 
-        try:
-            await self._ensure_hosted_room_worker()
-        except Exception:
-            logger.error(
-                "Group Chat worker failed to start; mutating Group Chat commands "
-                "will fail closed until supervision recovers it",
-                exc_info=True,
-            )
-        self._spawn_supervised(
-            self._hosted_room_worker_watcher,
-            "hosted_room_worker",
-        )
-
         self._start_loop_heartbeat_task()
 
         # Emit gateway:startup hook
@@ -14203,22 +14190,6 @@ class GatewayRunner(
             # paths the after-turn wait never reaches: signal shutdown, update
             # restarts, and a drain cancel/abort.
             await self._finalize_restart_wind_down_offer(WIND_DOWN_TERMINAL_CLOSED)
-
-            stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
-            if callable(stop_room_worker):
-                try:
-                    stopped = await stop_room_worker(timeout=5.0)
-                    if not stopped:
-                        logger.warning(
-                            "Group Chat worker is still settling durable work; "
-                            "the next gateway start will recover it"
-                        )
-                except Exception:
-                    logger.warning(
-                        "Group Chat worker could not stop cleanly; the next gateway "
-                        "start will recover durable work",
-                        exc_info=True,
-                    )
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):

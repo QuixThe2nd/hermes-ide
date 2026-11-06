@@ -255,12 +255,12 @@ def test_failed_staging_leaves_no_orphaned_copies(tmp_path, monkeypatch):
 def test_atomic_replace_dir_still_works_as_a_shim(tmp_path):
     """W1: it is now an alias over the two-phase helpers; #49145 must hold."""
     live, new = tmp_path / "live", tmp_path / "new"
-    _live_tree(live, {"ui-tui": "old"})
-    _live_tree(new, {"ui-tui": "new"})
+    _live_tree(live, {"gateway": "old"})
+    _live_tree(new, {"gateway": "new"})
 
-    update_cmd._atomic_replace_dir(str(new / "ui-tui"), str(live / "ui-tui"))
+    update_cmd._atomic_replace_dir(str(new / "gateway"), str(live / "gateway"))
 
-    assert (live / "ui-tui" / "version.txt").read_text() == "new"
+    assert (live / "gateway" / "version.txt").read_text() == "new"
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
 
 

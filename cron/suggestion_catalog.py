@@ -133,7 +133,7 @@ CATALOG: List[CatalogEntry] = [
                 "rotations; level 3: plus agent.log and agent.log.1; "
                 "level 4: plus the .2 and .3 rotations of the gateway and "
                 "errors logs; level 5: plus the tails of "
-                "tui_gateway_crash.log, gateway-exit-diag.log, and "
+                "gateway-exit-diag.log and "
                 "gateway-shutdown-diag.log; level 6: plus "
                 "gateway-startup-watchdog.log; level 7: plus journalctl for "
                 "the Hermes gateway service over the last 24h (error and "
