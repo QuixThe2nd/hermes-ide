@@ -318,7 +318,7 @@ class RuntimeMode:
 
     def toolset_selection(self, config: Optional[dict[str, Any]] = None) -> Optional[list[str]]:
         """Toolset list (only under ``focus``), or ``None`` to keep the platform default. Callers
-        apply it only when the user hasn't pinned a selection (``--toolsets``, ``HERMES_TUI_TOOLSETS``)."""
+        apply it only when the user hasn't pinned a selection (``--toolsets``)."""
         if self.config_mode != "focus" or self.profile.toolset is None:
             return None
         return [self.profile.toolset, *_enabled_mcp_servers(config)]

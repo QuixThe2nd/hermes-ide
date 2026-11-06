@@ -402,8 +402,8 @@ def _repair_node_deps_on_current_checkout(
 
 
 def _update_node_dependencies() -> list[str]:
-    """Refresh Node deps for ui-tui. Returns labels whose npm install failed (empty on
-    success) so the caller reports a partial update instead of ``Update complete!``.
+    """Refresh root Node deps. Returns labels whose npm install failed (empty on success)
+    so the caller reports a partial update instead of ``Update complete!``.
 
     See #30271.
     """
@@ -423,9 +423,7 @@ def _update_node_dependencies() -> list[str]:
             print("  ⚠ Skipped: only a Windows npm is reachable from this WSL shell.")
             print("    Install Node.js inside the WSL distro (nvm, or your distro's")
             print("    package manager), then re-run `hermes update`.")
-            has_workspace = any(
-                (_m().PROJECT_ROOT / ws / "package.json").exists() for ws in ("ui-tui",))
-            return ["ui-tui workspace"] if has_workspace else []
+            return ["Node.js dependencies"]
         return []
 
     from hermes_constants import get_default_hermes_root
@@ -445,15 +443,9 @@ def _update_node_dependencies() -> list[str]:
         logger.info("npm lockfile unchanged, skipping npm install")
         return []
 
-    # Root package.json has no deps of its own, so a workspace-scoped install prunes nothing
-    # root-only.
     print("→ Updating Node.js dependencies...")
     install_args = [
-        "--no-fund", "--no-audit", "--prefer-offline", "--progress=false",
-        "--workspace", "ui-tui",
-        # Root devDependencies (shared ESLint config) would otherwise be pruned by the
-        # scoped install.
-        "--include-workspace-root"]
+        "--no-fund", "--no-audit", "--prefer-offline", "--progress=false"]
 
     from hermes_constants import with_hermes_node_path
     nixos_env = with_hermes_node_path(_m()._nixos_build_env())
@@ -464,7 +456,7 @@ def _update_node_dependencies() -> list[str]:
         npm, _m().PROJECT_ROOT, extra_args=tuple(install_args), capture_output=False, env=nixos_env)
     if result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
-        print("  ✓ ui-tui workspace installed")
+        print("  ✓ Node.js dependencies installed")
         return []
     print("  ⚠ npm install failed")
     stderr = (result.stderr or "").strip()
@@ -474,7 +466,7 @@ def _update_node_dependencies() -> list[str]:
     print("  ⚠ Node.js dependency refresh did not complete cleanly; the")
     print("    installation may be in a mixed state (updated code, stale Node")
     print("    deps). Fix npm and re-run `hermes update`.")
-    return ["ui-tui workspace"]
+    return ["Node.js dependencies"]
 
 
 def _venv_core_imports_healthy() -> tuple[bool, str]:

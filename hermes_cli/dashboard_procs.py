@@ -510,7 +510,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 
     *killed* reports the roots only; swept descendants are the roots' own teardown debt. A descendant
     still alive after its SIGKILL grace is appended to *failed*: the stop must not be declared
-    complete while a wedged ui-tui still holds the deleted state.db-wal inode (#112631).
+    complete while a wedged TUI still holds the deleted state.db-wal inode (#112631).
     """
     import signal as _signal
 

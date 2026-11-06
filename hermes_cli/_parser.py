@@ -76,13 +76,10 @@ _EPILOGUE = """
 Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
-    hermes --tui                  Launch the modern TUI (or set display.interface: tui)
-    hermes --cli                  Force the classic REPL (overrides display.interface: tui)
     hermes -c                     Resume the most recent session
     hermes -c "my project"        Resume a session by name (latest in lineage)
     hermes --resume <session_id>  Resume a specific session by ID
     hermes --resume latest        Resume the most recent session (same as -c)
-    hermes --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
     hermes auth add <provider>    Add a pooled credential
@@ -185,12 +182,6 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills")
     inherited(parser, "--safe-mode", action="store_true", default=False,
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules)")
-    inherited(parser, "--tui", action="store_true", default=False,
-              help="Launch the modern TUI instead of the classic REPL")
-    inherited(parser, "--cli", action="store_true", default=False,
-              help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
-    inherited(parser, "--dev", dest="tui_dev", action="store_true", default=False,
-              help="With --tui: run TypeScript sources via tsx (skip dist build)")
 
 
 def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
@@ -285,12 +276,6 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules). Use to isolate whether a problem comes from your setup or from Hermes itself.")
     add("--source", default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.")
-    inherited(chat_parser, "--tui", action="store_true", default=SUPPRESS,
-              help="Launch the modern TUI instead of the classic REPL")
-    inherited(chat_parser, "--cli", action="store_true", default=SUPPRESS,
-              help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
-    inherited(chat_parser, "--dev", dest="tui_dev", action="store_true", default=SUPPRESS,
-              help="With --tui: run TypeScript sources via tsx (skip dist build)")
     return chat_parser
 
 

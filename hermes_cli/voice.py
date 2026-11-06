@@ -57,7 +57,7 @@ def voice_record_key_from_config(cfg: Any) -> Any:
 def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     """Coerce ``voice.record_key`` into prompt_toolkit's ``c-x`` / ``a-x`` format.
 
-    Mirrors the TUI parser contract (``ui-tui/src/lib/platform.ts``): non-string / empty / typo'd /
+    Contract kept from the former TUI parser: non-string / empty / typo'd /
     bare-char / multi-modifier / reserved ``ctrl+c|d|l`` / ``super``-family → the documented default
     ``c-b``; named keys collapse to canonical spelling (``ctrl+return`` → ``c-enter``). Exactly one
     modifier: multi-modifier chords bind different shortcuts in prompt_toolkit (a-c-r) and
