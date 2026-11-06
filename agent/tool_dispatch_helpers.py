@@ -46,6 +46,17 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "web_search",
 })
 
+# Tools whose parallel safety depends on the ``action`` argument: only pure remote
+# reads join a parallel run; every other action (or a missing/non-string one) stays
+# a sequential barrier so writes keep their side-effect ordering.
+_PARALLEL_SAFE_ACTIONS: dict[str, frozenset[str]] = {
+    "discord": frozenset({"fetch_messages", "search_members"}),
+    "discord_admin": frozenset({
+        "list_guilds", "server_info", "list_channels", "channel_info",
+        "list_roles", "member_info", "list_pins",
+    }),
+}
+
 # Filesystem tools admitted by path overlap: readers may share a subtree, a writer conflicts
 # with ANY overlapping reservation (so a batched read never observes pre-mutation state).
 _PATH_SCOPED_READERS = frozenset({"read_file", "search_files"})
@@ -159,6 +170,9 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, Lis
         scoped = _extract_parallel_scope_paths(name, args, execution_cwd=execution_cwd)
         return (name, scoped, name in _PATH_SCOPED_WRITERS) if scoped else None
     if name in _PARALLEL_SAFE_TOOLS or name in _PARALLEL_SAFE_BRIDGE_LOOKUPS or _is_mcp_tool_parallel_safe(name):
+        return name, [], False
+    action = args.get("action")
+    if isinstance(action, str) and action in _PARALLEL_SAFE_ACTIONS.get(name, frozenset()):
         return name, [], False
     return None
 
