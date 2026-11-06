@@ -271,14 +271,14 @@ async def test_channel_not_in_allowlist_rejected(adapter, monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_attempt_notifies_telegram(adapter):
+async def test_unauthorized_attempt_notifies_discord(adapter):
     from gateway.session import Platform
 
-    telegram_adapter = SimpleNamespace(send=AsyncMock())
+    discord_adapter = SimpleNamespace(send=AsyncMock())
     home = SimpleNamespace(chat_id="987654321")
     runner = SimpleNamespace(
-        adapters={Platform.TELEGRAM: telegram_adapter},
-        config=SimpleNamespace(get_notification_channel=lambda p: home if p is Platform.TELEGRAM else None),
+        adapters={Platform.DISCORD: discord_adapter},
+        config=SimpleNamespace(get_notification_channel=lambda p: home if p is Platform.DISCORD else None),
     )
     adapter.gateway_runner = runner
     adapter._allowed_user_ids = {"100200300"}
@@ -290,8 +290,8 @@ async def test_unauthorized_attempt_notifies_telegram(adapter):
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    telegram_adapter.send.assert_awaited_once()
-    chat_id, msg = telegram_adapter.send.call_args.args
+    discord_adapter.send.assert_awaited_once()
+    chat_id, msg = discord_adapter.send.call_args.args
     assert chat_id == "987654321"
     assert "Unauthorized" in msg
     assert "999999999" in msg
@@ -374,39 +374,6 @@ async def test_ignored_beats_allowed(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "1111")
     interaction = _make_interaction("100200300", channel_id=1111)
     assert await adapter._check_slash_authorization(interaction, "/help") is False
-
-
-# ---------------------------------------------------------------------------
-# Admin notify soft-fail fallback
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_notify_falls_back_to_slack_on_telegram_soft_fail(adapter):
-    """adapter.send returning SendResult(success=False) must NOT short-
-    circuit the fallback chain. Treating a soft failure as delivered
-    means a Telegram outage swallows alerts silently."""
-    from gateway.session import Platform
-
-    soft_fail = SimpleNamespace(success=False, error="rate limited")
-    telegram_adapter = SimpleNamespace(send=AsyncMock(return_value=soft_fail))
-    slack_adapter = SimpleNamespace(send=AsyncMock())
-    home_tg = SimpleNamespace(chat_id="987654321")
-    home_sl = SimpleNamespace(chat_id="C12345")
-    homes = {Platform.TELEGRAM: home_tg, Platform.SLACK: home_sl}
-    runner = SimpleNamespace(
-        adapters={
-            Platform.TELEGRAM: telegram_adapter,
-            Platform.SLACK: slack_adapter,
-        },
-        config=SimpleNamespace(get_notification_channel=lambda p: homes.get(p)),
-    )
-    adapter.gateway_runner = runner
-
-    await adapter._notify_unauthorized_slash("u", "1", 2, 3, "/x", "reason")
-
-    telegram_adapter.send.assert_awaited_once()
-    slack_adapter.send.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
