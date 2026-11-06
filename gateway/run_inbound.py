@@ -631,8 +631,11 @@ class GatewayInboundMixin:
     def _hm_text_only(event: "MessageEvent") -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
 
-    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> None:
-        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
+    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> bool:
+        """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics.
+
+        Returns whether the steer landed; the async caller (_hm_handle_running_session_message)
+        turns a True result into the same receipts the classic busy handler emits."""
         steer_text = (event.text or "").strip()
         steered = False
         if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
@@ -642,9 +645,10 @@ class GatewayInboundMixin:
                 logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
         if steered:
             logger.debug("PRIORITY steer for session %s", _quick_key)
-            return
+            return True
         logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
         self._queue_or_replace_pending_event(_quick_key, event)
+        return False
 
     async def _hm_busy_interrupt(
         self, event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
@@ -714,7 +718,25 @@ class GatewayInboundMixin:
             self._queue_or_replace_pending_event(_quick_key, event)
             return None
         if effective_busy_input_mode == "steer":
-            self._hm_busy_steer(event, running_agent, _quick_key)
+            steered = self._hm_busy_steer(event, running_agent, _quick_key)
+            if steered:
+                # Receipt parity with the classic busy handler
+                # (_handle_active_session_busy_message): a steered follow-up
+                # gets the Discord ⏩ read-receipt on its own source message
+                # plus the one-shot "steer delivered" ack. The priority path
+                # stays bubble-silent — these two receipts are all it emits —
+                # and a failure here must never unwind a delivered steer.
+                try:
+                    if self._steer_delivered_ack_enabled(event):
+                        self._register_steer_delivered_ack(event, _quick_key, running_agent)
+                    await self._maybe_react_discord_busy_steer(
+                        event, self._delivery_adapter_for(source), _quick_key,
+                        steered=True, is_steer_mode=True,
+                    )
+                except Exception:
+                    logger.debug(
+                        "PRIORITY steer receipt failed for session %s", _quick_key, exc_info=True
+                    )
             return None
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
