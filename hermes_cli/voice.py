@@ -13,8 +13,8 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
-# Modifier aliases mirrored from the TUI parser (``ui-tui/src/lib/platform.ts`` ``_MOD_ALIASES``)
-# so one config value binds the same shortcut in both runtimes. ``super``/``win``/``windows`` are
+# Modifier aliases (``_MOD_ALIASES``) so one config value binds the same shortcut in every
+# runtime. ``super``/``win``/``windows`` are
 # deliberately absent: prompt_toolkit has no super/meta modifier, so those spellings are TUI-only
 # and normalize to the default (a silent fallback beats a hard startup crash; cli.py warns).
 _VOICE_MOD_ALIASES = {"ctrl": "c-", "control": "c-", "alt": "a-", "option": "a-", "opt": "a-"}

@@ -1,7 +1,7 @@
 """``hermes update`` stdio protection: log mirror + hangup/broken-pipe survival.
 
-Moved from the removed dashboard's ``main_dashboard.py``; ``cmd_update`` and the
-update evals are the surviving consumers.
+Moved from the removed dashboard's ``main_dashboard.py``; ``cmd_update`` is the
+surviving consumer.
 """
 
 import contextlib

@@ -414,14 +414,14 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
 # SIGTERM → SIGKILL grace for the dashboard/serve backend. Must outlast the lifespan teardown in
 # hermes_cli/web_server.py::_lifespan: stop_hosted_room_service(timeout=5.0) + the startup-thread
 # join(1.0) + PTY_REGISTRY.close_all() (≤1.5s per attached Chat PTY, serial). A SIGKILL inside
-# that window skips close_all(), so the ui-tui / tui_gateway.entry children outlive the backend
+# that window skips close_all(), so the TUI children outlive the backend
 # and keep the deleted state.db-wal inode open — the next hermes start refuses with a FATAL
 # DeletedWalGenerationError (#111912). The orphan reaper's 1.5s (`_reap_orphaned_desktop_local_serves`)
 # is deliberately shorter: it runs on the Desktop boot path under a 10s ready-probe.
 _POSIX_TERM_GRACE_SECONDS = 10.0
 # Grace for a descendant that outlived the backend's own teardown. It already got the backend's
 # SIGTERM forwarded (or SIGHUP from its PTY master closing); anything still up is wedged, and a
-# wedged ui-tui keeps the deleted state.db-wal inode open until the next start refuses with
+# wedged TUI keeps the deleted state.db-wal inode open until the next start refuses with
 # DeletedWalGenerationError (#112631) — no finite root grace can cover an unbounded teardown.
 _POSIX_DESCENDANT_GRACE_SECONDS = 2.0
 _NO_TTY = ("?", "??", "-")  # Linux / macOS / BSD spellings of "no controlling terminal"
@@ -435,7 +435,7 @@ def _is_detached_session_leader(pid: int, tty: str) -> bool:
     ``hermes --tui`` child is a session leader too (``pty.fork``) but owns the pts whose master the
     dashboard held, so its tty column is set and it stays in the sweep.
 
-    Known gap: the turn-isolation ``tui_gateway.compute_host`` and ``slash_worker`` children are
+    Known gap: turn-isolation worker children (``compute_host``, ``slash_worker``) are
     launched the same way (``start_new_session=True``, no tty; ``compute_host`` also holds
     ``state.db``), so a wedged WAL holder of that class is spared here too. Their exit relies on
     their own ppid watchdogs (``compute_host._parent_guard_loop``,
@@ -1000,7 +1000,7 @@ def _reap_orphaned_desktop_local_serves(
             killed.append(pid)
         except OSError:
             failed.append(pid)
-    # A SIGKILLed backend never ran PTY_REGISTRY.close_all(): its hosted ui-tui / MCP trees would
+    # A SIGKILLed backend never ran PTY_REGISTRY.close_all(): its hosted TUI / MCP trees would
     # keep the deleted state.db-wal inode open (#112631). The boot-path budget leaves no second
     # grace, and these trees already lost their Electron and their backend.
     # A root whose own kill raised (EPERM: not ours) keeps its subtree — do not orphan it half-way.

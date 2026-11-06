@@ -2,7 +2,7 @@
 """Read the in-app terminal pane in the Hermes desktop GUI.
 
 The buffer lives in the desktop renderer (xterm.js), so this round-trips through the
-gateway's blocking-prompt bridge (as `clarify` does): tui_gateway emits
+gateway's blocking-prompt bridge (as `clarify` does): the host emits
 ``terminal.read.request``, the renderer answers ``terminal.read.respond``. Lives in the
 ``desktop_ui`` toolset, enabled only for desktop-sourced sessions.
 """

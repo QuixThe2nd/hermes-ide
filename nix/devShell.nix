@@ -1,7 +1,7 @@
 # nix/devShell.nix — Dev shell that delegates setup to each package
 #
-# Each npm workspace package exposes passthru.packageJsonPath (e.g.
-# "ui-tui/package.json").  This file collects them all and passes the
+# Each npm workspace package exposes passthru.packageJsonPath.  This file
+# collects them all and passes the
 # list to mkNpmDevShellHook, which stamps all package.jsons at once,
 # then runs a single `npm i --package-lock-only` if any changed and
 # `npm ci` if the lockfile changed.

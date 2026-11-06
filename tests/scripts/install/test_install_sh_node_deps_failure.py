@@ -27,21 +27,16 @@ def _run_node_deps_stage(
     fail_directory: str | None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, list[str]]:
     install_dir = tmp_path / "install"
-    tui_dir = install_dir / "ui-tui"
     bin_dir = tmp_path / "bin"
     hermes_home = tmp_path / "home"
     managed_bin = hermes_home / "bin"
     npm_calls = tmp_path / "npm-calls"
 
-    tui_dir.mkdir(parents=True)
+    install_dir.mkdir(parents=True)
     bin_dir.mkdir()
     managed_bin.mkdir(parents=True)
     (install_dir / "package.json").write_text(
         '{"name":"installer-regression-probe","private":true}\n',
-        encoding="utf-8",
-    )
-    (tui_dir / "package.json").write_text(
-        '{"name":"tui-regression-probe","private":true}\n',
         encoding="utf-8",
     )
     _write_executable(bin_dir / "node", "#!/bin/sh\necho v26.0.0\n")
@@ -113,23 +108,7 @@ def test_root_node_dependency_failure_is_fatal(tmp_path: Path) -> None:
     }
     assert calls == [str(install_dir)]
     assert "Node.js dependencies installed" not in proc.stdout
-    assert "TUI dependencies installed" not in proc.stdout
     assert not (install_dir / "node_modules").exists()
-
-
-def test_tui_node_dependency_failure_is_fatal(tmp_path: Path) -> None:
-    install_dir = tmp_path / "install"
-    tui_dir = install_dir / "ui-tui"
-    proc, _, calls = _run_node_deps_stage(
-        tmp_path,
-        fail_directory=str(tui_dir),
-    )
-
-    assert proc.returncode != 0
-    assert _stage_result(proc)["ok"] is False
-    assert calls == [str(install_dir), str(tui_dir)]
-    assert "Node.js dependencies installed" in proc.stdout
-    assert "TUI dependencies installed" not in proc.stdout
 
 
 def test_node_dependency_success_remains_successful(tmp_path: Path) -> None:
@@ -144,6 +123,5 @@ def test_node_dependency_success_remains_successful(tmp_path: Path) -> None:
         "stage": "node-deps",
         "skipped": False,
     }
-    assert calls == [str(install_dir), str(install_dir / "ui-tui")]
+    assert calls == [str(install_dir)]
     assert "Node.js dependencies installed" in proc.stdout
-    assert "TUI dependencies installed" in proc.stdout

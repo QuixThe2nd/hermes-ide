@@ -52,7 +52,7 @@ let
     if releaseRevCountMatch == null then null else builtins.fromJSON (builtins.elemAt releaseRevCountMatch 0);
 
   # Install stamp values — written to install-stamp.json so the Python
-  # runtime (CLI, TUI) reads one file instead of env vars or .git probes.
+  # runtime reads one file instead of env vars or .git probes.
   stampDistance =
     if revCount != null && releaseRevCount != null then
       lib.trivial.max 0 (revCount - releaseRevCount)
@@ -78,10 +78,6 @@ let
 
   hermesNpmLib = callPackage ./lib.nix {
     inherit npm-lockfile-fix;
-  };
-
-  hermesTui = callPackage ./tui.nix {
-    inherit hermesNpmLib;
   };
 
   bundledSkills = lib.cleanSourceWith {
@@ -202,11 +198,10 @@ stdenv.mkDerivation (finalAttrs: {
     ln -s ${bundledPlugins} $out/share/hermes-agent/plugins
     ln -s ${bundledLocales} $out/share/hermes-agent/locales
     ln -s ${bundledOptionalMcps} $out/share/hermes-agent/optional-mcps
-    ln -s ${hermesTui}/lib/hermes-tui $out/ui-tui
 
     # Write the canonical install stamp. version_info.py resolves it
     # through HERMES_INSTALL_ROOT (set by the wrapper below) — one file,
-    # one resolution path for the Python runtime (CLI, TUI), no .git
+    # one resolution path for the Python runtime, no .git
     # probing and no stamp-specific env channel. updateMechanism is
     # `external`: the nix store path is replaced by nix, never by hermes.
     cat > $out/share/hermes-agent/install-stamp.json <<STAMP
@@ -222,7 +217,6 @@ stdenv.mkDerivation (finalAttrs: {
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
           --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
           --set HERMES_OPTIONAL_MCPS $out/share/hermes-agent/optional-mcps \
-          --set HERMES_TUI_DIR $out/ui-tui \
           --set-default HERMES_BIN $out/bin/hermes \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
           --set HERMES_NODE ${lib.getExe hermesNpmLib.nodejs} \
@@ -263,7 +257,6 @@ stdenv.mkDerivation (finalAttrs: {
     in
     {
       inherit
-        hermesTui
         hermesNpmLib
         hermesVenv
         ;

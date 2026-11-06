@@ -73,7 +73,7 @@ def has_clipboard_image() -> bool:
     return any(enabled and has() for enabled, has, _ in _linux_backends())
 
 
-# ── Text write (native tools, mirrors ui-tui/src/lib/clipboard.ts) ──────
+# ── Text write (native tools) ──────
 
 def _write_clipboard_commands(data: bytes) -> list:
     """(argv, run_kwargs) candidates for writing *data*, in platform fallback order."""

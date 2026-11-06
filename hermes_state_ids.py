@@ -1,6 +1,6 @@
 """Session-id minting: the ONE place that knows the ``YYYYMMDD_HHMMSS_<hex>`` shape.
 
-stdlib-only on purpose: ``agent/``, ``cli.py``, ``gateway/`` and ``tui_gateway/`` all mint ids and
+stdlib-only on purpose: ``agent/``, ``cli.py`` and ``gateway/`` all mint ids and
 must not pull the SessionDB import graph in to do it. ``hermes_cli/session_lost_and_found.py``
 classifies schema-less salvage rows by ``SESSION_ID_PATTERN``, so a shape change here is a
 recovery-classification change — keep the prefix stable.

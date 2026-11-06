@@ -1,7 +1,7 @@
 """Heal mixed ``sys.modules`` after an in-place checkout update.
 
 Pre-reexec updaters (Hermes ≤ v2026.9.14) purged only package prefixes
-(``hermes_cli``, ``gateway``, ``tools``, ``tui_gateway``, ``agent``) and left
+(``hermes_cli``, ``gateway``, ``tools``, ``agent``) and left
 root modules like ``utils`` cached in the updater process. The post-pull
 gateway-restart phase then imports new ``hermes_cli.gateway`` /
 ``hermes_cli.config`` into that process; those need symbols the stale

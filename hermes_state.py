@@ -431,11 +431,10 @@ _MODEL_CONFIG_ROW_MISSING = object()
 
 # Billing-bucket classes that aren't a routable provider identity on their
 # own — used by session_gateway_runtime's billing_provider fallback and by
-# tui_gateway.server._stored_session_runtime_overrides. A session that
+# a session-runtime override store. A session that
 # persisted only one of these (never ran /model) must fall back to the
 # ambient config default rather than restore a bare bucket. Shared here so
-# both consumers stay in sync (previously duplicated as a set in
-# tui_gateway/server.py).
+# both consumers stay in sync.
 _BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
 
 
@@ -4907,7 +4906,7 @@ def refuse_deleted_wal_generation(db_path) -> None:
 # working for every call site and test that imports from here.
 #
 # Routing rules (see hermes_state_registry for the full lifecycle):
-#   - Long-lived in-process callers (gateway, tui_gateway, cron,
+#   - Long-lived in-process callers (gateway, cron,
 #     in-process tools) share ONE writer connection per resolved path
 #     via get_shared_session_db().
 #   - CLI one-shots, recovery flows, and read-only cross-profile opens
@@ -7400,7 +7399,7 @@ class SessionDB(
         idle window and a GC cycle" is not a release policy.  Call sites
         owning a handle are still expected to close it deterministically
         (see the ownership comments in ``run_agent.py`` and
-        ``tui_gateway/methods_session.py``).
+        the RPC session surface).
 
         This makes the correct usage the easy one, so an owning scope can be
         exception-safe by construction rather than by remembering a
@@ -11350,7 +11349,7 @@ class SessionDB(
         return self._execute_write(_do) or []
 
     # ── Cross-backend heartbeat API (#94895) ───────────────────────────
-    # Each serve / tui_gateway process registers a heartbeat row at startup
+    # Each serve backend process registers a heartbeat row at startup
     # and refreshes ``last_heartbeat`` periodically. The startup orphan
     # sweep reads these rows to avoid reaping sessions owned by another
     # still-live backend that just happens to be idle. Backends remove

@@ -845,7 +845,7 @@ class CLISessionMixin:
     def _transfer_session_yolo(self, old_session_id: str, new_session_id: str) -> None:
         """Move YOLO bypass state to a new session key when ``self.session_id`` is reassigned
         mid-run (/branch, auto-compression rotation) — ``_session_yolo`` is keyed by id, so
-        without this the toggle silently reverts. Mirrors tui_gateway's rename path."""
+        without this the toggle silently reverts."""
         if not old_session_id or not new_session_id or old_session_id == new_session_id:
             return
         try:

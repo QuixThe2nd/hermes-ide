@@ -264,36 +264,6 @@ def test_explicit_unknown_platform_toolsets_fail_closed_not_composite(monkeypatc
     assert resolved == set()
 
 
-def test_tui_load_enabled_toolsets_unknown_allowlist_is_not_unrestricted(monkeypatch):
-    """TUI must not treat an empty resolved CLI allowlist as None (all tools).
-
-    GUI-surface toolsets (project) may still fold in; terminal / x_search must
-    not come back from a fully-retired explicit list.
-    """
-    import agent.coding_context as cc
-    import hermes_cli.config as config_mod
-    import hermes_cli.tools_config as _tc
-    import tui_gateway.server as server
-
-    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
-    monkeypatch.setattr(cc, "coding_selection", lambda **_: None)
-    monkeypatch.setattr(_tc, "_get_plugin_toolset_keys", lambda: set())
-    monkeypatch.setattr(_tc, "_xai_credentials_present", lambda: True)
-    monkeypatch.setattr(
-        config_mod,
-        "load_config",
-        lambda: {"platform_toolsets": {"cli": ["fully_retired_allowlist_entry"]}},
-    )
-
-    result = server._load_enabled_toolsets("tui")
-
-    assert result is not None
-    assert "x_search" not in result
-    assert "terminal" not in result
-    assert "file" not in result
-    assert set(result) <= {"project"}
-
-
 def test_resolvable_mcp_passthrough_name_survives_unknown_filter(caplog):
     """An MCP server name saved in platform_toolsets is not a toolset but DOES
     resolve to tools — the #38798 unknown-name filter must keep it flowing and

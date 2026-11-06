@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -48,9 +47,9 @@ def test_compressed_result_rejoins_verbatim_tail_and_never_mutates_input():
     assert agent._compress_context.call_args.kwargs["force"] is True
 
 
-@pytest.mark.parametrize("surface", ["cli", "gateway", "tui"])
+@pytest.mark.parametrize("surface", ["cli", "gateway"])
 def test_every_surface_honours_preview_without_compressing(surface, monkeypatch):
-    """The prompt-cache-breaking mutation must be gated by the same ``--preview`` on all four surfaces."""
+    """The prompt-cache-breaking mutation must be gated by the same ``--preview`` on every surface."""
     agent, history = _agent(), _history()
     frozen = copy.deepcopy(history)
     if surface == "cli":
@@ -71,11 +70,6 @@ def test_every_surface_honours_preview_without_compressing(surface, monkeypatch)
         event = MagicMock(); event.get_command_args.return_value = "--preview"
         reply = asyncio.run(gw._handle_compress_command_inner(event))
         assert "Preview" in reply
-    elif surface == "tui":
-        from tui_gateway.server import _compress_session_history
-        session = {"agent": agent, "history": history, "history_lock": threading.Lock(), "history_version": 3}
-        assert _compress_session_history(session, "--preview")[0] == 0
-        assert session["history"] == frozen and session["history_version"] == 3
     agent._compress_context.assert_not_called()
 
 

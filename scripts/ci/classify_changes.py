@@ -16,7 +16,7 @@ Lanes:
 * ``docker_meta`` — Dockerfiles etc.
 * ``docker`` — any product change + docker meta
 * ``nix``         — ``nix flake check``: the flake inputs and any product change.
-* ``frontend``    — TS checks for the TUI, web dashboard, and shared package.
+* ``frontend``    — TS checks (no TS packages remain in this fork).
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
@@ -57,7 +57,7 @@ import os
 import subprocess
 import sys
 
-_FRONTEND = ("ui-tui/", "apps/shared/")  # TS typecheck-matrix packages
+_FRONTEND = ()  # TS typecheck-matrix packages (none remain)
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
@@ -82,13 +82,7 @@ _PY_RELEVANT_SITE = (
 )
 # Cross-language contract files: data committed under a frontend tree that a
 # pytest pins against the Python side (emitter inventory, command registry).
-# Editing only the JSON in an apps/-only PR would otherwise skip the one test
-# that can catch the drift, so these force the Python lane too.
-_PY_RELEVANT_CONTRACT_FILES = {
-    # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
-    "apps/shared/src/gateway-contract.generated.ts",
-    "apps/shared/src/gateway-contract.openrpc.json",
-}
+_PY_RELEVANT_CONTRACT_FILES: set = set()
 
 # CI-sensitive files: eslint config, workflow files, composite actions.
 # Changes here can influence what code the autofix job executes and pushes to

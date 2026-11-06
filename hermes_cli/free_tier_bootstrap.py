@@ -73,8 +73,8 @@ def current_record() -> Optional[SetupRecord]:
 def wait_for_record(timeout: float = SETUP_READY_WAIT_SECONDS) -> Optional[SetupRecord]:
     """Block up to ``timeout`` seconds for a bootstrap that is IN FLIGHT, then return whatever it
     produced, reconciled with any provider configured since (:func:`reconcile_record`). Returns
-    None at once when no bootstrap ever started in this process (a bare ``tui_gateway`` under
-    test, an old serve without the boot hook): the caller falls back to its live probe instead of
+    None at once when no bootstrap ever started in this process (e.g. an old serve without
+    the boot hook): the caller falls back to its live probe instead of
     paying the wait for nothing."""
     if not _started:
         return None

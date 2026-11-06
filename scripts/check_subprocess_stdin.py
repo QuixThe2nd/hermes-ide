@@ -7,7 +7,7 @@ inherit this fd can cause the gateway to exit with stdin EOF during tool
 execution (issue #14036, PR #39257).
 
 This script checks that all subprocess.run() and subprocess.Popen() calls
-in TUI-context files (agent/, tools/, plugins/, tui_gateway/) explicitly
+in stdin-sensitive context files (agent/, tools/, plugins/) explicitly
 set stdin= to prevent fd inheritance.
 
 Exit codes:
@@ -35,7 +35,6 @@ TUI_CONTEXT_DIRS = [
     "agent/",
     "tools/",
     "plugins/",
-    "tui_gateway/",
 ]
 
 # User plugin roots — scanned at runtime if they exist.  Plugins load from

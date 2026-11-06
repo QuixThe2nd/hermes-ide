@@ -1161,7 +1161,7 @@ def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
         return _ACCENT_ANSI_DEFAULT if bold else "\033[38;2;184;134;11m"
 
 
-# Light/dark terminal detection (mirrors ui-tui/src/theme.ts detectLightMode()). Priority:
+# Light/dark terminal detection. Priority:
 # HERMES_LIGHT/HERMES_TUI_LIGHT env, HERMES_TUI_THEME, HERMES_TUI_BACKGROUND, COLORFGBG
 # (bg slot 7/15 = light), OSC 11 query, default dark. Cached so the terminal is queried once.
 _LIGHT_MODE_CACHE: bool | None = None

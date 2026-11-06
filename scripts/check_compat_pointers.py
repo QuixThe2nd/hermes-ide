@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "compat_manifest.json"
 DEPENDENCY_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
 ROOT_SKIP_DIRS = DEPENDENCY_DIRS | {
-    "website", "skills", "optional-skills", "apps", "evals", "build", "MagicMock", ".worktrees"
+    "website", "skills", "optional-skills", "build", "MagicMock", ".worktrees"
 }
 
 

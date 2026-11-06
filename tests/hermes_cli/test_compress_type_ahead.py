@@ -25,9 +25,7 @@ These tests pin that claim end-to-end for the classic CLI:
    command runs, type-ahead submissions would be silently dropped and the
    drain contract above would break without any other test noticing.
 
-The Ink TUI (ui-tui) needs no equivalent fix: its ``/compress`` is an async
-``session.compress`` RPC and the composer is never made read-only while it
-runs; the gateway already resolves the concurrent-mutation race via the
+The gateway resolves the concurrent-mutation race via the
 ``history_version`` guard in ``_compress_session_history``.
 """
 

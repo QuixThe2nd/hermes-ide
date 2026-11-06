@@ -18,10 +18,9 @@ class _FakeCurses:
 
 
 def test_scorer_matches_typescript_reference():
-    """Score parity with ui-tui/web fuzzy.ts. These exact values are produced
-    by the TS fuzzyScoreMulti for the same inputs (verified via a cross-language
-    harness); keep the Python port byte-identical so all three surfaces rank
-    consistently. If you change the scoring constants, update the TS copies too.
+    """Score parity reference values: produced by the TS fuzzyScoreMulti for the
+    same inputs (verified via a cross-language harness); keep the Python port
+    byte-identical so all surfaces rank consistently.
     """
     cases = {
         ("gpt-4o", "g4o"): 15.94,
