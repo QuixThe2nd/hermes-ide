@@ -984,6 +984,7 @@ _DISCORD_ADMIN_DESCRIBE_ACTIONS = {
 
 
 def _describe_discord_phrase(_tool_name: str, args: dict) -> str | None:
+    reason = _describe_arg(args, "description")
     label = _describe_enum_label(_DISCORD_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
         return None
@@ -992,11 +993,13 @@ def _describe_discord_phrase(_tool_name: str, args: dict) -> str | None:
     if action == "create_thread":
         thread_name = _describe_arg(args, "name")
         subject = f" {thread_name}" if thread_name else (f" in channel {channel_id}" if channel_id else "")
-        return label + subject
-    if action == "search_members":
+        phrase = label + subject
+    elif action == "search_members":
         query = _describe_arg(args, "query")
-        return f"{label} for {query}" if query else label
-    return f"{label} in channel {channel_id}" if channel_id else label
+        phrase = f"{label} for {query}" if query else label
+    else:
+        phrase = f"{label} in channel {channel_id}" if channel_id else label
+    return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
 
 
 # Subject field and connector vary by operation: a channel id is not a message
@@ -1017,15 +1020,18 @@ _DISCORD_ADMIN_DESCRIBE_SUBJECTS = {
 
 
 def _describe_discord_admin_phrase(_tool_name: str, args: dict) -> str | None:
+    reason = _describe_arg(args, "description")
     label = _describe_enum_label(_DISCORD_ADMIN_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
         return None
     subject_spec = _DISCORD_ADMIN_DESCRIBE_SUBJECTS.get(_describe_action_key(args))
     if subject_spec is None:
-        return label
-    key, connector = subject_spec
-    subject = _describe_arg(args, key)
-    return f"{label} {connector.format(subject)}" if subject else label
+        phrase = label
+    else:
+        key, connector = subject_spec
+        subject = _describe_arg(args, key)
+        phrase = f"{label} {connector.format(subject)}" if subject else label
+    return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
 
 
 _DISCORD_GUESTS_DESCRIBE_ACTIONS = {
@@ -1279,7 +1285,9 @@ def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
 
 
 # Builders here fold ``description`` into verb+reason; raw ``description`` alone must not win.
-_DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({"write_file", "patch", "skill_view", "skill_manage", "delegate_agent"})
+_DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({
+    "write_file", "patch", "skill_view", "skill_manage", "delegate_agent", "discord", "discord_admin",
+})
 
 
 def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIBE_TOOL_MAX_LEN) -> str:
