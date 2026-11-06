@@ -15,7 +15,7 @@ from gateway.session import SessionSource
 
 
 class RestartTestAdapter(BasePlatformAdapter):
-    def __init__(self, platform: Platform = Platform.TELEGRAM):
+    def __init__(self, platform: Platform = Platform.DISCORD):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent: list[str] = []
         self.sent_calls: list[tuple[str, str, object]] = []
@@ -42,7 +42,7 @@ def make_restart_source(
     chat_id: str = "123456",
     chat_type: str = "dm",
     thread_id: str | None = None,
-    platform: Platform = Platform.TELEGRAM,
+    platform: Platform = Platform.DISCORD,
     user_id: str | None = "u1",
     **extra,
 ) -> SessionSource:
@@ -61,7 +61,7 @@ def make_restart_source(
 def make_restart_runner(
     adapter: BasePlatformAdapter | None = None,
     *,
-    platform: Platform = Platform.TELEGRAM,
+    platform: Platform = Platform.DISCORD,
 ) -> tuple[GatewayRunner, BasePlatformAdapter]:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(

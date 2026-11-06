@@ -5449,8 +5449,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 # Gateway Setup (Interactive Messaging Platform Configuration)
 # =============================================================================
 
-# Built-in per-platform setup config (env vars, instructions, prompts). Telegram, WhatsApp, Email,
-# SMS, etc. live in plugins/platforms/<name>/ and are discovered via the platform registry.
+# Built-in per-platform setup config (env vars, instructions, prompts). Most adapters live in
+# plugins/platforms/<name>/ and are discovered via the platform registry.
 _PLATFORMS = []
 
 
@@ -5514,22 +5514,6 @@ def _platform_status(platform: dict) -> str:
                 return "configured + paired"
             return "enabled, not paired"
         return "not configured"
-    if platform.get("key") == "signal":
-        account = get_env_value("SIGNAL_ACCOUNT")
-        if val and account:
-            return "configured"
-        if val or account:
-            return "partially configured"
-        return "not configured"
-    if platform.get("key") == "email":
-        pwd = get_env_value("EMAIL_PASSWORD")
-        imap = get_env_value("EMAIL_IMAP_HOST")
-        smtp = get_env_value("EMAIL_SMTP_HOST")
-        if all([val, pwd, imap, smtp]):
-            return "configured"
-        if any([val, pwd, imap, smtp]):
-            return "partially configured"
-        return "not configured"
     if platform.get("key") == "matrix":
         homeserver = get_env_value("MATRIX_HOMESERVER")
         password = get_env_value("MATRIX_PASSWORD")
@@ -5540,16 +5524,9 @@ def _platform_status(platform: dict) -> str:
         if val or password or homeserver:
             return "partially configured"
         return "not configured"
-    if platform.get("key") == "weixin":
-        token = get_env_value("WEIXIN_TOKEN")
-        if val and token:
-            return "configured"
-        if val or token:
-            return "partially configured"
-        return "not configured"
     if val:
         return "configured"
-    return "partially configured" if any(present) else "not configured"
+    return "not configured"
 
 
 # Operator wording for the out-of-loop watchdog exit reasons stamped by gateway/shutdown_watchdog.py.
@@ -5823,7 +5800,6 @@ def _builtin_setup_fn(key: str):
     """Resolve a built-in platform's setup function; late-bound to dodge the hermes_cli.setup cycle."""
     from hermes_cli import setup as _s
     return {
-        # telegram/discord/slack/whatsapp/dingtalk/feishu/wecom setup_fns come from their plugins.
         "webhooks": setup_platforms._setup_webhooks,
     }.get(key)
 

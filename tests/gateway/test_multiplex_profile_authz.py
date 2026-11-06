@@ -11,16 +11,16 @@ from gateway.session import SessionSource
 
 def _clear_auth_env(monkeypatch) -> None:
     for key in (
-        "FEISHU_ALLOWED_USERS",
+        "MATRIX_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
-        "FEISHU_ALLOW_ALL_USERS",
+        "MATRIX_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
 
 
 def _make_multiplex_runner(monkeypatch):
-    """Runner with default allowlist Feishu and secondary open-policy Feishu."""
+    """Runner with default allowlist Matrix and secondary open-policy Matrix."""
     from gateway.run import GatewayRunner
 
     _clear_auth_env(monkeypatch)
@@ -41,9 +41,9 @@ def _make_multiplex_runner(monkeypatch):
         _group_policy="open",
     )
 
-    runner.adapters = {Platform.FEISHU: default_adapter}
+    runner.adapters = {Platform.MATRIX: default_adapter}
     runner._profile_adapters = {
-        "coder": {Platform.FEISHU: secondary_adapter},
+        "coder": {Platform.MATRIX: secondary_adapter},
     }
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
@@ -55,7 +55,7 @@ def test_default_profile_still_trusts_own_allowlist(monkeypatch):
     runner, _default_adapter, _secondary_adapter = _make_multiplex_runner(monkeypatch)
 
     source = SessionSource(
-        platform=Platform.FEISHU,
+        platform=Platform.MATRIX,
         user_id="allowed-user",
         chat_id="dm-chat",
         user_name="allowed-user",
@@ -71,7 +71,7 @@ def test_active_profile_stamp_resolves_primary_adapter(monkeypatch):
     runner, default_adapter, _secondary_adapter = _make_multiplex_runner(monkeypatch)
     runner._active_profile_name = lambda: "dev"
 
-    assert runner._authorization_adapter(Platform.FEISHU, profile="dev") is default_adapter
+    assert runner._authorization_adapter(Platform.MATRIX, profile="dev") is default_adapter
 
 
 def test_scoped_secondary_profile_still_uses_profile_adapters(monkeypatch):
@@ -81,8 +81,8 @@ def test_scoped_secondary_profile_still_uses_profile_adapters(monkeypatch):
     ``_profile_runtime_scope``, which overrides HERMES_HOME so
     ``get_active_profile_name()`` equals the secondary profile for that turn.
     Authorization must still read ``_profile_adapters[profile]``, not the
-    empty primary ``self.adapters`` map — otherwise upstream-auth platforms
-    such as A2A default-deny an already-authenticated peer (#80884). A
+    empty primary ``self.adapters`` map — otherwise upstream-authorization adapters
+    default-deny an already-authenticated peer (#80884). A
     secondary profile with NO registry entry still fails closed.
     """
     from gateway.run import GatewayRunner
@@ -99,15 +99,15 @@ def test_scoped_secondary_profile_still_uses_profile_adapters(monkeypatch):
         authorization_is_upstream=True,
         enforces_own_access_policy=False,
     )
-    runner._profile_adapters = {"beta": {Platform("a2a"): secondary}}
+    runner._profile_adapters = {"beta": {Platform.DISCORD: secondary}}
     # Simulate the scoped turn: active profile name collapses to the secondary.
     runner._active_profile_name = lambda: "beta"
 
-    assert runner._authorization_adapter(Platform("a2a"), profile="beta") is secondary
+    assert runner._authorization_adapter(Platform.DISCORD, profile="beta") is secondary
 
     source = SessionSource(
-        platform=Platform("a2a"),
-        chat_id="a2a-context",
+        platform=Platform.DISCORD,
+        chat_id="dm-context",
         user_id="alpha",
         user_name="alpha",
         chat_type="dm",
@@ -117,7 +117,7 @@ def test_scoped_secondary_profile_still_uses_profile_adapters(monkeypatch):
 
     # Fail-closed guard is untouched: no registry entry -> no default fallback.
     runner._profile_adapters = {"beta": {}}
-    assert runner._authorization_adapter(Platform("a2a"), profile="beta") is None
+    assert runner._authorization_adapter(Platform.DISCORD, profile="beta") is None
 
 
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
@@ -126,10 +126,10 @@ def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     secondary_adapter._dm_policy = "allowlist"
 
     assert runner._get_unauthorized_dm_behavior(
-        Platform.FEISHU,
+        Platform.MATRIX,
         profile="coder",
     ) == "ignore"
-    assert runner._get_unauthorized_dm_behavior(Platform.FEISHU) == "ignore"
+    assert runner._get_unauthorized_dm_behavior(Platform.MATRIX) == "ignore"
 
 
 def test_adapter_auth_check_stamps_secondary_profile(monkeypatch):
@@ -155,7 +155,7 @@ def test_adapter_auth_check_stamps_secondary_profile(monkeypatch):
 
     runner._is_user_authorized = fake_is_user_authorized
 
-    check = runner._make_adapter_auth_check(Platform.FEISHU, profile_name="coder")
+    check = runner._make_adapter_auth_check(Platform.MATRIX, profile_name="coder")
     assert check("some-user", "dm", "dm-chat") is True
     assert captured["profile"] == "coder"
 
@@ -172,7 +172,7 @@ def test_startup_guard_gateway_allow_all_reads_scope_not_environ(monkeypatch):
     _clear_auth_env(monkeypatch)
     cfg = GatewayConfig(multiplex_profiles=True)
     cfg.platforms = {
-        Platform.FEISHU: PlatformConfig(enabled=True, extra={"dm_policy": "open"}),
+        Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"dm_policy": "open"}),
     }
 
     previous_multiplex = secret_scope.is_multiplex_active()
@@ -186,7 +186,7 @@ def test_startup_guard_gateway_allow_all_reads_scope_not_environ(monkeypatch):
             secret_scope.reset_secret_scope(token)
         assert violation is not None, "default profile's env opt-in must not leak into the scoped secondary profile"
 
-        token = secret_scope.set_secret_scope({"GATEWAY_ALLOW_ALL_USERS": "true"})
+        token = secret_scope.set_secret_scope({"GATEWAY_ALLOW_ALL_USERS": "true", "WHATSAPP_ALLOW_ALL_USERS": "true"})
         try:
             violation = _own_policy_open_startup_violation(cfg)
         finally:
@@ -204,7 +204,7 @@ def test_secondary_open_policy_fails_startup_guard(monkeypatch):
 
     secondary_cfg = GatewayConfig(multiplex_profiles=True)
     secondary_cfg.platforms = {
-        Platform.FEISHU: PlatformConfig(
+        Platform.WHATSAPP: PlatformConfig(
             enabled=True,
             extra={"dm_policy": "open"},
         ),
@@ -212,7 +212,7 @@ def test_secondary_open_policy_fails_startup_guard(monkeypatch):
 
     violation = _own_policy_open_startup_violation(secondary_cfg)
     assert violation is not None
-    assert "feishu" in violation
+    assert "whatsapp" in violation
     assert "open policy" in violation
 
 

@@ -16,7 +16,7 @@ import agent.secret_scope as ss
 import gateway.platforms._shared as shared
 import hermes_cli.config as cli_config
 
-_ENV_ENABLEMENT_PLUGINS = ("buzz", "google_chat", "photon")
+_ENV_ENABLEMENT_PLUGINS = ("buzz",)
 
 
 @pytest.fixture(autouse=True)

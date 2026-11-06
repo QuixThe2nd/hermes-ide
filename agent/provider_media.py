@@ -2,7 +2,7 @@
 generation provider ABCs.
 
 Several backends return *ephemeral* delivery URLs that expire before a downstream
-consumer (Telegram ``send_photo``, browser fetch) can resolve them, so providers
+consumer (messaging ``send_photo``, browser fetch) can resolve them, so providers
 materialise the bytes locally at tool-completion time. Filenames are
 ``<prefix>_<YYYYMMDD_HHMMSS>_<uuid8>.<ext>``.
 """

@@ -7,8 +7,6 @@ import logging
 import os
 from functools import partial
 
-from agent.secret_scope import get_secret
-
 logger = logging.getLogger(__name__)
 
 from tools.send_message_targets import resolve_send_target
@@ -160,7 +158,7 @@ def _handle_react(args, remove=False):
         return tool_error("'target' is required when action='unreact'" if remove
                           else "Both 'target' and 'emoji' are required when action='react'")
 
-    # Platform-native ids (e.g. photon GUIDs) match no parser/directory entry; the adapter validates.
+    # Platform-native ids may match no parser/directory entry; the adapter validates.
     platform_name, chat_id, _thread_id, resolution_error = _resolve_tool_target(target, pass_unresolved_references=True)
     if resolution_error:
         return tool_error(resolution_error)
@@ -201,7 +199,7 @@ def _handle_send(args):
         return tool_error("Both 'target' and 'message' are required when action='send'")
     # Lone surrogates reach the outbound body via surrogateescape-decoded argv
     # (`hermes send` MESSAGE) and crash the UTF-8 marshal inside platform SDK
-    # request bodies (feishu/lark, #113799). Every send_message caller (model tool
+    # request bodies. Every send_message caller (model tool
     # call, `hermes send`, dashboard console) enters here, so scrub once before the
     # media extraction, the session mirror and the platform sender see the text.
     # Model output delivered by the gateway/cron is already scrubbed upstream
@@ -237,7 +235,7 @@ def _handle_send(args):
     # `_parse_target_ref` emits internal pseudo-ids (`user_name:ben`,
     # `user:U...`) that no provenance can ever contain, because provenances
     # record RESOLVED conversation ids. Authorizing above the resolver compared
-    # a handle against a set of `D...` ids and refused every Slack DM — a fix
+    # a handle against a set of `D...` ids and refused every DM — a fix
     # that caused the outage it was meant to prevent.
     # thread_id is part of the DESTINATION: on Discord the thread is the literal
     # REST target, so an attested parent must not vouch for an arbitrary thread.
@@ -278,7 +276,7 @@ def _platform_enum(platform_name):
 
 def _resolve_platform_config(platform_name, config):
     """``(platform, pconfig, registry_entry, error)``. Plugin platforms must be registered;
-    disabled/missing platforms error, except Weixin, which may be configured purely via .env."""
+    disabled/missing platforms error."""
     from gateway.config import Platform
     from gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
@@ -289,7 +287,7 @@ def _resolve_platform_config(platform_name, config):
         return None, None, None, err
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
+        pconfig = None
     if pconfig is None:
         return None, None, None, _not_configured_error(platform_name, platform, entry)
     return platform, pconfig, entry, None
@@ -375,18 +373,6 @@ def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
             user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None))
     except Exception:
         return False
-
-
-def _weixin_env_pconfig():
-    """Synthesize a Weixin PlatformConfig from .env secrets, or None."""
-    wx_token = get_secret("WEIXIN_TOKEN", "").strip()
-    wx_account = get_secret("WEIXIN_ACCOUNT_ID", "").strip()
-    if not (wx_token and wx_account):
-        return None
-    from gateway.config import PlatformConfig
-    return PlatformConfig(enabled=True, token=wx_token, extra={
-        "account_id": wx_account, "base_url": get_secret("WEIXIN_BASE_URL", "").strip(),
-        "cdn_base_url": get_secret("WEIXIN_CDN_BASE_URL", "").strip()})
 
 
 def _describe_media_for_mirror(media_files):
@@ -548,8 +534,7 @@ async def _send_chunks(chunks, send_one):
 
 
 def _platform_max_length(platform):
-    """Chunking limit: Signal's adapter constant (its raw JSON-RPC path bypasses the adapter's
-    chunking), the registry's ``max_message_length`` for plugins, else None (no chunking)."""
+    """Chunking limit: the registry's ``max_message_length`` for plugins, else None (no chunking)."""
     try:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform.value)
@@ -559,7 +544,7 @@ def _platform_max_length(platform):
 
 
 # Plugin platforms whose media (Discord: all) sends deliberately bypass the live adapter for the
-# registry ``standalone_sender_fn`` (Discord: forums/threads/multipart; Slack: files_upload_v2;
+# registry ``standalone_sender_fn`` (Discord: forums/threads/multipart;
 # WhatsApp: Baileys /send-media). platform -> (error label, run discover_plugins first,
 # caption-capable, media_files sentinel for non-final chunks, forward force_document)
 _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False),
@@ -599,9 +584,7 @@ def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
 # Native-media chunked routes for built-in platforms; media rides on the final chunk, non-final
 # chunks get the sentinel. platform -> (media required, sentinel, sender(platform, pconfig,
 # chat_id, chunk, media, thread_id, force_document)). Matrix: ALL sends use the native adapter
-# (E2EE text). Signal: attachments ride the JSON-RPC param. Yuanbao / WeCom: media needs the
-# running gateway. Slack text: live adapter (multi-workspace, ignored_channels gates) else the
-# plugin's standalone sender.
+# (E2EE text).
 _CHUNKED_ROUTES = {
     "matrix": (False, [], lambda p, pc, cid, chunk, media, tid, fd: _send_matrix_via_adapter(
         pc, cid, chunk, media_files=media, thread_id=tid)),
@@ -619,9 +602,7 @@ _MEDIA_PLATFORMS_NOTE = "discord, matrix, whatsapp"
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
                             force_document=False, mentions=None, args=None):
-    """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
-    Weixin first (its native helper must not be blocked by unrelated optional imports such as
-    lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
+    """Route to the platform sender, chunking long text with the adapters' splitter."""
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
@@ -694,7 +675,7 @@ SEND_MESSAGE_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["send", "list", "react", "unreact"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message on platforms that support it. 'unreact' retracts a previously-added reaction."
             },
             "target": {
                 "type": "string",

@@ -5,12 +5,8 @@ import re
 
 logger = logging.getLogger("tools.send_message_tool")
 
-_TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
-_NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE  # Discord snowflakes: numeric, same "<id>[:<thread>]" shape
-# Slack conversation IDs: C (public), G (private/group), D (DM); uppercase alnum, 9+ chars. User IDs
-# (U...) become ``user:U...`` and are opened as D... conversations first (posting straight to a U/W
-# id fails); ``@handle`` -> ``user_name:...`` resolves via users.list.
-# Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
+_NUMERIC_THREAD_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
+_NUMERIC_TOPIC_RE = _NUMERIC_THREAD_TARGET_RE
 # E.164 phone recipients ("+1555..."): the '+' fails the isdigit() rule and the channel directory
 # cannot resolve a raw number, so keep the '+' and treat it as explicit.
 _PHONE_PLATFORMS = frozenset({"whatsapp"})

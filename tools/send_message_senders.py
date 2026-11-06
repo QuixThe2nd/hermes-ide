@@ -15,11 +15,11 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
-_TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}  # sendAudio accepts only these; other audio -> sendVoice / document
+_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
 # Captionable on the media bubble; voice/audio notes excluded (a caption there reads as a separate label).
 _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip"}
-# Native caption limits (chars): Telegram caps photo/video at 1024; one conservative shared ceiling elsewhere.
-_TELEGRAM_CAPTION_LIMIT = 1024
+_CAPTION_LIMIT_NATIVE = 1024
+_TELEGRAM_CAPTION_LIMIT = _CAPTION_LIMIT_NATIVE
 _DEFAULT_CAPTION_LIMIT = 4096
 
 
@@ -27,8 +27,8 @@ def _media_caption_split(text, media_files, *, max_caption_len):
     """Single chokepoint deciding whether text rides on the media bubble as its caption:
     ``(caption, "")`` only for exactly one captionable file (not a voice/audio note) whose
     text fits ``max_caption_len``, else ``(None, text)`` — multi-file caption→file association
-    is ambiguous. Length is codepoints (never under-counts Telegram's UTF-16 units for BMP
-    text); the Telegram sender re-checks the *formatted* caption since escaping inflates it."""
+    is ambiguous. Length is codepoints for BMP surrogates where relevant; the sender may re-check
+    the *formatted* caption since escaping inflates it."""
     stripped = (text or "").strip()
     media = media_files or []
     if (not stripped or len(media) != 1 or len(stripped) > max_caption_len or media[0][1]
@@ -62,8 +62,8 @@ def _success(platform: str, chat_id, warnings=None, **fields) -> dict:
 
 _NO_DELIVERABLE = "No deliverable text or media remained after processing MEDIA tags"
 
-_TELEGRAM_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429", "service unavailable", "503",
-                               "gateway timeout", "504")
+_HTTP_TRANSIENT_MARKERS = ("bad gateway", "502", "too many requests", "429", "service unavailable", "503",
+                           "gateway timeout", "504")
 
 
 def _adapter_media_method(ext, voice, force_document=False):

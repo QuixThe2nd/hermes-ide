@@ -303,14 +303,6 @@ def test_send_message_routes_buzz_uuid_as_explicit_target() -> None:
     )
 
 
-def test_photon_e164_target_is_explicit() -> None:
-    chat_id, thread_id, is_explicit = _parse_target_ref("photon", "+15551234567")
-
-    assert chat_id == "+15551234567"
-    assert thread_id is None
-    assert is_explicit is True
-
-
 def test_e164_target_still_requires_phone_platform() -> None:
     assert _parse_target_ref("matrix", "+15551234567")[2] is False
 
@@ -516,27 +508,6 @@ def test_unresolved_builtin_target_still_errors_for_the_model_tool() -> None:
 
     assert chat_id is None
     assert error is not None
-
-
-def test_photon_group_guid_passes_through_when_requested() -> None:
-    """The reported regression case: a photon group GUID matches no parser
-    pattern (only DM GUIDs have an explicit rule) and no directory entry.
-    Photon registers as a parser-less plugin platform, so the pass-through
-    applies once platforms are prepared."""
-    from tools.send_message_tool import (
-        prepare_send_message_platforms,
-        resolve_send_target,
-    )
-
-    prepare_send_message_platforms()
-    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
-        chat_id, thread_id, error = resolve_send_target(
-            "photon", "iMessage;+;chat527148912345", pass_unresolved_references=True
-        )
-
-    assert error is None
-    assert chat_id == "iMessage;+;chat527148912345"
-    assert thread_id is None
 
 
 def test_parserless_plugin_target_passes_through_when_requested() -> None:

@@ -244,7 +244,7 @@ class SessionMessagesMixin:
         message_timestamp: float, *, keep_reasoning: bool) -> tuple:
         """Bind values for ``_INSERT_MESSAGE_SQL`` from one message dict (*tool_calls* already parsed;
         *keep_reasoning* False NULLs every reasoning column). ``platform_message_id`` falls back to
-        ``message_id`` (yuanbao's message-dict convention)."""
+        ``message_id`` when ``platform_message_id`` is absent."""
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None  # noqa: E731
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None  # noqa: E731
         encoded_content = self._encode_content(msg.get("content"))
@@ -1362,7 +1362,7 @@ class SessionMessagesMixin:
     def latest_conversation_boundary(self, session_key: str, source: str) -> Optional[int]:
         """Conversation boundaries (``_RESET_END_REASONS`` ends) this peer has crossed, or ``None`` if never
         reset. The peer is ``(session_key, source)``, never the key alone (an API caller may legally reuse a
-        Telegram row's key). Read from ``conversation_generations`` (advanced in each boundary's txn), not an
+        prior row key). Read from ``conversation_generations`` (advanced in each boundary's txn), not an
         aggregate over session rows: deletes/prunes would re-emit a retired pair. Rows are never GC'd
         (dropping one re-issues generation 1: the ABA this prevents). Wall-clock-free, so a backwards NTP
         correction cannot reorder it. DBs upgraded mid-conversation take their first generation from the
