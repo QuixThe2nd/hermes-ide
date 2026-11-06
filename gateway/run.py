@@ -6956,7 +6956,20 @@ class TurnRunner(_TurnRunnerCore):
             """Fold a repeat update into the last row, re-slicing oversized ones."""
             nonlocal _row_tail, _row_head_len, _row_slices
             if not progress_lines:
-                return base_msg
+                # Bubble was just reset (interim content landed) but the producer's
+                # dedup memory says this row repeats: seed the fresh bubble with the
+                # counted row instead of a plain copy (or a row the buffer dropped).
+                line = f"{base_msg} (×{count + 1})"
+                if _codebox_active():
+                    from gateway.display_config import chunk_oversized_progress_row
+
+                    slices = chunk_oversized_progress_row(
+                        line, _PROGRESS_TEXT_LIMIT, _progress_len_fn
+                    )
+                    progress_lines.extend(slices)
+                    return slices[-1]
+                progress_lines.append(line)
+                return line
             if _row_tail:
                 # The repeated row is already split across chunk messages.
                 # Slicing is prefix-stable, so the earlier chunks hold an
@@ -7141,8 +7154,12 @@ class TurnRunner(_TurnRunnerCore):
             progress_msg_id = None
             progress_lines = []
             _separate_pending_lines.clear()
-            ctx.last_progress_msg[0] = None
-            ctx.repeat_count[0] = 0
+            # Dedup memory (last_progress_msg/repeat_count) survives the reset:
+            # it tracks the PRODUCER's previous row, not the bubble.  Clearing
+            # it here made a retried identical tool call (interim content
+            # bubble between the two attempts) render as a second plain row
+            # instead of a (×2) counter; the native stream lane already keeps
+            # its memory across content bubbles.
 
         # Discord Claude delegation single-message rail (sibling-owned
         # combination): delivery itself stays on this loop's seams — the
@@ -7226,8 +7243,6 @@ class TurnRunner(_TurnRunnerCore):
                     progress_msg_id = None
                     progress_lines = []
                     _separate_pending_lines.clear()
-                    ctx.last_progress_msg[0] = None
-                    ctx.repeat_count[0] = 0
                     continue
                 elif _is_context_flush_queue_marker(raw):
                     # Context-card ordering gate: the turn's first visible
@@ -7422,8 +7437,6 @@ class TurnRunner(_TurnRunnerCore):
                                 progress_msg_id = None
                                 progress_lines = []
                                 _separate_pending_lines.clear()
-                                ctx.last_progress_msg[0] = None
-                                ctx.repeat_count[0] = 0
                             continue
                         elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
@@ -7444,8 +7457,6 @@ class TurnRunner(_TurnRunnerCore):
                             progress_msg_id = None
                             progress_lines = []
                             _separate_pending_lines.clear()
-                            ctx.last_progress_msg[0] = None
-                            ctx.repeat_count[0] = 0
                         else:
                             _absorb_row(raw)
                             if not can_edit:

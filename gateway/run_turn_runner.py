@@ -737,7 +737,11 @@ class TurnRunner(_TurnRunnerCore):
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
         st.progress_msg_id, st.progress_lines = None, []
         st._row_tail, st._row_head_len, st._row_slices = False, 0, 0
-        self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
+        # Producer-side dedup memory (last_progress_msg/repeat_count) survives the
+        # bubble reset: it tracks the previous row emitted, not the rendered bubble.
+        # Clearing it here let a retried tool call whose row is text-identical
+        # (describe mode re-renders the same phrase) re-render as a second plain
+        # row instead of collapsing into (×N).
 
     def _codebox_active(self, st) -> bool:
         return bool(self._ctx.progress_codebox) and st.can_edit
@@ -755,7 +759,16 @@ class TurnRunner(_TurnRunnerCore):
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
-                return base_msg
+                # Bubble was just reset (interim content landed) but the producer's
+                # dedup memory says this row repeats: seed the fresh bubble with the
+                # counted row instead of a plain copy (or a row the buffer dropped).
+                line = f"{base_msg} (×{count + 1})"
+                if self._codebox_active(st):
+                    slices = chunk_oversized_progress_row(line, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
+                    st.progress_lines.extend(slices)
+                    return slices[-1]
+                st.progress_lines.append(line)
+                return line
             if st._row_tail:
                 # The repeated row is already split across chunk messages. Slicing is
                 # prefix-stable, so earlier chunks hold an unchanged prefix — re-render
