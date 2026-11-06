@@ -12,9 +12,15 @@ import sqlite3
 
 from hermes_state import SessionDB
 
+from plugins.mission_control.delegates import (
+    WAITING_FIRST_RESPONSE,
+    activity_state_label,
+    summarize_arguments,
+)
 from plugins.mission_control.redaction import (
     clean_preview,
     clamp_label,
+    parse_tool_calls,
 )
 
 # Last message per session: the newest messages row with real text —
@@ -548,3 +554,111 @@ def session_lease_live(con, session_id, now):
     except sqlite3.Error:
         return False
     return False
+
+
+def compute_activity(con, session_id, now, busy_job=False, busy_since=None):
+    """One bounded activity snapshot for a session, never raising.
+
+    Walks the newest ACTIVITY_MAX_ROWS active rows chronologically:
+    every assistant tool_calls carrier after the last user message is
+    the current turn, and each of its calls stays pending until a tool
+    row echoes one of its id candidates back. The turn is scoped by two
+    cuts, each keeping interrupted older turns from looming as
+    "running" forever: rows after the last user message, and — for a
+    composer turn this server accepted at busy_since — rows newer than
+    that acceptance. The second cut is what makes a newly accepted
+    turn truthfully pre-first-output even before hermes has persisted
+    the turn's own user row: a historical answer or carrier predating
+    the acceptance can neither satisfy the wait nor pose as the turn's
+    pending work. Tool results — wherever they sit in the window —
+    resolve their carriers. With no pending call but a live turn (valid
+    lease or a composer job in this server), the weakest truthful
+    state is derived from the turn's newest row instead. The snapshot
+    is recomputed on its own, independent of the feed cursor.
+    """
+    act = {"active": bool(busy_job), "lease": False, "state": "",
+           "pending": [], "pending_count": 0, "names": []}
+    try:
+        rows = con.execute(
+            ACTIVITY_SQL, (session_id, ACTIVITY_MAX_ROWS)).fetchall()
+    except sqlite3.Error:
+        rows = []
+    rows.reverse()  # fetched newest-first; walk chronologically
+    lease = session_lease_live(con, session_id, now)
+    act["lease"] = lease
+    act["active"] = bool(busy_job) or lease
+
+    # The accepted turn's own rows. Without a floor (a lease-driven
+    # turn, or a plain snapshot) every row is in scope; with one, only
+    # rows strictly newer than the acceptance — the turn's user row,
+    # once hermes persists it, is newer too, so it re-tightens the
+    # scope exactly as the client-side cursor does.
+    turn = rows if busy_since is None else \
+        [r for r in rows if (r[7] or 0) > busy_since]
+
+    result_ids = set()
+    last_user = -1
+    for row in rows:
+        if row[0] == "tool":
+            call_id = row[2]
+            if isinstance(call_id, str) and call_id:
+                result_ids.add(call_id)
+    for i, row in enumerate(turn):
+        if row[0] == "user":
+            last_user = i
+
+    pending, seen = [], set()
+    for row in turn[last_user + 1:]:
+        if row[0] != "assistant":
+            continue
+        tool_calls = row[5]
+        if not isinstance(tool_calls, str) or not tool_calls:
+            continue
+        for call in parse_tool_calls(tool_calls):
+            key = call["ids"][0] if call["ids"] else call["name"]
+            if not key or key in seen:
+                continue
+            if any(cid in result_ids for cid in call["ids"]):
+                continue  # its result row exists — completed history
+            seen.add(key)
+            pending.append({
+                "name": call["name"] or "tool",
+                "args": summarize_arguments(call["args"]),
+                "state": activity_state_label(call["name"],
+                                              call["args"]),
+            })
+
+    if pending:
+        act["pending"] = pending
+        act["pending_count"] = len(pending)
+        act["names"] = [p["name"] for p in pending]
+        act["state"] = pending[-1]["state"]
+        return act
+
+    if act["active"]:
+        newest = turn[-1] if turn else None
+        if newest is None or newest[0] == "user":
+            # Pre-first-output of the live turn: no assistant or tool
+            # row has landed after the turn's floor — its own user row
+            # when one exists, else the acceptance a composer job
+            # recorded. A historical answer sits before that floor and
+            # can never satisfy the new turn — the same cut already
+            # scoped pending calls above.
+            act["state"] = WAITING_FIRST_RESPONSE
+        elif newest[0] == "tool":
+            act["state"] = "Thinking after %s" % (newest[1] or "tool")
+        elif newest[0] == "assistant":
+            tool_calls = newest[5] if isinstance(newest[5], str) else ""
+            calls = parse_tool_calls(tool_calls) if tool_calls else []
+            if tool_calls and calls and all(
+                    any(cid in result_ids for cid in c["ids"])
+                    for c in calls):
+                act["state"] = "Processing tool results"
+            else:
+                act["state"] = "Working"
+        else:
+            act["state"] = "Working"
+    return act
+
+
+WINDOW_SECONDS = 24 * 3600
