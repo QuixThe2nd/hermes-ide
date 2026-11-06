@@ -15,13 +15,11 @@ from gateway.platforms import helpers
 
 
 def _adapter_classes():
-    from gateway.platforms.qqbot.adapter import QQAdapter
-    from gateway.platforms.signal import SignalAdapter
     from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
     from plugins.platforms.buzz.adapter import BuzzAdapter
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from plugins.platforms.discord.adapter import DiscordAdapter
 
-    return [QQAdapter, SignalAdapter, WhatsAppCloudAdapter, BuzzAdapter, PhotonAdapter]
+    return [WhatsAppCloudAdapter, BuzzAdapter, DiscordAdapter]
 
 
 def test_no_adapter_redeclares_the_shared_utilities():
@@ -66,21 +64,3 @@ def test_bounded_put_refreshes_and_caps():
     assert list(store) == ["k2", "k3", "k4"]
     helpers.bounded_put(store, "k2", "again", cap=3)  # refresh moves it to the newest slot
     assert list(store) == ["k3", "k4", "k2"]
-
-
-def test_dedup_sites_keep_their_own_window(monkeypatch):
-    from gateway.platforms.qqbot import constants as qq
-    from plugins.platforms.photon import adapter as photon
-
-    windows = {
-        "qqbot": (qq.DEDUP_MAX_SIZE, qq.DEDUP_WINDOW_SECONDS),
-        "photon": (photon._DEDUP_MAX_SIZE, photon._DEDUP_WINDOW_SECONDS),
-    }
-    # The helper honours ttl exactly: a stale id is admitted again, a fresh one is not.
-    now = [1000.0]
-    monkeypatch.setattr(helpers.time, "time", lambda: now[0])
-    for name, (cap, ttl) in windows.items():
-        d = helpers.MessageDeduplicator(max_size=cap, ttl_seconds=ttl)
-        assert d.is_duplicate("m") is False and d.is_duplicate("m") is True, name
-        now[0] += ttl if ttl != float("inf") else 10 ** 9
-        assert d.is_duplicate("m") is (ttl == float("inf")), name

@@ -9,30 +9,14 @@ from pathlib import Path
 
 logger = logging.getLogger("hermes_cli.setup")
 
-_TELEGRAM_BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
 _RULE = "━" * 50
 
-
-def _is_valid_telegram_bot_token(token: str) -> bool:
-    return bool(_TELEGRAM_BOT_TOKEN_RE.match(token))
 
 
 def _profile_name_from_hermes_home(hermes_home) -> str | None:
     """Return the active profile name when HERMES_HOME is a profile dir."""
     return hermes_home.name if hermes_home.parent.name == "profiles" else None
 
-
-def _setup_telegram_auto_result():
-    """Attempt automatic Telegram bot creation via managed QR onboarding."""
-    from hermes_cli.setup import get_hermes_home
-    try:
-        from hermes_cli.telegram_managed_bot import auto_setup_telegram_bot_result
-    except ImportError:
-        return None
-    profile_name: str | None = None
-    with contextlib.suppress(Exception):
-        profile_name = _profile_name_from_hermes_home(Path(get_hermes_home()))
-    return auto_setup_telegram_bot_result(profile_name=profile_name)
 
 
 def declines_reconfigure(label: str, question: str, *env_vars: str) -> bool:
@@ -95,83 +79,9 @@ def _save_port(env_var: str, value: str, default: str) -> None:
         print_warning(f"Invalid port number, using default {default}")
 
 
-def _prompt_telegram_bot_token() -> str | None:
-    from hermes_cli.setup import print_error, print_info, prompt
-    print_info("Create a bot via @BotFather on Telegram")
-    while True:
-        token = prompt("Telegram bot token", password=True)
-        if not token or _is_valid_telegram_bot_token(token):
-            return token or None
-        print_error("Invalid token format. Expected: <numeric_id>:<alphanumeric_hash> "
-                    "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)")
 
 
-def _telegram_allowlist_nudge() -> None:
-    """Existing config kept as-is: warn when it has no user allowlist."""
-    from hermes_cli.setup import get_env_value, print_info, prompt, prompt_yes_no
-    if get_env_value("TELEGRAM_ALLOWED_USERS"):
-        return
-    print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
-    if prompt_yes_no("Add allowed users now?", True):
-        print_info("   To find your Telegram user ID: message @userinfobot")
-        allowed_users = prompt("Allowed user IDs (comma-separated)")
-        if allowed_users:
-            _save_allowlist("TELEGRAM_ALLOWED_USERS", allowed_users, "Telegram allowlist configured")
 
-
-def _obtain_telegram_token():
-    """Return (token, setup_result); auto flow first when chosen, else manual paste."""
-    from hermes_cli.setup import _info, print_error, prompt
-    _info("How would you like to create your Telegram bot?", None,
-          "  [1] Automatic (recommended)",
-          "      Scan a QR code → confirm in Telegram → done.",
-          "      No token copy-paste needed.", None,
-          "  [2] Manual",
-          "      Create a bot via @BotFather yourself and paste the token.", None)
-    token = setup_result = None
-    if prompt("Choice [1/2]", default="1").strip() == "1":
-        setup_result = _setup_telegram_auto_result()
-        if setup_result:
-            token = setup_result.token
-            if not _is_valid_telegram_bot_token(token):
-                print_error("Automatic setup returned an invalid Telegram bot token.")
-                token = setup_result = None
-        if not token:
-            _info(None, "Falling back to manual setup...", None)
-    if not token:
-        token = _prompt_telegram_bot_token()
-    return token, setup_result
-
-
-def _setup_telegram():
-    """Configure Telegram bot credentials and allowlist."""
-    from hermes_cli.setup import _info, print_header, print_success, prompt, prompt_yes_no, save_env_value
-    print_header("Telegram")
-    if declines_reconfigure("Telegram", "Reconfigure Telegram?", "TELEGRAM_BOT_TOKEN"):
-        _telegram_allowlist_nudge()
-        return
-    token, setup_result = _obtain_telegram_token()
-    if not token:
-        return
-    save_env_value("TELEGRAM_BOT_TOKEN", token)
-    print_success("Telegram token saved")
-    _info(None, "🔒 Security: Restrict who can use your bot",
-          "   To find your Telegram user ID:",
-          "   1. Message @userinfobot on Telegram",
-          "   2. It will reply with your numeric ID (e.g., 123456789)", None)
-    allowed_users = None
-    detected_id = str(getattr(setup_result, "owner_user_id", None) or "")
-    if detected_id:
-        print_success(f"Detected your Telegram user ID: {detected_id}")
-        if prompt_yes_no("Allow this Telegram account to use the bot?", True):
-            extra = prompt("Additional allowed user IDs (comma-separated, optional)")
-            allowed_users = ",".join(dict.fromkeys([detected_id, *filter(None, extra.replace(" ", "").split(","))]))
-    allowed_users = _prompt_allowlist(
-        "TELEGRAM_ALLOWED_USERS", "Allowed user IDs (comma-separated, leave empty for open access)",
-        "Telegram allowlist configured - only listed users can use the bot",
-        "⚠️  No allowlist set - anyone who finds your bot can use it!", preset=allowed_users)
-    _info(None, "📬 Notifications: run /setnotify in your Telegram chat to designate",
-          "   where Hermes delivers cron job results and notifications.")
 
 
 # _setup_slack and _write_slack_manifest_and_instruct moved to the slack plugin:

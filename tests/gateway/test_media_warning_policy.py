@@ -3,10 +3,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from plugins.platforms.discord.adapter import DiscordAdapter
-from plugins.platforms.slack.adapter import SlackAdapter
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
 

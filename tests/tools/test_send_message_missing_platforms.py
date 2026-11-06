@@ -1,4 +1,4 @@
-"""Tests for _send_matrix, _send_homeassistant."""
+"""Tests for _send_matrix."""
 
 import asyncio
 import os
@@ -18,21 +18,6 @@ async def _send_matrix(token, extra, chat_id, message):
     plugin's ``_standalone_send(pconfig, chat_id, message)``."""
     pconfig = SimpleNamespace(token=token, extra=extra or {})
     return await _matrix_standalone_send(pconfig, chat_id, message)
-
-# ``_send_homeassistant`` moved into the homeassistant plugin
-# (``plugins/platforms/homeassistant/adapter.py::_standalone_send``).
-from plugins.platforms.homeassistant.adapter import (
-    _standalone_send as _homeassistant_standalone_send,
-)
-
-
-async def _send_homeassistant(token, extra, chat_id, message):
-    """Pre-migration ``(token, extra, chat_id, message)`` shim around the
-    plugin's ``_standalone_send(pconfig, chat_id, message)``.
-    """
-    pconfig = SimpleNamespace(token=token, extra=extra or {})
-    return await _homeassistant_standalone_send(pconfig, chat_id, message)
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -124,39 +109,3 @@ class TestSendMatrix:
 
         assert len(txn_ids) == 2
         assert txn_ids[0] != txn_ids[1]
-
-
-# ---------------------------------------------------------------------------
-# _send_homeassistant
-# ---------------------------------------------------------------------------
-
-
-class TestSendHomeAssistant:
-    def test_success(self):
-        resp = _make_aiohttp_resp(200)
-        session_ctx, session = _make_aiohttp_session(resp)
-
-        with patch("aiohttp.ClientSession", return_value=session_ctx), \
-             patch.dict(os.environ, {"HASS_URL": "", "HASS_TOKEN": ""}, clear=False):
-            extra = {"url": "https://hass.example.com"}
-            result = asyncio.run(_send_homeassistant("hass-tok", extra, "mobile_app_phone", "alert!"))
-
-        assert result == {"success": True, "platform": "homeassistant", "chat_id": "mobile_app_phone"}
-        session.post.assert_called_once()
-        call_kwargs = session.post.call_args
-        assert call_kwargs[0][0] == "https://hass.example.com/api/services/notify/notify"
-        assert call_kwargs[1]["headers"]["Authorization"] == "Bearer hass-tok"
-        assert call_kwargs[1]["json"] == {"message": "alert!", "target": "mobile_app_phone"}
-
-
-    def test_env_var_fallback(self):
-        resp = _make_aiohttp_resp(200)
-        session_ctx, session = _make_aiohttp_session(resp)
-
-        with patch("aiohttp.ClientSession", return_value=session_ctx), \
-             patch.dict(os.environ, {"HASS_URL": "https://hass.env.com", "HASS_TOKEN": "env-tok"}, clear=False):
-            result = asyncio.run(_send_homeassistant("", {}, "notify_target", "hi"))
-
-        assert result["success"] is True
-        url = session.post.call_args[0][0]
-        assert "hass.env.com" in url

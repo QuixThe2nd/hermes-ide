@@ -9,10 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
 from plugins.platforms.buzz.adapter import BuzzAdapter
 from plugins.platforms.discord.adapter import DiscordAdapter
-from plugins.platforms.google_chat.adapter import GoogleChatAdapter
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
 
@@ -25,7 +23,7 @@ def policy(request, tmp_path, monkeypatch):
         if setting == "override":
             display["platforms"] = {
                 name: {"suppress_warning_notifications": True}
-                for name in ("matrix", "google_chat", "discord", "buzz", "feishu", "telegram")
+                for name in ("matrix", "discord", "buzz")
             }
         (tmp_path / "config.yaml").write_text(json.dumps({"display": display}))
     return setting is True or setting == "override"
@@ -55,36 +53,6 @@ async def test_matrix_download_diagnostic_not_caption_is_suppressed(policy, capt
         assert [f["body"] for f in frames] == [f"{caption}\n{notice}" if caption else notice]
         assert result.success and result.message_id == "$sent"
     assert "failed to download image" in caplog.text
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("caption", [None, "Warning: requested document caption"])
-async def test_google_chat_oauth_fallback_only_hides_diagnostic(policy, caption, tmp_path):
-    adapter = GoogleChatAdapter(PlatformConfig())
-    frames = []
-
-    async def record(chat, body):
-        frames.append(body)
-        return SendResult(success=True, message_id="spaces/test/messages/sent")
-
-    adapter._create_message = record
-    adapter._acquire_user_chat_api = AsyncMock(return_value=(None, None))
-    path = tmp_path / "report.pdf"
-    path.write_bytes(b"fixture")
-    result = await adapter.send_document("spaces/test", str(path), caption=caption, metadata={"thread_id": "spaces/test/threads/thread"})
-    assert not result.success and "OAuth" in result.error
-    if policy:
-        assert [f["text"] for f in frames] == ([caption] if caption else [])
-    else:
-        assert len(frames) == 1 and "/setup-files" in frames[0]["text"]
-        assert str(path) in frames[0]["text"]
-        if caption:
-            assert frames[0]["text"].startswith(caption + "\n")
-    if frames:
-        assert frames[0]["thread"]["name"] == "spaces/test/threads/thread"
-    # An explicit control request must still use the same transport.
-    await adapter.send_clarify("spaces/test", "Continue?", ["yes", "no"], "clarify", "session")
-    assert "cardsV2" in frames[-1]
 
 
 @pytest.mark.asyncio
@@ -173,81 +141,3 @@ async def test_discord_truncation_warning_covers_send_and_final_edit(policy, lan
     assert frames[0].startswith("Warning: requested result.")
     assert any("Response truncated" in frame for frame in frames) is (not policy)
     assert len(frames) == (2 if policy else 3)
-
-
-@pytest.mark.asyncio
-async def test_google_chat_revoked_oauth_fallback_uses_same_policy(policy, tmp_path, monkeypatch, caplog):
-    from plugins.platforms.google_chat import adapter as google
-
-    class Revoked(Exception):
-        resp = SimpleNamespace(status=403)
-
-    def fail(**kwargs):
-        raise Revoked("token revoked")
-
-    adapter = GoogleChatAdapter(PlatformConfig())
-    adapter._acquire_user_chat_api = AsyncMock(return_value=(SimpleNamespace(media=lambda: SimpleNamespace(upload=fail)), "owner"))
-    adapter._user_creds_by_email["owner"] = object()
-    adapter._user_chat_api_by_email["owner"] = object()
-    monkeypatch.setattr(google, "HttpError", Revoked)
-    monkeypatch.setattr(google, "MediaFileUpload", lambda *args, **kwargs: object())
-    frames = []
-
-    async def record(chat_id, body):
-        frames.append(body)
-        return SendResult(success=True, message_id="sent")
-
-    adapter._create_message = record
-    path = tmp_path / "file.pdf"
-    path.write_bytes(b"fixture")
-    result = await adapter.send_document("chat", str(path), caption="requested caption")
-    assert not result.success
-    assert "owner" not in adapter._user_creds_by_email
-    assert "owner" not in adapter._user_chat_api_by_email
-    assert "media.upload auth failure" in caplog.text
-    assert frames[0]["text"] == "requested caption" if policy else "/setup-files" in frames[0]["text"]
-
-
-@pytest.mark.asyncio
-async def test_feishu_downgrade_keeps_attachment_and_caption(policy, tmp_path):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
-
-    adapter = FeishuAdapter(PlatformConfig())
-    frames = []
-    path = tmp_path / "animation.gif"
-    path.write_bytes(b"fixture")
-    adapter._download_remote_document = AsyncMock(return_value=(str(path), path.name))
-
-    def upload(request):
-        return SimpleNamespace(success=lambda: True, code=0, data=SimpleNamespace(file_key="file-key"))
-
-    async def send_raw(**kwargs):
-        frames.append(kwargs)
-        return SimpleNamespace(success=lambda: True, code=0, data=SimpleNamespace(message_id="sent"))
-
-    adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(file=SimpleNamespace(create=upload))))
-    adapter._send_raw_message = send_raw
-    result = await adapter.send_animation("chat", "https://example.invalid/animation.gif", caption="Warning: requested caption")
-    assert result.success
-    assert "file-key" in frames[0]["payload"]
-    assert "Warning: requested caption" in frames[0]["payload"]
-    assert ("GIF downgraded to file" in frames[0]["payload"]) is (not policy)
-
-
-@pytest.mark.asyncio
-async def test_telegram_cache_warning_does_not_hide_inbound_context(policy):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
-
-    adapter = TelegramAdapter(PlatformConfig())
-    frames = []
-
-    async def reply_text(text):
-        frames.append(text)
-
-    from gateway.platforms.event import MessageEvent
-    event = MessageEvent(text="Requested content", source=adapter.build_source(chat_id="42", user_id="42"))
-    await adapter._surface_media_cache_failure(SimpleNamespace(reply_text=reply_text), event, "photo", RuntimeError("fixture"))
-    assert bool(frames) is (not policy)
-    assert event.text.startswith("Requested content")
-    assert "could not be downloaded" in event.text
-    assert ("asked to retry" in event.text) is (not policy)

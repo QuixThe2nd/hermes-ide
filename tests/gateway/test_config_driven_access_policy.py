@@ -1,6 +1,6 @@
 """Tests for config-driven platform access policies at the gateway layer.
 
-Background (#34515): Weixin, Yuanbao, QQBot, and WhatsApp expose a
+Background (#34515): WhatsApp exposes a
 documented config-driven access surface (``dm_policy`` / ``group_policy`` /
 ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra``) and enforce
 it at intake —
@@ -36,26 +36,15 @@ from gateway.session import SessionSource
 
 # Platforms whose adapters own their access policy at intake.
 _OWN_POLICY_PLATFORMS = [
-    Platform.WEIXIN,
-    Platform.YUANBAO,
-    Platform.QQBOT,
     Platform.WHATSAPP,
 ]
 
 
 def _clear_auth_env(monkeypatch) -> None:
     for key in (
-        "WEIXIN_ALLOWED_USERS",
-        "YUANBAO_ALLOWED_USERS",
-        "QQ_ALLOWED_USERS",
-        "QQ_GROUP_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
-        "TELEGRAM_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
-        "WEIXIN_ALLOW_ALL_USERS",
-        "YUANBAO_ALLOW_ALL_USERS",
-        "QQ_ALLOW_ALL_USERS",
         "WHATSAPP_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -105,9 +94,6 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
 @pytest.mark.parametrize(
     "module_path, class_name",
     [
-        ("gateway.platforms.weixin", "WeixinAdapter"),
-        ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
-        ("gateway.platforms.qqbot.adapter", "QQAdapter"),
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
     ],
 )
@@ -239,8 +225,6 @@ def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, pla
     "module_path, class_name, dm_helper",
     [
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter", "_is_dm_allowed"),
-        ("gateway.platforms.weixin", "WeixinAdapter", "_is_dm_allowed"),
-        ("gateway.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
     ],
 )
 def test_pairing_dm_policy_strict_intake_auth_denies_unknown(
@@ -258,27 +242,11 @@ def test_pairing_dm_policy_strict_intake_auth_denies_unknown(
     assert getattr(adapter, dm_helper)("unknown-user") is False
 
 
-@pytest.mark.parametrize("blank_sender", ["", "   ", None])
-def test_yuanbao_pairing_dm_intake_denies_blank_principal(monkeypatch, blank_sender):
-    """Yuanbao pairing intake must not forward senderless C2C callbacks."""
-    _clear_auth_env(monkeypatch)
-    from gateway.platforms.yuanbao import AccessPolicy
-
-    policy = AccessPolicy(
-        dm_policy="pairing",
-        dm_allow_from=[],
-        group_policy="pairing",
-        group_allow_from=[],
-    )
-    assert policy.is_dm_intake_allowed(blank_sender) is False
-    assert policy.is_dm_intake_allowed("user-1") is True
-
-
 # ---------------------------------------------------------------------------
 # Layer 2b: `dm_policy: pairing` is NOT blanket-trusted
 # ---------------------------------------------------------------------------
 #
-# Regression: Weixin documents ``dm_policy: pairing`` and declare
+# Regression: Weixin documented ``dm_policy: pairing`` and declared
 # ``enforces_own_access_policy=True``, but their intake helper only special-cases
 # ``disabled`` / ``allowlist`` — ``pairing`` falls through and forwards the DM so
 # the gateway can run its pairing handshake. With no env allowlist, the
@@ -304,20 +272,20 @@ def test_unauthorized_dm_behavior_follows_config_dm_policy(monkeypatch, dm_polic
     """A restrictive dm_policy drops unauthorized DMs; pairing opts back in."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
-        platforms={Platform.WEIXIN: PlatformConfig(enabled=True, extra={"dm_policy": dm_policy})}
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"dm_policy": dm_policy})}
     )
-    runner, _adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config, enforces=True)
 
-    assert runner._get_unauthorized_dm_behavior(Platform.WEIXIN) == expected
+    assert runner._get_unauthorized_dm_behavior(Platform.WHATSAPP) == expected
 
 
 def test_unauthorized_dm_behavior_open_policy_keeps_default(monkeypatch):
     """``dm_policy: open`` is not restrictive → falls through to the default."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
-        platforms={Platform.WEIXIN: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
     )
-    runner, _adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config, enforces=True)
 
     # No allowlist + no restrictive policy → open-gateway pairing default.
-    assert runner._get_unauthorized_dm_behavior(Platform.WEIXIN) == "pair"
+    assert runner._get_unauthorized_dm_behavior(Platform.WHATSAPP) == "pair"

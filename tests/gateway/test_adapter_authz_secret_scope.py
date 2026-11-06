@@ -3,7 +3,7 @@ secret scope (#77548 cluster; #72348 / #86905 precedent).
 
 Under ``gateway.multiplex_profiles`` ``os.environ`` holds the DEFAULT profile's values. A raw
 ``os.getenv`` in an adapter's own gate let the default's ``GATEWAY_ALLOW_ALL_USERS=true`` open every
-secondary email/QQ/WhatsApp/Matrix/Teams/Slack/LINE/DingTalk bot, and the default's allowlist decide
+secondary WhatsApp/Matrix bot, and the default's allowlist decide
 who may approve on a secondary bot. Two invariants per adapter: the default env never answers a
 scoped gate; the scope's own opt-in/allowlist does.
 """
@@ -19,8 +19,7 @@ from gateway.config import PlatformConfig
 _DEFAULT_ENV = {
     "GATEWAY_ALLOW_ALL_USERS": "true", "GATEWAY_ALLOWED_USERS": "default-admin",
     "MATRIX_ALLOWED_USERS": "@default-admin:example.org", "MATRIX_IGNORE_USER_PATTERNS": r"^@spam:.*",
-    "WHATSAPP_ALLOWED_USERS": "+15550001111", "SLACK_ALLOW_BOTS": "all", "SLACK_API_HUMAN_USERS": "U0DEFAULT",
-}
+    "WHATSAPP_ALLOWED_USERS": "+15550001111", }
 
 
 @pytest.fixture
@@ -55,25 +54,8 @@ def _whatsapp():
     return host
 
 
-def _slack():
-    from plugins.platforms.slack.adapter import SlackAdapter
-
-    adapter = SlackAdapter.__new__(SlackAdapter)
-    adapter.config = PlatformConfig(enabled=True, extra={})
-    return adapter
-
-
 # (label, opt-in the SECONDARY scope grants, gate(scope) -> observed value, closed value, open value)
 _GATES = [
-    ("email.allow_all", {"GATEWAY_ALLOW_ALL_USERS": "true"},
-     lambda: __import__("plugins.platforms.email.adapter", fromlist=["EmailAdapter"]).EmailAdapter._allow_all_senders(),
-     False, True),
-    ("email.allowlist", {"GATEWAY_ALLOWED_USERS": "bot2-admin"},
-     lambda: __import__("plugins.platforms.email.adapter", fromlist=["EmailAdapter"]).EmailAdapter._allowlist_in_effect(),
-     False, True),
-    ("qqbot.open_dm", {"QQ_ALLOW_ALL_USERS": "true"},
-     lambda: __import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(object.__new__(__import__("gateway.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter)),
-     False, True),
     ("whatsapp.open_dm", {"GATEWAY_ALLOW_ALL_USERS": "true"},
      lambda: __import__("gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._open_dm_opted_in(_whatsapp()),
      False, True),
@@ -86,9 +68,6 @@ _GATES = [
     ("matrix.ignored_patterns", {"MATRIX_IGNORE_USER_PATTERNS": r"^@bot2-spam:.*"},
      lambda: [p.pattern for p in _matrix()._ignored_user_patterns],
      [], [r"^@bot2-spam:.*"]),
-    ("slack.allow_bots", {"SLACK_ALLOW_BOTS": "mentions"}, lambda: _slack()._slack_allow_bots(), "none", "mentions"),
-    ("slack.api_human_users", {"SLACK_API_HUMAN_USERS": "U0BOT2"},
-     lambda: set(_slack()._slack_api_human_users()), set(), {"U0BOT2"}),
 ]
 
 

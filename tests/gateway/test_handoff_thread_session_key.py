@@ -16,9 +16,6 @@ session_key and spawned a fresh session instead of continuing the handed-off
 one (observed: a stray auto-titled session + a session_search fallback because
 the new session had no prior context).
 
-The fix is Discord-specific: Slack and Telegram adapters key organic thread
-messages with ``chat_id = parent_channel``, so the parent channel is correct
-for those platforms and the guard must NOT apply to them.
 """
 
 import asyncio
@@ -121,54 +118,6 @@ def _handoff_destination(platform: Platform, channel_id: str, thread_id: str, sc
         dest = asyncio.run(runner._handoff_resolve_destination(
             {"id": "cli-session", "title": "work", "handoff_platform": platform.value}, profile_name=None))
     return dest, runner._handoff_session_key(dest, profile_name=None)
-
-
-def _slack_handoff_destination(channel_id: str, thread_ts: str, team_id: str):
-    return _handoff_destination(Platform.SLACK, channel_id, thread_ts, team_id, MagicMock())
-
-
-def _organic_slack_reply_key(channel_id: str, thread_ts: str, team_id: str, chat_type: str) -> str:
-    """Key the Slack adapter builds for a thread reply (``_build_message_event``): parent channel
-    as chat_id, ``dm``/``group`` from the channel type, workspace id as scope_id."""
-    return build_session_key(SessionSource(
-        platform=Platform.SLACK, chat_id=channel_id, chat_type=chat_type, user_id="U123456",
-        thread_id=thread_ts, scope_id=team_id), thread_sessions_per_user=False)
-
-
-def test_slack_dm_handoff_key_matches_the_thread_reply_key():
-    """/handoff into a Slack DM must bind the key the next in-thread reply resolves to, or a
-    gateway restart forks the thread onto a fresh empty session (#111896)."""
-    dest, handoff = _slack_handoff_destination("D0C1HFBMQAX", "1789474088.089709", "T0C2HL96FH6")
-    assert handoff == _organic_slack_reply_key("D0C1HFBMQAX", "1789474088.089709", "T0C2HL96FH6", "dm")
-    assert dest.source.chat_id == "D0C1HFBMQAX"
-
-
-def test_slack_channel_handoff_key_matches_the_thread_reply_key():
-    """Channel handoffs key on the parent channel (not the thread ts) with the ``group`` layout the
-    adapter uses for channel replies (#111896)."""
-    dest, handoff = _slack_handoff_destination("C0CHANNEL01", "1789474088.089709", "T0C2HL96FH6")
-    assert handoff == _organic_slack_reply_key("C0CHANNEL01", "1789474088.089709", "T0C2HL96FH6", "group")
-    assert dest.source.chat_id == "C0CHANNEL01"
-
-def test_slack_handoff_without_stored_scope_uses_the_sole_workspace_on_a_cold_channel_map():
-    """An env/legacy home has no scope_id and the adapter's channel→team map is empty right after
-    boot; a single authenticated workspace still identifies the team the reply key will carry."""
-    from plugins.platforms.slack.adapter import SlackAdapter
-
-    adapter = SlackAdapter.__new__(SlackAdapter)
-    adapter._channel_team, adapter._channel_teams, adapter._team_clients = {}, {}, {"T0C2HL96FH6": object()}
-    _dest, handoff = _handoff_destination(Platform.SLACK, "D0C1HFBMQAX", "1789474088.089709", None, adapter)
-    assert handoff == _organic_slack_reply_key("D0C1HFBMQAX", "1789474088.089709", "T0C2HL96FH6", "dm")
-
-
-def test_telegram_forum_handoff_key_matches_the_topic_reply_key():
-    """The Telegram adapter keys forum-topic replies ``group:<chat>:<topic>``; the handoff must
-    bind the same slot, not ``thread``."""
-    _dest, handoff = _handoff_destination(Platform.TELEGRAM, "-1001234567", "77", None, SimpleNamespace())
-    assert handoff == build_session_key(SessionSource(
-        platform=Platform.TELEGRAM, chat_id="-1001234567", chat_type="group", user_id="42",
-        thread_id="77"), thread_sessions_per_user=False)
-    assert handoff == "agent:main:telegram:group:-1001234567:77"
 
 
 def _matrix_adapter(room_id: str, *, is_dm: bool, monkeypatch):

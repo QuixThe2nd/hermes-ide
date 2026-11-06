@@ -9,10 +9,6 @@ CONNECTOR's constructed REST payloads against them — so cross-repo renderer
 drift breaks a test instead of a user's formatting.
 
 Oracles (all imported, never reimplemented):
-  telegram  plugins.platforms.telegram.adapter.TelegramAdapter.format_message
-            (standard markdown → Telegram MarkdownV2)
-  slack     plugins.platforms.slack.adapter.SlackAdapter.format_message
-            (standard markdown → Slack mrkdwn)
   whatsapp  gateway.platforms.whatsapp_common.WhatsAppBehaviorMixin
             .format_message (standard markdown → WhatsApp formatting)
   discord   plugins.platforms.discord.adapter.DiscordAdapter.format_message
@@ -20,10 +16,7 @@ Oracles (all imported, never reimplemented):
 
 Expect semantics (consumed by the gg runner):
   parity    connector render must BYTE-EQUAL native_output
-            (Slack / WhatsApp — same-dialect ports; most Discord).
-  semantic  connector renders a DIFFERENT representation on purpose
-            (Telegram: connector sends HTML, native sends MarkdownV2);
-            the runner asserts plain-text content equivalence instead.
+            (WhatsApp — same-dialect port; most Discord).
   divergent documented no-parity (e.g. Discord tables: native converts to
             bullets, connector passes raw markdown through). The runner
             asserts the DOCUMENTED connector behavior named in `note`.
@@ -138,8 +131,6 @@ def corpus() -> List[Dict[str, str]]:
 
 
 def _oracles() -> Dict[str, Callable[[str], str]]:
-    from plugins.platforms.telegram.adapter import TelegramAdapter
-    from plugins.platforms.slack.adapter import SlackAdapter
     from plugins.platforms.discord.adapter import DiscordAdapter
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 
@@ -148,30 +139,14 @@ def _oracles() -> Dict[str, Callable[[str], str]]:
     return {
         # These format_message implementations are self-free (asserted by
         # tests/conformance/test_vector_generator.py) — invoked unbound.
-        "telegram": lambda s: TelegramAdapter.format_message(None, s),  # type: ignore[arg-type]
-        "slack": lambda s: SlackAdapter.format_message(None, s),  # type: ignore[arg-type]
         "discord": lambda s: DiscordAdapter.format_message(None, s),  # type: ignore[arg-type]
         "whatsapp": wa.format_message,
     }
 
 
-# Per-platform expect overrides (default: parity, except telegram=semantic).
+# Per-platform expect overrides (default: parity).
 # Keyed by vector id; value = (expect, note).
 _EXPECT_OVERRIDES: Dict[str, Dict[str, tuple]] = {
-    "telegram": {
-        # Native wraps pipe tables into row groups; the connector's HTML lane
-        # renders tables as <pre>. Same content, structurally different enough
-        # that plain-text comparison is noise — documented divergence.
-        "table-simple": ("divergent", "native wraps tables into row groups; connector renders <pre> — content preserved, layout differs"),
-        "table-cjk": ("divergent", "same as table-simple (CJK width alignment is native-only)"),
-        "unclosed-fence": ("divergent", "unterminated fence: native escapes as prose, connector HTML may close the block — degraded either way, never a 400"),
-        "placeholder-injection": ("divergent", "NUL placeholder tokens are renderer-internal; each side neutralizes its own pattern"),
-        "whitespace-only": ("divergent", "native collapses to empty-ish prose, connector HTML preserves — cosmetic"),
-    },
-    "slack": {
-        "placeholder-injection": ("divergent", "\\x00SL tokens are the native renderer's own placeholder alphabet; connector uses a different scheme"),
-        "unclosed-fence": ("divergent", "unterminated fence handling differs; both degrade without dropping content"),
-    },
     "whatsapp": {
         "placeholder-injection": ("divergent", "placeholder alphabets are renderer-internal"),
         "unclosed-fence": ("divergent", "unterminated fence handling differs; both degrade without dropping content"),
@@ -184,8 +159,7 @@ _EXPECT_OVERRIDES: Dict[str, Dict[str, tuple]] = {
 
 
 def _expect_for(platform: str, vector_id: str) -> tuple:
-    default = ("semantic", "") if platform == "telegram" else ("parity", "")
-    return _EXPECT_OVERRIDES.get(platform, {}).get(vector_id, default)
+    return _EXPECT_OVERRIDES.get(platform, {}).get(vector_id, ("parity", ""))
 
 
 def _oracle_commit() -> str:

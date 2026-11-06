@@ -139,11 +139,8 @@ class TestEditMessageFinalizeSignature:
     @pytest.mark.parametrize(
         "module_path,class_name",
         [
-            ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
             ("plugins.platforms.discord.adapter", "DiscordAdapter"),
-            ("plugins.platforms.slack.adapter", "SlackAdapter"),
             ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
-            ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
             ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
         ],
     )

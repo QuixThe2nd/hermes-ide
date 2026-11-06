@@ -19,11 +19,7 @@ import hermes_cli.setup_platforms as setup_platforms_mod
 _WIZARDS = [
     ("plugins.platforms.buzz.adapter", "BUZZ_RELAY_URL"),
     ("plugins.platforms.discord.adapter", "DISCORD_BOT_TOKEN"),
-    ("plugins.platforms.feishu.adapter", "FEISHU_APP_ID"),
-    ("plugins.platforms.google_chat.adapter", "GOOGLE_CHAT_SUBSCRIPTION_NAME"),
     ("plugins.platforms.matrix.adapter", "MATRIX_PASSWORD"),
-    ("plugins.platforms.raft.adapter", "RAFT_PROFILE"),
-    ("plugins.platforms.slack.adapter", "SLACK_BOT_TOKEN"),
 ]
 
 

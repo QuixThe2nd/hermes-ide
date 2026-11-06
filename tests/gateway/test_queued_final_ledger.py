@@ -32,8 +32,8 @@ from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
-SESSION_KEY = "agent:main:telegram:dm:5230977008"
-TOPIC_SESSION_KEY = "agent:main:telegram:group:-1001:topic:7"
+SESSION_KEY = "agent:main:discord:dm:5230977008"
+TOPIC_SESSION_KEY = "agent:main:discord:group:-1001:topic:7"
 CHAT = "5230977008"
 INBOUND_ID = "5301"
 TEXT = "**Yes.** I would make room for one island trip and one Balkan trip."
@@ -60,15 +60,15 @@ def _rows():
 
 
 def _source(*, chat_id=CHAT, thread_id=None, chat_type="dm"):
-    return SimpleNamespace(platform=Platform.TELEGRAM, chat_id=chat_id, thread_id=thread_id,
+    return SimpleNamespace(platform=Platform.DISCORD, chat_id=chat_id, thread_id=thread_id,
                            chat_type=chat_type)
 
 
-def _telegram_adapter(send_result=None):
-    """A real Telegram adapter (the base contract) whose transport send is a mock."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+def _discord_adapter(send_result=None):
+    """A real Discord adapter (the base contract) whose transport send is a mock."""
+    from plugins.platforms.discord.adapter import DiscordAdapter
 
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token", extra={}))
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={}))
     runner = MagicMock()
     runner._delivery_adapter_for = MagicMock(return_value=adapter)
     runner._schedule_flood_redelivery = MagicMock(return_value=187.0)
@@ -108,7 +108,7 @@ async def _deliver(adapter, *, session_key=SESSION_KEY, stream_consumer=None, me
 
 @pytest.mark.asyncio
 async def test_a_delivered_queued_final_is_recorded_and_marked_delivered():
-    adapter = _telegram_adapter()
+    adapter = _discord_adapter()
 
     await _deliver(adapter)
 
@@ -117,7 +117,7 @@ async def test_a_delivered_queued_final_is_recorded_and_marked_delivered():
     assert rows[0]["state"] == "delivered"
     assert rows[0]["session_key"] == SESSION_KEY
     assert rows[0]["content"] == TEXT
-    assert (rows[0]["platform"], rows[0]["chat_id"]) == ("telegram", CHAT)
+    assert (rows[0]["platform"], rows[0]["chat_id"]) == ("discord", CHAT)
     adapter.send.assert_awaited_once()
 
 
@@ -126,7 +126,7 @@ async def test_forum_topic_turns_are_identified_by_their_inbound_id_not_the_repl
     """Telegram forum topics route by topic metadata and never reply, so the anchor is None for
     every message in the topic. Two turns answering with the same text must still get two rows,
     or the second would overwrite the first's outstanding obligation and retry state."""
-    adapter = _telegram_adapter()
+    adapter = _discord_adapter()
     topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
 
     await _deliver(adapter, session_key=TOPIC_SESSION_KEY, source=topic, anchor=None,
@@ -144,7 +144,7 @@ async def test_forum_topic_turns_are_identified_by_their_inbound_id_not_the_repl
 async def test_a_flood_refused_queued_final_stays_in_the_ledger_as_failed(caplog):
     """The row survives the refusal, so the sweeps (and a flood timer, where present) can redeliver
     it."""
-    adapter = _telegram_adapter(SendResult(success=False, error="flood_control:185.0"))
+    adapter = _discord_adapter(SendResult(success=False, error="flood_control:185.0"))
 
     with caplog.at_level(logging.WARNING, logger="gateway.run"):
         await _deliver(adapter)
@@ -160,7 +160,7 @@ async def test_a_flood_refused_queued_final_stays_in_the_ledger_as_failed(caplog
 @pytest.mark.asyncio
 async def test_the_queued_final_is_sent_like_the_normal_final():
     """Reply anchor on the inbound message and a notify-worthy copy of the thread metadata."""
-    adapter = _telegram_adapter()
+    adapter = _discord_adapter()
     metadata = {"thread_id": "topic-7"}
 
     await _deliver(adapter, metadata=metadata)
@@ -270,7 +270,7 @@ async def test_the_terminal_turn_of_a_chain_is_ledgered_under_its_own_inbound_id
     from gateway.platforms.base import MessageEvent
 
     same_text = "Done."
-    adapter = _telegram_adapter()
+    adapter = _discord_adapter()
     # Turn A (inbound 101): its queued final is refused by flood control and stays outstanding.
     adapter._send_with_retry = AsyncMock(
         return_value=SendResult(success=False, error="flood_control:30.0"))
@@ -320,8 +320,8 @@ async def test_ephemeral_delete_targets_the_adapter_that_sent_the_final(tmp_path
     from gateway.platforms.event import MessageEvent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    sender = _telegram_adapter()
-    replacement = _telegram_adapter()
+    sender = _discord_adapter()
+    replacement = _discord_adapter()
     sender._schedule_ephemeral_delete = MagicMock()
     replacement._schedule_ephemeral_delete = MagicMock()
     live = {"adapter": sender}

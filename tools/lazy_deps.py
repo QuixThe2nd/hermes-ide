@@ -113,7 +113,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
     # brotlicffi: aiohttp needs its 2-arg Decompressor for Discord CDN Brotli attachments
     # (google's 1-arg `Brotli` fails "Can not decode br"). aiohttp is only capped transitively
     # by these adapters, so pin the patched floor explicitly.
@@ -125,32 +124,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "brotlicffi==1.2.0.2",
         "aiohttp==3.14.3",
     ),
-    "platform.slack": (
-        "slack-bolt==1.30.0",
-        "slack-sdk==3.44.1",
-        "aiohttp==3.14.3",
-    ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.1",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
         "aiohttp==3.14.3",
-    ),
-    "platform.feishu": (
-        "lark-oapi==1.6.8",
-        "qrcode==7.4.2",
-    ),
-    # Google Chat — Pub/Sub + Chat API. Not in [all]; Docker bakes `--extra google-chat`
-    # so hosted/immutable images do not have to write the sealed venv.
-    "platform.google_chat": (
-        "google-cloud-pubsub==2.39.0",
-        "google-api-python-client==2.194.0",
-        "google-auth==2.55.1",
-        "google-auth-oauthlib==1.3.1",
-        "google-auth-httplib2==0.3.1",
-        "httplib2==0.32.0",
-        "pyasn1==0.6.4",
     ),
 
     # ─── Terminal backends ─────────────────────────────────────────────────

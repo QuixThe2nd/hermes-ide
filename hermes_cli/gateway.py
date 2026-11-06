@@ -5694,33 +5694,6 @@ def _prompt_unauthorized_access(*, is_email: bool) -> None:
         print_info("  Skipped — configure later with 'hermes gateway setup'")
 
 
-def _telegram_auto_setup(token_var: str) -> tuple[bool, object]:
-    """Offer the managed-bot QR flow. Returns (token_saved, owner_user_id)."""
-    print()
-    _print_info_lines(
-        "  Telegram can be configured automatically with a managed bot:",
-        "  [1] Automatic (scan QR → confirm in Telegram → done)", "  [2] Manual BotFather token",
-    )
-    if prompt("  Choice [1/2]", default="1").strip() != "1":
-        return False, None
-    try:
-        from hermes_cli.telegram_managed_bot import (
-            auto_setup_telegram_bot_result, is_valid_telegram_bot_token,
-        )
-    except ImportError:
-        print_warning("  Automatic setup is unavailable in this install.")
-        return False, None
-    result = auto_setup_telegram_bot_result()
-    if result and is_valid_telegram_bot_token(result.token):
-        save_env_value(token_var, result.token)
-        print_success("  Saved TELEGRAM_BOT_TOKEN")
-        return True, result.owner_user_id
-    if result:
-        print_warning("  Automatic setup returned an invalid Telegram token.")
-    print()
-    print_info("  Falling back to manual setup...")
-    return False, None
-
 
 def _clean_discord_ids(cleaned: str) -> str:
     """Strip common Discord prefixes (user:123, <@123>, <@!123>) from a comma-separated list."""
@@ -5783,10 +5756,7 @@ def _setup_standard_platform(platform: dict):
     if not _confirm_reconfigure(label, token_var):
         return
 
-    auto_token_saved, auto_owner_user_id = False, None
-    if platform.get("key") == "telegram":
-        auto_token_saved, auto_owner_user_id = _telegram_auto_setup(token_var)
-
+    auto_owner_user_id = None
     # Skip knobs the setup forms hide (reply mode, proxy...): they're self-configuring.
     setup_vars = [
         v for v in platform["vars"]
@@ -5799,10 +5769,6 @@ def _setup_standard_platform(platform: dict):
         existing = get_env_value(var["name"])
         if existing and var["name"] != token_var:
             print_info(f"  Current: {existing}")
-
-        if auto_token_saved and var["name"] == token_var:
-            print_info("  Token saved by automatic setup.")
-            continue
 
         if var.get("is_allowlist"):
             _prompt_allowlist_var(var, platform.get("key"), auto_owner_user_id)

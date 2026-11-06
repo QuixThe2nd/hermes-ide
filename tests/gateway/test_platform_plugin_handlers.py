@@ -5,7 +5,7 @@ Covers:
 * ``PluginContext.register_telegram_handler`` back-compat alias
 * ``PluginManager.get_platform_handler_factories`` accessor (+ telegram alias)
 * ``BasePlatformAdapter._wire_plugin_handlers`` invoking factories with
-  ``(native, adapter)`` — exercised through the Telegram adapter
+  ``(native, adapter)`` — exercised through the Discord adapter
 * Defensive isolation: a factory that raises does NOT prevent other
   factories from wiring or the platform from connecting.
 * Platform scoping: factories for platform A never fire for platform B.
@@ -27,8 +27,8 @@ _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from gateway.config import PlatformConfig  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from gateway.config import Platform, PlatformConfig  # noqa: E402
 
 from hermes_cli.plugins import (  # noqa: E402
     PluginContext,
@@ -44,9 +44,10 @@ def _make_ctx(name: str = "test_plugin") -> tuple[PluginManager, PluginContext]:
     return mgr, ctx
 
 
-def _make_adapter() -> TelegramAdapter:
-    config = PlatformConfig(enabled=True, token="test-token", extra={})
-    adapter = TelegramAdapter(config)
+def _make_adapter() -> DiscordAdapter:
+    """Bare DiscordAdapter with the attributes _wire_plugin_handlers reads."""
+    adapter = object.__new__(DiscordAdapter)
+    adapter.platform = Platform.DISCORD
     adapter._app = MagicMock()
     adapter._bot = MagicMock()
     return adapter
@@ -146,7 +147,7 @@ class TestTelegramAlias:
 
 
 # ===========================================================================
-# BasePlatformAdapter._wire_plugin_handlers (via TelegramAdapter)
+# BasePlatformAdapter._wire_plugin_handlers (via DiscordAdapter)
 # ===========================================================================
 
 class TestAdapterPluginWiring:
@@ -167,7 +168,7 @@ class TestAdapterPluginWiring:
         assert calls == [(adapter._app, adapter)]
         adapter._app.add_handler.assert_called_once()
         # Adapter asked for its own platform's factories.
-        mgr.get_platform_handler_factories.assert_called_once_with("telegram")
+        mgr.get_platform_handler_factories.assert_called_once_with("discord")
 
     def test_no_factories_is_a_noop(self):
         adapter = _make_adapter()
@@ -238,9 +239,7 @@ def test_all_connectable_adapters_wire_plugin_handlers():
     ) + [
         str(repo / "gateway" / "platforms" / name)
         for name in (
-            "api_server.py", "bluebubbles.py", "msgraph_webhook.py",
-            "qqbot/adapter.py", "signal.py", "webhook.py", "weixin.py",
-            "whatsapp_cloud.py", "yuanbao.py",
+            "api_server.py", "webhook.py", "whatsapp_cloud.py",
         )
     ]
     missing = []
