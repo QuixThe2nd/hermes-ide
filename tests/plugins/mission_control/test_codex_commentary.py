@@ -42,6 +42,7 @@ import time
 import unittest
 from unittest import mock
 
+import plugins.mission_control.chat_format as chat_format
 import plugins.mission_control.server as server
 
 
@@ -331,7 +332,10 @@ class TestStructuralLimits(unittest.TestCase):
         # text cap) already bounds aggregate text below this point;
         # lift it here to prove the parser's own aggregate clamp at
         # its exact boundary and one past it.
-        with mock.patch.object(server, "CODEX_ITEMS_MAX_CHARS", cap * 4):
+        # the cap lives in the chat_format sibling the parser moved
+        # to; patch it where the parser reads it
+        with mock.patch.object(
+                chat_format, "CODEX_ITEMS_MAX_CHARS", cap * 4):
             at = commentary_json(commentary_item("a" * cap))
             self.assertLess(len(at), cap * 4)
             self.assertEqual(server.codex_commentary_text(at), "a" * cap)

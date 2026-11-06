@@ -332,6 +332,39 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from plugins.mission_control.chat_format import (
+    CHAT_DETAIL_CHARS,
+    CHAT_TEXT_CHARS,
+    CODEX_ITEMS_MAX_CHARS,
+    CODEX_ITEM_MAX_BLOCKS,
+    CODEX_ITEMS_MAX_DEPTH,
+    CODEX_ITEMS_MAX_ITEMS,
+    TOOL_CHIP_MAX,
+    chat_items,
+    chat_messages,
+    clean_preview,
+    clamp_label,
+    codex_commentary_text,
+    fmt_hhmm,
+    fmt_rel,
+    fmt_short,
+    fmt_time,
+    merge_children,
+    merge_delegate_cards,
+)
+from plugins.mission_control.redaction import (
+    ARGS_SUMMARY_CHARS,
+    ARGS_VALUE_CHARS,
+    REDACTED,
+    SUBAGENT_LABEL_CHARS,
+    DELEGATE_SPAWN_NAMES,
+    TOOL_CALLS_MAX,
+    parse_tool_calls,
+    redact_secret_text,
+    redact_secrets,
+    sanitize_text,
+)
+
 from plugins.mission_control.ui_assets import (
     CHAT_SHELL,
     CLARIFY_CARD_CSS,
@@ -796,26 +829,6 @@ def profile_identity(profile):
     return {"label": label, "letter": (label[:1] or "H").upper(),
             "avatar": profile_avatar_url(name or "default")}
 
-# Display caps: the SQL-level substr keeps any single row at 4000 chars
-# (an 80 KB tool result never leaves the DB whole) and a tool bubble
-# shows at most 400 characters of detail. CHAT_TEXT_CHARS is the Python
-# side of that same 4000-char transcript text cap — the clamp applied to
-# commentary recovered from codex_message_items, whose SQL projection
-# is bounded to the same size (the clamp guards rows arriving by any
-# other path).
-CHAT_DETAIL_CHARS = 400
-CHAT_TEXT_CHARS = 4000
-# The codex_message_items source bound. The SQL projections above and
-# codex_commentary_text() must agree on this number: SQL selects the
-# value only when its character length is within it, and the parser
-# rejects anything longer, so an oversized blob can never be sliced
-# into an accepted truncated prefix from either side.
-CODEX_ITEMS_MAX_CHARS = 4000
-
-# Distinct tool-name chips in a collapsed group's summary line; past
-# this a "+N more" chip keeps mixed runs to one readable row.
-TOOL_CHIP_MAX = 6
-
 # One session's header: everything the chat page shows except messages.
 # source/thread_id/archived drive the Close/Reopen toggle, the closed
 # banner and the disabled composer.
@@ -950,12 +963,6 @@ LIMIT ?
 """
 ACTIVITY_MAX_ROWS = 60
 
-# Defensive parsing bounds: one carrier rarely holds more than a
-# handful of calls, and summaries are display-only.
-TOOL_CALLS_MAX = 12
-ARGS_SUMMARY_CHARS = 160
-ARGS_VALUE_CHARS = 48
-
 # Session row lookup for the reply route: existence plus the recorded
 # working directory (the resume runs there when it still exists) and
 # the archived flag (a closed session refuses new turns).
@@ -1040,10 +1047,6 @@ SELECT session_id, preview FROM (
 ) WHERE rn = 1
 """
 
-# Belt-and-braces over the SQL substr: the Python clamp keeps any one
-# row's markup small no matter where the label came from.
-SUBAGENT_LABEL_CHARS = 200
-
 # ---- canonical-chain variants ----------------------------------------
 # A conversation is the whole compression lineage Hermes core resolves
 # (root first, tip last — see _chain_ids), not the one row a URL names.
@@ -1083,57 +1086,6 @@ ROOT_TITLE_SQL = """
 SELECT id, COALESCE(NULLIF(title, ''), NULLIF(display_name, ''), id)
 FROM sessions WHERE id IN ({placeholders})
 """
-
-# Discord envelopes wrap the real text in bookkeeping: a leading
-# "[Triggering message id: …]" block (the handle for reply/react/pin)
-# and a "[username]" sender prefix. Previews show the message itself.
-TRIGGERING_BLOCK_RE = re.compile(r"^\s*\[Triggering message id:[^\]]*\]\s*")
-SENDER_PREFIX_RE = re.compile(r"^\[[^\]\s]+\]\s+")
-BLANK_RUN_RE = re.compile(r"(?:[ \t]*\n){3,}")
-
-# Lone UTF-16 surrogates can reach Python strings only through escaped
-# JSON ("\ud800") — SQLite TEXT and utf-8 decoding cannot produce one.
-# They are unencodable: any response write (utf-8) would raise
-# UnicodeEncodeError, so every display-bound string replaces them with
-# U+FFFD. Properly paired astral characters are single code points in a
-# Python str and never match.
-LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
-
-
-def sanitize_text(text):
-    """One string -> the same string with lone surrogates replaced by
-    U+FFFD, so nothing downstream (HTML escape, JSON body, utf-8 write)
-    can raise UnicodeEncodeError."""
-    if not text:
-        return text
-    if not LONE_SURROGATE_RE.search(text):
-        return text
-    return LONE_SURROGATE_RE.sub("\N{REPLACEMENT CHARACTER}", text)
-
-
-def clean_preview(text):
-    """Raw message text -> display preview: envelope stripped, extra
-    blank lines collapsed, ends trimmed, lone surrogates replaced.
-    Newlines survive (the preview cell renders pre-wrap)."""
-    if not text:
-        return ""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = TRIGGERING_BLOCK_RE.sub("", text, count=1)
-    text = SENDER_PREFIX_RE.sub("", text, count=1)
-    text = BLANK_RUN_RE.sub("\n\n", text)
-    return sanitize_text(text).strip()
-
-
-def clamp_label(text):
-    """Raw text -> one-line sub-agent row label: cleaned with the same
-    helpers as previews, all whitespace collapsed, capped hard so a
-    whole prompt can never dump into the section (CSS clamps the visual
-    to two lines on top of this)."""
-    text = " ".join(clean_preview(text).split())
-    if len(text) > SUBAGENT_LABEL_CHARS:
-        text = text[:SUBAGENT_LABEL_CHARS - 1].rstrip() \
-            + "\N{HORIZONTAL ELLIPSIS}"
-    return text
 
 
 def _home_root():
@@ -2348,272 +2300,6 @@ def subagents_for(con, profile, chain):
     return children[:SUBAGENT_MAX_CHILDREN]
 
 
-# ---- live tool activity (/s/<profile>/<id> + /feed) ------------------
-# A tool call must be visible after its assistant tool_calls carrier is
-# persisted and before its matching tool result row exists. Everything
-# below is defensive by design: carriers are legacy JSON of several
-# Hermes generations, so nothing here may ever raise into a page or a
-# feed poll, and nothing unbounded may ever reach the response.
-
-# Keys whose values are redacted at any depth of a parsed argument
-# object (matched as substrings of the lowercased key, so
-# "github_token" or "PASSWORD" both redact), plus the same words in
-# textual "key=value" / "key: value" forms inside string values. Each
-# keyword's own underscore is [_-]? in the patterns, so the hyphenated
-# spelling ("x-api-key", "access-key") is the same keyword.
-SECRET_KEY_WORDS = ("password", "passwd", "passphrase", "secret", "token",
-                    "api_key", "apikey", "access_key", "auth", "authorization",
-                    "cookie", "credential")
-SECRET_KEY_RE = re.compile(
-    "(?i)(?:%s)" % "|".join(w.replace("_", "[_-]?")
-                            for w in SECRET_KEY_WORDS))
-# The same words as a name's required SUFFIX — exactly the judgment the
-# assignment pass below applies to a raw name, factored out so a
-# percent-decoded parameter name is judged by the same rule.
-SECRET_KEY_SUFFIX_RE = re.compile(
-    "(?i)(?:%s)$" % "|".join(w.replace("_", "[_-]?")
-                             for w in SECRET_KEY_WORDS))
-REDACTED = "[REDACTED]"
-
-# The one bounded redaction boundary every UI-exposed tool argument and
-# tool-result detail passes through, in order (each pattern's output is
-# opaque to the ones after it):
-#
-# 1. Authorization header values — the keyword plus its whole
-#    credential, scheme word included in the match so "Authorization:
-#    Bearer <token>" can never leave "<token>" (or mask only "Bearer")
-#    behind. Handles quoting and the common delimiter characters.
-# 2. Standalone bearer tokens with no keyword in front of them.
-# 3. Credential-bearing URLs and DB URIs — scheme://user:pass@… keeps
-#    the scheme and host shape, replaces the whole userinfo.
-# 4. Key/value secret assignments, quoted or bare — the FULL value is
-#    replaced (a quoted phrase like password: "hunter two" is one
-#    match, not a masked first word plus a leaked remainder).
-# 5. Percent-encoded parameter names — "Api%5FKey=…",
-#    "access%2Dtoken=…", "%41pi%5fkey=…" — spell the keyword with
-#    escapes the raw-name pass cannot see, so a name is judged again
-#    after exactly one safe percent-decoding pass of the NAME ONLY;
-#    the value is replaced whole, still exactly as written.
-AUTH_VALUE_RE = re.compile(
-    r"(?i)\b(authorization|proxy[-_]authorization)\b(\s*[=:]\s*)"
-    r"(?:bearer|basic|digest|token|oauth|negotiate|hmac|mutual)[ \t]+"
-    r"[^\s,;\"'<>)]+"
-    r"|\b(authorization|proxy[-_]authorization)\b(\s*[=:]\s*)"
-    r"[^\s,;\"'<>)]+")
-BEARER_TOKEN_RE = re.compile(
-    r"(?i)\b(bearer)[ \t]+[A-Za-z0-9._~+/\-=]{8,}")
-URL_USERINFO_RE = re.compile(
-    r"(?i)\b(?:[a-z][a-z0-9+.\-]*)://(?:[^\s/@:\[\"']+)?(?::[^\s/@\[\"']*)?@")
-# Compound names count too ("github_token: …", "x-api-key: …",
-# "SESSION_SECRET=…"), so the keyword may carry a run of identifier
-# characters — underscores AND hyphens. The value may not be the
-# redaction marker itself (keeps the pass idempotent and a following
-# quote alive).
-SECRET_ASSIGN_RE = re.compile(
-    r"(?i)\b([A-Za-z0-9_-]*(?:%s))[\"']?([ \t]*[:=][ \t]*)"
-    r"(?!\[REDACTED\])(\"[^\"]*\"|'[^']*'|[^\s,;&>]+)"
-    % "|".join(w.replace("_", "[_-]?") for w in SECRET_KEY_WORDS))
-
-# A parameter NAME that carries at least one percent escape, its "="
-# and the value forms the assignment pass would have consumed — quoted
-# phrase or bare run, exactly the same value charset, so pass 5's
-# replacements match pass 4's shape. Only percent-bearing names ever
-# match, so ordinary text ("status=open", "a=b", prose) is not even a
-# candidate here, and a clean name like "redirect_uri" never blankets
-# the nested parameters its value may hold.
-ENCODED_PARAM_RE = re.compile(
-    r"(?<![A-Za-z0-9_.~%-])([A-Za-z0-9_.~%-]*%[A-Za-z0-9_.~%-]*)="
-    r"(\"[^\"]*\"|'[^']*'|[^\s,;&>]+)")
-
-
-def _param_name_is_sensitive(name):
-    """True when a URL/query/form parameter name is secret-bearing.
-
-    The raw name counts exactly when the assignment pass above would
-    have taken it (a secret keyword as the name's suffix). Otherwise
-    the name gets ONE safe percent-decoding pass — the name only,
-    never any value — and is judged again by the same suffix rule, so
-    "Api%5FKey", "access%2Dtoken" and "%41pi%5fkey" all count while
-    "redirect%5Furi" and "token%5Fcount" do not. Malformed escapes
-    fail closed: whatever still holds an escape (or an undecodable
-    byte) after that one pass is judged by the broader substring test
-    AND by the most lenient further reading — bad escapes simply
-    dropped, "%%5Fapi%%5Fkey" reading as "__api_key" — so a name that
-    MIGHT decode to a keyword under any decoder redacts. Even a
-    decoder error counts as sensitive. Never raises.
-    """
-    if SECRET_KEY_SUFFIX_RE.search(name):
-        return True
-    try:
-        decoded = unquote(name)
-    except Exception:
-        return True
-    if SECRET_KEY_SUFFIX_RE.search(decoded):
-        return True
-    if "%" in decoded or "\N{REPLACEMENT CHARACTER}" in decoded:
-        if SECRET_KEY_RE.search(decoded):
-            return True
-        lenient = decoded.replace("%", "").replace(
-            "\N{REPLACEMENT CHARACTER}", "")
-        return bool(SECRET_KEY_SUFFIX_RE.search(lenient))
-    return False
-
-
-def _redact_encoded_params(text, depth=0):
-    """Mask the values of percent-encoded sensitive parameter names.
-
-    Pass 5 of the redaction boundary: each candidate name=value pair is
-    judged by _param_name_is_sensitive(); a sensitive name keeps its
-    encoded spelling and loses its whole value — quoted forms included
-    — to REDACTED, with nothing decoded, normalized or reordered in the
-    original text. A benign encoded name's value may itself carry
-    nested parameters (a redirect target URL), so that value is
-    re-scanned on its own, strictly shorter each level and capped at a
-    few levels, instead of being blanket-consumed and hiding them.
-    """
-    if depth >= 4 or "%" not in text:
-        return text
-    out, last = [], 0
-    for m in ENCODED_PARAM_RE.finditer(text):
-        value = m.group(2)
-        if _param_name_is_sensitive(m.group(1)):
-            fixed = REDACTED
-        else:
-            fixed = _redact_encoded_params(value, depth + 1)
-        if fixed == value:
-            continue
-        out.append(text[last:m.start(2)])
-        out.append(fixed)
-        last = m.end()
-    if not out:
-        return text
-    out.append(text[last:])
-    return "".join(out)
-
-
-def redact_secret_text(text):
-    """One string -> the same string with credential-shaped content
-    masked, value-complete rather than first-token-only.
-
-    Runs on every string that can reach a tool argument summary, a tool
-    detail block, or a Discord error line: Authorization headers
-    (keyword + scheme + full credential), bare bearer tokens,
-    user:password URL/DB-URI userinfo, password/token/api-key style
-    assignments with their full quoted or bare value, and the same
-    assignments hiding behind a percent-encoded parameter name. Useful
-    non-secret text (paths, commands, ordinary words) passes through.
-    """
-    if not text:
-        return text
-
-    def _auth_sub(m):
-        # group layout alternates (keyword, sep) between the two arms
-        keyword = m.group(1) or m.group(3)
-        sep = m.group(2) or m.group(4)
-        # The scheme word and the credential go together — keeping the
-        # scheme would only hand a later pass a bare "Bearer <masked>"
-        # fragment. One replacement, whole value.
-        return keyword + sep + REDACTED
-
-    text = AUTH_VALUE_RE.sub(_auth_sub, text)
-    text = BEARER_TOKEN_RE.sub(
-        lambda m: m.group(1) + " " + REDACTED, text)
-    text = URL_USERINFO_RE.sub(
-        lambda m: m.group(0).split("://", 1)[0] + "://" + REDACTED + "@",
-        text)
-    text = SECRET_ASSIGN_RE.sub(
-        lambda m: m.group(1) + m.group(2) + REDACTED, text)
-    text = _redact_encoded_params(text)
-    return text
-
-
-def redact_secrets(value):
-    """Recursively redact secret-bearing keys of a parsed JSON value;
-    lists and nested dicts are walked, everything else passes through."""
-    if isinstance(value, dict):
-        out = {}
-        for k, v in value.items():
-            key = str(k)
-            if SECRET_KEY_RE.search(key):
-                out[key] = REDACTED
-            else:
-                out[key] = redact_secrets(v)
-        return out
-    if isinstance(value, list):
-        return [redact_secrets(v) for v in value]
-    if isinstance(value, str):
-        return redact_secret_text(value)
-    return value
-
-
-def parse_tool_calls(raw):
-    """Bounded tool_calls JSON -> [{name, args, ids}], never raising.
-
-    Accepts both the OpenAI-ish shape ({"function": {"name",
-    "arguments"}}) and flatter legacy shapes ({"name", "arguments"}).
-    arguments may be a JSON string or an already-parsed object; ids
-    collects every non-empty id-ish field a tool result could echo back
-    — canonical first (call_id, the Responses pairing key the executor
-    and the spawn receipts use, matching coalesce_tool_call_id), then
-    the legacy transport aliases (id, response_item_id) — so a caller
-    taking the first id correlates the way the runtime does. Malformed
-    input yields [] — the page and the feed simply see no pending calls
-    from it.
-    """
-    if not raw or not isinstance(raw, str):
-        return []
-    try:
-        arr = json.loads(raw)
-    except (ValueError, TypeError):
-        return []
-    if not isinstance(arr, list):
-        return []
-    calls = []
-    for c in arr[:TOOL_CALLS_MAX]:
-        if not isinstance(c, dict):
-            continue
-        fn = c.get("function")
-        name = ""
-        args_raw = ""
-        if isinstance(fn, dict):
-            name = fn.get("name") or c.get("name") or ""
-            a = fn.get("arguments", c.get("arguments"))
-        else:
-            name = c.get("name") or ""
-            a = c.get("arguments")
-        if isinstance(a, str):
-            args_raw = a
-        elif a is None:
-            args_raw = ""
-        else:
-            try:
-                args_raw = json.dumps(a)
-            except (TypeError, ValueError):
-                args_raw = ""
-        if not isinstance(name, str):
-            name = ""
-        ids = []
-        for key in ("call_id", "id", "response_item_id"):
-            v = c.get(key)
-            if isinstance(v, str) and v:
-                ids.append(v)
-        calls.append({"name": name, "args": args_raw, "ids": ids})
-    return calls
-
-
-# ---- inline delegate dispatch cards (/s/<profile>/<id>) --------------
-# The real spawn-shaped delegate tool call is the chronological
-# authority for a dispatch: one card renders at the carrier's position
-# (replacing the generic delegate_* tool row), links into a child
-# transcript only when a child session or async delegation proves the
-# route, and — for delegate_claude_agent — opens that exact run's live
-# viewer page through a validated spawn receipt. Control calls
-# (delegate_agent with action list/steer/stop) are not dispatches and
-# never produce cards.
-
-# The delegate tools whose spawn-shaped calls become dispatch cards.
-DELEGATE_SPAWN_NAMES = ("delegate_agent", "delegate_task",
-                        "delegate_claude_agent", "delegate_cursor_agent")
 # delegate_agent actions that manage existing work instead of
 # dispatching it; they never produce cards.
 DELEGATE_CONTROL_ACTIONS = frozenset(("list", "steer", "stop"))
@@ -4689,282 +4375,6 @@ def start_new_session(text):
     threading.Thread(target=new_session_worker, args=(job_id, text),
                      daemon=True).start()
     return job_id, None
-
-
-# Structural bounds for codex_message_items parsing, all enforced by
-# codex_commentary_text itself so direct callers get the same contract
-# the SQL projection gives the page and feed. The persisted production
-# shape is a small list of flat message items (item dict -> content
-# list -> block dict -> text string, depth 4); everything past these
-# caps is rejected whole.
-CODEX_ITEMS_MAX_ITEMS = 32   # top-level message items in one value
-CODEX_ITEM_MAX_BLOCKS = 32   # content blocks in one message item
-CODEX_ITEMS_MAX_DEPTH = 6    # JSON nesting depth (legitimate max: 4)
-
-
-def _codex_depth_ok(data):
-    """True when the parsed JSON nests no deeper than the cap.
-
-    Iterative on purpose — no recursion that a deep blob could turn
-    into a RecursionError, and a hard node budget (32k) so even a
-    wide-but-shallow blob costs bounded work. Depth counts container
-    levels: the top-level value is 0, its members 1, and so on.
-    """
-    seen = 0
-    stack = [(data, 0)]
-    while stack:
-        node, depth = stack.pop()
-        seen += 1
-        if seen > 32000 or depth > CODEX_ITEMS_MAX_DEPTH:
-            return False
-        if isinstance(node, dict):
-            stack.extend((v, depth + 1) for v in node.values())
-        elif isinstance(node, list):
-            stack.extend((v, depth + 1) for v in node)
-    return True
-
-
-def codex_commentary_text(raw):
-    """Bounded codex_message_items JSON -> visible assistant commentary.
-
-    A Codex tool-call assistant row keeps content='' and stores its
-    narration in codex_message_items instead; this recovers that visible
-    text — and only that. The persisted shape (agent/codex_responses_
-    adapter.py) is message items whose type is "message" and role
-    "assistant", carrying a normalized "status" always and a "phase"
-    exactly when the run wrote one. Visible narration is ONLY the
-    complete commentary phase: status must be "completed" (never
-    "in_progress" or "incomplete") and phase exactly "commentary" —
-    phase-less items, "analysis", "reasoning", "final",
-    "final_answer", failed and cancelled variants all yield "". Only
-    content blocks typed output_text/text contribute, each solely
-    through its string "text" field; reasoning items, function calls
-    and their arguments, tool results, bare-string content and
-    arbitrary nested strings match none of those shapes, so they can
-    never surface.
-
-    Input is bounded before parsing: anything longer than
-    CODEX_ITEMS_MAX_CHARS is rejected whole (never sliced into an
-    accepted truncated prefix), as is anything structurally past the
-    item-count, block-count or nesting-depth caps. Malformed JSON
-    (and JSON deep enough that json.loads itself raises) yields ""
-    and never propagates. Recovered text is sanitized of lone
-    surrogates and clamped to CHAT_TEXT_CHARS, the same cap content
-    itself gets in SQL.
-    """
-    if not isinstance(raw, str) or not raw:
-        return ""
-    if len(raw) > CODEX_ITEMS_MAX_CHARS:
-        return ""
-    try:
-        data = json.loads(raw)
-    except (ValueError, RecursionError):
-        return ""
-    if not _codex_depth_ok(data):
-        return ""
-    if isinstance(data, dict):
-        items = (data,)
-    elif isinstance(data, list):
-        if len(data) > CODEX_ITEMS_MAX_ITEMS:
-            return ""
-        items = data
-    else:
-        return ""
-    texts = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") != "message" or item.get("role") != "assistant":
-            continue
-        if item.get("status") != "completed":
-            continue
-        if item.get("phase") != "commentary":
-            continue
-        blocks = item.get("content")
-        if not isinstance(blocks, list) \
-                or len(blocks) > CODEX_ITEM_MAX_BLOCKS:
-            continue
-        parts = [b["text"] for b in blocks
-                 if isinstance(b, dict)
-                 and b.get("type") in ("output_text", "text")
-                 and isinstance(b.get("text"), str)]
-        if parts:
-            texts.append("\n".join(parts))
-    if not texts:
-        return ""
-    return sanitize_text("\n\n".join(texts))[:CHAT_TEXT_CHARS]
-
-
-def chat_messages(rows, suppress=()):
-    """Transcript rows -> renderable messages.
-
-    Rows with nothing to show are dropped: the '[SILENT]' marker (same
-    rule the list page uses for previews) and assistant rows that end up
-    with no text at all. Tool rows keep the tool_name plus a short
-    detail slice of the already substr-capped content. Every kept
-    message carries its DB row id — the feed's cursor and per-entry id.
-
-    An assistant row whose content is empty is the Codex commentary
-    shape: its narration sits in codex_message_items, so exactly then
-    (never for a row that already has content, which stays the sole
-    authority) the trailing fallback column is parsed defensively and
-    its recovered text renders as a normal agent message. A carrier
-    with nothing recoverable still disappears, so truly consecutive
-    tool rows keep collapsing into one group.
-
-    Rows may carry the lifecycle columns (tool_calls, tool_call_id,
-    finish_reason) and the Codex commentary fallback after the display
-    fields; display rules ignore the lifecycle ones, and the activity
-    snapshot is what actually consumes them.
-
-    `suppress` holds the tool_call ids of delegate dispatches that
-    rendered as inline cards: exactly those generic delegate_* tool
-    result rows drop out here (initial page, full snapshot and delta
-    feed alike), while every unrelated tool row — delegate control
-    calls included, which are never in the set — passes through
-    unchanged.
-    """
-    out = []
-    for row in rows:
-        role, tool_name, ts, row_id, content = row[:5]
-        text = content if isinstance(content, str) else ""
-        if role in ("user", "assistant"):
-            if text == "[SILENT]":
-                continue
-            body = clean_preview(text)
-            if not body and role == "assistant" and not text:
-                # Codex commentary fallback, column 8: only an
-                # assistant row with empty content reaches here.
-                codex = row[8] if len(row) > 8 else ""
-                body = clean_preview(codex_commentary_text(codex))
-            if body:
-                out.append({"kind": "text", "role": role, "ts": ts,
-                            "id": row_id, "text": body})
-        elif role == "tool":
-            if suppress and tool_name in DELEGATE_SPAWN_NAMES:
-                call_id = row[6] if len(row) > 6 else None
-                if call_id and str(call_id) in suppress:
-                    continue
-            # Tool-result details are UI-exposed tool output: the same
-            # redaction boundary as argument summaries, applied BEFORE
-            # the display slice so a credential can never survive at
-            # the tail of the clamp, and sanitized so a lone surrogate
-            # cannot kill the page encoding.
-            detail = sanitize_text(redact_secret_text(text))
-            out.append({"kind": "tool", "ts": ts, "id": row_id,
-                        "tool": tool_name or "tool",
-                        "detail": detail[:CHAT_DETAIL_CHARS].strip()})
-    return out
-
-
-def merge_children(msgs, children):
-    """The flat chronological message list with one {"kind": "child"}
-    card per sub-agent merged in at that child's dispatch time.
-
-    Merging happens BEFORE tool grouping, on purpose: a child dispatched
-    between two tool rows is its own timeline event — it splits what
-    would otherwise be one collapsed tool group, and several children
-    from one dispatch stay individually addressable rows instead of
-    disappearing into a group. Ordering key is the child's stored
-    sessions.started_at (the chronological dispatch time) against each
-    message's timestamp; the 0/1 tag places a child after the messages
-    of an identical timestamp (a dispatch follows the carrier that
-    triggered it) while the preceding stable sort keeps both input
-    orders (messages by (timestamp, id), children by (started, id)).
-    """
-    if not children:
-        return msgs
-    keyed = [((m["ts"], 0), m) for m in msgs]
-    keyed += [(((c.get("started") or 0), 1), {"kind": "child", "c": c})
-              for c in children]
-    keyed.sort(key=lambda pair: pair[0])
-    return [m for _key, m in keyed]
-
-
-def merge_delegate_cards(msgs, cards):
-    """The message list with one {"kind": "delegate"} item per dispatch
-    card merged in at its call carrier's timestamp — the spawn-shaped
-    delegate tool call is the chronological authority, so the card
-    lands exactly where the carrier sits in the visible timeline (the
-    carrier itself renders nothing when it has no text). The (ts, 1)
-    tag places a card after any same-timestamp message bubble (a
-    carrier WITH text keeps its bubble and the card follows it), and
-    the stable sort keeps a batch's several cards in task order. Runs
-    before tool grouping like merge_children, so a card also splits
-    what would be one collapsed tool group."""
-    if not cards:
-        return msgs
-    # merge_children runs first, so the list may already carry child
-    # items, whose timestamp lives on the child record itself.
-    def item_ts(m):
-        if m["kind"] == "child":
-            return (m["c"].get("started") or 0, 0)
-        return (m.get("ts") or 0, 0)
-    keyed = [(item_ts(m), m) for m in msgs]
-    keyed += [((c["ts"], 1), {"kind": "delegate", "card": c})
-              for c in cards]
-    keyed.sort(key=lambda pair: pair[0])
-    return [m for _key, m in keyed]
-
-
-def chat_items(msgs):
-    """Renderable messages -> the final list the page draws.
-
-    Every maximal run of consecutive tool messages collapses into ONE
-    {"kind": "tools", "items": [...]} group; text messages and inline
-    child/dispatch cards pass through unchanged (a card between two
-    tool rows therefore splits them into two groups — the merge helpers
-    placed it there on purpose). Grouping runs after chat_messages()
-    has dropped empty
-    rows, so tools separated only by an empty assistant carrier merge
-    into the same group. The empty case is [] and only []. A group's id
-    is its newest row's id (items are chronological), so the feed cursor
-    advances past the whole group, and first_id is its oldest row's id —
-    the seam identity a delta poll's client-side merge matches (see
-    load_feed) so one run split across polls still renders as one
-    group.
-    """
-    out = []
-    for m in msgs:
-        if m["kind"] == "tool":
-            if out and out[-1]["kind"] == "tools":
-                out[-1]["items"].append(m)
-                out[-1]["id"] = m["id"]
-            else:
-                out.append({"kind": "tools", "items": [m],
-                            "id": m["id"], "first_id": m["id"]})
-        else:
-            out.append(m)
-    return out
-
-
-def fmt_time(ts):
-    """Server-local time, ISO-shaped."""
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def fmt_short(ts):
-    """Compact date-time for message headers and header time ranges."""
-    return datetime.fromtimestamp(ts).strftime("%d %b %H:%M")
-
-
-def fmt_hhmm(ts):
-    """Hour:minute only — the hover gutter of a continuation message."""
-    return datetime.fromtimestamp(ts).strftime("%H:%M")
-
-
-def fmt_rel(now, ts):
-    """Short relative age; kept in step with the client-side version."""
-    s = int(now - ts)
-    if s < 15:
-        return "just now"
-    if s < 60:
-        return "%ds ago" % s
-    if s < 3600:
-        return "%dm ago" % (s // 60)
-    if s < 86400:
-        return "%dh ago" % (s // 3600)
-    return "%dd ago" % (s // 86400)
 
 
 # ---- Discord-style app shell -----------------------------------------
