@@ -117,13 +117,7 @@ export const $isBlocked = computed(
  * panels HERE so the timer gate can't silently miss them.
  */
 export const hasFloatingPanel = (overlay: OverlayState): boolean =>
-  Boolean(
-    overlay.modelPicker ||
-    overlay.pager ||
-    overlay.pluginsHub ||
-    overlay.sessions ||
-    overlay.skillsHub
-  )
+  Boolean(overlay.modelPicker || overlay.pager || overlay.pluginsHub || overlay.sessions || overlay.skillsHub)
 
 export const $isStatusRuleOccluded = computed([$overlayState, $uiState], (overlay, ui) =>
   Boolean(overlay.widget || (ui.statusBar === 'top' && hasFloatingPanel(overlay)))

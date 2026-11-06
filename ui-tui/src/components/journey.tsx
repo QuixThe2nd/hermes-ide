@@ -3,8 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import { openInEditor } from '../lib/editor.js'
-import { rpcErrorMessage } from '../lib/rpc.js'
 import { deriveJourneyPalette, fadeHex, fadeInk, type JourneyPalette } from '../lib/journeyPalette.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { listRowStyle } from './overlayPrimitives.js'

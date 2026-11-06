@@ -352,5 +352,4 @@ describe.each([
       expect(out).toContain(DISABLE_MOUSE_TRACKING)
     }
   })
-
 })
