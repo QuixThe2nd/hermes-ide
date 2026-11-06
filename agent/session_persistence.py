@@ -399,12 +399,6 @@ class SessionPersistenceMixin:
     _format_tools_for_system_message = _forward("agent.system_prompt", "format_tools_for_system_message")
     _convert_to_trajectory_format = _forward("agent.agent_runtime_helpers", "convert_to_trajectory_format")
 
-    def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
-        """Save conversation trajectory to JSONL file."""
-        if not self.save_trajectories:
-            return
-        trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
-        _save_trajectory_to_file(trajectory, self.model, completed)
 
     _extract_api_error_context = _forward_static("agent.agent_runtime_helpers", "extract_api_error_context")
     _dump_api_request_debug = _forward("agent.agent_runtime_helpers", "dump_api_request_debug")

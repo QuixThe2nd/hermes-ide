@@ -310,15 +310,6 @@ class TurnExplainersMixin:
         r"(?<![/:\w.`])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.[\w]+",
     )
 
-    @classmethod
-    def _neutralize_footer_paths(cls, text: str) -> str:
-        """Backtick bare file paths so the gateway's ``extract_local_files`` never auto-attaches them.
-
-        The extractor skips inline-code spans; already-backticked paths are left alone (no double-wrap).
-        """
-        if not text:
-            return text
-        return cls._FOOTER_PATH_RE.sub(lambda m: f"`{m.group(0)}`", text)
 
     @classmethod
     def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
