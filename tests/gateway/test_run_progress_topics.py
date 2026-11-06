@@ -548,12 +548,6 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="production bug: gateway/run.py's restored duplicate _run_agent_inner "
-    "(run.py:35402) shadows GatewayTurnMixin._run_agent_inner (run_turn.py:4256) "
-    "and lacks the scheduled_heartbeat parameter, so heartbeat turns raise "
-    "TypeError before the suppression path can run"
-)
 async def test_scheduled_heartbeat_suppresses_routine_progress_and_typing(monkeypatch, tmp_path):
     """A silent scheduled heartbeat must not create a visible progress surface."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
@@ -1203,12 +1197,6 @@ class UnsupportedDestinationTaskCardAdapter(NativeTaskCardAdapter):
         {"tool_progress_overrides": {"slack": "off"}},
     ],
     ids=["platform-override", "global", "legacy-overrides"],
-)
-@pytest.mark.xfail(
-    reason="production bug: gateway/run.py's restored duplicate _run_agent_inner "
-    "(run.py:35402) shadows GatewayTurnMixin's canonical implementation, whose "
-    "explicit-off card gating (run_turn.py:3035: 'not (_tool_progress_explicit "
-    "and progress_mode == \"off\")') never runs"
 )
 async def test_slack_operator_tool_progress_off_disables_task_cards(monkeypatch, tmp_path, display_cfg):
     # Task cards ARE tool progress rendered natively. When the operator writes ``off`` (not the

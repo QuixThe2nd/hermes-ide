@@ -7369,6 +7369,7 @@ class GatewayTurnMixin:
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -7413,6 +7414,7 @@ class GatewayTurnMixin:
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                scheduled_heartbeat=scheduled_heartbeat,
             )
 
         from run_agent import AIAgent
@@ -7598,6 +7600,10 @@ class GatewayTurnMixin:
             source.platform == Platform.SLACK
             and _progress_adapter_for_native is not None
             and hasattr(_progress_adapter_for_native, "native_task_cards_enabled")
+            # Task cards ARE tool progress rendered natively: an operator's
+            # explicit ``off`` (not the tier default) disables the card lane
+            # too — otherwise "off" would keep publishing cards.
+            and not (_tool_progress_configured and progress_mode == "off")
         ):
             try:
                 _native_slack_task_cards = bool(
@@ -7608,6 +7614,16 @@ class GatewayTurnMixin:
         needs_progress_queue = (
             tool_progress_enabled or _thinking_enabled or _native_slack_task_cards
         )
+        if scheduled_heartbeat:
+            # A heartbeat is proactive work: tool chrome, drafts, thinking and
+            # periodic liveness notices would create a user-visible ping before
+            # its final result is known. Keep status callbacks intact for
+            # approvals and actionable failures.
+            tool_progress_enabled = False
+            interim_assistant_messages_enabled = False
+            _thinking_enabled = False
+            _native_slack_task_cards = False
+            needs_progress_queue = False
 
 
         # Queue for progress messages (thread-safe)
@@ -7742,6 +7758,7 @@ class GatewayTurnMixin:
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            scheduled_heartbeat=scheduled_heartbeat,
         )
         from gateway.run_turn_runner import TurnRunner
         turn_runner = TurnRunner(self, turn_ctx)
@@ -8022,6 +8039,7 @@ class GatewayTurnMixin:
         if (
             _stts_adapter is not None
             and _is_voice_input
+            and not scheduled_heartbeat
             and _stts_adapter._should_auto_tts_for_chat(source.chat_id)
         ):
             try:
@@ -8359,7 +8377,12 @@ class GatewayTurnMixin:
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
-        _notify_task = asyncio.create_task(_notify_long_running())
+        # A scheduled heartbeat is silent: no "still working" liveness bubbles.
+        _notify_task = (
+            None
+            if scheduled_heartbeat
+            else asyncio.create_task(_notify_long_running())
+        )
 
         def _stream_confirmed_final_delivery(
             consumer,
@@ -9190,7 +9213,8 @@ class GatewayTurnMixin:
             if log_task:
                 log_task.cancel()
             interrupt_monitor.cancel()
-            _notify_task.cancel()
+            if _notify_task:
+                _notify_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
