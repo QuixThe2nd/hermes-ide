@@ -366,6 +366,9 @@ class DiscordHubServer:
         async def _deliver(event: Any) -> None:
             from gateway.run_drain_queue import serialize_drain_event
 
+            # Same admission receipt as the base handle_message: True only when
+            # a live gateway generation took the record (scheduled/queued).
+            event._gateway_accepted = False
             key = adapter._event_session_key(event)
             raw = getattr(event, "raw_message", None)
             message_id = str(getattr(event, "message_id", "") or "")
@@ -377,7 +380,8 @@ class DiscordHubServer:
                     self._raw_messages.popitem(last=False)
             record = serialize_drain_event(key, event)
             record["discord_token"] = token_key
-            await self._router_for(token_key).route(key, record)
+            generation = await self._router_for(token_key).route(key, record)
+            event._gateway_accepted = generation is not None
         return _deliver
 
     async def _serve_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
