@@ -72,12 +72,17 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
-class TurnRunner:
-    """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
+class _TurnRunnerCore:
+    """Sole owner of the TurnRunner constructor: both TurnRunner shapes (the monolith copy in
+    ``gateway/run.py`` and this module's) share it so the pairing can never drift again."""
 
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+
+
+class TurnRunner(_TurnRunnerCore):
+    """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
