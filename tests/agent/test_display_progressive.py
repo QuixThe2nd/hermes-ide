@@ -87,3 +87,73 @@ class TestProgressivePhraseLeaveAlone:
     def test_single_word(self):
         assert progressive_phrase("check") == "checking"
         assert progressive_phrase("Check") == "Checking"
+
+
+class TestProgressivePhraseNounToolOpeners:
+    """Tool-name / noun openers must not be rewritten to false participles."""
+
+    def test_git_status_unchanged(self):
+        assert progressive_phrase("Git status") == "Git status"
+
+    def test_git_log_unchanged(self):
+        assert progressive_phrase("git log for the branch") == "git log for the branch"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Stat the socket file",
+            "stat the inode",
+            "Chmod the script",
+            "chmod the file",
+            "Chown the path",
+            "chown the tree",
+            "Version the artifact",
+            "version the build",
+            "Wedge the rollout",
+            "wedge the gap",
+        ],
+    )
+    def test_removed_verb_openers_unchanged(self, text):
+        assert progressive_phrase(text) == text
+
+
+class TestProgressivePhraseConsonantDoubling:
+    """Kept verbs whose participle doubles the final consonant."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("cut the wire", "cutting the wire"),
+            ("debug the crash", "debugging the crash"),
+            ("get the logs", "getting the logs"),
+            ("log the event", "logging the event"),
+            ("map the pins", "mapping the pins"),
+            ("pin the ref", "pinning the ref"),
+            ("refer to the docs", "referring to the docs"),
+            ("remap the table", "remapping the table"),
+            ("run the suite", "running the suite"),
+            ("set the env", "setting the env"),
+            ("skip the step", "skipping the step"),
+            ("spot the leak", "spotting the leak"),
+            ("stop the gateway", "stopping the gateway"),
+            ("strip the prefix", "stripping the prefix"),
+            ("swap the entries", "swapping the entries"),
+            ("tag the build", "tagging the build"),
+            ("unpin the package", "unpinning the package"),
+            ("embed the asset", "embedding the asset"),
+            ("flag the row", "flagging the row"),
+            ("grep the logs", "grepping the logs"),
+            ("plan the migration", "planning the migration"),
+            ("quit the session", "quitting the session"),
+            ("rescan the tree", "rescanning the tree"),
+            ("reset the counter", "resetting the counter"),
+            ("scan the folder", "scanning the folder"),
+            ("split the string", "splitting the string"),
+            ("submit the form", "submitting the form"),
+            ("transfer the file", "transferring the file"),
+            ("trim the buffer", "trimming the buffer"),
+            ("unset the flag", "unsetting the flag"),
+        ],
+    )
+    def test_consonant_doubling(self, text, expected):
+        assert progressive_phrase(text) == expected
