@@ -291,13 +291,13 @@ class TestDescribeToolCallDiscordDescription:
                 "discord",
                 {"action": "bogus_action", "description": "check something"},
             )
-            == "Check something"
+            == "Checking something"
         )
 
     def test_discord_missing_action_with_description_falls_back(self):
         assert (
             describe_tool_call("discord", {"description": "check something"})
-            == "Check something"
+            == "Checking something"
         )
 
 
