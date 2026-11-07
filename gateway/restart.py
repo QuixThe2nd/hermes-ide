@@ -363,6 +363,27 @@ def user_restart_via_service() -> bool:
     return is_gateway_supervisor_process() or is_container_restart_context()
 
 
+def resolve_planned_restart_exit_code(runner: Any) -> Optional[int]:
+    """Return the supervisor restart code, or None for an ordinary clean exit.
+
+    A hub successor may have been started by a request whose ``via_service``
+    flag was false. Re-check native supervision at teardown in that case:
+    exiting 0 under systemd would make it start another gateway beside the
+    successor. Do not use the generalized supervised-launch marker here; the
+    Windows Scheduled Task has no restart policy.
+    """
+    if not getattr(runner, "_restart_requested", False):
+        return None
+    successor_started = bool(getattr(runner, "_overlap_restart_successor_started", False))
+    if not getattr(runner, "_restart_via_service", False) and not (
+        successor_started and is_gateway_supervisor_process()
+    ):
+        return None
+    if successor_started:
+        return GATEWAY_OVERLAP_RESTART_EXIT_CODE
+    return GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
 def _restart_notify_payload(
     source: Optional[SessionSource], message_id: Optional[str]
 ) -> dict:

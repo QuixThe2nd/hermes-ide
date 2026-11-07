@@ -81,10 +81,17 @@ class OverlapSuccessorRegistry:
         now = time.monotonic()
         result: list[Dict[str, Any]] = []
         for pid, record in list(self._records.items()):
+            age = max(0.0, now - record.spawned_at)
+            if record.start_time is None:
+                # Popen can return before the child's fingerprint is available.
+                # Keep the spawn proof for attach during boot grace, but do not
+                # attest an unverified process as live.
+                if age > self._startup_grace_seconds:
+                    self._records.pop(pid, None)
+                continue
             if not self._live_start(pid, record.start_time):
                 self._records.pop(pid, None)
                 continue
-            age = max(0.0, now - record.spawned_at)
             if not record.ready and age > self._startup_grace_seconds:
                 self._records.pop(pid, None)
                 continue
