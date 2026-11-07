@@ -159,8 +159,14 @@ def is_unlocked(backend: str) -> bool:
     return _live(backend, touch=False) is not None
 
 
-def can_prompt_here() -> bool:
-    """False in contexts where no human can answer (cron, webhook, api_server, -q)."""
+def can_prompt_here(purpose: str = "unlock") -> bool:
+    """False in contexts where no human can answer (cron, webhook, api_server, -q).
+
+    ``purpose`` selects which callback slot proves a real surface is installed
+    ("unlock" | "save_login"); availability is purpose-aware so a messaging
+    turn that can broker a save-login form is not gated on an unlock prompt it
+    deliberately does not install.
+    """
     from tools.approval_context import (
         _is_cron_approval_context,
         _is_single_query_approval_context,
@@ -168,4 +174,6 @@ def can_prompt_here() -> bool:
     )
     if _is_cron_approval_context() or _is_unattended_platform_approval_context() or _is_single_query_approval_context():
         return False
+    if purpose == "save_login":
+        return get_save_login_prompt_callback() is not None
     return get_unlock_prompt_callback() is not None
