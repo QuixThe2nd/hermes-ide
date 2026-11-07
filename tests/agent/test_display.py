@@ -557,3 +557,52 @@ class TestBuildStatusPhrase:
             assert build_status_phrase("terminal", {"command": "ls"}) is None
         finally:
             set_friendly_tool_labels(True)
+
+
+class TestDescribeToolCallProgressiveLabels:
+    """Raw ``description`` passthrough renders with a present-progressive first word.
+
+    Models write descriptions imperatively; users should read "Inspecting…", not
+    "Inspect…". Composed purpose clauses ("Editing X to Y") stay infinitive.
+    """
+
+    @pytest.mark.parametrize(
+        ("description", "expected"),
+        [
+            ("Inspect dedup tests and live drain call site", "Inspecting dedup tests and live drain call site"),
+            ("Identify live drain path and legacy first-send", "Identifying live drain path and legacy first-send"),
+            ("Check batch composition and dedup reset sites", "Checking batch composition and dedup reset sites"),
+            ("check git status", "Checking git status"),
+            ("run the test suite", "Running the test suite"),
+            ("checking git status", "Checking git status"),
+            ("Reading the config", "Reading the config"),
+        ],
+    )
+    def test_raw_description_becomes_progressive(self, description, expected):
+        phrase = describe_tool_call("terminal", {"command": "x", "description": description})
+        assert phrase == expected
+
+    @pytest.mark.parametrize(
+        ("tool_name", "args", "expected"),
+        [
+            # Composed infinitive purpose clauses stay exactly as today.
+            ("patch", {"path": "/tmp/gpu.yaml", "description": "update the GPU mapping"}, "Editing gpu.yaml to update the GPU mapping"),
+            ("skill_view", {"name": "fork", "description": "check ship rules"}, "Reading skill to check ship rules"),
+            ("delegate_agent", {"backend": "claude", "goal": "g", "description": "implementing retry gate", "workdir": "/w"}, "Delegated to Claude agent: implementing retry gate"),
+        ],
+    )
+    def test_composed_purpose_clauses_unchanged(self, tool_name, args, expected):
+        assert describe_tool_call(tool_name, args) == expected
+
+    @pytest.mark.parametrize(
+        ("description", "expected"),
+        [
+            # Non-verb first words, digits/symbols, acronyms: left alone (then capitalised).
+            ("the deploy config needs updating", "The deploy config needs updating"),
+            ("GPU mapping note", "GPU mapping note"),
+            ("2fa rollout check", "2fa rollout check"),
+            ("API rate limits look fine", "API rate limits look fine"),
+        ],
+    )
+    def test_leave_alone_first_words(self, description, expected):
+        assert describe_tool_call("terminal", {"command": "x", "description": description}) == expected

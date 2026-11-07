@@ -4429,7 +4429,7 @@ TERMINAL_SCHEMA = {
             },
             "description": {
                 "type": "string",
-                "description": "One short phrase (max ~80 chars) saying WHAT this command is for, e.g. 'checking git status'. Shown to the user as progress instead of the command itself when they opt into quieter progress. Never put the command here."
+                "description": "One short phrase (max ~80 chars) saying WHAT this command is for, e.g. 'checking git status'. Start with an -ing verb (e.g. 'checking git status'). Shown to the user as progress instead of the command itself when they opt into quieter progress. Never put the command here."
             },
             "background": {
                 "type": "boolean",

@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 
 from utils import safe_json_loads
+from agent.display_progressive import progressive_phrase
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
@@ -1308,10 +1309,10 @@ def describe_tool_call(tool_name: str, args: dict | None, max_len: int = DESCRIB
             if derived:
                 return _describe_cap(derived, max_len)
             if has_desc:
-                return _describe_cap(desc, max_len)
+                return _describe_cap(progressive_phrase(desc), max_len)
         else:
             if has_desc:
-                return _describe_cap(desc, max_len)
+                return _describe_cap(progressive_phrase(desc), max_len)
             if derived:
                 return _describe_cap(derived, max_len)
     else:

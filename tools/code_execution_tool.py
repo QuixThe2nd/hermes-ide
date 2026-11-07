@@ -908,7 +908,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                     "Discard the kernel's persistent state and start fresh before running this code.")},
                 "description": {"type": "string", "description": (
                     "One short phrase (max ~80 chars) saying WHAT this code does, e.g. 'summarizing "
-                    "test failures'. Shown to the user as progress instead of the code itself when "
+                    "test failures'. Start with an -ing verb (e.g. 'summarizing test failures'). "
+                    "Shown to the user as progress instead of the code itself when "
                     "they opt into quieter progress. Never put the code here.")},
             },
             # "description" is execution metadata: advertised as required so models
