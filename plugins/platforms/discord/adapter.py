@@ -6400,14 +6400,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     async def _dispatch_raw_reaction(self, payload: Any) -> None:
         """One raw reaction event, routed by emoji to its owning feature.
 
-        Two consumers share this dispatcher: resolve-ticket confirmations
-        (✅/❌ on ``resolve_ticket`` embeds) and the restart wind-down opt-in
-        (⏸️ on the gateway's own pause offer). Their emoji sets are disjoint
-        and each filters to its own messages — resolve-ticket through its
-        pending-listener store, wind-down through the offered message-id
+        Three consumers share this dispatcher: resolve-ticket confirmations
+        and prepared-action approvals (✅/❌ on their respective embeds), plus
+        the restart wind-down opt-in (⏸️ on the gateway's own pause offer).
+        Each filters to its own messages — the two tools through their
+        pending-listener stores, wind-down through the offered message-id
         registry — so an unrelated reaction costs one cheap emoji check and
-        never reaches either. A failure in one branch can never leak into the
-        other.
+        never reaches any of them. A failure in one branch can never leak into
+        another.
         """
         try:
             emoji_name = getattr(payload.emoji, "name", None)
@@ -6415,10 +6415,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             emoji_name = None
 
         if emoji_name in ("✅", "❌"):
+            bot_user = self._client.user if self._client else None
+            if bot_user is not None and payload.user_id == bot_user.id:
+                return
             try:
-                bot_user = self._client.user if self._client else None
-                if bot_user is not None and payload.user_id == bot_user.id:
-                    return
                 from tools.discord_resolve_tool import handle_resolve_reaction
                 result = await asyncio.to_thread(
                     handle_resolve_reaction,
@@ -6432,6 +6432,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             except Exception:
                 logger.exception(
                     "[%s] resolve_ticket reaction handler failed", self.name
+                )
+            try:
+                from tools.discord_approve_action_tool import handle_approve_reaction
+                result = await asyncio.to_thread(
+                    handle_approve_reaction,
+                    str(payload.channel_id),
+                    str(payload.message_id),
+                    emoji_name,
+                    self.config.token,
+                )
+                if result.get("acted"):
+                    logger.info("[%s] approve_action reaction: %s", self.name, result)
+            except Exception:
+                logger.exception(
+                    "[%s] approve_action reaction handler failed", self.name
                 )
             return
 

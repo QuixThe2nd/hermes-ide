@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -139,5 +139,45 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     raw_message.remove_reaction.assert_not_awaited()
     # Response should still be sent
     adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_raw_decision_reaction_routes_to_both_pending_listeners(adapter):
+    payload = SimpleNamespace(
+        emoji=SimpleNamespace(name="✅"),
+        user_id=42,
+        channel_id=123,
+        message_id=456,
+    )
+
+    with patch(
+        "tools.discord_resolve_tool.handle_resolve_reaction",
+        return_value={"acted": False, "reason": "not_listening"},
+    ) as resolve, patch(
+        "tools.discord_approve_action_tool.handle_approve_reaction",
+        return_value={"acted": True, "decision": "approved"},
+    ) as approve:
+        await adapter._dispatch_raw_reaction(payload)
+
+    resolve.assert_called_once_with("123", "456", "✅", "***")
+    approve.assert_called_once_with("123", "456", "✅", "***")
+
+
+@pytest.mark.asyncio
+async def test_raw_decision_reaction_filters_the_bots_own_seeded_reactions(adapter):
+    payload = SimpleNamespace(
+        emoji=SimpleNamespace(name="❌"),
+        user_id=adapter._client.user.id,
+        channel_id=123,
+        message_id=456,
+    )
+
+    with patch("tools.discord_resolve_tool.handle_resolve_reaction") as resolve, patch(
+        "tools.discord_approve_action_tool.handle_approve_reaction"
+    ) as approve:
+        await adapter._dispatch_raw_reaction(payload)
+
+    resolve.assert_not_called()
+    approve.assert_not_called()
 
 
