@@ -1111,6 +1111,14 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
     "parameters": {
         "type": "object",
         "properties": {
+            "description": {
+                "type": "string",
+                "description": (
+                    "One short phrase (max ~80 chars) saying WHY you are calling this, "
+                    "e.g. 'clean up the stale backup monitor'. Shown to the user as progress. "
+                    "Never put secrets here."
+                ),
+            },
             "paused": {"type": "boolean", "description": "Create only: persist disabled atomically. Resume to schedule; explicit run remains available. Default false."},
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
             "action": {

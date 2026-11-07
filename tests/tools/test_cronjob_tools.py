@@ -475,6 +475,43 @@ class TestUnifiedCronjobTool:
 # =========================================================================
 
 
+class TestProgressDescription:
+    def test_description_is_optional_progress_reason(self):
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+
+        parameters = CRONJOB_SCHEMA["parameters"]
+        assert parameters["properties"]["description"] == {
+            "type": "string",
+            "description": (
+                "One short phrase (max ~80 chars) saying WHY you are calling this, "
+                "e.g. 'clean up the stale backup monitor'. Shown to the user as progress. "
+                "Never put secrets here."
+            ),
+        }
+        assert "description" not in parameters["required"]
+
+    def test_registered_handler_does_not_forward_description(self, monkeypatch):
+        import tools.cronjob_tools as tool_module
+        from tools.registry import registry
+
+        captured = {}
+
+        def _fake_cronjob(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        monkeypatch.setattr(tool_module, "cronjob", _fake_cronjob)
+        registry._tools["cronjob_manage"].handler({
+            "action": "remove",
+            "job_id": "d3b3945f166d",
+            "description": "clean up the stale backup monitor",
+        })
+
+        assert captured["action"] == "remove"
+        assert captured["job_id"] == "d3b3945f166d"
+        assert "description" not in captured
+
+
 class TestAgentCannotSetModelPin:
     """Per-job inference pins are user-owned (dashboard / `hermes cron`
     --model / hand-edited jobs). The agent-facing tool schema must not expose
@@ -674,7 +711,7 @@ class TestLocalDeliveryNotice:
         # Omitted deliver from a session with no origin downgrades to local.
         assert created["deliver"] == "local"
         assert "local-only cron job" in created["message"]
-        assert "deliver='telegram'" in created["message"]
+        assert "deliver='discord:999888777'" in created["message"]
 
 
     def test_gateway_origin_no_notice(self, monkeypatch):

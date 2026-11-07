@@ -68,6 +68,37 @@ def _seed_modpack_sessions(db):
 # =========================================================================
 
 class TestSchema:
+    def test_description_is_optional_progress_reason(self):
+        parameters = SESSION_SEARCH_SCHEMA["parameters"]
+        assert parameters["properties"]["description"] == {
+            "type": "string",
+            "description": (
+                "One short phrase (max ~80 chars) saying WHY you are calling this, "
+                "e.g. 'find where we left the deploy'. Shown to the user as progress. "
+                "Never put secrets here."
+            ),
+        }
+        assert "description" not in parameters["required"]
+
+    def test_registered_handler_does_not_forward_description(self, monkeypatch):
+        import tools.session_search_tool as tool_module
+        from tools.registry import registry
+
+        captured = {}
+
+        def _fake_session_search(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        monkeypatch.setattr(tool_module, "session_search", _fake_session_search)
+        registry._tools["session_search"].handler({
+            "query": "ezEIGEN",
+            "description": "find where we left the deploy",
+        })
+
+        assert captured["query"] == "ezEIGEN"
+        assert "description" not in captured
+
     def test_schema_params_cover_every_shape(self):
         params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
         # Discovery shape

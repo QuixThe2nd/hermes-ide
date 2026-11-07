@@ -606,3 +606,138 @@ class TestDescribeToolCallProgressiveLabels:
     )
     def test_leave_alone_first_words(self, description, expected):
         assert describe_tool_call("terminal", {"command": "x", "description": description}) == expected
+
+
+class TestDescribeToolCallSessionSearchPurpose:
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            (
+                {"query": "ezEIGEN", "description": "find where we left the deploy"},
+                "Searching past sessions for ezEIGEN to find where we left the deploy",
+            ),
+            (
+                {"description": "recall the deploy discussion"},
+                "Searching past sessions to recall the deploy discussion",
+            ),
+            ({"query": "ezEIGEN"}, "Searching past sessions for ezEIGEN"),
+            ({}, "Searching past sessions"),
+        ],
+    )
+    def test_composes_query_and_purpose(self, args, expected):
+        assert describe_tool_call("session_search", args) == expected
+
+
+class TestDescribeToolCallCronPurpose:
+    @pytest.mark.parametrize("tool_name", ["cronjob_manage", "cronjob"])
+    def test_remove_composes_unresolved_id_and_purpose(self, tool_name):
+        assert describe_tool_call(
+            tool_name,
+            {
+                "action": "remove",
+                "job_id": "d3b3945f166d",
+                "description": "clean up the stale backup monitor",
+            },
+        ) == "Removing cron job d3b3945f166d to clean up the stale backup monitor"
+
+    @pytest.mark.parametrize("tool_name", ["cronjob_manage", "cronjob"])
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            ({"action": "list"}, "Listing cron jobs"),
+            (
+                {"action": "list", "description": "audit the backup schedule"},
+                "Listing cron jobs to audit the backup schedule",
+            ),
+            ({"action": "unknown"}, "Managing cron jobs"),
+            (
+                {"action": "unknown", "description": "inspect the job action"},
+                "Managing cron jobs to inspect the job action",
+            ),
+        ],
+    )
+    def test_existing_labels_only_gain_a_supplied_purpose(self, tool_name, args, expected):
+        assert describe_tool_call(tool_name, args) == expected
+
+    def test_remove_resolves_name_from_real_active_profile_store(self, tmp_path, monkeypatch):
+        from cron.jobs import create_job
+
+        home = tmp_path / "active-profile"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        job = create_job(
+            prompt="private prompt payload",
+            schedule="every 1h",
+            name="NAS backup monitor",
+            script="private-script.py",
+            no_agent=True,
+        )
+
+        phrase = describe_tool_call(
+            "cronjob_manage", {"action": "remove", "job_id": job["id"]}
+        )
+
+        assert phrase == "Removing cron job NAS backup monitor"
+        assert job["id"] not in phrase
+        assert job["prompt"] not in phrase
+        assert job["script"] not in phrase
+        assert job["schedule_display"] not in phrase
+
+    @pytest.mark.parametrize("stored_job", [None, {"name": ""}, {"name": "   "}])
+    def test_missing_or_empty_stored_name_falls_back_to_id(self, stored_job, monkeypatch):
+        monkeypatch.setattr("cron.jobs.get_job", lambda _job_id: stored_job)
+        assert describe_tool_call(
+            "cronjob_manage", {"action": "remove", "job_id": "d3b3945f166d"}
+        ) == "Removing cron job d3b3945f166d"
+
+    def test_store_lookup_error_never_escapes_display(self, monkeypatch):
+        def _raise_lookup_error(_job_id):
+            raise RuntimeError("store unavailable")
+
+        monkeypatch.setattr("cron.jobs.get_job", _raise_lookup_error)
+        assert describe_tool_call(
+            "cronjob_manage", {"action": "remove", "job_id": "d3b3945f166d"}
+        ) == "Removing cron job d3b3945f166d"
+
+    def test_explicit_name_does_not_need_store_lookup(self, monkeypatch):
+        def _unexpected_lookup(_job_id):
+            raise AssertionError("an explicit name must win without a store read")
+
+        monkeypatch.setattr("cron.jobs.get_job", _unexpected_lookup)
+        assert describe_tool_call(
+            "cronjob_manage",
+            {"action": "remove", "job_id": "d3b3945f166d", "name": "NAS backup monitor"},
+        ) == "Removing cron job NAS backup monitor"
+
+
+class TestDescribeToolCallGerundPurposes:
+    @pytest.mark.parametrize(
+        ("tool_name", "args", "expected"),
+        [
+            (
+                "skill_view",
+                {"name": "x", "description": "checking fork ship rules"},
+                "Reading skill to check fork ship rules",
+            ),
+            (
+                "discord",
+                {
+                    "action": "fetch_messages",
+                    "channel_id": "123",
+                    "description": "Finding the deploy report",
+                },
+                "Fetching recent Discord messages in channel 123 to find the deploy report",
+            ),
+            (
+                "write_file",
+                {"path": "/a/b.md", "description": "Updating the GPU note"},
+                "Writing b.md to update the GPU note",
+            ),
+        ],
+    )
+    def test_progressive_reason_becomes_infinitive(self, tool_name, args, expected):
+        assert describe_tool_call(tool_name, args) == expected
+
+    def test_explicit_to_progressive_reason_is_also_normalized(self):
+        assert describe_tool_call(
+            "skill_view", {"name": "x", "description": "to Checking fork ship rules"}
+        ) == "Reading skill to check fork ship rules"

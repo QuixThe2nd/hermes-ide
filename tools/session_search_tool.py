@@ -667,6 +667,14 @@ SESSION_SEARCH_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "description": {
+                "type": "string",
+                "description": (
+                    "One short phrase (max ~80 chars) saying WHY you are calling this, "
+                    "e.g. 'find where we left the deploy'. Shown to the user as progress. "
+                    "Never put secrets here."
+                ),
+            },
             "query": {
                 "type": "string",
                 "description": (
