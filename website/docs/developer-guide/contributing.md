@@ -226,6 +226,7 @@ refactor/description   # Code restructuring
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: Consider macOS, Linux, WSL2, and native Windows. If you touch file I/O, process management, terminal handling, subprocesses, or signals, run `scripts/check-windows-footguns.py`.
 4. **Keep PRs focused**: One logical change per PR
+5. **Check PR diff gates**: CI runs `scripts/check_pr_diff.py` on every PR: a change to product (non-test) Python must also touch tests (the `no-tests-needed` label or docs/config/chore-only diffs are exempt), and lockfiles or CI workflow rewrites must be the PR's main purpose (majority of changed files) or carry the `deps` / `ci` label.
 
 ### PR Description
 
