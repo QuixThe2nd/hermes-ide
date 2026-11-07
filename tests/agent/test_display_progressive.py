@@ -2,7 +2,38 @@
 
 import pytest
 
+import agent.display_progressive as display_progressive
 from agent.display_progressive import progressive_phrase
+
+
+_PURPOSE_VERB_FORMS = [
+    ("recall", "recalling"),
+    ("diagnose", "diagnosing"),
+    ("remember", "remembering"),
+    ("understand", "understanding"),
+    ("pick", "picking"),
+    ("choose", "choosing"),
+    ("decide", "deciding"),
+    ("continue", "continuing"),
+    ("reconcile", "reconciling"),
+    ("grab", "grabbing"),
+    ("dedupe", "deduping"),
+]
+
+
+class TestPurposeProgressiveVerbs:
+    @pytest.mark.parametrize(("verb", "progressive"), _PURPOSE_VERB_FORMS)
+    def test_progressive_phrase(self, verb, progressive):
+        assert progressive_phrase(f"{verb} the thing") == f"{progressive} the thing"
+        assert progressive_phrase(
+            f"{verb.capitalize()} the thing"
+        ) == f"{progressive.capitalize()} the thing"
+
+    @pytest.mark.parametrize(("verb", "progressive"), _PURPOSE_VERB_FORMS)
+    def test_base_verb_phrase(self, verb, progressive):
+        assert display_progressive.base_verb_phrase(
+            f"{progressive} the thing"
+        ) == f"{verb} the thing"
 
 
 class TestProgressivePhraseSpelling:
@@ -157,3 +188,51 @@ class TestProgressivePhraseConsonantDoubling:
     )
     def test_consonant_doubling(self, text, expected):
         assert progressive_phrase(text) == expected
+
+
+class TestBaseVerbPhrase:
+    """Progressive purpose openers invert through the same curated verb tables."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("checking fork ship rules", "check fork ship rules"),
+            ("Finding the deploy report", "find the deploy report"),
+            ("Updating the GPU note", "update the GPU note"),
+            ("running the suite", "run the suite"),
+            ("making it so", "make it so"),
+            ("lying down", "lie down"),
+            ("tying the knot", "tie the knot"),
+            ("seeing the diff", "see the diff"),
+            ("checking", "check"),
+        ],
+    )
+    def test_base_spelling(self, text, expected):
+        assert display_progressive.base_verb_phrase(text) == expected
+
+    def test_every_curated_progressive_round_trips_to_its_base(self):
+        for verb in sorted(display_progressive._PROGRESSIVE_VERBS):
+            progressive = progressive_phrase(verb)
+            assert display_progressive.base_verb_phrase(progressive) == verb
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "obliterating the cache",
+            "the deploy config",
+            "GPU mapping note",
+            "4 spaces only",
+            "API rate limits",
+            "READING the config",
+            "checking?",
+            "   ",
+            "",
+        ],
+    )
+    def test_unknown_and_non_verb_openers_pass_through(self, text):
+        assert display_progressive.base_verb_phrase(text) == text
+
+    def test_only_first_word_is_inverted(self):
+        assert display_progressive.base_verb_phrase(
+            "checking the running job"
+        ) == "check the running job"

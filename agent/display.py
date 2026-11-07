@@ -16,7 +16,8 @@ from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 
 from utils import safe_json_loads
-from agent.display_progressive import progressive_phrase
+from agent.display_cron_subject import resolve_cron_job_name
+from agent.display_progressive import base_verb_phrase, progressive_phrase
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
@@ -639,8 +640,11 @@ def _describe_todo_list_phrase(args: dict) -> str | None:
 
 
 def _describe_purpose(reason: str) -> str:
-    """Infinitive purpose clause for progress copy, without doubling an explicit ``to``."""
-    return reason if reason.lower().startswith("to ") else f"to {reason}"
+    """Infinitive purpose clause, normalising progressive openers without doubling ``to``."""
+    explicit_to = re.match(r"(?i)^(to\s+)(.*)$", reason, re.DOTALL)
+    if explicit_to:
+        return explicit_to.group(1) + base_verb_phrase(explicit_to.group(2))
+    return f"to {base_verb_phrase(reason)}"
 
 
 def _describe_file_tool_phrase(tool_name: str, args: dict) -> str | None:
@@ -663,8 +667,10 @@ def _describe_web_search_phrase(tool_name: str, args: dict) -> str | None:
 
 def _describe_session_search_phrase(tool_name: str, args: dict) -> str | None:
     query = _describe_safe_str(args.get("query"))
+    reason = _describe_safe_str(args.get("description"))
     verb = get_tool_verb(tool_name)
-    return f"{verb} for {query}" if verb and query else None
+    label = f"{verb} for {query}" if verb and query else verb
+    return f"{label} {_describe_purpose(reason)}" if label and reason else label
 
 
 # Curated safe-subject builders, table-driven like _TOOL_VERBS above: each entry
@@ -795,16 +801,22 @@ _CRON_NEUTRAL_TOOL_PHRASES = {"cronjob_manage": "Managing cron jobs", "cronjob":
 
 def _describe_cronjob_phrase(_tool_name: str, args: dict) -> str | None:
     action = _describe_action_key(args)
+    reason = _describe_arg(args, "description")
     label = _describe_enum_label(_CRON_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
         # missing/null/unknown action (None, int, list, dict, bad string): never claim scheduling
-        return "Managing cron jobs"
-    subject = _describe_arg(args, "name", "job_id") if action != "list" else None
+        label = "Managing cron jobs"
+        return f"{label} {_describe_purpose(reason)}" if reason else label
+    subject = _describe_arg(args, "name") if action != "list" else None
+    job_id = _describe_arg(args, "job_id") if action != "list" else None
+    if subject is None and job_id is not None:
+        subject = resolve_cron_job_name(job_id) or job_id
     if subject is None and action == "create":
         skills = args.get("skills")
         subject = skills[0] if isinstance(skills, list) and skills and isinstance(skills[0], str) else None
         subject = subject or _describe_arg(args, "skill")
-    return f"{label} {subject}" if subject else label
+    phrase = f"{label} {subject}" if subject else label
+    return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
 
 
 _PROCESS_DESCRIBE_ACTIONS = {
@@ -1288,6 +1300,7 @@ def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
 # Builders here fold ``description`` into verb+reason; raw ``description`` alone must not win.
 _DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({
     "write_file", "patch", "skill_view", "skill_manage", "delegate_agent", "discord", "discord_admin",
+    "session_search", "cronjob_manage", "cronjob",
 })
 
 
