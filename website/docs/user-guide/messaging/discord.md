@@ -758,17 +758,17 @@ display:
   tool_progress_command: true
 ```
 
-#### `display.reasoning_style`
+#### `display.show_reasoning`
 
-**Type:** string — **Default:** `"code"` — **Values:** `code`, `blockquote`, `subtext`, `compact`
+**Type:** boolean — **Default:** `false`
 
-Controls how the model's reasoning block is rendered when reasoning display is enabled. The default is `code` (same as every other platform): a fenced code block prefixed with `💭 **Reasoning:**`. `blockquote` renders each line as a `>` quote. On Discord you can opt into `subtext` to use the native `-# ` small grey metadata text so reasoning stays visually secondary to the answer. Long reasoning is collapsed to the first 15 lines. `compact` shows only a single `💭 thought for Xs` duration line (no reasoning text at all), with an optional `(N tokens)` suffix carrying this turn's thinking/output tokens when the provider reports them.
+When enabled, prepends one reasoning-summary line to the final response: `-# 💭 Reasoned about <describe>` on Discord and `_💭 Reasoned about <describe>_` on other platforms. `<describe>` is the first non-empty reasoning line, truncated to 80 characters with an ellipsis when longer. The multi-line reasoning body is never rendered, and there is no style or verbosity setting.
 
 ```yaml
 display:
   platforms:
     discord:
-      reasoning_style: subtext   # opt-in: native -# grey metadata (default is code)
+      show_reasoning: true
 ```
 
 #### `display.long_running_notifications`

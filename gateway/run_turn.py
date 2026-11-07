@@ -1732,13 +1732,8 @@ class GatewayTurnMixin:
                 )
         return response, _intentional_silence, agent_messages
 
-    # reasoning_style → (header line, per-line quote prefix for blank / non-blank lines)
-    _REASONING_QUOTE_STYLES = {
-        "subtext": ("-# 💭 Reasoning", "-# ", "-#"), "blockquote": ("> 💭 **Reasoning:**", "> ", ">")
-    }
-
     def _hmwa_prepend_reasoning(self, agent_result, response, source, _intentional_silence):
-        """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
+        """Prepend the one-line reasoning summary when enabled for this platform. Mattermost
         requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
         try:
@@ -1751,29 +1746,9 @@ class GatewayTurnMixin:
         last_reasoning = agent_result.get("last_reasoning")
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
             return response
-        from gateway.stream_consumer_fences import escape_code_fences_for_display
-        # Collapse long reasoning to keep messages readable
-        lines = last_reasoning.strip().splitlines()
-        if len(lines) > 15:
-            display_reasoning = "\n".join(lines[:15]) + f"\n_... ({len(lines) - 15} more lines)_"
-        else:
-            display_reasoning = last_reasoning.strip()
-        # Per-platform render style from config (default fenced code block; "-# " subtext when configured).
-        try:
-            from gateway.display_config import resolve_display_setting
-            _reasoning_style = resolve_display_setting(
-                _load_gateway_config(), _platform_config_key(source.platform), "reasoning_style", "code",
-            )
-        except Exception:
-            _reasoning_style = "code"
-        _quote = self._REASONING_QUOTE_STYLES.get(_reasoning_style)
-        if _quote:
-            header, prefix, empty = _quote
-            _quoted = "\n".join(f"{prefix}{ln}" if ln else empty for ln in display_reasoning.splitlines())
-            return f"{header}\n{_quoted}\n\n{response}"
-        # Escape ``` inside reasoning so inner fences don't break the outer code block.
-        display_reasoning = escape_code_fences_for_display(display_reasoning)
-        return f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+        from gateway.display_config import format_reasoning_prefix
+        prefix = format_reasoning_prefix(last_reasoning, _platform_config_key(source.platform))
+        return f"{prefix}\n\n{response}" if prefix else response
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
@@ -4460,45 +4435,9 @@ class GatewayTurnMixin:
             # reasoning prepend AND the runtime footer below resolve display.*
             # from the profile that actually served this turn.
             with self._display_config_scope(source):
-                try:
-                    _show_reasoning_effective = _resolve_gateway_display_bool(
-                        _load_gateway_config(),
-                        _platform_config_key(source.platform),
-                        "show_reasoning",
-                        default=bool(getattr(self, "_show_reasoning", False)),
-                        platform=source.platform,
-                    )
-                except Exception:
-                    _show_reasoning_effective = getattr(self, "_show_reasoning", False)
-                if _show_reasoning_effective and response and not _intentional_silence:
-                    last_reasoning = agent_result.get("last_reasoning")
-                    if last_reasoning:
-                        # Render style is per-platform: Discord defaults to "-# "
-                        # subtext (native small grey metadata text); "compact"
-                        # shows only a one-line "thought for Xs" duration note
-                        # (plus this turn's "(N tokens)" when the provider
-                        # reported a count); other platforms keep the fenced
-                        # code block.
-                        try:
-                            from gateway.display_config import resolve_display_setting
-                            _reasoning_style = resolve_display_setting(
-                                _load_gateway_config(),
-                                _platform_config_key(source.platform),
-                                "reasoning_style",
-                                "code",
-                            )
-                        except Exception:
-                            _reasoning_style = "code"
-                        from gateway.display_config import format_reasoning_prefix
-                        _reasoning_prefix = format_reasoning_prefix(
-                            _reasoning_style,
-                            last_reasoning,
-                            _turn_seconds,
-                            _platform_config_key(source.platform),
-                            thought_tokens=agent_result.get("thought_tokens"),
-                        )
-                        if _reasoning_prefix:
-                            response = f"{_reasoning_prefix}\n\n{response}"
+                response = self._hmwa_prepend_reasoning(
+                    agent_result, response, source, _intentional_silence
+                )
 
                 # Runtime-metadata footer — only on the FINAL message of the turn.
                 # Off by default (display.runtime_footer.enabled=false).  When

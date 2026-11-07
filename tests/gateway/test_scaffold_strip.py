@@ -20,19 +20,14 @@ def test_memory_injection_card_stripped_prose_preserved():
     assert _sanitize_gateway_final_response("discord", raw) == expected
 
 
-def test_reasoning_header_and_fenced_block_stripped():
-    raw = (
-        "💭 **Reasoning:**\n"
-        "```\n"
-        "First I considered the user's question.\n"
-        "Then I checked the docs.\n"
-        "_... (20 more lines)_\n"
-        "```\n"
-        f"{REAL_PROSE}\n"
-    )
-    expected = REAL_PROSE
-    assert _strip_provider_scaffolding(raw) == expected
-    assert _sanitize_gateway_final_response("discord", raw) == expected
+def test_reasoned_about_summary_stripped():
+    for prefix in (
+        "-# 💭 Reasoned about the user's question",
+        "_💭 Reasoned about the user's question_",
+    ):
+        raw = f"{prefix}\n{REAL_PROSE}\n"
+        assert _strip_provider_scaffolding(raw) == REAL_PROSE
+        assert _sanitize_gateway_final_response("discord", raw) == REAL_PROSE
 
 
 def test_progress_accumulation_fence_stripped():
@@ -115,11 +110,7 @@ def test_mixed_scaffold_stripped_prose_kept():
         "§ USER PROFILE\n"
         "════════════════════════════════\n"
         "```\n"
-        "💭 **Reasoning:**\n"
-        "```\n"
-        "Thinking step one.\n"
-        "_... (20 more lines)_\n"
-        "```\n"
+        "-# 💭 Reasoned about the next step\n"
         "```\n"
         "📖 Reading skill docs\n"
         "💻 Merge the documentation PR\n"

@@ -1,21 +1,19 @@
-"""Reasoning display — compact style + serving-profile display resolution.
+"""Reasoning display — hardcoded one-line summary + serving-profile display resolution.
 
 Two invariants:
 
-1. ``reasoning_style: compact`` shows ONLY a one-line "💭 thought for Xs"
-   duration note (Discord subtext / italic elsewhere), optionally suffixed
-   with this turn's "(N tokens)" count, and never the chain-of-thought body.
-2. On a multiplexed gateway, the reasoning prepend and runtime footer
-   resolve ``display.*`` from the SERVING profile's config.yaml — the home
-   ``_run_agent`` scoped the turn to — not the default profile home.
+1. Reasoning display is one ``💭 Reasoned about <describe>`` line: Discord
+   subtext, italic elsewhere, using only the first non-empty reasoning line.
+2. On a multiplexed gateway, the reasoning prepend and runtime footer resolve
+   ``display.*`` from the SERVING profile's config.yaml — the home ``_run_agent``
+   scoped the turn to — not the default profile home.
    ``GatewayRunner._display_config_scope`` is the seam that makes
    ``_load_gateway_config()`` at the prepend/footer site see that home.
 """
 
 import yaml
 
-# Stand-in chain-of-thought; compact must never leak any of it.
-REASONING_BODY = "internal scratch deliberation about the answer"
+REASONING_BODY = "First I considered the user's question.\nThen I checked the docs."
 FINAL_ANSWER = "here is the answer"
 
 
@@ -23,217 +21,149 @@ def _render_final_response(
     config: dict,
     *,
     platform_key: str,
-    last_reasoning: str,
-    turn_seconds,
-    thought_tokens: int | None = None,
+    last_reasoning: str | None,
 ) -> str:
-    """Mirror the ``_handle_message_with_agent`` prepend gate + helper call.
-
-    Same contract as the production site: resolve show_reasoning, resolve
-    reasoning_style, render the prefix, prepend it to the final answer.
-    """
+    """Mirror the production ``show_reasoning`` gate and prefix prepend."""
     from gateway.display_config import format_reasoning_prefix, resolve_display_setting
 
     if not resolve_display_setting(config, platform_key, "show_reasoning", False):
         return FINAL_ANSWER
-    style = resolve_display_setting(config, platform_key, "reasoning_style", "code")
-    prefix = format_reasoning_prefix(
-        style, last_reasoning, turn_seconds, platform_key, thought_tokens=thought_tokens
-    )
+    prefix = format_reasoning_prefix(last_reasoning, platform_key)
     return f"{prefix}\n\n{FINAL_ANSWER}" if prefix else FINAL_ANSWER
 
 
-def _compact_config(platform_key: str = "discord", **display) -> dict:
+def _reasoning_config(platform_key: str = "discord", **display) -> dict:
     display.setdefault("show_reasoning", True)
-    display.setdefault("reasoning_style", "compact")
     return {"display": {"platforms": {platform_key: display}}}
 
 
-class TestCompactReasoningStyle:
-    """``compact`` renders one duration line, never the reasoning body."""
-
-    def test_discord_renders_subtext_duration_line(self):
+class TestOneLineReasoningDisplay:
+    def test_discord_renders_subtext_summary(self):
         rendered = _render_final_response(
-            _compact_config("discord"),
+            _reasoning_config("discord"),
             platform_key="discord",
             last_reasoning=REASONING_BODY,
-            turn_seconds=11.0,
         )
-        assert rendered.startswith("-# 💭 thought for 11s")
-        assert REASONING_BODY not in rendered
-        assert rendered.endswith(f"\n\n{FINAL_ANSWER}")
+        assert rendered == (
+            "-# 💭 Reasoned about First I considered the user's question.\n\n"
+            f"{FINAL_ANSWER}"
+        )
 
-    def test_non_discord_renders_italic_duration_line(self):
+    def test_non_discord_renders_italic_summary(self):
         for platform_key in ("telegram", "slack", "matrix"):
             rendered = _render_final_response(
-                _compact_config(platform_key),
+                _reasoning_config(platform_key),
                 platform_key=platform_key,
                 last_reasoning=REASONING_BODY,
-                turn_seconds=11.0,
             )
-            assert rendered.startswith("_💭 thought for 11s_"), platform_key
-            assert REASONING_BODY not in rendered
+            assert rendered == (
+                "_💭 Reasoned about First I considered the user's question._\n\n"
+                f"{FINAL_ANSWER}"
+            ), platform_key
 
-    def test_show_reasoning_false_suppresses_thought_line(self):
-        config = _compact_config("discord", show_reasoning=False)
-        rendered = _render_final_response(
-            config,
-            platform_key="discord",
-            last_reasoning=REASONING_BODY,
-            turn_seconds=11.0,
-        )
-        assert rendered == FINAL_ANSWER
-        assert "thought for" not in rendered
-
-    def test_empty_duration_omits_thought_line(self):
-        for turn_seconds in (None, -1.0):
-            rendered = _render_final_response(
-                _compact_config("discord"),
-                platform_key="discord",
-                last_reasoning=REASONING_BODY,
-                turn_seconds=turn_seconds,
-            )
-            assert rendered == FINAL_ANSWER, turn_seconds
-            assert "thought for" not in rendered
-
-    def test_no_reasoning_text_omits_thought_line(self):
-        rendered = _render_final_response(
-            _compact_config("discord"),
-            platform_key="discord",
-            last_reasoning="",
-            turn_seconds=11.0,
-        )
-        assert rendered == FINAL_ANSWER
-
-    def test_duration_reuses_runtime_footer_formatting(self):
-        from gateway.runtime_footer import _format_duration
-
-        for turn_seconds, expected in (
-            (0.4, "0.4s"),
-            (11.0, "11s"),
-            (63.0, "1m03s"),
-            (4980.0, "1h23m"),
-        ):
-            rendered = _render_final_response(
-                _compact_config("discord"),
-                platform_key="discord",
-                last_reasoning=REASONING_BODY,
-                turn_seconds=turn_seconds,
-            )
-            assert rendered.startswith(f"-# 💭 thought for {expected}"), turn_seconds
-            assert expected == _format_duration(turn_seconds)
-
-
-class TestCompactThoughtTokens:
-    """``compact`` appends this turn's token count when the provider reports one.
-
-    The gateway diffs cumulative ``session_*_tokens`` counters around
-    ``run_conversation()`` and passes the per-turn delta in as
-    ``thought_tokens``. The 💭 marker is always present; a positive count
-    appends an ``(N tokens)`` suffix, while a missing/zero count leaves
-    the bare duration line.
-    """
-
-    def test_discord_appends_token_count(self):
-        rendered = _render_final_response(
-            _compact_config("discord"),
-            platform_key="discord",
-            last_reasoning=REASONING_BODY,
-            turn_seconds=3.9,
-            thought_tokens=598,
-        )
-        assert rendered.startswith("-# 💭 thought for 3.9s (598 tokens)")
-        assert REASONING_BODY not in rendered
-        assert rendered.endswith(f"\n\n{FINAL_ANSWER}")
-
-    def test_non_discord_appends_token_count(self):
-        for platform_key in ("telegram", "slack", "matrix"):
-            rendered = _render_final_response(
-                _compact_config(platform_key),
-                platform_key=platform_key,
-                last_reasoning=REASONING_BODY,
-                turn_seconds=3.9,
-                thought_tokens=598,
-            )
-            assert rendered.startswith("_💭 thought for 3.9s (598 tokens)_"), platform_key
-            assert REASONING_BODY not in rendered
-
-    def test_missing_or_zero_tokens_keep_plain_duration_line(self):
-        for thought_tokens in (None, 0):
-            rendered = _render_final_response(
-                _compact_config("discord"),
-                platform_key="discord",
-                last_reasoning=REASONING_BODY,
-                turn_seconds=3.9,
-                thought_tokens=thought_tokens,
-            )
-            assert rendered.startswith("-# 💭 thought for 3.9s"), thought_tokens
-            assert "tokens" not in rendered, thought_tokens
-            assert "💭" in rendered, thought_tokens
-
-    def test_helper_contract_exact_strings(self):
+    def test_first_meaningful_line_is_stripped_and_rest_is_omitted(self):
         from gateway.display_config import format_reasoning_prefix
 
-        assert (
-            format_reasoning_prefix(
-                "compact", "scratch", 3.9, "discord", thought_tokens=598
-            )
-            == "-# 💭 thought for 3.9s (598 tokens)"
+        prefix = format_reasoning_prefix(
+            "\n  \n\t\n  Compare the available options.  \nNever render this line.",
+            "discord",
         )
-        assert (
-            format_reasoning_prefix(
-                "compact", "scratch", 3.9, "telegram", thought_tokens=598
-            )
-            == "_💭 thought for 3.9s (598 tokens)_"
-        )
-        assert (
-            format_reasoning_prefix("compact", "scratch", 3.9, "discord")
-            == "-# 💭 thought for 3.9s"
-        )
-        assert (
-            format_reasoning_prefix("compact", "scratch", 3.9, "telegram")
-            == "_💭 thought for 3.9s_"
-        )
+        assert prefix == "-# 💭 Reasoned about Compare the available options."
+        assert "\n" not in prefix
+        assert "Never render this line" not in prefix
 
-    def test_large_counts_render_plain_integers(self):
-        rendered = _render_final_response(
-            _compact_config("discord"),
-            platform_key="discord",
-            last_reasoning=REASONING_BODY,
-            turn_seconds=63.0,
-            thought_tokens=123456,
-        )
-        assert rendered.startswith("-# 💭 thought for 1m03s (123456 tokens)")
-
-    def test_non_compact_styles_ignore_token_count(self):
+    def test_description_is_truncated_to_80_chars_with_ellipsis(self):
         from gateway.display_config import format_reasoning_prefix
 
-        for style in ("code", "blockquote", "subtext"):
-            rendered = format_reasoning_prefix(
-                style, REASONING_BODY, 3.9, "discord", thought_tokens=598
-            )
-            assert "598" not in rendered, style
+        description = "x" * 81
+        prefix = format_reasoning_prefix(description, "discord")
+        assert prefix == f"-# 💭 Reasoned about {'x' * 80}…"
+        assert "\n" not in prefix
 
-
-class TestReasoningStyleAcceptsCompact:
-    """resolve_display_setting: compact is valid; garbage still coerces."""
-
-    def test_compact_accepted(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {"display": {"reasoning_style": "compact"}}
-        assert (
-            resolve_display_setting(config, "discord", "reasoning_style") == "compact"
+        exact_limit = "y" * 80
+        assert format_reasoning_prefix(exact_limit, "telegram") == (
+            f"_💭 Reasoned about {exact_limit}_"
         )
 
-    def test_garbage_coerces_to_code(self):
-        from gateway.display_config import resolve_display_setting
+    def test_empty_or_blank_reasoning_returns_empty_prefix(self):
+        from gateway.display_config import format_reasoning_prefix
 
-        for bad in ("fancy", "SUMMARY", "inline"):
-            config = {"display": {"reasoning_style": bad}}
-            assert (
-                resolve_display_setting(config, "discord", "reasoning_style") == "code"
-            ), bad
+        for last_reasoning in (None, "", "  \n\t\n "):
+            assert format_reasoning_prefix(last_reasoning, "discord") == ""
+            assert _render_final_response(
+                _reasoning_config("discord"),
+                platform_key="discord",
+                last_reasoning=last_reasoning,
+            ) == FINAL_ANSWER
+
+    def test_show_reasoning_false_suppresses_summary(self):
+        rendered = _render_final_response(
+            _reasoning_config("discord", show_reasoning=False),
+            platform_key="discord",
+            last_reasoning=REASONING_BODY,
+        )
+        assert rendered == FINAL_ANSWER
+        assert "💭" not in rendered
+
+    def test_no_fence_duration_or_token_suffix_is_rendered(self):
+        from gateway.display_config import format_reasoning_prefix
+
+        prefix = format_reasoning_prefix(
+            "Compare the available options for 63 seconds and 598 tokens.\n"
+            "```python\nprint('never rendered')\n```",
+            "discord",
+        )
+        assert prefix == (
+            "-# 💭 Reasoned about Compare the available options for 63 seconds and 598 tokens."
+        )
+        assert "```" not in prefix
+        assert "thought for" not in prefix
+        assert "(598 tokens)" not in prefix
+
+    def test_gateway_helper_honors_gate_and_hardcoded_summary(self, monkeypatch):
+        import gateway.run as run_mod
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        runner = object.__new__(run_mod.GatewayRunner)
+        runner._show_reasoning = False
+        source = SessionSource(
+            platform=Platform.DISCORD, chat_id="chat-1", profile="default"
+        )
+        config = _reasoning_config("discord")
+        monkeypatch.setattr(run_mod, "_load_gateway_config", lambda: config)
+
+        rendered = runner._hmwa_prepend_reasoning(
+            {"last_reasoning": REASONING_BODY}, FINAL_ANSWER, source, False
+        )
+        assert rendered == (
+            "-# 💭 Reasoned about First I considered the user's question.\n\n"
+            f"{FINAL_ANSWER}"
+        )
+
+        config["display"]["platforms"]["discord"]["show_reasoning"] = False
+        assert runner._hmwa_prepend_reasoning(
+            {"last_reasoning": REASONING_BODY}, FINAL_ANSWER, source, False
+        ) == FINAL_ANSWER
+
+    def test_legacy_style_config_cannot_change_rendering(self):
+        expected = _render_final_response(
+            _reasoning_config("discord"),
+            platform_key="discord",
+            last_reasoning=REASONING_BODY,
+        )
+        for legacy_style in ("code", "blockquote", "subtext", "compact", "verbose"):
+            config = _reasoning_config("discord", reasoning_style=legacy_style)
+            assert _render_final_response(
+                config,
+                platform_key="discord",
+                last_reasoning=REASONING_BODY,
+            ) == expected, legacy_style
+
+    def test_reasoning_style_is_not_an_overrideable_setting(self):
+        from gateway.display_config import OVERRIDEABLE_KEYS
+
+        assert "reasoning_style" not in OVERRIDEABLE_KEYS
 
 
 class TestServingProfileDisplayScope:
@@ -265,29 +195,18 @@ class TestServingProfileDisplayScope:
     def test_serving_profile_display_wins_over_default_home(
         self, tmp_path, monkeypatch
     ):
-        """The live defect: default home says show_reasoning=true, the serving
-        profile says false — only the scoped read honors the serving profile."""
+        """The serving profile's show_reasoning=false beats default-home true."""
         import gateway.run as run_mod
         from gateway.display_config import resolve_display_setting
         from gateway.runtime_footer import resolve_footer_config
 
-        # Default home (the multiplexer's own) turns everything ON.
         self._write_config(
             tmp_path,
-            {
-                "show_reasoning": True,
-                "reasoning_style": "subtext",
-                "runtime_footer": {"enabled": True},
-            },
+            {"show_reasoning": True, "runtime_footer": {"enabled": True}},
         )
-        # Serving profile for this turn turns it all OFF + compact.
         self._write_config(
             tmp_path / "profiles" / "assistant",
-            {
-                "show_reasoning": False,
-                "reasoning_style": "compact",
-                "runtime_footer": {"enabled": False},
-            },
+            {"show_reasoning": False, "runtime_footer": {"enabled": False}},
         )
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -296,26 +215,18 @@ class TestServingProfileDisplayScope:
         runner = self._make_runner(multiplex=True)
         source = self._make_source(profile="assistant")
 
-        # Unscoped (pre-fix behavior): reads the DEFAULT home — reasoning on.
         default_cfg = run_mod._load_gateway_config()
         assert resolve_display_setting(default_cfg, "discord", "show_reasoning") is True
         assert resolve_footer_config(default_cfg, "discord")["enabled"] is True
 
-        # Scoped to the serving profile (the fix's seam): reasoning off,
-        # compact style, footer disabled.
         with runner._display_config_scope(source):
             scoped_cfg = run_mod._load_gateway_config()
             assert (
                 resolve_display_setting(scoped_cfg, "discord", "show_reasoning")
                 is False
             )
-            assert (
-                resolve_display_setting(scoped_cfg, "discord", "reasoning_style")
-                == "compact"
-            )
             assert resolve_footer_config(scoped_cfg, "discord")["enabled"] is False
 
-        # Scope resets — later turns still see the default home.
         assert (
             resolve_display_setting(
                 run_mod._load_gateway_config(), "discord", "show_reasoning"
@@ -329,9 +240,7 @@ class TestServingProfileDisplayScope:
         from contextlib import nullcontext
         from gateway.display_config import resolve_display_setting
 
-        self._write_config(
-            tmp_path, {"show_reasoning": True, "reasoning_style": "subtext"}
-        )
+        self._write_config(tmp_path, {"show_reasoning": True})
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(run_mod, "_hermes_home", tmp_path)
