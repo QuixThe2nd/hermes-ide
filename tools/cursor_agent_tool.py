@@ -121,6 +121,11 @@ DEFAULT_ORCHESTRATION_PROMPT = (
 POST_TIMEOUT_SECONDS = 30.0
 HTTP_TIMEOUT_SECONDS = 30.0
 POLL_INTERVAL_SECONDS = 2.0
+# Transient status-poll failure handling: a single GET timeout or 5xx must not
+# kill the waiter while the remote run keeps executing. Failures are retried
+# inside the caller's absolute deadline; exceeding the cap re-raises.
+STATUS_POLL_TRANSIENT_MAX_FAILURES = 3
+STATUS_POLL_TRANSIENT_RETRY_SLEEP_SECONDS = 5.0
 WORKER_LOG_MAX_BYTES = 256 * 1024
 WORKER_READY_ATTEMPTS = 5
 WORKER_READY_DELAY_SECONDS = 0.5
@@ -1120,6 +1125,11 @@ def cancel_cloud_run(agent_id: str, run_id: str, api_key: str) -> None:
         logger.debug("Cursor Cloud Agent cancel failed", exc_info=True)
 
 
+def _describe_transient_poll_failure(exc: Exception, count: int, limit: int) -> str:
+    """Human-readable note for a transient status-poll failure."""
+    return f"{exc} (transient status-poll failure {count}/{limit}; retrying)"
+
+
 def poll_cloud_run(
     *,
     agent_id: str,
@@ -1128,8 +1138,17 @@ def poll_cloud_run(
     timeout_seconds: int,
     started_mono: float,
 ) -> Dict[str, Any]:
-    """Poll GET /v1/agents/{id}/runs/{runId} until a terminal status."""
+    """Poll GET /v1/agents/{id}/runs/{runId} until a terminal status.
+
+    Single-request transport failures (timeouts, HTTP 5xx) are treated as
+    transient and retried with bounded backoff; the absolute ``timeout_seconds``
+    deadline still governs the whole wait. An observer error must not decide
+    the remote run's fate while the run itself may still be executing, so
+    consecutive transient failures beyond STATUS_POLL_TRANSIENT_MAX_FAILURES
+    re-raise, and non-transient API errors (e.g. HTTP 4xx) fail immediately.
+    """
     last: Dict[str, Any] = {"id": run_id, "agentId": agent_id, "status": "CREATING"}
+    transient_failures = 0
     while True:
         if _check_interrupted():
             cancel_cloud_run(agent_id, run_id, api_key)
@@ -1149,8 +1168,38 @@ def poll_cloud_run(
                 api_key=api_key,
                 timeout=HTTP_TIMEOUT_SECONDS,
             )
-        except TimeoutError as exc:
-            raise CursorCloudError(str(exc)) from None
+        except (TimeoutError, CursorCloudError) as exc:
+            is_http_5xx = isinstance(exc, CursorCloudError) and re.search(
+                r"HTTP 5\d\d\b", str(exc)
+            ) is not None
+            if not isinstance(exc, TimeoutError) and not is_http_5xx:
+                raise
+            transient_failures += 1
+            if transient_failures > STATUS_POLL_TRANSIENT_MAX_FAILURES:
+                if isinstance(exc, TimeoutError):
+                    # Preserve the original contract: timeouts surface as
+                    # CursorCloudError, which is what the caller catches.
+                    raise CursorCloudError(str(exc)) from None
+                raise
+            logger.warning(
+                "Cursor Cloud Agent: %s",
+                _describe_transient_poll_failure(
+                    exc, transient_failures, STATUS_POLL_TRANSIENT_MAX_FAILURES
+                ),
+            )
+            if (
+                timeout_seconds > 0
+                and (time.monotonic() - started_mono) + STATUS_POLL_TRANSIENT_RETRY_SLEEP_SECONDS
+                >= timeout_seconds
+            ):
+                # No room for a backoff sleep plus one more attempt inside the
+                # deadline; sleep out the remainder so the top-of-loop deadline
+                # check ends the wait deterministically.
+                time.sleep(max(0.0, timeout_seconds - (time.monotonic() - started_mono)))
+            else:
+                time.sleep(STATUS_POLL_TRANSIENT_RETRY_SLEEP_SECONDS)
+            continue
+        transient_failures = 0
         if not isinstance(last, dict):
             raise CursorCloudError("Cursor Cloud Agent poll returned a non-object")
         status = str(last.get("status") or "").strip().upper()
