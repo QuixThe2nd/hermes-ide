@@ -1039,7 +1039,7 @@ _SCAFFOLD_INJECTING_HEADER_RE = re.compile(
     r"^[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U00002300-\U000023FF\U0001F900-\U0001F9FF"
     r"\U0001F3FB-\U0001F3FF\U0000200D\U0000FE0F]+\s*Injecting\b"
 )
-_SCAFFOLD_REASONING_HEADER_RE = re.compile(r"^💭")
+_SCAFFOLD_REASONING_HEADER_RE = re.compile(r"^(?:(?:-#|>)\s*)?_?💭")
 _SCAFFOLD_PROGRESS_BULLET_RE = re.compile(
     r"^[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U00002300-\U000023FF\U0001F900-\U0001F9FF"
     r"\U0001F3FB-\U0001F3FF\U0000200D\U0000FE0F]*\s+"
@@ -16002,7 +16002,7 @@ class GatewayRunner(
         Both resolve ``display.*`` via ``_load_gateway_config()``, which reads
         ``_gateway_config_home()``; unscoped, that is the DEFAULT profile's
         config.yaml, so a multiplexed profile's display.show_reasoning /
-        reasoning_style / runtime_footer settings were silently ignored.
+        runtime_footer settings were silently ignored.
 
         Multiplexing only: single-profile gateways get a pass-through and
         keep resolving from the default home exactly as before.

@@ -977,10 +977,6 @@ DEFAULT_CONFIG = {
         # / status_phrases/*.yaml). Keys: status, generic. mode: "append" (default) | "replace".
         # Per-platform: display.platforms.<platform>.status_phrases.
         "status_phrases": {},
-        # Reasoning summary rendering: "code" (💭 fenced block) | "blockquote" ("> ") | "subtext"
-        # ("-# " Discord small grey text; Discord's default). Per-platform via
-        # display.platforms.<platform>.reasoning_style.
-        "reasoning_style": "code",
         # Auto-delete EphemeralReply system notices ("✨ New session started!", …) after N seconds
         # where deletion is supported (Telegram; others ignore). Agent responses are never touched.
         # 0 = disabled.

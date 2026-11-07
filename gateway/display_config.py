@@ -12,8 +12,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from gateway.runtime_footer import _format_duration
-
 # ---------------------------------------------------------------------------
 # Overrideable display settings and their global defaults
 # ---------------------------------------------------------------------------
@@ -29,14 +27,6 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # they stay inside the box). Opt-in; off = plain multi-line bubble.
     "tool_progress_codebox": False,
     "show_reasoning": False,
-    # How a reasoning/thinking summary is rendered when show_reasoning is on.
-    #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
-    #   "blockquote"-> each line prefixed with "> "
-    #   "subtext"   -> each line prefixed with "-# " (Discord small grey subtext)
-    #   "compact"   -> single "💭 thought for Xs" duration line, no CoT text;
-    #                  appends " (N tokens)" when this turn's count is known
-    # All platforms (including Discord) default to "code"; "subtext" is an explicit opt-in.
-    "reasoning_style": "code",
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
@@ -88,9 +78,6 @@ _TIER_MINIMAL = {**_TIER_LOW, "tool_preview_length": 0}
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
-    # Discord has a native "subtext" primitive (-# small grey text) that reads
-    # as metadata rather than content; select it via
-    # display.platforms.discord.reasoning_style when desired.
     # Discord's long-running heartbeat defaults to the phase line ("⏳ terminal
     # 1m42s" / "⏳ grok-4.6 38s" / "⏳ packing 12s") — the current wait plus its
     # elapsed time — instead of the raw diagnostic join ("⏳ Working — 3 min —
@@ -253,70 +240,28 @@ _NORMALISERS: dict[str, Any] = {
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
     "tool_progress_codebox": _norm_bool,
-    # "compact" (fork): single "💭 thought for Xs" duration line, no CoT text.
-    "reasoning_style": _norm_choice(("code", "blockquote", "subtext", "compact")),
     "tool_preview_length": _norm_int,
 }
 
 
-def format_reasoning_prefix(
-    style: str,
-    last_reasoning: str | None,
-    turn_seconds: float | None,
-    platform_key: str,
-    thought_tokens: int | None = None,
-) -> str:
-    """Render the reasoning block prepended to a final response.
+def format_reasoning_prefix(last_reasoning: str | None, platform_key: str) -> str:
+    """Render one line summarizing the first non-empty reasoning line.
 
-    Returns ``""`` when there is nothing to show — no reasoning text, or the
-    ``compact`` style with no measurable duration. Callers own the
-    ``show_reasoning`` gate and prepend the result as ``f"{prefix}\\n\\n{response}"``.
-
-    ``compact`` never includes chain-of-thought text: it renders a single
-    💭-marked duration line (``-# 💭 thought for 12s`` on Discord,
-    ``_💭 thought for 12s_`` elsewhere) so users see that the model reasoned
-    without dumping the reasoning itself. When ``thought_tokens`` carries
-    THIS turn's reasoning/output token count, the line gains a
-    ``(N tokens)`` suffix (``-# 💭 thought for 12s (N tokens)``); a
-    missing/zero count leaves the bare duration line. Duration formatting
-    reuses :func:`gateway.runtime_footer._format_duration`.
+    Callers own the ``show_reasoning`` gate and prepend the result as
+    ``f"{prefix}\\n\\n{response}"``.
     """
     if not last_reasoning:
         return ""
-    if style == "compact":
-        duration = _format_duration(turn_seconds)
-        if not duration:
-            return ""
-        if thought_tokens:
-            duration += f" ({thought_tokens} tokens)"
-        if platform_key == "discord":
-            return f"-# 💭 thought for {duration}"
-        return f"_💭 thought for {duration}_"
-    # Collapse long reasoning to keep messages readable
-    lines = last_reasoning.strip().splitlines()
-    if len(lines) > 15:
-        display_reasoning = "\n".join(lines[:15])
-        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-    else:
-        display_reasoning = last_reasoning.strip()
-    if style == "subtext":
-        quoted = "\n".join(
-            f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
-        )
-        return f"-# 💭 Reasoning\n{quoted}"
-    if style == "blockquote":
-        quoted = "\n".join(
-            f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
-        )
-        return f"> 💭 **Reasoning:**\n{quoted}"
-    # Default "code" style: escape ``` inside reasoning so inner fences don't
-    # break the outer code block used to render it.
-    from gateway.stream_consumer_fences import escape_code_fences_for_display
-
-    return (
-        f"💭 **Reasoning:**\n"
-        f"```\n{escape_code_fences_for_display(display_reasoning)}\n```"
+    describe = next(
+        (line.strip() for line in last_reasoning.splitlines() if line.strip()), ""
     )
+    if not describe:
+        return ""
+    if len(describe) > 80:
+        describe = describe[:80] + "…"
+    if platform_key == "discord":
+        return f"-# 💭 Reasoned about {describe}"
+    return f"_💭 Reasoned about {describe}_"
 
 
 def _normalise(setting: str, value: Any) -> Any:

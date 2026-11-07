@@ -319,33 +319,35 @@ class TestToolProgressGrouping:
         )
 
 
-class TestReasoningStyle:
-    """Per-platform reasoning render style (code | blockquote | subtext | compact)."""
+class TestReasoningDisplay:
+    """Reasoning summaries have one hardcoded rendering per platform family."""
 
-    def test_discord_defaults_to_code(self):
-        from gateway.display_config import resolve_display_setting
+    def test_discord_uses_subtext_summary(self):
+        from gateway.display_config import format_reasoning_prefix
 
-        assert resolve_display_setting({}, "discord", "reasoning_style") == "code"
+        assert format_reasoning_prefix("Compare options.", "discord") == (
+            "-# 💭 Reasoned about Compare options."
+        )
 
-    def test_other_platforms_default_to_code(self):
-        from gateway.display_config import resolve_display_setting
+    def test_other_platforms_use_italic_summary(self):
+        from gateway.display_config import format_reasoning_prefix
 
         for plat in ("telegram", "slack", "matrix", "api_server"):
-            assert (
-                resolve_display_setting({}, plat, "reasoning_style") == "code"
+            assert format_reasoning_prefix("Compare options.", plat) == (
+                "_💭 Reasoned about Compare options._"
             ), plat
 
-    def test_compact_is_a_valid_style(self):
-        from gateway.display_config import resolve_display_setting
+    def test_only_first_non_empty_line_is_rendered(self):
+        from gateway.display_config import format_reasoning_prefix
 
-        config = {"display": {"reasoning_style": "compact"}}
-        assert resolve_display_setting(config, "discord", "reasoning_style") == "compact"
+        assert format_reasoning_prefix("\nCompare options.\nOmit this.", "discord") == (
+            "-# 💭 Reasoned about Compare options."
+        )
 
-    def test_unknown_style_still_coerces_to_code(self):
-        from gateway.display_config import resolve_display_setting
+    def test_empty_reasoning_has_no_prefix(self):
+        from gateway.display_config import format_reasoning_prefix
 
-        config = {"display": {"reasoning_style": "summary"}}
-        assert resolve_display_setting(config, "discord", "reasoning_style") == "code"
+        assert format_reasoning_prefix(" \n\t", "discord") == ""
 
 
 class TestLiveStatusSetting:
