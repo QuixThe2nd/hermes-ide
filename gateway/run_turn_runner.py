@@ -2180,3 +2180,458 @@ class TurnRunner(_TurnRunnerCore):
             # didn't — see codex_runtime.py); default True keeps skip-db for the standard runtime.
             "agent_persisted": result.get("agent_persisted", True),
         }
+
+    # --- Tool-stage embed delivery (Discord) -------------------------------
+    # Moved verbatim from gateway/run.py TurnRunner: run_turn._run_agent_inner
+    # (kept by #569) subscribes turn_runner.tool_stage_event_callback and
+    # drains send_tool_stage_embeds(), but builds this TurnRunner.
+
+    def tool_stage_event_callback(self, event: dict) -> None:
+        """Bus subscriber: enqueue one stage event from a tool worker thread."""
+        ctx = self._ctx
+        if not ctx.stage_event_queue or not ctx._run_still_current():
+            return
+        try:
+            ctx.stage_event_queue.put_nowait(event)
+        except Exception:
+            logger.debug("tool stage event enqueue failed", exc_info=True)
+
+    def _collect_final_stage_events(self) -> list:
+        """Drain the stage queue; one event per invocation (terminal preferred)."""
+        ctx = self._ctx
+        by_invocation: Dict[str, list] = {}
+        while not ctx.stage_event_queue.empty():
+            try:
+                event = ctx.stage_event_queue.get_nowait()
+            except Exception:
+                break
+            invocation = str(event.get("invocation_id") or "")
+            if not invocation:
+                continue
+            by_invocation.setdefault(invocation, []).append(event)
+        to_deliver: list = []
+        for events in by_invocation.values():
+            terminal = next((e for e in reversed(events) if e.get("terminal")), None)
+            to_deliver.append(terminal if terminal is not None else events[-1])
+        return to_deliver
+
+    _STAGE_DELIVERY_RECOVER_TIMEOUT = 10.0
+
+    _STAGE_STOP_DRAIN_TIMEOUT = 1.0
+
+    _STAGE_OUTCOME_DELIVERED = "delivered"
+
+    _STAGE_OUTCOME_FAILED = "failed"
+
+    _STAGE_OUTCOME_UNKNOWN = "unknown"
+
+    async def _deliver_tool_stage_event(
+        self, event: dict, embed_msg_ids: Dict[str, str]
+    ) -> bool:
+        """Return True when the adapter reported success (side effect happened)."""
+        ctx = self._ctx
+        adapter = ctx._stage_embed_adapter
+        if adapter is None:
+            return False
+        invocation = str(event.get("invocation_id") or "")
+        if not invocation:
+            return False
+        try:
+            message_id = embed_msg_ids.get(invocation)
+            if message_id is None:
+                result = await ctx.deliver_visible(lambda: adapter.send_tool_stage_embed(
+                    ctx.source.chat_id,
+                    event,
+                    metadata=ctx._progress_metadata,
+                    reply_to=ctx._progress_reply_to,
+                ))
+            else:
+                result = await ctx.deliver_visible(lambda: adapter.edit_tool_stage_embed(
+                    ctx.source.chat_id,
+                    message_id,
+                    event,
+                    metadata=ctx._progress_metadata,
+                ))
+            if result is not None and getattr(result, "success", False):
+                new_id = getattr(result, "message_id", None)
+                if new_id:
+                    embed_msg_ids[invocation] = str(new_id)
+                return True
+            # Fail soft: forget the mapping so the NEXT event
+            # (usually the terminal one) sends a fresh embed
+            # instead of hammering a dead message id. A rendering
+            # failure must never alter the MoA tool's result.
+            embed_msg_ids.pop(invocation, None)
+            return False
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(
+                "tool stage embed delivery failed: %s", e, exc_info=True
+            )
+            embed_msg_ids.pop(invocation, None)
+            return False
+
+    _STAGE_STATE_EMPTY = "empty"
+
+    _STAGE_STATE_IN_FLIGHT = "in_flight"
+
+    _STAGE_STATE_DELIVERED = "delivered"
+
+    _STAGE_STATE_FAILED = "failed"
+
+    _STAGE_STATE_FAILED_FINAL = "failed_final"
+
+    _STAGE_STATE_UNKNOWN = "unknown"
+
+    @staticmethod
+    def _fresh_stage_delivery_record() -> dict:
+        return {"state": TurnRunner._STAGE_STATE_EMPTY, "attempts": 0, "task": None}
+
+    def _sync_consume_stage_delivery_task(self, record: dict) -> None:
+        task = record.get("task")
+        if task is None or not task.done():
+            return
+        try:
+            delivered = bool(task.result())
+        except Exception:
+            delivered = False
+        if delivered:
+            record["state"] = self._STAGE_STATE_DELIVERED
+        elif record["attempts"] >= 2:
+            record["state"] = self._STAGE_STATE_FAILED_FINAL
+        else:
+            record["state"] = self._STAGE_STATE_FAILED
+        record["task"] = None
+
+    def _pin_stage_delivery_task(self, task: asyncio.Task) -> None:
+        detached = getattr(self, "_stage_delivery_detached_tasks", None)
+        if detached is None:
+            detached = self._stage_delivery_detached_tasks = set()
+        detached.add(task)
+
+        def _release_detached(t: asyncio.Task) -> None:
+            if t is not task:
+                return
+            if not t.cancelled():
+                t.exception()
+            detached.discard(t)
+
+        task.add_done_callback(_release_detached)
+
+    def _claim_tool_stage_delivery(
+        self,
+        event: dict,
+        embed_msg_ids: Dict[str, str],
+        records: Dict[str, dict],
+        *,
+        retry: bool = False,
+    ) -> Optional[asyncio.Task]:
+        """Synchronous claim — the only ``create_task`` site for stage deliveries."""
+        invocation = str(event.get("invocation_id") or "")
+        if not invocation:
+            return None
+
+        record = records.setdefault(invocation, self._fresh_stage_delivery_record())
+
+        if record["state"] == self._STAGE_STATE_UNKNOWN:
+            task = record.get("task")
+            if task is not None and not task.done():
+                return None
+
+        self._sync_consume_stage_delivery_task(record)
+
+        if retry:
+            if (
+                record["state"] != self._STAGE_STATE_FAILED
+                or record["attempts"] != 1
+            ):
+                return None
+        else:
+            if record["state"] in (
+                self._STAGE_STATE_DELIVERED,
+                self._STAGE_STATE_FAILED_FINAL,
+            ):
+                record = records[invocation] = self._fresh_stage_delivery_record()
+            elif record["state"] == self._STAGE_STATE_FAILED:
+                record = records[invocation] = self._fresh_stage_delivery_record()
+            elif record["state"] == self._STAGE_STATE_UNKNOWN:
+                task = record.get("task")
+                if task is not None and not task.done():
+                    return None
+                record = records[invocation] = self._fresh_stage_delivery_record()
+            else:
+                task = record.get("task")
+                if (
+                    record["state"] == self._STAGE_STATE_IN_FLIGHT
+                    and task is not None
+                    and not task.done()
+                ):
+                    return None
+
+        record["attempts"] += 1
+        task = asyncio.create_task(
+            self._deliver_tool_stage_event(event, embed_msg_ids)
+        )
+        record["task"] = task
+        record["state"] = self._STAGE_STATE_IN_FLIGHT
+        return task
+
+    async def _harvest_tool_stage_delivery(
+        self, task: asyncio.Task, record: dict
+    ) -> str:
+        """Bounded harvest via ``asyncio.wait`` — never cancels the delivery task."""
+        done, _pending = await asyncio.wait(
+            {task}, timeout=self._STAGE_DELIVERY_RECOVER_TIMEOUT
+        )
+        if task in done:
+            try:
+                delivered = bool(task.result())
+            except Exception:
+                delivered = False
+            if delivered:
+                record["state"] = self._STAGE_STATE_DELIVERED
+                record["task"] = None
+                return self._STAGE_OUTCOME_DELIVERED
+            if record["attempts"] >= 2:
+                record["state"] = self._STAGE_STATE_FAILED_FINAL
+                record["task"] = None
+                return self._STAGE_OUTCOME_FAILED
+            record["state"] = self._STAGE_STATE_FAILED
+            record["task"] = None
+            return self._STAGE_OUTCOME_FAILED
+
+        record["state"] = self._STAGE_STATE_UNKNOWN
+        record["task"] = task
+        self._pin_stage_delivery_task(task)
+        return self._STAGE_OUTCOME_UNKNOWN
+
+    def _handle_stage_delivery_cancel(
+        self, task: asyncio.Task, record: dict
+    ) -> None:
+        """Fully synchronous cancel handler — no awaits, no new deliveries."""
+        if task.done():
+            self._sync_consume_stage_delivery_task(record)
+        else:
+            record["state"] = self._STAGE_STATE_UNKNOWN
+            record["task"] = task
+            self._pin_stage_delivery_task(task)
+
+    def _invocation_has_live_unknown_delivery(
+        self, records: Dict[str, dict], invocation_id: str
+    ) -> bool:
+        if not invocation_id:
+            return False
+        record = records.get(invocation_id)
+        if record is None or record["state"] != self._STAGE_STATE_UNKNOWN:
+            return False
+        task = record.get("task")
+        return task is not None and not task.done()
+
+    async def _drain_parked_tool_stage_events(
+        self,
+        embed_msg_ids: Dict[str, str],
+        records: Dict[str, dict],
+        parked: Dict[str, list],
+    ) -> None:
+        """Deliver parked events once their invocation's UNKNOWN pin resolves."""
+        if not parked:
+            return
+        for invocation in list(parked.keys()):
+            if self._invocation_has_live_unknown_delivery(records, invocation):
+                continue
+            events = parked.pop(invocation, [])
+            for event in events:
+                await self._process_tool_stage_event(
+                    event, embed_msg_ids, records, parked
+                )
+
+    async def _process_tool_stage_event(
+        self,
+        event: dict,
+        embed_msg_ids: Dict[str, str],
+        records: Dict[str, dict],
+        parked: Optional[Dict[str, list]] = None,
+    ) -> None:
+        invocation = str(event.get("invocation_id") or "")
+        if (
+            parked is not None
+            and invocation
+            and self._invocation_has_live_unknown_delivery(records, invocation)
+        ):
+            parked.setdefault(invocation, []).append(event)
+            return
+
+        task = self._claim_tool_stage_delivery(event, embed_msg_ids, records)
+        if task is None:
+            return
+
+        record = records[str(event.get("invocation_id") or "")]
+        try:
+            outcome = await self._harvest_tool_stage_delivery(task, record)
+        except asyncio.CancelledError:
+            self._handle_stage_delivery_cancel(task, record)
+            raise
+
+        if (
+            outcome == self._STAGE_OUTCOME_FAILED
+            and event.get("terminal")
+            and record["state"] == self._STAGE_STATE_FAILED
+            and record["attempts"] == 1
+        ):
+            retry_task = self._claim_tool_stage_delivery(
+                event, embed_msg_ids, records, retry=True
+            )
+            if retry_task is None:
+                return
+            try:
+                await self._harvest_tool_stage_delivery(retry_task, record)
+            except asyncio.CancelledError:
+                self._handle_stage_delivery_cancel(retry_task, record)
+                raise
+
+    async def _stop_drain_remaining_stage_embeds(
+        self,
+        embed_msg_ids: Dict[str, str],
+        records: Dict[str, dict],
+        parked: Optional[Dict[str, list]] = None,
+    ) -> None:
+        """Normal stop path: deliver terminal/last queued events via claim+harvest."""
+        if parked is None:
+            parked = {}
+        deadline = time.monotonic() + self._STAGE_STOP_DRAIN_TIMEOUT
+        while True:
+            if time.monotonic() >= deadline:
+                return
+            await self._drain_parked_tool_stage_events(
+                embed_msg_ids, records, parked
+            )
+            for event in self._collect_final_stage_events():
+                try:
+                    await self._process_tool_stage_event(
+                        event, embed_msg_ids, records, parked
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
+            if not parked:
+                break
+            if any(
+                self._invocation_has_live_unknown_delivery(records, inv)
+                for inv in list(parked.keys())
+            ):
+                if time.monotonic() >= deadline:
+                    return
+                await asyncio.sleep(0.2)
+                continue
+
+    async def send_tool_stage_embeds(self):
+        ctx = self._ctx
+        if not ctx.stage_event_queue:
+            return
+        if ctx._stage_embed_adapter is None:
+            return
+
+        # invocation_id -> embed message id. Concurrent invocations of the
+        # same tool each own exactly one message, so their updates can
+        # never cross-edit each other's embed.
+        embed_msg_ids: Dict[str, str] = {}
+        records: Dict[str, dict] = {}
+        parked: Dict[str, list] = {}
+
+        try:
+            while True:
+                if not ctx._run_still_current():
+                    await self._stop_drain_remaining_stage_embeds(
+                        embed_msg_ids, records, parked
+                    )
+                    return
+
+                await self._drain_parked_tool_stage_events(
+                    embed_msg_ids, records, parked
+                )
+
+                try:
+                    event = ctx.stage_event_queue.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.2)
+                    continue
+
+                await self._process_tool_stage_event(
+                    event, embed_msg_ids, records, parked
+                )
+        except asyncio.CancelledError:
+            raise
+
+    async def _deliver_agent_status_marker(self, marker: tuple) -> Optional[str]:
+        """Send one queued branded agent-viewer status line as its own message.
+
+        The consumer side of the ``_status_callback_sync`` reorder: the exact
+        line the direct rail would have sent goes through the same
+        ``_send_or_update_status_coro`` door with the same status wiring
+        (adapter, chat id, thread metadata, cleanup tracking), so platform
+        rendering — Discord's branded embed conversion, Telegram's
+        status-bubble editing — is byte-identical. Only the scheduling
+        changed: queue-ordered instead of independently scheduled. Returns
+        the sent message id on success (``None`` otherwise) so correlated
+        consumers can record the exact message for later in-place edits.
+        Never raises on transport failure, so a dead platform call cannot
+        take the progress consumer down with it (and lose every later tool
+        row).
+        """
+        # Late seam (as in #569): these helpers live in the gateway.run facade.
+        from gateway.run import (
+            _is_agent_status_queue_marker,
+            _retain_undelivered_status_notice,
+            _send_or_update_status_coro,
+            _status_failure_is_transient,
+        )
+        ctx = self._ctx
+        if not _is_agent_status_queue_marker(marker):
+            return None
+        # No adapter re-resolution: _status_callback_sync only enqueues a
+        # marker once ctx._status_adapter is set, and the direct rail sends
+        # through that same adapter — the marker rail must not invent one.
+        adapter = ctx._status_adapter
+        if adapter is None:
+            return None
+        _kind, event_type, content = marker[:3]
+        try:
+            result = await ctx.deliver_visible(lambda: _send_or_update_status_coro(
+                adapter,
+                ctx._status_chat_id,
+                event_type,
+                content,
+                ctx._status_thread_metadata))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug(
+                "agent-viewer status marker delivery failed", exc_info=True
+            )
+            return None
+        if (
+            ctx._cleanup_progress
+            and getattr(result, "success", False)
+            and getattr(result, "message_id", None)
+        ):
+            ctx._cleanup_msg_ids.append(str(result.message_id))
+        # Same transient-failure retention as the direct status rail: the
+        # marker carries the exact line the direct rail would have sent, so
+        # it gets the same durable second chance after reconnect.
+        if (
+            event_type != "retry_progress"
+            and _status_failure_is_transient(result)
+        ):
+            await _retain_undelivered_status_notice(
+                adapter=adapter,
+                chat_id=ctx._status_chat_id,
+                thread_metadata=ctx._status_thread_metadata,
+                session_key=str(getattr(ctx, "session_key", "") or ""),
+                status_key=event_type,
+                content=content,
+            )
+        if getattr(result, "success", False) and getattr(result, "message_id", None):
+            return str(result.message_id)
+        return None
