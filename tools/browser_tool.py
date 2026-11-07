@@ -505,7 +505,7 @@ BROWSER_TOOL_SCHEMAS = [
                 },
                 "description": {
                     "type": "string",
-                    "description": "One short phrase (max ~80 chars) saying WHAT this interaction is for, e.g. 'clicking the submit button'. Shown to the user as progress instead of the generic label. Never put secrets, passwords, or the typed text itself here."
+                    "description": "One short phrase (max ~80 chars) saying WHAT this interaction is for, e.g. 'clicking the submit button'. Start with an -ing verb (e.g. 'clicking the submit button'). Shown to the user as progress instead of the generic label. Never put secrets, passwords, or the typed text itself here."
                 }
             },
             "required": ["ref"]
@@ -526,7 +526,7 @@ BROWSER_TOOL_SCHEMAS = [
                 },
                 "description": {
                     "type": "string",
-                    "description": "One short phrase (max ~80 chars) saying WHAT this interaction is for, e.g. 'typing the search query'. Shown to the user as progress instead of the generic label. Never put secrets, passwords, or the typed text itself here."
+                    "description": "One short phrase (max ~80 chars) saying WHAT this interaction is for, e.g. 'typing the search query'. Start with an -ing verb (e.g. 'typing the search query'). Shown to the user as progress instead of the generic label. Never put secrets, passwords, or the typed text itself here."
                 }
             },
             "required": ["ref", "text"]
@@ -564,7 +564,7 @@ BROWSER_TOOL_SCHEMAS = [
                 },
                 "description": {
                     "type": "string",
-                    "description": "One short phrase (max ~80 chars) saying WHAT this interaction is for, e.g. 'pressing Enter to submit the form'. Shown to the user as progress instead of the generic label. Never put secrets, passwords, or the typed text itself here."
+                    "description": "One short phrase (max ~80 chars) saying WHAT this interaction is for, e.g. 'pressing Enter to submit the form'. Start with an -ing verb (e.g. 'pressing Enter to submit the form'). Shown to the user as progress instead of the generic label. Never put secrets, passwords, or the typed text itself here."
                 }
             },
             "required": ["key"]
