@@ -6,6 +6,36 @@ import agent.display_progressive as display_progressive
 from agent.display_progressive import progressive_phrase
 
 
+_PURPOSE_VERB_FORMS = [
+    ("recall", "recalling"),
+    ("diagnose", "diagnosing"),
+    ("remember", "remembering"),
+    ("understand", "understanding"),
+    ("pick", "picking"),
+    ("choose", "choosing"),
+    ("decide", "deciding"),
+    ("continue", "continuing"),
+    ("reconcile", "reconciling"),
+    ("grab", "grabbing"),
+    ("dedupe", "deduping"),
+]
+
+
+class TestPurposeProgressiveVerbs:
+    @pytest.mark.parametrize(("verb", "progressive"), _PURPOSE_VERB_FORMS)
+    def test_progressive_phrase(self, verb, progressive):
+        assert progressive_phrase(f"{verb} the thing") == f"{progressive} the thing"
+        assert progressive_phrase(
+            f"{verb.capitalize()} the thing"
+        ) == f"{progressive.capitalize()} the thing"
+
+    @pytest.mark.parametrize(("verb", "progressive"), _PURPOSE_VERB_FORMS)
+    def test_base_verb_phrase(self, verb, progressive):
+        assert display_progressive.base_verb_phrase(
+            f"{progressive} the thing"
+        ) == f"{verb} the thing"
+
+
 class TestProgressivePhraseSpelling:
     """Verb → present participle spelling, straight from the curated tables."""
 

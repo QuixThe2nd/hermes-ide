@@ -627,6 +627,12 @@ class TestDescribeToolCallSessionSearchPurpose:
     def test_composes_query_and_purpose(self, args, expected):
         assert describe_tool_call("session_search", args) == expected
 
+    def test_recalling_purpose_inverts_to_recall(self):
+        assert describe_tool_call(
+            "session_search",
+            {"description": "recalling the last deploy discussion"},
+        ) == "Searching past sessions to recall the last deploy discussion"
+
 
 class TestDescribeToolCallCronPurpose:
     @pytest.mark.parametrize("tool_name", ["cronjob_manage", "cronjob"])
