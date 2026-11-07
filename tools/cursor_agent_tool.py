@@ -113,9 +113,12 @@ DEFAULT_ORCHESTRATION_PROMPT = (
     "Delegate all implementation work to a Task subagent pinned to model composer-2.5 "
     "(the standard variant; never use composer-2.5-fast). "
     "After implementation completes, delegate exactly one read-only review Task pinned to model "
-    "cursor-grok-4.5-high. "
+    "cursor-grok-4.6-high. "
     "If the review reports blocking findings, fix them exactly once via the implementer subagent "
     "(one remediation pass only; do not loop). "
+    "If the required review Task cannot run (model unavailable, spawn rejected, or the reviewer "
+    "skips it), report the overall result as UNVERIFIABLE and say why - never report success "
+    "without the review having actually run. "
     "In your final report, include the actual models used by each delegation.\n\n"
 )
 POST_TIMEOUT_SECONDS = 30.0
