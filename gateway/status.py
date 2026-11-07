@@ -348,8 +348,11 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-    # Gateway-dedicated entrypoints carry no subcommand to inspect.
+    # Gateway-dedicated entrypoints carry no subcommand to inspect. Hub-spawned
+    # overlap successors use the module form ``python -m gateway.run``.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
+        return "run"
+    if any(token == "-m" and tokens[i + 1] == "gateway.run" for i, token in enumerate(tokens[:-1])):
         return "run"
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
