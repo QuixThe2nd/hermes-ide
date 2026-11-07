@@ -103,6 +103,13 @@ itself: preinstalled tooling and prebuilt pipelines are the point of this fork.
   integrate the same *category*, design one shared interface instead of merging
   them one at a time (see the ABC + orchestrator note under the Footprint
   Ladder).
+- **Study established products before designing.** Before designing a solution,
+  look at how established products in the space solve the same problem and
+  adopt their proven patterns and conventions rather than inventing an approach
+  from scratch.
+- **Check the dependency before reimplementing.** Before hand-rolling a helper,
+  check the docs and types of the dependencies the repo already has — assume a
+  well-maintained library can do it until proven otherwise.
 - **Behavior contracts over snapshots.** Tests should assert how two pieces of
   data must relate (invariants), not freeze a current value (model lists,
   config version literals, enumeration counts). See "Don't write
