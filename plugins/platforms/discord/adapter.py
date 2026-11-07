@@ -6435,12 +6435,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 )
             try:
                 from tools.discord_approve_action_tool import handle_approve_reaction
+                reactor_id = str(payload.user_id)
+                authorized = reactor_id != "*" and reactor_id in self._allowed_user_ids
                 result = await asyncio.to_thread(
                     handle_approve_reaction,
                     str(payload.channel_id),
                     str(payload.message_id),
                     emoji_name,
                     self.config.token,
+                    reactor_id=reactor_id,
+                    authorized=authorized,
                 )
                 if result.get("acted"):
                     logger.info("[%s] approve_action reaction: %s", self.name, result)

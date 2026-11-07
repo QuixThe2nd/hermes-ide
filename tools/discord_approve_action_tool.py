@@ -5,12 +5,13 @@ listener. The Discord platform adapter forwards raw reaction events to
 :func:`handle_approve_reaction`; a decision executes the prepared action at
 most once and a late reaction settles an expired card without executing it.
 
-Security contract: this follows ``resolve_ticket``'s existing raw-reaction
-entry-point convention. The handler receives no reactor user id, so it trusts
-any non-bot reaction after the adapter filters the bot's own seeded reactions;
-it does NOT verify a guild owner or configured owner id. ``run_script`` is
-restricted to the active profile's ``scripts`` directory, and no Discord API
-call in this module uses DELETE.
+Security contract: only a reactor whose Discord user ID is literally listed in
+the adapter's ``DISCORD_ALLOWED_USERS`` set may approve or decline. The ``*``
+wildcard, guild/role/channel grants, pairing, and allow-all modes do not
+authorize prepared actions. The handler also fails closed when called without
+an explicit authorization decision. ``run_script`` is restricted to the active
+profile's ``scripts`` directory, and no Discord API call in this module uses
+DELETE.
 """
 
 import json
@@ -397,13 +398,16 @@ def handle_approve_reaction(
     message_id: str,
     emoji: str,
     token: Optional[str] = None,
+    *,
+    reactor_id: Optional[str] = None,
+    authorized: bool = False,
 ) -> Dict[str, Any]:
-    """Settle one pending approval card from a raw Discord reaction.
+    """Settle one pending approval card from an authorized raw reaction.
 
-    The adapter filters its own reactions and passes its configured token
+    The adapter filters its own reactions, passes its configured token
     explicitly because raw gateway events run outside the per-turn secret
-    scope. Like ``handle_resolve_reaction``, this entry point receives no
-    reactor identity and therefore trusts any non-bot user's reaction.
+    scope, and computes authorization from its literal user-ID allowlist.
+    Direct callers fail closed unless they explicitly pass ``authorized=True``.
     """
     if emoji not in (EMOJI_CONFIRM, EMOJI_DECLINE):
         return {"acted": False, "reason": "unrelated_emoji"}
@@ -412,6 +416,14 @@ def handle_approve_reaction(
     entry = pending.get(message_id)
     if not entry or entry.get("channel_id") != channel_id:
         return {"acted": False, "reason": "not_listening"}
+
+    if not authorized:
+        logger.warning(
+            "approve_action: unauthorized reactor %s for message %s",
+            reactor_id or "<unknown>",
+            message_id,
+        )
+        return {"acted": False, "reason": "unauthorized_reactor"}
 
     token = (token or "").strip() or _get_bot_token()
     if not token:

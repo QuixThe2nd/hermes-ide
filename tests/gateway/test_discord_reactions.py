@@ -143,6 +143,7 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_raw_decision_reaction_routes_to_both_pending_listeners(adapter):
+    adapter._allowed_user_ids = {"42"}
     payload = SimpleNamespace(
         emoji=SimpleNamespace(name="✅"),
         user_id=42,
@@ -160,7 +161,78 @@ async def test_raw_decision_reaction_routes_to_both_pending_listeners(adapter):
         await adapter._dispatch_raw_reaction(payload)
 
     resolve.assert_called_once_with("123", "456", "✅", "***")
-    approve.assert_called_once_with("123", "456", "✅", "***")
+    approve.assert_called_once_with(
+        "123", "456", "✅", "***", reactor_id="42", authorized=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("allowed_user_ids", "expected_authorized"),
+    [(set(), False), ({"*"}, False), ({"42"}, True)],
+)
+async def test_owner_raw_reaction_requires_a_literal_listed_user_id(
+    adapter, allowed_user_ids, expected_authorized
+):
+    adapter._allowed_user_ids = allowed_user_ids
+    payload = SimpleNamespace(
+        emoji=SimpleNamespace(name="✅"),
+        user_id=42,
+        channel_id=123,
+        message_id=456,
+    )
+
+    with patch(
+        "tools.discord_resolve_tool.handle_resolve_reaction",
+        return_value={"acted": False, "reason": "not_listening"},
+    ), patch(
+        "tools.discord_approve_action_tool.handle_approve_reaction",
+        return_value={"acted": False, "reason": "unauthorized_reactor"},
+    ) as approve:
+        await adapter._dispatch_raw_reaction(payload)
+
+    approve.assert_called_once_with(
+        "123",
+        "456",
+        "✅",
+        "***",
+        reactor_id="42",
+        authorized=expected_authorized,
+    )
+
+
+@pytest.mark.asyncio
+async def test_owner_raw_reaction_guild_grant_does_not_authorize(adapter, monkeypatch):
+    monkeypatch.setattr(
+        DiscordAdapter, "_is_pairing_approved_user", lambda self, uid: False
+    )
+    monkeypatch.setenv("DISCORD_ALLOWED_GUILDS", "777")
+    guild = SimpleNamespace(id=777)
+    assert adapter._is_allowed_user("42", guild=guild) is True
+
+    payload = SimpleNamespace(
+        emoji=SimpleNamespace(name="✅"),
+        user_id=42,
+        channel_id=123,
+        message_id=456,
+    )
+    with patch(
+        "tools.discord_resolve_tool.handle_resolve_reaction",
+        return_value={"acted": False, "reason": "not_listening"},
+    ), patch(
+        "tools.discord_approve_action_tool.handle_approve_reaction",
+        return_value={"acted": False, "reason": "unauthorized_reactor"},
+    ) as approve:
+        await adapter._dispatch_raw_reaction(payload)
+
+    approve.assert_called_once_with(
+        "123",
+        "456",
+        "✅",
+        "***",
+        reactor_id="42",
+        authorized=False,
+    )
 
 
 @pytest.mark.asyncio

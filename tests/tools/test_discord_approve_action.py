@@ -1,6 +1,7 @@
 """Contract tests for Discord prepared-action approval cards."""
 
 import json
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -178,13 +179,36 @@ class TestPropose:
 
 
 class TestApprovedActions:
+    def test_owner_authorized_approval_executes(self, discord):
+        _propose(
+            discord, "post_message", {"channel_id": "999", "content": "Owner approved"}
+        )
+        discord.calls.clear()
+
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "✅", reactor_id="42", authorized=True
+        )
+
+        assert result["acted"] is True
+        assert result["decision"] == "approved"
+        assert result["success"] is True
+        assert (
+            "POST",
+            "/channels/999/messages",
+            "fake-token",
+            {"content": "Owner approved"},
+        ) in discord.calls
+        assert "msg-1" not in dat._load_pending()
+
     def test_post_message_executes_and_marks_card_approved(self, discord):
         _propose(
             discord, "post_message", {"channel_id": "999", "content": "Approved update"}
         )
         discord.calls.clear()
 
-        result = dat.handle_approve_reaction("123", "msg-1", "✅")
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "✅", reactor_id="42", authorized=True
+        )
 
         assert result["acted"] is True
         assert result["decision"] == "approved"
@@ -229,7 +253,9 @@ class TestApprovedActions:
         )
         discord.calls.clear()
 
-        result = dat.handle_approve_reaction("123", "msg-1", "✅")
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "✅", reactor_id="42", authorized=True
+        )
 
         assert result["success"] is True
         create.assert_called_once_with(
@@ -257,7 +283,9 @@ class TestApprovedActions:
         _propose(discord, "run_script", {"path": "approved.py", "args": ["--yes"]})
         discord.calls.clear()
 
-        result = dat.handle_approve_reaction("123", "msg-1", "✅")
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "✅", reactor_id="42", authorized=True
+        )
 
         assert result["success"] is True
         assert result["result"]["stdout"] == "approved\n"
@@ -275,7 +303,9 @@ class TestApprovedActions:
         _propose(discord, "custom_note", {"note": "agent follow-up", "ticket": 7})
         discord.calls.clear()
 
-        result = dat.handle_approve_reaction("123", "msg-1", "✅")
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "✅", reactor_id="42", authorized=True
+        )
 
         assert result["success"] is True
         assert result["result"]["note"] == {"note": "agent follow-up", "ticket": 7}
@@ -301,7 +331,9 @@ class TestApprovedActions:
         monkeypatch.setattr(dat.subprocess, "run", run)
         discord.calls.clear()
 
-        result = dat.handle_approve_reaction("123", "msg-1", "✅")
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "✅", reactor_id="42", authorized=True
+        )
 
         assert result["acted"] is True
         assert result["success"] is False
@@ -314,13 +346,76 @@ class TestApprovedActions:
 
 
 class TestOtherReactionOutcomes:
+    def test_owner_unauthorized_approval_preserves_pending(
+        self, discord, caplog
+    ):
+        _propose(
+            discord, "post_message", {"channel_id": "999", "content": "Must not post"}
+        )
+        pending_before = dat._load_pending()
+        discord.calls.clear()
+        caplog.set_level(logging.WARNING, logger=dat.logger.name)
+
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "✅", reactor_id="99", authorized=False
+        )
+
+        assert result == {"acted": False, "reason": "unauthorized_reactor"}
+        assert dat._load_pending() == pending_before
+        assert discord.calls == []
+        assert any(
+            "unauthorized" in record.getMessage().lower()
+            and "99" in record.getMessage()
+            for record in caplog.records
+        )
+
+        owner_result = dat.handle_approve_reaction(
+            "123", "msg-1", "✅", reactor_id="42", authorized=True
+        )
+        assert owner_result["acted"] is True
+        assert owner_result["success"] is True
+        assert "msg-1" not in dat._load_pending()
+
+    def test_owner_unauthorized_decline_preserves_pending(self, discord, caplog):
+        _propose(discord)
+        pending_before = dat._load_pending()
+        discord.calls.clear()
+        caplog.set_level(logging.WARNING, logger=dat.logger.name)
+
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "❌", reactor_id="99", authorized=False
+        )
+
+        assert result == {"acted": False, "reason": "unauthorized_reactor"}
+        assert dat._load_pending() == pending_before
+        assert discord.calls == []
+        assert any(
+            "unauthorized" in record.getMessage().lower()
+            and "99" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_owner_direct_call_without_authorized_fails_closed(self, discord):
+        _propose(
+            discord, "post_message", {"channel_id": "999", "content": "Must not post"}
+        )
+        discord.calls.clear()
+
+        result = dat.handle_approve_reaction("123", "msg-1", "✅")
+
+        assert result == {"acted": False, "reason": "unauthorized_reactor"}
+        assert "msg-1" in dat._load_pending()
+        assert discord.calls == []
+
     def test_decline_edits_gray_and_does_not_execute(self, discord):
         _propose(
             discord, "post_message", {"channel_id": "999", "content": "Must not post"}
         )
         discord.calls.clear()
 
-        result = dat.handle_approve_reaction("123", "msg-1", "❌")
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "❌", reactor_id="42", authorized=True
+        )
 
         assert result == {"acted": True, "decision": "declined"}
         assert len(discord.calls) == 1
@@ -339,7 +434,9 @@ class TestOtherReactionOutcomes:
         dat._save_pending(pending)
         discord.calls.clear()
 
-        result = dat.handle_approve_reaction("123", "msg-1", "✅")
+        result = dat.handle_approve_reaction(
+            "123", "msg-1", "✅", reactor_id="42", authorized=True
+        )
 
         assert result == {"acted": False, "reason": "timed_out"}
         assert len(discord.calls) == 1
@@ -373,7 +470,12 @@ class TestOtherReactionOutcomes:
 
         monkeypatch.setattr(dat, "_get_bot_token", explode)
         result = dat.handle_approve_reaction(
-            "123", "msg-1", "❌", token="adapter-token"
+            "123",
+            "msg-1",
+            "❌",
+            token="adapter-token",
+            reactor_id="42",
+            authorized=True,
         )
 
         assert result["decision"] == "declined"
