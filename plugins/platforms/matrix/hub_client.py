@@ -424,6 +424,9 @@ class MatrixHubClientAdapter(MatrixAdapter):
     def mark_overlap_successor_ready(self) -> None:
         self._overlap_successor_ready = True
 
+    def mark_overlap_successor_lost(self) -> None:
+        self._overlap_successor_ready = False
+
     def admits_owned_work_while_draining(self, source: Any = None) -> bool:
         return self._running and self._overlap_successor_ready
 

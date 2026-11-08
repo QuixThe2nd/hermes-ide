@@ -435,6 +435,9 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
     def mark_overlap_successor_ready(self) -> None:
         self._overlap_successor_ready = True
 
+    def mark_overlap_successor_lost(self) -> None:
+        self._overlap_successor_ready = False
+
     def admits_owned_work_while_draining(self, source: Any = None) -> bool:
         # The hub has already selected this generation for the event. Once the
         # successor is attached, new keys go there and only owned follow-ups

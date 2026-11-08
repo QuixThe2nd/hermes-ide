@@ -2206,6 +2206,13 @@ class GatewayShutdownMixin:
                     await spawn_successor(self, via_service=via_service)
             except Exception:
                 logger.exception("Overlapping restart successor could not start; using the legacy drain path")
+            if overlap and getattr(self, "_overlap_restart_successor_started", False):
+                from gateway.overlap_restart import watch_successor
+                # Strong reference: a bare create_task may be garbage-collected.
+                # Not in _background_tasks — it exits on its own once stop() begins.
+                self._overlap_successor_watch_task = asyncio.create_task(
+                    watch_successor(self, via_service=via_service)
+                )
             # ── Destructive boundary ────────────────────────────────────
             # stop() may run only once the real active-work count is zero
             # while admission (_draining) is still closed — with NOTHING

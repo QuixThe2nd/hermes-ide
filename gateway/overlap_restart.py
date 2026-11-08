@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 OVERLAP_SUCCESSOR_ENV = "HERMES_OVERLAP_SUCCESSOR"
 OVERLAP_PREDECESSOR_PID_ENV = "HERMES_OVERLAP_PREDECESSOR_PID"
 GATEWAY_CLAIM_SUCCESSOR_PENDING = "successor-pending"
+SUCCESSOR_WATCH_POLL_SECONDS = 2.0
+SUCCESSOR_RESPAWN_BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0, 30.0)
 
 
 def overlap_predecessor_pid() -> Optional[int]:
@@ -310,3 +312,75 @@ async def spawn_successor(runner: Any, *, via_service: bool) -> Optional[int]:
         logger.info("Overlapping gateway successor started as pid %s", pid)
         return int(pid)
     return None
+
+
+def _predecessor_still_draining(runner: Any) -> bool:
+    """True while this process is a predecessor whose drain has not reached stop()."""
+    return bool(
+        getattr(runner, "_draining", False)
+        and getattr(runner, "_restart_requested", False)
+        and getattr(runner, "_stop_task", None) is None
+        and not _shutdown_requested(runner)
+    )
+
+
+def mark_successor_lost(runner: Any) -> None:
+    """Forget a dead successor so routing, exit codes and respawn see the truth.
+
+    With the started flag cleared, ``resolve_planned_restart_exit_code`` falls
+    back to the ordinary service-restart code, so even if no replacement can be
+    started the supervisor revives the gateway instead of trusting a corpse.
+    """
+    for adapter in _iter_adapters(runner):
+        if getattr(adapter, "supports_overlap_restart", False) is not True:
+            continue
+        lost = getattr(adapter, "mark_overlap_successor_lost", None)
+        if callable(lost):
+            lost()
+    runner._overlap_restart_successor_started = False
+    runner._overlap_restart_successor_pid = None
+
+
+async def watch_successor(
+    runner: Any,
+    *,
+    via_service: bool,
+    poll_seconds: float = SUCCESSOR_WATCH_POLL_SECONDS,
+    backoff: tuple = SUCCESSOR_RESPAWN_BACKOFF_SECONDS,
+) -> None:
+    """Keep exactly one live successor for as long as this predecessor drains.
+
+    A successor can die underneath a long drain (hub restart kills its cgroup,
+    the tripwire, OOM). Without this, the predecessor keeps answering every new
+    message with the queued-for-next-turn notice until its last turn ends.
+    """
+    from gateway.status import _pid_exists
+
+    attempt = 0
+    delay = poll_seconds
+    while True:
+        # Always yield first: the successor needs a moment to exist, and a
+        # respawn that "succeeds" with an instantly dead PID must not spin.
+        await asyncio.sleep(delay)
+        delay = poll_seconds
+        if not _predecessor_still_draining(runner):
+            return
+        pid = getattr(runner, "_overlap_restart_successor_pid", None)
+        if getattr(runner, "_overlap_restart_successor_started", False) and pid and _pid_exists(int(pid)):
+            continue
+        if pid:
+            logger.error(
+                "Overlap successor PID %s died while predecessor PID %d is still draining; "
+                "starting a replacement successor", pid, os.getpid(),
+            )
+            mark_successor_lost(runner)
+        try:
+            new_pid = await spawn_successor(runner, via_service=via_service)
+        except Exception:
+            logger.exception("Replacement overlap successor could not start; retrying")
+            new_pid = None
+        if new_pid is not None:
+            attempt = 0
+            continue
+        delay = backoff[min(attempt, len(backoff) - 1)]
+        attempt += 1
