@@ -104,11 +104,11 @@ def request_gateway_restart(
             status = str(ack.get("status") or "")
             accepted = bool(
                 ack.get("queued") or ack.get("restarting") or ack.get("accepted")
-                or ack.get("already_stopping") or status == "already_in_progress"
+                or ack.get("already_stopping") or status in {"already_in_progress", "chained"}
             )
             return RestartOutcome(
                 accepted=accepted,
-                attached=bool(ack.get("already_stopping")) or status == "already_in_progress",
+                attached=bool(ack.get("already_stopping")) or status in {"already_in_progress", "chained"},
             )
 
     if not hasattr(signal, "SIGUSR1") or old_pid <= 0:

@@ -62,6 +62,34 @@ async def test_restart_slash_command_reaches_shared_queue(tmp_path, monkeypatch)
     assert "Restarting" in str(result) or result  # reply derived from the status
 
 
+@pytest.mark.asyncio
+async def test_restart_slash_command_reports_chained_on_incoming_generation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    queued = AsyncMock(return_value={
+        "status": "chained", "active_agents": 0, "via_service": False,
+    })
+    monkeypatch.setattr("gateway.restart.queue_user_restart", queued)
+    runner, _adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._overlap_restart_successor_started = True
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m-chain",
+        platform_update_id=None,
+    )
+
+    result = await runner._handle_restart_command(event)
+
+    queued.assert_awaited_once()
+    assert "chained" in str(result)
+    assert "incoming generation" in str(result)
+
+
 # ── (b) tool: plugins.gateway_restart.tool.handle_restart → queue_user_restart ─
 
 
@@ -160,6 +188,18 @@ def test_control_socket_transport_passes_flag_through(monkeypatch):
     assert cli_gateway._restart_via_control_socket(False) is True
     requested.assert_called_once()
     assert requested.call_args.kwargs.get("restart_platforms") is False
+
+
+def test_control_socket_chained_reply_names_incoming_generation(monkeypatch, capsys):
+    import hermes_cli.gateway as cli_gateway
+
+    requested = MagicMock(return_value={"queued": True, "status": "chained"})
+    monkeypatch.setattr("gateway.control_socket.request_gateway_restart", requested)
+
+    assert cli_gateway._restart_via_control_socket(True) is True
+    output = capsys.readouterr().out
+    assert "chained" in output
+    assert "incoming generation" in output
 
 
 # ── (d) SIGUSR1: restart_platforms resolved from the runner's config ─────────

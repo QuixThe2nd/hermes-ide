@@ -11904,7 +11904,7 @@ async def _start_gateway_start_control_socket(runner):
                 return {"queued": False, "reason": "restart hand-off not observed in time"}
             status = result_box[0]
             return {
-                "queued": status.get("status") == "restarting",
+                "queued": status.get("status") in {"restarting", "chained"},
                 "status": status.get("status"),
                 "active_agents": status.get("active_agents", 0),
                 "via_service": status.get("via_service"),

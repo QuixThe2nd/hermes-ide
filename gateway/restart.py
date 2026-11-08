@@ -470,12 +470,22 @@ async def queue_user_restart(
     succeeded.
 
     Returns the status dict both entry points derive their reply from:
-    ``status`` ("restarting" / "already_in_progress"), ``active_agents``
-    (counted before the drain closes in), and ``via_service`` (None when
-    nothing was started this call).
+    ``status`` ("restarting" / "already_in_progress" / "chained" /
+    "shutdown_in_progress"), ``active_agents`` (counted before the drain
+    closes in), and ``via_service`` (None when nothing was started or chained
+    this call).
     """
     from gateway.run import _hermes_home
+    from gateway.restart_chain import chained_restart_status
 
+    chained = chained_restart_status(
+        runner,
+        source=source,
+        message_id=message_id,
+        via_service=user_restart_via_service(),
+    )
+    if chained is not None:
+        return chained
     if restart_committed(runner):
         return {
             "status": "already_in_progress",
@@ -501,8 +511,17 @@ async def queue_user_restart(
     try:
         # Ownership recheck after the preflight's awaits: another entry point
         # (or a signal-initiated drain) may have opened the restart while this
-        # caller was inspecting or delivering. The loser keeps the winner's
-        # routing and sends nothing further.
+        # caller was inspecting or delivering. A pending successor can still
+        # accept exactly one chained request; other losers keep the winner's
+        # routing and send nothing further.
+        chained = chained_restart_status(
+            runner,
+            source=source,
+            message_id=message_id,
+            via_service=user_restart_via_service(),
+        )
+        if chained is not None:
+            return chained
         if restart_committed(runner):
             return {
                 "status": "already_in_progress",
