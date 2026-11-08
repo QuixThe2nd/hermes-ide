@@ -538,3 +538,59 @@ def test_failed_attempt_is_not_reviewed(monkeypatch, workdir):
     assert result["success"] is False
     assert invoked == []
     assert "review" not in result["backend_result"]
+
+
+# Routing hint: delegate_agent's schema points lane-shaped work at the lane
+# tools, but only when a lane tool is actually present in the session.
+
+_LANE_ROUTING_SENTENCE = (
+    " For UI, client-logic, backend, or reverse-engineering work, prefer the dedicated "
+    "delegate_ui_dev / delegate_client_dev / delegate_backend_dev / delegate_reverse_engineer "
+    "lane tools; use delegate_agent only for parallel fan-out of non-lane work or tasks that "
+    "match no lane."
+)
+
+
+def _agent_def(description="Delegate a task."):
+    return {"type": "function", "function": {"name": "delegate_agent", "description": description}}
+
+
+def test_delegate_agent_routing_hint_with_lanes_present():
+    from model_tools import _apply_dynamic_schemas
+
+    defs = [_agent_def()] + [
+        {"type": "function", "function": {"name": n, "description": "lane."}}
+        for n in LANE_TOOL_NAMES
+    ]
+    out = _apply_dynamic_schemas(defs)
+    agent = next(d for d in out if d["function"]["name"] == "delegate_agent")
+    assert agent["function"]["description"].endswith(_LANE_ROUTING_SENTENCE)
+
+
+def test_delegate_agent_routing_hint_silent_without_lanes():
+    from model_tools import _apply_dynamic_schemas
+
+    out = _apply_dynamic_schemas([_agent_def()])
+    assert out[0]["function"]["description"] == "Delegate a task."
+
+
+def test_lane_tool_descriptions_carry_routing_clause():
+    for lane_name in LANE_NAMES:
+        description = lane_tool._DESCRIPTIONS[lane_name]
+        assert "Preferred over delegate_agent(backend=...) for this work class." in description
+        assert "LiteLLM gateway" in description
+        assert "reviewer verdict" in description
+    # And the registered schemas render those descriptions.
+    assert "Preferred over delegate_agent(backend=...)" in lane_tool._schema("ui_dev")["description"]
+
+
+def test_tool_definitions_route_delegation_to_lanes():
+    from model_tools import get_tool_definitions
+
+    config = get_hermes_home() / "config.yaml"
+    config.write_text("delegation:\n  lanes:\n    ui_dev: {}\n", encoding="utf-8")
+    exposed = get_tool_definitions(
+        enabled_toolsets=["delegation"], quiet_mode=True, skip_tool_search_assembly=True,
+    )
+    agent = next(d for d in exposed if d["function"]["name"] == "delegate_agent")
+    assert "delegate_ui_dev" in agent["function"]["description"]

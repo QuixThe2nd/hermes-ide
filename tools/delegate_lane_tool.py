@@ -285,17 +285,41 @@ def check_lane_requirements() -> bool:
 
 
 _DESCRIPTIONS = {
-    "ui_dev": "Delegate interface visuals, responsive layout, accessibility, and pixel-polish work.",
-    "client_dev": "Delegate frontend state, hooks, interactions, and client-side data-flow work.",
-    "backend_dev": "Delegate APIs, data layers, migrations, and backend contract work.",
-    "reverse_engineer": "Delegate static-only binary, APK, and protocol analysis with evidence-backed findings.",
+    "ui_dev": (
+        "Delegate interface visuals, responsive layout, accessibility, and pixel-polish work. "
+        "Runs on the configured harness with the model chain resolved by the LiteLLM gateway from "
+        "the lane's fallback order; soul, skills, and an independent reviewer are baked in and the "
+        "call returns a receipt with lane|model|reviewer verdict. "
+        "Preferred over delegate_agent(backend=...) for this work class."
+    ),
+    "client_dev": (
+        "Delegate frontend state, hooks, interactions, and client-side data-flow work. "
+        "Runs on the configured harness with the model chain resolved by the LiteLLM gateway from "
+        "the lane's fallback order; soul, skills, and an independent reviewer are baked in and the "
+        "call returns a receipt with lane|model|reviewer verdict. "
+        "Preferred over delegate_agent(backend=...) for this work class."
+    ),
+    "backend_dev": (
+        "Delegate APIs, data layers, migrations, and backend contract work. "
+        "Runs on the configured harness with the model chain resolved by the LiteLLM gateway from "
+        "the lane's fallback order; soul, skills, and an independent reviewer are baked in and the "
+        "call returns a receipt with lane|model|reviewer verdict. "
+        "Preferred over delegate_agent(backend=...) for this work class."
+    ),
+    "reverse_engineer": (
+        "Delegate static-only binary, APK, and protocol analysis with evidence-backed findings. "
+        "Runs on the configured harness with the model chain resolved by the LiteLLM gateway from "
+        "the lane's fallback order; soul, skills, and an independent reviewer are baked in and the "
+        "call returns a receipt with lane|model|reviewer verdict. "
+        "Preferred over delegate_agent(backend=...) for this work class."
+    ),
 }
 
 
 def _schema(lane_name: str) -> dict:
     return {
         "name": f"delegate_{lane_name}",
-        "description": _DESCRIPTIONS[lane_name] + " Uses the configured model chain and returns a lane receipt.",
+        "description": _DESCRIPTIONS[lane_name],
         "parameters": {
             "type": "object",
             "properties": {
