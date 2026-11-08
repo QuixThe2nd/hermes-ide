@@ -242,9 +242,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Fallback sends only the missing tail after a partial overflow delivery.
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids: "set[str]" = set()
-        # Tool-progress overlay (native only): shown in the bubble until text arrives.
+        # Tool-progress overlay: shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
+        # True while ``_message_id`` holds a tool-only bubble preserved across a
+        # text-less segment break (see _end_segment): more tool rounds keep editing
+        # that message, and the first real text must open a NEW message below it.
+        self._tool_bubble_preserved: bool = False
         self._clear_turn_final_flags()
 
     def _clear_turn_final_flags(self) -> None:
@@ -336,6 +340,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._tool_progress_lines:  # real text overwrites the overlay
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
+        if self._tool_bubble_preserved:
+            # Text after a preserved tool-only bubble: the box stays on screen as-is;
+            # the text must land as a NEW message below it (chat ordering: text below
+            # tool boxes), never as an edit of the tool box.
+            self._tool_bubble_preserved = False
+            self._message_id = None
+            self._message_created_ts = None
+            self._last_sent_text = ""
         self._accumulated += text
         self._stream_ledger += text
 
@@ -675,7 +687,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         return
 
                 if self._should_edit(tick) and (
-                    self._accumulated or (self._use_native_streaming and self._tool_progress_active)
+                    self._accumulated or self._tool_progress_active
                 ):
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
@@ -764,7 +776,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if kind is _FINAL_TEXT:
                 self._adopt_final_text(item[1])
             elif kind is _TOOL_PROGRESS:  # keep draining to batch simultaneous lines
-                if self._use_native_streaming:
+                # Native frames carry the overlay; edit-based (non-cumulative)
+                # transports render it as ONE edited tool bubble.
+                if self._use_native_streaming or (
+                        self._edit_supported and not self._use_draft_streaming):
                     self._tool_progress_lines.append(item[1])
                     self._tool_progress_active = True
             elif kind is _APPROVAL_BOUNDARY:
@@ -834,8 +849,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
             # platform-limit check (_len_fn is for overflow).
-            should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or len(self._accumulated) >= self.cfg.buffer_threshold)
+            should_edit = bool(
+                (elapsed >= self._current_edit_interval
+                 and (self._accumulated or self._tool_progress_active))
+                or len(self._accumulated) >= self.cfg.buffer_threshold)
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(
@@ -918,11 +935,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
         if tick.is_interim:
-            if self._use_native_streaming:
+            if self._use_native_streaming or self._tool_progress_lines:
+                # Native frames carry the overlay; the edit path composes the same
+                # Strategy-B frame (text above, tool status below) into the bubble.
                 display_text = self._compose_frame_content()
-                if display_text and self.cfg.cursor:
-                    display_text += self.cfg.cursor
-            else:
+            if display_text and self.cfg.cursor:
                 display_text += self.cfg.cursor
 
         # A got_done FRESH send via the draft transport already carries finalize=True,
@@ -1023,6 +1040,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         must keep its sentinel or every tool boundary posts a new message; the
         continuation goes out once via _send_fallback_final."""
         if self._cumulative_transport():
+            return
+        # Tool-only segment (no text deltas): the delivered bubble IS the tool box.
+        # PRESERVE it — keep _message_id and the overlay lines so the next round's
+        # tool lines keep EDITING the same message instead of stacking one box per
+        # tool round.  Still interim, not the final answer: clear the turn-final
+        # flags (#29346 semantics).  _append_accumulated releases the bubble when
+        # real text finally arrives, so the text lands below the box.
+        if (not self._accumulated and self._tool_progress_lines
+                and self._message_id and self._message_id != "__no_edit__"):
+            self._clear_turn_final_flags()
+            self._tool_bubble_preserved = True
             return
         # If the segment-break edit didn't land (flood control / fallback mode),
         # _accumulated holds unseen pre-boundary text — flush it before the reset.

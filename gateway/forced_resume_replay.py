@@ -5,16 +5,16 @@ or shutdown (``restart_timeout`` / ``shutdown_timeout``), a crash
 (``restart_interrupted``), or any legacy/generic marker — used to resume
 with an LLM-visible ``[System note: The previous turn was interrupted by
 a gateway restart ...]`` wrapper.  The model then narrated the outage
-("the advisory call died") instead of simply finishing the turn.  Only
-sessions that accepted ``COOPERATIVE_RESTART_STEER`` should ever see
-restart guidance; a genuinely interrupted victim resumes as if the
-process had stayed alive.
+("the advisory call died") instead of simply finishing the turn.  A
+genuinely interrupted victim resumes as if the process had stayed alive;
+only the idle ``/restart`` requester's synthesized comeback turn (which
+interrupted nothing) takes the note path.
 
 This module owns the pieces of that transparent resume:
 
-* :func:`is_forced_interruption_reason` — recovery classification.
-  Cooperative restarts keep the existing safe-pause guidance; every other
-  reason recovers below the LLM boundary.
+* :func:`is_forced_interruption_reason` — recovery classification: every
+  reason except the requester's idle-comeback marker recovers below the
+  LLM boundary.
 * :func:`build_victim_replay_plan` — locate the FINAL interrupted
   assistant tool batch in the raw transcript and split its calls into
   completed (leave untouched), replayable (re-run through the normal
@@ -66,7 +66,7 @@ from agent.message_sanitization import (
 from agent.replay_cleanup import is_interrupted_tool_result
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
-from gateway.restart_wind_down import is_cooperative_restart_reason
+from gateway.run_resume_reasons import RESTART_REQUESTER_RESUME_REASON
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +77,15 @@ GATEWAY_LIFECYCLE_TOOL_NAMES = frozenset({"restart"})
 
 
 def is_forced_interruption_reason(reason: Optional[str]) -> bool:
-    """True for every recovery reason that is NOT a cooperative park.
+    """True for every recovery reason that is a forced mid-turn bounce.
 
-    ``cooperative_restart`` sessions asked to wind down and expect the
-    safe-pause guidance; ``restart_timeout`` / ``shutdown_timeout`` /
-    ``restart_interrupted`` / anything else (including None and legacy
-    markers) are victims of a bounce they did not accept.
+    ``restart_timeout`` / ``shutdown_timeout`` / ``restart_interrupted`` /
+    anything else (including None and legacy markers) are victims of a
+    bounce they did not accept.  The one exception is the idle ``/restart``
+    requester's comeback marker: that session interrupted nothing, so its
+    synthesized turn takes the restore-note path instead of the replay.
     """
-    return not is_cooperative_restart_reason(reason)
+    return reason != RESTART_REQUESTER_RESUME_REASON
 
 
 # ──────────────────────────────────────────────────────────────────────

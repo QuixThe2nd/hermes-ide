@@ -32,7 +32,7 @@ approval:
 gateway:
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
-  draining:         "⏳ Asking {count} active agent(s) to park, then restarting..."
+  draining:         "♻ Restarting gateway..."
   goal_cleared:     "✓ Goal cleared."
   no_active_goal:   "No active goal."
   config_read_failed: "⚠️ Could not read config.yaml: {error}"
@@ -251,7 +251,7 @@ gateway:
 
   restart:
     in_progress:           "⏳ Gateway restart already in progress..."
-    restarting:            "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
+    restarting:            "♻ Restarting gateway..."
 
   resume:
     db_unavailable:        "Session database not available."

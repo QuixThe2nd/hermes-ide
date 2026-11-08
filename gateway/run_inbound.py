@@ -732,8 +732,12 @@ class GatewayInboundMixin:
                 return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
-        from gateway.overlap_restart import admits_owned_work
+        from gateway.overlap_restart import admits_owned_work, handoff_overlap_event
         if self._draining and not admits_owned_work(self, event.source):
+            if await handoff_overlap_event(
+                self, event, _quick_key, require_successor_ready=True,
+            ):
+                return None
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
                 self._queue_or_replace_pending_event(_quick_key, event)
@@ -1087,8 +1091,13 @@ class GatewayInboundMixin:
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
         from gateway.run import logger
 
-        from gateway.overlap_restart import admits_owned_work
+        from gateway.overlap_restart import admits_owned_work, handoff_overlap_event
         if self._draining and not admits_owned_work(self, event.source):
+            if await handoff_overlap_event(
+                self, event, self._session_key_for_source(event.source),
+                require_successor_ready=True,
+            ):
+                return True, None, command
             return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
@@ -2051,6 +2060,12 @@ class GatewayInboundMixin:
                     _cmd_def_inner.name, source
                 )
                 if _drain_notice is not None:
+                    from gateway.overlap_restart import handoff_overlap_event
+
+                    if await handoff_overlap_event(
+                        self, event, _quick_key, require_successor_ready=True,
+                    ):
+                        return None
                     return _drain_notice
 
             # Any recognized slash command: dispatch according to its
@@ -2062,8 +2077,15 @@ class GatewayInboundMixin:
                     event, _cmd_def_inner, _quick_key, source,
                 )
 
-            from gateway.overlap_restart import admits_owned_work as _admits_overlap_work
+            from gateway.overlap_restart import (
+                admits_owned_work as _admits_overlap_work,
+                handoff_overlap_event,
+            )
             _overlap_owned = _admits_overlap_work(self, source)
+            if self._draining and not _overlap_owned and await handoff_overlap_event(
+                self, event, _quick_key, require_successor_ready=True,
+            ):
+                return None
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 if self._draining and not _overlap_owned:
@@ -2137,6 +2159,13 @@ class GatewayInboundMixin:
                     return self._busy_drain_admission(
                         event, _quick_key, effective_busy_input_mode
                     )
+                # Steer mode: a steer-eligible follow-up parks in the
+                # steer-on-live slot instead — injected the moment the agent
+                # build finishes, not parked as a second user turn.
+                if await self._maybe_park_steer_on_agent_live(
+                    event, _quick_key, effective_busy_input_mode, running_agent
+                ):
+                    return None
                 # Queue the message so it will be picked up after the
                 # agent starts.
                 adapter = self._adapter_for_source(source)
@@ -2337,6 +2366,12 @@ class GatewayInboundMixin:
         # rewritten command is gated under its FINAL name.
         _cold_drain_notice = self._slash_drain_gate_notice(canonical, source)
         if _cold_drain_notice is not None:
+            from gateway.overlap_restart import handoff_overlap_event
+
+            if await handoff_overlap_event(
+                self, event, _quick_key, require_successor_ready=True,
+            ):
+                return None
             # Plain text / media the gate refused is no longer dropped: the
             # idle session has no in-memory queue to join, so queue it
             # durably for the post-restart process to replay. Slash commands
@@ -2949,19 +2984,33 @@ class GatewayInboundMixin:
         # message arriving during any of those yields would pass the
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
-        _active_session_lease, _limit_message = self._claim_active_session_slot(
-            _quick_key,
-            source,
-        )
-        if _limit_message is not None:
+        _active_session_lease = None
+        _handoff_retry_delay = 0.05
+        while True:
+            _active_session_lease, _limit_message = self._claim_active_session_slot(
+                _quick_key,
+                source,
+            )
+            if _limit_message is None:
+                break
             from gateway.overlap_restart import drop_inbound_session_refusal_during_overlap
 
             if drop_inbound_session_refusal_during_overlap(self, _limit_message, _quick_key):
-                logger.info(
-                    "Deferring inbound for session %s during overlap-successor handoff",
-                    _quick_key,
-                )
-                return None
+                from gateway.overlap_restart import handoff_to_overlap_predecessor
+
+                if await handoff_to_overlap_predecessor(self, event, _quick_key):
+                    logger.info(
+                        "Handed off inbound for session %s to the overlap predecessor",
+                        _quick_key,
+                    )
+                    return None
+                # The target may have detached or a newer delivery may have won
+                # the version fence. Retry while its lease remains live; if that
+                # lease disappears, this successor claims the event itself.
+                event._gateway_accepted = False
+                await asyncio.sleep(_handoff_retry_delay)
+                _handoff_retry_delay = min(_handoff_retry_delay * 2, 1.0)
+                continue
             logger.info(
                 "Rejecting new active session %s: max_concurrent_sessions reached",
                 _quick_key,

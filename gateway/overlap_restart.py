@@ -69,6 +69,16 @@ def _overlap_holder_pid(session_id: str) -> Optional[int]:
     return None
 
 
+def _runner_predecessor_pid(runner: Any) -> int:
+    try:
+        predecessor = int(getattr(runner, "_overlap_predecessor_pid", None) or 0)
+    except (TypeError, ValueError):
+        predecessor = 0
+    if predecessor <= 0:
+        predecessor = overlap_predecessor_pid() or 0
+    return predecessor
+
+
 def drop_inbound_session_refusal_during_overlap(
     runner: Any, refusal: Any, session_id: str = "",
 ) -> bool:
@@ -84,12 +94,7 @@ def drop_inbound_session_refusal_during_overlap(
 
     if getattr(refusal, "reason", None) != SESSION_NOT_OWNED:
         return False
-    try:
-        predecessor = int(getattr(runner, "_overlap_predecessor_pid", None) or 0)
-    except (TypeError, ValueError):
-        predecessor = 0
-    if predecessor <= 0:
-        predecessor = overlap_predecessor_pid() or 0
+    predecessor = _runner_predecessor_pid(runner)
     if predecessor <= 0 or not session_id:
         return False
     return _overlap_holder_pid(session_id) == predecessor
@@ -182,7 +187,19 @@ async def claim_when_predecessor_exits(
         if claim == GATEWAY_CLAIM_SUCCESSOR_PENDING:
             await asyncio.sleep(poll_seconds)
             continue
-        logger.error(reason)
+        logger.warning(reason)
+        for adapter in _iter_adapters(runner):
+            if getattr(adapter, "supports_overlap_restart", False) is not True:
+                continue
+            disconnect = getattr(adapter, "disconnect", None)
+            if not callable(disconnect):
+                continue
+            try:
+                result = disconnect()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("Could not detach losing overlap successor from its hub")
         runner._exit_cleanly = True
         runner._exit_reason = reason
         stop = getattr(runner, "stop", None)
@@ -215,6 +232,44 @@ def admits_owned_work(runner: Any, source: Any) -> bool:
         return False
     session_key = session_key_for_source(source)
     return (getattr(runner, "_running_agents", None) or {}).get(session_key) is not None
+
+
+async def handoff_overlap_event(
+    runner: Any, event: Any, session_key: str, *,
+    target_pid: Optional[int] = None,
+    require_successor_ready: bool = False,
+) -> bool:
+    """Return an unowned event to its shared hub instead of dropping or queueing it."""
+    adapter = _overlap_adapter(runner, event.source)
+    if adapter is None:
+        return False
+    ready = getattr(adapter, "admits_owned_work_while_draining", None)
+    if require_successor_ready and (not callable(ready) or not ready(event.source)):
+        return False
+    handoff = getattr(adapter, "handoff_event", None)
+    if not callable(handoff):
+        return False
+    retry_delay = 0.05
+    while True:
+        if await handoff(event, session_key, target_pid=target_pid) is True:
+            return True
+        event._gateway_accepted = False
+        if not require_successor_ready or not ready(event.source):
+            return False
+        # A newer delivery can win the version fence, or the hub connection can
+        # fail transiently. Keep the event live and unacknowledged until routing
+        # succeeds; falling through would recreate the drain ack/queue bug.
+        await asyncio.sleep(retry_delay)
+        retry_delay = min(retry_delay * 2, 1.0)
+
+
+async def handoff_to_overlap_predecessor(
+    runner: Any, event: Any, session_key: str,
+) -> bool:
+    predecessor = _runner_predecessor_pid(runner)
+    return predecessor > 0 and await handoff_overlap_event(
+        runner, event, session_key, target_pid=predecessor,
+    )
 
 
 def _iter_adapters(runner: Any):

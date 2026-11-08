@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.platforms.base import BasePlatformAdapter, Platform, PlatformConfig
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.run import GatewayRunner
 from gateway.run_drain_queue import (
     claimed_drain_queue_path,
@@ -170,6 +170,75 @@ async def test_replay_dedupes_snapshot_records_by_message_id():
     state = fresh._peek_session_state(session_key)
     assert [e.message_id for e in state.conversation.queued_events] == []
     assert not drain_queue_path().exists()
+    assert not claimed_drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_replay_settles_message_already_persisted_without_injecting_it():
+    source = make_restart_source(chat_id="already-processed-chat")
+    fresh, fresh_adapter = make_restart_runner()
+    session_key = fresh._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("already answered", source=source, message_id="m-processed"),
+        session_key,
+    )
+    fresh.session_store.peek_session_id.return_value = "sid-processed"
+    fresh.session_store.has_platform_message_id.return_value = True
+    fresh_adapter.handle_message = AsyncMock()
+
+    assert replay_drain_queue(fresh) == 0
+
+    fresh_adapter.handle_message.assert_not_called()
+    assert not drain_queue_path().exists()
+    assert not claimed_drain_queue_path().exists()
+    assert replay_drain_queue(fresh) == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_duplicate_settles_when_current_turn_finishes_unsuccessfully():
+    source = make_restart_source(chat_id="duplicate-failure-chat")
+    fresh, fresh_adapter = make_restart_runner()
+    session_key = fresh._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("answered before this replay", source=source, message_id="m-duplicate"),
+        session_key,
+    )
+    fresh.session_store.peek_session_id.return_value = "sid-duplicate"
+    fresh.session_store.has_platform_message_id.return_value = False
+    fresh_adapter.handle_message = AsyncMock()
+    assert replay_drain_queue(fresh) == 1
+    await _settle(fresh)
+
+    replayed = fresh_adapter.handle_message.await_args.args[0]
+    fresh.session_store.has_platform_message_id.return_value = True
+    replayed._gateway_replay_completion(ProcessingOutcome.FAILURE)
+
+    assert not drain_queue_path().exists()
+    assert not claimed_drain_queue_path().exists()
+    assert replay_drain_queue(fresh) == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_unprocessed_failure_remains_durable():
+    source = make_restart_source(chat_id="unprocessed-failure-chat")
+    fresh, fresh_adapter = make_restart_runner()
+    session_key = fresh._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("still needs a reply", source=source, message_id="m-unprocessed"),
+        session_key,
+    )
+    fresh.session_store.peek_session_id.return_value = "sid-unprocessed"
+    fresh.session_store.has_platform_message_id.return_value = False
+    fresh_adapter.handle_message = AsyncMock()
+    assert replay_drain_queue(fresh) == 1
+    await _settle(fresh)
+
+    replayed = fresh_adapter.handle_message.await_args.args[0]
+    replayed._gateway_replay_completion(ProcessingOutcome.FAILURE)
+
+    assert [record["event"]["message_id"] for record in _snapshot_events()] == [
+        "m-unprocessed"
+    ]
     assert not claimed_drain_queue_path().exists()
 
 

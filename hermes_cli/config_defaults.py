@@ -969,9 +969,9 @@ DEFAULT_CONFIG = {
         # "separate" one message per tool (noisier). Needs tool_progress enabled. Per-platform:
         # display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
-        # Gateway tool-progress groups render as one fenced code box per group when true.
-        # Opt-in per platform: display.platforms.<platform>.tool_progress_codebox.
-        "tool_progress_codebox": False,
+        # Gateway tool-progress rows render inside fenced code boxes when true (default); set
+        # false for plain text. Per platform: display.platforms.<platform>.tool_progress_codebox.
+        "tool_progress_codebox": True,
         # Custom long-running status phrases. Defaults: gateway/assets/status_phrases.yaml.
         # `path`/`paths` = HERMES_HOME-relative YAML files/dirs (or conventional status_phrases.yaml
         # / status_phrases/*.yaml). Keys: status, generic. mode: "append" (default) | "replace".
@@ -988,15 +988,16 @@ DEFAULT_CONFIG = {
         "platforms": {
             "discord": {"streaming": False},
         },
-        # Gateway runtime footer on the FINAL message, e.g. `model · 68% · ~/projects/hermes`.
+        # Gateway runtime footer on the FINAL message, e.g. `model · 68% · 12s · api 8s · 9 tools`.
         # Per-platform: display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
-            "enabled": False,
-            # Order shown; drop any to hide. Opt-in extras: latency, served_model (alias → the
+            "enabled": True,
+            # Order shown; drop any to hide. Opt-in extras: cwd, latency, served_model (alias → the
             # deployment a routing proxy reported / Hermes' fallback route).
             "fields": [
-                "model", "context_pct", "cwd",
-                "turn_time", "api_time", "tool_time", "overhead_time", "api_calls",
+                "model", "context_pct",
+                "turn_time", "api_time", "tool_time", "overhead_time", "api_calls", "tool_calls",
+                "reasoning",
             ],
         },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
@@ -2005,6 +2006,10 @@ DEFAULT_CONFIG = {
         # teardown proceeds. Keep this short so service-manager shutdowns do
         # not exhaust their stop budget before resource cleanup begins.
         "signal_interrupt_grace_timeout": 1,
+        # Opt-in: post the cooperative restart wind-down (⏸️ park) offer embed on a
+        # user-requested /restart. Debugging aid for the wind-down path only — the
+        # multi-instance overlap restart keeps sessions alive across restarts, which
+        # made the always-on offer obsolete chatter.
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the
         # platform send; a gateway that died between finalize and platform ACK redelivers on next
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;

@@ -1,0 +1,8 @@
+name: brief-gate
+default_enabled: true
+version: "0.1.0"
+description: "Warns (never blocks) when a delegate_agent/delegate_task brief is missing the dispatch-contract field classes — invariant, owner/existing mechanism, acceptance/tests — before the delegate commits compute. One warning per missing class per session. Configure under plugins.entries.brief-gate.settings or the flat plugins.brief_gate section."
+author: "Hermes Agent"
+kind: backend
+hooks:
+  - pre_tool_call

@@ -20,12 +20,16 @@ from typing import Any
 # and don't participate in per-platform resolution.
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
-    "tool_progress": "all",
+    # Unconfigured installs get "describe" (one short human sentence per call).
+    # The explicit opt-in to raw verbosity stays available: ``tool_progress: all``,
+    # and a bare boolean ``tool_progress: true`` still coerces to "all" (see _NORMALISERS).
+    "tool_progress": "describe",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
-    # Present each accumulated tool-progress group as one unlabelled fenced
-    # code block (rows keep their relative order; embedded ``` are escaped so
-    # they stay inside the box). Opt-in; off = plain multi-line bubble.
-    "tool_progress_codebox": False,
+    # Present tool-progress rows as unlabelled fenced code blocks (accumulated
+    # groups, "separate" per-row messages and non-editable sends alike; embedded
+    # ``` are escaped so they stay inside the box). On by default;
+    # ``tool_progress_codebox: false`` restores plain text.
+    "tool_progress_codebox": True,
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -65,7 +69,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
 # LOW = no edit support (progress messages are permanent); MINIMAL = batch delivery.
 _TIER_HIGH = {
-    "tool_progress": "all", "show_reasoning": False, "tool_preview_length": 40,
+    "tool_progress": "describe", "show_reasoning": False, "tool_preview_length": 40,
     "streaming": None,  # follow global
     "interim_assistant_messages": True, "long_running_notifications": True, "busy_ack_detail": True,
 }
@@ -331,6 +335,19 @@ def format_progress_group(lines: list, codebox: bool) -> str:
     if run:
         segments.append("```\n" + "\n".join(run) + "\n```")
     return "\n\n".join(segments)
+
+
+def format_progress_row(row, codebox: bool, limit: int, len_fn=len) -> list[str]:
+    """Texts to send for ONE row delivered as its own message ("separate" / non-editable).
+
+    Plain mode is the row unchanged. Boxed mode wraps it via
+    :func:`format_progress_group` (fenced rows stay unboxed) and slices an
+    oversized row into limit-fitting boxes so nothing is split mid-fence by
+    the adapter. Rows must be passed RAW (never pre-boxed).
+    """
+    if not codebox:
+        return [str(row)]
+    return [format_progress_group([chunk], True) for chunk in chunk_oversized_progress_row(row, limit, len_fn)]
 
 
 # "```\n" + "\n```" around a one-line boxed group.

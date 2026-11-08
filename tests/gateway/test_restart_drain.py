@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -61,7 +62,9 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     # sides of the equality above would still match. Assert on the catalog
     # output explicitly so a broken locale resolution fails loudly here.
     assert expected != "gateway.draining"
-    assert "Asking" in expected and "1" in expected
+    # The reply is terse — the old "Asking N active agent(s) to park" wording
+    # is gone (overlap restart keeps sessions alive across the bounce).
+    assert expected == "♻ Restarting gateway..."
     running_agent.interrupt.assert_not_called()
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 
@@ -167,6 +170,47 @@ async def test_request_restart_is_idempotent():
     runner.stop.assert_awaited_once_with(
         restart=True, detached_restart=True, service_restart=False
     )
+
+
+@pytest.mark.asyncio
+async def test_sigterm_during_pending_restart_drain_does_not_start_competing_stop(
+    monkeypatch,
+):
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_task_started = True
+    runner._restart_requested = True
+    runner._draining = True
+    runner._restart_drain_timeout = 0.0
+    restart_task = asyncio.create_task(asyncio.Event().wait())
+    runner._restart_task = restart_task
+    monkeypatch.setattr(gateway_run, "_best_effort", lambda *a, **k: None)
+    handler = gateway_run._start_gateway_make_shutdown_signal_handler(runner, [False])
+
+    try:
+        handler(signal.SIGTERM)
+        await asyncio.sleep(0)
+
+        runner.stop.assert_not_called()
+        assert not restart_task.done()
+    finally:
+        restart_task.cancel()
+        await asyncio.gather(restart_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_sigterm_without_pending_restart_still_starts_stop(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_task_started = False
+    runner._restart_task = None
+    monkeypatch.setattr(gateway_run, "_best_effort", lambda *a, **k: None)
+    handler = gateway_run._start_gateway_make_shutdown_signal_handler(runner, [False])
+
+    handler(signal.SIGTERM)
+    await asyncio.sleep(0)
+
+    runner.stop.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

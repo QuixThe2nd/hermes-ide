@@ -204,3 +204,53 @@ def test_run_conversation_accepts_persist_user_platform_id():
         "persist_user_platform_id"
         in inspect.signature(AIAgent.run_conversation).parameters
     )
+
+
+def test_drain_replay_settles_against_real_persisted_platform_message_id(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.run_drain_queue import (
+        claimed_drain_queue_path,
+        drain_queue_path,
+        queue_drain_refused_message,
+        replay_drain_queue,
+    )
+    from run_agent import AIAgent
+    from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+
+    db = _make_db(tmp_path)
+    session_id = db.create_session("sess-drain-replay", "gateway")
+    agent = _MinimalAgent(db, session_id)
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_platform_id = "discord-already-processed"
+    messages = [{"role": "user", "content": "already answered"}]
+    AIAgent._apply_persist_user_message_override(agent, messages)
+    AIAgent._flush_messages_to_session_db_unlocked(
+        agent, messages, conversation_history=None
+    )
+
+    draining, _adapter = make_restart_runner()
+    source = make_restart_source(chat_id="real-db-replay-chat")
+    session_key = draining._session_key_for_source(source)
+    event = MessageEvent(
+        text="already answered",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="discord-already-processed",
+    )
+    draining._draining = True
+    draining._restart_requested = True
+    draining._busy_input_mode = "queue"
+    assert queue_drain_refused_message(draining, event, session_key) is not None
+
+    fresh, fresh_adapter = make_restart_runner()
+    fresh.session_store.peek_session_id.return_value = session_id
+    fresh.session_store.has_platform_message_id.side_effect = db.has_platform_message_id
+    fresh_adapter.handle_message = AsyncMock()
+
+    assert replay_drain_queue(fresh) == 0
+
+    fresh_adapter.handle_message.assert_not_called()
+    assert not drain_queue_path().exists()
+    assert not claimed_drain_queue_path().exists()

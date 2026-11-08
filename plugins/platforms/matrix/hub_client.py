@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from gateway.config import Platform, PlatformConfig
 from gateway.overlap_restart import overlap_attachment
 from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
 from hermes_constants import get_hermes_home
 from plugins.platforms.discord.hub import default_socket_path
 from plugins.platforms.discord.hub_client import DiscordHubClientAdapter
@@ -243,6 +244,47 @@ class MatrixHubClientAdapter(MatrixAdapter):
                 except Exception:
                     logger.exception("[%s] Could not report Matrix hub disconnect", self.name)
 
+    async def handle_message(self, event: MessageEvent) -> None:
+        """Claim locally-started turns without losing process-local replay callbacks."""
+        if getattr(event, "_hub_delivered", False) is True:
+            await super().handle_message(event)
+            return
+        from gateway.run_drain_queue import serialize_drain_event
+
+        event._gateway_accepted = False
+        try:
+            session_key = self._event_session_key(event)
+            registration = await self._call("register", {"session_key": session_key})
+            if not isinstance(registration, dict):
+                return
+            owner = registration.get("owner")
+            if owner != self._generation_id:
+                if owner and not callable(getattr(event, "_gateway_replay_completion", None)):
+                    record = serialize_drain_event(session_key, event)
+                    generation = await self._call("route", {
+                        "session_key": session_key,
+                        "record": record,
+                    })
+                    event._gateway_accepted = generation is not None
+                return
+            version = registration.get("version")
+            if version is None:
+                return
+            self._session_versions[session_key] = int(version)
+            await super().handle_message(event)
+            if (
+                not event._gateway_accepted
+                and session_key not in self._active_sessions
+                and session_key not in self._pending_messages
+                and session_key not in self._session_tasks
+            ):
+                await self._release_ownership(session_key, int(version))
+        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
+            logger.error(
+                "[%s] Could not route locally-started Matrix turn: %s",
+                self.name, exc,
+            )
+
     async def _receive_event(self, message: Dict[str, Any]) -> None:
         from gateway.run_drain_queue import deserialize_drain_event
 
@@ -253,6 +295,8 @@ class MatrixHubClientAdapter(MatrixAdapter):
             if session_key and version is not None:
                 self._session_versions[session_key] = int(version)
             _session_key, event = deserialize_drain_event(record)
+            event._hub_delivered = True
+            event._hub_handoffs = list(record.get("_matrix_hub_version_handoffs") or [])
             await self.handle_message(event)
         except Exception:
             logger.exception("[%s] Could not admit Matrix hub event", self.name)
@@ -287,6 +331,12 @@ class MatrixHubClientAdapter(MatrixAdapter):
                 self._writer.write((json.dumps(response, separators=(",", ":")) + "\n").encode())
                 await self._writer.drain()
 
+    def _schedule_ownership_release(self, session_key: str) -> None:
+        version = self._session_versions.get(session_key, 0)
+        task = asyncio.create_task(self._release_ownership(session_key, version))
+        self._release_tasks.add(task)
+        task.add_done_callback(self._release_tasks.discard)
+
     def _cleanup_finished_session_task(self, session_key: str, interrupt_event) -> None:
         super()._cleanup_finished_session_task(session_key, interrupt_event)
         if (
@@ -294,20 +344,82 @@ class MatrixHubClientAdapter(MatrixAdapter):
             and session_key not in self._pending_messages
             and session_key not in self._session_tasks
         ):
-            task = asyncio.create_task(self._release_ownership(session_key))
-            self._release_tasks.add(task)
-            task.add_done_callback(self._release_tasks.discard)
+            self._schedule_ownership_release(session_key)
 
-    async def _release_ownership(self, session_key: str) -> None:
+    async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
+                                        discard_pending: bool = True) -> None:
+        await super().cancel_session_processing(
+            session_key, release_guard=release_guard, discard_pending=discard_pending,
+        )
+        if (
+            session_key not in self._active_sessions
+            and session_key not in self._pending_messages
+            and session_key not in self._session_tasks
+        ):
+            self._schedule_ownership_release(session_key)
+
+    def _heal_stale_session_lock(self, session_key: str) -> bool:
+        healed = super()._heal_stale_session_lock(session_key)
+        if healed:
+            self._schedule_ownership_release(session_key)
+        return healed
+
+    async def _drain_pending_after_session_command(self, session_key: str, command_guard) -> None:
+        await super()._drain_pending_after_session_command(session_key, command_guard)
+        if (
+            session_key not in self._active_sessions
+            and session_key not in self._pending_messages
+            and session_key not in self._session_tasks
+        ):
+            self._schedule_ownership_release(session_key)
+
+    async def _release_ownership(self, session_key: str, version: int) -> None:
         try:
             released = await self._call("unregister", {
                 "session_key": session_key,
-                "version": self._session_versions.get(session_key, 0),
+                "version": version,
             })
-            if released:
+            if released and self._session_versions.get(session_key) == version:
                 self._session_versions.pop(session_key, None)
         except (ConnectionError, RuntimeError) as exc:
             logger.debug("[%s] Matrix ownership release failed: %s", self.name, exc)
+
+    async def handoff_event(self, event: MessageEvent, session_key: str, *,
+                            target_pid: Optional[int] = None) -> bool:
+        """Return an event to the hub; only an accepted RPC transfers its outcome."""
+        from gateway.run_drain_queue import serialize_drain_event
+
+        try:
+            record = serialize_drain_event(session_key, event)
+            handoffs = list(getattr(event, "_hub_handoffs", None) or [])
+            if handoffs:
+                record["_matrix_hub_version_handoffs"] = handoffs
+            accepted = await self._call("handoff", {
+                "session_key": session_key,
+                "version": self._session_versions.get(session_key, 0),
+                "record": record,
+                "target_pid": target_pid,
+            })
+            if accepted is not True:
+                event._gateway_accepted = False
+                return False
+            event._gateway_accepted = True
+            return True
+        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
+            event._gateway_accepted = False
+            logger.error("[%s] Matrix hub handoff failed for %s: %s", self.name, session_key, exc)
+            return False
+
+    async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
+        runner = self.gateway_runner
+        if runner is not None and getattr(runner, "_draining", False):
+            from gateway.overlap_restart import admits_owned_work, handoff_overlap_event
+
+            if not admits_owned_work(runner, event.source) and await handoff_overlap_event(
+                runner, event, session_key, require_successor_ready=True,
+            ):
+                return
+        await super()._handle_message_while_active(event, session_key)
 
     def mark_overlap_successor_ready(self) -> None:
         self._overlap_successor_ready = True

@@ -82,6 +82,8 @@ from tools.cursor_run_receipts import (
     update_receipt,
     validate_receipt_binding,
 )
+from tools.delegate_evidence_gate import apply_evidence_gate
+from tools.delegate_tool_config import _cfg
 from tools.environments.local import build_subprocess_env
 from tools.registry import registry
 from tools.tool_status import CURSOR_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
@@ -1367,6 +1369,7 @@ def _authoritative_terminal_reconcile(
         duration_seconds=0.0,
         log_path=str(receipt.get("log_path") or ""),
         attempt_id=str(receipt.get("attempt_id") or ""),
+        task_text=str(receipt.get("task") or ""),
     )
     finalize_receipt(
         receipt_path,
@@ -1520,6 +1523,7 @@ def _build_cloud_tool_result_from_run(
     log_path: Optional[str],
     progress_url: Optional[str] = None,
     attempt_id: Optional[str] = None,
+    task_text: str = "",
 ) -> Tuple[str, bool, str, Optional[str]]:
     fields = _cloud_result_fields(
         agent=agent,
@@ -1544,10 +1548,18 @@ def _build_cloud_tool_result_from_run(
             cloud_status,
         )
     if cloud_status == "FINISHED":
+        result_json = _make_cloud_tool_result(
+            success=True, error=None, attempt_id=attempt_id, **fields
+        )
+        payload = json.loads(result_json)
+        gated = apply_evidence_gate(payload, task_text=task_text, config=_cfg())
+        if gated is not payload:
+            result_json = json.dumps(gated, ensure_ascii=False)
+        success = gated.get("success") is True
         return (
-            _make_cloud_tool_result(success=True, error=None, attempt_id=attempt_id, **fields),
-            True,
-            outcome,
+            result_json,
+            success,
+            outcome if success else "failed",
             cloud_status,
         )
     if cloud_status == "ERROR":
@@ -1633,6 +1645,7 @@ def _execute_cloud_delegation(
                 duration_seconds=0.0,
                 log_path=str(log_path),
                 attempt_id=str(receipt.get("attempt_id") or ""),
+                task_text=task,
             )
             finalize_receipt(
                 receipt_path,
@@ -1669,6 +1682,7 @@ def _execute_cloud_delegation(
                     duration_seconds=0.0,
                     log_path=str(log_path),
                     attempt_id=str(receipt.get("attempt_id") or ""),
+                    task_text=task,
                 )
                 finalize_receipt(
                     receipt_path,
@@ -1806,6 +1820,7 @@ def _execute_cloud_delegation(
         log_path=str(log_path),
         progress_url=progress_url,
         attempt_id=str(receipt.get("attempt_id") or ""),
+        task_text=task,
     )
     finalize_receipt(
         receipt_path,
@@ -2273,7 +2288,7 @@ def _cloud_result_fields(
     duration_ms = run.get("durationMs")
     if isinstance(duration_ms, (int, float)) and duration_ms >= 0:
         duration_seconds = float(duration_ms) / 1000.0
-    return {
+    fields = {
         "final_report": final_report,
         "delegations": [],
         "duration_seconds": round(float(duration_seconds), 3),
@@ -2284,6 +2299,9 @@ def _cloud_result_fields(
         "cloud_status": cloud_status,
         "progress_url": url,
     }
+    if "test_evidence" in run:
+        fields["test_evidence"] = run["test_evidence"]
+    return fields
 
 
 def _cloud_outcome_from_run(

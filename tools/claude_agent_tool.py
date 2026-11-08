@@ -79,6 +79,8 @@ from hermes_constants import get_hermes_home
 from tools.agent_cli_runner import run_agent_cli
 from tools.claude_run_receipts import write_spawn_receipt
 from tools.claude_viewer_url import watch_url
+from tools.delegate_evidence_gate import apply_evidence_gate
+from tools.delegate_tool_config import _cfg
 from tools.registry import registry
 from tools.tool_status import CLAUDE_AGENT_VIEWER_STATUS_PREFIX, emit_tool_status
 
@@ -255,7 +257,7 @@ def parse_claude_agent_log(log_text: str) -> Dict[str, Any]:
     if permission_denials is None:
         permission_denials = []
 
-    return {
+    parsed = {
         "subtype": result_event.get("subtype"),
         "is_error": result_event.get("is_error"),
         "result": result_event.get("result"),
@@ -266,6 +268,9 @@ def parse_claude_agent_log(log_text: str) -> Dict[str, Any]:
         "models_used": models_used,
         "permission_denials": permission_denials,
     }
+    if "test_evidence" in result_event:
+        parsed["test_evidence"] = result_event["test_evidence"]
+    return parsed
 
 
 # Markers that mean the run degraded silently even when the exit code and
@@ -631,6 +636,7 @@ def delegate_claude_agent(
             goal=prompt,
             model_name=model_name,
             on_spawn=on_spawn,
+            task_text=str(task),
         )
 
     return _run_claude_agent_sync(
@@ -641,6 +647,7 @@ def delegate_claude_agent(
         run_timestamp=run_timestamp,
         goal_brief_path=goal_brief_path,
         on_spawn=on_spawn,
+        task_text=str(task),
     )
 
 
@@ -654,6 +661,7 @@ def _run_claude_agent_sync(
     goal_brief_path: Optional[str],
     on_spawn: Optional[Callable[[Path], None]] = None,
     on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
+    task_text: str = "",
 ) -> str:
     """Spawn the CLI, wait for it to exit, and return its result inline.
 
@@ -692,6 +700,8 @@ def _run_claude_agent_sync(
         "warnings": extract_log_warnings(log_text),
         "goal_brief_path": goal_brief_path,
     }
+    if "test_evidence" in parsed:
+        base_fields["test_evidence"] = parsed["test_evidence"]
 
     if watchdog_error:
         return _make_result(
@@ -744,11 +754,18 @@ def _run_claude_agent_sync(
             f"refusal: {base_fields['final_report'][:200]}"
         )
 
-    return _make_result(
+    result_json = _make_result(
         success=success,
         error=error,
         **base_fields,
     )
+    if not success:
+        return result_json
+    payload = json.loads(result_json)
+    gated = apply_evidence_gate(payload, task_text=task_text, config=_cfg())
+    if gated is payload:
+        return result_json
+    return json.dumps(gated, ensure_ascii=False)
 
 
 def _dispatch_claude_background(
@@ -762,6 +779,7 @@ def _dispatch_claude_background(
     goal: str,
     model_name: str,
     on_spawn: Optional[Callable[[Path], None]] = None,
+    task_text: str = "",
 ) -> str:
     """Return the background acceptance envelope, or a clear rejection.
 
@@ -803,6 +821,7 @@ def _dispatch_claude_background(
             goal_brief_path=goal_brief_path,
             on_spawn=on_spawn,
             on_proc=_on_proc,
+            task_text=task_text,
         )
         payload = json.loads(out)
         status = "completed" if payload.get("success") else "error"
