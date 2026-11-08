@@ -413,3 +413,128 @@ def test_claude_argv_includes_append_system_prompt_file(monkeypatch, tmp_path, w
     later_flag = "--model" if "--model" in argv else "--permission-mode"
     assert argv.index("--append-system-prompt-file") < argv.index(later_flag)
     assert argv[-1] == "do it"
+
+
+# --- Reviewer pass -----------------------------------------------------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ({"provider": "custom:litellm", "model": "grok-4.6"},
+     {"provider": "custom:litellm", "model": "grok-4.6"}),
+    ({"provider": "custom:litellm", "model": "grok-4.6", "reasoning_effort": "medium"},
+     {"provider": "custom:litellm", "model": "grok-4.6", "reasoning_effort": "medium"}),
+    ("custom:litellm:grok-4.6", {"provider": "custom:litellm", "model": "grok-4.6"}),
+    ("openrouter:grok-4.6", {"provider": "openrouter", "model": "grok-4.6"}),
+    ("grok-4.6", {"provider": "", "model": "grok-4.6"}),
+    ("grok-4.6-medium (moa)",
+     {"provider": "", "model": "grok-4.6", "reasoning_effort": "medium"}),
+    ("gpt-5.2-low", {"provider": "", "model": "gpt-5.2", "reasoning_effort": "low"}),
+    ("requesting agent", None),
+    ("the requesting agent will review", None),
+    ("", None),
+    (None, None),
+])
+def test_parse_reviewer_grammar(raw, expected):
+    from tools.delegate_lane_review import _parse_reviewer
+
+    assert _parse_reviewer(raw) == expected
+
+
+def _review_lane(monkeypatch, workdir, reviewer, reply=None, error=None):
+    """Drive one ui_dev lane attempt with a stubbed reviewer LLM call."""
+    import agent.auxiliary_client as aux
+    import agent.moa_loop as moa
+    from tools import delegate_lane_review
+
+    _configure(monkeypatch, {"ui_dev": {"models": ["provider/model"], "reviewer": reviewer}})
+    calls = []
+
+    monkeypatch.setitem(lane_tool._RUNNERS, "omp", lambda *args: (
+        {"success": True, "final_report": "done: checks pass"}
+    ))
+    monkeypatch.setattr(moa, "_slot_runtime",
+                        lambda slot: {"provider": slot["provider"], "model": slot["model"]})
+    monkeypatch.setattr(moa, "_slot_reasoning_config", lambda slot: None)
+    monkeypatch.setattr(moa, "_extract_text", lambda response: response)
+
+    def _call_llm(**kwargs):
+        calls.append(kwargs)
+        if error is not None:
+            raise error
+        return reply
+
+    monkeypatch.setattr(aux, "call_llm", _call_llm)
+    result = json.loads(registry.dispatch(
+        "delegate_ui_dev", {"task": "Align the panel", "workdir": str(workdir)}
+    ))
+    return result, calls, delegate_lane_review
+
+
+def test_successful_attempt_with_approved_review(monkeypatch, workdir):
+    result, calls, _ = _review_lane(
+        monkeypatch, workdir,
+        {"provider": "custom:litellm", "model": "grok-4.6"}, reply="APPROVED",
+    )
+    assert result["success"] is True
+    assert result["review"]["status"] == "approved"
+    assert "(review: approved)" in result["receipt"]
+    assert len(calls) == 1
+    assert calls[0]["task"] == "lane_review"
+    assert calls[0]["model"] == "grok-4.6"
+    assert "Agent report:\ndone: checks pass" in calls[0]["messages"][0]["content"]
+
+
+def test_blocked_review_fails_the_lane(monkeypatch, workdir):
+    result, calls, _ = _review_lane(
+        monkeypatch, workdir,
+        {"provider": "custom:litellm", "model": "grok-4.6"},
+        reply="BLOCKED: no evidence the layout was verified",
+    )
+    assert result["success"] is False
+    assert "reviewer blocked" in result["error"]
+    assert "no evidence" in result["error"]
+    assert result["review_blocked"] is True
+    assert result["review"]["status"] == "blocked"
+    assert "(review: blocked)" in result["receipt"]
+    assert "reviewer blocked" in result["verdict"]
+    assert result["receipt_data"]["review_detail"] == "BLOCKED: no evidence the layout was verified"
+
+
+def test_prose_reviewer_is_skipped_without_an_llm_call(monkeypatch, workdir):
+    result, calls, _ = _review_lane(monkeypatch, workdir, "requesting agent")
+    assert result["success"] is True
+    assert result["review"]["status"] == "skipped"
+    assert calls == []
+
+
+def test_reviewer_transport_error_never_fails_the_lane(monkeypatch, workdir):
+    result, calls, _ = _review_lane(
+        monkeypatch, workdir,
+        {"provider": "custom:litellm", "model": "grok-4.6"},
+        error=RuntimeError("provider unreachable"),
+    )
+    assert result["success"] is True
+    assert result["review"]["status"] == "failed"
+    assert "provider unreachable" in result["review"]["detail"]
+    assert "(review: failed)" in result["receipt"]
+    assert "provider unreachable" in result["receipt_data"]["review_detail"]
+
+
+def test_failed_attempt_is_not_reviewed(monkeypatch, workdir):
+    from tools import delegate_lane_review
+
+    _configure(monkeypatch, {"ui_dev": {"models": ["provider/model"]}})
+    monkeypatch.setitem(
+        lane_tool._RUNNERS, "omp",
+        lambda *args: {"success": False, "error": "migration contract test failed"},
+    )
+    invoked = []
+    monkeypatch.setattr(
+        delegate_lane_review, "apply_review",
+        lambda *args, **kwargs: invoked.append(args) or args[2],
+    )
+    result = json.loads(registry.dispatch(
+        "delegate_ui_dev", {"task": "Change the API", "workdir": str(workdir)}
+    ))
+    assert result["success"] is False
+    assert invoked == []
+    assert "review" not in result["backend_result"]

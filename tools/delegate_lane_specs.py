@@ -124,7 +124,13 @@ def resolve_lane_spec(name: str, lanes: Any = None) -> Dict[str, Any]:
         spec.get("receipt_fields") or RECEIPT_FIELDS, "receipt_fields"
     )
     spec["soul"] = str(spec.get("soul") or "")
-    spec["reviewer"] = str(spec.get("reviewer") or "requesting agent")
+    raw_reviewer = spec.get("reviewer")
+    # Dict reviewers ({provider, model, reasoning_effort}) stay structured for
+    # the reviewer pass; everything else stays the display string.
+    spec["reviewer"] = (
+        raw_reviewer if isinstance(raw_reviewer, dict)
+        else str(raw_reviewer or "requesting agent")
+    )
     return spec
 
 
