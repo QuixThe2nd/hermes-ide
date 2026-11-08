@@ -1784,7 +1784,9 @@ display:
   # Tool progress display level (CLI and gateway)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
-  #   all:     Show every tool call with a short preview (default)
+  #   all:     Show every tool call with a short preview (CLI default)
+  #   describe: One short human sentence per call (gateway default; rows render in code boxes,
+  #            set display.tool_progress_codebox: false for plain text)
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI

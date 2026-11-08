@@ -160,11 +160,11 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Discord (tier_high) defaults to 'all'; matrix (tier_medium) to 'new'."""
+        """Discord (tier_high) defaults to 'describe'; matrix (tier_medium) to 'new'."""
         from gateway.display_config import resolve_display_setting
 
         # Discord: pure tier_high.
-        assert resolve_display_setting({}, "discord", "tool_progress") == "all"
+        assert resolve_display_setting({}, "discord", "tool_progress") == "describe"
         # Matrix: tier_medium — editing support, but quieter default.
         assert resolve_display_setting({}, "matrix", "tool_progress") == "new"
 
@@ -359,3 +359,39 @@ class TestLiveStatusSetting:
         assert resolve_display_setting({}, "slack", "live_status") == "full"
 
 
+
+
+class TestToolProgressDefaults:
+    """Unconfigured gateways describe tool calls inside code boxes; explicit config wins."""
+
+    def test_unconfigured_discord_describes_in_codebox(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "discord", "tool_progress") == "describe"
+        assert resolve_display_setting({}, "discord", "tool_progress_codebox") is True
+
+    def test_explicit_overrides_win(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress": "all", "tool_progress_codebox": False}}
+        assert resolve_display_setting(config, "discord", "tool_progress") == "all"
+        assert resolve_display_setting(config, "discord", "tool_progress_codebox") is False
+
+    def test_per_platform_codebox_false_wins(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"discord": {"tool_progress_codebox": False}}}}
+        assert resolve_display_setting(config, "discord", "tool_progress_codebox") is False
+
+    def test_boolean_true_still_means_verbose_all(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress": True}}
+        assert resolve_display_setting(config, "discord", "tool_progress") == "all"
+
+    def test_quiet_tiers_stay_quiet(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "whatsapp_cloud", "tool_progress") == "off"
+        assert resolve_display_setting({}, "webhook", "tool_progress") == "off"
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "new"
