@@ -333,6 +333,26 @@ def test_socket_reported_restart_is_attached_without_another_signal(tmp_path, mo
     kill.assert_not_called()
 
 
+def test_socket_reported_chained_restart_is_attached_without_another_signal(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import gateway_restart_progress as progress
+
+    monkeypatch.setattr(progress, "_read_status", lambda home: {
+        "pid": 100, "gateway_state": "running",
+    })
+    query = MagicMock(return_value={"queued": True, "status": "chained"})
+    monkeypatch.setattr(progress, "query_gateway_control", query)
+    kill = MagicMock()
+    monkeypatch.setattr(progress.os, "kill", kill)
+
+    outcome = progress.request_gateway_restart(100, home=tmp_path, via_service=True)
+
+    assert outcome.accepted is True and outcome.attached is True
+    query.assert_called_once()
+    kill.assert_not_called()
+
+
 def test_committed_restart_attaches_without_sending_another_request(tmp_path, monkeypatch):
     from hermes_cli import gateway_restart_progress as progress
 

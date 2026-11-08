@@ -479,7 +479,11 @@ class GatewaySlashCommandsMixin(
                         src.platform.value if src and src.platform else "?",
                         event.platform_update_id)
             return ""
-        if self._restart_requested or self._draining:
+        chain_pending = bool(
+            self._draining
+            and getattr(self, "_overlap_restart_successor_started", False)
+        )
+        if (self._restart_requested or self._draining) and not chain_pending:
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
@@ -505,6 +509,8 @@ class GatewaySlashCommandsMixin(
         # ONE gateway-owned helper shared with the agent-callable restart tool, so the two
         # user-restart entry points cannot drift apart.
         status = await queue_user_restart(self, event.source, event.message_id)
+        if status["status"] == "chained":
+            return EphemeralReply(t("gateway.restart.chained"))
         active_agents = status["active_agents"]
         # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
         # counter increments for sessions that were running. If a session hits the threshold (3 consecutive

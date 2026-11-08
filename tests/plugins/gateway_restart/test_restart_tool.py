@@ -400,6 +400,31 @@ def test_handler_reports_committed_restart_without_second_restart(
     assert not (tmp_path / ".restart_notify.json").exists()
 
 
+def test_handler_chains_committed_restart_with_pending_successor(
+    gateway_loop, monkeypatch, tmp_path
+):
+    from plugins.gateway_restart.tool import handle_restart
+
+    runner = _live_runner(
+        monkeypatch,
+        gateway_loop,
+        _restart_requested=True,
+        _draining=True,
+        _overlap_restart_successor_started=True,
+    )
+
+    _bind_session(runner, **_TELEGRAM_SESSION)
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert result["status"] == "chained"
+    assert (tmp_path / ".restart_chain.json").exists()
+    runner.request_restart.assert_not_called()
+
+
 def test_handler_refuses_generic_shutdown_drain(gateway_loop, monkeypatch):
     from plugins.gateway_restart.tool import handle_restart
 

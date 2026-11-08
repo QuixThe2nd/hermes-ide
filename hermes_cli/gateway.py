@@ -6566,11 +6566,13 @@ def _restart_via_control_socket(restart_platforms: bool, *, old_pid: int | None 
     if not isinstance(ack, dict):
         return False
     status = str(ack.get("status") or "")
-    if not ack.get("queued") and status != "already_in_progress":
+    if not ack.get("queued") and status not in {"already_in_progress", "chained"}:
         logger.debug("Control-socket restart verb refused: %s", ack)
         return False
     if status == "already_in_progress":
         print("✓ Gateway restart already in progress — draining active work")
+    elif status == "chained":
+        print("✓ Gateway restart chained — queued on the incoming generation")
     else:
         print("✓ Gateway restart queued — in-flight sessions drain undisturbed, then the gateway bounces")
         if not restart_platforms:

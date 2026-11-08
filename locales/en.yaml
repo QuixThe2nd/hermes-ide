@@ -252,6 +252,7 @@ gateway:
   restart:
     in_progress:           "⏳ Gateway restart already in progress..."
     restarting:            "♻ Restarting gateway..."
+    chained:               "♻ Gateway restart chained — queued on the incoming generation."
 
   resume:
     db_unavailable:        "Session database not available."

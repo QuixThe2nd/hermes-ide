@@ -180,7 +180,7 @@ async def _queue_user_restart(runner: Any, source: Any, message_id: Optional[str
     privates; the two user-restart entry points cannot drift apart. Must run
     on the gateway event loop (``request_restart`` schedules its drain task
     there), and returns the shared status dict shape: ``status``
-    ("restarting" / "already_in_progress"), ``active_agents`` (counted
+    ("restarting" / "already_in_progress" / "chained"), ``active_agents`` (counted
     before the drain closes in), and ``via_service`` (None when nothing was
     started this call).
     """
@@ -235,7 +235,7 @@ def _restart_via_control_socket() -> str:
     if not isinstance(ack, dict):
         return _error_json(_NO_GATEWAY_ERROR)
     status = str(ack.get("status") or "")
-    if not ack.get("queued") and status != "already_in_progress":
+    if not ack.get("queued") and status not in {"already_in_progress", "chained"}:
         # The gateway answered but refused (e.g. a drain already shutting
         # down, or the hand-off not observed in time) — surface its reason.
         return _error_json(
@@ -310,7 +310,7 @@ def handle_restart(args: dict, **_: Any) -> str:
             "state; no restart was started."
         )
     committed, draining = state
-    if committed:
+    if committed and not draining:
         # A restart already in flight owns the notify payload — do not write
         # another requester's routing or call request_restart a second time.
         return _result_json(
@@ -321,10 +321,13 @@ def handle_restart(args: dict, **_: Any) -> str:
                 "via_service": None,
             },
         )
-    if draining:
+    if draining and not committed:
         return _error_json(
             "Gateway shutdown is already in progress; no restart was started."
         )
+    # A committed overlap drain reaches the shared queue: with a pending
+    # successor it returns ``chained``; without one it keeps the existing
+    # already-in-progress result. Generic shutdowns were refused above.
 
     session_key = get_session_env("HERMES_SESSION_KEY", "").strip()
     get_cached_source = getattr(runner, "_get_cached_session_source", None)

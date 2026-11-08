@@ -194,6 +194,9 @@ async def claim_when_predecessor_exits(
             )
             try:
                 await on_authoritative()
+                from gateway.restart_chain import run_chained_restart
+
+                await run_chained_restart(runner)
             except Exception:
                 logger.exception("Overlap successor became authoritative but post-claim startup failed; exiting")
                 runner._exit_with_failure = True

@@ -28,7 +28,7 @@ TURN_CONTROL_FIELD = "_hermes_turn_control"
 GATEWAY_RESTART_CONTROL = "gateway_restart"
 
 # Restart statuses that mean the drain is committed or already active.
-TERMINAL_RESTART_STATUSES = frozenset({"restarting", "already_in_progress"})
+TERMINAL_RESTART_STATUSES = frozenset({"restarting", "already_in_progress", "chained"})
 
 
 def is_terminal_restart_status(status: Any) -> bool:

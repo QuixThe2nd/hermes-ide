@@ -2174,6 +2174,14 @@ class GatewayShutdownMixin:
     ) -> bool:
         from gateway.run import _RESTART_WAIT_RETRY_SLEEP_S
         if self._restart_task_started:
+            if overlap:
+                from gateway.restart_chain import record_chained_restart
+
+                record_chained_restart(
+                    self,
+                    request_kind="request_restart",
+                    via_service=via_service,
+                )
             return False
         # One provisional setup transaction: every flag and partial cycle
         # mutation below is owned by THIS request until the restart task
