@@ -2253,6 +2253,13 @@ class GatewayTurnMixin:
         if _vc_note:
             turn_sidecar_notes.append(_vc_note)
 
+        # Restart-resume: the hub routed this session's first post-restart turn
+        # to a new gateway generation; tell the agent (and, via the injection
+        # card, the user) that the instance changed between turns.
+        _restart_note = self._hub_restart_sidecar_note(event)
+        if _restart_note:
+            turn_sidecar_notes.append(_restart_note)
+
         # Auto-analyze user images so the model gets a description plus the local path.
         message_text = await self._prepare_profile_scoped_inbound_message_text(
             event=event, source=source, history=history, session_key=session_key,
@@ -4162,6 +4169,12 @@ class GatewayTurnMixin:
         _vc_note = self._voice_channel_sidecar_note(event, source, session_key)
         if _vc_note:
             turn_sidecar_notes.append(_vc_note)
+
+        # Restart-resume (see _prepare path above): the hub routed this
+        # session's first post-restart turn to a new gateway generation.
+        _restart_note = self._hub_restart_sidecar_note(event)
+        if _restart_note:
+            turn_sidecar_notes.append(_restart_note)
 
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user

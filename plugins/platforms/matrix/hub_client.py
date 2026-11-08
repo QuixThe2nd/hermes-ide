@@ -297,6 +297,15 @@ class MatrixHubClientAdapter(MatrixAdapter):
             _session_key, event = deserialize_drain_event(record)
             event._hub_delivered = True
             event._hub_handoffs = list(record.get("_matrix_hub_version_handoffs") or [])
+            # Restart-resume (router-set, owner-change turn only): the gateway
+            # turns this into an ephemeral per-turn system note.
+            if record.get("_hub_generation_changed"):
+                event._hub_generation_restart = {
+                    "previous_generation": str(record.get("_hub_previous_generation") or ""),
+                    "previous_pid": record.get("_hub_previous_pid"),
+                    "generation": self._generation_id,
+                    "pid": os.getpid(),
+                }
             await self.handle_message(event)
         except Exception:
             logger.exception("[%s] Could not admit Matrix hub event", self.name)
