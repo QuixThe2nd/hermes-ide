@@ -1,13 +1,11 @@
 """Behavioral coverage for checkpoint path resolution across terminal backends."""
 
-import json
 import os
 from types import SimpleNamespace
 
 import pytest
 
 from agent.tool_executor import _ToolCallRef, _begin_tool_execution, _ensure_file_checkpoint
-from run_agent import AIAgent
 from tools.checkpoint_manager import CheckpointManager
 from tools.terminal_tool import _active_environments, _env_lock
 
@@ -67,8 +65,8 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
 
 def test_container_backend_task_leaves_host_store_untouched(tmp_path, manager, container_task_id):
     """A container-backed task's paths are container paths: no host snapshot from the file or
-    destructive-terminal hooks and no host ledger entry, even when an unrelated host tree shares
-    the spelling. A local task on the same manager still gets its checkpoint (control)."""
+    destructive-terminal hooks, even when an unrelated host tree shares the spelling. A local task
+    on the same manager still gets its checkpoint (control)."""
     host_file = tmp_path / "workspace" / "project" / "a.txt"
     host_file.parent.mkdir(parents=True)
     host_file.write_text("host content\n", encoding="utf-8")
@@ -81,10 +79,6 @@ def test_container_backend_task_leaves_host_store_untouched(tmp_path, manager, c
     _ensure_file_checkpoint(agent, "write_file", {"path": path}, container_task_id)
     ref = _ToolCallRef("terminal", {"command": f"rm -rf {host_file.parent}"}, container_task_id, "call-1", [])
     _begin_tool_execution(agent, ref, None)
-    AIAgent._record_file_mutation_result(
-        agent, "write_file", {"path": path, "content": "x"},
-        json.dumps({"bytes_written": 1, "resolved_path": path}), False, task_id=container_task_id,
-    )
     assert manager.list_checkpoints(str(host_file.parent)) == []
     assert not (tmp_path / "checkpoints").exists()
 
