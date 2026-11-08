@@ -42,6 +42,7 @@ class DiscordSessionRouter:
     def __init__(self, *, transport: str = "Discord",
                  version_field: str = "_discord_hub_version") -> None:
         self._clients: "OrderedDict[str, Delivery]" = OrderedDict()
+        self._client_pids: Dict[str, int] = {}
         self._owners: Dict[str, str] = {}
         self._versions: Dict[str, int] = {}
         self._current: Optional[str] = None
@@ -49,6 +50,7 @@ class DiscordSessionRouter:
         self._lock = asyncio.Lock()
         self._transport = transport
         self._version_field = version_field
+        self._handoff_field = f"{version_field}_handoffs"
 
     @property
     def current_generation(self) -> Optional[str]:
@@ -61,15 +63,21 @@ class DiscordSessionRouter:
     def owner_for(self, session_key: str) -> Optional[str]:
         return self._owners.get(session_key)
 
-    def attach(self, generation_id: str, delivery: Delivery) -> None:
+    def attach(self, generation_id: str, delivery: Delivery, *,
+               gateway_pid: Optional[int] = None) -> None:
         if not generation_id or not callable(delivery):
             raise ValueError("a generation id and delivery callback are required")
         self._clients.pop(generation_id, None)
         self._clients[generation_id] = delivery
+        if gateway_pid is None:
+            self._client_pids.pop(generation_id, None)
+        else:
+            self._client_pids[generation_id] = int(gateway_pid)
         self._current = generation_id
 
     def detach(self, generation_id: str) -> None:
         self._clients.pop(generation_id, None)
+        self._client_pids.pop(generation_id, None)
         if self._current == generation_id:
             self._current = next(reversed(self._clients), None) if self._clients else None
 
@@ -82,29 +90,93 @@ class DiscordSessionRouter:
         self._versions.pop(session_key, None)
         return True
 
-    async def route(self, session_key: str, record: Dict[str, Any]) -> Optional[str]:
+    async def register(self, session_key: str, generation_id: str) -> Dict[str, Any]:
+        """Claim a locally-started turn without serializing away its in-memory callbacks."""
         if not session_key:
             raise ValueError("session_key is required")
         async with self._lock:
             owner = self._owners.get(session_key)
-            generation = owner if owner in self._clients else self._current
+            if owner is not None and owner != generation_id and owner in self._clients:
+                return {"owner": owner, "version": None}
+            version = self._versions.get(session_key, 0) + 1
+            self._versions[session_key] = version
+            self._owners[session_key] = generation_id
+            return {"owner": generation_id, "version": version}
+
+    async def _route_locked(self, session_key: str, record: Dict[str, Any], *,
+                            excluded: frozenset[str] = frozenset(),
+                            target_pid: Optional[int] = None) -> Optional[str]:
+        owner = self._owners.get(session_key)
+        if target_pid is not None:
+            generation = next((
+                candidate for candidate, pid in self._client_pids.items()
+                if pid == target_pid and candidate in self._clients
+                and candidate not in excluded
+            ), None)
+        else:
+            generation = (
+                owner if owner in self._clients and owner not in excluded else None
+            )
             if generation is None:
-                self._undelivered.append(record)
-                logger.warning("%s hub retained an event for %s: no Hermes client is attached", self._transport, session_key)
-                return None
-            try:
-                version = self._versions.get(session_key, 0) + 1
-                self._versions[session_key] = version
-                delivered_record = dict(record)
-                delivered_record[self._version_field] = version
-                await self._clients[generation](session_key, delivered_record)
-            except Exception:
-                # Do not send a possibly-received event to a second generation.
-                self._undelivered.append(record)
-                logger.exception("%s hub retained an event for %s after delivery failed", self._transport, session_key)
-                return None
-            self._owners[session_key] = generation
-            return generation
+                generation = next((
+                    candidate for candidate in reversed(self._clients)
+                    if candidate not in excluded
+                ), None)
+        if generation is None:
+            self._undelivered.append(record)
+            logger.warning(
+                "%s hub retained an event for %s: no eligible Hermes client is attached",
+                self._transport, session_key,
+            )
+            return None
+        try:
+            version = self._versions.get(session_key, 0) + 1
+            self._versions[session_key] = version
+            delivered_record = dict(record)
+            delivered_record[self._version_field] = version
+            await self._clients[generation](session_key, delivered_record)
+        except Exception:
+            # Do not send a possibly-received event to a second generation.
+            self._undelivered.append(record)
+            logger.exception("%s hub retained an event for %s after delivery failed", self._transport, session_key)
+            return None
+        self._owners[session_key] = generation
+        return generation
+
+    async def route(self, session_key: str, record: Dict[str, Any]) -> Optional[str]:
+        if not session_key:
+            raise ValueError("session_key is required")
+        excluded = frozenset(str(item) for item in record.get(self._handoff_field) or [])
+        async with self._lock:
+            return await self._route_locked(session_key, record, excluded=excluded)
+
+    async def handoff(self, session_key: str, generation_id: str,
+                      version: int, record: Dict[str, Any], *,
+                      target_pid: Optional[int] = None) -> bool:
+        """Return an admitted event to the hub without revisiting a generation."""
+        if not session_key:
+            raise ValueError("session_key is required")
+        visited = list(dict.fromkeys([
+            *(str(item) for item in record.get(self._handoff_field) or []),
+            generation_id,
+        ]))
+        handed_record = dict(record)
+        handed_record[self._handoff_field] = visited
+        async with self._lock:
+            if self._versions.get(session_key) != version:
+                return False
+            if target_pid is not None and not any(
+                pid == target_pid and candidate in self._clients and candidate not in visited
+                for candidate, pid in self._client_pids.items()
+            ):
+                return False
+            # None means the hub retained the record after a delivery failure or
+            # with no eligible generation; either way the caller must not queue it.
+            await self._route_locked(
+                session_key, handed_record, excluded=frozenset(visited),
+                target_pid=target_pid,
+            )
+            return True
 
     async def replay_undelivered(self) -> int:
         """Replay retained records after an attach; leave failures queued."""
@@ -447,7 +519,9 @@ class DiscordHubServer:
                         client.token_key = token_key
                         client.router = router
                         self._clients[generation] = client
-                        client.router.attach(generation, client.deliver)
+                        client.router.attach(
+                            generation, client.deliver, gateway_pid=gateway_pid,
+                        )
                         await client.send({"id": request_id, "result": {
                             "generation_id": generation, "pid": os.getpid(),
                             "token_key": token_key,
@@ -503,6 +577,21 @@ class DiscordHubServer:
             return (client.router or self.router).unregister(
                 str(params["session_key"]), client.generation_id,
                 int(version) if version is not None else None)
+        if method == "register":
+            return await (client.router or self.router).register(
+                str(params["session_key"]), client.generation_id,
+            )
+        if method == "route":
+            return await (client.router or self.router).route(
+                str(params["session_key"]), params["record"],
+            )
+        if method == "handoff":
+            target_pid = params.get("target_pid")
+            return await (client.router or self.router).handoff(
+                str(params["session_key"]), client.generation_id,
+                int(params["version"]), params["record"],
+                target_pid=int(target_pid) if target_pid is not None else None,
+            )
         if method == "ping":
             return {
                 "pid": os.getpid(),

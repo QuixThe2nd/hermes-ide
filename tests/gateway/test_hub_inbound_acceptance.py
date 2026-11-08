@@ -14,10 +14,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from plugins.platforms.discord.hub import DiscordHubServer
+from plugins.platforms.discord.hub_client import DiscordHubClientAdapter
 from plugins.platforms.matrix.hub import MatrixHub
 
 
@@ -83,3 +84,37 @@ class TestDiscordHubInboundAcceptance:
         await deliver(event)
 
         assert event._gateway_accepted is False
+
+    async def test_local_internal_event_is_not_accepted_without_a_hub_generation(self):
+        adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+        adapter._writer = SimpleNamespace()
+        adapter._call = AsyncMock(return_value=None)
+        handler = AsyncMock(return_value=None)
+        adapter.set_message_handler(handler)
+        event = _event(Platform.DISCORD)
+        event.internal = True
+
+        await adapter.handle_message(event)
+
+        assert event._gateway_accepted is False
+        adapter._call.assert_awaited_once()
+        assert adapter._call.await_args.args[0] == "register"
+        handler.assert_not_awaited()
+
+    async def test_remote_owned_replay_is_declined_without_losing_its_completion(self):
+        adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+        adapter._writer = SimpleNamespace()
+        adapter._call = AsyncMock(return_value={"owner": "other", "version": None})
+        handler = AsyncMock(return_value=None)
+        adapter.set_message_handler(handler)
+        event = _event(Platform.DISCORD)
+        event.internal = True
+        event._gateway_replay_completion = lambda _outcome: None
+
+        await adapter.handle_message(event)
+
+        assert event._gateway_accepted is False
+        adapter._call.assert_awaited_once_with("register", {
+            "session_key": adapter._event_session_key(event),
+        })
+        handler.assert_not_awaited()

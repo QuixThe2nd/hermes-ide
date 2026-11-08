@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.run_drain_queue import serialize_drain_event
 from gateway.session import SessionSource
@@ -83,6 +83,291 @@ def test_stale_unregister_cannot_move_a_session_with_a_newer_delivery():
     assert hub.router.owner_for("busy") == "A"
     assert hub.router.unregister("busy", "A", version=2)
     assert run(hub.router.route("busy", {"session_key": "busy", "text": "next"})) == "B"
+
+
+def test_internal_and_followup_turns_own_then_release_hub_session():
+    """Internal wakes take hub ownership and retain it through queued follow-ups."""
+    async def scenario():
+        router = DiscordSessionRouter()
+        adapter = DiscordHubClientAdapter(PlatformConfig(
+            token="fake-token", typing_indicator=False,
+        ))
+        adapter._writer = MagicMock()
+        generation = adapter._generation_id
+
+        async def deliver(session_key, record):
+            await adapter._receive_event({"session_key": session_key, "record": record})
+
+        async def rpc(method, params=None):
+            params = params or {}
+            if method == "register":
+                return await router.register(params["session_key"], generation)
+            if method == "route":
+                return await router.route(params["session_key"], params["record"])
+            if method == "unregister":
+                return router.unregister(
+                    params["session_key"], generation, params.get("version")
+                )
+            raise AssertionError(f"unexpected hub RPC: {method}")
+
+        router.attach(generation, deliver)
+        adapter._call = rpc
+        first_started = asyncio.Event()
+        first_finished = asyncio.Event()
+        finish_first = asyncio.Event()
+        processed = []
+
+        async def handler(event):
+            processed.append(event.text)
+            if len(processed) == 1:
+                first_started.set()
+                try:
+                    await finish_first.wait()
+                finally:
+                    first_finished.set()
+            return None
+
+        adapter.set_message_handler(handler)
+        source = SessionSource(
+            platform=Platform.DISCORD, chat_id="42", chat_type="dm", user_id="7"
+        )
+        internal = MessageEvent(
+            text="internal wake", source=source, message_id="internal-1", internal=True
+        )
+        replay_completion = MagicMock()
+        internal._gateway_replay_completion = replay_completion
+        session_key = adapter._event_session_key(internal)
+        successor_received = []
+
+        async def successor_delivery(key, record):
+            successor_received.append(record)
+
+        router.attach("B", successor_delivery)
+        try:
+            await adapter.handle_message(internal)
+            initial_accepted = internal._gateway_accepted
+            await asyncio.wait_for(first_started.wait(), timeout=2)
+            initial_owner = router.owner_for(session_key)
+
+            followup = MessageEvent(text="follow up", source=source, message_id="user-1")
+            record = serialize_drain_event(session_key, followup)
+            followup_generation = await router.route(session_key, record)
+            successor_after_followup = len(successor_received)
+            owner_with_followup = router.owner_for(session_key)
+
+            finish_first.set()
+            await asyncio.wait_for(first_finished.wait(), timeout=2)
+            for _ in range(200):
+                if len(processed) == 2 and router.owner_for(session_key) is None:
+                    break
+                await asyncio.sleep(0.01)
+            idle_record = serialize_drain_event(
+                session_key, MessageEvent(text="after idle", source=source, message_id="user-2")
+            )
+            idle_generation = await router.route(session_key, idle_record)
+        finally:
+            finish_first.set()
+            if first_started.is_set():
+                await asyncio.wait_for(first_finished.wait(), timeout=2)
+            if adapter._release_tasks:
+                await asyncio.gather(*list(adapter._release_tasks), return_exceptions=True)
+            await BasePlatformAdapter.cancel_background_tasks(adapter)
+
+        assert initial_owner == generation
+        assert initial_accepted is True
+        assert replay_completion.call_count == 1
+        assert followup_generation == generation
+        assert successor_after_followup == 0
+        assert owner_with_followup == generation
+        assert processed == ["internal wake", "follow up"]
+        assert idle_generation == "B"
+        assert len(successor_received) == 1
+
+    run(scenario())
+
+
+@pytest.mark.asyncio
+async def test_cancel_releases_the_version_captured_at_cleanup():
+    adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    adapter._writer = MagicMock()
+    adapter._call = AsyncMock(return_value=False)
+    session_key = "agent:main:discord:42"
+    adapter._session_versions[session_key] = 7
+
+    await adapter.cancel_session_processing(session_key)
+    # A newer delivery must not let the old cleanup unregister its ownership.
+    adapter._session_versions[session_key] = 8
+    if adapter._release_tasks:
+        await asyncio.gather(*list(adapter._release_tasks))
+
+    adapter._call.assert_awaited_once_with("unregister", {
+        "session_key": session_key,
+        "version": 7,
+    })
+
+
+@pytest.mark.asyncio
+async def test_successful_old_release_preserves_a_newer_cached_version():
+    adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    session_key = "agent:main:discord:42"
+    adapter._session_versions[session_key] = 7
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+
+    async def rpc(method, params=None):
+        assert method == "unregister"
+        release_started.set()
+        await finish_release.wait()
+        return True
+
+    adapter._call = rpc
+    release = asyncio.create_task(adapter._release_ownership(session_key, 7))
+    await release_started.wait()
+    adapter._session_versions[session_key] = 8
+    finish_release.set()
+    await release
+
+    assert adapter._session_versions[session_key] == 8
+
+
+@pytest.mark.asyncio
+async def test_post_command_drain_releases_idle_ownership():
+    adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    adapter._call = AsyncMock(return_value=True)
+    session_key = "agent:main:discord:42"
+    adapter._session_versions[session_key] = 9
+    command_guard = asyncio.Event()
+    adapter._active_sessions[session_key] = command_guard
+
+    await adapter._drain_pending_after_session_command(session_key, command_guard)
+    if adapter._release_tasks:
+        await asyncio.gather(*list(adapter._release_tasks))
+
+    adapter._call.assert_awaited_once_with("unregister", {
+        "session_key": session_key,
+        "version": 9,
+    })
+
+
+@pytest.mark.asyncio
+async def test_handoff_moves_idle_event_to_current_and_guards_loops():
+    router = DiscordSessionRouter()
+    received = {"A": [], "B": [], "C": []}
+
+    def delivery(generation):
+        async def deliver(_session_key, record):
+            received[generation].append(record)
+        return deliver
+
+    router.attach("A", delivery("A"))
+    record = {"session_key": "idle", "event": {"text": "hand me off"}}
+    assert await router.route("idle", record) == "A"
+    router.attach("B", delivery("B"))
+
+    predecessor_copy = received["A"][0]
+    assert await router.handoff(
+        "idle", "A", predecessor_copy["_discord_hub_version"], predecessor_copy
+    ) is True
+    assert len(received["B"]) == 1
+    assert router.owner_for("idle") == "B"
+    assert router.undelivered == []
+
+    # A stale retry cannot deliver the same event twice.
+    assert await router.handoff(
+        "idle", "A", predecessor_copy["_discord_hub_version"], predecessor_copy
+    ) is False
+    assert len(received["A"]) == len(received["B"]) == 1
+
+    # With no unvisited generation left, the hub retains rather than ping-ponging.
+    successor_copy = received["B"][0]
+    assert await router.handoff(
+        "idle", "B", successor_copy["_discord_hub_version"], successor_copy
+    ) is True
+    assert len(received["A"]) == len(received["B"]) == 1
+    assert len(router.undelivered) == 1
+
+    router.attach("C", delivery("C"))
+    assert await router.replay_undelivered() == 1
+    assert len(received["C"]) == 1
+    assert len(received["A"]) == len(received["B"]) == 1
+    assert router.undelivered == []
+
+
+@pytest.mark.asyncio
+async def test_targeted_handoff_returns_event_to_predecessor():
+    router = DiscordSessionRouter()
+    received = {"A": [], "B": []}
+
+    def delivery(generation):
+        async def deliver(_session_key, record):
+            received[generation].append(record)
+        return deliver
+
+    router.attach("A", delivery("A"), gateway_pid=101)
+    router.attach("B", delivery("B"), gateway_pid=202)
+    record = {"session_key": "busy", "event": {"text": "join the live turn"}}
+    assert await router.route("busy", record) == "B"
+    successor_copy = received["B"][0]
+
+    assert await router.handoff(
+        "busy", "B", successor_copy["_discord_hub_version"], successor_copy,
+        target_pid=101,
+    ) is True
+
+    assert len(received["A"]) == 1
+    assert received["A"][0]["event"]["text"] == "join the live turn"
+    assert router.owner_for("busy") == "A"
+    assert router.undelivered == []
+
+
+@pytest.mark.asyncio
+async def test_targeted_handoff_refuses_a_detached_target_without_retaining():
+    router = DiscordSessionRouter()
+    received = {"A": [], "B": []}
+
+    def delivery(generation):
+        async def deliver(_session_key, record):
+            received[generation].append(record)
+        return deliver
+
+    router.attach("A", delivery("A"), gateway_pid=101)
+    router.attach("B", delivery("B"), gateway_pid=202)
+    record = {"session_key": "busy", "event": {"text": "join the live turn"}}
+    assert await router.route("busy", record) == "B"
+    successor_copy = received["B"][0]
+    router.detach("A")
+
+    assert await router.handoff(
+        "busy", "B", successor_copy["_discord_hub_version"], successor_copy,
+        target_pid=101,
+    ) is False
+    assert router.undelivered == []
+    assert len(received["B"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_client_preserves_handoff_history_across_deserialization():
+    adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    adapter.handle_message = AsyncMock()
+    source = SessionSource(
+        platform=Platform.DISCORD, chat_id="42", chat_type="dm", user_id="7",
+    )
+    event = MessageEvent(text="do not ping-pong", source=source, message_id="busy-1")
+    session_key = adapter._event_session_key(event)
+    record = serialize_drain_event(session_key, event)
+    record["_discord_hub_version"] = 2
+    record["_discord_hub_version_handoffs"] = ["A"]
+
+    await adapter._receive_event({"session_key": session_key, "record": record})
+    received_event = adapter.handle_message.await_args.args[0]
+    assert received_event._hub_handoffs == ["A"]
+
+    adapter._call = AsyncMock(return_value=False)
+    assert await adapter.handoff_event(received_event, session_key) is False
+    assert received_event._gateway_accepted is False
+    method, params = adapter._call.await_args.args
+    assert method == "handoff"
+    assert params["record"]["_discord_hub_version_handoffs"] == ["A"]
 
 
 def test_client_disconnect_keeps_websocket_and_records_unavailable_delivery():
@@ -244,6 +529,42 @@ def test_overlap_admission_opens_only_after_successor_attaches(tmp_path):
             await server.stop()
 
     run(scenario())
+
+
+@pytest.mark.asyncio
+async def test_active_busy_event_hands_off_before_drain_ack():
+    from gateway.run_drain_queue import drain_queue_path
+    from tests.gateway.restart_test_helpers import make_restart_runner
+
+    adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    runner, _ = make_restart_runner(adapter, platform=Platform.DISCORD)
+    adapter.gateway_runner = runner
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    adapter._running = True
+    adapter._overlap_successor_ready = True
+    adapter._call = AsyncMock(return_value=True)
+    adapter._send_with_retry = AsyncMock()
+
+    source = SessionSource(
+        platform=Platform.DISCORD, chat_id="42", chat_type="dm", user_id="7"
+    )
+    event = MessageEvent(text="do not queue me", source=source, message_id="busy-1")
+    session_key = adapter._event_session_key(event)
+    adapter._session_versions[session_key] = 3
+
+    await adapter._handle_message_while_active(event, session_key)
+
+    method, params = adapter._call.await_args.args
+    assert method == "handoff"
+    assert params["session_key"] == session_key
+    assert params["version"] == 3
+    assert params["record"]["event"]["text"] == "do not queue me"
+    assert params["target_pid"] is None
+    adapter._send_with_retry.assert_not_awaited()
+    assert event._gateway_accepted is True
+    assert not drain_queue_path().exists()
 
 
 def test_hub_marks_successor_with_predecessor_pid(monkeypatch, tmp_path):
@@ -421,22 +742,39 @@ async def test_deferred_successor_claim_retries_then_becomes_authoritative(monke
 
 
 @pytest.mark.asyncio
-async def test_deferred_successor_exits_cleanly_when_another_gateway_wins(monkeypatch):
+async def test_deferred_successor_exits_cleanly_when_another_gateway_wins(monkeypatch, caplog):
     from gateway.overlap_restart import claim_when_predecessor_exits
 
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
     monkeypatch.setattr("gateway.run._start_gateway_claim_pid_file", lambda *_: False)
+    adapter = SimpleNamespace(
+        supports_overlap_restart=True,
+        disconnect=AsyncMock(),
+    )
+    matrix_adapter = SimpleNamespace(
+        supports_overlap_restart=True,
+        disconnect=AsyncMock(),
+    )
     runner = SimpleNamespace(
         _overlap_successor_pending=True,
         _shutdown_event=asyncio.Event(),
+        adapters={Platform.DISCORD: adapter, Platform.MATRIX: matrix_adapter},
         stop=AsyncMock(),
     )
 
-    assert not await claim_when_predecessor_exits(
-        runner, 4242, AsyncMock(), poll_seconds=0,
-    )
+    with caplog.at_level(logging.WARNING):
+        assert not await claim_when_predecessor_exits(
+            runner, 4242, AsyncMock(), poll_seconds=0,
+        )
     assert runner._exit_cleanly is True
     assert "lost the gateway lock/PID claim" in runner._exit_reason
+    adapter.disconnect.assert_awaited_once_with()
+    matrix_adapter.disconnect.assert_awaited_once_with()
+    assert any(
+        record.levelno == logging.WARNING
+        and "lost the gateway lock/PID claim" in record.getMessage()
+        for record in caplog.records
+    )
     runner.stop.assert_awaited_once_with()
 
 
