@@ -6,6 +6,7 @@ Nothing runs on the host unless TERMINAL_ENV=local; other backends run in their 
 
 import codecs
 from contextlib import suppress
+from functools import partial
 import json
 import logging
 import os
@@ -33,8 +34,17 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 from hermes_cli.config import get_hermes_home
 
 from tools.process_registry_notifications import format_process_notification
-from tools.process_registry_checkpoint import ProcessCheckpointMixin
+import tools.process_registry_checkpoint as _process_registry_checkpoint
 from tools.process_registry_results import load_completed_results, save_completed_result
+from agent.redact import redact_sensitive_text as _redact_sensitive_text
+
+# Durable checkpoints must redact even when live model output opts out. The
+# checkpoint mixin imports its redactor at module scope, so bind that seam to
+# the same forced policy used by durable process-result receipts.
+_process_registry_checkpoint.redact_sensitive_text = partial(
+    _redact_sensitive_text, force=True
+)
+ProcessCheckpointMixin = _process_registry_checkpoint.ProcessCheckpointMixin
 
 logger = logging.getLogger(__name__)
 

@@ -1521,10 +1521,12 @@ class TestSystemUnitRefreshSyncsHermesHome:
         root_hermes.mkdir(parents=True)
         alice_hermes.mkdir(parents=True)
         (root_hermes / "config.yaml").write_text(
-            "agent:\n  restart_drain_timeout: 60\n", encoding="utf-8"
+            "agent:\n  restart_drain_timeout: 60\n  cron_drain_timeout: 0\n",
+            encoding="utf-8",
         )
         (alice_hermes / "config.yaml").write_text(
-            "agent:\n  restart_drain_timeout: 180\n", encoding="utf-8"
+            "agent:\n  restart_drain_timeout: 180\n",
+            encoding="utf-8",
         )
 
         unit_path = tmp_path / "hermes-gateway.service"
@@ -1541,11 +1543,21 @@ class TestSystemUnitRefreshSyncsHermesHome:
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda *a, **k: None)
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.delenv("HERMES_CRON_DRAIN_TIMEOUT", raising=False)
 
-        # Correct installed unit (operator's HERMES_HOME + drain timeout).
+        # Correct installed unit (operator's HERMES_HOME + full drain budget).
         monkeypatch.setenv("HERMES_HOME", str(alice_hermes))
         good_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
-        assert "TimeoutStopSec=210" in good_unit
+        expected_stop_sec = resolve_systemd_timeout_stop_sec(
+            180, DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
+        )
+        actual_stop_sec = int(next(
+            line.partition("=")[2]
+            for line in good_unit.splitlines()
+            if line.startswith("TimeoutStopSec=")
+        ))
+        assert actual_stop_sec == expected_stop_sec
+        assert actual_stop_sec >= DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT + 30
         unit_path.write_text(good_unit, encoding="utf-8")
 
         # Simulate sudo without inherited HERMES_HOME (falls back to root).
@@ -1678,7 +1690,12 @@ class TestGeneratedUnitIncludesLocalBin:
             "_build_user_local_paths",
             lambda home_path, existing: [str(home_path / ".local" / "bin")],
         )
-        unit = gateway_cli.generate_systemd_unit(system=True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice", 1001),
+        )
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
         # System unit uses the resolved home dir from _system_service_identity
         assert "/.local/bin" in unit
 
@@ -2876,13 +2893,11 @@ class TestTimeoutStopSecCoversCronFloor:
         unit = self._unit_with_config(
             tmp_path,
             monkeypatch,
-            "agent:\n  restart_drain_timeout: 60\n",
+            "agent:\n  restart_drain_timeout: 60\n  cron_drain_timeout: 0\n",
         )
-        # An explicit restart drain above the default cron floor (30+10=40)
-        # keeps the old formula's result — no regression for
-        # restart-drain-dominated installs. (Default installs differ from
-        # main: restart_drain_timeout defaults to 0, so the cron floor 40+30
-        # raises the leash from 60 to 70 — see the PR description.)
+        # An explicit restart drain with the cron floor opted out keeps the
+        # old formula's result — no regression for restart-drain-dominated
+        # installs. The fork's default 24h cron floor otherwise dominates.
         assert "TimeoutStopSec=90" in unit
 
     def test_env_override_extends_the_leash(self, tmp_path, monkeypatch):
