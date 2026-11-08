@@ -969,9 +969,9 @@ DEFAULT_CONFIG = {
         # "separate" one message per tool (noisier). Needs tool_progress enabled. Per-platform:
         # display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
-        # Gateway tool-progress groups render as one fenced code box per group when true.
-        # Opt-in per platform: display.platforms.<platform>.tool_progress_codebox.
-        "tool_progress_codebox": False,
+        # Gateway tool-progress rows render inside fenced code boxes when true (default); set
+        # false for plain text. Per platform: display.platforms.<platform>.tool_progress_codebox.
+        "tool_progress_codebox": True,
         # Custom long-running status phrases. Defaults: gateway/assets/status_phrases.yaml.
         # `path`/`paths` = HERMES_HOME-relative YAML files/dirs (or conventional status_phrases.yaml
         # / status_phrases/*.yaml). Keys: status, generic. mode: "append" (default) | "replace".

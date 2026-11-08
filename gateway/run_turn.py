@@ -5965,7 +5965,7 @@ class GatewayTurnMixin:
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
-        # Code-box presentation for accumulated groups (opt-in; plain otherwise)
+        # Code-box presentation for every progress row (default on; plain when false)
         progress_codebox = bool(
             resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
         )
@@ -7426,11 +7426,11 @@ class GatewayTurnMixin:
         progress_mode = (
             _env_tp
             if _env_tp and not _tool_progress_configured
-            else (_resolved_tp or _env_tp or "all")
+            else (_resolved_tp or _env_tp or "describe")
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
-        # Code-box presentation for accumulated groups (opt-in; plain otherwise)
+        # Code-box presentation for every progress row (default on; plain when false)
         _progress_codebox = bool(
             resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
         )

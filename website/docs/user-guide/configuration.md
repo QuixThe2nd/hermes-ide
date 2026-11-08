@@ -2110,7 +2110,7 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 
 ```yaml
 display:
-  tool_progress: all      # off | new | all | verbose | describe (short intent line instead of raw commands/code)
+  tool_progress: all      # off | new | all | verbose | describe (CLI default all; gateway default describe, in code boxes — tool_progress_codebox: false for plain)
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
@@ -2309,7 +2309,7 @@ Different platforms have different verbosity needs. Use `display.platforms` to s
 
 ```yaml
 display:
-  tool_progress: all          # global default
+  tool_progress: describe     # global default (gateway default; `all` = verbose opt-in)
   platforms:
     signal:
       tool_progress: 'off'    # Signal cannot currently display tool-progress bubbles
