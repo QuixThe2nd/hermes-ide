@@ -4085,6 +4085,7 @@ os.environ["HERMES_QUIET"] = "1"
 # see gateway/cwd_placeholder.py for the three-case contract (local vs docker
 # mount-off vs docker mount-on).  MESSAGING_CWD is a backward-compat fallback.
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
+from gateway.runtime_footer import turn_metrics
 
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
@@ -10279,6 +10280,7 @@ class TurnRunner(_TurnRunnerCore):
                 "final_response": "",
                 "messages": [],
                 "api_calls": result.get("api_calls", 0),
+                **turn_metrics(result),
                 "failed": True,
                 "failure_reason": result.get("failure_reason"),
                 "partial": result.get("partial", False),
@@ -10318,6 +10320,7 @@ class TurnRunner(_TurnRunnerCore):
                 "final_response": final_response,
                 "messages": result.get("messages", []),
                 "api_calls": result.get("api_calls", 0),
+                **turn_metrics(result),
                 "failed": result.get("failed", False),
                 # Sibling of the non-empty-response return below (#64686):
                 # the classifier's failure_reason must survive the
@@ -10401,6 +10404,7 @@ class TurnRunner(_TurnRunnerCore):
             "thought_tokens": _thought_tokens,
             "messages": ctx.result_holder[0].get("messages", []) if ctx.result_holder[0] else [],
             "api_calls": ctx.result_holder[0].get("api_calls", 0) if ctx.result_holder[0] else 0,
+            **turn_metrics(ctx.result_holder[0]),
             "failed": ctx.result_holder[0].get("failed", False) if ctx.result_holder[0] else False,
             "failure_reason": (
                 ctx.result_holder[0].get("failure_reason") if ctx.result_holder[0] else None

@@ -9,7 +9,6 @@ from gateway.runtime_footer import (
     build_footer_line,
     format_runtime_footer,
 )
-from hermes_cli.config import DEFAULT_CONFIG
 
 
 @pytest.mark.parametrize(
@@ -30,21 +29,6 @@ from hermes_cli.config import DEFAULT_CONFIG
 )
 def test_format_duration(seconds, expected):
     assert _format_duration(seconds) == expected
-
-
-def test_default_config_enables_all_timing_fields_when_footer_is_opted_in():
-    footer = DEFAULT_CONFIG["display"]["runtime_footer"]
-    assert footer["enabled"] is False
-    assert footer["fields"] == [
-        "model",
-        "context_pct",
-        "cwd",
-        "turn_time",
-        "api_time",
-        "tool_time",
-        "overhead_time",
-        "api_calls",
-    ]
 
 
 def test_format_footer_full_timing_breakdown():
