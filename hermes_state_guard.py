@@ -131,15 +131,11 @@ _last_init_error: Optional[str] = None
 _last_init_error_lock = threading.Lock()
 
 
-def _set_last_init_error(msg: Optional[str]) -> None:
-    """Record (or clear with None) the most recent init failure. __init__ never
-    clears on success: a concurrent open would erase the cause another thread's
-    /resume is about to format."""
-    global _last_init_error
-    with _last_init_error_lock:
-        _last_init_error = msg
-
-
 def get_last_init_error() -> Optional[str]:
     """Most recent state.db init failure (None if none/never attempted)."""
     return _last_init_error
+
+
+# The facade owns the live global record. This late binding is safe in either
+# import order because the facade imports _running_under_pytest after defining it.
+from hermes_state import _set_last_init_error  # noqa: E402,F401

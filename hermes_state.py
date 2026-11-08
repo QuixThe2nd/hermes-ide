@@ -113,7 +113,7 @@ from hermes_state_holders import read_only_db_uri
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_schema import SessionSchemaMixin
 from hermes_state_dbfile import (
-    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
@@ -121,14 +121,18 @@ from hermes_state_dbfile import (
 )
 from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
-    _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
+    _WAL_INCOMPAT_MARKERS, _apply_wal_size_limit, _on_disk_journal_mode,
+    apply_database_pragmas, apply_wal_with_fallback,
 )
-from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
+from hermes_state_repair import (
+    _bump_schema_cookie, _claim_repair_attempt, _existing_malformed_backups,
+    _mask_volatile_header, preflight_db_writability, repair_state_db_schema,
+)
 from hermes_state_search import SessionSearchMixin
 from hermes_state_messages import SessionMessagesMixin
-from hermes_state_sessions import SessionSessionsMixin
+from hermes_state_sessions import SessionSessionsMixin, _cwd_prefix_clause, _workspace_key_clause
 from hermes_state_fts import SessionFtsSetupMixin
-from hermes_state_telegram import SessionTelegramTopicsMixin
+from hermes_state_telegram import SessionTelegramTopicsMixin, _normalize_telegram_topic_profile_name
 from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_gateway import SessionGatewayMixin
@@ -436,38 +440,6 @@ _MODEL_CONFIG_ROW_MISSING = object()
 # ambient config default rather than restore a bare bucket. Shared here so
 # both consumers stay in sync.
 _BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
-
-
-def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
-    prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
-    # ``_`` and ``%`` are LIKE wildcards but ordinary characters in a path
-    # (``my_project``), so an unescaped prefix also matches sibling directories.
-    # Escape the needle and pair it with ESCAPE; the literal separator
-    # backslash in the Windows pattern needs escaping for the same reason. The
-    # ``=`` arm is an exact compare and keeps the raw prefix.
-    esc = _escape_like(prefix)
-    return (
-        "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
-        [prefix, f"{esc}/%", f"{esc}\\\\%"],
-    )
-
-
-def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
-    """Match sessions whose ``workspace_key(row)`` equals ``key``.
-
-    Mirrors :func:`workspace_key`: a session belongs to workspace ``key``
-    when its recorded ``git_repo_root`` equals ``key``, or — for rows that
-    predate per-session git metadata — when its ``cwd`` is at or under
-    ``key`` (so a session started in ``repo/src`` still groups with ``repo``).
-    Used by ``hermes -c``/``--resume`` to continue the most recent session in
-    the *current* workspace rather than the global MRU.
-    """
-    prefix = key.rstrip("/\\") or key
-    cwd_clause, cwd_params = _cwd_prefix_clause(prefix)
-    return (
-        f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
-        [prefix, *cwd_params],
-    )
 
 
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
@@ -990,15 +962,6 @@ def _real_platform_state_root() -> Optional[Path]:
 _TEST_ISOLATION_MARKER_ENV = "HERMES_TEST_ISOLATION"
 
 
-def _running_under_pytest() -> bool:
-    """True when this process (or a parent test process) is a pytest run."""
-    return bool(
-        os.environ.get("PYTEST_CURRENT_TEST")
-        or os.environ.get("PYTEST_VERSION")
-        or os.environ.get(_TEST_ISOLATION_MARKER_ENV)
-    )
-
-
 #: Names that identify a pytest launcher in a process command line.  Matched
 #: against the *basename* of each argv token so ``/tmp/pytest-of-dev/...``
 #: paths — which do show up in real argv — cannot false-positive.
@@ -1243,6 +1206,11 @@ def get_last_init_error() -> Optional[str]:
     return _last_init_error
 
 
+# Bind after _set_last_init_error exists: hermes_state_guard re-exports that
+# facade helper, while the facade consumes the guard's test-context predicate.
+from hermes_state_guard import _running_under_pytest  # noqa: E402
+
+
 # Distinctive opening shared by both background-review harness prompts
 # (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
 # Matched case-sensitively against the leading content of a user/system message.
@@ -1415,17 +1383,6 @@ def _strip_stale_tool_call_markers(
     return messages
 
 
-def _normalize_telegram_topic_profile_name(profile_name: Optional[str] = None) -> str:
-    """Normalize profile namespace for Telegram topic-mode tables.
-
-    Empty / missing values map to ``\"default\"`` so non-multiplexed gateways
-    keep a single namespace. Multiplexed callers must pass the *routed*
-    profile (``source.profile``), never the process-global active profile.
-    """
-    name = str(profile_name or "").strip()
-    return name if name else "default"
-
-
 def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
     """Read the journal mode from the SQLite DB header on disk.
 
@@ -1465,43 +1422,6 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
             "_on_disk_journal_mode: retries exhausted on disk read (%s)", last_exc
         )
     return None
-
-
-def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
-    """Bound the WAL so it returns space to the OS after big transactions.
-
-    SQLite's default ``journal_size_limit`` is -1 (unlimited): after a
-    checkpoint the WAL file is *reused in place* and never truncated, so
-    ``state.db-wal`` permanently retains the high-water mark of the largest
-    transaction ever run against it.
-
-    A single bulk operation is enough to strand gigabytes. Observed on a
-    3.0 GB ``state.db``: ``hermes sessions optimize`` (FTS merge + VACUUM)
-    rewrites every page through the WAL, leaving a **3.07 GB**
-    ``state.db-wal`` sitting next to the database indefinitely — the host
-    went from 6.9 GB free to 772 MB (100% full) and stayed there, because
-    nothing shrinks the WAL back down. An explicit
-    ``PRAGMA wal_checkpoint(TRUNCATE)`` reclaimed the full 3.07 GB, which
-    confirms the space was pure slack rather than live data.
-
-    That also makes the maintenance command self-defeating on exactly the
-    databases that need it most: the larger the DB, the larger the WAL it
-    strands, so ``optimize`` can consume more disk than it frees.
-
-    ``journal_size_limit`` makes SQLite truncate the WAL back to the limit
-    at each checkpoint. 64 MiB is comfortably above normal transaction
-    sizes (so steady-state commits never pay a truncate) while capping the
-    stranded slack at a bounded, predictable figure.
-
-    The session store previously had no equivalent bound on stranded WAL slack.
-
-    Best-effort: never raises. A failure here only costs disk slack, and
-    must not prevent the database from opening.
-    """
-    try:
-        conn.execute(f"PRAGMA journal_size_limit={_WAL_SIZE_LIMIT_BYTES}")
-    except sqlite3.OperationalError as exc:  # pragma: no cover - defensive
-        logger.debug("journal_size_limit not applied: %s", exc)
 
 
 def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
@@ -2779,31 +2699,6 @@ def _release_auto_maintenance_lock(handle: Any) -> None:
         handle.close()
 
 
-def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
-    """Increment the schema cookie after direct ``sqlite_master`` surgery.
-
-    Ordinary DDL bumps this counter for free, and every other connection
-    compares it before running a prepared statement — that is how they learn
-    to discard a cached schema.  Editing ``sqlite_master`` under
-    ``PRAGMA writable_schema=ON`` does NOT bump it, so live connections in
-    other processes keep compiling statements against the schema we just
-    deleted objects from — e.g. writing ``messages`` rows through triggers
-    into ``messages_fts*`` shadow tables that no longer exist.  SQLite's
-    writable_schema documentation calls out incrementing ``schema_version``
-    as the required companion to such an edit.
-
-    Best-effort and never raises: a failed bump leaves exactly the
-    pre-existing behaviour, and the repair itself is still worth completing.
-    """
-    try:
-        current = conn.execute("PRAGMA schema_version").fetchone()[0]
-        # Wraps within the 32-bit signed range SQLite stores this in; the
-        # comparison other connections make is equality, not ordering.
-        conn.execute(f"PRAGMA schema_version={(int(current) + 1) & 0x7FFFFFFF}")
-    except (sqlite3.DatabaseError, TypeError, IndexError) as exc:
-        logger.warning("Could not bump state.db schema cookie: %s", exc)
-
-
 # ── Repair-loop bounding + dead-backup hygiene (#86747) ─────────────────────
 #
 # ``_claim_repair_attempt`` above is an in-memory set: it bounds the loop
@@ -2849,15 +2744,6 @@ _FINGERPRINT_SAMPLE_BYTES = 65536
 # byte 100 and stays in the sample.
 _FINGERPRINT_VOLATILE_HEADER_RANGES = ((24, 28), (92, 96))
 
-
-def _mask_volatile_header(head: bytes) -> bytes:
-    """Zero the commit-counter fields so ordinary writes don't re-key the ledger."""
-    if len(head) < 96:
-        return head
-    buf = bytearray(head)
-    for start, end in _FINGERPRINT_VOLATILE_HEADER_RANGES:
-        buf[start:end] = b"\x00" * (end - start)
-    return bytes(buf)
 
 # Free-space headroom for the pre-repair forensic backup. The backup is a
 # full raw copy of the damaged DB (plus its -wal/-shm sidecars), so a repair
@@ -3219,21 +3105,6 @@ def _record_repair_outcome(
         )
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("Could not update state.db repair ledger: %s", exc)
-
-
-def _existing_malformed_backups(db_path: Path) -> "List[Path]":
-    """Timestamped forensic backups of *db_path*, newest first."""
-    prefix = f"{db_path.name}.malformed-backup-"
-    try:
-        found = [
-            p
-            for p in db_path.parent.iterdir()
-            if p.name.startswith(prefix)
-            and not p.name.endswith(_DB_SIDECAR_SUFFIXES)
-        ]
-    except OSError:
-        return []
-    return sorted(found, key=lambda p: p.name, reverse=True)
 
 
 def _prune_malformed_backups(db_path: Path, keep: int = _MAX_MALFORMED_BACKUPS) -> None:

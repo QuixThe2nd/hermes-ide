@@ -241,19 +241,5 @@ _read_budgets: "weakref.WeakValueDictionary[str, _PathReadBudget]" = (weakref.We
 _read_budgets_lock = threading.Lock()
 
 
-def _read_budget_key(db_path) -> str:
-    """Canonicalise a db path so two spellings share one budget."""
-    try:
-        return str(Path(db_path).resolve())
-    except OSError:
-        return str(db_path)
-
-
-def _read_budget_for(db_path) -> _PathReadBudget:
-    key = _read_budget_key(db_path)
-    with _read_budgets_lock:
-        budget = _read_budgets.get(key)
-        if budget is None:
-            budget = _PathReadBudget()
-            _read_budgets[key] = budget
-        return budget
+# SessionDB's live per-path registry is canonical; retain this import surface.
+from hermes_state import _read_budget_for, _read_budget_key  # noqa: E402,F401

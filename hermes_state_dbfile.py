@@ -556,22 +556,6 @@ def capture_retired_wal_generation(
     return final
 
 
-def _connect_tracked_db(path, tracking_path=None, **kwargs):
-    """``sqlite3.connect`` that registers the open fd so byte-level probes of a live file are
-    refused (an ``open()``/``close()`` would cancel every POSIX lock, even a running VACUUM's
-    EXCLUSIVE).  The ONLY tolerated fallback is the helper being absent (scaffold/embed installs
-    without hermes_cli); a real connection failure must propagate — a silent untracked retry
-    would disable the guard for that connection."""
-    try:
-        from hermes_cli.sqlite_safe_read import connect_tracked
-    except ImportError:
-        logger.debug("hermes_cli.sqlite_safe_read unavailable; opening %s untracked "
-                     "(byte-probe guard inactive in this install)", path)
-        return sqlite3.connect(str(path), **kwargs)
-    # Open through THIS module's sqlite3.connect so tests patching hermes_state.sqlite3.connect keep control.
-    return connect_tracked(path, tracking_path=tracking_path, connect_fn=sqlite3.connect, **kwargs)
-
-
 def _preopen_header(path: Path, probe_bytes: int, force: bool) -> Optional[bytes]:
     """First ``probe_bytes`` of *path* read WITHOUT opening a SQLite connection, or None when the probe
     must not run: special files (a FIFO would block), unreadable paths, or — unless ``force`` — a path
