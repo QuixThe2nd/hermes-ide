@@ -159,9 +159,13 @@ def _format_result(spec, payload, model, attempts):
     success = _succeeded(payload)
     error = None if success else _error(payload)
     verdict = "completed" if success else f"failed: {_one_line(error)}"
+    reviewer_value = spec.get("reviewer") or "requesting agent"
+    review = payload.get("review") if isinstance(payload, dict) else None
+    if isinstance(review, dict) and review.get("status") in ("approved", "blocked", "failed"):
+        reviewer_value = f"{reviewer_value} (review: {review['status']})"
     values = {
         "lane": spec["name"], "harness": spec["harness"], "model": model,
-        "reviewer": spec.get("reviewer") or "requesting agent", "verdict": verdict,
+        "reviewer": reviewer_value, "verdict": verdict,
     }
     receipt = " | ".join(f"{field}: {_one_line(values[field])}" for field in RECEIPT_FIELDS)
     report = (_report(payload) or error or "No report returned").rstrip()
@@ -170,11 +174,18 @@ def _format_result(spec, payload, model, attempts):
         field: values[field] for field in spec.get("receipt_fields", RECEIPT_FIELDS)
         if field in values
     }
-    return json.dumps({
+    if isinstance(review, dict) and review.get("status") in ("blocked", "failed"):
+        receipt_data["review_detail"] = review.get("detail", "")
+    out = {
         "success": success, "error": error, "final_report": final_report,
         **values, "receipt": receipt, "receipt_data": receipt_data,
         "attempts": attempts, "backend_result": payload,
-    }, ensure_ascii=False)
+    }
+    if isinstance(review, dict):
+        out["review"] = review
+    if payload.get("review_blocked"):
+        out["review_blocked"] = True
+    return json.dumps(out, ensure_ascii=False)
 
 
 def _configuration_error(name: str, error: Exception) -> str:
@@ -251,6 +262,12 @@ def delegate_lane(
                 os.unlink(claude_soul_file)
             except OSError:
                 pass
+    if _succeeded(payload):
+        # Successful attempts get an independent reviewer pass before the
+        # receipt is issued; failures already carry their own verdict.
+        from tools.delegate_lane_review import apply_review
+
+        payload = apply_review(spec, task, payload, timeout_seconds=timeout_seconds)
     return _format_result(spec, payload, selected, attempts)
 
 
