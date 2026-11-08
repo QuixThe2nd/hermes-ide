@@ -988,15 +988,15 @@ DEFAULT_CONFIG = {
         "platforms": {
             "discord": {"streaming": False},
         },
-        # Gateway runtime footer on the FINAL message, e.g. `model · 68% · ~/projects/hermes`.
+        # Gateway runtime footer on the FINAL message, e.g. `model · 68% · 12s · api 8s · 9 tools`.
         # Per-platform: display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
-            "enabled": False,
-            # Order shown; drop any to hide. Opt-in extras: latency, served_model (alias → the
+            "enabled": True,
+            # Order shown; drop any to hide. Opt-in extras: cwd, latency, served_model (alias → the
             # deployment a routing proxy reported / Hermes' fallback route).
             "fields": [
-                "model", "context_pct", "cwd",
-                "turn_time", "api_time", "tool_time", "overhead_time", "api_calls",
+                "model", "context_pct",
+                "turn_time", "api_time", "tool_time", "overhead_time", "api_calls", "tool_calls",
             ],
         },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,

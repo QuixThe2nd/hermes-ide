@@ -1751,8 +1751,8 @@ class GatewayTurnMixin:
         return f"{prefix}\n\n{response}" if prefix else response
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
-        """Runtime-metadata footer for the FINAL message of the turn; off by default
-        (display.runtime_footer.enabled=false)."""
+        """Runtime-metadata footer for the FINAL message of the turn; on by default
+        (display.runtime_footer.enabled=false disables)."""
         from gateway.run import logger
 
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
@@ -1764,6 +1764,11 @@ class GatewayTurnMixin:
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+                turn_time=_turn_seconds,
+                api_time=agent_result.get("api_time"),
+                tool_time=agent_result.get("tool_time"),
+                api_calls=agent_result.get("api_calls"),
+                tool_calls=agent_result.get("tool_calls"),
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
             )
@@ -4440,7 +4445,7 @@ class GatewayTurnMixin:
                 )
 
                 # Runtime-metadata footer — only on the FINAL message of the turn.
-                # Off by default (display.runtime_footer.enabled=false).  When
+                # On by default (display.runtime_footer.enabled=false disables).  When
                 # streaming already delivered the body, we can't mutate the sent
                 # text, so we fire a separate trailing send below.
                 _footer_line = ""
@@ -4458,6 +4463,7 @@ class GatewayTurnMixin:
                         api_time=agent_result.get("api_time"),
                         tool_time=agent_result.get("tool_time"),
                         api_calls=_api_calls,
+                        tool_calls=agent_result.get("tool_calls"),
                         requested_model=agent_result.get("requested_model"),
                         served_model=agent_result.get("served_model"),
                     )
