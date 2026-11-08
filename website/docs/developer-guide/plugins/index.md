@@ -994,6 +994,37 @@ All callbacks should accept `**kwargs` for forward compatibility. If a hook call
 
 The **API request hooks** are observers for the raw provider request, one level below the per-turn `pre_llm_call` / `post_llm_call` pair: a single turn that calls tools makes several API requests, and these hooks fire around each one. They exist for observability plugins (tracing, cost accounting, latency dashboards). The `request` and `response` kwargs are sanitized, size-capped JSON views of the provider payload (sensitive keys redacted, long strings truncated, SDK objects normalized), and `usage` is a plain token-summary dict. Every payload carries the correlation fields `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count`, so a plugin can stitch requests, tool calls, and turns together. `api_request_error` fires when a provider call raises and adds `status_code`, `retry_count` / `max_retries`, `retryable`, `reason`, and an `error` dict with `type` and `message`.
 
+### Example: gate delegate briefs (`brief-gate`)
+
+The bundled `brief-gate` plugin (`plugins/brief-gate/`) is a worked example of an observe-only `pre_tool_call` hook. It is enabled by default. Before a `delegate_agent` (or legacy `delegate_task`) call dispatches, it reads the brief and checks it for three dispatch-contract field classes. Matching is case-insensitive, and a labeled section (`INVARIANT: …`) or a clear synonym counts:
+
+| Class | Recognized as | Meaning |
+|-------|---------------|---------|
+| `invariant` | `invariant` | The observable condition that must hold |
+| `owner` | `owner`, `existing mechanism` | What existing code owns that condition today |
+| `acceptance` | `acceptance`, `test` / `tests` | The checks that prove it, including before/after tests |
+
+The brief is `goal` plus `context` for a single delegation. For a batch (`tasks=[...]`), each task's own `goal` + `context` is checked separately. Calls to other tools are ignored.
+
+When a class is missing, the gate logs a `WARNING` (`brief-gate: delegate brief missing <class> field …`) to the agent log. It logs at most once per class per session.
+
+The hook always returns `None`, so it **never blocks** a dispatch, and it never injects text into the conversation.
+
+Settings live on the standard per-plugin settings surface:
+
+```yaml
+plugins:
+  entries:
+    brief-gate:
+      settings:
+        enabled: true                                   # false turns the gate into a no-op
+        required_fields: [invariant, owner, acceptance] # narrow the checked classes
+```
+
+The flat alias `plugins.brief_gate.enabled` / `plugins.brief_gate.required_fields` works too. It is consulted only when the per-entry settings leave a key unset.
+
+To unload the plugin entirely, run `hermes plugins disable brief-gate`, or add it to `plugins.disabled`.
+
 ### `pre_llm_call` context injection
 
 This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
