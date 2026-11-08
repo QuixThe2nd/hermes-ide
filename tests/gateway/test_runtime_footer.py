@@ -259,7 +259,7 @@ def test_build_footer_line_threads_turn_seconds(monkeypatch):
 
 _DEFAULT_FOOTER_FIELDS = [
     "model", "context_pct", "turn_time", "api_time", "tool_time", "overhead_time",
-    "api_calls", "tool_calls",
+    "api_calls", "tool_calls", "reasoning",
 ]
 # An absolute path that survives _home_relative_cwd unchanged on every host
 # (os.path.abspath("/var/data") -> "C:\\var\\data" on Windows, "/var/data" on POSIX).
@@ -271,6 +271,62 @@ def test_default_fields_include_timing_and_exclude_optins():
     assert fields == _DEFAULT_FOOTER_FIELDS
     for optin in ("cwd", "latency", "served_model"):
         assert optin not in fields
+
+
+def test_default_fields_end_with_reasoning():
+    """Order contract: reasoning is the last default field, not a full-list snapshot."""
+    from gateway.runtime_footer import _DEFAULT_FIELDS
+
+    assert _DEFAULT_FIELDS[-1] == "reasoning"
+
+
+# ---------------------------------------------------------------------------
+# reasoning — effective reasoning effort (bare level, `off`, or skipped)
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_field_renders_bare_effort():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        reasoning_effort="medium", fields=("reasoning",),
+    )
+    assert out == "medium"
+
+
+def test_reasoning_field_renders_off():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        reasoning_effort="off", fields=("reasoning",),
+    )
+    assert out == "off"
+
+
+def test_reasoning_field_skipped_when_unset():
+    """None (no reachable agent / no effort) skips the field silently."""
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        reasoning_effort=None, fields=("model", "reasoning"),
+    )
+    assert out == "m"
+
+
+def test_build_footer_line_forwards_reasoning_effort(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    common = dict(
+        user_config={"display": {"runtime_footer": {"enabled": True}}},
+        platform_key="discord",
+        model="gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+    )
+    out = build_footer_line(**common, reasoning_effort="high")
+    assert out.endswith("· high")
+    # Disabled footer short-circuits before any field renders, reasoning included.
+    off = build_footer_line(
+        **{**common, "user_config": {"display": {"runtime_footer": {"enabled": False}}}},
+        reasoning_effort="high",
+    )
+    assert off == ""
 
 
 def test_footer_enabled_by_default_and_matches_config_defaults():

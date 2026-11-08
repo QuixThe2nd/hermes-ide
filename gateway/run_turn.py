@@ -1750,6 +1750,16 @@ class GatewayTurnMixin:
         prefix = format_reasoning_prefix(last_reasoning, _platform_config_key(source.platform))
         return f"{prefix}\n\n{response}" if prefix else response
 
+    def _footer_reasoning_effort(self, session_key):
+        """Footer ``reasoning`` value from the resident agent's resolved reasoning_config:
+        ``off`` when disabled, the effort string when set, else None (field skipped)."""
+        agent = self._resident_agent_for(session_key) if session_key else None
+        cfg = getattr(agent, "reasoning_config", None) or {}
+        if cfg.get("enabled") is False:
+            return "off"
+        effort = cfg.get("effort")
+        return effort if isinstance(effort, str) and effort else None
+
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; on by default
         (display.runtime_footer.enabled=false disables)."""
@@ -1771,6 +1781,8 @@ class GatewayTurnMixin:
                 tool_calls=agent_result.get("tool_calls"),
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
+                reasoning_effort=self._footer_reasoning_effort(
+                    self._session_key_for_source(source)),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -4466,6 +4478,7 @@ class GatewayTurnMixin:
                         tool_calls=agent_result.get("tool_calls"),
                         requested_model=agent_result.get("requested_model"),
                         served_model=agent_result.get("served_model"),
+                        reasoning_effort=self._footer_reasoning_effort(session_key),
                     )
                 except Exception as _footer_err:
                     logger.debug("runtime_footer build failed: %s", _footer_err)

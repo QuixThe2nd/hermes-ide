@@ -2272,7 +2272,7 @@ Notes:
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. It can show the model, context-window percentage, working directory, total wall time, time spent in LLM API calls, time spent running tools, remaining agent/gateway overhead, and API-call count. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true` (the default), Hermes appends a small runtime-context footer to the **final** message of each gateway turn. It can show the model, context-window percentage, working directory, total wall time, time spent in LLM API calls, time spent running tools, remaining agent/gateway overhead, and API-call count, and the effective reasoning effort. Opt out per-gateway (or per-platform via `display.platforms.<platform>.runtime_footer`) if you don't want every reply to include this provenance.
 
 ```yaml
 display:
@@ -2290,15 +2290,16 @@ Supported fields:
 | `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
 | `served_model` | The model that actually answered, when it differs from the one you configured: the deployment a routing proxy reported in its `x-litellm-model-name` (or `x-litellm-model-id` / `x-litellm-model-api-base`) response header, or the fallback model Hermes switched to for the turn | `hermes-router → gpt-4o-2024-11-20` |
 | `cwd` | Home-relative working directory | `~` |
+| `reasoning` | Effective thinking depth for the turn; off when reasoning is disabled | `medium` |
 
-The default field set is `["model", "context_pct", "cwd"]`. `latency` and `served_model` are opt-in — add them to `fields` to use them. `served_model` renders nothing when the served model is the configured one (or when the proxy sends no such header), so behind a routing proxy or an active fallback it is the field that makes the switch visible. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
+The default field set also includes the per-turn timing breakdown and call counts (`turn_time`, `api_time`, `tool_time`, `overhead_time`, `api_calls`, `tool_calls`, `reasoning`); the compact three-field example above is an opt-in trim. `latency`, `served_model`, and `cwd` are opt-in — add them to `fields` to use them. `served_model` renders nothing when the served model is the configured one (or when the proxy sends no such header), so behind a routing proxy or an active fallback it is the field that makes the switch visible. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
 
 The `/footer` slash command toggles this at runtime in any session.
 
 Example footer appended to a Telegram/Discord/Slack reply:
 
 ```
-MiniMax-M3 · 10% · 1m10s · api 42s · tools 15s · other 13s · 3 calls
+MiniMax-M3 · 10% · 1m10s · api 42s · tools 15s · other 13s · 3 calls · medium
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.

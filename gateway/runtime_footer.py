@@ -23,6 +23,7 @@ Available fields:
     turn_time / api_time / tool_time / overhead_time — per-turn timing breakdown
     api_calls    — model calls this turn (``3 calls``)
     tool_calls   — tool calls executed this turn (``9 tools``)
+    reasoning    — effective reasoning effort (``medium``; ``off`` when disabled)
 
 ``latency`` is opt-in: it is not in the default field set, so a footer whose
 ``fields`` are unset renders exactly as before.
@@ -49,7 +50,7 @@ from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = (
     "model", "context_pct", "turn_time", "api_time", "tool_time", "overhead_time",
-    "api_calls", "tool_calls",
+    "api_calls", "tool_calls", "reasoning",
 )
 _SEP = " · "
 
@@ -133,6 +134,7 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           api_calls: Optional[int] = None,
                           tool_calls: Optional[int] = None,
                           requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                          reasoning_effort: Optional[str] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
@@ -195,6 +197,7 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
         "overhead_time": lambda: _labeled("other", overhead_time),
         "api_calls": api_calls_field,
         "tool_calls": tool_calls_field,
+        "reasoning": lambda: reasoning_effort or "",
     }
     return _SEP.join(v for field in fields if (render := renderers.get(field)) and (v := render()))
 
@@ -205,7 +208,8 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
                       turn_time: Optional[float] = None, api_time: Optional[float] = None,
                       tool_time: Optional[float] = None, api_calls: Optional[int] = None,
                       tool_calls: Optional[int] = None,
-                      requested_model: Optional[str] = None, served_model: Optional[str] = None) -> str:
+                      requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                      reasoning_effort: Optional[str] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
@@ -219,6 +223,7 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
                                  turn_time=turn_time, api_time=api_time, tool_time=tool_time,
                                  api_calls=api_calls, tool_calls=tool_calls,
                                  requested_model=requested_model, served_model=served_model,
+                                 reasoning_effort=reasoning_effort,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)
 
 
