@@ -724,6 +724,47 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
         value = self.config.extra.get("reactions", True)
         return value is not False and str(value).strip().lower() not in {"0", "false", "off", "no"}
 
+    def _hub_reaction_message_id(self, message: Any) -> Optional[str]:
+        # raw_message is the hub dict set in _receive_drain_event; bare ids are
+        # accepted for callers that only carry event.message_id.
+        if isinstance(message, dict):
+            return str(message.get("discord_hub_message_id") or "") or None
+        return str(message) if message else None
+
+    async def _add_reaction(self, message: Any, emoji: str) -> bool:
+        # Receipt lane for busy-steer ⏩ (gateway/run_busy.py). A failed reaction
+        # must never unwind a delivered steer — the caller runs inside receipt
+        # paths that must not raise.
+        message_id = self._hub_reaction_message_id(message)
+        if not message_id:
+            return False
+        # The hub resolves the raw discord.py message from its _raw_messages LRU
+        # (capped at 4096, oldest evicted). A steer reacts to a message that
+        # arrived seconds earlier, so the id is present in practice.
+        try:
+            await self._call("rpc", {
+                "token_key": self._token_key, "method": "add_reaction",
+                "message_id": message_id, "emoji": emoji,
+            })
+            return True
+        except Exception:
+            logger.debug("[%s] add_reaction rpc failed for %s", self.name, message_id, exc_info=True)
+            return False
+
+    async def _remove_reaction(self, message: Any, emoji: str) -> bool:
+        message_id = self._hub_reaction_message_id(message)
+        if not message_id:
+            return False
+        try:
+            await self._call("rpc", {
+                "token_key": self._token_key, "method": "remove_reaction",
+                "message_id": message_id, "emoji": emoji,
+            })
+            return True
+        except Exception:
+            logger.debug("[%s] remove_reaction rpc failed for %s", self.name, message_id, exc_info=True)
+            return False
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         if self._reactions_enabled() and event.message_id:
             with contextlib.suppress(Exception):
