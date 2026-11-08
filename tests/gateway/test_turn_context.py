@@ -1,5 +1,5 @@
 """Unit tests for the TurnContext/TurnRunner seam extracted from
-``GatewayRunner._run_agent_inner`` (gateway/turn_context.py + gateway/run.py).
+``GatewayRunner._run_agent_inner`` (gateway/turn_context.py + gateway/run_turn_runner.py).
 
 The extraction contract: the closure bodies moved onto ``TurnRunner`` methods
 byte-identically (modulo local -> ctx.field rewrites), with every closed-over
@@ -21,10 +21,13 @@ from gateway.turn_context import TurnContext
 
 
 def _make_runner(ctx, adapter=None):
-    from gateway.run import TurnRunner
+    from gateway.run_turn_runner import TurnRunner
 
     class _StubGatewayRunner:
         def _adapter_for_source(self, source):
+            return adapter
+
+        def _delivery_adapter_for(self, source):
             return adapter
 
     return TurnRunner(_StubGatewayRunner(), ctx)

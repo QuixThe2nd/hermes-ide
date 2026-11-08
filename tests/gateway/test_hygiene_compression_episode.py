@@ -58,6 +58,7 @@ from agent.compression_status import (
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionEntry, SessionSource
 
 SESSION_KEY = "agent:main:discord:dm:12345"
@@ -766,7 +767,7 @@ async def test_agent_rail_independent_of_open_hygiene_card(monkeypatch, tmp_path
 
     # The real agent-rail consumer (TurnRunner._status_callback_sync) on a
     # ctx bound to the SAME adapter/chat/session as the hygiene card.
-    turn_runner = gateway_run.TurnRunner(
+    turn_runner = TurnRunner(
         runner,
         SimpleNamespace(
             _status_adapter=adapter,
@@ -782,6 +783,9 @@ async def test_agent_rail_independent_of_open_hygiene_card(monkeypatch, tmp_path
             _status_thread_metadata=None,
             _loop_for_step=asyncio.get_running_loop(),
             _cleanup_progress=False,
+            mute_notification_reply=False,
+            user_config={},
+            deliver_visible=lambda fn: fn(),
             _cleanup_msg_ids=[],
             tool_progress_enabled=False,
             progress_queue=None,

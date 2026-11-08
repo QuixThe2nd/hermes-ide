@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import json
 import logging
 import queue
@@ -74,8 +75,7 @@ class _ExecApprovalDeclined(RuntimeError):
 
 
 class _TurnRunnerCore:
-    """Sole owner of the TurnRunner constructor: both TurnRunner shapes (the monolith copy in
-    ``gateway/run.py`` and this module's) share it so the pairing can never drift again."""
+    """Sole owner of the live TurnRunner constructor."""
 
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
@@ -148,6 +148,9 @@ class TurnRunner(_TurnRunnerCore):
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
             return
+        if event_type == "context.injected":
+            self._progress_context_injection(args)
+            return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
             return
@@ -198,7 +201,94 @@ class TurnRunner(_TurnRunnerCore):
         ctx.last_tool[0] = tool_name
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
-            self._progress_emit(msg)
+            from gateway.run_claude_progress import claude_delegation_single_status
+
+            suppress_generic = (
+                tool_name == "delegate_claude_agent" and claude_delegation_single_status(ctx)
+            )
+            if not suppress_generic:
+                self._progress_emit(msg)
+
+    def _progress_context_injection(self, args) -> None:
+        """Render model-received context through the ordered progress queue."""
+        from gateway.run import (
+            _format_context_injection_progress,
+            _platform_config_key,
+            _resolve_gateway_display_bool,
+        )
+
+        ctx = self._ctx
+        if not ctx.tool_progress_enabled or not isinstance(args, dict):
+            return
+        content = args.get("content")
+        if not isinstance(content, str) or not content:
+            return
+        adapter = self._runner._delivery_adapter_for(ctx.source)
+        if adapter is None:
+            return
+
+        def declared_callable(name: str):
+            try:
+                inspect.getattr_static(adapter, name)
+                candidate = getattr(adapter, name)
+            except Exception:
+                return None
+            return candidate if callable(candidate) else None
+
+        chat_limit_fn = declared_callable("max_message_length_for_chat")
+        try:
+            message_limit = int(
+                chat_limit_fn(ctx.source.chat_id)
+                if chat_limit_fn is not None
+                else getattr(adapter, "MAX_MESSAGE_LENGTH", 4000)
+            )
+        except Exception:
+            message_limit = 4000
+        message_len_fn = len
+        chat_len_fn = declared_callable("message_len_fn_for_chat")
+        if chat_len_fn is not None:
+            try:
+                candidate_len_fn = chat_len_fn(ctx.source.chat_id)
+                if callable(candidate_len_fn):
+                    message_len_fn = candidate_len_fn
+            except Exception:
+                pass
+
+        platform = getattr(ctx.source, "platform", None)
+        try:
+            platform_key = _platform_config_key(platform) if platform is not None else "cli"
+            include_content = _resolve_gateway_display_bool(
+                ctx.user_config or {}, platform_key, "context_injection_content", default=True,
+            )
+        except Exception:
+            platform_key = "cli"
+            include_content = True
+        sources = args.get("sources") if isinstance(args.get("sources"), list) else []
+        if sources == ["gateway"]:
+            try:
+                if not _resolve_gateway_display_bool(
+                    ctx.user_config or {}, platform_key, "gateway_context_notifications", default=True,
+                ):
+                    return
+            except Exception:
+                pass
+        messages = _format_context_injection_progress(
+            content=content,
+            injected_chars=args.get("injected_chars", len(content)),
+            sources=sources,
+            message_limit=message_limit,
+            supports_code_blocks=bool(getattr(adapter, "supports_code_blocks", False)),
+            message_len_fn=message_len_fn,
+            include_content=include_content,
+            recalled_count=args.get("recalled_count"),
+        )
+        for message in messages:
+            ctx.progress_queue.put(message)
+        # The first visible assistant output waits until these cards are delivered.
+        ctx._context_cards_queued[0] = True
+        ctx.last_was_terminal_block[0] = False
+        ctx.last_progress_msg[0] = messages[-1] if messages else None
+        ctx.repeat_count[0] = 0
 
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
@@ -755,6 +845,28 @@ class TurnRunner(_TurnRunnerCore):
         # (describe mode re-renders the same phrase) re-render as a second plain
         # row instead of collapsing into (×N).
 
+    def _claude_progress_delivery(self, st):
+        """Bind the shared Claude/viewer delivery rail to this bubble state."""
+        from gateway.run_claude_progress import ClaudeDelegationDelivery
+
+        async def flush_before_status() -> None:
+            if not st.progress_lines:
+                return
+            try:
+                if not await self._roll_progress_overflow_if_needed(st):
+                    await self._progress_send_or_edit(st, st.progress_lines[-1])
+            except Exception:
+                logger.debug("progress flush before agent status failed", exc_info=True)
+
+        return ClaudeDelegationDelivery(
+            ctx=self._ctx,
+            adapter=st.adapter,
+            deliver_status_marker=self._deliver_agent_status_marker,
+            flush_before_status=flush_before_status,
+            reset_bubble=lambda: self._reset_progress_bubble(st),
+            agent_interrupted=self._agent_interrupted,
+        )
+
     def _codebox_active(self, st) -> bool:
         return bool(self._ctx.progress_codebox)
 
@@ -826,8 +938,12 @@ class TurnRunner(_TurnRunnerCore):
                 await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st, st.progress_lines))
 
     async def _drain_progress_on_cancel(self, st) -> None:
+        from gateway.run import _is_agent_status_queue_marker
+        from gateway.run_claude_progress import is_claude_delegation_start_marker
+
         ctx = self._ctx
         st.adapter = self._runner._delivery_adapter_for(ctx.source) or st.adapter
+        claude_delivery = self._claude_progress_delivery(st)
         with suppress(Exception):
             while not ctx.progress_queue.empty():
                 raw = ctx.progress_queue.get_nowait()
@@ -835,19 +951,29 @@ class TurnRunner(_TurnRunnerCore):
                     # Cancelled drain: release the ordering gate's waiter.
                     self._signal_flush_marker(raw)
                     continue
+                if is_claude_delegation_start_marker(raw):
+                    if not self._agent_interrupted():
+                        await claude_delivery.deliver_start(raw)
+                    continue
+                if _is_agent_status_queue_marker(raw):
+                    await claude_delivery.deliver_viewer_marker(raw)
+                    continue
+                if self._agent_interrupted():
+                    # A reset clears local bookkeeping but must not edit a stopped bubble.
+                    if self._is_reset_marker(raw):
+                        self._reset_progress_bubble(st)
+                    continue
                 if self._is_reset_marker(raw):
-                    # Content-bubble marker during drain: close the current progress bubble
-                    # and start a fresh one for tool lines that arrived after.
                     await self._roll_progress_overflow_if_needed(st)
                     await self._flush_progress_edit(st)
                     self._reset_progress_bubble(st)
                 else:
                     self._progress_absorb(st, raw)
                     await self._roll_progress_overflow_if_needed(st)
-        # Final edit with all remaining tools (only if editing works)
-        if st.can_edit and st.progress_lines and st.progress_msg_id:
+        # Final edit with all remaining tools (only if editing works and the turn is live).
+        if not self._agent_interrupted() and st.can_edit and st.progress_lines and st.progress_msg_id:
             await self._roll_progress_overflow_if_needed(st)
-        await self._flush_progress_edit(st)
+            await self._flush_progress_edit(st)
 
     async def _progress_restore_typing(self, st) -> None:
         ctx = self._ctx
@@ -884,6 +1010,9 @@ class TurnRunner(_TurnRunnerCore):
         return True
 
     async def send_progress_messages(self):
+        from gateway.run import _adapter_can_edit_progress, _is_agent_status_queue_marker
+        from gateway.run_claude_progress import is_claude_delegation_start_marker
+
         ctx = self._ctx
         adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
@@ -891,45 +1020,58 @@ class TurnRunner(_TurnRunnerCore):
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
-        # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
-        # each update would be a separate bubble. getattr, not attribute access: duck-typed
-        # adapters (test fakes, minimal plugins) may lack edit_message — treated as "can't edit".
-        adapter_edit = getattr(type(adapter), "edit_message", None)
-        if adapter_edit is None or adapter_edit is BasePlatformAdapter.edit_message:
-            self._drain_progress_queue()
+        # Non-editable platforms drain once and return. Tool rows are dropped by
+        # design, but standalone viewer notices and flush waiters must not strand.
+        if not _adapter_can_edit_progress(adapter):
+            while not ctx.progress_queue.empty():
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                except Exception:
+                    break
+                if _is_agent_status_queue_marker(raw):
+                    await self._deliver_agent_status_marker(raw)
+                elif self._is_flush_marker(raw):
+                    self._signal_flush_marker(raw)
             return
         st = self._progress_edit_state(adapter)
+        claude_delivery = self._claude_progress_delivery(st)
         last_edit_ts = 0.0
         EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
         while True:
             # Mid-turn platform reconnect swaps the registry adapter; re-resolve
-            # per iteration so remaining sends/edits/typing ride the current
-            # transport instead of raising on the dead snapshot for the rest
-            # of the turn.
+            # per iteration so remaining sends/edits/typing ride the current transport.
             st.adapter = self._runner._delivery_adapter_for(ctx.source) or st.adapter
             try:
                 if not ctx._run_still_current():
                     self._drain_progress_queue()
                     return
-                raw = ctx.progress_queue.get_nowait()
-                # Context-card ordering gate: force-deliver everything absorbed
-                # ahead of the marker, then release the gated first output.
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                except queue.Empty:
+                    # Keep this await inside the cancellation-drain try: normal
+                    # turn cleanup also cancels the consumer while it is parked.
+                    await asyncio.sleep(0.3)
+                    continue
                 if self._is_flush_marker(raw):
                     await self._handle_flush_marker(st, raw)
                     continue
-                # Drain silently when interrupted: events queued in the window between tool parse
-                # and interrupt processing should not render as bubbles.
-                if self._agent_interrupted():
+                # Late rows are suppressed after stop. Viewer markers survive:
+                # the spawned agent keeps running and its link remains useful.
+                if self._agent_interrupted() and not _is_agent_status_queue_marker(raw):
                     await asyncio.sleep(0)
                     continue
                 if self._is_reset_marker(raw):
                     self._reset_progress_bubble(st)
                     continue
+                if is_claude_delegation_start_marker(raw):
+                    await claude_delivery.deliver_start(raw)
+                    continue
+                if _is_agent_status_queue_marker(raw):
+                    await claude_delivery.deliver_viewer_marker(raw)
+                    continue
                 msg = self._progress_absorb(st, raw)
                 if not await self._roll_progress_overflow_if_needed(st):
-                    # Throttle edits: batch rapid tool updates into fewer API calls (grammY pattern:
-                    # proactively rate-limit rather than react to 429s). Loop back to drain further
-                    # queued messages before sending a single batched edit.
+                    # Throttle edits: batch rapid tool updates into fewer API calls.
                     remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
                     if remaining > 0:
                         await asyncio.sleep(remaining)
@@ -940,8 +1082,6 @@ class TurnRunner(_TurnRunnerCore):
                         continue
                 last_edit_ts = time.monotonic()
                 await self._progress_restore_typing(st)
-            except queue.Empty:
-                await asyncio.sleep(0.3)
             except asyncio.CancelledError:
                 await self._drain_progress_on_cancel(st)
                 return
@@ -1012,6 +1152,10 @@ class TurnRunner(_TurnRunnerCore):
             self.voice_ack_callback(call_id, tool_name, args)
         if self._ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
+        from gateway.run_claude_progress import claude_delegation_single_status, queue_claude_delegation_start
+
+        if str(tool_name or "") == "delegate_claude_agent" and claude_delegation_single_status(self._ctx):
+            queue_claude_delegation_start(self._ctx, call_id, tool_name, args)
 
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────
 
@@ -1085,10 +1229,22 @@ class TurnRunner(_TurnRunnerCore):
             logger.debug("Failed to attach session title callback", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
-        from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.run import (
+            _mission_chat_suppresses_status, _prepare_gateway_status_message,
+            _redact_gateway_user_facing_secrets, _send_or_update_status_coro,
+        )
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
+            return
+        # Mission-bound chats serve an end-user persona: suppress only the
+        # operator-facing fallback notice, before preparation or delivery.
+        if _mission_chat_suppresses_status(ctx._status_chat_id, event_type, message):
+            logger.debug(
+                "status_callback suppressed for mission chat %s/%s: %s",
+                ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
+                _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+            )
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
@@ -1098,6 +1254,28 @@ class TurnRunner(_TurnRunnerCore):
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        # Viewer notices follow the delegation's tool row through the same FIFO.
+        # Non-editable and native-card consumers have no durable text queue, so
+        # those surfaces retain the direct status rail.
+        from gateway.run import _adapter_can_edit_progress, _agent_status_queue_marker
+        if (
+            ctx.tool_progress_enabled
+            and ctx.progress_queue is not None
+            and not ctx._native_slack_task_cards
+            and _adapter_can_edit_progress(ctx._status_adapter)
+        ):
+            from tools.tool_status import get_tool_status_call_id, is_agent_viewer_status_line
+
+            if is_agent_viewer_status_line(prepared):
+                try:
+                    viewer_call_id = get_tool_status_call_id()
+                except Exception:
+                    viewer_call_id = None
+                ctx.progress_queue.put(
+                    _agent_status_queue_marker(event_type, prepared, viewer_call_id)
+                )
+                return
+
         def present():
             fut = self._schedule(
                 ctx.deliver_visible(lambda: _send_or_update_status_coro(
@@ -1762,16 +1940,15 @@ class TurnRunner(_TurnRunnerCore):
         # sequences. Telegram observed=True rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
         agent_history, observed_group_context, cursor_recovery_note = _build_gateway_agent_history(
-            ctx.history, channel_prompt=ctx.channel_prompt, inject_timestamps=_message_timestamps_enabled(ctx.user_config),
+            ctx.history, channel_prompt=ctx.channel_prompt,
+            inject_timestamps=_message_timestamps_enabled(ctx.user_config),
+            hermes_session_id=ctx.session_id,
         )
-        if cursor_recovery_note:
-            # Observed-group cursor recovery is ordinary context machinery (not
-            # restart prose); mirror the facade resume path (run.py) so a note
-            # never drops on the normal turn path.
-            if isinstance(ctx.message, str) and ctx.message:
-                ctx.message = f"{cursor_recovery_note}\n\n{ctx.message}"
-            else:
-                ctx.message = cursor_recovery_note
+        # Recovery preparation decides whether this note is an ordinary new
+        # message or must yield to the pure continuation seam.
+        self._cursor_recovery_note = cursor_recovery_note
+        self._live_history_selected = False
+        self._live_replay_source = None
         # FTS write-corruption guard: if persistence failed silently the reloaded transcript is stale
         # while the SAME cached agent still holds the live conversation (same-session amnesia). Only
         # for a reused agent bound to this exact session_id.
@@ -1782,9 +1959,10 @@ class TurnRunner(_TurnRunnerCore):
             # Consecutive lagging turns per session (cleared on /new): one lag is a blip, a streak
             # is the #114266 write outage and must escalate past a repeating WARNING.
             streaks = getattr(self._runner, "_transcript_lag_streaks", None)
-            if streaks is None:  # tests may build bare runners
+            if not isinstance(streaks, dict):  # tests may build bare runners
                 streaks = self._runner._transcript_lag_streaks = {}
             if selected is not agent_history:
+                self._live_history_selected = True
                 streak = streaks[ctx.session_key] = streaks.get(ctx.session_key, 0) + 1
                 log = logger.error if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else logger.warning
                 log(
@@ -1797,6 +1975,10 @@ class TurnRunner(_TurnRunnerCore):
                 )
                 # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
                 # the full canonicalization so no replay transform can slip through.
+                # Keep the authoritative pre-cleanup rows for forced replay
+                # planning; canonicalization synthesizes UNKNOWN for a
+                # dangling batch and would otherwise hide the replay work.
+                self._live_replay_source = selected
                 agent_history = canonicalize_replay_history(selected)
             else:
                 streaks.pop(ctx.session_key, None)
@@ -1810,65 +1992,23 @@ class TurnRunner(_TurnRunnerCore):
         notes = getattr(self._runner, attr, None)
         note = notes.pop(ctx.session_key, None) if notes and ctx.session_key and ctx.session_key in notes else None
         if note:
-            ctx.message = note + "\n\n" + ctx.message
+            if isinstance(ctx.message, str):
+                ctx.message = note + "\n\n" + ctx.message
+            else:
+                # A pure continuation has no current user message. Keep the
+                # one-shot note for the next real user turn.
+                notes[ctx.session_key] = note
 
     def _resume_note_interactive(self) -> bool:
         """Interactive platforms report the restore and ask what next; event platforms (webhook,
         API server) continue the work — nobody is present to answer."""
         return bool(getattr(self._runner._delivery_adapter_for(self._ctx.source), "interactive_resume", True))
 
-    def _prepare_turn_message(self, agent_history):
-        """Prepend recovery/notice guidance to ``ctx.message``.
+    def _prepare_turn_message(self, agent_history, observed_group_context=None):
+        """Prepare ordinary guidance or transparent forced-victim recovery."""
+        from gateway.run_turn_recovery import prepare_turn_message
 
-        Returns (persist_user_message_override, persist_user_timestamp_override): real user text is
-        kept separate from API-only recovery guidance so stale guidance never replays as user text.
-        """
-        from gateway.run import (
-            _auto_continue_freshness_window, _is_fresh_gateway_interruption,
-            _last_transcript_timestamp, _prepare_resume_pending_message, build_resume_recovery_note,
-        )
-        ctx = self._ctx
-        persist_override: Optional[Any] = ctx.persist_user_message
-        self._prepend_pending_note("_pending_model_notes")
-        # Auto-continue: history ending with a tool result means the previous turn was cut off
-        # (restart, crash, SIGTERM). Session-level resume_pending (drain-timeout shutdown) uses
-        # stronger reason-aware wording that subsumes this case. Both gate on the age of
-        # ``history[-1]`` (not agent_history, which stripped tool-row timestamps); no stamp = fresh.
-        window = _auto_continue_freshness_window()
-        interruption_is_fresh = _is_fresh_gateway_interruption(_last_transcript_timestamp(ctx.history), window_secs=window)
-        entry = None
-        if ctx.session_key:
-            with suppress(Exception):
-                entry = self._runner.session_store._entries.get(ctx.session_key)
-        resume_pending = entry is not None and getattr(entry, "resume_pending", False)
-        resume_reason = (getattr(entry, "resume_reason", None) or "restart_timeout") if resume_pending else None
-        # resume_pending freshness ALSO uses the restart watchdog's ``last_resume_marked_at`` (the true
-        # interruption stamp): the transcript clock can be hours older for an active thread, and the
-        # startup auto-resume turn has empty text, so gating on it alone yields a blank user message.
-        mark_is_fresh = resume_pending and _is_fresh_gateway_interruption(
-            getattr(entry, "last_resume_marked_at", None), window_secs=window,
-        )
-        if resume_pending and (interruption_is_fresh or mark_is_fresh):
-            # Empty message = the startup auto-resume turn; there is no NEW user message.
-            ctx.message, persist_override = _prepare_resume_pending_message(
-                resume_reason, ctx.message, interactive=self._resume_note_interactive(),
-            )
-        elif agent_history and agent_history[-1].get("role") == "tool" and interruption_is_fresh:
-            persist_override = ctx.message
-            ctx.message = (
-                "[System note: A new message has arrived. The conversation "
-                "history contains pending tool outputs from an interrupted turn. "
-                "IGNORE those pending results. Address the user's NEW message "
-                "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
-                + ctx.message
-            )
-        self._prepend_pending_note("_pending_skills_reload_notes")
-        # Safety net: a startup auto-resume event carries empty text; if the resume_pending branch
-        # did not fire (freshness signals disagreed, marker cleared) we must NOT hand the model a blank
-        # user turn. Restricted to resume_pending sessions so caption-less image turns are untouched.
-        if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
-            ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
-        return persist_override, ctx.persist_user_timestamp
+        return prepare_turn_message(self, agent_history, observed_group_context)
 
     def _native_image_run_message(self):
         """Wrap the user turn as an OpenAI-style multimodal content list when
@@ -1890,7 +2030,8 @@ class TurnRunner(_TurnRunnerCore):
         return ctx.message
 
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
-                                        persist_user_message_override, persist_user_timestamp_override):
+                                        persist_user_message_override, persist_user_timestamp_override,
+                                        *, continue_interrupted_turn=False, forced_recovery_blocked=None):
         """Run the turn with the per-session gateway approval callback registered: dangerous-command
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from gateway.run import _wrap_current_message_with_observed_context
@@ -1921,10 +2062,26 @@ class TurnRunner(_TurnRunnerCore):
                 kwargs["moa_config"] = ctx.moa_config
             if persist_user_timestamp_override is not None:
                 kwargs["persist_user_timestamp"] = persist_user_timestamp_override
+            if continue_interrupted_turn:
+                # Continue the original assistant/tool loop without adding a
+                # synthetic user row or re-running new-user side channels.
+                kwargs["continue_interrupted_turn"] = True
             # The RAW inbound id (not event_message_id, the reply anchor) rides the persisted user
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            if forced_recovery_blocked is not None:
+                # Internal control outcome: recovery could not prove a safe
+                # model boundary. Never call the model or fabricate prose.
+                return {
+                    "final_response": None,
+                    "messages": [],
+                    "completed": False,
+                    "failed": True,
+                    "interrupted": False,
+                    "error": forced_recovery_blocked,
+                    "forced_recovery_control": True,
+                }
             from agent.notification_presentation import notification_turn
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
                 return agent.run_conversation(api_message, **kwargs)
@@ -2094,7 +2251,11 @@ class TurnRunner(_TurnRunnerCore):
         every rebind. session_key propagates via contextvars (_set_session_env / set_current_session_key)
         — never os.environ["HERMES_SESSION_KEY"], which would misroute approvals across sessions.
         """
-        from gateway.run import _current_max_iterations, _normalize_empty_agent_response, _sanitize_gateway_final_response
+        from gateway.run import (
+            _current_max_iterations, _is_forced_recovery_control_outcome,
+            _is_gateway_restart_control_outcome, _normalize_empty_agent_response,
+            _sanitize_gateway_final_response,
+        )
         ctx = self._ctx
         runner = self._runner
         # Platform.LOCAL ("local") maps to the "cli" hint key the agent understands.
@@ -2156,8 +2317,16 @@ class TurnRunner(_TurnRunnerCore):
             agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
-        persist_msg, persist_ts = self._prepare_turn_message(agent_history)
-        result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        preparation = self._prepare_turn_message(agent_history, observed_group_context)
+        agent_history = preparation.agent_history
+        observed_group_context = preparation.observed_group_context
+        history_media_paths = preparation.history_media_paths
+        result = self._run_conversation_with_approval(
+            agent, agent_history, observed_group_context,
+            preparation.persist_user_message, preparation.persist_user_timestamp,
+            continue_interrupted_turn=preparation.continue_interrupted_turn,
+            forced_recovery_blocked=preparation.blocked_error,
+        )
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.
@@ -2194,14 +2363,24 @@ class TurnRunner(_TurnRunnerCore):
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             **usage,
         }
+        if _is_forced_recovery_control_outcome(result):
+            # Deliberately silent: no empty-response normalization, error
+            # prose, auto-media tags, or persistence rows for a forced victim.
+            return {"final_response": "", "forced_recovery_control": True, **common}
         if not final_response:
-            final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
-            final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
-            if not final_response:
-                final_response = f"⚠️ {result['error']}" if result.get("error") else ""
+            restart_control = _is_gateway_restart_control_outcome(result)
+            if not restart_control:
+                final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
+                final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
+                if not final_response:
+                    final_response = f"⚠️ {result['error']}" if result.get("error") else ""
             # NOTE: deliberately omits agent_persisted/last_reasoning/response_* — the caller
             # defaults agent_persisted differently when the key is absent.
-            return {"final_response": final_response, **common}
+            return {
+                "final_response": final_response,
+                "gateway_restart_queued": restart_control,
+                **common,
+            }
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.

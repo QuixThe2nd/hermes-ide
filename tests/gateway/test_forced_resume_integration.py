@@ -37,7 +37,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.config import Platform
-from gateway.run import TurnRunner
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 

@@ -9,13 +9,12 @@ showed the same plain row TWICE (the reset cleared the dedup memory) or an
 empty `````\\n\\n````` codebox bubble plus a lost row (a ``__dedup__`` absorb
 against the just-cleared buffer returned the row without absorbing it).
 
-Pinned end to end against the LIVE ``TurnRunner`` classes (both twins):
-a retried call whose row text matches the previous row must update that row
-with a ``(×2)`` counter, and the drain must never render an empty bubble.
+Pinned end to end against the live ``TurnRunner`` class: a retried call whose
+row text matches the previous row must update that row with a ``(×2)`` counter,
+and the drain must never render an empty bubble.
 """
 
 import asyncio
-import importlib
 import queue as queue_mod
 
 import pytest
@@ -23,6 +22,7 @@ import pytest
 from agent.display import describe_tool_call, get_tool_emoji
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 
@@ -105,8 +105,6 @@ def _make(runner_cls):
 
 
 def _live_runner_cls():
-    from gateway.run import TurnRunner
-
     return TurnRunner
 
 
@@ -148,13 +146,11 @@ def _assert_no_empty_bubble(adapter):
         assert _bubble_rows(text), f"empty progress bubble delivered: {text!r}"
 
 
-@pytest.mark.parametrize("runner_module", ["gateway.run", "gateway.run_turn_runner"])
 @pytest.mark.asyncio
-async def test_incident_burst_retry_collapses_into_counter_row(runner_module):
+async def test_incident_burst_retry_collapses_into_counter_row():
     """T1 — the live incident ordering: both rows, the interim reset and the
     retry all queued before the drain runs."""
-    runner_cls = importlib.import_module(runner_module).TurnRunner
-    runner, ctx, adapter = _make(runner_cls)
+    runner, ctx, adapter = _make(TurnRunner)
     plain_skill = _row("skill_manage", SKILL_ARGS)
 
     runner.progress_callback("tool.started", "write_file", None, WRITE_ARGS)

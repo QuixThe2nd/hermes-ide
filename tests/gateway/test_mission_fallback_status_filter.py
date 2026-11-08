@@ -16,10 +16,10 @@ import types
 import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.run import (
-    TurnRunner,
     _mission_chat_suppresses_status,
     _prepare_gateway_status_message,
 )
+from gateway.run_turn_runner import TurnRunner
 
 # The exact shape run_agent._emit_pending_fallback_notice emits
 # (agent/chat_completion_helpers.py formats the producer side).
@@ -70,6 +70,8 @@ class _StubCtx:
         self._status_thread_metadata = None
         self._loop_for_step = object()
         self._cleanup_progress = False
+        self.mute_notification_reply = False
+        self.user_config = {}
         # Tool progress off → the ordered-queue rail at run.py's
         # tool_progress_enabled check is skipped; deliveries ride the direct
         # rail, which is what these tests observe.
@@ -79,6 +81,9 @@ class _StubCtx:
 
     def _run_still_current(self):
         return True
+
+    def deliver_visible(self, fn):
+        return fn()
 
 
 def _deliver_via_status_callback(monkeypatch, ctx, event_type, message):
