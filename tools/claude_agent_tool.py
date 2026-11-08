@@ -36,7 +36,10 @@ first line. Callers stay free to pass one long ``task`` string: an
 over-limit ``/goal`` task is rewritten before spawn, writing the original
 task to ``<workdir>/.hermes-claude-goal-brief.md`` and replacing the ``-p``
 argument with a short ``/goal`` condition (first line plus a pointer to
-that file). Non-goal tasks are never rewritten.
+that file). Non-goal tasks are never rewritten. An existing brief file is
+left alone when it already holds the same task; if it holds DIFFERENT
+content and is tracked by the workdir's git repository, the call fails
+closed instead of silently dirtying the worktree.
 
 Log format
 ----------
@@ -474,6 +477,24 @@ def _shorten_goal_condition(condition: str) -> str:
     return first_line + _GOAL_BRIEF_SUFFIX
 
 
+def _brief_tracked_in_git(workdir_path: Path, brief_name: str) -> bool:
+    """True when ``brief_name`` is a tracked file in the workdir's git repo.
+
+    ``git ls-files --error-unmatch`` exits 0 only for tracked paths. A
+    non-git workdir, a missing git binary, or any subprocess error all read
+    as untracked, so the spill keeps working outside repositories.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(workdir_path), "ls-files", "--error-unmatch", "--", brief_name],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
 # ---------------------------------------------------------------------------
 # Tool implementation
 # ---------------------------------------------------------------------------
@@ -571,13 +592,39 @@ def delegate_claude_agent(
     if goal_condition is not None and len(goal_condition) > GOAL_CONDITION_MAX_CHARS:
         brief_path = workdir_path / GOAL_BRIEF_FILENAME
         try:
-            brief_path.write_text(str(task), encoding="utf-8")
-            os.chmod(brief_path, 0o644)
+            existing_brief = (
+                brief_path.read_text(encoding="utf-8") if brief_path.exists() else None
+            )
         except OSError as exc:
             return _make_result(
                 success=False,
-                error=f"failed to write /goal brief file {brief_path}: {exc}",
+                error=f"failed to read existing /goal brief file {brief_path}: {exc}",
             )
+        if (
+            existing_brief is not None
+            and existing_brief != str(task)
+            and _brief_tracked_in_git(workdir_path, GOAL_BRIEF_FILENAME)
+        ):
+            # A tracked file with different content is part of the repo, not
+            # a leftover spill: overwriting it would silently dirty the
+            # worktree (observed when a repo committed an earlier brief).
+            return _make_result(
+                success=False,
+                error=(
+                    f"refusing to overwrite /goal brief file {brief_path}: it is "
+                    "tracked by the workdir git repository with different content. "
+                    "Untrack or remove that file (or pass a different workdir) and retry."
+                ),
+            )
+        if existing_brief != str(task):
+            try:
+                brief_path.write_text(str(task), encoding="utf-8")
+                os.chmod(brief_path, 0o644)
+            except OSError as exc:
+                return _make_result(
+                    success=False,
+                    error=f"failed to write /goal brief file {brief_path}: {exc}",
+                )
         prompt = "/goal " + _shorten_goal_condition(goal_condition)
         goal_brief_path = str(brief_path)
 
