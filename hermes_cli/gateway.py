@@ -1343,7 +1343,9 @@ def _wait_for_systemd_service_restart(
 
 
 def _systemd_restart_wait_timeout(system: bool = False) -> float:
-    """Cover systemd's relaunch delays before applying the runtime wait floor."""
+    """The ONE systemd-wait timeout: cover systemd's relaunch delays (RestartUSec +
+    TimeoutStartUSec from the unit) plus the shared 60s floor. Derived from the
+    unit's own properties, not a separate config knob."""
     from gateway.shutdown_forensics import parse_systemd_duration_to_us
     props = _read_systemd_unit_properties(system=system, properties=("RestartUSec", "TimeoutStartUSec"))
     supervisor_budget = 0.0
@@ -3717,17 +3719,33 @@ def _print_system_scope_remediation(action: str) -> None:
 
 
 def _get_restart_drain_timeout() -> float:
-    """Return the configured gateway restart drain timeout in seconds."""
+    """Return the ONE drain timeout in seconds.
+
+    Resolution order: the deprecated ``HERMES_RESTART_DRAIN_TIMEOUT`` env var
+    (warned), then the canonical ``gateway.drain_timeout`` config key, then the
+    legacy ``agent.restart_drain_timeout`` alias, then the shared default.
+    """
+    from gateway.restart import warn_deprecated_timeout_env
+
+    warn_deprecated_timeout_env("HERMES_RESTART_DRAIN_TIMEOUT")
     raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
     if not raw:
         cfg = read_raw_config()
+        gw_cfg = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
         agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
-        raw = str(agent_cfg.get("restart_drain_timeout", DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT))
+        if isinstance(gw_cfg, dict) and gw_cfg.get("drain_timeout") is not None:
+            raw = str(gw_cfg["drain_timeout"])
+        else:
+            raw = str(agent_cfg.get("restart_drain_timeout", DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT))
     return parse_restart_drain_timeout(raw)
 
 
 def _agent_timeout_setting(env_var: str, key: str, parse) -> float:
     """``parse(env)`` when the env var is non-empty, else ``parse(agent.<key>)`` (None if unset)."""
+    from gateway.restart import warn_deprecated_timeout_env
+
+    if env_var:
+        warn_deprecated_timeout_env(env_var)
     env_raw = os.getenv(env_var)
     if env_raw is not None and str(env_raw).strip() != "":
         return parse(env_raw)
@@ -3739,17 +3757,31 @@ def _agent_timeout_setting(env_var: str, key: str, parse) -> float:
 
 
 def _get_cron_drain_timeout() -> float:
-    """Return the configured cron-only drain floor in seconds.
+    """The cron-only drain floor in seconds.
 
-    See #82161.
+    Order: deprecated env var (warned) → legacy ``agent.cron_drain_timeout``
+    alias → the ONE ``gateway.drain_timeout`` → default. See #82161.
     """
-    return _agent_timeout_setting("HERMES_CRON_DRAIN_TIMEOUT", "cron_drain_timeout", parse_cron_drain_timeout)
+    from gateway.restart import warn_deprecated_timeout_env
+
+    warn_deprecated_timeout_env("HERMES_CRON_DRAIN_TIMEOUT")
+    env_raw = os.getenv("HERMES_CRON_DRAIN_TIMEOUT")
+    if env_raw is not None and str(env_raw).strip() != "":
+        return parse_cron_drain_timeout(env_raw)
+    cfg = read_raw_config()
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+    gw_cfg = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
+    if isinstance(agent_cfg, dict) and agent_cfg.get("cron_drain_timeout") is not None:
+        return parse_cron_drain_timeout(agent_cfg["cron_drain_timeout"])
+    if isinstance(gw_cfg, dict) and gw_cfg.get("drain_timeout") is not None:
+        return parse_cron_drain_timeout(gw_cfg["drain_timeout"])
+    return parse_cron_drain_timeout(None)
 
 
 def _get_restart_exit_wait_budget() -> float:
     """CLI wait for gateway exit after SIGUSR1 / self-restart (#77184)."""
     return resolve_restart_exit_wait_budget(
-        # TimeoutStopSec must cover the full stop budget, not just restart_drain_timeout. Cron work can
+        # TimeoutStopSec must cover the full stop budget, not just drain_timeout. Cron work can
         # legally wait cron_drain_timeout plus cleanup reserve before interrupt/teardown, and systemd
         # SIGKILLs if the unit's deadline is shorter (#94759). 30s of post-drain headroom is preserved on
         # top, with a 60s floor.
@@ -6540,11 +6572,53 @@ def _restart_all(system: bool) -> None:
         _service_call(kind, "start", system)
 
 
+def _restart_via_control_socket(restart_platforms: bool) -> bool:
+    """Ask the running gateway (control socket) to run the ONE restart core.
+
+    Returns True when the restart was queued or already in progress in the
+    running process — the CLI then has nothing left to orchestrate. False when
+    no gateway answers (not running, old gateway without the verb, dead
+    socket) and the caller falls through to the SIGUSR1/service transports.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        from gateway.control_socket import request_gateway_restart
+
+        ack = request_gateway_restart(get_hermes_home(), restart_platforms=restart_platforms)
+    except Exception as exc:
+        logger.debug("Control-socket restart transport unavailable: %s", exc)
+        return False
+    if not isinstance(ack, dict):
+        return False
+    status = str(ack.get("status") or "")
+    if not ack.get("queued") and status != "already_in_progress":
+        logger.debug("Control-socket restart verb refused: %s", ack)
+        return False
+    if status == "already_in_progress":
+        print("✓ Gateway restart already in progress — draining active work")
+    else:
+        print("✓ Gateway restart queued — in-flight sessions drain undisturbed, then the gateway bounces")
+        if not restart_platforms:
+            print("  (--no-platforms: platform gateway connections are not bounced)")
+    return True
+
+
 def _cmd_restart(args):
+    """`hermes gateway restart` — the CLI door onto the ONE restart pipeline.
+
+    Transports, in order: (1) the running gateway's control socket runs the
+    same core ``queue_user_restart`` sequence /restart uses (carrying the
+    ``--no-platforms`` override); (2) SIGUSR1, which the gateway maps to the
+    same ``request_restart`` core; (3) the service manager (systemd/launchd/
+    Windows) as a TRANSPORT of the same semantics, not a second one — its
+    graceful path SIGUSR1s first too; (4) stop + fresh start when no gateway
+    is running.
+    """
     _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
+    restart_platforms = not getattr(args, "no_platforms", False)
     _guard_named_profile_under_multiplexer(force=force)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
         return
@@ -6552,6 +6626,10 @@ def _cmd_restart(args):
         return
     if restart_all:
         _restart_all(system)
+        return
+
+    # Door 1: the running process runs the ONE restart core itself.
+    if _restart_via_control_socket(restart_platforms):
         return
 
     # The Windows restart path handles both registered installs and detached restarts.

@@ -66,7 +66,9 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     # is gone (overlap restart keeps sessions alive across the bounce).
     assert expected == "♻ Restarting gateway..."
     running_agent.interrupt.assert_not_called()
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    runner.request_restart.assert_called_once_with(
+        detached=True, via_service=False, restart_platforms=True
+    )
 
 
 def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monkeypatch):

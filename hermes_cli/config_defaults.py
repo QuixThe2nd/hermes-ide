@@ -124,6 +124,10 @@ DEFAULT_CONFIG = {
         # (`hermes gateway restart` prints a "still draining" hint instead
         # of waiting forever); no value — 0 included — is a deadline.
         "restart_after_turn_timeout": 1800,
+        # LEGACY aliases of gateway.drain_timeout (read-old, write-new): when
+        # explicitly set they still win so existing configs keep working;
+        # new configuration goes to gateway.drain_timeout.
+        # See gateway/restart.py::warn_deprecated_timeout_env for the env vars.
         # Max seconds a submitted prompt waits for the deferred agent build (MCP discovery, model
         # metadata, skills scan) before failing visibly. The prompt is delivered as soon as the
         # build completes (progress notice past 30s), so this only fires on a hung build. Raise for
@@ -2006,10 +2010,21 @@ DEFAULT_CONFIG = {
         # teardown proceeds. Keep this short so service-manager shutdowns do
         # not exhaust their stop budget before resource cleanup begins.
         "signal_interrupt_grace_timeout": 1,
-        # Opt-in: post the cooperative restart wind-down (⏸️ park) offer embed on a
-        # user-requested /restart. Debugging aid for the wind-down path only — the
-        # multi-instance overlap restart keeps sessions alive across restarts, which
-        # made the always-on offer obsolete chatter.
+        # THE drain timeout (seconds) for the ONE restart/stop pipeline: how long
+        # the stop() drain may wait on in-flight work before interrupting it.
+        # The pre-stop wait is unbounded (#77184); this bounds only the stop()
+        # drain itself. One knob for chat work; the cron floor derives from it
+        # unless agent.cron_drain_timeout (legacy alias) is explicitly set.
+        # systemd TimeoutStopSec and the systemd restart-wait budget derive
+        # from this value. Legacy aliases: agent.restart_drain_timeout,
+        # agent.cron_drain_timeout, agent.restart_after_turn_timeout (all
+        # still read; env-var mirrors are deprecated).
+        "drain_timeout": 86400,
+        # tool — one pipeline) also bounces platform gateway connections: the overlap
+        # successor takes over the platform transports and adapters reconnect on it.
+        # false = agent-core sessions restart without bouncing platform connections;
+        # `hermes gateway restart --no-platforms` overrides per call.
+        "restart_platforms": True,
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the
         # platform send; a gateway that died between finalize and platform ACK redelivers on next
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
