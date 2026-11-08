@@ -65,7 +65,7 @@ _MAX_MESSAGE_CHARS = 4000
 #: ``context_messages`` still cannot turn into an unbounded request body.
 _MAX_SNAPSHOT_MESSAGES = 50
 
-#: Usage attribution headers (override mode only; stripped by llm_usage_proxy upstream).
+#: Usage attribution headers (override mode only; stripped by the upstream metering proxy).
 _USAGE_CALLER_HEADER = "X-Usage-Caller"
 _USAGE_CHAT_TYPE_HEADER = "X-Usage-Chat-Type"
 _USAGE_CHAT_ID_HEADER = "X-Usage-Chat-Id"
