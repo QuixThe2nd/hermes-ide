@@ -56,14 +56,56 @@ def _check_vault_available() -> bool:
 # JS evaluation plumbing (server-side; results never carry secret values)
 # ---------------------------------------------------------------------------
 
+def _eval_js_camofox(task_id: str, expression: str, *, secret: bool = False) -> Dict[str, Any]:
+    """Evaluate JS via the Camofox REST API (``POST /tabs/{tabId}/evaluate``, bearer-auth).
+
+    Same session machinery browser_console's camofox path uses (``_get_session`` tab +
+    user id), never a subprocess — the expression rides an authenticated HTTP body, which
+    is the accepted secret transport on this install. Fails closed for secret-bearing
+    expressions when the camofox key or session tab is missing; in camofox mode there is
+    deliberately no fallback to the supervisor/CLI paths (camofox has no local CDP
+    endpoint, and the CLI would place the expression in subprocess argv).
+    """
+    from agent.secret_scope import get_secret
+    from tools import browser_camofox as cf
+
+    if not cf.get_camofox_url():
+        return {"success": False, "error_type": "camofox_session_required",
+                "error": "Camofox mode is active but CAMOFOX_URL is not set; cannot evaluate page JS."}
+    if secret and not (get_secret("CAMOFOX_API_KEY", "") or "").strip():
+        return {"success": False, "error_type": "camofox_session_required",
+                "error": ("Vault fill over Camofox requires CAMOFOX_API_KEY (bearer-authenticated "
+                          "evaluate endpoint). No weaker fallback is used for secrets.")}
+    session = cf._get_session(task_id)
+    if not session.get("tab_id"):
+        return {"success": False, "error_type": "camofox_session_required",
+                "error": "No browser session. Call browser_navigate first."}
+    try:
+        resp = cf._post(f"/tabs/{session['tab_id']}/evaluate",
+                        {"expression": expression, "userId": session["user_id"]})
+    except Exception as exc:
+        return {"success": False, "error": f"camofox evaluate failed: {exc}"[:300]}
+    raw = resp.get("result") if isinstance(resp, dict) else resp
+    return {"success": True, "result": _parse_json_result(raw) if isinstance(raw, str) else raw}
+
+
 def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
 
-    Prefers the supervisor's persistent CDP WebSocket, falls back to the
-    agent-browser CLI ``eval`` command. Never use this for expressions that
-    embed secret values — the fallback places the expression in subprocess
-    argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
+    Camofox mode routes through its REST API; otherwise prefers the supervisor's
+    persistent CDP WebSocket, falling back to the agent-browser CLI ``eval``
+    command. Never use the non-camofox path for expressions that embed secret
+    values — the fallback places the expression in subprocess argv. Use
+    :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    try:
+        from tools.browser_camofox import is_camofox_mode
+
+        if is_camofox_mode():
+            return _eval_js_camofox(task_id, expression)
+    except ImportError:
+        pass
+
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
@@ -125,9 +167,19 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
     ``eval`` path, because that places the expression — and therefore the
     credential bytes — in subprocess argv, visible to any process listing.
-    When no supervisor session is available the caller gets a typed refusal
-    (``error_type='supervisor_required'``) and nothing is written.
+    Camofox mode uses the bearer-authenticated REST evaluate endpoint instead
+    (see :func:`_eval_js_camofox`). When no acceptable transport is available
+    the caller gets a typed refusal (``error_type='supervisor_required'`` /
+    ``'camofox_session_required'``) and nothing is written.
     """
+    try:
+        from tools.browser_camofox import is_camofox_mode
+
+        if is_camofox_mode():
+            return _eval_js_camofox(task_id, expression, secret=True)
+    except ImportError:
+        pass
+
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception as exc:

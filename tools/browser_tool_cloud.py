@@ -194,8 +194,9 @@ def _get_browser_engine() -> str:
         engine = _bt._browser_cfg("engine", "auto", lambda v: str(v).strip().lower() if v and str(v).strip() else "auto", "browser.engine from config")
         if engine == "auto":
             engine = os.environ.get("AGENT_BROWSER_ENGINE", "").strip().lower() or engine
-        # agent-browser only accepts "chrome" and "lightpanda".
-        _VALID_ENGINES = {"auto", "lightpanda", "chrome"}
+        # agent-browser only accepts "chrome" and "lightpanda"; "camofox" is a backend
+        # selection (runtime path is _is_camofox_mode(), never an agent-browser flag).
+        _VALID_ENGINES = {"auto", "lightpanda", "chrome", "camofox"}
         if engine not in _VALID_ENGINES:
             _bt.logger.warning("Unknown browser engine %r (valid: %s), falling back to 'auto'", engine, ", ".join(sorted(_VALID_ENGINES)))
             engine = "auto"
@@ -215,7 +216,7 @@ def _is_headed_mode() -> bool:
 def _should_inject_engine(engine: str) -> bool:
     """True when ``--engine`` should be added: explicit (non-``auto``) engine on a non-cloud, non-camofox local session."""
     _bt = _origin()
-    return engine != "auto" and not _bt._is_camofox_mode() and _is_local_mode()
+    return engine not in ("auto", "camofox") and not _bt._is_camofox_mode() and _is_local_mode()
 
 
 def _auto_local_for_private_urls() -> bool:
