@@ -263,8 +263,8 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
-def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress=None) -> bool:
-    """SIGUSR1 (drain-aware restart) a gateway PID and wait for exit; False if unsent or it outlived the timeout.
+def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress=None) -> bool | None:
+    """SIGUSR1 a gateway PID and wait for exit; False means still alive, None means unsent.
 
     gateway/run.py maps SIGUSR1 to ``request_restart(via_service=True)``: refuse new turns, drain,
     ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + drain
@@ -272,13 +272,13 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress
     a long wait can report what the gateway is still holding for (``update_cmd_drain_report``).
     """
     if not hasattr(signal, "SIGUSR1") or pid <= 0:
-        return False
+        return None
     try:
         os.kill(pid, signal.SIGUSR1)  # windows-footgun: ok — POSIX signal, guarded by hasattr(signal, 'SIGUSR1') above
     except ProcessLookupError:
         return True
     except (PermissionError, OSError):
-        return False
+        return None
 
     return _wait_for_pid_exit(pid, max(drain_timeout, 1.0), on_progress=on_progress)
 
@@ -3926,7 +3926,7 @@ def systemd_stop(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
 
-def systemd_restart(system: bool = False):
+def systemd_restart(system: bool = False, force: bool = False):
     system = _systemd_scope_preamble("restart", system, preflight_user=True)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; its os.environ mutation
     # persists for the get_running_pid / drain-timeout reads below.
@@ -3955,7 +3955,7 @@ def systemd_restart(system: bool = False):
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
         return
     if pid is not None:
-        service_action = _systemd_graceful_restart_action(system, pid)
+        service_action = _systemd_graceful_restart_action(system, pid, force=force)
         if service_action:
             _systemd_reset_and_run(service_action, system=system, previous_pid=pid)
         return
@@ -3965,9 +3965,8 @@ def systemd_restart(system: bool = False):
     _systemd_reset_and_run("restart", system=system, previous_pid=pid)
 
 
-def _systemd_graceful_restart_action(system: bool, pid: int) -> str | None:
-    """SIGUSR1-drain the live gateway ``pid``; return the follow-up ``systemctl`` verb (``"start"`` /
-    ``"restart"``) the caller must still issue, or None when systemd already owns the relaunch."""
+def _systemd_graceful_restart_action(system: bool, pid: int, force: bool = False) -> str | None:
+    """SIGUSR1-drain the live gateway; return a follow-up systemctl verb only when authorized."""
     scope_label = _service_scope_label(system).capitalize()
     # Graceful in-band restart, mirroring the systemd branch. Previously this sent a bare SIGTERM and waited
     # ``_get_restart_drain_timeout()`` — which defaults to 0, so the wait could never succeed and every
@@ -3986,8 +3985,29 @@ def _systemd_graceful_restart_action(system: bool, pid: int) -> str | None:
         f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
     )
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
-    if not _graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
-        print(f"⚠ Graceful restart did not complete within {int(wait_budget)}s; forcing a service restart...")
+    graceful_result = _graceful_restart_via_sigusr1(
+        pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)
+    )
+    if graceful_result is None and not force:
+        print(
+            f"✗ Could not send the graceful restart request to PID {pid}; "
+            "leaving the live service untouched (use --force to restart it explicitly)."
+        )
+        raise SystemExit(1)
+    if graceful_result is not True:
+        if force:
+            print("⚠ Explicit --force requested; forcing a service restart...")
+            return "restart"
+        if probe_gateway_loop_liveness(pid) != GATEWAY_LOOP_WEDGED:
+            print(
+                f"⏳ {scope_label} graceful restart is still underway (PID {pid}); "
+                "leaving the live service untouched while its drain completes."
+            )
+            return None
+        print(
+            f"⚠ Gateway PID {pid} event loop is unresponsive after the graceful wait; "
+            "forcing a service restart..."
+        )
         return "restart"
 
     # Exit 75 hands restart ownership to systemd; observe that replacement rather than restarting again.
@@ -5846,15 +5866,17 @@ def _service_backend(*, windows: bool = True) -> str | None:
     return None
 
 
-def _service_call(backend: str, verb: str, system: bool | None = False) -> None:
-    """Run ``verb`` (start/stop/restart/uninstall) on ``backend``. Names resolve at call time so tests
-    can monkeypatch them; only systemd takes a scope, and ``system=None`` omits it (wizard restart)."""
+def _service_call(backend: str, verb: str, system: bool | None = False, force: bool = False) -> None:
+    """Run ``verb`` on ``backend``; explicit force applies only to systemd restart."""
     if backend == "windows":
         return getattr(_gw_windows(), verb)()
     if backend == "launchd":
         return globals()[f"launchd_{verb}"]()
     fn = globals()[f"systemd_{verb}"]
-    return fn() if system is None else fn(system=system)
+    kwargs = {} if system is None else {"system": system}
+    if force and verb == "restart":
+        kwargs["force"] = True
+    return fn(**kwargs)
 
 
 def _wizard_offer_service_action(action: str, question: str, failed_label: str, **kwargs) -> None:
@@ -6538,7 +6560,8 @@ def _cmd_restart(args):
     if kind is not None:
         swallow = (RuntimeError, OSError) if kind == "windows" else ()
         try:
-            _service_call(kind, "restart", system)
+            service_kwargs = {"force": True} if force else {}
+            _service_call(kind, "restart", system, **service_kwargs)
             return
         except (subprocess.CalledProcessError, *swallow):
             pass

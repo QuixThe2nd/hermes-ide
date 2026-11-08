@@ -16616,6 +16616,19 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     def shutdown_signal_handler(received_signal=None):
+        restart_task = getattr(runner, "_restart_task", None)
+        if (
+            getattr(runner, "_restart_task_started", False)
+            and restart_task is not None
+            and not restart_task.done()
+        ):
+            logger.info(
+                "Received %s during an active restart drain; leaving the existing "
+                "restart task and its configured drain timeout in control",
+                received_signal,
+            )
+            return
+
         # Planned --replace takeover (sibling marked this PID): exit 0 so systemd won't revive us.
         def _takeover() -> bool:
             from gateway.status import consume_takeover_marker_for_self
