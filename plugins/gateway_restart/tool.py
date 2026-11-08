@@ -1,13 +1,13 @@
-"""``restart`` tool — agent-callable gateway restart on the /restart drain path.
+"""``restart`` tool — agent-callable gateway restart on the /restart path.
 
 The tool queues through the same gateway-owned sequence as the ``/restart``
 slash command: warn about uncommitted runtime source, persist the requester's
 comeback routing, then hand off to ``GatewayRunner.request_restart``. The
-shared drain blocks new work and waits
-for in-flight sessions to finish naturally, with no cap, before the gateway
-bounces and comes back online. The tool never runs a wait of its own beside
-that drain. The shell/systemctl path stays blocked by the lifecycle guard —
-that path SIGTERMs the gateway and kills whatever child ran the command.
+successor instance spawns immediately and the transport hub routes all new
+turns to it, while the old process only stays alive to finish its
+long-running turns before exiting. The tool never runs a wait of its own.
+The shell/systemctl path stays blocked by the lifecycle guard — that path
+SIGTERMs the gateway and kills whatever child ran the command.
 """
 
 from __future__ import annotations
@@ -24,14 +24,11 @@ logger = logging.getLogger(__name__)
 RESTART_SCHEMA = {
     "name": "restart",
     "description": (
-        "Queue a Hermes gateway restart through the same drain path as the "
-        "/restart slash command. The restart is queued immediately, including "
-        "when other sessions or background work are active. The shared drain "
-        "blocks new work and waits for every in-flight turn to finish "
-        "naturally, without forcing or capping that work. The gateway then "
-        "bounces and the requesting chat gets a comeback notice. A successful "
-        "restart ends this turn immediately: do not plan further tool calls "
-        "or a closing summary after it — the user sees the restart lifecycle "
+        "Restart hermes-ide through the same path as the /restart slash "
+        "command. All new turns will continue in a new instance while the "
+        "old instance finishes long running turns. A successful restart "
+        "ends this turn immediately: do not plan further tool calls or a "
+        "closing summary after it — the user sees the restart lifecycle "
         "notices instead. Use it to pick up config or code changes, or to "
         "recover a misbehaving gateway."
     ),
