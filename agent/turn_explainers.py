@@ -5,15 +5,7 @@ summarises why a turn ended without a final answer. Every method resolves throug
 """
 import os
 import re
-from contextlib import suppress
 from typing import Any, Dict, Optional
-
-from agent.tool_dispatch_helpers import (
-    _extract_error_preview, _extract_file_mutation_targets, _extract_landed_file_mutation_paths
-)
-from agent.tool_result_classification import (
-    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed
-)
 
 _NO_REPLY = "⚠️ No reply: "
 
@@ -224,57 +216,6 @@ def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: s
 class TurnExplainersMixin:
     """File-mutation failure footer + turn-completion explainer (see module docstring)."""
 
-    def _record_file_mutation_result(
-        self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool,
-        *, task_id: Optional[str] = None,
-    ) -> None:
-        """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
-
-        Failures store ``{path: {error_preview, tool, identity, stat}}`` keyed by the model's
-        spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at
-        failure time. A later success on the same identity (any spelling) removes the entry.
-        No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
-        """
-        if tool_name not in _FILE_MUTATING_TOOLS:
-            return
-        state = getattr(self, "_turn_failed_file_mutations", None)
-        if state is None:
-            return
-        targets = _extract_file_mutation_targets(tool_name, args)
-        if not targets:
-            return
-        landed = file_mutation_result_landed(tool_name, result)
-        if landed:
-            landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
-            changed = getattr(self, "_turn_file_mutation_paths", None)
-            if changed is not None:
-                changed.update(landed_paths)
-            # Feed the checkpoint agent-write ledger so /rollback's safe mode can tell
-            # Hermes-authored content from later user hand-edits.
-            mgr = getattr(self, "_checkpoint_mgr", None)
-            if mgr is not None and getattr(mgr, "enabled", False):
-                from tools.file_tools_paths import container_backend_for_task
-                if container_backend_for_task(task_id or "default") is None:  # container paths carry no host ledger entry
-                    for _p in landed_paths:
-                        with suppress(Exception):
-                            mgr.record_agent_write(_p)
-        if is_error and not landed:
-            # Keep the FIRST error per path unless a later success replaces it.
-            preview = _extract_error_preview(result)
-            for path in targets:
-                identity = _file_mutation_identity(path, task_id)
-                state.setdefault(path, {
-                    "tool": tool_name, "error_preview": preview,
-                    "identity": identity, "stat": _file_stat_signature(identity),
-                })
-        else:
-            cleared = {
-                _file_mutation_identity(p, task_id)
-                for p in (landed_paths if landed else targets)
-            }
-            for path, info in list(state.items()):
-                if info.get("identity", _file_mutation_identity(path, task_id)) in cleared:
-                    state.pop(path, None)
 
     @staticmethod
     def _file_mutations_still_failed(failed: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -290,19 +231,6 @@ class TurnExplainersMixin:
             if "stat" not in info or _file_stat_signature(info["identity"]) == info["stat"]
         }
 
-    def _file_mutation_verifier_enabled(self) -> bool:
-        """``display.file_mutation_verifier`` / ``HERMES_FILE_MUTATION_VERIFIER`` (a patchable seam)."""
-        return _display_flag_enabled(
-            self, env_var="HERMES_FILE_MUTATION_VERIFIER", config_key="file_mutation_verifier",
-            cache_attr="_file_mutation_verifier_enabled_cache",
-        )
-
-    def _turn_completion_explainer_enabled(self) -> bool:
-        """``display.turn_completion_explainer`` / ``HERMES_TURN_COMPLETION_EXPLAINER``."""
-        return _display_flag_enabled(
-            self, env_var="HERMES_TURN_COMPLETION_EXPLAINER", config_key="turn_completion_explainer",
-            cache_attr="_turn_completion_explainer_enabled_cache",
-        )
 
     # Bare absolute / home / Windows-drive paths in a footer line. Mirrors the gateway's
     # extract_local_files detector so anything it WOULD auto-attach is backticked first (#35584).

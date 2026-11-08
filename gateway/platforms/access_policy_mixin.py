@@ -14,8 +14,6 @@ DEFAULT profile's opt-in, which must never open a secondary bot's DMs (#93522).
 
 from __future__ import annotations
 
-from typing import Iterable
-
 from gateway.platforms._shared import get_scoped_secret
 
 OPTIN_TRUTHY = frozenset({"true", "1", "yes"})
@@ -42,11 +40,6 @@ class OwnAccessPolicyMixin:
         return any(str(get_scoped_secret(name, "") or "").strip().lower() in OPTIN_TRUTHY
                    for name in self._allow_all_env_names())
 
-    def _entry_matches(self, entries: Iterable[str], target: str) -> bool:
-        return target in entries
-
-    def _live_dm_allow_from(self) -> Iterable[str]:
-        return self._allow_from
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""

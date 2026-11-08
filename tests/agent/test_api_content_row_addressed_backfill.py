@@ -24,9 +24,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.session_persistence import SessionPersistenceMixin
 from agent.turn_context import _stamp_api_content_sidecar, compose_user_api_content
 from hermes_state import SessionDB
+from run_agent import AIAgent
 from tests.agent.test_api_content_sidecar import _FakeAgent, _build
 
 
@@ -100,8 +100,11 @@ class TestPrologueRowAddressedBackfill:
         agent._session_db.set_message_api_content.assert_not_called()
         agent._session_db.set_latest_user_api_content.assert_not_called()
 
-class _RealPersistenceAgent(SessionPersistenceMixin, _FakeAgent):
-    """Stand-in agent with the real SessionPersistenceMixin flush implementation."""
+class _RealPersistenceAgent(_FakeAgent):
+    """Stand-in agent with AIAgent's real flush implementation."""
+
+    _flush_messages_to_session_db = AIAgent._flush_messages_to_session_db
+    _flush_messages_to_session_db_unlocked = AIAgent._flush_messages_to_session_db_unlocked
 
     def __init__(self, db=None, sid="s1"):
         _FakeAgent.__init__(self)
