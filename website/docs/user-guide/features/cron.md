@@ -23,11 +23,12 @@ Cron jobs can:
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
 :::tip
-**Which model does a cron job run on?** Resolution at fire time is: per-job pin → `cron.model` in `config.yaml` → the global default from `hermes model`.
+**Which model does a cron job run on?** Cron jobs are never model-specific. Resolution at fire time is: `cron.model` in `config.yaml` → the global default from `hermes model`.
 
-- **Per-job pin** — set by *you* via the dashboard, `hermes cron create/edit --model … --provider …`, or by editing `~/.hermes/cron/jobs.json`. Once set, it sticks until you change it. The agent's `cronjob` tool cannot set or change per-job models — inference pins are user-owned.
-- **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
-- **Global default** — only when neither of the above is set does a job follow `hermes model`. Hermes **snapshots** the provider and model at creation, and that snapshot is the job's effective pin: if you later switch the global default (`hermes model`, `/model`, `hermes config set model.default …`), the job **keeps running on the model and provider it was created under** and logs one INFO line per run noting the difference. A global model change never stops a scheduled job, and an unattended job never silently inherits a switch to a paid provider/model (#44585). To move a job to the new default, **resnap** it (`hermes cron resnap <job_id>`, or `--all` for every unpinned job) so it adopts the current default while staying unpinned, pin it (`hermes cron edit <job_id> --provider <provider> --model <model>`), or set `cron.model` to move the whole fleet at once. Jobs created before snapshots existed keep following the live global default.
+- **`cron.model` / `cron.model_provider`** — a cron-fleet default: every job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
+- **Global default** — only when `cron.model` is unset does a job follow `hermes model`.
+
+Per-job model pinning (`hermes cron create/edit --model/--provider`, creation snapshots, `resnap`) has been **removed**. A job that carried a stale pin in `~/.hermes/cron/jobs.json` (e.g. naming a provider that no longer exists on this host) no longer fails on it: any stored `model`/`provider`/snapshot fields are tolerated on load and ignored — the job always runs on the fleet default. `hermes cron resnap <job_id>` (or `--all`) now simply clears those leftover pin fields from the store.
 
 Whichever provider a job resolves to, its provider-specific request settings (e.g. `request_overrides` such as `extra_body`/`extra_headers` for custom providers) carry into the scheduled run just like an interactive session.
 
@@ -109,30 +110,20 @@ cron:
 
 Or: `hermes config set cron.preflight false`
 
-## Moving unpinned jobs to a new global default
+## Moving the cron fleet to a new global default
 
-An unpinned job stays on the provider/model it was created under, so changing your chat model
-never changes (or stops) your cron fleet. When you *do* want scheduled jobs to move:
-
-```bash
-hermes cron edit <job_id> --provider <provider> --model <model>   # one job
-hermes config set cron.model <model>                               # every unpinned job
-```
-
-`hermes config set model.default …` and the Desktop model picker list the unpinned jobs that will
-keep their original model so you can decide deliberately. Stored snapshots are refreshed whenever
-you edit a job's provider, model, or base URL.
-
-Resnapping refreshes an unpinned job's stored snapshot to the current global resolution without
-pinning it, so it keeps tracking future changes:
+Cron jobs always follow the fleet default (`cron.model` in `config.yaml`, falling back to the
+global `hermes model` default), so changing the fleet is one command — there are no per-job pins
+to chase:
 
 ```bash
-hermes cron resnap <job_id>   # one job
-hermes cron resnap --all      # every unpinned agent job
+hermes config set cron.model <model>    # the whole cron fleet
+hermes model <model>                    # the global default (used when cron.model is unset)
 ```
 
-The agent-facing `cronjob` tool accepts the same action (`action=resnap job_id=<id>` or
-`action=resnap all=true`). Pinned axes and `no_agent` script jobs are left untouched.
+`hermes cron resnap <job_id>` (or `--all`) clears any leftover per-job pin fields written by
+older Hermes versions; the agent-facing `cronjob` tool accepts the same action
+(`action=resnap job_id=<id>` or `action=resnap all=true`).
 
 ## Skill-backed cron jobs
 

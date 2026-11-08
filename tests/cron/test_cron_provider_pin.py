@@ -1,20 +1,19 @@
-"""Unpinned cron jobs run on their creation snapshot (#44585 follow-up).
+"""Cron jobs are never model-specific: per-job pins are ignored (fleet default always wins).
 
-Background: an UNPINNED cron job used to follow the live global default provider/model. A
-temporary switch to a paid provider made every unpinned job silently inherit it on its next
-tick (the $7.73 incident). The first fix failed closed on any drift, which instead killed every
-unpinned job whenever the operator changed models — silently, for days.
+Background: a job carried a stale pin (`model: gpt-5.6-sol, provider: openai-codex`) in the jobs
+store and failed with HTTP 400 after that provider stopped existing on the host. Per-job model
+pinning (pins + creation snapshots) was therefore removed.
 
 Current contract:
-  - create_job() snapshots the provider/model resolution WOULD pick at creation into
-    job["provider_snapshot"] / job["model_snapshot"] (unpinned, agent-backed jobs only).
-  - run_job() treats the snapshot as the effective pin: an unpinned axis runs on its snapshot
-    even after the global default moved. Explicit per-job pins and the cron.model /
-    cron.model_provider fleet defaults still win; a job with no snapshot follows the global
-    default as before.
+  - run_job() resolves the model as cron.model (fleet default) > global default; any per-job
+    ``model``/``provider``/``model_snapshot``/``provider_snapshot`` fields are tolerated on load
+    and have ZERO effect.
+  - create_job() never computes snapshots; the fields persist as None for record-shape stability.
+  - resnapshot_job()/resnapshot_all_unpinned() (still called by the cronjob tool's resnap action)
+    clear leftover pin fields from older stores.
 
 These tests exercise the full run_job path (real imports, mocked AIAgent +
-resolve_runtime_provider against a temp HERMES_HOME) and the create_job snapshot capture.
+resolve_runtime_provider against a temp HERMES_HOME).
 """
 
 import sys
@@ -35,6 +34,7 @@ def _base_job(**overrides):
         "model": None,
         "provider": None,
         "provider_snapshot": None,
+        "model_snapshot": None,
         "base_url": None,
     }
     job.update(overrides)
@@ -91,34 +91,24 @@ def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cr
     return success, error, agent_kwargs, (resolve_kwargs or None)
 
 
-class TestSnapshotIsTheEffectivePin:
-    def test_unpinned_job_runs_on_snapshot_after_global_default_moved(self, tmp_path):
-        """Global default moved old-provider/old-model -> new-provider/new-model; the unpinned job
-        still runs, on what it was created under. Neither a skip nor a silent inherit."""
-        job = _base_job(provider_snapshot="old-provider", model_snapshot="old-model")
+class TestPerJobPinsAreIgnored:
+    def test_stale_pin_and_snapshot_run_on_global_default(self, tmp_path):
+        """A job naming a provider that no longer exists must still run: the stale model/provider
+        pins and creation snapshots are ignored and the fleet (global) default is used."""
+        job = _base_job(
+            model="gpt-5.6-sol", provider="openai-codex",
+            model_snapshot="old-model", provider_snapshot="old-provider")
         success, error, agent_kwargs, resolve_kwargs = _run(
             job, tmp_path, current_provider="new-provider", current_model="new-model")
 
         assert success is True, error
-        assert agent_kwargs["model"] == "old-model"
-        assert resolve_kwargs["requested"] == "old-provider"
-        assert resolve_kwargs["target_model"] == "old-model"
+        assert agent_kwargs["model"] == "new-model"
+        assert resolve_kwargs["requested"] is None
+        assert resolve_kwargs["target_model"] == "new-model"
 
-    def test_explicit_job_pin_beats_snapshot(self, tmp_path):
-        job = _base_job(
-            provider="pinned-provider", model="pinned-model",
-            provider_snapshot="old-provider", model_snapshot="old-model")
-        success, error, agent_kwargs, resolve_kwargs = _run(
-            job, tmp_path, current_provider="new-provider", current_model="new-model",
-            cron_model="fleet-model")
-
-        assert success is True, error
-        assert agent_kwargs["model"] == "pinned-model"
-        assert resolve_kwargs["requested"] == "pinned-provider"
-
-    def test_cron_fleet_default_beats_snapshot(self, tmp_path):
-        """cron.model / cron.model_provider deliberately route the whole unpinned fleet."""
-        job = _base_job(provider_snapshot="old-provider", model_snapshot="old-model")
+    def test_cron_fleet_default_beats_job_pin(self, tmp_path):
+        """cron.model / cron.model_provider route the whole fleet, pins included."""
+        job = _base_job(model="stale-model", provider="stale-provider")
         success, error, agent_kwargs, resolve_kwargs = _run(
             job, tmp_path, current_provider="new-provider", current_model="new-model",
             cron_model="fleet-model", cron_model_provider="fleet-provider")
@@ -126,11 +116,10 @@ class TestSnapshotIsTheEffectivePin:
         assert success is True, error
         assert agent_kwargs["model"] == "fleet-model"
         assert resolve_kwargs["requested"] == "fleet-provider"
+        assert resolve_kwargs["target_model"] == "fleet-model"
 
-    def test_job_without_snapshot_follows_global_default(self, tmp_path):
-        """Legacy record (keys absent) keeps tracking the live global default."""
+    def test_job_without_pins_follows_global_default(self, tmp_path):
         job = _base_job()
-        job.pop("provider_snapshot", None)
         success, error, agent_kwargs, resolve_kwargs = _run(
             job, tmp_path, current_provider="new-provider", current_model="new-model")
 
@@ -138,20 +127,20 @@ class TestSnapshotIsTheEffectivePin:
         assert agent_kwargs["model"] == "new-model"
         assert resolve_kwargs["requested"] is None
 
-    def test_missing_model_guides_to_user_owned_cli(self, tmp_path, monkeypatch):
-        """A missing-model failure cannot advertise agent-owned pinning."""
+    def test_missing_model_guides_to_fleet_default(self, tmp_path, monkeypatch):
+        """A missing-model failure must point at the fleet default, not per-job pinning."""
         monkeypatch.delenv("HERMES_MODEL", raising=False)
         success, error, agent_kwargs, _ = _run(
             _base_job(), tmp_path, current_provider="openrouter", current_model=None)
 
         assert success is False
         assert agent_kwargs is None
-        assert "hermes cron edit pin-test --model <name>" in error
-        assert "cronjob action=update" not in error
+        assert "cron.model" in error
+        assert "hermes cron edit" not in error
 
 
-class TestCreateJobSnapshot:
-    """create_job captures provider_snapshot for unpinned agent jobs only."""
+class TestCreateJobNoSnapshot:
+    """create_job stores the (inert) model/provider fields verbatim and never resolves a snapshot."""
 
     @staticmethod
     def _isolate_storage(monkeypatch):
@@ -168,65 +157,33 @@ class TestCreateJobSnapshot:
         monkeypatch.setattr(jobs, "save_jobs", lambda j: None, raising=True)
         return jobs
 
-    def test_unpinned_job_captures_snapshot(self, monkeypatch):
-        jobs = self._isolate_storage(monkeypatch)
-
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value={"provider": "openrouter"},
-        ):
-            job = jobs.create_job(prompt="do a thing", schedule="every 1 hour")
-
-        assert job["provider"] is None
-        assert job["provider_snapshot"] == "openrouter"
-
-    def test_pinned_job_skips_snapshot(self, monkeypatch):
+    def test_create_stores_none_snapshots_without_resolving(self, monkeypatch):
         jobs = self._isolate_storage(monkeypatch)
 
         resolver = MagicMock(return_value={"provider": "openrouter"})
         with patch("hermes_cli.runtime_provider.resolve_runtime_provider", resolver):
-            job = jobs.create_job(
-                prompt="do a thing", schedule="every 1 hour", provider="nous"
-            )
-
-        # Explicit provider → pinned → no snapshot needed, and resolution skipped.
-        assert job["provider"] == "nous"
-        assert job["provider_snapshot"] is None
-        resolver.assert_not_called()
-
-    def test_snapshot_resolution_error_fails_open_to_none(self, monkeypatch):
-        """If resolution raises at creation, snapshot is None — creation never breaks."""
-        jobs = self._isolate_storage(monkeypatch)
-
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            side_effect=RuntimeError("no creds"),
-        ):
             job = jobs.create_job(prompt="do a thing", schedule="every 1 hour")
 
         assert job["provider_snapshot"] is None
+        assert job["model_snapshot"] is None
+        resolver.assert_not_called()
 
+    def test_create_tolerates_passed_pins_inertly(self, monkeypatch):
+        """The CLI/tool still accept --model/--provider; they are stored but have no effect."""
+        jobs = self._isolate_storage(monkeypatch)
 
-class TestRuntimeResolutionTargetModel:
-    """run_job must resolve the primary provider against the model the job will actually run
-    (per-job pin > cron.model > snapshot > config default), so providers with model-specific
-    api_mode routing pick the mode for that model instead of the stale persisted default."""
+        job = jobs.create_job(
+            prompt="do a thing", schedule="every 1 hour", model="m", provider="p")
 
-    def test_primary_resolution_passes_effective_model(self, tmp_path):
-        job = _base_job(model="my-pinned-model", provider="openrouter")
-        success, error, _agent_kwargs, resolve_kwargs = _run(
-            job, tmp_path, current_provider="openrouter", current_model="other-model")
-
-        assert success is True, error
-        assert resolve_kwargs["target_model"] == "my-pinned-model"
-        assert resolve_kwargs["requested"] == "openrouter"
+        assert job["model"] == "m"
+        assert job["provider"] == "p"
+        assert job["model_snapshot"] is None
+        assert job["provider_snapshot"] is None
 
 
 class TestResnapshot:
-    """resnapshot_job / resnapshot_all_unpinned — 'adopt the current global
-    default without pinning' (#44585 companion). These refresh an unpinned
-    job's snapshot(s) to the CURRENT global resolution while leaving the job
-    unpinned, so it keeps tracking future global changes."""
+    """resnapshot_job / resnapshot_all_unpinned clear leftover pin fields (still called by the
+    cronjob tool's resnap action)."""
 
     @staticmethod
     def _install_store(monkeypatch, initial_jobs):
@@ -265,89 +222,43 @@ class TestResnapshot:
         job.update(overrides)
         return job
 
-    def test_resnapshot_unpinned_refreshes_to_current(self, monkeypatch, tmp_path):
-        jobs_mod, store = self._install_store(
-            monkeypatch, [self._make_job("j1", model_snapshot="old-model")]
-        )
-        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
-        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value={"provider": "openrouter"},
-        ):
-            updated = jobs_mod.resnapshot_job("j1")
-
-        assert updated is not None
-        assert updated["model"] is None, "job must stay unpinned"
-        assert updated["model_snapshot"] == "new-model"
-        assert updated["provider_snapshot"] == "openrouter"
-        # Persisted too.
-        assert store[0]["model_snapshot"] == "new-model"
-        assert store[0]["provider_snapshot"] == "openrouter"
-
-    def test_resnapshot_pinned_job_keeps_none_snapshot(self, monkeypatch, tmp_path):
-        # A fully-pinned job already carries None snapshots; resnapping must not
-        # clobber them into a global default.
+    def test_resnapshot_clears_pin_fields(self, monkeypatch):
         jobs_mod, store = self._install_store(
             monkeypatch,
-            [
-                self._make_job(
-                    "j1",
-                    model="my-pinned-model",
-                    provider="openrouter",
-                    model_snapshot=None,
-                    provider_snapshot=None,
-                )
-            ],
+            [self._make_job("j1", model="stale-model", provider="stale-provider")],
         )
-        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
-        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value={"provider": "openrouter"},
-        ):
-            updated = jobs_mod.resnapshot_job("j1")
 
-        # Pinned axes stay pinned: model unchanged, snapshots still None.
-        assert updated["model"] == "my-pinned-model"
+        updated = jobs_mod.resnapshot_job("j1")
+
+        assert updated is not None
+        assert updated["model"] is None
+        assert updated["provider"] is None
         assert updated["model_snapshot"] is None
         assert updated["provider_snapshot"] is None
+        # Persisted too.
+        assert store[0]["model"] is None
+        assert store[0]["provider_snapshot"] is None
 
-    def test_resnapshot_missing_job_returns_none(self, monkeypatch, tmp_path):
+    def test_resnapshot_missing_job_returns_none(self, monkeypatch):
         jobs_mod, _store = self._install_store(monkeypatch, [])
         assert jobs_mod.resnapshot_job("nope") is None
 
-    def test_resnapshot_all_skips_no_agent_and_fully_pinned(self, monkeypatch, tmp_path):
+    def test_resnapshot_all_clears_every_job(self, monkeypatch):
         jobs_mod, store = self._install_store(
             monkeypatch,
             [
-                # unpinned, model-only → should be refreshed (provider axis too)
-                self._make_job("j1", model_snapshot="old", provider_snapshot="old"),
-                # no_agent → skipped entirely
-                self._make_job("j2", no_agent=True, model_snapshot="old", provider_snapshot="old"),
-                # fully pinned → skipped (nothing unpinned)
-                self._make_job(
-                    "j3",
-                    model="pm", provider="pp",
-                    model_snapshot=None, provider_snapshot=None,
-                ),
+                self._make_job("j1", model="m1", provider="p1"),
+                self._make_job("j2", no_agent=True, model_snapshot="old"),
+                self._make_job("j3", model=None, provider=None, model_snapshot=None,
+                               provider_snapshot=None),
             ],
         )
-        (tmp_path / "config.yaml").write_text("model:\n  default: new-model\n")
-        monkeypatch.setattr("cron.jobs.get_hermes_home", lambda: tmp_path, raising=True)
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value={"provider": "openrouter"},
-        ):
-            updated = jobs_mod.resnapshot_all_unpinned()
 
-        ids = [j["id"] for j in updated]
-        assert ids == ["j1"], "only the unpinned agent job is refreshed"
-        by_id = {j["id"]: j for j in store}
-        assert by_id["j1"]["model_snapshot"] == "new-model"
-        assert by_id["j1"]["provider_snapshot"] == "openrouter"
-        # no_agent job keeps its (irrelevant) old snapshot untouched.
-        assert by_id["j2"]["model_snapshot"] == "old"
-        # pinned job keeps None.
-        assert by_id["j3"]["model_snapshot"] is None
+        updated = jobs_mod.resnapshot_all_unpinned()
 
+        assert [j["id"] for j in updated] == ["j1", "j2"]
+        for stored in store:
+            assert stored["model"] is None
+            assert stored["provider"] is None
+            assert stored["model_snapshot"] is None
+            assert stored["provider_snapshot"] is None

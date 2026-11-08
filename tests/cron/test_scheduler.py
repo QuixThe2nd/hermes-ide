@@ -1183,6 +1183,8 @@ class TestRunJobConfigEnvVarExpansion:
             "    model: claude-opus-5\n",
             encoding="utf-8",
         )
+        # Stale per-job pins (provider names a dead provider) must be ignored: the primary
+        # resolve comes from persisted config, not the job record.
         job = {
             "id": "dns-fallback",
             "name": "dns fallback",
@@ -1195,7 +1197,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         def resolve_runtime(**kwargs):
             requested.append(kwargs.get("requested"))
-            if kwargs.get("requested") in (None, "xai-oauth"):
+            if kwargs.get("requested") is None:
                 raise httpx.ConnectError(
                     "[Errno 8] nodename nor servname provided, or not known"
                 )
@@ -1220,7 +1222,8 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True, error
         assert error is None
-        assert requested == ["xai-oauth", "xai"]
+        # Primary resolve is config-default (requested=None), never the job's stale pin.
+        assert requested == [None, "xai"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "xai"
         assert kwargs["model"] == "grok-4.5"
@@ -1240,6 +1243,8 @@ class TestRunJobConfigEnvVarExpansion:
             "    model: z-ai/glm-5.2\n",
             encoding="utf-8",
         )
+        # Legacy snapshot fields are tolerated and ignored; the primary resolve is the
+        # config-default provider, which fails auth and walks the fallback chain.
         job = {
             "id": "auth-fallback",
             "name": "auth fallback",
@@ -1252,8 +1257,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         def resolve_runtime(**kwargs):
             requested.append(kwargs.get("requested"))
-            if kwargs.get("requested") == "openai-codex":
-                # The unpinned job's provider_snapshot is its effective pin.
+            if kwargs.get("requested") is None:
                 raise AuthError("No Codex credentials stored")
             assert kwargs["requested"] == "openrouter"
             assert kwargs["target_model"] == "z-ai/glm-5.2"
@@ -1275,7 +1279,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True
         assert error is None
-        assert requested == ["openai-codex", "openrouter"]
+        assert requested == [None, "openrouter"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
         assert kwargs["model"] == "z-ai/glm-5.2"
@@ -1409,8 +1413,9 @@ class TestRunJobModelResolution:
         assert error is None
         assert mock_agent_cls.call_args.kwargs["model"] == "alias-key-model"
 
-    def test_corrupt_config_yaml_does_not_crash_with_job_model(self, tmp_path, monkeypatch):
-        """A malformed config.yaml degrades gracefully when the job has a model."""
+    def test_corrupt_config_yaml_degrades_gracefully_ignoring_job_model(self, tmp_path, monkeypatch):
+        """A malformed config.yaml fails with fleet-default guidance; a stale job pin does NOT
+        rescue the run (pins are inert — the model always comes from config)."""
         (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
@@ -1430,10 +1435,11 @@ class TestRunJobModelResolution:
             mock_agent_cls.return_value = mock_agent
             success, _, _, error = run_job(job)
 
-        # Explicit job model survives the corrupt-config fall-through.
-        assert success is True
-        assert error is None
-        assert mock_agent_cls.call_args.kwargs["model"] == "explicit-model"
+        # No rescue from the job's stale pin: the run fails cleanly, pointing at the fleet default.
+        assert success is False
+        assert mock_agent_cls.call_args is None
+        assert "cron.model" in error
+        assert "explicit-model" not in error
 
 
 class TestRunJobSkillBacked:
