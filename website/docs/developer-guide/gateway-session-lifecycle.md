@@ -375,32 +375,270 @@ session that was mid-turn when the drain timeout fired. Reasons:
 - `"restart_timeout"` — killed during restart drain
 - `"shutdown_timeout"` — killed during shutdown drain
 - `"restart_interrupted"` — crash recovery (from `suspend_recently_active`)
-- `"cooperative_restart"` — live chat sessions that parked themselves after
-  `/restart` asked them to wind down; startup auto-continues the parked work
+- `"restart_requester"` — the idle `/restart` requester's synthesized comeback
+  turn after the ♻️ gateway-restarted notice delivers
 
 All four reasons are in `_AUTO_RESUME_REASONS` and eligible for startup auto-resume.
 
-### Cooperative restart wind-down
+### Auto-Resume on Next Access
 
-The wind-down offer is **opt-in** via `gateway.restart_wind_down_offer: true`
-in `config.yaml` (default off since the multi-instance overlap restart keeps
-sessions alive across restarts — the always-on ⏸️ park embed became restart
-chatter). With the flag off, `/restart` replies with a terse
-"♻ Restarting gateway..." and simply waits for live sessions to finish on
-their own during the drain.
+When `get_or_create_session()` encounters `resume_pending=True`:
 
-With the flag on, in-band `/restart` (and SIGUSR1) still refuses new turns,
-but it also snapshots every *other* live chat at the moment the park steer is
-sent, then steers those agents once: park at a safe pause, do not start new
-long work, end the turn. The snapshot is written even when the list is empty.
-Those steered sessions are marked `resume_pending` with `cooperative_restart`.
-Startup auto-continues only chats from that snapshot. Leftover
-`resume_pending` flags on chats that were idle at steer time stay idle. A
-missing snapshot file means the previous process never started a cooperative
-restart (crash / drain timeout), so the usual resume_pending scan still
-applies. Cron and API-server work are not steered; the existing drain wait
-still covers them.
+1. It returns the existing entry **without** creating a new `session_id`.
+2. The existing transcript is loaded intact.
+3. The marking is not cleared here — it survives until the next successful turn
+   completes (`clear_resume_pending()` is called from the gateway after
+   `run_conversation()` returns a real response).
+4. If the resumed turn is interrupted again, the `resume_pending` flag remains set,
+   and the next restart will retry. The stuck-loop counter handles terminal escalation
+   (3 retries → suspended).
 
+### Clean Shutdown Marker (`.clean_shutdown`)
+
+Written at the end of a graceful shutdown. On next startup:
+
+- If present: skip `suspend_recently_active()` entirely. Active agents were already
+  drained, so no sessions are stuck.
+- Then delete the marker.
+
+This prevents unwanted auto-resets after `hermes update`, `hermes gateway restart`,
+or `/restart`.
+
+---
+
+## 8. Message Queuing Flow
+
+The message queuing system handles two scenarios:
+
+1. **Interrupt follow-ups** — When a user sends multiple messages while the agent is
+   processing, subsequent messages are queued as single-slot pending messages.
+2. **`/queue` FIFO** — Explicit `/queue` commands that must each produce their own full
+   agent turn, in order, without merging.
+
+### Data Structures
+
+```
+adapter._pending_messages: Dict[session_key, MessageEvent]
+    └── Single "next-up" slot per session. Overwritten on repeat sends
+        (burst collapse). Shared with photo-burst follow-ups.
+
+self._queued_events: Dict[session_key, List[MessageEvent]]
+    └── Overflow buffer. Each /queue invocation appends here when the
+        slot is occupied. Promoted one-at-a-time after each drain.
+```
+
+### Enqueue (`_enqueue_fifo`)
+
+```
+_enqueue_fifo(session_key, event, adapter)
+       │
+       ▼
+┌───────────────────────────────────────┐
+│ Is slot free?                         │
+│ (session_key NOT in _pending_messages)│── Yes ──► Place event in slot
+└───────────────────────────────────────┘
+       │ No
+       ▼
+Append to _queued_events[session_key] (overflow tail)
+```
+
+### Dequeue / Promotion (`_promote_queued_event`)
+
+Called at the drain site after the slot was consumed. If there's an overflow item:
+
+- When `pending_event is None` (slot was empty), return overflow head as the new event.
+- When `pending_event` exists, stage overflow head in the slot for the next recursion.
+- If no adapter available, push back to `_queued_events` (don't silently drop).
+
+### Queue Depth
+
+`_queue_depth(session_key, adapter)` returns `len(overflow) + (1 if slot occupied else 0)`.
+
+### Clearing
+
+Queued events for a session are cleared on `/new` and `/reset` (via `_handle_reset_command`).
+`/stop` drops the single-slot follow-up the user sent during the interrupted turn. An
+**internal** wake parked in either store (an async-delegation completion notice or a cron
+`notify+wake`) survives all three commands: `_interrupt_and_clear_session` leaves it in the slot
+(promoting it out of the overflow when a discarded human follow-up held the slot) so the
+post-command drain starts it right away instead of the session idling until the next user
+message. Whether a wake pinned to a session that `/new` just closed may still run is decided at
+processing time (`_resolve_async_delegation_session`, fail-closed).
+
+Both commands also end the session's **background delegations** (`tools.async_delegation.
+interrupt_for_session`, selected by routing key and by the spawner's durable session id):
+`_interrupt_and_clear_session` fans the stop out for the busy path, and `_handle_stop_command`
+does the same for an idle session whose dispatching turn already ended (replying "Stopped" rather
+than "No active task to stop"). The turn's own hard interrupt never reaches those units — they are
+detached from `_active_children` at dispatch — so without the fan-out they run to completion and wake
+the chat minutes later. Each stopped unit still finalizes normally and re-enters as its completion
+notice with `status="interrupted"` and the child's partial output. `/new` and `/reset` already did this
+in `_handle_reset_command`; the shared helper's earlier call is idempotent there (a hard interrupt
+requested twice is one stop).
+
+### FIFO Invariant
+
+Each `/queue` invocation produces exactly one full agent turn, in FIFO order, with no
+merging. The single-slot `_pending_messages` + overflow `_queued_events` design ensures
+that repeated sends during an active turn don't cause out-of-order processing.
+
+---
+
+## 9. Session Context Injection
+
+`SessionContext` is built from a `SessionSource` and `GatewayConfig` and injected into the
+agent's system prompt. It tells the agent:
+
+- Where the current message came from
+- What platforms are connected
+- Where it can deliver scheduled task outputs
+- Whether this is a shared multi-user session
+
+### Construction (`build_session_context`)
+
+```python
+def build_session_context(source, config, session_entry=None) -> SessionContext
+```
+
+1. Collects connected platforms from config.
+2. Collects notification channels for each platform.
+3. Determines `shared_multi_user_session` via `is_shared_multi_user_session()`.
+4. Attaches session metadata (key, id, timestamps) if `session_entry` is provided.
+
+### PII Redaction (`build_session_context_prompt`)
+
+The dynamic system prompt section (`## Current Session Context`) can optionally redact
+personally identifiable information before sending to the LLM:
+
+- User IDs → `user_<12hex>` (SHA-256 prefix)
+- Chat IDs → `<platform>:<12hex>` or just `<12hex>`
+- Platforms excluded from redaction: Discord (needs raw IDs for `@mentions`),
+  and any plugin-registered platform not marked `pii_safe`.
+
+Redaction applies only to the system prompt text. Routing, session keys, and adapter
+operations always use the original values.
+
+---
+
+## 10. Background Housekeeping
+
+The `_session_housekeeping_watcher` periodically sweeps idle cached agents, sheds
+cache entries under memory pressure, and prunes old routing entries hourly.
+It never ends a transcript because of inactivity or the time of day.
+
+TTL, LRU and pressure eviction commit the live transcript to memory providers before
+soft-releasing clients. Active turns remain protected; terminal, browser and background
+process resources survive soft release. Routing-entry pruning preserves the canonical
+SQLite transcript, and live processes protect their routing entries from pruning.
+Historical `expiry_finalized` flags remain recovery fences but are no longer written
+by a timer watcher.
+
+---
+
+## 11. Agent Cache
+
+The gateway maintains an LRU cache of `AIAgent` instances keyed by `session_key` to
+preserve prompt caching across turns.
+
+### Cache Properties
+
+- **Max size:** 128 entries (`agent.agent_cache.max_size`, default `_AGENT_CACHE_MAX_SIZE`).
+- **Eviction policy:** Least-recently-used (LRU via `OrderedDict`).
+- **Idle TTL:** 3600s (1h) — `agent.agent_cache.idle_ttl_secs`, enforced by
+  `_session_housekeeping_watcher`.
+- **Memory budget:** `agent.agent_cache.memory_high_mb` (default `auto`) — see below.
+- **Lock:** `_agent_cache_lock` (threading) for thread safety.
+
+### Memory-Pressure Eviction
+
+A cached agent pins `_session_messages`, the full live transcript including tool
+outputs — tens of MB on a session with 100+ tool calls. The entry cap and the idle
+TTL are both blind to that: a gateway serving many chats keeps every warm transcript
+resident (agents that took a turn within the TTL are never idle-swept), so RSS climbs until
+the cgroup throttles and SIGTERM can no longer flush inside systemd's stop timeout
+(#80764).
+
+`_sweep_agent_cache_under_pressure()` is the valve. Each watcher tick it compares anonymous
+memory against `memory_high_mb` — the cgroup's own `memory.stat` `anon` when the gateway runs
+under a cgroup limit (the scope the budget is charged against, so same-unit children such as
+`execute_code` kernels count; #110549), otherwise the process's own anonymous RSS; over budget, it evicts LRU agents
+through the same soft path the cap enforcer uses (`_commit_then_release_soft`), then
+runs `malloc_trim` so the freed arenas actually return to the OS. Evicted sessions
+rebuild their transcript from the persisted session on the next turn.
+
+Three classes of session are never shed:
+
+- agents currently mid-turn (their clients and sandboxes are in use);
+- the `protect_recent` most-recently-used sessions (their prompt cache is worth the
+  most);
+- any session whose live transcript has not finished reaching disk —
+  `transcript_persistence_caught_up()` compares `_last_flushed_db_idx` against
+  `len(_session_messages)`, the same divergence the FTS write-corruption guard reacts
+  to when it preserves live history over a lagging transcript.
+
+`memory_high_mb: auto` derives the budget from the cgroup limit the gateway runs under
+(`memory.high`, then `memory.max`, then cgroup v1), falling back to total RAM when
+uncapped. Set a number to pin it, or `0`/`off` to disable the pass entirely. Helpers
+live in `gateway/agent_cache_pressure.py`.
+
+### Cache Lifecycle
+
+```
+Message arrives
+    │
+    ▼
+get_or_create_session()  →  session_key obtained
+    │
+    ▼
+Lookup _agent_cache[session_key]
+    │
+    ├── Hit → move_to_end(), reuse AIAgent (preserves prompt cache)
+    │
+    └── Miss → create new AIAgent, store in cache
+                (if at capacity, popitem(last=False) evicts LRU entry)
+    │
+    ▼
+run_conversation()  →  agent processes message
+    │
+    ▼
+Housekeeping soft-releases idle agents without ending transcripts
+```
+
+### Cleanup Flow
+
+Resource eviction removes the cached agent and commits memory before soft-releasing
+clients. Full `_cleanup_agent_resources(agent)` teardown is reserved for actual
+conversation boundaries and shutdown.
+
+---
+
+## Appendix: Key Configuration
+
+| Config Key | Type | Default | Description |
+|---|---|---|---|
+| `group_sessions_per_user` | `bool` | `true` | Isolate group/channel sessions per user |
+| `thread_sessions_per_user` | `bool` | `false` | Isolate thread sessions per user |
+| `session_store_max_age_days` | `int` | `0` | Prune sessions older than N days (0=disabled) |
+| `agent.gateway_auto_continue_freshness` | `int` | `3600` | Seconds for resume freshness window |
+| `agent.gateway_timeout` | `int` | `1800` | Agent turn timeout (30 min default) |
+| `agent.agent_cache.max_size` | `int` | `128` | LRU entry cap on cached AIAgents |
+| `agent.agent_cache.idle_ttl_secs` | `int` | `3600` | Evict agents idle this long |
+| `agent.agent_cache.memory_high_mb` | `int`/`str` | `auto` | Anon-RSS budget above which LRU transcripts are shed |
+| `agent.agent_cache.max_evictions_per_pass` | `int` | `16` | Cap on sessions shed per pressure pass |
+| `agent.agent_cache.protect_recent` | `int` | `8` | MRU sessions the pressure pass never touches |
+
+## State database and FTS recovery
+
+The canonical transcript lives in the `sessions` and `messages` tables. FTS5
+tables and their sync triggers are derived indexes that can be detached and
+rebuilt without deleting canonical messages. See
+[State DB recovery](state-db-recovery.md) for the bounded live failure
+mode and the explicit repair procedure.
+
+### Conversation lifetime
+
+No idle or daily reset settings are supported. Explicit `/new` and `/reset`,
+compaction, suspension and crash recovery retain their separate lifecycle roles.
 ### Auto-Resume on Next Access
 
 When `get_or_create_session()` encounters `resume_pending=True`:

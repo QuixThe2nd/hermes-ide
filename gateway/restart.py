@@ -423,7 +423,7 @@ async def queue_user_restart(
     requester setup can never drift apart: warn about uncommitted runtime
     source (the warning-only preflight below), persist the comeback routing
     (the in-memory command source plus the ``.restart_notify.json`` marker the
-    next gateway process consumes), offer the opt-in wind-down prompt, then
+    next gateway process consumes), then
     hand off to ``request_restart``, which opens the shared drain. Must run on
     the gateway event loop — ``request_restart`` schedules its drain task
     there.
@@ -505,24 +505,6 @@ async def queue_user_restart(
 
         active_agents = runner._running_agent_count()
 
-        # Opt-in cooperative wind-down: for a native-Discord requester with at
-        # least one other live chat, offer the ⏸️ pause embed *before*
-        # request_restart() opens the drain, so the offer is bound to this
-        # restart cycle (request_restart re-enters the already-open cycle and
-        # mints no second generation). The embed is the only thing that can
-        # trigger a park steer — without it the restart simply waits for the
-        # live sessions to finish on their own. Off by default
-        # (``gateway.restart_wind_down_offer``): the overlap restart keeps
-        # sessions alive across restarts, so the offer is debugging surface,
-        # not default UX. Runners without the capability (older cores, foreign
-        # objects) skip it, and any failure here just leaves the restart on
-        # the natural-wait drain.
-        send_offer = getattr(runner, "_send_restart_wind_down_prompt", None)
-        if callable(send_offer) and restart_wind_down_offer_enabled():
-            try:
-                await send_offer(source)
-            except Exception as exc:
-                logger.debug("Restart wind-down offer skipped: %s", exc)
 
         via_service = user_restart_via_service()
         started = runner.request_restart(detached=not via_service, via_service=via_service)
@@ -536,22 +518,6 @@ async def queue_user_restart(
         # Setup resolved (started, failed, or cancelled): drop the provisional
         # preflight state so a later attempt retries it, and wake any rider.
         restart_preflight.release_restart_preflight(preflight_attempt)
-
-
-def restart_wind_down_offer_enabled() -> bool:
-    """``gateway.restart_wind_down_offer`` — opt-in (default off).
-
-    The always-on ⏸️ park offer became obsolete chatter once the overlap
-    restart kept sessions alive across restarts; the flag exists so the
-    wind-down path can still be exercised and debugged deliberately.
-    """
-    try:
-        from hermes_cli.config import load_config
-
-        gateway_cfg = (load_config() or {}).get("gateway") or {}
-    except Exception:
-        return False
-    return bool(gateway_cfg.get("restart_wind_down_offer", False))
 
 
 def restart_committed(runner: Any) -> bool:

@@ -4354,34 +4354,14 @@ class GatewayTurnMixin:
             # the restart-interruption system note.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
                 await self._clear_restart_failure_count(session_key)
-                _resume_entry = None
                 try:
-                    if getattr(self, "session_store", None) is not None:
-                        _resume_entry = self.session_store._entries.get(session_key)
-                except Exception:
-                    _resume_entry = None
-                from gateway.restart_wind_down import (
-                    should_preserve_cooperative_restart_marker,
-                )
-
-                if should_preserve_cooperative_restart_marker(
-                    draining=bool(getattr(self, "_draining", False)),
-                    resume_reason=getattr(_resume_entry, "resume_reason", None),
-                ):
-                    logger.info(
-                        "Preserving cooperative-restart resume_pending for %s "
-                        "so startup can continue the parked turn",
-                        session_key,
+                    await self.async_session_store.clear_resume_pending(session_key)
+                    await self._clear_resume_inbound_metadata(session_key)
+                except Exception as _e:
+                    logger.debug(
+                        "clear_resume_pending failed for %s: %s",
+                        session_key, _e,
                     )
-                else:
-                    try:
-                        await self.async_session_store.clear_resume_pending(session_key)
-                        await self._clear_resume_inbound_metadata(session_key)
-                    except Exception as _e:
-                        logger.debug(
-                            "clear_resume_pending failed for %s: %s",
-                            session_key, _e,
-                        )
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
