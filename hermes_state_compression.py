@@ -158,4 +158,3 @@ class SessionCompressionMixin:
 
     def _write_session_column(self, column: str, session_id: str, value: Any) -> None:
         self._write_sql(f"UPDATE sessions SET {column} = ? WHERE id = ?", (value, session_id))
-

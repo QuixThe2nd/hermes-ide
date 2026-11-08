@@ -44,4 +44,3 @@ class SessionTitlesMixin:
         if len(cleaned) > SessionDB.MAX_TITLE_LENGTH:
             raise ValueError(f"Title too long ({len(cleaned)} chars, max {SessionDB.MAX_TITLE_LENGTH})")
         return cleaned
-

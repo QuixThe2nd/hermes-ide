@@ -139,4 +139,3 @@ class SessionMaintenanceMixin:
             self._conn.execute(f"PRAGMA wal_checkpoint({mode})")
         except Exception as exc:
             logger.debug(fail_msg, exc)
-

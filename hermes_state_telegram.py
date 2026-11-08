@@ -122,4 +122,3 @@ class SessionTelegramTopicsMixin:
 
     def _topic_read_all(self, sql: str, params):
         return self._topic_read(lambda: self._read_all(sql, params), [])
-

@@ -119,4 +119,3 @@ class SessionUsageMixin:
             chain,
         )
         return {row["task"]: {k: row[k] for k in row.keys() if k != "task"} for row in rows}
-

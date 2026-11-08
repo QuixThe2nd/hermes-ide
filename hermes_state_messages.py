@@ -579,4 +579,3 @@ class SessionMessagesMixin:
             "AND CASE WHEN json_valid(display_metadata) "
             "THEN json_extract(display_metadata, '$.gateway_input_owner') END = ? LIMIT 1",
             (session_id, owner)) is not None
-

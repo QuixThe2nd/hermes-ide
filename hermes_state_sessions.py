@@ -495,4 +495,3 @@ class SessionSessionsMixin:
         "message_count = 0 AND ended_at IS NOT NULL AND archived = 0 AND NOT EXISTS ("
         "SELECT 1 FROM messages WHERE messages.session_id = sessions.id)"
     )
-
