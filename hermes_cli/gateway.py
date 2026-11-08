@@ -263,16 +263,28 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
-def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress=None) -> bool | None:
+def _graceful_restart_via_sigusr1(
+    pid: int, drain_timeout: float, *, on_progress=None,
+    from_update: bool = False, hermes_home=None,
+) -> bool | None:
     """SIGUSR1 a gateway PID and wait for exit; False means still alive, None means unsent.
 
     gateway/run.py maps SIGUSR1 to ``request_restart(via_service=True)``: refuse new turns, drain,
     ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + drain
     — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
     a long wait can report what the gateway is still holding for (``update_cmd_drain_report``).
+
+    ``from_update`` marks the restart as code-update-driven (the updater's SIGUSR1
+    before a service restart): an update-restart marker is written first so the
+    gateway drains with update semantics — defer indefinitely on active work,
+    but never be held forever by units idle past the inactivity timeout.
     """
     if not hasattr(signal, "SIGUSR1") or pid <= 0:
         return None
+    if from_update:
+        from gateway.status import write_update_restart_marker
+        if not write_update_restart_marker(pid, target_home=hermes_home):
+            print("  ⚠ Could not mark this restart as update-driven; using ordinary drain semantics")
     try:
         os.kill(pid, signal.SIGUSR1)  # windows-footgun: ok — POSIX signal, guarded by hasattr(signal, 'SIGUSR1') above
     except ProcessLookupError:

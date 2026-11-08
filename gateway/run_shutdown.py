@@ -2110,7 +2110,7 @@ class GatewayShutdownMixin:
         into ``stop()`` (the boundary guard in ``request_restart`` enforces
         the same invariant defensively).
         """
-        active = self._probed_active_work_count()
+        active = self._restart_wait_blocking_count()
         if active is not None and active <= 0:
             return True
 
@@ -2135,7 +2135,7 @@ class GatewayShutdownMixin:
         loop = asyncio.get_running_loop()
         last_status_at = 0.0
         while True:
-            active = self._probed_active_work_count()
+            active = self._restart_wait_blocking_count()
             if active is not None and active <= 0:
                 break
             now = loop.time()
@@ -2169,9 +2169,25 @@ class GatewayShutdownMixin:
         )
         return True
 
+    def _restart_wait_blocking_count(self) -> Optional[int]:
+        """Active-work count as the restart drain should wait on it.
+
+        ``None`` means the probe failed (busy, retry). A restart-from-update
+        waits indefinitely on genuinely ACTIVE units but does NOT let units
+        idle past the inactivity timeout hold it: an update must eventually
+        complete, so wedged units are discounted there — unlike a
+        user-requested restart, which keeps counting them forever.
+        """
+        active = self._probed_active_work_count()
+        if active is None or active <= 0:
+            return active
+        if getattr(self, "_restart_from_update", False):
+            return max(0, active - self._wedged_agent_count())
+        return active
+
     def request_restart(
         self, *, detached: bool = False, via_service: bool = False, overlap: bool = True,
-        restart_platforms: bool = True,
+        restart_platforms: bool = True, from_update: bool = False,
     ) -> bool:
         from gateway.run import _RESTART_WAIT_RETRY_SLEEP_S
         if self._restart_task_started:
@@ -2189,6 +2205,7 @@ class GatewayShutdownMixin:
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
+        self._restart_from_update = bool(from_update)
         self._restart_platforms = bool(restart_platforms)
         self._restart_task_started = True
         # Refuse new turns immediately while in-flight work finishes.
@@ -2264,6 +2281,11 @@ class GatewayShutdownMixin:
                 # wait; it can never authorize stop().
                 try:
                     active_now = self._authoritative_active_work_count()
+                    # Same update-drain semantics as the wait: a
+                    # restart-from-update discounts units idle past the
+                    # inactivity timeout so it does not stall on wedged work.
+                    if getattr(self, "_restart_from_update", False):
+                        active_now -= self._wedged_agent_count()
                 except Exception:
                     logger.exception(
                         "Restart boundary: the active-work probe failed — "
@@ -2319,6 +2341,7 @@ class GatewayShutdownMixin:
             self._restart_requested = False
             self._restart_detached = False
             self._restart_via_service = False
+            self._restart_from_update = False
             self._restart_platforms = True
             if not cycle_was_open:
                 # This request opened (or was opening) the restart cycle;
