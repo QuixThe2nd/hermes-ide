@@ -304,8 +304,14 @@ class TestBusySessionAck:
         assert "Steered into current run" not in content
 
     @pytest.mark.asyncio
-    async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
-        """If agent is still starting (sentinel), steer mode falls back to queue."""
+    async def test_steer_mode_parks_when_agent_pending(self, monkeypatch):
+        """If agent is still starting (sentinel), a steer-eligible follow-up is
+        PARKED in the steer-on-live slot (steered in the moment the agent goes
+        live), not queued as a second user turn."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
@@ -319,14 +325,14 @@ class TestBusySessionAck:
 
         await runner._handle_active_session_busy_message(event, sk)
 
-        # Event was queued instead of steered (FIFO path, #43066)
-        assert adapter._pending_messages.get(sk) is event
+        # Event was parked for steer-on-live, NOT queued into the FIFO
+        assert runner._parked_steer_map().get(sk) is event
+        assert adapter._pending_messages.get(sk) is None
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Couldn't steer into the current run" in content
-        assert "the run isn't accepting injections right now" in content
-        assert "queued for the next turn" in content
+        assert "pending start" in content
+        assert "injected as soon as the run accepts" in content
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_media_not_steerable(self):

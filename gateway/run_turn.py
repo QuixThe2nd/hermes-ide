@@ -6302,6 +6302,11 @@ class GatewayTurnMixin:
             )
             return
         self._session_state(session_key).turn.agent = agent_holder[0]
+        # A steer-mode follow-up that arrived during the agent-pending window is
+        # parked in the steer-on-live slot — this promotion is the exact moment
+        # the run becomes steerable, so inject it now instead of letting it wait
+        # out the turn as a queued second user turn.
+        await self._consume_parked_steer_on_agent_live(session_key, agent_holder[0])
         if self._draining:
             self._update_runtime_status("draining")
 
@@ -6669,6 +6674,13 @@ class GatewayTurnMixin:
         from gateway.run import (
             _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
         )
+
+        # A steer-on-live event still parked at drain time means the run finished
+        # without the agent ever promoting (fast failure) — recover it into the
+        # FIFO before the dequeue so it rides the normal queued-follow-up chain.
+        if session_key:
+            self._flush_parked_steer(session_key)
+
         pending_event = None
         pending = None
         if result and adapter and session_key:
