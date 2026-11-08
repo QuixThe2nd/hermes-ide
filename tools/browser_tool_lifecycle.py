@@ -561,6 +561,7 @@ def _drop_last_active_binding(task_id: str) -> None:
     bare_task_id = _bt._bare_task_id_for_session_key(task_id)
     if bare_task_id == task_id or _bt._last_active_session_key.get(bare_task_id) == task_id:
         _bt._last_active_session_key.pop(bare_task_id, None)
+        _bt._task_explicit_native.pop(bare_task_id, None)
 
 
 def cleanup_browser(task_id: Optional[str] = None) -> None:
