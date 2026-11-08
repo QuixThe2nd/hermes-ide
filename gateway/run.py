@@ -11593,6 +11593,10 @@ class GatewayRunner(
         # Why a steer-mode message fell back to queue: "agent-not-live",
         # "media-not-steerable", or "steer-failed" (None when no steer was attempted).
         steer_fallback_reason: Optional[str] = None
+        # True when a steer-eligible follow-up that hit the agent-not-live window
+        # was parked in the steer-on-live slot instead of the pending FIFO — it is
+        # steered into the run the moment _run_agent_track_agent promotes the agent.
+        parked_for_steer: bool = False
 
     def _steer_delivered_ack_enabled(self, event: MessageEvent) -> bool:
         """Resolve the busy_steer_delivered_ack_enabled display setting.

@@ -2159,6 +2159,13 @@ class GatewayInboundMixin:
                     return self._busy_drain_admission(
                         event, _quick_key, effective_busy_input_mode
                     )
+                # Steer mode: a steer-eligible follow-up parks in the
+                # steer-on-live slot instead — injected the moment the agent
+                # build finishes, not parked as a second user turn.
+                if await self._maybe_park_steer_on_agent_live(
+                    event, _quick_key, effective_busy_input_mode, running_agent
+                ):
+                    return None
                 # Queue the message so it will be picked up after the
                 # agent starts.
                 adapter = self._adapter_for_source(source)
