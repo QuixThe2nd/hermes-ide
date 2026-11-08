@@ -352,6 +352,22 @@ def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIM
     return query_gateway_control(home, "pause-for-update", timeout=timeout)
 
 
+def request_gateway_restart(home: Path, *, restart_platforms: bool = True,
+                             timeout: float = 15.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to run the ONE restart core in-process.
+
+    This is the ``hermes gateway restart`` CLI's primary transport: the same
+    overlap pipeline ``/restart`` and the agent ``restart`` tool use, triggered
+    out-of-process. ``restart_platforms`` carries the ``--no-platforms``
+    per-call override. Returns the ACK ``{"queued", "status", ...}`` or None
+    when no gateway answers / the gateway predates the verb — the caller then
+    falls back to the SIGUSR1 / service-manager transports.
+    """
+    return query_gateway_control(
+        home, "restart", params={"restart_platforms": bool(restart_platforms)}, timeout=timeout,
+    )
+
+
 def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dict[str, Any]]:
     """Ask the multiplexer serving ``home`` to reconcile ``profiles/`` now (hot-serve a created profile,
     unroute a deleted one). Returns its ``{"served_profiles", "added", "removed", ...}`` answer, or None

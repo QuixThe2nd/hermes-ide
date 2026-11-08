@@ -500,10 +500,10 @@ class GatewaySlashCommandsMixin(
                                     _dedup_payload(), indent=None)
         except Exception as e:
             logger.debug("Failed to write restart dedup marker: %s", e)
-        # The requester-facing queue steps — comeback routing + notify marker, the capability-gated
-        # wind-down offer, then the request_restart drain hand-off (supervisor/container routing
-        # included) — live in ONE gateway-owned helper shared with the agent-callable restart tool,
-        # so the two user-restart entry points cannot drift apart.
+        # The requester-facing queue steps — comeback routing + notify marker, then the
+        # request_restart drain hand-off (supervisor/container routing included) — live in
+        # ONE gateway-owned helper shared with the agent-callable restart tool, so the two
+        # user-restart entry points cannot drift apart.
         status = await queue_user_restart(self, event.source, event.message_id)
         active_agents = status["active_agents"]
         # Track sessions that were active at shutdown for stuck-loop detection (#7536). On each restart, the
