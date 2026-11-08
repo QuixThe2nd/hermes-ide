@@ -248,15 +248,11 @@ DEFAULT_CONFIG = {
         # button tap hit a dead entry. Tradeoff: a higher value holds the gateway's running-agent
         # guard longer for a genuinely abandoned prompt — lower it to free the guard sooner. See #32762.
         "clarify_timeout": 3600,
-        # "Still working" status interval (seconds); 0 = off. Lower = faster feedback, more noise;
-        # 180 catches spinning weak-model runs before users /restart. Measured from the turn's
-        # last user-visible progress, so continuous visible output suppresses heartbeats.
-        "gateway_notify_interval": 180,
         # Session stall watchdog (seconds): RECOVERY notifier for an in-process AIAgent with an
         # adapter-queued follow-up while its activity clock is stale — NOT a general stall detector
         # (ignores startup restore, build sentinels, leases, debounce, other processes; scan cadence
         # per AIAgent). Notify-only: tells the user to try /new. Distinct from gateway_timeout
-        # (kills the turn) and gateway_notify_interval. 0 = disable.
+        # (kills the turn). 0 = disable.
         # See #76354.
         "session_stall_timeout": 300,
         # Transcript-sanitiser heal escalation: after this many pre-send heal passes within a

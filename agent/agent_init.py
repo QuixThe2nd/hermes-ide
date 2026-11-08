@@ -565,8 +565,8 @@ _TURN_STATE: Dict[str, Any] = {
     "_budget_grace_call": False,
     "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
     "_run_budget_wrapup_injected": False,  # one-shot latch for the 80% wrap-up notice
-    # Activity tracking (API call / tool / stream chunk) for the gateway timeout handler and
-    # "still working" notifications. Named provenances are stamped only by compression writers.
+    # Activity tracking (API call / tool / stream chunk) for the gateway timeout handler.
+    # Named provenances are stamped only by compression writers.
     "_last_activity_ts": lambda: time.time(),
     "_last_activity_desc": "initializing",
     "_last_activity_provenance": ActivityProvenance.UNKNOWN,

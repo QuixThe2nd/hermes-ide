@@ -771,12 +771,6 @@ display:
       show_reasoning: true
 ```
 
-#### `display.long_running_notifications`
-
-**Type:** boolean|string — **Default (Discord):** `"phase"` — **Values:** `true`, `false`, `"generic"`, `"phase"`
-
-Discord heartbeats are phase lines by default: the bubble names the current wait and how long that wait has lasted — `⏳ terminal 1m42s` while a tool is in flight, `⏳ grok-4.6 38s` while waiting on the next model response, `⏳ packing 12s` once the last tool has returned and the next call is being packed — with no iteration counter or provider wait diagnostics. Set `display.platforms.discord.long_running_notifications: true` for the old verbose diagnostic line (`⏳ Working — 3 min — iteration 1/256, …`), `"generic"` for the plain catalog phrase, or `false` to turn heartbeats off. The `"generic"` phrase comes from the [status-phrase catalog](/user-guide/messaging#configurable-status-phrases), so you can also customize it via `display.status_phrases`.
-
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:
