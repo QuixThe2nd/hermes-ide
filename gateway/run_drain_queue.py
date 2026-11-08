@@ -7,8 +7,7 @@ or parked in the adapter's in-memory ``_pending_messages`` FIFO (busy
 sessions) — a queue that dies with the process bounce, so the "queued for
 the next turn after it comes back" ack was a promise nothing could keep.
 
-This module copies the cooperative-restart receipt pattern
-(``gateway/restart_wind_down.py``): every drain-time queueing appends the
+Every drain-time queueing appends the
 event to one JSON snapshot in the gateway state dir, and gateway startup
 replays that snapshot — re-injecting each event into the owning adapter's
 pending FIFO and starting the turn — before the resume scheduler runs.
@@ -297,7 +296,7 @@ _EVENT_FIELDS = (
 
 
 def drain_queue_path(home: Optional[Path] = None) -> Path:
-    """Live snapshot path, beside ``cooperative_restart_resume.json``.
+    """Live snapshot path in the gateway state dir.
 
     *home* pins the profile home the queue belongs to — startup replay under
     ``gateway.multiplex_profiles`` reads every served profile's file. The
@@ -919,19 +918,18 @@ def _write_back_retained_records(
     return True
 
 
-def _scheduler_will_resume(runner: Any, session_key: str, allowlist: Any) -> bool:
+def _scheduler_will_resume(runner: Any, session_key: str) -> bool:
     """True when the resume scheduler would resume ``session_key`` THIS boot.
 
     Mirrors ``GatewayRunner._schedule_resume_pending_sessions`` exactly —
     the candidate filter (``resume_pending``, not suspended, origin present,
-    reason in ``_AUTO_RESUME_REASONS``, allowlist membership) plus the
-    freshness gate on ``last_resume_marked_at or updated_at``. Replay may
-    only leave a queued message for the scheduler when the scheduler will
-    ACTUALLY take it: an allowlist entry alone is not enough, because a
-    suspended entry or a stale marker makes the scheduler skip the session —
-    and then nobody would ever consume the queued message.
+    reason in ``_AUTO_RESUME_REASONS``) plus the freshness gate on
+    ``last_resume_marked_at or updated_at``. Replay may only leave a queued
+    message for the scheduler when the scheduler will ACTUALLY take it: an
+    eligible reason alone is not enough, because a suspended entry or a
+    stale marker makes the scheduler skip the session — and then nobody
+    would ever consume the queued message.
     """
-    from gateway.restart_wind_down import should_auto_resume_session
     from gateway.session_lifecycle import auto_continue_freshness_window
 
     store = getattr(runner, "session_store", None)
@@ -959,8 +957,6 @@ def _scheduler_will_resume(runner: Any, session_key: str, allowlist: Any) -> boo
         return False
     reasons = getattr(runner, "_AUTO_RESUME_REASONS", frozenset())
     if not resume_pending or suspended or origin is None or reason not in reasons:
-        return False
-    if not should_auto_resume_session(session_key, allowlist):
         return False
     if marker is not None:
         window = auto_continue_freshness_window()
@@ -1212,10 +1208,6 @@ def _replay_drain_queue_owned(
             owner["waiting"] = True
             injected[session_key] = adapter
 
-    allowlist = getattr(runner, "_resume_allowlist_for_this_boot", None)
-    raw_allowlist = allowlist() if callable(allowlist) else None
-    cooperative = set(raw_allowlist or set())
-
     def _forget_session_wait(session_key: str) -> None:
         # No turn was dispatched to invoke these callbacks. Keep the records in
         # pending, but let this pass write them back and release its owner.
@@ -1224,9 +1216,7 @@ def _replay_drain_queue_owned(
 
     started = 0
     for session_key, adapter in injected.items():
-        if session_key in cooperative and _scheduler_will_resume(
-            runner, session_key, raw_allowlist
-        ):
+        if _scheduler_will_resume(runner, session_key):
             # Scheduling is not completion: the injected records keep their
             # callbacks and leave the claim only as their own turns finish.
             continue

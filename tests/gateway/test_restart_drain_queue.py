@@ -34,7 +34,6 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.restart_wind_down import write_resume_allowlist
 from gateway.run_drain_queue import (
     claimed_drain_queue_path,
     deserialize_drain_event,
@@ -543,19 +542,17 @@ async def test_fresh_process_replays_snapshot_and_starts_the_turn():
 
 
 @pytest.mark.asyncio
-async def test_cooperative_resume_session_enqueues_without_a_second_turn():
-    """A session steered into the cooperative wind-down is resumed by the
-    scheduler — replay must only enqueue its message, and the combined
-    startup sequence delivers exactly ONE turn for it."""
+async def test_scheduler_resume_session_enqueues_without_a_second_turn():
+    """A session the resume scheduler will take is resumed by the scheduler
+    — replay must only enqueue its message, and the combined startup
+    sequence delivers exactly ONE turn for it."""
     source = make_restart_source(chat_id="coop-chat")
     runner, adapter = make_restart_runner()
     session_key = runner._session_key_for_source(source)
     _queue_in_draining_process(
         _event("queued while winding down", source=source), session_key
     )
-    # The wind-down snapshotted this session as actively running.
-    assert write_resume_allowlist([session_key])
-    # …and its session entry carries the resume marker the scheduler reads.
+    # Its session entry carries the resume marker the scheduler reads.
     runner.session_store._entries = {session_key: _resume_entry(source, session_key)}
     adapter.handle_message = AsyncMock()
 
@@ -573,9 +570,9 @@ async def test_cooperative_resume_session_enqueues_without_a_second_turn():
 
 
 @pytest.mark.asyncio
-async def test_cooperative_session_the_scheduler_would_skip_still_gets_its_turn():
-    """Allowlist presence alone must not leave the message unconsumed: the
-    allowlist names the session, but the scheduler refuses suspended
+async def test_suspended_resume_session_still_gets_its_turn():
+    """Scheduler eligibility alone must not leave the message unconsumed:
+    the entry is resume_pending, but the scheduler refuses suspended
     entries — so replay owns the turn."""
     source = make_restart_source(chat_id="suspended-coop-chat")
     runner, adapter = make_restart_runner()
@@ -583,7 +580,6 @@ async def test_cooperative_session_the_scheduler_would_skip_still_gets_its_turn(
     _queue_in_draining_process(
         _event("queued while parked", source=source), session_key
     )
-    assert write_resume_allowlist([session_key])
     entry = _resume_entry(source, session_key)
     entry.suspended = True  # the scheduler's candidate filter skips this
     runner.session_store._entries = {session_key: entry}
@@ -598,7 +594,7 @@ async def test_cooperative_session_the_scheduler_would_skip_still_gets_its_turn(
 
 
 @pytest.mark.asyncio
-async def test_cooperative_session_with_stale_marker_still_gets_its_turn(
+async def test_stale_resume_marker_session_still_gets_its_turn(
     monkeypatch,
 ):
     """Same rule for the freshness gate: a resume marker older than the
@@ -613,7 +609,6 @@ async def test_cooperative_session_with_stale_marker_still_gets_its_turn(
     _queue_in_draining_process(
         _event("queued before the long pause", source=source), session_key
     )
-    assert write_resume_allowlist([session_key])
     entry = _resume_entry(source, session_key)
     entry.last_resume_marked_at = datetime.now() - timedelta(hours=6)
     runner.session_store._entries = {session_key: entry}

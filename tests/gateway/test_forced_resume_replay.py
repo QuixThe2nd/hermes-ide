@@ -5,9 +5,9 @@ restart/shutdown, crash) resumed with an LLM-visible "[System note: The
 previous turn was interrupted by a gateway restart ...]" wrapper, so the
 model narrated the outage instead of finishing the turn.  The contract:
 
-* Only sessions that accepted ``COOPERATIVE_RESTART_STEER`` see restart
-  guidance; every forced reason recovers below the LLM boundary with ZERO
-  synthetic rows — no note, no synthetic user message, no blank user row.
+* Every forced reason recovers below the LLM boundary with ZERO synthetic
+  rows — no note, no synthetic user message, no blank user row; only the
+  idle `/restart` requester's comeback marker takes the restore-note path.
 * The unresolved / explicitly interrupted calls of the FINAL assistant
   tool batch re-run through the normal dispatcher with their original
   name, call id, and arguments — LITERALLY, with no tool-name whitelist:
@@ -54,6 +54,7 @@ from gateway.run import (
     _prepare_resume_pending_message,
     _strip_auto_continue_noise,
 )
+from gateway.run_resume_reasons import RESTART_REQUESTER_RESUME_REASON
 
 
 @pytest.fixture(autouse=True)
@@ -764,21 +765,21 @@ def test_dispatcher_failure_fails_closed_without_fabrication():
 
 
 # ---------------------------------------------------------------------------
-# Proof 7: cooperative parked sessions keep the safe-pause guidance
+# Proof 7: the requester's idle comeback turn keeps the restore note
 # ---------------------------------------------------------------------------
 
 
 def _route_resume_turn(reason, message):
     """Mirror of the run.py ``_is_resume_pending`` branch routing: forced
-    reasons take the transparent path, cooperative ones keep the existing
-    guidance builder."""
+    reasons take the transparent path, the requester's idle-comeback marker
+    keeps the guidance builder."""
     if is_forced_interruption_reason(reason):
         return plan_forced_resume_turn(message)
     return _prepare_resume_pending_message(reason, message)
 
 
-def test_recovery_classification_splits_cooperative_from_forced():
-    assert is_forced_interruption_reason("cooperative_restart") is False
+def test_recovery_classification_splits_requester_comeback_from_forced():
+    assert is_forced_interruption_reason(RESTART_REQUESTER_RESUME_REASON) is False
     for reason in (
         "restart_timeout",
         "shutdown_timeout",
@@ -790,19 +791,18 @@ def test_recovery_classification_splits_cooperative_from_forced():
         assert is_forced_interruption_reason(reason) is True, reason
 
 
-def test_cooperative_restart_keeps_safe_pause_guidance():
-    recovery, persist = _route_resume_turn("cooperative_restart", "")
-    # The parked-task safe-pause guidance survives verbatim.
-    assert "parked itself" in recovery
-    assert "CONTINUE the parked task" in recovery
+def test_requester_comeback_keeps_restore_note():
+    recovery, persist = _route_resume_turn(RESTART_REQUESTER_RESUME_REASON, "")
+    # The synthesized comeback turn reports the restore and asks what next.
+    assert "restored successfully" in recovery
     assert recovery == persist  # synthesized turn persists the guidance row
 
 
-def test_cooperative_route_does_not_run_victim_replay():
-    """A cooperative parked session with a dangling batch must not have its
-    calls re-executed: is_forced_interruption_reason gates execute_victim_replay
-    in run.py, and the gate is False exactly for cooperative_restart."""
-    assert is_forced_interruption_reason("cooperative_restart") is False
+def test_requester_route_does_not_run_victim_replay():
+    """The requester's idle comeback must not have calls re-executed:
+    is_forced_interruption_reason gates execute_victim_replay in run.py,
+    and the gate is False exactly for the requester marker."""
+    assert is_forced_interruption_reason(RESTART_REQUESTER_RESUME_REASON) is False
     # The gate is the ONLY thing standing between the plan and execution —
     # verify the plan itself WOULD have found work, so the gate is load-bearing.
     history = [
@@ -812,9 +812,9 @@ def test_cooperative_route_does_not_run_victim_replay():
     assert build_victim_replay_plan(history).has_replay_work is True
 
 
-def test_forced_reasons_never_produce_the_cooperative_pause_note():
-    """No forced reason may leak the cooperative safe-pause guidance —
-    system guidance is exclusive to sessions that accepted the steer."""
+def test_forced_reasons_never_produce_a_restore_note():
+    """No forced reason may leak the restore note — system guidance is
+    exclusive to the requester's idle comeback turn."""
     for reason in ("restart_timeout", "shutdown_timeout", "restart_interrupted"):
         turn = _route_resume_turn(reason, "")
         assert turn.message is None, reason

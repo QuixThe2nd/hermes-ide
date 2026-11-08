@@ -87,13 +87,6 @@ def make_restart_runner(
     runner._restart_command_source = None
     runner._restart_generation = 0
     runner._restart_cycle_open = False
-    runner._restart_wind_down_nonce = None
-    runner._restart_wind_down_offer = None
-    runner._restart_wind_down_accepted = False
-    runner._restart_wind_down_allowlist_written = False
-    runner._restart_wind_down_finalized = False
-    runner._restart_wind_down_final_reason = None
-    runner._restart_wind_down_send_in_flight = None
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._restart_after_turn_timeout = DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
     runner._cron_drain_timeout = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
@@ -205,34 +198,8 @@ def make_restart_runner(
         GatewayRunner._await_active_work_before_restart.__get__(runner, GatewayRunner)
     )
     runner.request_restart = GatewayRunner.request_restart.__get__(runner, GatewayRunner)
-    runner._request_cooperative_restart_wind_down = (
-        GatewayRunner._request_cooperative_restart_wind_down.__get__(
-            runner, GatewayRunner
-        )
-    )
     runner._begin_restart_cycle = GatewayRunner._begin_restart_cycle.__get__(
         runner, GatewayRunner
-    )
-    runner._restart_wind_down_offer_eligible = (
-        GatewayRunner._restart_wind_down_offer_eligible.__get__(runner, GatewayRunner)
-    )
-    runner._send_restart_wind_down_prompt = (
-        GatewayRunner._send_restart_wind_down_prompt.__get__(runner, GatewayRunner)
-    )
-    runner._open_restart_wind_down_send = (
-        GatewayRunner._open_restart_wind_down_send.__get__(runner, GatewayRunner)
-    )
-    runner._close_restart_wind_down_send = (
-        GatewayRunner._close_restart_wind_down_send.__get__(runner, GatewayRunner)
-    )
-    runner._await_restart_wind_down_send = (
-        GatewayRunner._await_restart_wind_down_send.__get__(runner, GatewayRunner)
-    )
-    runner.accept_restart_wind_down_opt_in = (
-        GatewayRunner.accept_restart_wind_down_opt_in.__get__(runner, GatewayRunner)
-    )
-    runner._finalize_restart_wind_down_offer = (
-        GatewayRunner._finalize_restart_wind_down_offer.__get__(runner, GatewayRunner)
     )
     runner._wedged_agent_count = GatewayRunner._wedged_agent_count.__get__(
         runner, GatewayRunner

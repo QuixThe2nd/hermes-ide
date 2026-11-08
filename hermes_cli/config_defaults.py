@@ -2010,7 +2010,6 @@ DEFAULT_CONFIG = {
         # user-requested /restart. Debugging aid for the wind-down path only — the
         # multi-instance overlap restart keeps sessions alive across restarts, which
         # made the always-on offer obsolete chatter.
-        "restart_wind_down_offer": False,
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the
         # platform send; a gateway that died between finalize and platform ACK redelivers on next
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;

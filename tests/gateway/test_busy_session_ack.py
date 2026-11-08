@@ -837,36 +837,6 @@ class TestLongRunningNotificationOwnership:
             "sess", agent, executor_task=None
         ) is True
 
-    def test_notification_suppressed_for_requesters_session(self):
-        """The requester's chat — the one the restart wind-down embed targets —
-        stays quiet for the drain (the original suppression contract)."""
-        agent = MagicMock()
-        runner = self._qualifying_runner(agent)
-        source = SessionSource(
-            platform=Platform.TELEGRAM, chat_id="123",
-            chat_type="dm", user_id="requester",
-        )
-        requester_key = runner._session_key_for_source(source)
-        runner._running_agents[requester_key] = agent
-        runner._restart_requested = True
-        runner._restart_command_source = source
-
-        assert runner._should_emit_long_running_notification(
-            requester_key, agent, executor_task=None
-        ) is False
-
-    def test_notification_suppressed_for_park_steered_session(self):
-        """A session whose agent accepted the cooperative park steer was told
-        in-band to wind down; its heartbeat stays quiet for the drain."""
-        agent = MagicMock()
-        runner = self._qualifying_runner(agent)
-        runner._restart_requested = True
-        runner._cooperative_restart_steered_sessions = ["sess"]
-
-        assert runner._should_emit_long_running_notification(
-            "sess", agent, executor_task=None
-        ) is False
-
     def test_notification_emitted_when_restart_not_requested(self):
         agent = MagicMock()
         runner = self._qualifying_runner(agent)
@@ -953,8 +923,8 @@ class TestLongRunningHeartbeatIterationDetail:
         adapter.send = first_send
 
         async def _edit_then_restart(*a, **k):
-            runner._restart_requested = True  # restart notice goes out while the edit is awaited
-            runner._cooperative_restart_steered_sessions = ["sess"]  # this chat was told (park steer)
+            runner._restart_requested = True  # restart begins while the edit is awaited
+            runner._running_agents.pop("sess", None)  # the turn finished; the loop must stop
             return SimpleNamespace(success=False)
 
         adapter.edit_message = AsyncMock(side_effect=_edit_then_restart)
@@ -979,20 +949,4 @@ class TestLongRunningHeartbeatIterationDetail:
 
         assert first_send.await_count == 1  # the original heartbeat only
         adapter.edit_message.assert_awaited_once()
-
-    def test_notification_stops_once_targeted_drain_notice(self):
-        """After the restart notice a heartbeat would contradict it (#10990) — but only for
-        chats actually told about the drain (wind-down embed target or cooperative park
-        steer), not on the bare process-wide flag."""
-        from gateway.run import GatewayRunner
-
-        runner = object.__new__(GatewayRunner)
-        runner._running_agents = {}
-        agent = MagicMock()
-        runner._running_agents["sess"] = agent
-        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is True
-        runner._restart_requested = True
-        runner._cooperative_restart_steered_sessions = ["sess"]  # cooperative park-steer lane: told
-        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
-
 
