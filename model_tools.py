@@ -439,6 +439,27 @@ def _rewrite_delegate_task(td: Dict[str, Any], available: set) -> Optional[Dict[
     return {**td, "function": {**fn, "description": desc}}
 
 
+_LANE_ROUTING_SENTENCE = (
+    " For UI, client-logic, backend, or reverse-engineering work, prefer the dedicated "
+    "delegate_ui_dev / delegate_client_dev / delegate_backend_dev / delegate_reverse_engineer "
+    "lane tools; use delegate_agent only for parallel fan-out of non-lane work or tasks that "
+    "match no lane."
+)
+_LANE_TOOL_NAMES = (
+    "delegate_ui_dev", "delegate_client_dev", "delegate_backend_dev", "delegate_reverse_engineer",
+)
+
+
+def _rewrite_delegate_agent_lanes(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
+    """Point lane-shaped work at the lane tools, but only when one is actually present —
+    the lane tools are availability-gated (lanes must be configured), and naming absent
+    tools teaches the model ghost vocabulary (same rule as _rewrite_browser_navigate)."""
+    if not any(name in available for name in _LANE_TOOL_NAMES):
+        return td
+    fn = td["function"]
+    return _fn_def({**fn, "description": fn.get("description", "") + _LANE_ROUTING_SENTENCE})
+
+
 _VAULT_INPUT_TOOL_HINT = "the browser's input tool"
 
 
@@ -502,7 +523,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_type": _rewrite_input_tool_for_vault,
     "browser_vault_list": _rewrite_browser_vault,
     "browser_vault_fill": _rewrite_browser_vault,
-    "delegate_agent": _rewrite_delegate_task,
+    "delegate_agent": _compose_rewriters(_rewrite_delegate_task, _rewrite_delegate_agent_lanes),
     "delegate_task": _rewrite_delegate_task,
 }
 
