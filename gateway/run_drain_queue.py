@@ -40,6 +40,20 @@ sharing the claim file; callback identity fences stale owners from a later pass.
 Under ``gateway.multiplex_profiles`` each profile's handler queues under
 its own home, so startup replays every served profile's queue, not just
 the launch home's.
+
+Scope after the unified restart pipeline (Nov 2026 successor-delivery
+audit, ``tests/gateway/test_successor_delivery_*.py``): overlap-capable
+transports (Discord/Matrix hub clients) hand NEW user messages to the
+successor via ``handoff_overlap_event`` before any queueing is consulted,
+and the API server refuses new turns at the HTTP layer (503
+``gateway_draining``). The predecessor-side queue survives for exactly the
+transports that still feed a draining predecessor: the webhook adapter
+(and every other non-hub messaging platform — Telegram, Slack, WhatsApp,
+...) whose listener stays attached to the predecessor through the drain,
+plus the hub transports' no-ready-successor fallback (successor spawn
+failed or never attached). For those the snapshot IS the successor-side
+delivery vehicle: the predecessor records, never processes, and the
+successor replays at startup.
 """
 
 from __future__ import annotations

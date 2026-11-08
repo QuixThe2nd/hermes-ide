@@ -1679,10 +1679,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Telegram #58563 fix.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
-        # Live restart wind-down offers, keyed by the offered message id.
-        # Deliberately separate from the resolve_ticket pending store: the two
-        # reaction features share one dispatcher but never a prompt, and their
-        # message ids must never authorize each other.
 
     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
         """Resolve a liveness value from profile config, legacy env, or default."""
@@ -6393,8 +6389,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
-
-    # ── Restart wind-down ⏸️ offer (opt-in cooperative restart) ────────────
 
     async def _dispatch_raw_reaction(self, payload: Any) -> None:
         """One raw reaction event, routed by emoji to its owning feature.

@@ -2169,7 +2169,10 @@ class GatewayShutdownMixin:
         )
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False, overlap: bool = True) -> bool:
+    def request_restart(
+        self, *, detached: bool = False, via_service: bool = False, overlap: bool = True,
+        restart_platforms: bool = True,
+    ) -> bool:
         from gateway.run import _RESTART_WAIT_RETRY_SLEEP_S
         if self._restart_task_started:
             return False
@@ -2186,6 +2189,7 @@ class GatewayShutdownMixin:
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
+        self._restart_platforms = bool(restart_platforms)
         self._restart_task_started = True
         # Refuse new turns immediately while in-flight work finishes.
         # Keep ``_running`` True so adapters stay connected and the active
@@ -2203,7 +2207,10 @@ class GatewayShutdownMixin:
             try:
                 if overlap:
                     from gateway.overlap_restart import spawn_successor
-                    await spawn_successor(self, via_service=via_service)
+                    await spawn_successor(
+                        self, via_service=via_service,
+                        restart_platforms=bool(getattr(self, "_restart_platforms", True)),
+                    )
             except Exception:
                 logger.exception("Overlapping restart successor could not start; using the legacy drain path")
             # ── Destructive boundary ────────────────────────────────────
@@ -2305,8 +2312,9 @@ class GatewayShutdownMixin:
             self._restart_requested = False
             self._restart_detached = False
             self._restart_via_service = False
+            self._restart_platforms = True
             if not cycle_was_open:
-                # This request opened (or was opening) the wind-down cycle;
+                # This request opened (or was opening) the restart cycle;
                 # a half-minted generation with no drain task behind it must
                 # not shadow the next cycle's offer binding.
                 self._restart_cycle_open = False
