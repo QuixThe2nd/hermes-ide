@@ -8,6 +8,7 @@ import importlib
 import inspect
 import json
 import logging
+import os
 import threading
 import time
 from contextlib import nullcontext, suppress
@@ -938,6 +939,37 @@ class GatewayAgentCacheMixin:
         if not vc_now:
             return "[Voice channel now: not connected to a voice channel]"
         return f"[Voice channel now: {vc_now}]"
+
+    def _hub_restart_sidecar_note(self, event) -> Optional[str]:
+        """Return the restart-resume note on the first turn after a hub restart.
+
+        The hub router stamps the delivery record when a session's owner
+        generation changed (predecessor detached, successor took over); the
+        hub client copies it onto the event as ``_hub_generation_restart``.
+        The note rides the api_content sidecar of THIS user message only —
+        ephemeral for the model context, never stored history, never the
+        system prompt — and disappears on the next turn because the flag
+        rides the owner-change delivery only.
+        """
+        info = getattr(event, "_hub_generation_restart", None)
+        if not isinstance(info, dict):
+            return None
+        build = ""
+        try:
+            from gateway.status import _get_code_identity_fields
+            sha = _get_code_identity_fields().get("code_sha")
+            if sha:
+                build = f"build {str(sha)[:8]}, "
+        except Exception:
+            logger.debug("code identity read failed for restart note", exc_info=True)
+        pid = info.get("pid") or os.getpid()
+        return (
+            "[System note: Hermes restarted since your last message in this chat — "
+            f"this turn is running on a new gateway instance ({build}pid {pid}). "
+            "Conversation history is intact, but code/config/tool schemas may have "
+            "changed; re-verify environment assumptions before claiming anything "
+            "is live.]"
+        )
 
     def _pinned_session_context_prompt(
         self, context, redact_pii: bool, session_key: Optional[str]

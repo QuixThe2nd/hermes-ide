@@ -312,6 +312,15 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
             session_key, event = deserialize_drain_event(record)
             event._hub_delivered = True
             event._hub_handoffs = list(record.get("_discord_hub_version_handoffs") or [])
+            # Restart-resume (router-set, owner-change turn only): the gateway
+            # turns this into an ephemeral per-turn system note.
+            if record.get("_hub_generation_changed"):
+                event._hub_generation_restart = {
+                    "previous_generation": str(record.get("_hub_previous_generation") or ""),
+                    "previous_pid": record.get("_hub_previous_pid"),
+                    "generation": self._generation_id,
+                    "pid": os.getpid(),
+                }
             event.raw_message = {
                 "discord_hub_message_id": event.message_id,
                 "discord_hub_token": self._token_key,

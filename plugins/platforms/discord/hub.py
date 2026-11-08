@@ -129,11 +129,21 @@ class DiscordSessionRouter:
                 self._transport, session_key,
             )
             return None
+        # Restart-resume signal: the session previously ran on a DIFFERENT
+        # generation (detached predecessor or overlap handoff to a successor),
+        # so this turn resumes on a new gateway instance. Rides the delivery
+        # record once, on the owner-change turn only; downstream it becomes an
+        # ephemeral turn note, never stored history.
+        previous_owner = owner if owner is not None and owner != generation else None
         try:
             version = self._versions.get(session_key, 0) + 1
             self._versions[session_key] = version
             delivered_record = dict(record)
             delivered_record[self._version_field] = version
+            if previous_owner is not None:
+                delivered_record["_hub_generation_changed"] = True
+                delivered_record["_hub_previous_generation"] = previous_owner
+                delivered_record["_hub_previous_pid"] = self._client_pids.get(previous_owner)
             await self._clients[generation](session_key, delivered_record)
         except Exception:
             # Do not send a possibly-received event to a second generation.
