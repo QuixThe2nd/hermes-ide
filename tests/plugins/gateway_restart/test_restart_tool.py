@@ -180,9 +180,9 @@ def test_schema_describes_immediate_natural_drain():
     from plugins.gateway_restart.tool import RESTART_SCHEMA
 
     description = RESTART_SCHEMA["description"]
-    assert "queued immediately" in description
-    assert "finish naturally" in description
-    assert "comeback notice" in description
+    assert "same path as the /restart slash command" in description
+    assert "new instance" in description
+    assert "long running turns" in description
     # Spell the removed interaction vocabulary without retaining its wording.
     removed_terms = (
         "con" + "sent",
