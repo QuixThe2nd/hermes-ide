@@ -3,7 +3,9 @@
 import copy
 import json
 import subprocess
+import threading
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -188,6 +190,10 @@ def test_existing_harnesses_use_shared_dispatch_and_inject_prompt_material(
 
     def _dispatch(args, **kwargs):
         captured.update(args)
+        # The lane deletes the claude soul temp file once the run returns, so
+        # its content must be captured here, at dispatch time.
+        if args.get("system_prompt_file"):
+            captured["_soul_text"] = Path(args["system_prompt_file"]).read_text(encoding="utf-8")
         return json.dumps({"success": True, "final_report": "done"})
 
     monkeypatch.setattr(generic_delegate, "_delegate_agent_handler", _dispatch)
@@ -198,9 +204,21 @@ def test_existing_harnesses_use_shared_dispatch_and_inject_prompt_material(
     assert captured["backend"] == harness
     assert captured["model"] == "provider/model"
     assert captured["background"] is False
-    assert "Lane instructions" in captured["goal"]
-    assert "Complete skill instructions" in captured["goal"]
     assert captured.get("allowed_tools") == (",".join(tools) if tools else None)
+    if harness == "claude":
+        # Soul material is pinned at the harness level via a system prompt
+        # file (deleted after the run), not concatenated into the goal.
+        soul_path = captured.get("system_prompt_file")
+        assert soul_path
+        assert "Lane instructions" in captured["_soul_text"]
+        assert "Complete skill instructions" in captured["_soul_text"]
+        assert "# Task" in captured["goal"]
+        assert "Lane instructions" not in captured["goal"]
+        assert not Path(soul_path).exists()
+    else:
+        # Cursor cannot take an appended system prompt; soul stays in the goal.
+        assert "Lane instructions" in captured["goal"]
+        assert "Complete skill instructions" in captured["goal"]
 
 
 def test_subagent_lane_uses_native_dispatch_and_routing_config(monkeypatch, workdir):
@@ -248,3 +266,150 @@ def test_existing_delegate_schema_and_behavior_are_untouched(monkeypatch):
     assert called["background"] is False
     assert registry.get_entry("delegate_agent") is entry
     assert generic_delegate.DELEGATE_TASK_SCHEMA == schema_before
+
+
+def test_claude_lane_pins_soul_in_system_prompt_file(monkeypatch, tmp_path, workdir):
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("Skill body text", encoding="utf-8")
+    _configure(monkeypatch, {"client_dev": {
+        "harness": "claude", "models": ["provider/model"], "soul": "Soul rules here",
+        "skills": [str(skill_dir)],
+    }})
+    captured = {}
+
+    def _dispatch(args, **kwargs):
+        captured.update(args)
+        # The lane deletes the soul temp file after the run, so capture its
+        # content now, at dispatch time.
+        if args.get("system_prompt_file"):
+            captured["_soul_text"] = Path(args["system_prompt_file"]).read_text(encoding="utf-8")
+        return json.dumps({"success": True, "final_report": "ok"})
+
+    monkeypatch.setattr(generic_delegate, "_delegate_agent_handler", _dispatch)
+    result = json.loads(registry.dispatch(
+        "delegate_client_dev", {"task": "Implement", "workdir": str(workdir)}
+    ))
+    assert result["success"] is True
+    soul_path = captured.get("system_prompt_file")
+    assert soul_path
+    assert Path(soul_path).suffix == ".md"
+    assert Path(soul_path).name.startswith("hermes-claude-soul-")
+    assert "Soul rules here" in captured["_soul_text"]
+    assert "Skill body text" in captured["_soul_text"]
+    assert "# Lane instructions" in captured["_soul_text"]
+    assert "# Injected skill:" in captured["_soul_text"]
+    assert "# Task" in captured["goal"]
+    assert "Soul rules here" not in captured["goal"]
+    assert not Path(soul_path).exists()
+
+
+def test_claude_lane_without_soul_sends_no_system_prompt_file(monkeypatch, workdir):
+    # soul:"" overrides the lane's default soul so nothing is left to pin.
+    _configure(monkeypatch, {"client_dev": {
+        "harness": "claude", "models": ["provider/model"], "soul": "",
+    }})
+    captured = {}
+
+    def _dispatch(args, **kwargs):
+        captured.update(args)
+        if args.get("system_prompt_file"):
+            captured["_soul_text"] = Path(args["system_prompt_file"]).read_text(encoding="utf-8")
+        return json.dumps({"success": True, "final_report": "ok"})
+
+    monkeypatch.setattr(generic_delegate, "_delegate_agent_handler", _dispatch)
+    result = json.loads(registry.dispatch(
+        "delegate_client_dev", {"task": "Implement", "workdir": str(workdir)}
+    ))
+    assert result["success"] is True
+    assert captured.get("system_prompt_file") is None
+    assert "# Task" in captured["goal"]
+
+
+def test_subagent_lane_prepends_soul_to_child_system_prompt(monkeypatch, workdir):
+    _configure(
+        monkeypatch,
+        {"reverse_engineer": {
+            "harness": "subagent", "models": ["provider/model"], "soul": "RE soul rules",
+        }},
+        provider="openrouter",
+    )
+    parent = MagicMock()
+    parent.base_url = ""
+    parent.api_key = "x"
+    parent.provider = None
+    parent.api_mode = None
+    parent.model = None
+    parent.platform = "cli"
+    parent.providers_allowed = None
+    parent.providers_ignored = None
+    parent.providers_order = None
+    parent.provider_sort = None
+    parent._session_db = None
+    parent._delegate_depth = 0
+    parent._active_children = []
+    parent._active_children_lock = threading.Lock()
+    parent._print_fn = None
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+    parent.enabled_toolsets = ["terminal"]
+
+    monkeypatch.setattr(
+        generic_delegate, "_resolve_delegation_credentials",
+        lambda *a, **k: {
+            "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "model": None,
+        },
+    )
+    monkeypatch.setattr(generic_delegate, "_load_config", lambda: {"max_spawn_depth": 2})
+
+    with patch("run_agent.AIAgent") as MockAgent:
+        mock_child = MagicMock()
+        mock_child.run_conversation.return_value = {
+            "final_response": "done", "completed": True,
+            "api_calls": 1, "messages": [],
+        }
+        mock_child._delegate_saved_tool_names = []
+        mock_child._credential_pool = None
+        mock_child.session_prompt_tokens = 0
+        mock_child.session_completion_tokens = 0
+        mock_child.model = "test"
+        MockAgent.return_value = mock_child
+
+        result = json.loads(registry.dispatch(
+            "delegate_reverse_engineer", {"task": "Inspect statically", "workdir": str(workdir)},
+            parent_agent=parent,
+        ))
+
+    assert result["success"] is True
+    child_prompt = MockAgent.call_args[1]["ephemeral_system_prompt"]
+    assert "RE soul rules" in child_prompt
+    assert "# Lane instructions" in child_prompt
+    assert "You are a focused subagent" in child_prompt
+    assert child_prompt.index("RE soul rules") < child_prompt.index("You are a focused subagent")
+
+
+def test_claude_argv_includes_append_system_prompt_file(monkeypatch, tmp_path, workdir):
+    from tests.tools.test_claude_agent_tool import _write_fake_binary
+
+    import tools.claude_agent_tool as claude_tool
+
+    soul_path = tmp_path / "soul.md"
+    soul_path.write_text("Harness soul", encoding="utf-8")
+    fake_binary = _write_fake_binary(tmp_path, name="claude-fake")
+    argv_out = tmp_path / "argv.json"
+    monkeypatch.setattr(
+        "tools.claude_agent_tool.resolve_claude_binary",
+        lambda model=None: str(fake_binary),
+    )
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_OUT", str(argv_out))
+
+    result = json.loads(claude_tool.delegate_claude_agent(
+        task="do it", workdir=str(workdir), system_prompt_file=str(soul_path),
+    ))
+    assert result["success"] is True
+    argv = json.loads(argv_out.read_text(encoding="utf-8"))
+    assert argv[argv.index("--append-system-prompt-file") + 1] == str(soul_path)
+    later_flag = "--model" if "--model" in argv else "--permission-mode"
+    assert argv.index("--append-system-prompt-file") < argv.index(later_flag)
+    assert argv[-1] == "do it"

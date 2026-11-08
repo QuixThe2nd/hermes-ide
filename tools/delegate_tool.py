@@ -178,6 +178,8 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    # Lane soul material prepended to the child's system prompt (harness-level pin).
+    ephemeral_system_prompt: Optional[str] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -200,9 +202,12 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
-    child_prompt = _build_child_system_prompt(
+    built_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
+    )
+    child_prompt = (
+        ephemeral_system_prompt + "\n\n" + built_prompt if ephemeral_system_prompt else built_prompt
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -387,7 +392,8 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                ephemeral_system_prompt=t.get("ephemeral_system_prompt"), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -440,6 +446,7 @@ def delegate_task(
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
+    ephemeral_system_prompt: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -523,6 +530,10 @@ def delegate_task(
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+    if not err and ephemeral_system_prompt:
+        # Lane dispatch is single-task; attaching to every entry is harmless there.
+        for t in task_list:
+            t["ephemeral_system_prompt"] = ephemeral_system_prompt
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
@@ -880,7 +891,7 @@ _BACKENDS = ("subagent", "claude", "cursor")
 _SUBAGENT_ONLY_PARAMS = (
     "tasks", "context", "output_schema", "images", "action", "subagent_id", "message", "max_iterations", "role",
 )
-_CLAUDE_ONLY_PARAMS = ("allowed_tools", "permission_mode")
+_CLAUDE_ONLY_PARAMS = ("allowed_tools", "permission_mode", "system_prompt_file")
 _CURSOR_ONLY_PARAMS = ("force",)
 # Shared by both external backends; forwarded verbatim when present.
 _EXTERNAL_SHARED_PARAMS = ("model", "timeout_seconds", "background")
@@ -903,7 +914,7 @@ def _backend_param_error(backend: str, bad_params: list) -> Optional[str]:
         f"delegate_agent(backend={backend}) does not accept: {', '.join(sorted(bad_params))}. "
         "Those parameters belong to a different backend; re-issue the call with only this "
         "backend's parameters (goal, workdir, model, timeout_seconds, background"
-        + (", allowed_tools, permission_mode" if backend == "claude" else "")
+        + (", allowed_tools, permission_mode, system_prompt_file" if backend == "claude" else "")
         + (", force" if backend == "cursor" else "")
         + ")."
     )
@@ -961,7 +972,7 @@ def _delegate_agent_handler(args: dict, **kw):
             # below answers with a clear error, never a crash.
             from tools.agent_dispatch_context import get_agent_dispatch_context
             parent_agent = get_agent_dispatch_context()
-        return delegate_agent(
+        subagent_kwargs = dict(
             goal=args.get("goal"),
             context=args.get("context"),
             tasks=_strip_model_hidden_task_fields(args.get("tasks")),
@@ -975,6 +986,9 @@ def _delegate_agent_handler(args: dict, **kw):
             message=args.get("message"),
             parent_agent=parent_agent,
         )
+        if args.get("ephemeral_system_prompt") is not None:
+            subagent_kwargs["ephemeral_system_prompt"] = args.get("ephemeral_system_prompt")
+        return delegate_agent(**subagent_kwargs)
 
     # External backends (claude / cursor): validate the parameter family, then
     # forward to the existing handler with `goal` mapped to its `task` (an
