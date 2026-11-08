@@ -1249,9 +1249,15 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            identity = self._completion_delivery_identity(evt)
+            ledger_message_id = (
+                "watch:" + ":".join(str(part) for part in identity)
+                if identity is not None else None
+            )
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                ledger_message_id=ledger_message_id,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",

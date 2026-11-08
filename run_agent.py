@@ -504,6 +504,7 @@ class AIAgent(
         # surfaces real values regardless of which return path executed.
         self._turn_api_time = 0.0
         self._turn_tool_time = 0.0
+        self._turn_tool_calls = 0
         self.session_cost_source = "none"
 
         # Session boundary: the usage anchor describes the OLD transcript; fall back to full estimation.
@@ -4892,9 +4893,11 @@ class AIAgent(
             if isinstance(result, dict):
                 _api_t = getattr(self, "_turn_api_time", 0.0) or 0.0
                 _tool_t = getattr(self, "_turn_tool_time", 0.0) or 0.0
-                if _api_t or _tool_t:
+                _tool_n = getattr(self, "_turn_tool_calls", 0) or 0
+                if _api_t or _tool_t or _tool_n:
                     result.setdefault("api_time", _api_t)
                     result.setdefault("tool_time", _tool_t)
+                    result.setdefault("tool_calls", _tool_n)
             return result
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (

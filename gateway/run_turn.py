@@ -1750,9 +1750,19 @@ class GatewayTurnMixin:
         prefix = format_reasoning_prefix(last_reasoning, _platform_config_key(source.platform))
         return f"{prefix}\n\n{response}" if prefix else response
 
+    def _footer_reasoning_effort(self, session_key):
+        """Footer ``reasoning`` value from the resident agent's resolved reasoning_config:
+        ``off`` when disabled, the effort string when set, else None (field skipped)."""
+        agent = self._resident_agent_for(session_key) if session_key else None
+        cfg = getattr(agent, "reasoning_config", None) or {}
+        if cfg.get("enabled") is False:
+            return "off"
+        effort = cfg.get("effort")
+        return effort if isinstance(effort, str) and effort else None
+
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
-        """Runtime-metadata footer for the FINAL message of the turn; off by default
-        (display.runtime_footer.enabled=false)."""
+        """Runtime-metadata footer for the FINAL message of the turn; on by default
+        (display.runtime_footer.enabled=false disables)."""
         from gateway.run import logger
 
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
@@ -1764,8 +1774,15 @@ class GatewayTurnMixin:
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+                turn_time=_turn_seconds,
+                api_time=agent_result.get("api_time"),
+                tool_time=agent_result.get("tool_time"),
+                api_calls=agent_result.get("api_calls"),
+                tool_calls=agent_result.get("tool_calls"),
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
+                reasoning_effort=self._footer_reasoning_effort(
+                    self._session_key_for_source(source)),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -4349,34 +4366,14 @@ class GatewayTurnMixin:
             # the restart-interruption system note.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
                 await self._clear_restart_failure_count(session_key)
-                _resume_entry = None
                 try:
-                    if getattr(self, "session_store", None) is not None:
-                        _resume_entry = self.session_store._entries.get(session_key)
-                except Exception:
-                    _resume_entry = None
-                from gateway.restart_wind_down import (
-                    should_preserve_cooperative_restart_marker,
-                )
-
-                if should_preserve_cooperative_restart_marker(
-                    draining=bool(getattr(self, "_draining", False)),
-                    resume_reason=getattr(_resume_entry, "resume_reason", None),
-                ):
-                    logger.info(
-                        "Preserving cooperative-restart resume_pending for %s "
-                        "so startup can continue the parked turn",
-                        session_key,
+                    await self.async_session_store.clear_resume_pending(session_key)
+                    await self._clear_resume_inbound_metadata(session_key)
+                except Exception as _e:
+                    logger.debug(
+                        "clear_resume_pending failed for %s: %s",
+                        session_key, _e,
                     )
-                else:
-                    try:
-                        await self.async_session_store.clear_resume_pending(session_key)
-                        await self._clear_resume_inbound_metadata(session_key)
-                    except Exception as _e:
-                        logger.debug(
-                            "clear_resume_pending failed for %s: %s",
-                            session_key, _e,
-                        )
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
@@ -4440,7 +4437,7 @@ class GatewayTurnMixin:
                 )
 
                 # Runtime-metadata footer — only on the FINAL message of the turn.
-                # Off by default (display.runtime_footer.enabled=false).  When
+                # On by default (display.runtime_footer.enabled=false disables).  When
                 # streaming already delivered the body, we can't mutate the sent
                 # text, so we fire a separate trailing send below.
                 _footer_line = ""
@@ -4458,8 +4455,10 @@ class GatewayTurnMixin:
                         api_time=agent_result.get("api_time"),
                         tool_time=agent_result.get("tool_time"),
                         api_calls=_api_calls,
+                        tool_calls=agent_result.get("tool_calls"),
                         requested_model=agent_result.get("requested_model"),
                         served_model=agent_result.get("served_model"),
+                        reasoning_effort=self._footer_reasoning_effort(session_key),
                     )
                 except Exception as _footer_err:
                     logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -5965,7 +5964,7 @@ class GatewayTurnMixin:
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
-        # Code-box presentation for accumulated groups (opt-in; plain otherwise)
+        # Code-box presentation for every progress row (default on; plain when false)
         progress_codebox = bool(
             resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
         )
@@ -6303,6 +6302,11 @@ class GatewayTurnMixin:
             )
             return
         self._session_state(session_key).turn.agent = agent_holder[0]
+        # A steer-mode follow-up that arrived during the agent-pending window is
+        # parked in the steer-on-live slot — this promotion is the exact moment
+        # the run becomes steerable, so inject it now instead of letting it wait
+        # out the turn as a queued second user turn.
+        await self._consume_parked_steer_on_agent_live(session_key, agent_holder[0])
         if self._draining:
             self._update_runtime_status("draining")
 
@@ -6670,6 +6674,13 @@ class GatewayTurnMixin:
         from gateway.run import (
             _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
         )
+
+        # A steer-on-live event still parked at drain time means the run finished
+        # without the agent ever promoting (fast failure) — recover it into the
+        # FIFO before the dequeue so it rides the normal queued-follow-up chain.
+        if session_key:
+            self._flush_parked_steer(session_key)
+
         pending_event = None
         pending = None
         if result and adapter and session_key:
@@ -7426,11 +7437,11 @@ class GatewayTurnMixin:
         progress_mode = (
             _env_tp
             if _env_tp and not _tool_progress_configured
-            else (_resolved_tp or _env_tp or "all")
+            else (_resolved_tp or _env_tp or "describe")
         )
         # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
-        # Code-box presentation for accumulated groups (opt-in; plain otherwise)
+        # Code-box presentation for every progress row (default on; plain when false)
         _progress_codebox = bool(
             resolve_display_setting(user_config, platform_key, "tool_progress_codebox")
         )

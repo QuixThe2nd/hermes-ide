@@ -736,7 +736,7 @@ Controls whether the bot sends progress messages in the chat while processing (e
 
 ```yaml
 display:
-  tool_progress: "all"    # off | new | all | verbose
+  tool_progress: "describe"    # off | new | all | verbose | describe (default: describe; rows render in code boxes, tool_progress_codebox: false for plain text)
 ```
 
 - `off` — no progress messages

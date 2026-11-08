@@ -407,6 +407,7 @@ def finalize_turn(
     _pending_verification_response_previewed=False,
     turn_api_time=0.0,
     turn_tool_time=0.0,
+    turn_tool_calls=0,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
@@ -528,6 +529,7 @@ def finalize_turn(
         "api_calls": api_call_count,
         "api_time": float(turn_api_time or 0.0),
         "tool_time": float(turn_tool_time or 0.0),
+        "tool_calls": int(turn_tool_calls or 0),
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,

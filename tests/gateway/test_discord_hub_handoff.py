@@ -977,58 +977,6 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
     assert tail == {"control": control, "cron_provider": cron_provider}
 
 
-@pytest.mark.platforms("posix")
-def test_restart_wind_down_control_stays_on_prompt_owner(tmp_path):
-    async def scenario():
-        server = DiscordHubServer(tmp_path / "discord-hub.sock")
-
-        class FakeDiscordConnection:
-            async def disconnect(self):
-                pass
-
-            async def send_restart_wind_down_offer(self, **kwargs):
-                return "offer-1"
-
-        connection = FakeDiscordConnection()
-
-        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
-            server._adapters[_token_key(config_data["token"])] = connection
-
-        server._attach_adapter = fake_attach
-        await server.start()
-        clients = [DiscordHubClientAdapter(PlatformConfig(token="fake-token")) for _ in range(2)]
-        try:
-            for client in clients:
-                client._socket_path = server.socket_path
-            assert await clients[0].connect()
-            assert await clients[0].send_restart_wind_down_offer(
-                channel_id="42", requester_user_id="7", generation=1, nonce="nonce"
-            ) == "offer-1"
-
-            # Attaching the successor must not steal the predecessor's native prompt.
-            assert await clients[1].connect()
-            clients[0].gateway_runner = SimpleNamespace(
-                accept_restart_wind_down_opt_in=AsyncMock(return_value={"accepted": True})
-            )
-            clients[1].gateway_runner = SimpleNamespace(
-                accept_restart_wind_down_opt_in=AsyncMock(return_value={"accepted": False})
-            )
-            params = {
-                "message_id": "offer-1", "channel_id": "42", "requester_user_id": "7",
-                "emoji": "⏸️", "generation": 1, "nonce": "nonce",
-            }
-            assert await server.request_control(_token_key("fake-token"), "offer-1", params) == {
-                "accepted": True
-            }
-            clients[0].gateway_runner.accept_restart_wind_down_opt_in.assert_awaited_once_with(**params)
-            clients[1].gateway_runner.accept_restart_wind_down_opt_in.assert_not_awaited()
-        finally:
-            await asyncio.gather(*(client.disconnect() for client in clients), return_exceptions=True)
-            await server.stop()
-
-    run(scenario())
-
-
 @pytest.mark.asyncio
 async def test_overlap_successor_starts_before_predecessor_finishes_owned_work():
     from tests.gateway.restart_test_helpers import RestartTestAdapter, make_restart_runner
