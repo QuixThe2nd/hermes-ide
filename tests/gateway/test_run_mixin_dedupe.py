@@ -38,7 +38,6 @@ CONSOLIDATED_MIXIN_METHODS = (
     ("_hm_busy_steer", GatewayInboundMixin),
     ("_clear_plugin_message_injector", GatewayInboundMixin),
     ("_busy_profile_name_for_source", GatewayConfigLoadersMixin),
-    ("_ensure_hosted_room_worker", GatewayStartupMixin),
     ("_start_free_tier_bootstrap", GatewayStartupMixin),
     ("_stop_systemd_watchdog", GatewayShutdownMixin),
     ("wait_for_shutdown", GatewayShutdownMixin),

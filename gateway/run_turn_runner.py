@@ -1210,10 +1210,22 @@ class TurnRunner(_TurnRunnerCore):
             logger.debug("Failed to attach session title callback", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
-        from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.run import (
+            _mission_chat_suppresses_status, _prepare_gateway_status_message,
+            _redact_gateway_user_facing_secrets, _send_or_update_status_coro,
+        )
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
+            return
+        # Mission-bound chats serve an end-user persona: suppress only the
+        # operator-facing fallback notice, before preparation or delivery.
+        if _mission_chat_suppresses_status(ctx._status_chat_id, event_type, message):
+            logger.debug(
+                "status_callback suppressed for mission chat %s/%s: %s",
+                ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
+                _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+            )
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
@@ -2222,7 +2234,8 @@ class TurnRunner(_TurnRunnerCore):
         """
         from gateway.run import (
             _current_max_iterations, _is_forced_recovery_control_outcome,
-            _normalize_empty_agent_response, _sanitize_gateway_final_response,
+            _is_gateway_restart_control_outcome, _normalize_empty_agent_response,
+            _sanitize_gateway_final_response,
         )
         ctx = self._ctx
         runner = self._runner
@@ -2335,13 +2348,19 @@ class TurnRunner(_TurnRunnerCore):
             # prose, auto-media tags, or persistence rows for a forced victim.
             return {"final_response": "", "forced_recovery_control": True, **common}
         if not final_response:
-            final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
-            final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
-            if not final_response:
-                final_response = f"⚠️ {result['error']}" if result.get("error") else ""
+            restart_control = _is_gateway_restart_control_outcome(result)
+            if not restart_control:
+                final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
+                final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
+                if not final_response:
+                    final_response = f"⚠️ {result['error']}" if result.get("error") else ""
             # NOTE: deliberately omits agent_persisted/last_reasoning/response_* — the caller
             # defaults agent_persisted differently when the key is absent.
-            return {"final_response": final_response, **common}
+            return {
+                "final_response": final_response,
+                "gateway_restart_queued": restart_control,
+                **common,
+            }
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.

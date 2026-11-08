@@ -26,11 +26,11 @@ from unittest.mock import MagicMock
 
 from gateway.config import Platform
 from gateway.run import (
-    TurnRunner,
     _exempt_from_empty_response_normalization,
     _is_gateway_restart_control_outcome,
     _normalize_empty_agent_response,
 )
+from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 
