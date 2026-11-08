@@ -6,9 +6,9 @@ import pytest
 
 from agent.codex_runtime import _persist_projected_messages
 from agent.message_metadata import append_message
-from agent.session_persistence import SessionPersistenceMixin
 from agent.transports.codex_event_projector import CodexEventProjector
 from hermes_state import SessionDB
+from run_agent import AIAgent
 
 
 @pytest.mark.parametrize("platform_id", ["2146", None])
@@ -17,7 +17,7 @@ def test_only_submitted_leading_echo_is_excluded(tmp_path, platform_id, projecti
     db = SessionDB(tmp_path / "state.db")
     try:
         db.create_session(session_id="echo", source="telegram", model="codex")
-        agent = SessionPersistenceMixin()
+        agent = object.__new__(AIAgent)
         agent.session_id = "echo"
         agent._session_db = db
         agent._session_db_created = True

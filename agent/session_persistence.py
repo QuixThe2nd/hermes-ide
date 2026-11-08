@@ -17,7 +17,7 @@ from agent.context_compressor import (
     drop_shadowed_checkpoints,
     user_originated_turn_view,
 )
-from agent.lazy_forward import forward as _forward, forward_static as _forward_static
+from agent.lazy_forward import forward_static as _forward_static
 from agent.memory_manager import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
@@ -287,118 +287,5 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
 class SessionPersistenceMixin:
     """Session DB flush and trajectory persistence (see module docstring)."""
 
-    def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
-        """Rewrite the current-turn user message in place: some paths send an API-only variant that must not
-        leak into transcripts or resumed history."""
-        idx = getattr(self, "_persist_user_message_idx", None)
-        override = getattr(self, "_persist_user_message_override", None)
-        timestamp = getattr(self, "_persist_user_message_timestamp", None)
-        platform_id = getattr(self, "_persist_user_message_platform_id", None)
-        if idx is None or (override is None and timestamp is None and platform_id is None):
-            return
-        msg = messages[idx] if 0 <= idx < len(messages) else None
-        if not (isinstance(msg, dict) and msg.get("role") == "user"):
-            return
-        if _override_replaces_content(msg, msg.get("content"), override):
-            msg["content"] = override
-        if timestamp is not None:
-            msg["timestamp"] = timestamp
-        if platform_id is not None:  # load-bearing for restart drain-window recovery dedup (has_platform_message_id)
-            msg["platform_message_id"] = platform_id
-
-    def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
-        """Save to SQLite on any exit path. Trailing empty-response scaffolding is dropped from
-        the live list; the persist override is applied to the DB row only.
-
-        The persist user-message *override* is NOT applied here — it is resolved inside
-        ``_flush_messages_to_session_db`` and written only to the DB row, never mutating the live message
-        list used by the API call (#48677 is thus closed for every persist caller, not just this one).
-        """
-        from agent.agent_runtime_helpers import note_turn_persisted
-        with _persist_lock(self):
-            self._drop_trailing_empty_response_scaffolding(messages)
-            self._session_messages = messages
-            self._flush_messages_to_session_db(messages, conversation_history)
-            # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.
-            if self._session_db is not None:
-                self._session_db.flush_token_counts()
-            note_turn_persisted(self)
-
-    def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
-        """Pop empty-response retry scaffolding from the tail, then (only if any was present) rewind the
-        tool-result / assistant(tool_calls) pair the failed iteration left hanging — otherwise the next user
-        turn lands as ``...tool, user`` and providers return empty content forever."""
-        def tail(*keys: str) -> bool:
-            return bool(messages) and isinstance(messages[-1], dict) and any(messages[-1].get(k) for k in keys)
-
-        def tail_role(role: str) -> bool:
-            return bool(messages) and isinstance(messages[-1], dict) and messages[-1].get("role") == role
-
-        dropped_scaffolding = False
-        while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
-            messages.pop()
-            dropped_scaffolding = True
-        if not dropped_scaffolding:
-            return
-        while tail_role("tool"):
-            messages.pop()
-        # Providers reject a dangling assistant(tool_calls) whose results were just popped.
-        if tail_role("assistant") and tail("tool_calls"):
-            messages.pop()
-
-    _repair_message_sequence = _forward("agent.agent_runtime_helpers", "repair_message_sequence")
-
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None):
-        """Serialize direct and turn-boundary session flushes per agent."""
-        with _persist_lock(self):
-            return self._flush_messages_to_session_db_unlocked(messages, conversation_history)
-
-    def _flush_messages_to_session_db_unlocked(
-        self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None, _adoption_budget: int = 1,
-    ):
-        """Persist un-flushed messages to SQLite. Dedup is the intrinsic ``_DB_PERSISTED_MARKER`` on each written
-        dict — not positional slices (drift after sequence repair) nor an ``id(msg)`` set (address reuse). The
-        persist override touches the written row only. A compression-closed session adopts its live tip and
-        retries exactly once.
-
-        Deduplicates via an intrinsic ``_DB_PERSISTED_MARKER`` stamped on each written message dict, so
-        repeated calls (from multiple exit paths) only write truly new messages — preventing the
-        duplicate-write bug (#860) without relying on positional slices that can drift after
-        message-sequence repair, and without a retained ``id(msg)`` set that CPython could alias onto a
-        freed-then-reused address (#50372). The ``_flushed_db_message_ids`` attribute is now only a one-shot
-        seed (translated to markers, then cleared each flush), not a persisted set.
-        """
-        # Persistence-isolated agents (background review fork) share the parent's session_id for cache warmth;
-        # a write here would land the curator's turn in the user's real history.
-        if getattr(self, "_persist_disabled", False) or not self._session_db:
-            return None
-        batch_rows: List[Dict[str, Any]] = []
-        try:
-            if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
-                self._ensure_db_session()
-            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
-            _db_flush_write(self, batch_rows, batch_msgs, messages)
-            # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
-            self._flushed_db_message_ids = set()
-            self._last_flushed_db_idx = len(messages)
-            # Snapshot for the bounded scan — only on full success, so a partial list is never treated as settled.
-            self._db_flush_scan_prefix = messages[:]
-            return True
-        except Exception as e:
-            if _db_flush_failed(self, e, batch_rows, _adoption_budget):
-                return self._flush_messages_to_session_db_unlocked(messages, conversation_history, _adoption_budget=0)
-            return False
-
-    def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
-        """Messages before the last assistant turn (rollback point for a malformed final answer); all if none."""
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") == "assistant":
-                return messages[:i]
-        return messages.copy()
-
-    _format_tools_for_system_message = _forward("agent.system_prompt", "format_tools_for_system_message")
-    _convert_to_trajectory_format = _forward("agent.agent_runtime_helpers", "convert_to_trajectory_format")
-
 
     _extract_api_error_context = _forward_static("agent.agent_runtime_helpers", "extract_api_error_context")
-    _dump_api_request_debug = _forward("agent.agent_runtime_helpers", "dump_api_request_debug")

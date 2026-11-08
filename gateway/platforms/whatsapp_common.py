@@ -73,16 +73,6 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             return content
         return cls._OUTBOUND_ODD_SPACE_RE.sub(" ", cls._OUTBOUND_INVISIBLE_CHARS_RE.sub("", content))
 
-    def _effective_reply_prefix(self) -> str:
-        """Prefix for outgoing replies in self-chat mode (Cloud API overrides to ``""``)."""
-        if (_get_wsecret("WHATSAPP_MODE", default="self-chat") or "self-chat") != "self-chat":
-            return ""
-        if self._reply_prefix is not None:
-            return self._reply_prefix.replace("\\n", "\n")
-        env_prefix = _get_wsecret("WHATSAPP_REPLY_PREFIX")
-        if env_prefix is not None:
-            return env_prefix.replace("\\n", "\n")
-        return self.DEFAULT_REPLY_PREFIX
 
     def _outgoing_chunk_limit(self) -> int:
         """Reserve room for the reply prefix; floor keeps space for pagination/fence repair."""

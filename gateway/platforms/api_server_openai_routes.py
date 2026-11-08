@@ -1,7 +1,8 @@
-"""OpenAI-compatible routes for the API server adapter.
+"""OpenAI-compatible route helpers for the API server adapter.
 
-``OpenAICompatRoutesMixin`` (inherited by ``APIServerAdapter``) carries ``/v1/chat/completions``,
-``/v1/responses`` (+ GET/DELETE), their SSE writers and the Responses-transcript helpers.
+``OpenAICompatRoutesMixin`` carries the Responses-transcript helpers and SSE writers. The
+admission-wrapped POST handlers for ``/v1/chat/completions`` and ``/v1/responses`` live on
+``APIServerAdapter``; GET/DELETE and the shared route machinery remain here.
 api_server-internal helpers are imported lazily inside each method: the origin imports this
 module (top-level import = cycle), and lazy lookup keeps ``patch("...api_server.X")`` effective.
 """
@@ -515,6 +516,384 @@ class _ResponsesStream:
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
 
 
+async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
+    """POST /v1/chat/completions — OpenAI Chat Completions format."""
+    from gateway.platforms.api_server import (
+        ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
+        _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
+        _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
+        _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
+    # Bound total in-flight agent runs (configurable; #7483).
+    limited = self._concurrency_limited_response()
+    if limited is not None:
+        return limited
+    try:
+        body = await request.json()
+    except Exception:
+        return _error_response("Invalid JSON in request body", 400)
+    from gateway.platforms.api_server import _request_relay_metadata
+    relay_metadata = _request_relay_metadata(body)
+    messages = body.get("messages")
+    if not messages or not isinstance(messages, list):
+        return _invalid_request("Missing or invalid 'messages' field")
+    stream = _coerce_request_bool(body.get("stream"), default=False)
+
+    # System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
+    # (Anthropic rejects images there, OpenAI text models ignore them).
+    system_prompt = None
+    conversation_messages: List[Dict[str, str]] = []
+    for idx, msg in enumerate(messages):
+        role = msg.get("role", "")
+        raw_content = msg.get("content", "")
+        if role == "system":
+            content = _normalize_chat_content(raw_content)
+            system_prompt = content if system_prompt is None else system_prompt + "\n" + content
+        elif role in {"user", "assistant"}:
+            try:
+                content = _normalize_multimodal_content(raw_content)
+            except ValueError as exc:
+                return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
+            conversation_messages.append({"role": role, "content": content})
+    user_message: Any = (conversation_messages[-1].get("content", "") if conversation_messages else "")
+    history = conversation_messages[:-1]
+    if not _content_has_visible_payload(user_message):
+        return _invalid_request("No user message found in messages")
+
+    # X-Hermes-Session-Key scopes long-term memory per channel; independent of
+    # X-Hermes-Session-Id (the key persists across transcripts, the id rotates on /new).
+    gateway_session_key, key_err = self._parse_session_key_header(request)
+    if key_err is not None:
+        return key_err
+    # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
+    # requires a configured API key or any client could read history by guessing ids.
+    provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+    if provided_session_id:
+        if not self._api_key:
+            logger.warning(
+                "Session continuation via X-Hermes-Session-Id rejected: "
+                "no API key configured.  Set API_SERVER_KEY to enable "
+                "session continuity.")
+            return _error_response("Session continuation requires API key authentication. "
+                    "Configure API_SERVER_KEY to enable this feature.", 403)
+        # Same guard as the native gateway: ids are interpolated into on-disk filenames.
+        from gateway.session import _is_path_unsafe
+        if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
+            return _invalid_request("Invalid session ID")
+        if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
+            return _invalid_request("Session ID too long")
+        session_id = provided_session_id
+        try:
+            db = await self._ensure_session_db_async()
+            if db is not None:
+                # #98619/#13437: a client-addressed id from before a compression rotation
+                # must adopt the live continuation tip — history loads from it, the turn and
+                # the wake target bind it, and a detached delegation delivery row persisted
+                # on the tip is what this continuation consumes. Same canonical resolution
+                # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
+                from gateway.platforms.api_server_runs import _resolve_live_session_id
+                session_id = await _resolve_live_session_id(self, provided_session_id)
+                history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+        except Exception as e:
+            logger.warning("Failed to load session history for %s: %s", session_id, e)
+            history = []
+    else:
+        # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
+        # one Hermes session.
+        first_user = next(
+            (cm.get("content", "") for cm in conversation_messages if cm.get("role") == "user"), "")
+        session_id = _derive_chat_session_id(system_prompt, first_user)
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
+    model_name = body.get("model", self._model_name)
+    created = int(time.time())
+    route, agent_overrides, selection_error = self._select_request_route(
+        body, session_id=session_id, gateway_session_key=gateway_session_key,
+        model_alias=model_name)
+    if selection_error is not None:
+        return selection_error
+    run_kwargs = dict(
+        user_message=user_message, conversation_history=history,
+        ephemeral_system_prompt=system_prompt, session_id=session_id,
+        gateway_session_key=gateway_session_key, **agent_overrides, route=route,
+        relay_metadata=relay_metadata,
+        # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
+        # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
+        # and the client can resume the session by sending it again). A fingerprint-derived
+        # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
+        # there — the wake would hard-fail or land in history that client never reloads.
+        session_history_delivery=("1" if provided_session_id else ""))
+    # This is presentation only. The ordinary API-key/session authorization
+    # above still applies; it grants no internal ingress or control authority.
+    if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
+        run_kwargs["notification_category"] = "diagnostic"
+    if stream:
+        _stream_q = ThreadSafeAsyncQueue()
+        # tool_call_ids with an emitted "running": a "completed" without one (internal/
+        # filtered tools) is dropped rather than orphaned on the wire.
+        _started_tool_call_ids: set[str] = set()
+
+        def _on_tool_start(tool_call_id, function_name, function_args):
+            """``hermes.tool.progress`` status=running; ``_``-prefixed tools stay off the wire."""
+            if not tool_call_id or function_name.startswith("_"):
+                return
+            _started_tool_call_ids.add(tool_call_id)
+            from agent.display import build_tool_preview, get_tool_emoji
+            label = build_tool_preview(function_name, function_args) or function_name
+            _stream_q.put_threadsafe(("__tool_progress__", {
+                "tool": function_name, "emoji": get_tool_emoji(function_name), "label": label,
+                "toolCallId": tool_call_id, "status": "running"}))
+
+        def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            if not tool_call_id or tool_call_id not in _started_tool_call_ids:
+                return
+            _started_tool_call_ids.discard(tool_call_id)
+            _stream_q.put_threadsafe(("__tool_progress__", {
+                "tool": function_name, "toolCallId": tool_call_id, "status": "completed"}))
+
+        # tool_progress_callback deliberately NOT wired: it would duplicate the structured
+        # start/complete callbacks (which carry the tool_call id).
+        agent_task, agent_ref = self._spawn_stream_agent(
+            _stream_q, tool_start_callback=_on_tool_start,
+            tool_complete_callback=_on_tool_complete, **run_kwargs)
+        # #13437 identity contract: an explicit-header client keeps addressing the id it
+        # sent; the response echoes that stable id while reads/writes adopt the live tip,
+        # so a rotation mid-turn (after these headers are prepared) never changes what the
+        # client should send next — it re-sends the same id and the tip resolution above
+        # finds whatever session is live by then.
+        return await self._write_sse_chat_completion(
+            request, completion_id, model_name, created, _stream_q,
+            agent_task, agent_ref, session_id=(provided_session_id or session_id),
+            gateway_session_key=gateway_session_key)
+
+    async def _compute_completion():
+        return await self._run_agent(**run_kwargs)
+    outcome, err = await self._run_idempotent(
+        request, body, _compute_completion, log_label="chat completions",
+        fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
+                          "hermes_notification_category"],
+        route="chat_completions",
+    )
+    if err is not None:
+        return err
+    result, usage = outcome
+    presentation_muted = result.get("_notification_presentation_suppressed") is True
+    final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
+    completed, is_partial, is_failed, err_msg = _result_flags(result)
+    if err_msg:
+        err_msg = _redact_api_error_text(err_msg)
+    finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg)
+    # Same #13437 identity contract as the SSE path: an explicit-header client is echoed
+    # the stable id it sent; a fingerprint-derived (header-less) turn keeps reporting the
+    # id the agent actually resolved, so headerless clients still learn where the turn went.
+    response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
+    if gateway_session_key:
+        response_headers["X-Hermes-Session-Key"] = gateway_session_key
+    # Hard fail (no usable text AND a real failure) -> 502 OpenAI error envelope so SDK
+    # clients raise instead of rendering the failure string as message.content.
+    if not final_response and (is_failed or is_partial):
+        err_body = _openai_error(
+            "" if presentation_muted else (err_msg or "Agent run did not produce a response."), err_type="server_error",
+            code="agent_incomplete")
+        err_body["error"]["hermes"] = {
+            "completed": completed, "partial": is_partial, "failed": is_failed}
+        response_headers["X-Hermes-Completed"] = "false"
+        response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+        return web.json_response(err_body, status=502, headers=response_headers)
+    # Soft partial (some text, run incomplete): 200 + finish_reason="length"/Hermes extras.
+    response_data = {
+        "id": completion_id, "object": "chat.completion", "created": created,
+        "model": model_name,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
+                     "finish_reason": finish_reason}],
+        "usage": _chat_usage_payload(usage)}
+    # Non-streaming twin of ``delta.reasoning_content`` (#99552).
+    reasoning_text = _turn_reasoning_text(history, user_message, result)
+    if reasoning_text and not presentation_muted:
+        response_data["choices"][0]["message"]["reasoning_content"] = reasoning_text
+    if is_partial or is_failed or not completed:
+        response_data["hermes"] = _hermes_extras(
+            completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
+        response_headers["X-Hermes-Completed"] = "false"
+        response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+        if err_msg and not presentation_muted:
+            response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
+    return web.json_response(response_data, headers=response_headers)
+
+async def _handle_responses(self, request: "web.Request") -> "web.Response":
+    """POST /v1/responses — OpenAI Responses API format."""
+    from gateway.platforms.api_server import (
+        ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
+        _content_has_visible_payload, _error_response, _invalid_request,
+        _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
+        _resolve_media_to_data_urls, _responses_usage_payload)
+    # Bound total in-flight agent runs (configurable; #7483).
+    limited = self._concurrency_limited_response()
+    if limited is not None:
+        return limited
+    gateway_session_key, key_err = self._parse_session_key_header(request)
+    if key_err is not None:
+        return key_err
+    try:
+        body = await request.json()
+    except Exception:
+        return _invalid_request("Invalid JSON in request body")
+    from gateway.platforms.api_server import _request_relay_metadata
+    relay_metadata = _request_relay_metadata(body)
+    raw_input = body.get("input")
+    if raw_input is None:
+        return _error_response("Missing 'input' field", 400)
+    instructions = body.get("instructions")
+    previous_response_id = body.get("previous_response_id")
+    conversation = body.get("conversation")
+    store = _coerce_request_bool(body.get("store"), default=True)
+    if conversation and previous_response_id:
+        return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
+    if conversation:
+        # A conversation name resolves to its latest response_id (unknown = new conversation).
+        previous_response_id = self._response_store.get_conversation(conversation)
+
+    input_messages: List[Dict[str, Any]] = []
+    if isinstance(raw_input, str):
+        input_messages = [{"role": "user", "content": raw_input}]
+    elif isinstance(raw_input, list):
+        for idx, item in enumerate(raw_input):
+            if isinstance(item, str):
+                input_messages.append({"role": "user", "content": item})
+            elif _is_reasoning_input_item(item):
+                continue
+            elif isinstance(item, dict):
+                try:
+                    content = _normalize_multimodal_content(item.get("content", ""))
+                except ValueError as exc:
+                    return _multimodal_validation_error(exc, param=f"input[{idx}].content")
+                input_messages.append({"role": item.get("role", "user"), "content": content})
+    else:
+        return _error_response("'input' must be a string or array", 400)
+
+    # Explicit conversation_history (stateless clients) beats previous_response_id chaining.
+    conversation_history: List[Dict[str, Any]] = []
+    raw_history = body.get("conversation_history")
+    if raw_history:
+        if not isinstance(raw_history, list):
+            return _error_response("'conversation_history' must be an array of message objects", 400)
+        for i, entry in enumerate(raw_history):
+            if _is_reasoning_input_item(entry):
+                continue
+            if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                return _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
+            try:
+                entry_content = _normalize_multimodal_content(entry["content"])
+            except ValueError as exc:
+                return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
+            conversation_history.append({"role": str(entry["role"]), "content": entry_content})
+        if previous_response_id:
+            logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+    stored_session_id = None
+    if not conversation_history and previous_response_id:
+        stored = self._response_store.get(previous_response_id)
+        if stored is None:
+            return _error_response(f"Previous response not found: {previous_response_id}", 404)
+        conversation_history = list(stored.get("conversation_history", []))
+        stored_session_id = stored.get("session_id")
+        if instructions is None:
+            instructions = stored.get("instructions")
+    # All input messages but the last become history; the last is the user message.
+    conversation_history.extend(input_messages[:-1])
+    user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
+    if not _content_has_visible_payload(user_message):
+        return _error_response("No user message found in input", 400)
+    if body.get("truncation") == "auto":
+        conversation_history = _auto_truncate_response_history(conversation_history)
+
+    # Session precedence: previous_response_id chain > declared X-Hermes-Session-Key > fresh
+    # id. Binding the declared key follows the same precedence: a chain-selected session must
+    # not have its routing key rewritten to this header.
+    _declared_selected = not stored_session_id and bool(gateway_session_key)
+    session_id = (
+        stored_session_id
+        or await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
+        or str(uuid.uuid4()))
+    stream = _coerce_request_bool(body.get("stream"), default=False)
+    route, agent_overrides, selection_error = self._select_request_route(
+        body, session_id=session_id, gateway_session_key=gateway_session_key,
+        model_alias=body.get("model"))
+    if selection_error is not None:
+        return selection_error
+    run_kwargs = dict(
+        user_message=user_message, conversation_history=conversation_history,
+        ephemeral_system_prompt=instructions, session_id=session_id,
+        gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
+        **agent_overrides, route=route, relay_metadata=relay_metadata)
+    if stream:
+        _stream_q = ThreadSafeAsyncQueue()
+
+        def _on_tool_progress(event_type, name, preview, args, **kwargs):
+            return  # structured start/complete callbacks carry the call id; progress ignored
+
+        def _on_tool_start(tool_call_id, function_name, function_args):
+            _stream_q.put_threadsafe(("__tool_started__", {
+                "tool_call_id": tool_call_id, "name": function_name,
+                "arguments": function_args or {}}))
+
+        def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            _stream_q.put_threadsafe(("__tool_completed__", {
+                "tool_call_id": tool_call_id, "name": function_name,
+                "arguments": function_args or {}, "result": function_result}))
+        agent_task, agent_ref = self._spawn_stream_agent(
+            _stream_q, tool_progress_callback=_on_tool_progress,
+            tool_start_callback=_on_tool_start, tool_complete_callback=_on_tool_complete,
+            **run_kwargs)
+        return await self._write_sse_responses(
+            request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}",
+            model=body.get("model", self._model_name), created_at=int(time.time()),
+            stream_q=_stream_q, agent_task=agent_task, agent_ref=agent_ref,
+            conversation_history=conversation_history, user_message=user_message,
+            instructions=instructions, conversation=conversation, store=store,
+            session_id=session_id, gateway_session_key=gateway_session_key)
+
+    async def _compute_response():
+        return await self._run_agent(**run_kwargs)
+    outcome, err = await self._run_idempotent(
+        request, body, _compute_response, log_label="responses",
+        fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
+        route="responses",
+    )
+    if err is not None:
+        return err
+    result, usage = outcome
+    final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
+    if not final_response:
+        final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
+    response_id = f"resp_{uuid.uuid4().hex[:28]}"
+    created_at = int(time.time())
+    full_history = self._build_response_conversation_history(
+        conversation_history, user_message, result, final_response,
+        tool_output_max_chars=self._history_tool_output_max_chars)
+    # _run_agent's effective session id carries compression rotations; storing it keeps
+    # previous_response_id chaining off the pre-rotation session (else compression re-fires).
+    _result_sid = result.get("session_id") if isinstance(result, dict) else None
+    _effective_session_id = (
+        _result_sid if isinstance(_result_sid, str) and _result_sid else session_id)
+    # Output items = current turn only (AIAgent returns a full transcript; mocked paths
+    # only the current-turn suffix).
+    output_start_index = self._response_messages_turn_start_index(
+        conversation_history, user_message, result)
+    response_data = {
+        "id": response_id, "object": "response", "status": "completed",
+        "created_at": created_at, "model": body.get("model", self._model_name),
+        "output": self._extract_output_items(result, start_index=output_start_index),
+        "usage": _responses_usage_payload(usage)}
+    if store:
+        self._response_store.put(response_id, {
+            "response": response_data, "conversation_history": full_history,
+            "instructions": instructions, "session_id": _effective_session_id})
+        if conversation:
+            self._response_store.set_conversation(conversation, response_id)
+    response_headers = {"X-Hermes-Session-Id": _effective_session_id}
+    if gateway_session_key:
+        response_headers["X-Hermes-Session-Key"] = gateway_session_key
+    return web.json_response(response_data, headers=response_headers)
+
+
 class OpenAICompatRoutesMixin:
     """/v1/chat/completions and /v1/responses handlers + SSE writers."""
 
@@ -554,207 +933,6 @@ class OpenAICompatRoutesMixin:
         agent_task.add_done_callback(lambda _fut: stream_q.put_nowait(None))
         return agent_task, agent_ref
 
-    async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
-        """POST /v1/chat/completions — OpenAI Chat Completions format."""
-        from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
-            _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
-            _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
-            _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
-        # Bound total in-flight agent runs (configurable; #7483).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
-        try:
-            body = await request.json()
-        except Exception:
-            return _error_response("Invalid JSON in request body", 400)
-        from gateway.platforms.api_server import _request_relay_metadata
-        relay_metadata = _request_relay_metadata(body)
-        messages = body.get("messages")
-        if not messages or not isinstance(messages, list):
-            return _invalid_request("Missing or invalid 'messages' field")
-        stream = _coerce_request_bool(body.get("stream"), default=False)
-
-        # System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
-        # (Anthropic rejects images there, OpenAI text models ignore them).
-        system_prompt = None
-        conversation_messages: List[Dict[str, str]] = []
-        for idx, msg in enumerate(messages):
-            role = msg.get("role", "")
-            raw_content = msg.get("content", "")
-            if role == "system":
-                content = _normalize_chat_content(raw_content)
-                system_prompt = content if system_prompt is None else system_prompt + "\n" + content
-            elif role in {"user", "assistant"}:
-                try:
-                    content = _normalize_multimodal_content(raw_content)
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
-                conversation_messages.append({"role": role, "content": content})
-        user_message: Any = (conversation_messages[-1].get("content", "") if conversation_messages else "")
-        history = conversation_messages[:-1]
-        if not _content_has_visible_payload(user_message):
-            return _invalid_request("No user message found in messages")
-
-        # X-Hermes-Session-Key scopes long-term memory per channel; independent of
-        # X-Hermes-Session-Id (the key persists across transcripts, the id rotates on /new).
-        gateway_session_key, key_err = self._parse_session_key_header(request)
-        if key_err is not None:
-            return key_err
-        # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
-        # requires a configured API key or any client could read history by guessing ids.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
-        if provided_session_id:
-            if not self._api_key:
-                logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity.")
-                return _error_response("Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature.", 403)
-            # Same guard as the native gateway: ids are interpolated into on-disk filenames.
-            from gateway.session import _is_path_unsafe
-            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
-                return _invalid_request("Invalid session ID")
-            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
-                return _invalid_request("Session ID too long")
-            session_id = provided_session_id
-            try:
-                db = await self._ensure_session_db_async()
-                if db is not None:
-                    # #98619/#13437: a client-addressed id from before a compression rotation
-                    # must adopt the live continuation tip — history loads from it, the turn and
-                    # the wake target bind it, and a detached delegation delivery row persisted
-                    # on the tip is what this continuation consumes. Same canonical resolution
-                    # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
-                    from gateway.platforms.api_server_runs import _resolve_live_session_id
-                    session_id = await _resolve_live_session_id(self, provided_session_id)
-                    history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
-            except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
-                history = []
-        else:
-            # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
-            # one Hermes session.
-            first_user = next(
-                (cm.get("content", "") for cm in conversation_messages if cm.get("role") == "user"), "")
-            session_id = _derive_chat_session_id(system_prompt, first_user)
-        completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
-        created = int(time.time())
-        route, agent_overrides, selection_error = self._select_request_route(
-            body, session_id=session_id, gateway_session_key=gateway_session_key,
-            model_alias=model_name)
-        if selection_error is not None:
-            return selection_error
-        run_kwargs = dict(
-            user_message=user_message, conversation_history=history,
-            ephemeral_system_prompt=system_prompt, session_id=session_id,
-            gateway_session_key=gateway_session_key, **agent_overrides, route=route,
-            relay_metadata=relay_metadata,
-            # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
-            # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
-            # and the client can resume the session by sending it again). A fingerprint-derived
-            # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
-            # there — the wake would hard-fail or land in history that client never reloads.
-            session_history_delivery=("1" if provided_session_id else ""))
-        # This is presentation only. The ordinary API-key/session authorization
-        # above still applies; it grants no internal ingress or control authority.
-        if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
-            run_kwargs["notification_category"] = "diagnostic"
-        if stream:
-            _stream_q = ThreadSafeAsyncQueue()
-            # tool_call_ids with an emitted "running": a "completed" without one (internal/
-            # filtered tools) is dropped rather than orphaned on the wire.
-            _started_tool_call_ids: set[str] = set()
-
-            def _on_tool_start(tool_call_id, function_name, function_args):
-                """``hermes.tool.progress`` status=running; ``_``-prefixed tools stay off the wire."""
-                if not tool_call_id or function_name.startswith("_"):
-                    return
-                _started_tool_call_ids.add(tool_call_id)
-                from agent.display import build_tool_preview, get_tool_emoji
-                label = build_tool_preview(function_name, function_args) or function_name
-                _stream_q.put_threadsafe(("__tool_progress__", {
-                    "tool": function_name, "emoji": get_tool_emoji(function_name), "label": label,
-                    "toolCallId": tool_call_id, "status": "running"}))
-
-            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
-                if not tool_call_id or tool_call_id not in _started_tool_call_ids:
-                    return
-                _started_tool_call_ids.discard(tool_call_id)
-                _stream_q.put_threadsafe(("__tool_progress__", {
-                    "tool": function_name, "toolCallId": tool_call_id, "status": "completed"}))
-
-            # tool_progress_callback deliberately NOT wired: it would duplicate the structured
-            # start/complete callbacks (which carry the tool_call id).
-            agent_task, agent_ref = self._spawn_stream_agent(
-                _stream_q, tool_start_callback=_on_tool_start,
-                tool_complete_callback=_on_tool_complete, **run_kwargs)
-            # #13437 identity contract: an explicit-header client keeps addressing the id it
-            # sent; the response echoes that stable id while reads/writes adopt the live tip,
-            # so a rotation mid-turn (after these headers are prepared) never changes what the
-            # client should send next — it re-sends the same id and the tip resolution above
-            # finds whatever session is live by then.
-            return await self._write_sse_chat_completion(
-                request, completion_id, model_name, created, _stream_q,
-                agent_task, agent_ref, session_id=(provided_session_id or session_id),
-                gateway_session_key=gateway_session_key)
-
-        async def _compute_completion():
-            return await self._run_agent(**run_kwargs)
-        outcome, err = await self._run_idempotent(
-            request, body, _compute_completion, log_label="chat completions",
-            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
-                              "hermes_notification_category"],
-            route="chat_completions",
-        )
-        if err is not None:
-            return err
-        result, usage = outcome
-        presentation_muted = result.get("_notification_presentation_suppressed") is True
-        final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
-        completed, is_partial, is_failed, err_msg = _result_flags(result)
-        if err_msg:
-            err_msg = _redact_api_error_text(err_msg)
-        finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg)
-        # Same #13437 identity contract as the SSE path: an explicit-header client is echoed
-        # the stable id it sent; a fingerprint-derived (header-less) turn keeps reporting the
-        # id the agent actually resolved, so headerless clients still learn where the turn went.
-        response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
-        if gateway_session_key:
-            response_headers["X-Hermes-Session-Key"] = gateway_session_key
-        # Hard fail (no usable text AND a real failure) -> 502 OpenAI error envelope so SDK
-        # clients raise instead of rendering the failure string as message.content.
-        if not final_response and (is_failed or is_partial):
-            err_body = _openai_error(
-                "" if presentation_muted else (err_msg or "Agent run did not produce a response."), err_type="server_error",
-                code="agent_incomplete")
-            err_body["error"]["hermes"] = {
-                "completed": completed, "partial": is_partial, "failed": is_failed}
-            response_headers["X-Hermes-Completed"] = "false"
-            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
-            return web.json_response(err_body, status=502, headers=response_headers)
-        # Soft partial (some text, run incomplete): 200 + finish_reason="length"/Hermes extras.
-        response_data = {
-            "id": completion_id, "object": "chat.completion", "created": created,
-            "model": model_name,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
-                         "finish_reason": finish_reason}],
-            "usage": _chat_usage_payload(usage)}
-        # Non-streaming twin of ``delta.reasoning_content`` (#99552).
-        reasoning_text = _turn_reasoning_text(history, user_message, result)
-        if reasoning_text and not presentation_muted:
-            response_data["choices"][0]["message"]["reasoning_content"] = reasoning_text
-        if is_partial or is_failed or not completed:
-            response_data["hermes"] = _hermes_extras(
-                completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
-            response_headers["X-Hermes-Completed"] = "false"
-            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
-            if err_msg and not presentation_muted:
-                response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
-        return web.json_response(response_data, headers=response_headers)
 
     async def _run_idempotent(
         self, request: "web.Request", body: Dict[str, Any], compute, *,
@@ -929,180 +1107,6 @@ class OpenAICompatRoutesMixin:
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(st.agent_error)[:300])
         return response
 
-    async def _handle_responses(self, request: "web.Request") -> "web.Response":
-        """POST /v1/responses — OpenAI Responses API format."""
-        from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
-            _content_has_visible_payload, _error_response, _invalid_request,
-            _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
-            _resolve_media_to_data_urls, _responses_usage_payload)
-        # Bound total in-flight agent runs (configurable; #7483).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
-        gateway_session_key, key_err = self._parse_session_key_header(request)
-        if key_err is not None:
-            return key_err
-        try:
-            body = await request.json()
-        except Exception:
-            return _invalid_request("Invalid JSON in request body")
-        from gateway.platforms.api_server import _request_relay_metadata
-        relay_metadata = _request_relay_metadata(body)
-        raw_input = body.get("input")
-        if raw_input is None:
-            return _error_response("Missing 'input' field", 400)
-        instructions = body.get("instructions")
-        previous_response_id = body.get("previous_response_id")
-        conversation = body.get("conversation")
-        store = _coerce_request_bool(body.get("store"), default=True)
-        if conversation and previous_response_id:
-            return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
-        if conversation:
-            # A conversation name resolves to its latest response_id (unknown = new conversation).
-            previous_response_id = self._response_store.get_conversation(conversation)
-
-        input_messages: List[Dict[str, Any]] = []
-        if isinstance(raw_input, str):
-            input_messages = [{"role": "user", "content": raw_input}]
-        elif isinstance(raw_input, list):
-            for idx, item in enumerate(raw_input):
-                if isinstance(item, str):
-                    input_messages.append({"role": "user", "content": item})
-                elif _is_reasoning_input_item(item):
-                    continue
-                elif isinstance(item, dict):
-                    try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
-                    except ValueError as exc:
-                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
-                    input_messages.append({"role": item.get("role", "user"), "content": content})
-        else:
-            return _error_response("'input' must be a string or array", 400)
-
-        # Explicit conversation_history (stateless clients) beats previous_response_id chaining.
-        conversation_history: List[Dict[str, Any]] = []
-        raw_history = body.get("conversation_history")
-        if raw_history:
-            if not isinstance(raw_history, list):
-                return _error_response("'conversation_history' must be an array of message objects", 400)
-            for i, entry in enumerate(raw_history):
-                if _is_reasoning_input_item(entry):
-                    continue
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
-                try:
-                    entry_content = _normalize_multimodal_content(entry["content"])
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
-                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
-            if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
-        stored_session_id = None
-        if not conversation_history and previous_response_id:
-            stored = self._response_store.get(previous_response_id)
-            if stored is None:
-                return _error_response(f"Previous response not found: {previous_response_id}", 404)
-            conversation_history = list(stored.get("conversation_history", []))
-            stored_session_id = stored.get("session_id")
-            if instructions is None:
-                instructions = stored.get("instructions")
-        # All input messages but the last become history; the last is the user message.
-        conversation_history.extend(input_messages[:-1])
-        user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
-        if not _content_has_visible_payload(user_message):
-            return _error_response("No user message found in input", 400)
-        if body.get("truncation") == "auto":
-            conversation_history = _auto_truncate_response_history(conversation_history)
-
-        # Session precedence: previous_response_id chain > declared X-Hermes-Session-Key > fresh
-        # id. Binding the declared key follows the same precedence: a chain-selected session must
-        # not have its routing key rewritten to this header.
-        _declared_selected = not stored_session_id and bool(gateway_session_key)
-        session_id = (
-            stored_session_id
-            or await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
-            or str(uuid.uuid4()))
-        stream = _coerce_request_bool(body.get("stream"), default=False)
-        route, agent_overrides, selection_error = self._select_request_route(
-            body, session_id=session_id, gateway_session_key=gateway_session_key,
-            model_alias=body.get("model"))
-        if selection_error is not None:
-            return selection_error
-        run_kwargs = dict(
-            user_message=user_message, conversation_history=conversation_history,
-            ephemeral_system_prompt=instructions, session_id=session_id,
-            gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route, relay_metadata=relay_metadata)
-        if stream:
-            _stream_q = ThreadSafeAsyncQueue()
-
-            def _on_tool_progress(event_type, name, preview, args, **kwargs):
-                return  # structured start/complete callbacks carry the call id; progress ignored
-
-            def _on_tool_start(tool_call_id, function_name, function_args):
-                _stream_q.put_threadsafe(("__tool_started__", {
-                    "tool_call_id": tool_call_id, "name": function_name,
-                    "arguments": function_args or {}}))
-
-            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
-                _stream_q.put_threadsafe(("__tool_completed__", {
-                    "tool_call_id": tool_call_id, "name": function_name,
-                    "arguments": function_args or {}, "result": function_result}))
-            agent_task, agent_ref = self._spawn_stream_agent(
-                _stream_q, tool_progress_callback=_on_tool_progress,
-                tool_start_callback=_on_tool_start, tool_complete_callback=_on_tool_complete,
-                **run_kwargs)
-            return await self._write_sse_responses(
-                request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}",
-                model=body.get("model", self._model_name), created_at=int(time.time()),
-                stream_q=_stream_q, agent_task=agent_task, agent_ref=agent_ref,
-                conversation_history=conversation_history, user_message=user_message,
-                instructions=instructions, conversation=conversation, store=store,
-                session_id=session_id, gateway_session_key=gateway_session_key)
-
-        async def _compute_response():
-            return await self._run_agent(**run_kwargs)
-        outcome, err = await self._run_idempotent(
-            request, body, _compute_response, log_label="responses",
-            fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
-            route="responses",
-        )
-        if err is not None:
-            return err
-        result, usage = outcome
-        final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
-        if not final_response:
-            final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
-        response_id = f"resp_{uuid.uuid4().hex[:28]}"
-        created_at = int(time.time())
-        full_history = self._build_response_conversation_history(
-            conversation_history, user_message, result, final_response,
-            tool_output_max_chars=self._history_tool_output_max_chars)
-        # _run_agent's effective session id carries compression rotations; storing it keeps
-        # previous_response_id chaining off the pre-rotation session (else compression re-fires).
-        _result_sid = result.get("session_id") if isinstance(result, dict) else None
-        _effective_session_id = (
-            _result_sid if isinstance(_result_sid, str) and _result_sid else session_id)
-        # Output items = current turn only (AIAgent returns a full transcript; mocked paths
-        # only the current-turn suffix).
-        output_start_index = self._response_messages_turn_start_index(
-            conversation_history, user_message, result)
-        response_data = {
-            "id": response_id, "object": "response", "status": "completed",
-            "created_at": created_at, "model": body.get("model", self._model_name),
-            "output": self._extract_output_items(result, start_index=output_start_index),
-            "usage": _responses_usage_payload(usage)}
-        if store:
-            self._response_store.put(response_id, {
-                "response": response_data, "conversation_history": full_history,
-                "instructions": instructions, "session_id": _effective_session_id})
-            if conversation:
-                self._response_store.set_conversation(conversation, response_id)
-        response_headers = {"X-Hermes-Session-Id": _effective_session_id}
-        if gateway_session_key:
-            response_headers["X-Hermes-Session-Key"] = gateway_session_key
-        return web.json_response(response_data, headers=response_headers)
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":
         """GET /v1/responses/{response_id} — retrieve a stored response."""

@@ -283,6 +283,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
 
+    def _effective_reply_prefix(self) -> str:
+        """Prefix for outgoing replies in self-chat mode."""
+        if (_wenv("WHATSAPP_MODE", default="self-chat") or "self-chat") != "self-chat":
+            return ""
+        if self._reply_prefix is not None:
+            return self._reply_prefix.replace("\\n", "\n")
+        env_prefix = get_scoped_secret("WHATSAPP_REPLY_PREFIX", None)
+        if env_prefix is not None:
+            return env_prefix.replace("\\n", "\n")
+        return self.DEFAULT_REPLY_PREFIX
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
         if WhatsAppAdapter._DEFAULT_BRIDGE_DIR is None:

@@ -631,11 +631,14 @@ def test_declined_INITIAL_draft_is_not_retried_as_a_plain_send():
     StreamTransportMixin: ops were ['draft', 'send'].
     """
     from gateway.platforms.base import SendResult
+    from gateway.stream_consumer import GatewayStreamConsumer
     from gateway.stream_consumer_transport import StreamTransportMixin
 
     adapter, connector = _code_only_adapter()
 
     class _Consumer(StreamTransportMixin):
+        _first_send = GatewayStreamConsumer._first_send
+
         def __init__(self):
             self.adapter = adapter
             self.chat_id = "C1"

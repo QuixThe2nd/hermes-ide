@@ -6,10 +6,9 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 import json
 import math
 import os
-import time
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 from agent.usage_pricing import normalize_usage
 
@@ -188,42 +187,3 @@ class ApiRequestHooksMixin:
         return {
             "_truncated": True, "original_type": type(value).__name__, "preview": encoded[:limit]
         }
-
-
-
-    def _invoke_api_request_error_hook(
-        self, *, task_id: str, turn_id: str, api_request_id: str, api_call_count: int,
-        api_start_time: float, api_kwargs: Optional[Dict[str, Any]], error_type: str,
-        error_message: str, status_code: Optional[int] = None, retry_count: Optional[int] = None,
-        max_retries: Optional[int] = None, retryable: Optional[bool] = None,
-        reason: Optional[str] = None,
-    ) -> None:
-        # Lazy module import (not from-import) so tests can replace lifecycle dispatch at this call site.
-        with suppress(Exception):
-            from hermes_cli import lifecycle as _lifecycle
-            if not _lifecycle.has_hook("api_request_error"):
-                return
-            ended_at = time.time()
-            _lifecycle.invoke_hook(
-                "api_request_error",
-                task_id=task_id,
-                turn_id=turn_id,
-                api_request_id=api_request_id,
-                session_id=self.session_id or "",
-                platform=self.platform or "",
-                model=self.model,
-                provider=self.provider,
-                base_url=self.base_url,
-                api_mode=self.api_mode,
-                api_call_count=api_call_count,
-                api_duration=ended_at - api_start_time,
-                started_at=api_start_time,
-                ended_at=ended_at,
-                status_code=status_code,
-                retry_count=retry_count,
-                max_retries=max_retries,
-                retryable=retryable,
-                reason=reason,
-                error={"type": error_type, "message": error_message},
-                request=self._api_request_payload_for_hook(api_kwargs),
-            )

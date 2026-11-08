@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.tool_executor import _ToolCallRef, _begin_tool_execution, _ensure_file_checkpoint
-from agent.turn_explainers import TurnExplainersMixin
+from run_agent import AIAgent
 from tools.checkpoint_manager import CheckpointManager
 from tools.terminal_tool import _active_environments, _env_lock
 
@@ -81,7 +81,7 @@ def test_container_backend_task_leaves_host_store_untouched(tmp_path, manager, c
     _ensure_file_checkpoint(agent, "write_file", {"path": path}, container_task_id)
     ref = _ToolCallRef("terminal", {"command": f"rm -rf {host_file.parent}"}, container_task_id, "call-1", [])
     _begin_tool_execution(agent, ref, None)
-    TurnExplainersMixin._record_file_mutation_result(
+    AIAgent._record_file_mutation_result(
         agent, "write_file", {"path": path, "content": "x"},
         json.dumps({"bytes_written": 1, "resolved_path": path}), False, task_id=container_task_id,
     )

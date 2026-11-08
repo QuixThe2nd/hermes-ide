@@ -125,7 +125,11 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
-from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from gateway.platforms.api_server_openai_routes import (
+    OpenAICompatRoutesMixin,
+    _handle_chat_completions as _openai_handle_chat_completions,
+    _handle_responses as _openai_handle_responses,
+)
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -1170,8 +1174,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _history_tool_output_max_chars: int = 0
 
     # Admission-gated OpenAI-compatible entry points (bodies live in the mixin).
-    _handle_chat_completions = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_chat_completions)
-    _handle_responses = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_responses)
+    _handle_chat_completions = _admit_api_agent_request(_openai_handle_chat_completions)
+    _handle_responses = _admit_api_agent_request(_openai_handle_responses)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)

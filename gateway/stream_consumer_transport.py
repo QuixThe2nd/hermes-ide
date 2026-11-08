@@ -264,43 +264,6 @@ class StreamTransportMixin:
         # ``is True`` keeps MagicMock auto-children from enabling fresh-final.
         return result is True
 
-    async def _try_fresh_final(self, text: str, *, is_turn_final: bool = True) -> bool:
-        """Send ``text`` fresh and best-effort delete the preview(s); False on any failure so
-        the caller falls back to edit.  ``is_turn_final=False`` leaves the delivery flag unset.
-
-        ``is_turn_final`` is False when finalizing an interim segment at a tool boundary (a preamble) rather
-        than the turn-final answer; the final-delivery flag is then left unset so the gateway still delivers
-        the real answer from the next API call (#29346).
-        Ported from openclaw/openclaw#72038.
-        """
-        # Replacing every preview is only sound while ``text`` holds the whole answer;
-        # after a split, deleting sealed heads would erase delivered text.
-        if self._turn_split_delivery:
-            return False
-        stale_ids = self._stale_preview_ids()
-        try:
-            result = await self.adapter.send(
-                chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
-        except Exception as e:
-            logger.debug("Fresh-final send failed, falling back to edit: %s", e)
-            return False
-        if not getattr(result, "success", False):
-            return False
-        new_message_id = getattr(result, "message_id", None)
-        # Record delivery BEFORE the best-effort preview cleanup: the fresh send already
-        # landed, so a stuck/cancelled delete must never leave the delivery flags unset —
-        # the gateway would treat that as "not delivered" and re-send the full final
-        # (duplicate final send, same class as the wecom ack-timeout RCA).
-        self._adopt_message_id(new_message_id)
-        self._already_sent = True
-        self._last_sent_text = text
-        if is_turn_final:
-            self._final_response_sent = True
-            self._record_turn_final_payload(text)
-        # Best-effort preview cleanup LAST; never delete the message just sent.
-        await self._delete_previews(stale_ids, skip=new_message_id, label="Fresh-final")
-        self._preview_message_ids = set()
-        return True
 
     def _adopt_message_id(self, message_id) -> None:
         """Retarget edits at ``message_id``; None → "__no_edit__" sentinel so we never edit it."""
@@ -462,78 +425,6 @@ class StreamTransportMixin:
         self._notify_visible_progress()  # landed draft frame = user-visible progress
         return True
 
-    async def _first_send(self, text: str, *, finalize: bool) -> bool:
-        """First send, threaded to the user's message (correct topic/thread)."""
-        if getattr(self, "_egress_declined", False):
-            # The connector refused this destination earlier in the run (see
-            # _send_draft_frame). This is where every fallback path converges,
-            # so the check belongs here rather than at each caller.
-            logger.warning(
-                "suppressing the plain-send fallback: the connector already "
-                "declined this destination for this run"
-            )
-            return False
-        result = await self.adapter.send(
-            chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
-            metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
-        if not result.success:
-            self._edit_supported = False
-            return False
-        self._already_sent = True
-        self._notify_visible_progress()  # landed send = user-visible progress
-        self._last_sent_text = text
-        if result.message_id:
-            self._adopt_message_id(result.message_id)
-            self._track_preview_ids_from_result(result)
-        else:
-            # No editable id: fallback mode + sentinel so we don't re-enter first-send.
-            self._enter_fallback_mode(self._visible_prefix())
-            self._message_id = "__no_edit__"
-        self._notify_new_message()
-        return True
-
-    async def _edit_existing(self, text: str, *, finalize: bool, is_turn_final: bool) -> bool:
-        """Edit the live preview (or replace it via fresh-final when finalizing)."""
-        # REQUIRES_EDIT_FINALIZE adapters need the finalize=True edit even when
-        # unchanged; everyone else short-circuits.
-        if text == self._last_sent_text and not (finalize and self._adapter_requires_finalize):
-            return True
-        # Fresh-final: replace a long-lived preview with a fresh message, or whenever
-        # the adapter prefers it (Telegram's send path renders richer markdown).  An
-        # explicit hook returning False must NOT be overridden by the time threshold
-        # (delete is best-effort; both messages would stay on screen).  Check the
-        # CLASS (MagicMock auto-creates attrs) plus instance __dict__ (test doubles).
-        has_prefers_hook = (
-            hasattr(type(self.adapter), "prefers_fresh_final_streaming")
-            or "prefers_fresh_final_streaming" in getattr(self.adapter, "__dict__", {}))
-        prefers_fresh = self._adapter_prefers_fresh_final(text)  # probed every edit (hook contract)
-        if finalize and (
-            prefers_fresh or (not has_prefers_hook and self._should_send_fresh_final())
-        ) and await self._try_fresh_final(text, is_turn_final=is_turn_final):
-            self._notify_visible_progress()  # fresh-final message landed
-            return True
-        result = await self._edit_message(message_id=self._message_id, content=text,
-                                          finalize=finalize)
-        if not result.success:
-            return await self._on_edit_failure(result, text, finalize=finalize,
-                                               is_turn_final=is_turn_final)
-        self._already_sent = True
-        self._notify_visible_progress()  # landed edit = user-visible progress
-        self._track_preview_ids_from_result(result)
-        # Oversized edit split across continuations: message_id is now the LAST
-        # continuation, which holds only the final chunk — retarget edits and reset
-        # skip-if-same.  getattr keeps SimpleNamespace test mocks working.
-        if ((getattr(result, "continuation_message_ids", ()) or ())
-                and result.message_id and result.message_id != self._message_id):
-            self._last_edit_overflowed = True
-            self._turn_split_delivery = True
-            self._adopt_message_id(str(result.message_id))
-            self._last_sent_text = ""
-            self._notify_new_message()
-        else:
-            self._last_sent_text = text
-        self._flood_strikes = 0
-        return True
 
     def _enter_fallback_mode(self, prefix: str) -> None:
         """Edits are over for this stream: send only the missing tail at got_done."""

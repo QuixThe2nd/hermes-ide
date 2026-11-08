@@ -29,6 +29,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from agent.secret_sources.bitwarden import _expected_sha256
 from utils import atomic_json_write, atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -277,15 +278,6 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
         )
     logger.info("Verified iron-proxy checksums.txt GPG signature.")
     return True
-
-
-def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    """Parse ``sha256sum`` output (``<hex>  <filename>``)."""
-    for line in checksum_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2 and parts[-1] == asset_name:
-            return parts[0]
-    raise RuntimeError(f"No checksum entry for {asset_name} in {checksum_file.name}")
 
 
 def _sha256_file(path: Path) -> str:
