@@ -1298,6 +1298,13 @@ _TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
 _TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
 _PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
 _PLANNED_STOP_MARKER_TTL_S = 60
+# `hermes update` writes this before SIGUSR1-ing a gateway it is about to
+# restart with new code. A marker-named restart drains with update semantics:
+# it defers indefinitely while genuinely active work remains, but units idle
+# past the inactivity timeout no longer hold it (an update must complete,
+# unlike a user restart which waits forever on purpose).
+_UPDATE_RESTART_MARKER_FILENAME = ".gateway-update-restart.json"
+_UPDATE_RESTART_MARKER_TTL_S = 300
 
 
 def _get_takeover_marker_path(hermes_home: Optional[Path] = None) -> Path:
@@ -1602,6 +1609,30 @@ def consume_planned_stop_marker_for_self() -> bool:
     """Return True when the current process is being intentionally stopped."""
     return _consume_pid_marker_for_self(
         _get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S
+    )
+
+
+def write_update_restart_marker(target_pid: int, *, target_home: Optional[Path] = None) -> bool:
+    """Record that the NEXT SIGUSR1 to ``target_pid`` restarts it onto updated code.
+
+    Written by the updater before its graceful SIGUSR1 drain so the gateway's
+    restart handler can adopt update-drain semantics (unbounded defer on
+    active work; idle-past-timeout units do not block). Best-effort: a failed
+    write degrades to an ordinary restart, never blocks the update.
+    """
+    home = _canonical_hermes_home(target_home or _get_process_hermes_home())
+    return _write_marker(home / _UPDATE_RESTART_MARKER_FILENAME, {
+        "target_pid": target_pid, "target_start_time": _get_process_start_time(target_pid),
+        "target_hermes_home": str(home), "updater_pid": os.getpid(),
+        "written_at": _utc_now_iso(),
+    })
+
+
+def consume_update_restart_marker_for_self() -> bool:
+    """Consume the update-restart marker; True => this restart loads updated code."""
+    home = _get_process_hermes_home()
+    return _consume_pid_marker_for_self(
+        home / _UPDATE_RESTART_MARKER_FILENAME, ttl_s=_UPDATE_RESTART_MARKER_TTL_S
     )
 
 

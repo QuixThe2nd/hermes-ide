@@ -1158,6 +1158,9 @@ def _drain_or_signal_gateway_for_update(pid: int, drain_budget: float, label: st
             "process tree — signalling restart and letting the gateway "
             "drain itself (avoids the cron-update deadlock, #100179)"
         )
+        with _best_effort("Update-restart marker write failed: %s"):
+            from gateway.status import write_update_restart_marker
+            write_update_restart_marker(pid, target_home=_gateway_home_for_pid(pid))
         return _request_gateway_self_restart(pid)
     if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
         print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
@@ -1165,9 +1168,11 @@ def _drain_or_signal_gateway_for_update(pid: int, drain_budget: float, label: st
         return True
     print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    _home = _gateway_home_for_pid(pid)
     return _graceful_restart_via_sigusr1(
         pid, drain_timeout=drain_budget,
-        on_progress=drain_progress_reporter(_gateway_home_for_pid(pid), budget_s=drain_budget))
+        on_progress=drain_progress_reporter(_home, budget_s=drain_budget),
+        from_update=True, hermes_home=_home)
 
 
 def _gateway_home_for_pid(pid: int):

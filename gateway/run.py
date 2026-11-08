@@ -5030,6 +5030,22 @@ _CONTROL_INTERRUPT_MESSAGES = frozenset({
     _INTERRUPT_REASON_TIMEOUT.lower(), _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
     _INTERRUPT_REASON_EVICTED.lower(), _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(),
     _INTERRUPT_REASON_GATEWAY_RESTART.lower()})
+_SHUTDOWN_INTERRUPT_MESSAGES = frozenset({
+    _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(), _INTERRUPT_REASON_GATEWAY_RESTART.lower()})
+
+
+def _is_gateway_shutdown_interrupt_result(agent_result: dict) -> bool:
+    """True when the turn was interrupted by the gateway's own shutdown/restart.
+
+    The interrupt cause rides ``interrupt_message`` (the reason string passed
+    to ``request_hard_interrupt`` by the shutdown drain) — not user /stop,
+    timeout, or eviction, which keep their existing reply behavior.
+    """
+    message = agent_result.get("interrupt_message")
+    if not message:
+        return False
+    normalized = " ".join(str(message).strip().split()).lower()
+    return normalized in _SHUTDOWN_INTERRUPT_MESSAGES
 
 
 def _is_control_interrupt_message(message: Optional[str]) -> bool:
@@ -5610,6 +5626,15 @@ def _normalize_empty_agent_response(
                 "⚠️ Your message was interrupted before processing started "
                 "(likely by a recent /stop). Please send it again."
             )
+        # A shutdown/restart interrupt killed a turn that was doing real work:
+        # the gateway — not the user, not a transient provider error — ended
+        # it. Say so instead of silence or the generic transient-error reply,
+        # and point at /retry (the work is lost with the process either way).
+        if _is_gateway_shutdown_interrupt_result(agent_result):
+            return (
+                "⚠️ The gateway had to restart mid-task, so this task did "
+                "not finish. Use /retry to run it again."
+            )
         return response
     if api_calls > 0:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
@@ -6151,6 +6176,7 @@ class GatewayRunner(
     _restart_task_started: bool = False
     _restart_detached: bool = False
     _restart_via_service: bool = False
+    _restart_from_update: bool = False
     _detached_restart_watcher_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
     # ``_restart_generation`` counts restart cycles this process opened;
@@ -6364,6 +6390,7 @@ class GatewayRunner(
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
+        self._restart_from_update = False
         self._restart_platforms = True
         self._detached_restart_watcher_started = False
         self._restart_command_source: Optional[SessionSource] = None
@@ -12085,12 +12112,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     def restart_signal_handler():
         # SIGUSR1 (`hermes gateway restart`, `hermes update`) is a thin trigger of
         # the ONE restart core — same overlap pipeline as /restart and the agent
-        # restart tool, honouring gateway.restart_platforms.
+        # restart tool, honouring gateway.restart_platforms. A consumed
+        # update-restart marker says the SIGUSR1 came from `hermes update`
+        # restarting this gateway onto new code, so the drain adopts update
+        # semantics (idle-past-timeout units stop holding it).
         from gateway.restart import _runner_restart_platforms
+        from gateway.status import consume_update_restart_marker_for_self
 
         runner.request_restart(
             detached=False, via_service=True,
             restart_platforms=_runner_restart_platforms(runner),
+            from_update=consume_update_restart_marker_for_self(),
         )
 
     loop = asyncio.get_running_loop()
