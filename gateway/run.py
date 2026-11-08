@@ -6917,21 +6917,24 @@ class TurnRunner(_TurnRunnerCore):
             # and marks only a landed edit as user-visible progress.
             return await ctx.deliver_visible(lambda: adapter.edit_message(**kwargs))
 
+        def _codebox_active() -> bool:
+            return bool(ctx.progress_codebox)
+
+        def _chunking_active() -> bool:
+            # Buffer slicing only serves the editable lane; non-editable rows
+            # are chunked at send time (_send_progress_row).
+            return _codebox_active() and can_edit
+
         def _progress_text(lines: list) -> str:
             # Code-box presentation (display.tool_progress_codebox): the whole
             # accumulated group — including every already-fenced command/code
             # preview row — becomes ONE unlabelled fenced block, with inner ```
             # escaped so they render inside the box instead of breaking out.
-            # Only the editable (accumulate) lane boxes; "separate"-mode rows
-            # and no-edit fallback bubbles keep their plain per-row text.
+            # Applies to every lane: accumulated bubbles, "separate" per-row
+            # messages and no-edit fallback sends.
             from gateway.display_config import format_progress_group
 
-            return format_progress_group(
-                lines, bool(ctx.progress_codebox) and can_edit
-            )
-
-        def _codebox_active() -> bool:
-            return bool(ctx.progress_codebox) and can_edit
+            return format_progress_group(lines, _codebox_active())
 
         def _absorb_row(raw) -> str:
             """Append a tool row, slicing it when its boxed rendering alone
@@ -6939,7 +6942,7 @@ class TurnRunner(_TurnRunnerCore):
             between rows — without this the native adapter split the row and
             later edits truncated the tail, losing repeat counters)."""
             nonlocal _row_tail, _row_head_len, _row_slices
-            if _codebox_active():
+            if _chunking_active():
                 from gateway.display_config import chunk_oversized_progress_row
 
                 slices = chunk_oversized_progress_row(
@@ -6961,7 +6964,7 @@ class TurnRunner(_TurnRunnerCore):
                 # dedup memory says this row repeats: seed the fresh bubble with the
                 # counted row instead of a plain copy (or a row the buffer dropped).
                 line = f"{base_msg} (×{count + 1})"
-                if _codebox_active():
+                if _chunking_active():
                     from gateway.display_config import chunk_oversized_progress_row
 
                     slices = chunk_oversized_progress_row(
@@ -6983,7 +6986,7 @@ class TurnRunner(_TurnRunnerCore):
                 tail = repeat_row_text(base_msg, count, _codebox_active())[
                     _row_head_len:
                 ]
-                if _codebox_active():
+                if _chunking_active():
                     from gateway.display_config import chunk_oversized_progress_row
 
                     slices = chunk_oversized_progress_row(
@@ -6997,7 +7000,7 @@ class TurnRunner(_TurnRunnerCore):
                 _row_slices = 1
                 return tail
             line = f"{base_msg} (×{count + 1})"
-            if _codebox_active():
+            if _chunking_active():
                 from gateway.display_config import chunk_oversized_progress_row
 
                 slices = chunk_oversized_progress_row(
@@ -7041,6 +7044,18 @@ class TurnRunner(_TurnRunnerCore):
                 metadata=ctx._progress_metadata,
             ))
             _track_progress_result(result)
+            return result
+
+        async def _send_progress_row(row):
+            """Send one row as its own message(s): "separate" grouping and
+            non-editable fallbacks (boxed + sliced per the codebox setting)."""
+            from gateway.display_config import format_progress_row
+
+            result = None
+            for _text in format_progress_row(
+                row, _codebox_active(), _PROGRESS_TEXT_LIMIT, _progress_len_fn
+            ):
+                result = await _send_progress_text(_text)
             return result
 
         async def _roll_progress_overflow_if_needed() -> bool:
@@ -7120,7 +7135,7 @@ class TurnRunner(_TurnRunnerCore):
                 # never re-send (or drop) them.
                 for _line in list(_separate_pending_lines):
                     try:
-                        await _send_progress_text(str(_line))
+                        await _send_progress_row(_line)
                     except Exception:
                         logger.debug(
                             "progress flush before agent status failed",
@@ -7343,21 +7358,9 @@ class TurnRunner(_TurnRunnerCore):
                             _last_edit_ts = time.monotonic()
                         else:
                             can_edit = False
-                        _flood_result = await ctx.deliver_visible(lambda: adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=msg,
-                            reply_to=ctx._progress_reply_to,
-                            metadata=ctx._progress_metadata,
-                        ))
-                        if getattr(_flood_result, "success", False):
-                            # deliver_visible already marked the landed line.
-                            if (
-                                ctx._cleanup_progress
-                                and getattr(_flood_result, "message_id", None)
-                            ):
-                                ctx._cleanup_msg_ids.append(
-                                    str(_flood_result.message_id)
-                                )
+                        # deliver_visible (inside the helper) already marked the
+                        # landed line; cleanup ids are tracked there too.
+                        await _send_progress_row(msg)
                 else:
                     if can_edit:
                         # First tool: send all accumulated text as new message
