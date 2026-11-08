@@ -2209,26 +2209,6 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
-async def _sleep_heartbeat_silence_deadline(interval: float, turn_ctx, origin: list) -> None:
-    """Sleep until ``interval`` of USER-VISIBLE silence has elapsed for this turn.
-
-    ``origin`` is a single-element ``time.monotonic()`` holder naming the last
-    user-visible event (progress delivery or a consumed heartbeat tick). Sleeps
-    out the full remaining wait, then re-reads the turn's visible-progress
-    timestamp: a delivery that landed mid-wait (``TurnContext.mark_visible_
-    progress``) moves ``origin`` forward and the wait resumes — the heartbeat
-    never fires within ``interval`` after visible progress, while a genuinely
-    quiet turn still gets one a full interval after the last visible event.
-    Shared by both heartbeat loops (facade ``_notify_long_running`` and
-    ``run_turn._run_agent_notify_long_running``)."""
-    while True:
-        await asyncio.sleep(interval - (time.monotonic() - origin[0]))
-        _lp = turn_ctx.last_visible_progress_monotonic()
-        if _lp is None or _lp <= origin[0]:
-            return
-        origin[0] = _lp
-
-
 def _stamp_hygiene_compression_provenance(
     agent: Any,
     desc: str,
@@ -3589,7 +3569,6 @@ _AGENT_ENV_BRIDGE = {
     "gateway_timeout": "HERMES_AGENT_TIMEOUT",
     "gateway_turn_lease_timeout": "HERMES_TURN_LEASE_TIMEOUT",
     "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
-    "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
     "session_stall_timeout": "HERMES_SESSION_STALL_TIMEOUT",
     # Internal bridge only — config.yaml (agent.reconnect_attention_after) is the documented setting.
     "reconnect_attention_after": "HERMES_RECONNECT_ATTENTION_AFTER_SECONDS",
@@ -3915,8 +3894,6 @@ if _config_path.exists():
                 )
             if "gateway_timeout_warning" in _agent_cfg:
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
-            if "gateway_notify_interval" in _agent_cfg:
-                os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
             if "session_stall_timeout" in _agent_cfg:
                 os.environ["HERMES_SESSION_STALL_TIMEOUT"] = str(
                     _agent_cfg["session_stall_timeout"]
@@ -7378,38 +7355,6 @@ class GatewayRunner(
 
 
 
-
-    @staticmethod
-    def _format_long_running_status_detail(
-        activity: Optional[dict], *, include_iterations: bool
-    ) -> str:
-        """Render the `` — iteration N/M, <action>`` suffix for the long-running
-        heartbeat bubble from an agent activity summary.
-
-        ``sys.maxsize`` means the iteration cap is unbounded, so the shared
-        ``format_iteration_progress`` drops the sentinel denominator instead of
-        printing it (#102806) — the same contract the busy acknowledgement
-        already honors. Empty summary or a malformed snapshot renders no
-        detail, never an error.
-        """
-        if not activity:
-            return ""
-        try:
-            parts: list = []
-            if include_iterations:
-                from agent.session_activity import format_iteration_progress
-
-                parts.append(
-                    format_iteration_progress(
-                        activity["api_call_count"], activity["max_iterations"]
-                    )
-                )
-            action = activity.get("current_tool") or activity.get("last_activity_desc")
-            if action:
-                parts.append(str(action))
-        except Exception:
-            return ""
-        return " — " + ", ".join(parts) if parts else ""
 
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
     # running on the gateway's event loop (session-expiry sweep, in-turn

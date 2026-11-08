@@ -1589,23 +1589,6 @@ class GatewayShutdownMixin:
                 agent, context="shutdown finalize"
             )
 
-    def _should_emit_long_running_notification(
-        self, session_key: Optional[str], agent: Any, executor_task: Optional[Any],
-    ) -> bool:
-        """Emit the heartbeat only while this task still owns the live run (not after ``/new`` rebinds).
-
-        Terminal conditions only: stop once the executor finishes, the agent is gone, or the
-        session key has been rebound to a different live agent (e.g. the user sent ``/new`` and
-        a fresh agent took the slot mid-run, #12029).
-        """
-        if agent is None or (executor_task is not None and executor_task.done()):
-            return False
-        if session_key:
-            _hb_state = self._peek_session_state(session_key)
-            if (_hb_state.turn.agent if _hb_state else None) is not agent:
-                return False
-        return True
-
     def _defer_agent_cleanup_until_future_done(
         self,
         future: asyncio.Future,

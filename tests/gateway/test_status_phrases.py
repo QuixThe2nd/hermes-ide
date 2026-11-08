@@ -56,17 +56,12 @@ def test_choose_status_phrase_uses_custom_catalog_without_leaking_args():
     assert "SECRET" not in msg
 
 
-def test_discord_zero_config_heartbeat_is_phase_line():
-    """No config set → Discord resolves phase mode and the heartbeat names
-    the current wait (tool / model / packing) with its elapsed time — never
-    an iteration counter or provider wait-notice essay."""
-    from gateway.display_config import resolve_display_setting
+def test_phase_heartbeat_names_current_wait_with_elapsed_time():
+    """The phase heartbeat names the current wait (tool / model / packing)
+    with its elapsed time — never an iteration counter or provider
+    wait-notice essay."""
     from gateway.status_phrases import format_phase_heartbeat
 
-    assert (
-        resolve_display_setting({}, "discord", "long_running_notifications", True)
-        == "phase"
-    )
     # Tool in flight: tool function name + elapsed on this tool.
     assert (
         format_phase_heartbeat(

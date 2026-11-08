@@ -36,7 +36,6 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "suppress_warning_notifications": False,
-    "long_running_notifications": True,
     "busy_ack_detail": True,
     # Whether busy_input_mode=steer sends a visible "Steered into current run"
     # acknowledgment after successfully injecting the user's mid-turn message.
@@ -48,7 +47,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # context (the immediate ack only promises that it WILL arrive). Disable
     # to keep only the initial acknowledgment.
     "busy_steer_delivered_ack_enabled": True,
-    # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
+    # When true, delete tool-progress / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
     # live, just cleaned up after success so the chat doesn't fill up with
@@ -71,30 +70,22 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
 _TIER_HIGH = {
     "tool_progress": "describe", "show_reasoning": False, "tool_preview_length": 40,
     "streaming": None,  # follow global
-    "interim_assistant_messages": True, "long_running_notifications": True, "busy_ack_detail": True,
+    "interim_assistant_messages": True, "busy_ack_detail": True,
 }
 _TIER_MEDIUM = {**_TIER_HIGH, "tool_progress": "new"}
 _TIER_LOW = {
     **_TIER_HIGH, "tool_progress": "off", "streaming": False,
-    "interim_assistant_messages": False, "long_running_notifications": False, "busy_ack_detail": False,
+    "interim_assistant_messages": False, "busy_ack_detail": False,
 }
 _TIER_MINIMAL = {**_TIER_LOW, "tool_preview_length": 0}
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
-    # Discord's long-running heartbeat defaults to the phase line ("⏳ terminal
-    # 1m42s" / "⏳ grok-4.6 38s" / "⏳ packing 12s") — the current wait plus its
-    # elapsed time — instead of the raw diagnostic join ("⏳ Working — 3 min —
-    # iteration N/M, <provider wait notice>"). "generic" keeps the catalog
-    # phrase ("⏳ still working"); raw detail remains available via
-    # display.platforms.discord.long_running_notifications: true (plus
-    # busy_ack_detail for the iteration counter).
     # Discord shows the FULL tool command and all arguments by default
     # (tool_preview_length 0 = unlimited); an explicit positive
     # display.platforms.discord.tool_preview_length re-caps.
     "discord":     {
         **_TIER_HIGH,
-        "long_running_notifications": "phase",
         "tool_preview_length": 0,
     },
 
@@ -189,14 +180,6 @@ def _norm_bool(value: Any) -> bool:
     return value.strip().lower() in _TRUTHY | {"raw", "verbose"} if isinstance(value, str) else bool(value)
 
 
-def _norm_long_running(value: Any) -> Any:
-    if isinstance(value, str):
-        val = value.strip().lower()
-        if val in {"generic", "phase"}:
-            return val
-    return _norm_bool(value)
-
-
 def _norm_suppress_warning_notifications(value: Any) -> bool:
     # Only an explicit, recognized opt-in may hide engine diagnostics.
     if isinstance(value, bool):
@@ -233,7 +216,6 @@ _NORMALISERS: dict[str, Any] = {
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
-    "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,
     # Fork additions: the second steer ack + live retry-progress rail.

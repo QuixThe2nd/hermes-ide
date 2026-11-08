@@ -109,42 +109,6 @@ class TestYAMLNormalisation:
         assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
 
 
-    def test_only_long_running_visibility_accepts_generic_mode(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {
-                    "whatsapp": {
-                        "thinking_progress": "generic",
-                        "interim_assistant_messages": "generic",
-                        "long_running_notifications": "generic",
-                    }
-                }
-            }
-        }
-        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
-        assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
-        assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "generic"
-
-    def test_long_running_notifications_accepts_phase_mode(self):
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {
-                    "whatsapp": {
-                        "thinking_progress": "phase",
-                        "interim_assistant_messages": "phase",
-                        "long_running_notifications": "phase",
-                    }
-                }
-            }
-        }
-        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
-        assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
-        assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "phase"
-
     def test_thinking_progress_string_false_normalised_to_false(self):
         from gateway.display_config import resolve_display_setting
 
@@ -179,36 +143,17 @@ class TestPlatformDefaults:
 
     def test_discord_chatter_defaults(self):
         """Discord keeps interim commentary and busy-ack detail on
-        (desktop-first, more vertical space), but its long-running
-        heartbeat defaults to the phase line ("⏳ terminal 1m42s" /
-        "⏳ grok-4.6 38s" / "⏳ packing 12s") rather than the raw
-        diagnostic join."""
+        (desktop-first, more vertical space)."""
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
-        assert resolve_display_setting({}, "discord", "long_running_notifications") == "phase"
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
-
-    def test_discord_long_running_generic_still_resolves_when_configured(self):
-        """Users can opt Discord back into the catalog phrase ("generic")."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {
-            "display": {
-                "platforms": {"discord": {"long_running_notifications": "generic"}},
-            }
-        }
-        assert (
-            resolve_display_setting(config, "discord", "long_running_notifications")
-            == "generic"
-        )
 
     def test_webhook_batch_chatter_defaults(self):
         """Tier-minimal batch delivery (webhook) leaves no mid-turn breadcrumbs."""
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "webhook", "tool_progress") == "off"
-        assert resolve_display_setting({}, "webhook", "long_running_notifications") is False
         assert resolve_display_setting({}, "webhook", "busy_ack_detail") is False
 
 
