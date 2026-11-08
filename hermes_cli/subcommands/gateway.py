@@ -61,22 +61,37 @@ def build_gateway_parser(
     add_accept_hooks_flag(gateway_parser)
 
     gateway_start = gateway_subparsers.add_parser(
-        "start", help="Start the installed systemd/launchd background service")
+        "start", help="Start the installed systemd/launchd background service",
+        description="Start the gateway as a FRESH process (no drain, no successor — "
+                    "unlike restart, which hands over from a running gateway).")
     _add_system_flag(gateway_start)
     _flag(gateway_start, "--all",
         help="Kill ALL stale gateway processes across all profiles before starting")
     _flag(gateway_start, "--force", help=_FORCE_SERVED_PROFILE_HELP)
     _add_compat_platform_flag(gateway_start)
 
-    gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
+    gateway_stop = gateway_subparsers.add_parser(
+        "stop", help="Stop gateway service",
+        description="Stop the gateway: admission closes, in-flight work drains, then the "
+                    "process exits. No successor is started (unlike restart).")
     _add_system_flag(gateway_stop)
     _flag(gateway_stop, "--all", help="Stop ALL gateway processes across all profiles")
 
-    gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
+    gateway_restart = gateway_subparsers.add_parser(
+        "restart", help="Restart gateway service",
+        description="Restart the gateway through the ONE restart pipeline (same as /restart "
+                    "and the agent restart tool): a successor takes new work, in-flight "
+                    "sessions drain undisturbed, then this process exits. "
+                    "Unlike stop→start, adapters hand over to the successor.")
     _add_system_flag(gateway_restart)
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
     _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
+    gateway_restart.add_argument(
+        "--no-platforms", dest="no_platforms", action="store_true",
+        help="Restart agent-core sessions without bouncing platform gateway "
+             "connections (overrides gateway.restart_platforms=false for this "
+             "call; slash /restart and the restart tool follow the config flag)")
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")

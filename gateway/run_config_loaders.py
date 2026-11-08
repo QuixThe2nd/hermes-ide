@@ -347,11 +347,28 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_restart_drain_timeout(cls) -> float:
-        """Graceful gateway restart/stop drain timeout in seconds."""
-        raw = cls._env_or_cfg_str("HERMES_RESTART_DRAIN_TIMEOUT", "agent", "restart_drain_timeout")
+        """Graceful gateway restart/stop drain timeout in seconds.
+
+        Canonical key: ``gateway.drain_timeout``; ``agent.restart_drain_timeout``
+        remains a read-old alias, and the deprecated env var still wins when set.
+        """
+        from gateway.restart import warn_deprecated_timeout_env
+
+        warn_deprecated_timeout_env("HERMES_RESTART_DRAIN_TIMEOUT")
+        env_raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT")
+        raw: object = None
+        if env_raw is not None and str(env_raw).strip() != "":
+            raw = env_raw
+        else:
+            from gateway.run import _load_gateway_config
+
+            if cfg_get(_load_gateway_config(), "gateway", "drain_timeout", default=None) is not None:
+                raw = cfg_get(_load_gateway_config(), "gateway", "drain_timeout")
+            else:
+                raw = cfg_get(_load_gateway_config(), "agent", "restart_drain_timeout", default=None)
         value = parse_restart_drain_timeout(raw)
         if raw and value == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT:
-            cls._warn_unparsable_timeout("restart_drain_timeout", raw, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
+            cls._warn_unparsable_timeout("drain_timeout", raw, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
         return value
 
     @classmethod

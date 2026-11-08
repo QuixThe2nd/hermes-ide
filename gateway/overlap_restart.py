@@ -283,10 +283,24 @@ def _iter_adapters(runner: Any):
                 yield adapter
 
 
-async def spawn_successor(runner: Any, *, via_service: bool) -> Optional[int]:
-    """Start one successor for this gateway process, before its drain wait."""
+async def spawn_successor(
+    runner: Any, *, via_service: bool, restart_platforms: bool = True,
+) -> Optional[int]:
+    """Start one successor for this gateway process, before its drain wait.
+
+    ``restart_platforms=False`` (``gateway.restart_platforms: false``) skips the
+    successor spawn through platform-adapter hubs entirely: platform gateway
+    connections are not bounced as part of the restart — they stay attached to
+    the predecessor through its drain and reconnect on whatever process follows.
+    """
     if getattr(runner, "_overlap_restart_successor_started", False):
         return getattr(runner, "_overlap_restart_successor_pid", None)
+    if not restart_platforms:
+        logger.info(
+            "restart_platforms=false: skipping the platform successor spawn — "
+            "agent-core restarts without bouncing platform gateway connections"
+        )
+        return None
     for adapter in _iter_adapters(runner):
         if getattr(adapter, "supports_overlap_restart", False) is not True:
             continue

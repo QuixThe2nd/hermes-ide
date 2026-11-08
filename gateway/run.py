@@ -6364,6 +6364,7 @@ class GatewayRunner(
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
+        self._restart_platforms = True
         self._detached_restart_watcher_started = False
         self._restart_command_source: Optional[SessionSource] = None
         self._restart_generation = 0
@@ -11833,6 +11834,9 @@ async def _start_gateway_start_control_socket(runner):
 
             def _request() -> None:
                 try:
+                    # overlap=False deliberately: this fires BEFORE the update's
+                    # code swap — a successor spawned here would run the OLD tree
+                    # and race the updater. The updater relaunches after the swap.
                     accepted_box.append(runner.request_restart(detached=False, via_service=True, overlap=False))
                 finally:
                     _done.set()
@@ -11859,8 +11863,56 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        def _restart_verb_handler(restart_platforms: bool = True) -> dict:
+            """`hermes gateway restart` asks this process to run the ONE restart core.
+
+            Same pipeline as ``/restart`` and the agent ``restart`` tool
+            (``queue_user_restart`` → ``request_restart(overlap=True)``); the
+            CLI is out-of-process, so this socket verb — not a second
+            orchestration — is its transport. Runs on the socket executor
+            thread; marshal onto the loop like pause-for-update does.
+            """
+            from gateway.restart import _runner_restart_platforms, queue_user_restart
+
+            if restart_platforms is None:
+                restart_platforms = _runner_restart_platforms(runner)
+            result_box: list[dict] = []
+            _done = threading.Event()
+
+            def _request() -> None:
+                async def _queue() -> None:
+                    try:
+                        result_box.append(
+                            await queue_user_restart(
+                                runner, None, None, restart_platforms=bool(restart_platforms)
+                            )
+                        )
+                    finally:
+                        _done.set()
+
+                try:
+                    asyncio.get_running_loop().create_task(_queue())
+                except Exception:
+                    _done.set()
+                    logger.exception("restart control verb could not queue the core restart")
+
+            _main_loop.call_soon_threadsafe(_request)
+            # The queue sequence includes a bounded (<=4s) preflight; give it room
+            # but never block the socket executor on the drain itself.
+            _done.wait(timeout=10.0)
+            if not result_box:
+                return {"queued": False, "reason": "restart hand-off not observed in time"}
+            status = result_box[0]
+            return {
+                "queued": status.get("status") == "restarting",
+                "status": status.get("status"),
+                "active_agents": status.get("active_agents", 0),
+                "via_service": status.get("via_service"),
+            }
+
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
+                           "restart": _restart_verb_handler,
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "purge-profile-identity": purge_profile_identity_verb(runner)})
@@ -12031,7 +12083,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         runner, _signal_initiated_shutdown)
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True, overlap=False)
+        # SIGUSR1 (`hermes gateway restart`, `hermes update`) is a thin trigger of
+        # the ONE restart core — same overlap pipeline as /restart and the agent
+        # restart tool, honouring gateway.restart_platforms.
+        from gateway.restart import _runner_restart_platforms
+
+        runner.request_restart(
+            detached=False, via_service=True,
+            restart_platforms=_runner_restart_platforms(runner),
+        )
 
     loop = asyncio.get_running_loop()
 
