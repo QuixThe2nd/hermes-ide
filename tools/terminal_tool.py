@@ -80,6 +80,22 @@ from tools.terminal_tool_config import (
     _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
     _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
+from tools.terminal_tool_guards import (
+    _looks_like_help_or_version_command,
+    _safe_command_preview,
+)
+from tools.terminal_tool_sudo import (
+    _get_cached_sudo_password,
+    _get_sudo_password_cache_scope,
+    _in_delegated_child_context,
+    _looks_like_env_assignment,
+    _reset_cached_sudo_passwords,
+    _set_cached_sudo_password,
+)
+from tools.terminal_tool_sudo import (  # noqa: F401 — shared cache re-export
+    _sudo_password_cache,
+    _sudo_password_cache_lock,
+)
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
     _record_unavailable_reason, terminal_backend_unavailable_reason,  # noqa: F401 — re-exported
@@ -260,15 +276,6 @@ def _check_disk_usage_warning():
         return False
 
 
-# Interactive sudo password cache.
-#
-# Scope the cache to the active session when a session key is available, then
-# fall back to callback identity (ACP / CLI interactive callbacks), then the
-# current thread. This prevents one interactive session from reusing another
-# session's cached sudo password inside the same long-lived process.
-_sudo_password_cache: dict[str, str] = {}
-_sudo_password_cache_lock = threading.Lock()
-
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
 # so prompts route through prompt_toolkit's event loop.
@@ -323,48 +330,6 @@ def set_approval_callback(cb):
     """
     _callback_tls.approval = cb
 
-
-def _get_sudo_password_cache_scope() -> str:
-    """Return the cache scope for interactive sudo passwords."""
-    session_key = _current_session_key()
-    if session_key:
-        return f"session:{session_key}"
-
-    callback = _get_sudo_password_callback()
-    if callback is not None:
-        owner = getattr(callback, "__self__", None)
-        func = getattr(callback, "__func__", None)
-        if owner is not None and func is not None:
-            return f"callback-owner:{id(owner)}:{id(func)}"
-        return f"callback:{id(callback)}"
-
-    return f"thread:{threading.get_ident()}"
-
-
-def _get_cached_sudo_password() -> str:
-    """Return the cached sudo password for the current scope."""
-    scope = _get_sudo_password_cache_scope()
-    with _sudo_password_cache_lock:
-        return _sudo_password_cache.get(scope, "")
-
-
-def _set_cached_sudo_password(password: str) -> None:
-    """Persist a sudo password for the current scope."""
-    scope = _get_sudo_password_cache_scope()
-    with _sudo_password_cache_lock:
-        if password:
-            _sudo_password_cache[scope] = password
-        else:
-            _sudo_password_cache.pop(scope, None)
-
-
-def _reset_cached_sudo_passwords() -> None:
-    """Clear all cached sudo passwords.
-
-    Internal helper for tests and process teardown paths.
-    """
-    with _sudo_password_cache_lock:
-        _sudo_password_cache.clear()
 
 # =============================================================================
 # Dangerous Command Approval System
@@ -443,28 +408,6 @@ def _validate_workdir(workdir: str) -> str | None:
                 "Use a simple filesystem path without shell metacharacters."
             )
     return None
-
-
-def _in_delegated_child_context() -> bool:
-    """Return True while running inside a delegate_agent child.
-
-    Subagents execute on worker threads of the parent process, so they
-    inherit process-wide interactivity signals (``HERMES_INTERACTIVE=1`` set
-    by the CLI at startup) that do NOT mean *this* execution context can
-    reach the user. A child that passes the interactive gate with no sudo
-    callback falls through to the raw ``/dev/tty`` prompt — printed mid-TUI
-    from a background thread, racing siblings for the tty, and blocking the
-    child for the full timeout. Children must always behave as headless for
-    sudo prompting. The ContextVar is set by ``delegated_child_context()``
-    around every child run and propagates through ``contextvars.copy_context``
-    onto the executor thread.
-    """
-    try:
-        from agent.delegation_context import is_delegated_child_context
-
-        return is_delegated_child_context()
-    except Exception:
-        return False
 
 
 def _handle_sudo_failure(output: str, env_type: str) -> str:
@@ -671,25 +614,6 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     finally:
         if "HERMES_SPINNER_PAUSE" in os.environ:
             del os.environ["HERMES_SPINNER_PAUSE"]
-
-def _safe_command_preview(command: Any, limit: int = 200) -> str:
-    """Return a log-safe preview for possibly-invalid command values."""
-    if command is None:
-        return "<None>"
-    if isinstance(command, str):
-        return command[:limit]
-    try:
-        return repr(command)[:limit]
-    except Exception:
-        return f"<{type(command).__name__}>"
-
-def _looks_like_env_assignment(token: str) -> bool:
-    """Return True when *token* is a leading shell environment assignment."""
-    if "=" not in token or token.startswith("="):
-        return False
-    name, _value = token.split("=", 1)
-    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
-
 
 def _read_shell_token(command: str, start: int) -> tuple[str, int]:
     """Read one shell token, preserving quotes/escapes, starting at *start*."""
@@ -1699,25 +1623,6 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
         )
 
 
-def _safe_getcwd() -> str:
-    """Return the current working directory, tolerating a deleted or
-    permission-restricted CWD.
-
-    ``os.getcwd()`` raises FileNotFoundError when the process's working
-    directory has been removed out from under it (e.g. a scratch workspace
-    that was cleaned up mid-session). On macOS with TCC (Transparency,
-    Consent, and Control), it raises PermissionError (EPERM) when the CWD
-    is under a protected location (~/Documents, ~/Desktop, ~/Downloads)
-    and the calling process lacks Full Disk Access. Fall back to
-    TERMINAL_CWD, then the user's home directory, so terminal setup never
-    crashes on a stale or TCC-blocked CWD.
-    """
-    try:
-        return os.getcwd()
-    except (FileNotFoundError, PermissionError):
-        return _tenv("TERMINAL_CWD") or os.path.expanduser("~")
-
-
 # Path prefixes that identify a *host* working directory which cannot exist
 # inside a container sandbox. Covers POSIX user dirs and Windows drive paths
 # (``C:\Users\...`` / ``C:/Users/...``) — the latter is how a Windows host's
@@ -1784,20 +1689,6 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     if not os.path.isabs(cwd):
         return True
     return False
-
-
-def _tenv(name: str, default: str = "") -> str:
-    """Scope-aware read of a ``TERMINAL_*`` variable.
-
-    Every terminal setting read in this module must go through this helper:
-    under gateway multiplexing the active profile's terminal config arrives
-    via a per-turn scope (``tools.terminal_scope``), and a raw ``os.getenv``
-    would read whatever profile's config a previous turn pinned into the
-    process env (the cross-profile backend leak fixed here).
-    """
-    from tools.terminal_scope import terminal_env
-
-    return terminal_env(name, default)
 
 
 # One-shot guard for the config-fallback bridge below.  Purely an
@@ -2922,17 +2813,6 @@ _LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\bgunicorn\b", re.IGNORECASE),
     re.compile(r"\bpython(?:3)?\s+-m\s+http\.server\b", re.IGNORECASE),
 )
-
-
-def _looks_like_help_or_version_command(command: str) -> bool:
-    """Return True for informational invocations that should never be blocked."""
-    normalized = " ".join(command.lower().split())
-    return (
-        " --help" in normalized
-        or normalized.endswith(" -h")
-        or " --version" in normalized
-        or normalized.endswith(" -v")
-    )
 
 
 def _foreground_background_guidance(command: str) -> str | None:

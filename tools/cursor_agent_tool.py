@@ -57,11 +57,16 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
-from tools.agent_cli_runner import _terminate_process
+from tools.agent_cli_runner import (
+    _check_interrupted,
+    _clamp_timeout_seconds as _clamp_timeout_seconds_impl,
+    _terminate_process,
+)
 from tools.cursor_run_receipts import (
     ReceiptValidationError,
     MAX_RECOVERY_ATTEMPTS,
@@ -96,6 +101,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no wall-clock limit
 MIN_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 1800
+_clamp_timeout_seconds = partial(
+    _clamp_timeout_seconds_impl,
+    default=DEFAULT_TIMEOUT_SECONDS,
+    minimum=MIN_TIMEOUT_SECONDS,
+    maximum=MAX_TIMEOUT_SECONDS,
+)
 # 0 = stall watchdog off — long quiet stretches are the normal case for
 # coding delegations; only an explicit positive timeout_seconds bounds a run.
 STALL_WATCHDOG_SECONDS = 0
@@ -1098,15 +1109,6 @@ def is_terminal_run_status(status: Any) -> bool:
     return str(status or "").strip().upper() in TERMINAL_RUN_STATUSES
 
 
-def _check_interrupted() -> bool:
-    try:
-        from tools.interrupt import is_interrupted
-
-        return is_interrupted()
-    except Exception:
-        return False
-
-
 def cancel_cloud_run(agent_id: str, run_id: str, api_key: str) -> None:
     if not agent_id or not run_id:
         return
@@ -1251,16 +1253,6 @@ class MachineWorker:
 # ---------------------------------------------------------------------------
 # Subprocess helpers
 # ---------------------------------------------------------------------------
-
-def _clamp_timeout_seconds(timeout_seconds: int) -> int:
-    try:
-        value = int(timeout_seconds)
-    except (TypeError, ValueError):
-        value = DEFAULT_TIMEOUT_SECONDS
-    if value <= 0:
-        return 0  # unbounded: no wall-clock limit and no stall kill
-    return max(MIN_TIMEOUT_SECONDS, min(MAX_TIMEOUT_SECONDS, value))
-
 
 def _make_result(
     *,

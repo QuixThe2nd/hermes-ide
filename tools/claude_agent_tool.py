@@ -72,11 +72,15 @@ import shutil
 import subprocess
 import time
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
-from tools.agent_cli_runner import run_agent_cli
+from tools.agent_cli_runner import (
+    _clamp_timeout_seconds as _clamp_timeout_seconds_impl,
+    run_agent_cli,
+)
 from tools.claude_run_receipts import write_spawn_receipt
 from tools.claude_viewer_url import watch_url
 from tools.delegate_evidence_gate import apply_evidence_gate
@@ -89,6 +93,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 0  # 0 = no wall-clock limit
 MIN_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 3600
+_clamp_timeout_seconds = partial(
+    _clamp_timeout_seconds_impl,
+    default=DEFAULT_TIMEOUT_SECONDS,
+    minimum=MIN_TIMEOUT_SECONDS,
+    maximum=MAX_TIMEOUT_SECONDS,
+)
 # 0 = stall watchdog off. Long quiet stretches (model thinking, slow tool
 # calls inside the child) are the normal case for coding delegations, so a
 # silent run is never killed; only an explicit positive timeout_seconds
@@ -360,16 +370,6 @@ def _spawn_on_spawn(
         if session_id and tool_call_id:
             write_spawn_receipt(session_id, tool_call_id, log_path, workdir)
     return _on_spawn
-
-
-def _clamp_timeout_seconds(timeout_seconds: int) -> int:
-    try:
-        value = int(timeout_seconds)
-    except (TypeError, ValueError):
-        value = DEFAULT_TIMEOUT_SECONDS
-    if value <= 0:
-        return 0  # unbounded: no wall-clock limit and no stall kill
-    return max(MIN_TIMEOUT_SECONDS, min(MAX_TIMEOUT_SECONDS, value))
 
 
 def _make_result(
