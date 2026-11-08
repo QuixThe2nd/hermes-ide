@@ -109,7 +109,7 @@ def test_resolve_platform_can_add_fields_only():
     }
     tg = resolve_footer_config(user, "telegram")
     assert tg["enabled"] is True
-    assert tg["fields"] == ["model", "context_pct", "cwd"]
+    assert tg["fields"] == _DEFAULT_FOOTER_FIELDS
     dc = resolve_footer_config(user, "discord")
     assert dc["enabled"] is True
     assert dc["fields"] == ["context_pct"]
@@ -253,60 +253,84 @@ def test_build_footer_line_threads_turn_seconds(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Byte-stability: `latency` is opt-in, so the DEFAULT footer is unchanged.
-#
-# Upstream doctrine: a system prompt / rendered surface must be byte-stable for
-# the life of a conversation.  Adding a field to _DEFAULT_FIELDS would silently
-# change the footer text of every user who already enabled it.  These tests pin
-# the default set and the exact default-config output strings.
+# Default behaviour: footer is ON with the timing + call-count fields; cwd,
+# latency and served_model stay opt-in.
 # ---------------------------------------------------------------------------
 
-_LEGACY_DEFAULT_FIELDS = ["model", "context_pct", "cwd"]
+_DEFAULT_FOOTER_FIELDS = [
+    "model", "context_pct", "turn_time", "api_time", "tool_time", "overhead_time",
+    "api_calls", "tool_calls",
+]
 # An absolute path that survives _home_relative_cwd unchanged on every host
 # (os.path.abspath("/var/data") -> "C:\\var\\data" on Windows, "/var/data" on POSIX).
 _VAR_DATA = os.path.abspath("/var/data")
 
 
-def test_latency_not_in_default_fields():
-    from gateway.runtime_footer import _DEFAULT_FIELDS
+def test_default_fields_include_timing_and_exclude_optins():
+    fields = resolve_footer_config({}, "telegram")["fields"]
+    assert fields == _DEFAULT_FOOTER_FIELDS
+    for optin in ("cwd", "latency", "served_model"):
+        assert optin not in fields
 
-    assert "latency" not in _DEFAULT_FIELDS
-    assert list(_DEFAULT_FIELDS) == _LEGACY_DEFAULT_FIELDS
+
+def test_footer_enabled_by_default_and_matches_config_defaults():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    resolved = resolve_footer_config({}, "telegram")
+    assert resolved["enabled"] is True
+    cfg = DEFAULT_CONFIG["display"]["runtime_footer"]
+    assert cfg["enabled"] is resolved["enabled"]
+    assert cfg["fields"] == resolved["fields"]
 
 
-def test_resolve_footer_config_default_fields_exclude_latency():
-    assert resolve_footer_config({}, "telegram")["fields"] == _LEGACY_DEFAULT_FIELDS
-    assert resolve_footer_config(
-        {"display": {"runtime_footer": {"enabled": True}}}, "discord"
-    )["fields"] == _LEGACY_DEFAULT_FIELDS
+def test_enabled_without_fields_gives_timing():
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True}}},
+        platform_key="discord", model="openai/gpt-5.4",
+        context_tokens=50_000, context_length=1_000_000,
+        turn_time=20.0, api_time=12.0, tool_time=5.0, api_calls=3, tool_calls=9,
+    )
+    assert out == "gpt-5.4 · 5% · 20s · api 12s · tools 5.0s · other 3.0s · 3 calls · 9 tools"
+
+
+def test_explicit_disable_and_explicit_fields_win():
+    common = dict(platform_key="discord", model="m", context_tokens=10, context_length=100,
+                  tool_calls=2)
+    assert build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": False}}}, **common) == ""
+    assert build_footer_line(
+        user_config={"display": {"runtime_footer": {"fields": ["model"]}}}, **common) == "m"
+
+
+@pytest.mark.parametrize("count,expected", [(1, "1 tool"), (9, "9 tools"), (0, ""), (None, "")])
+def test_tool_calls_field(count, expected):
+    out = format_runtime_footer(model=None, context_tokens=0, context_length=None,
+                                tool_calls=count, fields=("tool_calls",))
+    assert out == expected
+
+
+def test_turn_metrics_keeps_timing_and_tool_calls():
+    from gateway.runtime_footer import turn_metrics
+
+    result = {"api_time": 1.5, "tool_time": 2.5, "tool_calls": 4, "final_response": "x"}
+    assert turn_metrics(result) == {"api_time": 1.5, "tool_time": 2.5, "tool_calls": 4}
+    assert turn_metrics(None) == {"api_time": None, "tool_time": None, "tool_calls": None}
 
 
 @pytest.mark.parametrize(
     "model,tokens,window,cwd,expected",
     [
-        ("openai/gpt-5.4", 50_247, 1_000_000, _VAR_DATA, f"gpt-5.4 · 5% · {_VAR_DATA}"),
-        ("claude-opus-4-8", 68_000, 100_000, _VAR_DATA, f"claude-opus-4-8 · 68% · {_VAR_DATA}"),
-        ("m", 0, None, _VAR_DATA, f"m · {_VAR_DATA}"),
-        ("", 10, 100, _VAR_DATA, f"10% · {_VAR_DATA}"),
-        ("m", 10, 100, "", "m · 10%"),
+        ("openai/gpt-5.4", 50_247, 1_000_000, _VAR_DATA, "gpt-5.4 · 5%"),
+        ("m", 0, None, _VAR_DATA, "m"),
+        ("", 10, 100, "", "10%"),
     ],
 )
-def test_default_footer_renders_byte_identically(
+def test_default_footer_omits_cwd_and_unmeasured_fields(
     monkeypatch, model, tokens, window, cwd, expected
 ):
-    """Default-config output is byte-for-byte what it was before `latency`.
-
-    Note `turn_seconds` IS supplied — proving that even when the caller
-    measures timing, a default-configured footer does not show it.
-    """
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     out = format_runtime_footer(
-        model=model,
-        context_tokens=tokens,
-        context_length=window,
-        cwd=cwd,
-        turn_seconds=22.0,
-        # fields deliberately NOT passed — exercises the default.
+        model=model, context_tokens=tokens, context_length=window, cwd=cwd, turn_seconds=22.0,
     )
     assert out == expected
 
@@ -324,7 +348,7 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
     )
     baseline = build_footer_line(**common)
     with_timing = build_footer_line(**common, turn_seconds=125.0)
-    assert baseline == f"gpt-5.4 · 5% · {_VAR_DATA}"
+    assert baseline == "gpt-5.4 · 5%"
     assert with_timing == baseline
 
 

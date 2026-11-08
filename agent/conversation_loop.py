@@ -1865,6 +1865,7 @@ def _run_conversation_inlined(
     api_call_count = 0
     agent._turn_api_time = 0.0
     agent._turn_tool_time = 0.0
+    agent._turn_tool_calls = 0
     final_response = None
     interrupted = False
     failed = False
@@ -7875,6 +7876,7 @@ def _run_conversation_inlined(
                         pass
 
                 _tool_phase_started = time.perf_counter()
+                agent._turn_tool_calls += len(getattr(assistant_message, "tool_calls", None) or ())
                 try:
                     agent._execute_tool_calls(
                         assistant_message,
@@ -9090,6 +9092,7 @@ def _run_conversation_inlined(
         _pending_verification_response_previewed=_pending_verification_response_previewed,
         turn_api_time=agent._turn_api_time,
         turn_tool_time=agent._turn_tool_time,
+        turn_tool_calls=agent._turn_tool_calls,
     )
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
