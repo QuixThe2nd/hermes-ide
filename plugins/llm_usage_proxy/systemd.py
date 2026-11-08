@@ -28,6 +28,7 @@ from plugins.auto_update.platform import (
     resolve_python_executable,
 )
 from plugins.auto_update.systemd import (
+    _systemd_quote,
     atomic_write,
     default_systemctl_runner,
     format_exec_start,
@@ -208,21 +209,6 @@ def build_exec_start_argv(
             if rendered.strip():
                 argv.extend(("--route-capability", f"{name}={rendered}"))
     return argv
-
-
-def _systemd_quote(value: str) -> str:
-    if not value:
-        return '""'
-    special = set(' \t\n"\\$%')
-    if not any(ch in special for ch in value):
-        return value
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("$", "\\$")
-        .replace("%", "%%")
-    )
-    return f'"{escaped}"'
 
 
 def render_service_unit(

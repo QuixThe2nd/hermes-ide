@@ -31,7 +31,7 @@ def _info(exe: Path, version: tuple[int, int, int], sqlite: str) -> SQLiteRuntim
 
 @pytest.mark.windows_only
 def test_runtime_config_cutover_repoints_a_running_venv(tmp_path: Path, monkeypatch) -> None:
-    from hermes_cli import managed_uv
+    from hermes_cli import managed_uv, runtime_repair
 
     live = tmp_path / "venv"
     candidate = tmp_path / "candidate"
@@ -41,7 +41,7 @@ def test_runtime_config_cutover_repoints_a_running_venv(tmp_path: Path, monkeypa
     replacement = candidate_config.read_bytes() + b"runtime-cutover = candidate\n"
     candidate_config.write_bytes(replacement)
     info = SimpleNamespace(sqlite_version_string="3.53.1")
-    monkeypatch.setattr(managed_uv, "_smoke_candidate_venv", lambda target: (True, "", info))
+    monkeypatch.setattr(runtime_repair, "_smoke_candidate_venv", lambda target: (True, "", info))
     same = (3, 11, 15)
     current = _info(_python(live), same, "3.50.4")
     fixed = _info(candidate / "python.exe", same, "3.53.1")
@@ -80,7 +80,7 @@ def test_runtime_config_cutover_repoints_a_running_venv(tmp_path: Path, monkeypa
 
 
 def test_runtime_config_cutover_rolls_back_failed_live_smoke(tmp_path: Path, monkeypatch) -> None:
-    from hermes_cli import managed_uv
+    from hermes_cli import managed_uv, runtime_repair
 
     live = tmp_path / "venv"
     candidate = tmp_path / "candidate"
@@ -90,7 +90,7 @@ def test_runtime_config_cutover_rolls_back_failed_live_smoke(tmp_path: Path, mon
     (live / "pyvenv.cfg").write_bytes(original)
     (candidate / "pyvenv.cfg").write_bytes(b"home = new-runtime\n")
     monkeypatch.setattr(
-        managed_uv, "_smoke_candidate_venv", lambda target: (False, "core import smoke failed", None))
+        runtime_repair, "_smoke_candidate_venv", lambda target: (False, "core import smoke failed", None))
     same = (3, 11, 15)
 
     ok, generation_in_use, info, detail = managed_uv._cut_over_windows_runtime_config(
@@ -105,7 +105,7 @@ def test_runtime_config_cutover_rolls_back_failed_live_smoke(tmp_path: Path, mon
 
 def test_runtime_config_cutover_refuses_a_minor_line_jump(tmp_path: Path, monkeypatch) -> None:
     """The live venv keeps its cp311 site-packages, so a 3.12 generation must never be pointed at it."""
-    from hermes_cli import managed_uv
+    from hermes_cli import managed_uv, runtime_repair
 
     live = tmp_path / "venv"
     candidate = tmp_path / "candidate"
@@ -115,7 +115,7 @@ def test_runtime_config_cutover_refuses_a_minor_line_jump(tmp_path: Path, monkey
     (live / "pyvenv.cfg").write_bytes(original)
     (candidate / "pyvenv.cfg").write_bytes(b"home = new-runtime\n")
     smoked = []
-    monkeypatch.setattr(managed_uv, "_smoke_candidate_venv", lambda target: smoked.append(target))
+    monkeypatch.setattr(runtime_repair, "_smoke_candidate_venv", lambda target: smoked.append(target))
 
     ok, generation_in_use, info, detail = managed_uv._cut_over_windows_runtime_config(
         candidate, live=live,

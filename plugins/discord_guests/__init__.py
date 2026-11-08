@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from plugins.hermes_starts import _read_discord_token, check_requirements
 
 _DISCORD_API_BASE = "https://discord.com/api/v10"
 _USER_AGENT = "DiscordBot (https://github.com/NousResearch/hermes-agent, 1.0)"
@@ -148,30 +149,8 @@ DISCORD_GUESTS_SCHEMA = {
 }
 
 
-def _env_path() -> Path:
-    return get_hermes_home() / ".env"
-
-
 def _state_path() -> Path:
     return get_hermes_home() / "discord_guests" / "state.json"
-
-
-def _parse_token_line(line: str) -> str:
-    value = line.split("=", 1)[1].strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        value = value[1:-1]
-    return value
-
-
-def _read_discord_token() -> str:
-    try:
-        with _env_path().open("r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("DISCORD_BOT_TOKEN="):
-                    return _parse_token_line(line)
-    except OSError:
-        pass
-    return ""
 
 
 def _empty_state() -> Dict[str, Any]:
@@ -923,20 +902,6 @@ def handle_discord_guests(args: dict, **kwargs: Any) -> str:
         return json.dumps({"success": False, "error": f"URL error: {reason}"})
     except Exception as exc:
         return json.dumps({"success": False, "error": str(exc)})
-
-
-def check_requirements() -> bool:
-    try:
-        path = _env_path()
-        if not path.is_file():
-            return False
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("DISCORD_BOT_TOKEN="):
-                    return bool(_parse_token_line(line))
-        return False
-    except Exception:
-        return False
 
 
 def register(ctx) -> None:

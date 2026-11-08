@@ -4,19 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from plugins.auto_update.config import _coerce_bool
 from plugins.llm_usage_proxy.server import DEFAULT_PORT
 
 CONFIG_SECTION = "llm_usage_proxy"
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
 
 
 def _coerce_port(value: Any) -> int:

@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Tuple
 
+from plugins.auto_update.config import _coerce_bool, _coerce_int
+
 HttpFn = Callable[[urllib.request.Request, float], Tuple[int, bytes]]
 NowFn = Callable[[], float]
 SendFn = Callable[[str], None]
@@ -122,24 +124,6 @@ def load_config_section(config_path: Optional[Path] = None) -> dict:
         except Exception as exc:
             raise FallbackWatchError(f"cannot parse {config_path}: {exc}") from exc
     return raw if isinstance(raw, dict) else {}
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
-def _coerce_int(value: Any, default: int, *, minimum: int = 0) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(minimum, parsed)
 
 
 def load_watch_config(raw: Mapping[str, Any]) -> WatchConfig:

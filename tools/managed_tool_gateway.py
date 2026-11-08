@@ -218,6 +218,8 @@ def managed_gateway_auth_headers(
     url: object,
     gateway_builder: Optional[Callable[[str], str]] = None,
     token_reader: Optional[Callable[[], Optional[str]]] = None,
+    *,
+    url_predicate: Optional[Callable[[object, Optional[Callable[[str], str]]], bool]] = None,
 ) -> dict:
     """Live auth headers for a managed gateway URL, or ``{}`` when not managed.
 
@@ -225,8 +227,11 @@ def managed_gateway_auth_headers(
     within the hour, and a long session would otherwise keep presenting a dead
     bearer. Returns ``{}`` rather than raising when no token is available, so a
     caller can report "sign in" instead of sending an unauthenticated request.
+    ``url_predicate`` lets the connector-aware auth surface retain its broader
+    first-party origin set without duplicating bearer handling.
     """
-    if not is_managed_nous_gateway_url(url, gateway_builder):
+    predicate = url_predicate or is_managed_nous_gateway_url
+    if not predicate(url, gateway_builder):
         return {}
 
     resolved_token_reader = token_reader or read_nous_access_token

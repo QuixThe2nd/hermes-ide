@@ -48,6 +48,23 @@ def _check_interrupted() -> bool:
         return False
 
 
+def _clamp_timeout_seconds(
+    timeout_seconds: int,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Clamp a caller's wall-clock limit using that agent's own bounds."""
+    try:
+        value = int(timeout_seconds)
+    except (TypeError, ValueError):
+        value = default
+    if value <= 0:
+        return 0  # unbounded: no wall-clock limit and no stall kill
+    return max(minimum, min(maximum, value))
+
+
 def _signal_process_group(proc: subprocess.Popen, sig: signal.Signals) -> bool:
     if not _KILLPG_SUPPORTED:
         return False

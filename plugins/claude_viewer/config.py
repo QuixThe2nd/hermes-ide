@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from plugins.auto_update.config import _coerce_bool
 from tools.claude_viewer_url import (
     DEFAULT_BIND,
     DEFAULT_PORT,
@@ -11,16 +12,6 @@ from tools.claude_viewer_url import (
     viewer_bind,
     viewer_port,
 )
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
 
 
 def load_claude_viewer_config(raw: Mapping[str, Any] | None = None) -> dict[str, Any]:

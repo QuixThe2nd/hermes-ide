@@ -19,7 +19,6 @@ releases it.
 
 from __future__ import annotations
 
-import importlib
 import json
 import logging
 import os
@@ -35,6 +34,18 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.runtime_repair import (
+    _cut_over_windows_runtime_config,
+    _default_live_venv,
+    _record_runtime_repair,
+    _reload_hermes_constants,
+    _remove_tree,
+    _rename_with_retry,
+    _report_runtime_repair_failure,
+    _sweep_stale_runtime_backups,
+    _venv_python,
+    _windows_runtime_self_lock,
+)
 from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo, probe_sqlite_runtime
 
 logger = logging.getLogger(__name__)
@@ -211,22 +222,6 @@ class _RepairLock:
     fd: int
 
 
-def _report_runtime_repair_failure(repair: RuntimeRepairResult) -> None:
-    if repair.backup_venv is None:
-        print(
-            "  ℹ Managed Python runtime was not replaced; "
-            f"the existing venv is unchanged ({repair.detail})."
-        )
-        print(
-            "    Sessions stay protected meanwhile: Hermes keeps databases "
-            "out of WAL mode on this SQLite build. The next `hermes update` "
-            "will retry."
-        )
-        return
-    print(f"  ✗ Managed Python runtime cutover needs manual recovery: {repair.detail}")
-    print(f"    Previous venv: {repair.backup_venv}")
-
-
 class _UvResult(str):
     """``ensure_uv()`` return value that survives an update boundary.
 
@@ -267,6 +262,20 @@ class _UvResult(str):
         return iter(((str(self) or None), self.fresh_bootstrap))
 
 
+def _run_runtime_repair(
+    uv_bin: str,
+    repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
+) -> RuntimeRepairResult:
+    """Run the repair once and fan its outcome out to every update consumer."""
+    repair = repair_vulnerable_runtime(uv_bin)
+    _record_runtime_repair(repair)
+    if repair_observer is not None:
+        repair_observer(repair)
+    if repair.status == "failed":
+        _report_runtime_repair_failure(repair)
+    return repair
+
+
 def _ensure_uv_path(
     *,
     repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
@@ -303,11 +312,7 @@ def _ensure_uv_path(
         # that first update can migrate a vulnerable runtime without requiring
         # a second ``hermes update``.
         try:
-            repair = repair_vulnerable_runtime(result)
-            if repair_observer is not None:
-                repair_observer(repair)
-            if repair.status == "failed":
-                _report_runtime_repair_failure(repair)
+            _run_runtime_repair(result, repair_observer)
         except Exception as exc:
             logger.warning("Managed Python runtime repair failed: %s", exc)
     else:
@@ -440,11 +445,7 @@ def update_managed_uv(
     # module on disk before the updater imports it. Calling the repair here is
     # what makes the migration happen on that first update.
     try:
-        repair = repair_vulnerable_runtime(existing)
-        if repair_observer is not None:
-            repair_observer(repair)
-        if repair.status == "failed":
-            _report_runtime_repair_failure(repair)
+        _run_runtime_repair(existing, repair_observer)
     except Exception as exc:
         # Runtime refresh is deliberately non-fatal. The live venv was not
         # touched unless a fully prepared candidate reached cutover.
@@ -456,46 +457,6 @@ def update_managed_uv(
 # ---------------------------------------------------------------------------
 # Managed Python runtime repair
 # ---------------------------------------------------------------------------
-
-
-def _reload_hermes_constants():
-    """Re-execute ``hermes_constants`` from disk and return the fresh module.
-
-    ``hermes update`` imports ``hermes_constants`` from the OLD checkout,
-    ``git pull`` then replaces that file, and this freshly-pulled module runs
-    its lazy imports against the module object Python already cached in
-    ``sys.modules`` — the pre-upgrade one. A symbol added by the update is
-    absent there while the file named in the resulting ``ImportError`` plainly
-    contains it, which is what made this read as a contradiction:
-
-        cannot import name 'venv_python_path' from 'hermes_constants'
-        (~/.hermes/hermes-agent/hermes_constants.py)
-
-    Reloading picks up the definitions actually on disk, so callers keep using
-    the shared helper instead of hand-rolling a second copy of its logic. Same
-    update-boundary class as the ``ensure_uv()`` arity skew on :class:`_UvResult`.
-    """
-    import hermes_constants
-
-    return importlib.reload(hermes_constants)
-
-
-def _venv_python(venv_dir: Path) -> Path:
-    windows = platform.system() == "Windows"
-    try:
-        from hermes_constants import venv_python_path
-    except ImportError:
-        venv_python_path = _reload_hermes_constants().venv_python_path
-    return venv_python_path(venv_dir, windows=windows)
-
-
-def _remove_tree(path: Path, *, boundary: Path) -> None:
-    """Best-effort removal constrained to a known runtime boundary."""
-    try:
-        path.resolve().relative_to(boundary.resolve())
-    except (OSError, ValueError):
-        return
-    shutil.rmtree(path, ignore_errors=True)
 
 
 def _make_world_traversable(path: Path) -> None:
@@ -957,20 +918,6 @@ def _stage_candidate_venv(
     return candidate
 
 
-def _rename_with_retry(source: Path, destination: Path) -> None:
-    last_error: OSError | None = None
-    for delay in (0.0, 0.1, 0.25, 0.5, 1.0):
-        if delay:
-            time.sleep(delay)
-        try:
-            source.rename(destination)
-            return
-        except OSError as exc:
-            last_error = exc
-    if last_error is not None:
-        raise last_error
-
-
 def _cut_over_candidate(
     candidate: Path,
     *,
@@ -1108,76 +1055,6 @@ def _windows_runtime_holders() -> tuple[bool, str]:
     return False, ""
 
 
-def _windows_runtime_self_lock(live: Path) -> tuple[bool, str]:
-    """Detect the one holder the generic scan above is blind to: THIS process.
-
-    ``_detect_venv_python_processes`` excludes the calling process and its
-    ancestors on purpose — a CLI ``hermes update`` itself runs from the
-    venv python — which is correct for the dependency-sync path, where only
-    a *loaded* ``.pyd`` image blocks the rewrite and a fresh child process
-    dodges it.  For the whole-venv park rename that exemption is fatal:
-    Windows keeps the image of any executable a running process was started
-    from mapped until that process exits, so a directory containing the
-    updater's own ``python.exe`` (or a waiting ``hermes.exe`` launcher
-    ancestor) can never be renamed from inside the updater.  The retry loop
-    in ``_cut_over_candidate`` cannot help against that — the lock is
-    structural, not transient (#93032).
-
-    No-op off Windows: POSIX renames work fine while this process maps
-    files from the renamed tree (open FDs and mmaps keep inodes alive).
-    """
-    if platform.system() != "Windows":
-        return False, ""
-    try:
-        live_res = str(live.resolve()).lower().rstrip(os.sep) + os.sep
-    except OSError:
-        live_res = str(live).lower().rstrip(os.sep) + os.sep
-
-    def _under_live(path_value: str | None) -> bool:
-        if not path_value:
-            return False
-        try:
-            resolved = str(Path(path_value).resolve()).lower()
-        except (OSError, ValueError):
-            resolved = str(path_value).lower()
-        return resolved.startswith(live_res)
-
-    try:
-        exe = sys.executable
-    except Exception:
-        exe = None
-    if _under_live(exe):
-        return True, (
-            f"the updater itself runs from the live venv it must replace "
-            f"({exe}); Windows cannot rename a directory while a process "
-            "executes from inside it"
-        )
-    # Belt-and-braces: the venv\Scripts\hermes.exe launcher stays mapped
-    # while it waits for this child, so an ancestor started from the venv
-    # blocks the rename too.
-    try:
-        import psutil
-
-        try:
-            parents = psutil.Process().parents()
-        except Exception:
-            parents = []
-        for anc in parents:
-            try:
-                anc_exe = anc.exe()
-            except Exception:
-                continue
-            if _under_live(anc_exe):
-                return True, (
-                    f"ancestor process PID {anc.pid} runs from the live venv "
-                    f"({anc_exe}); Windows cannot rename a directory while a "
-                    "process executes from inside it"
-                )
-    except Exception:
-        pass
-    return False, ""
-
-
 def _uv_version_string(uv_bin: str) -> str:
     """Return ``uv --version`` output, or ``""`` when it cannot be read."""
     try:
@@ -1234,70 +1111,6 @@ def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
     if not after:
         return False
     return after != before
-
-
-def _default_live_venv(root: Path) -> Path:
-    """Return the venv that runtime repair should target for *root*.
-
-    Managed installs create ``<checkout>/venv``, but uv-default and dev
-    checkouts use ``<checkout>/.venv``.  Historically only ``venv`` was
-    probed, so a ``.venv`` install linking a vulnerable SQLite returned
-    ``not-applicable`` on every ``hermes update`` and stayed on
-    journal_mode=DELETE forever — even though the WAL fallback warning
-    promises that ``hermes update`` repairs the runtime (issue class:
-    2,600x slower ``state.db`` appends under DELETE).
-
-    ``venv`` wins when it holds an interpreter (managed layout takes
-    precedence); otherwise fall back to ``.venv`` when that one does.
-    When neither has an interpreter, return the ``venv`` path so the
-    caller's existing ``not-applicable`` handling fires unchanged.
-    """
-    primary = root / _VENV_NAME
-    if _venv_python(primary).is_file():
-        return primary
-    fallback = root / _ALT_VENV_NAME
-    if _venv_python(fallback).is_file():
-        return fallback
-    return primary
-
-
-def _sweep_stale_runtime_backups(
-    live: Path,
-    *,
-    root: Path,
-    keep: Path | None = None,
-    min_age_seconds: float = 3600.0,
-) -> None:
-    """Remove leftover ``venv.stale.runtime-*`` backups next to *live*.
-
-    A successful runtime repair parks the previous venv as
-    ``<live>.stale.runtime-<token>``; historically nothing ever reclaimed
-    those, so each repair leaked a full venv (~1 GB) at the project root
-    forever (issue #73109).  On POSIX, deleting the tree is safe even while
-    an older process still maps files from it — open FDs and mmaps keep
-    their inodes alive; the directory entry is what goes away.
-
-    ``min_age_seconds`` guards against racing a concurrent repair in
-    another process: a backup parked seconds ago may still be that
-    repair's rollback path, so only clearly-old markers are swept.
-    ``keep`` exempts the backup the current repair just created.
-    Best-effort: never raises.
-    """
-    try:
-        candidates = list(live.parent.glob(f"{live.name}.stale.runtime-*"))
-    except OSError:
-        return
-    now = time.time()
-    for candidate in candidates:
-        if keep is not None and candidate == keep:
-            continue
-        try:
-            age = now - candidate.stat().st_mtime
-        except OSError:
-            continue
-        if age < min_age_seconds:
-            continue
-        _remove_tree(candidate, boundary=root)
 
 
 def repair_vulnerable_runtime(

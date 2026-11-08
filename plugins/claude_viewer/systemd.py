@@ -23,10 +23,16 @@ from plugins.auto_update.platform import (
     resolve_python_executable,
 )
 from plugins.auto_update.systemd import (
+    _systemd_quote,
     atomic_write,
     default_systemctl_runner,
     format_exec_start,
     format_environment,
+)
+from plugins.llm_usage_proxy.systemd import (
+    ProbeOutcome,
+    ProbeResult,
+    _classify_probe,
 )
 from plugins.claude_viewer.config import (
     load_claude_viewer_config,
@@ -49,28 +55,6 @@ _COEXIST_NOTE = (
     "# directory. Stand-down is reported as a warning, never an error, so it\n"
     "# cannot fail gateway start."
 )
-
-
-class ProbeOutcome:
-    """String sentinels for systemctl probe classification."""
-
-    TRUE = "true"
-    FALSE = "false"
-    QUERY_FAILED = "query_failed"
-
-
-@dataclass(frozen=True)
-class ProbeResult:
-    outcome: str
-    detail: str = ""
-
-    @property
-    def known(self) -> bool:
-        return self.outcome != ProbeOutcome.QUERY_FAILED
-
-    @property
-    def as_bool(self) -> bool:
-        return self.outcome == ProbeOutcome.TRUE
 
 
 @dataclass(frozen=True)
@@ -120,21 +104,6 @@ def build_exec_start_argv(
         "--log-dir",
         str(log_dir_path(home)),
     ]
-
-
-def _systemd_quote(value: str) -> str:
-    if not value:
-        return '""'
-    special = set(' \t\n"\\$%')
-    if not any(ch in special for ch in value):
-        return value
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("$", "\\$")
-        .replace("%", "%%")
-    )
-    return f'"{escaped}"'
 
 
 def render_service_unit(
@@ -192,39 +161,6 @@ def write_unit_if_changed(scope: InstallScope, *, body: str) -> bool:
         return False
     atomic_write(path, body)
     return True
-
-
-def _classify_probe(code: int, stdout: str, stderr: str, *, active_words: set[str]) -> ProbeResult:
-    blob = f"{stderr} {stdout}".lower()
-    query_markers = (
-        "failed to connect to bus",
-        "connection timed out",
-        "operation timed out",
-        "timed out after",
-        "access denied",
-        "permission denied",
-        "transport endpoint",
-        "can't connect",
-    )
-    detail = " ".join((stderr or "").split())[:200]
-    if any(marker in blob for marker in query_markers):
-        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail or f"exit code {code}")
-    text = stdout.strip().lower()
-    if code == 0 and text in active_words:
-        return ProbeResult(ProbeOutcome.TRUE)
-    if code in {3, 4}:
-        return ProbeResult(ProbeOutcome.FALSE)
-    if code == 1:
-        if text and text not in {"unknown", "not-found"}:
-            return ProbeResult(ProbeOutcome.FALSE)
-        if not detail:
-            return ProbeResult(ProbeOutcome.FALSE)
-        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail)
-    if detail:
-        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail)
-    if code != 0:
-        return ProbeResult(ProbeOutcome.QUERY_FAILED, f"exit code {code}")
-    return ProbeResult(ProbeOutcome.FALSE)
 
 
 def probe_service_is_enabled(
