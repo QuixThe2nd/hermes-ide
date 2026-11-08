@@ -433,6 +433,10 @@ class GatewayAgentCacheMixin:
             # ``state.turn.agent`` is still reachable, so it can never fire
             # on a later turn that reuses the same agent object.
             self._drop_steer_delivered_listener(session_key)
+            # A steer-on-live event still parked here means the run died before
+            # the agent ever promoted (/stop, cancel, error) — recover it into
+            # the pending FIFO so nothing is lost. Idempotent no-op once empty.
+            self._flush_parked_steer(session_key)
             state.turn.clear()
         # Turn boundary: a running-agent slot was just released.  Persist the
         # new (lower) in-flight count so the dashboard readout stays current
