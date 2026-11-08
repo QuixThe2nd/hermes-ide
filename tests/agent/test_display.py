@@ -215,6 +215,43 @@ class TestDescribeToolCallSkillAndDelegateDescription:
         assert phrase == "Delegated to Cursor agent: cloud fix"
 
 
+class TestDescribeToolCallMemoryDescription:
+    """describe_tool_call — optional description on memory (composed with derived label)."""
+
+    def test_memory_single_op_composes_description(self):
+        phrase = describe_tool_call(
+            "memory",
+            {"action": "replace", "target": "memory", "old_text": "x",
+             "description": "save the deploy rule"},
+        )
+        assert phrase == "Replacing a memory (memory) to save the deploy rule"
+
+    def test_memory_batch_composes_description(self):
+        phrase = describe_tool_call(
+            "memory",
+            {"target": "memory", "operations": [{"action": "add", "content": "a"},
+                                                {"action": "remove", "old_text": "b"},
+                                                {"action": "add", "content": "c"}],
+             "description": "consolidate stale notes"},
+        )
+        assert phrase == "Updating memories (3 operations) (memory) to consolidate stale notes"
+
+    def test_memory_batch_none_target_composes_description(self):
+        phrase = describe_tool_call(
+            "memory",
+            {"operations": [{"action": "add", "content": "a"}], "description": "record a fact"},
+        )
+        assert phrase == "Updating memories (1 operation) to record a fact"
+
+    def test_memory_without_description_unchanged(self):
+        assert describe_tool_call(
+            "memory", {"action": "add", "target": "memory", "content": "x"}
+        ) == "Saving a memory (memory)"
+        assert describe_tool_call(
+            "memory", {"target": "user", "operations": [{"action": "add", "content": "a"}]}
+        ) == "Updating memories (1 operation) (user)"
+
+
 class TestDescribeToolCallDiscordDescription:
     """describe_tool_call — optional description on discord / discord_admin (composed with derived label)."""
 

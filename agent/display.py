@@ -841,17 +841,20 @@ def _describe_memory_phrase(_tool_name: str, args: dict) -> str | None:
     # target is a memory/user enum; invalid strings are never reflected.
     target = _describe_arg(args, "target")
     target = target if target in ("memory", "user") else None
+    reason = _describe_arg(args, "description")
     if "operations" in args and args.get("action") is None:
         # Current batch shape: operations with a top-level target, no action
         # ("batch" is not a schema enum). Only the count renders — never contents.
         operations = args.get("operations")
         count = len(operations) if isinstance(operations, list) else 0
         label = f"Updating memories ({count} operation{'s' if count != 1 else ''})"
-        return f"{label} ({target})" if target else label
+        phrase = f"{label} ({target})" if target else label
+        return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
     label = _describe_enum_label(_MEMORY_DESCRIBE_ACTIONS, args.get("action"))
     if label is None:
         return None
-    return f"{label} ({target})" if target else label
+    phrase = f"{label} ({target})" if target else label
+    return f"{phrase} {_describe_purpose(reason)}" if reason else phrase
 
 
 def _describe_send_message_phrase(_tool_name: str, args: dict) -> str | None:
@@ -1300,7 +1303,7 @@ def _describe_subject_phrase(tool_name: str, args: dict) -> str | None:
 # Builders here fold ``description`` into verb+reason; raw ``description`` alone must not win.
 _DESCRIBE_COMPOSES_TOOL_DESCRIPTION = frozenset({
     "write_file", "patch", "skill_view", "skill_manage", "delegate_agent", "discord", "discord_admin",
-    "session_search", "cronjob_manage", "cronjob",
+    "session_search", "cronjob_manage", "cronjob", "memory",
 })
 
 
