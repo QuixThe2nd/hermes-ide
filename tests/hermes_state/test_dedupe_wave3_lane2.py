@@ -258,12 +258,16 @@ def test_cross_file_helpers_have_one_defining_module():
 
 def test_cross_file_compatibility_imports_resolve_to_owner():
     # dbfile.collect_state_db_stats late-imports _connect_tracked_db from the
-    # facade to avoid a module-import cycle; all other former copy sites bind
-    # the owner directly.
-    late_import_only = ("_connect_tracked_db", "hermes_state_dbfile.py")
+    # facade to avoid a module-import cycle. The guard has no _set_last_init_error
+    # callers; leaving that name unbound keeps it independent of the facade,
+    # as required by the facade/sibling one-way import rule.
+    unbound_sites = {
+        ("_connect_tracked_db", "hermes_state_dbfile.py"),
+        ("_set_last_init_error", "hermes_state_guard.py"),
+    }
     for name, (owner_path, site_paths) in CROSS_FILE_HELPERS.items():
         owner_fn = vars(_module(owner_path))[name]
         for site_path in site_paths:
-            if (name, site_path) == late_import_only:
+            if (name, site_path) in unbound_sites:
                 continue
             assert vars(_module(site_path)).get(name) is owner_fn, f"{site_path}:{name} is not re-exported"

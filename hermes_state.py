@@ -63,6 +63,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Ty
 
 import hermes_state_holders as _state_holders
 import hermes_state_lockguard as _lockguard
+from hermes_state_guard import _running_under_pytest
 from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
     _COMPRESSION_CHILD_SQL,
@@ -1204,11 +1205,6 @@ def get_last_init_error() -> Optional[str]:
     successfully (or hasn't been attempted).
     """
     return _last_init_error
-
-
-# Bind after _set_last_init_error exists: hermes_state_guard re-exports that
-# facade helper, while the facade consumes the guard's test-context predicate.
-from hermes_state_guard import _running_under_pytest  # noqa: E402
 
 
 # Distinctive opening shared by both background-review harness prompts
