@@ -129,7 +129,10 @@ def _live_runner(monkeypatch, gateway_loop, **overrides):
 def _bind_session(runner, **kwargs):
     """Bind tool context and seed the runner's cached comeback source."""
     set_session_vars(**kwargs)
+    from gateway.config import Platform
+
     source = make_restart_source(
+        platform=Platform(str(kwargs.get("platform") or "discord")),
         chat_id=str(kwargs.get("chat_id") or ""),
         chat_type=str(kwargs.get("chat_type") or "dm"),
         thread_id=kwargs.get("thread_id"),
@@ -218,11 +221,38 @@ def test_check_fn_true_only_with_live_runner(monkeypatch):
     from plugins.gateway_restart.tool import check_restart_requirements
 
     monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: None)
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway", lambda home, **kw: None
+    )
     assert check_restart_requirements() is False
 
     runner, _adapter = make_restart_runner()
     monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
     assert check_restart_requirements() is True
+
+
+def test_check_fn_true_when_control_socket_answers(monkeypatch):
+    """Worker processes have no runner ref — the socket probe is the answer."""
+    from plugins.gateway_restart.tool import check_restart_requirements
+
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: None)
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda home, timeout=1.0: {"pid": 123},
+    )
+    assert check_restart_requirements() is True
+
+
+def test_check_fn_never_raises_on_socket_probe(monkeypatch):
+    from plugins.gateway_restart.tool import check_restart_requirements
+
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: None)
+
+    def _boom(home, **kw):
+        raise OSError("socket exploded")
+
+    monkeypatch.setattr("gateway.control_socket.identify_gateway", _boom)
+    assert check_restart_requirements() is False
 
 
 # ── handler contract ────────────────────────────────────────────────────────
@@ -234,6 +264,9 @@ def test_handler_errors_without_live_runner():
     result = json.loads(handle_restart({}))
     assert result["success"] is False
     assert result["error"]
+    # The typed error describes the real condition: no gateway answered on
+    # the control socket (the in-process runner was never the only door).
+    assert "control socket" in result["error"].lower()
 
 
 def test_handler_refuses_cron_sessions(gateway_loop, monkeypatch):
@@ -268,7 +301,9 @@ def test_handler_uses_service_path_under_supervisor(gateway_loop, monkeypatch):
     assert result["status"] == "restarting"
     assert result["via_service"] is True
     assert "active_agents" in result
-    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    runner.request_restart.assert_called_once_with(
+        detached=False, via_service=True, restart_platforms=True
+    )
 
 
 def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatch):
@@ -285,7 +320,9 @@ def test_handler_uses_detached_helper_when_unsupervised(gateway_loop, monkeypatc
     assert result["success"] is True
     assert result["status"] == "restarting"
     assert result["via_service"] is False
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    runner.request_restart.assert_called_once_with(
+        detached=True, via_service=False, restart_platforms=True
+    )
 
 
 def test_handler_uses_service_path_in_container(gateway_loop, monkeypatch):
@@ -302,7 +339,9 @@ def test_handler_uses_service_path_in_container(gateway_loop, monkeypatch):
 
     assert result["success"] is True
     assert result["via_service"] is True
-    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    runner.request_restart.assert_called_once_with(
+        detached=False, via_service=True, restart_platforms=True
+    )
 
 
 def test_handler_reports_committed_restart_without_second_restart(
@@ -455,6 +494,132 @@ def test_notify_uses_cached_relay_source(gateway_loop, monkeypatch, tmp_path):
     assert notify["message_id"] == "m9"
     assert runner._restart_command_source.delivered_via_upstream_relay is True
 
+
+
+# ── control-socket transport (worker processes) ─────────────────────────
+
+
+def _no_runner(monkeypatch):
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: None)
+
+
+def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
+    """The gateway-chat reality: agent turns run outside the GatewayRunner
+    process, so the tool reaches the same restart core through the control
+    socket — the transport `hermes gateway restart` already uses."""
+    from agent.turn_control import turn_control_field_for
+    from hermes_constants import get_hermes_home
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    requested = {}
+
+    def _fake_restart(home, *, restart_platforms=True, timeout=15.0):
+        requested["home"] = home
+        requested["restart_platforms"] = restart_platforms
+        return {
+            "queued": True,
+            "status": "restarting",
+            "active_agents": 2,
+            "via_service": False,
+        }
+
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart", _fake_restart
+    )
+
+    result = json.loads(handle_restart({}))
+
+    assert result["success"] is True
+    assert result["status"] == "restarting"
+    assert result["active_agents"] == 2
+    assert result["via_service"] is False
+    # No live runner to read draining from — the ack's status carries the
+    # state, so False is the honest answer.
+    assert result["draining"] is False
+    # Same committed-restart turn-control stamp as the in-process path, so
+    # the tool executor ends the turn identically on either transport.
+    expected_fields = {
+        "success", "status", "draining", "active_agents", "via_service",
+        *turn_control_field_for("restarting"),
+    }
+    assert set(result) == expected_fields
+    assert requested["home"] == get_hermes_home()
+    assert requested["restart_platforms"] is True
+
+
+def test_handler_socket_ack_already_in_progress_is_success(monkeypatch):
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    calls = []
+
+    def _fake_restart(home, **kw):
+        calls.append(kw)
+        return {"queued": False, "status": "already_in_progress", "active_agents": 1}
+
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart", _fake_restart
+    )
+
+    result = json.loads(handle_restart({}))
+
+    assert result["success"] is True
+    assert result["status"] == "already_in_progress"
+    # One request — the ack itself said no second queue was needed.
+    assert len(calls) == 1
+
+
+def test_handler_socket_ack_refusal_surfaces_reason(monkeypatch):
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart",
+        lambda home, **kw: {"queued": False, "reason": "drain already stopping"},
+    )
+
+    result = json.loads(handle_restart({}))
+
+    assert result["success"] is False
+    assert "drain already stopping" in result["error"]
+
+
+def test_handler_socket_silence_is_typed_no_gateway_error(monkeypatch):
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart", lambda home, **kw: None
+    )
+
+    result = json.loads(handle_restart({}))
+
+    assert result["success"] is False
+    assert "control socket" in result["error"].lower()
+
+
+def test_handler_cron_refusal_wins_over_socket_transport(monkeypatch):
+    """The cron guard fires before any transport — even a healthy socket."""
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    socket_restart = MagicMock(
+        return_value={"queued": True, "status": "restarting"}
+    )
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart", socket_restart
+    )
+
+    set_session_vars(cron_session="1")
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is False
+    assert "cron" in result["error"].lower()
+    socket_restart.assert_not_called()
 
 
 # ── loop and runner guards ───────────────────────────────────────────────
@@ -814,3 +979,117 @@ def test_terminal_block_message_mentions_restart_tool(monkeypatch, tmp_path):
     assert _RESTART_TOOL_MENTION in result
     parsed = json.loads(result)
     assert parsed["status"] == "error"
+
+
+# ── E2E: real imports in a subprocess, real client path ────────────────
+
+
+_E2E_SCRIPT = r"""
+import asyncio, json, sys, threading, tempfile
+from pathlib import Path
+
+home = Path(sys.argv[1])
+mode = sys.argv[2]
+
+from hermes_constants import get_hermes_home
+assert get_hermes_home() == home, (get_hermes_home(), home)
+
+import gateway.run as gateway_run
+assert gateway_run._gateway_runner_ref() is None, "subprocess must have no runner"
+
+from plugins.gateway_restart.tool import check_restart_requirements, handle_restart
+
+if mode == "offline":
+    # No gateway serving this home: reachability is False and the tool fails
+    # with the typed no-gateway error.
+    assert check_restart_requirements() is False
+    result = json.loads(handle_restart({}))
+    assert result["success"] is False, result
+    assert "control socket" in result["error"].lower(), result
+    print("OFFLINE-OK")
+else:
+    # A real GatewayControlServer with the restart verb stubbed answers on
+    # this home's socket; the tool must queue through the REAL client path.
+    from gateway.control_socket import GatewayControlServer
+
+    acks = []
+
+    def _restart_verb(params):
+        acks.append(params)
+        return {"queued": True, "status": "restarting",
+                "active_agents": 3, "via_service": None}
+
+    server = GatewayControlServer(home, verb_handlers={"restart": _restart_verb})
+    loop = asyncio.new_event_loop()
+    started = threading.Event()
+
+    def _serve():
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_start_and_wait())
+
+    async def _start_and_wait():
+        assert await server.start()
+        started.set()
+        await asyncio.Event().wait()  # serve until stopped
+
+    thread = threading.Thread(target=_serve, daemon=True)
+    thread.start()
+    assert started.wait(timeout=5.0)
+
+    try:
+        assert check_restart_requirements() is True
+        result = json.loads(handle_restart({}))
+        assert result["success"] is True, result
+        assert result["status"] == "restarting"
+        assert result["active_agents"] == 3
+        assert acks == [{"restart_platforms": True}], acks
+        from agent.turn_control import turn_control_field_for
+        assert set(result) == {
+            "success", "status", "draining", "active_agents", "via_service",
+            *turn_control_field_for("restarting"),
+        }, sorted(result)
+        print("SOCKET-OK")
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5.0)
+        loop.close()
+        server.cleanup_files()
+"""
+
+
+@pytest.mark.parametrize("mode", ["offline", "socket"])
+def test_control_socket_transport_end_to_end_in_subprocess(
+    tmp_path, mode
+):
+    """Real imports, real control-socket client, no monkeypatching.
+
+    A fresh interpreter with a temp HERMES_HOME reproduces the gateway-chat
+    topology (agent turn outside the GatewayRunner process): offline, the
+    tool fails honestly; with a live control server answering the restart
+    verb, the tool queues through the real client and returns success.
+    """
+    import os
+    import subprocess
+    import sys as _sys
+
+    repo_root = str(Path(gateway_run.__file__).resolve().parent.parent)
+    env = {
+        **{k: v for k, v in os.environ.items() if k.startswith("HERMES_TEST")},
+        "HERMES_HOME": str(tmp_path),
+        "HOME": str(tmp_path),
+        "PATH": os.environ.get("PATH", ""),
+        # Keep the subprocess free of any host credentials/flags; cwd (the
+        # repo root) is what puts the hermes packages on sys.path.
+        "LANG": "C.UTF-8",
+        "TZ": "UTC",
+    }
+    proc = subprocess.run(
+        [_sys.executable, "-c", _E2E_SCRIPT, str(tmp_path), mode],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=repo_root,
+        env=env,
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert ("OFFLINE-OK" if mode == "offline" else "SOCKET-OK") in proc.stdout

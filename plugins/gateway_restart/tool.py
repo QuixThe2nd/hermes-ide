@@ -55,10 +55,17 @@ RESTART_SCHEMA = {
 # leaves the gateway retryable and never reaches stop().
 _BEGIN_RESTART_TIMEOUT_S = 15.0
 
-_NO_RUNNER_ERROR = (
-    "No live gateway runner in this process — the restart tool only works "
-    "inside a running gateway. From outside, an operator can run "
-    "`hermes gateway restart` in a separate shell."
+# Control-socket transport bounds: the reachability probe in check_fn stays
+# cheap (a listing must not stall on a dead socket), while the restart request
+# itself gets the same room the in-process hand-off has — the verb's queue
+# sequence includes a bounded preflight before it acks.
+_SOCKET_PROBE_TIMEOUT_S = 1.0
+_SOCKET_RESTART_TIMEOUT_S = _BEGIN_RESTART_TIMEOUT_S
+
+_NO_GATEWAY_ERROR = (
+    "No running gateway answered on the control socket — the restart tool "
+    "needs a live gateway to queue into. Start the gateway, or from an "
+    "operator shell run `hermes gateway restart`."
 )
 
 # The runner the plugin needs must expose the current restart entry point.
@@ -81,17 +88,30 @@ _CRON_REFUSAL = (
 
 
 def check_restart_requirements() -> bool:
-    """True only inside a live gateway process.
+    """True when a restart target is reachable: this process OR its control socket.
 
-    Hidden in CLI/cron subprocesses and anything else without a running
-    ``GatewayRunner``. Deliberately does NOT require systemd: an unsupervised
-    foreground ``hermes gateway run`` still restarts fine via the detached
-    helper, exactly like ``/restart`` there.
+    Agent turns run in restart-safe worker processes outside the GatewayRunner
+    process, so the in-process runner ref is usually absent there — the
+    control-socket probe (``identify`` against ``get_hermes_home()``) answers
+    the real reachability question instead. Either path answering counts.
+    Cheap and never raises; the registry TTL-caches the result process-wide,
+    so the probe runs once per cache window, not per tool listing.
     """
     try:
         from gateway.run import _gateway_runner_ref
 
-        return _gateway_runner_ref() is not None
+        if _gateway_runner_ref() is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        from hermes_constants import get_hermes_home
+
+        from gateway.control_socket import identify_gateway
+
+        return isinstance(
+            identify_gateway(get_hermes_home(), timeout=_SOCKET_PROBE_TIMEOUT_S), dict
+        )
     except Exception:
         return False
 
@@ -172,14 +192,71 @@ async def _queue_user_restart(runner: Any, source: Any, message_id: Optional[str
     return await queue_user_restart(runner, source, message_id)
 
 
+def _socket_result_json(ack: dict) -> str:
+    """Success payload for a control-socket ack (same keys as the in-process path).
+
+    ``draining`` has no live runner to read here; the ack's status already
+    encodes the restart state, so False is the honest answer. The
+    turn-control stamp is identical to `_result_json` so the tool executor
+    ends the turn the same way on either transport.
+    """
+    payload = {
+        "success": True,
+        "status": ack.get("status"),
+        "draining": False,
+        "active_agents": ack.get("active_agents", 0),
+        "via_service": ack.get("via_service"),
+    }
+    control_field = turn_control_field_for(ack.get("status"))
+    if control_field:
+        payload.update(control_field)
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+def _restart_via_control_socket() -> str:
+    """Queue the restart through the gateway's control socket (out-of-process path).
+
+    The transport ``hermes gateway restart`` already uses: the socket verb
+    runs the SAME ``queue_user_restart`` core on the gateway loop, so an
+    agent turn in a restart-safe worker process (no in-process runner)
+    reaches the identical drain pipeline. Never raises — every failure maps
+    to a typed error result.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        from gateway.control_socket import request_gateway_restart
+
+        ack = request_gateway_restart(
+            get_hermes_home(),
+            restart_platforms=True,
+            timeout=_SOCKET_RESTART_TIMEOUT_S,
+        )
+    except Exception as exc:
+        logger.warning("restart tool: control-socket transport failed: %s", exc)
+        return _error_json(_NO_GATEWAY_ERROR)
+    if not isinstance(ack, dict):
+        return _error_json(_NO_GATEWAY_ERROR)
+    status = str(ack.get("status") or "")
+    if not ack.get("queued") and status != "already_in_progress":
+        # The gateway answered but refused (e.g. a drain already shutting
+        # down, or the hand-off not observed in time) — surface its reason.
+        return _error_json(
+            f"The running gateway refused the restart: {ack.get('reason') or status or 'no reason given'}"
+        )
+    return _socket_result_json(ack)
+
+
 def handle_restart(args: dict, **_: Any) -> str:
     """Queue a gateway restart via the shared /restart drain path.
 
-    Cron sessions, missing or outdated runners, a dead gateway loop, and an
-    invocation on the gateway loop itself are refused. An already-committed
-    restart returns ``already_in_progress`` without queueing another; a generic
-    shutdown drain returns the existing error. Otherwise the shared queue is
-    submitted to the gateway loop and its status becomes the tool result.
+    Cron sessions, outdated runners, a dead gateway loop, and an invocation on
+    the gateway loop itself are refused. Without an in-process runner (agent
+    turns run in worker processes) the gateway's control socket queues the
+    same restart core instead. An already-committed restart returns
+    ``already_in_progress`` without queueing another; a generic shutdown drain
+    returns the existing error. Otherwise the shared queue is submitted to the
+    gateway loop and its status becomes the tool result.
     """
     from gateway.session_context import get_session_env
     from utils import is_truthy_value
@@ -194,7 +271,10 @@ def handle_restart(args: dict, **_: Any) -> str:
     except Exception:
         runner = None
     if runner is None:
-        return _error_json(_NO_RUNNER_ERROR)
+        # Agent turns run in restart-safe worker processes outside the
+        # GatewayRunner process — the normal gateway-chat case. The control
+        # socket is the transport to the same restart core from there.
+        return _restart_via_control_socket()
 
     # The gateway-owned queue sequence this hands the runner into calls these
     # on it directly. A runner without them is a foreign or outdated object,
