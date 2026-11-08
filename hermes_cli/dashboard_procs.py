@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_state_dbfile import _is_ephemeral_port_zero_backend
+
 # Cmdline substrings identifying the long-lived server (``serve`` = the headless name Desktop
 # spawns; reaped on update for the same reason).
 _DASHBOARD_PATTERNS = tuple(
@@ -177,19 +179,6 @@ def _profile_flag_value(argv: list[str]) -> str | None:
         if tok.startswith("--profile="):
             return tok.split("=", 1)[1]
     return None
-
-
-def _is_ephemeral_port_zero_backend(argv: list[str]) -> bool:
-    """True for Desktop-style ``serve|dashboard --port 0`` backends — replaying them after
-    ``hermes update`` multiplies listening backends because ``--port 0`` binds a fresh port.
-
-    See #78821.
-    """
-    if _dashboard_subcommand_index(argv) is None:
-        return False
-    return any((tok == "--port" and i + 1 < len(argv) and str(argv[i + 1]) == "0")
-               or (tok.startswith("--port=") and tok.split("=", 1)[1].strip() == "0")
-               for i, tok in enumerate(argv))
 
 
 def _normalize_dashboard_cmdline(argv: list[str]) -> tuple[str, ...]:
