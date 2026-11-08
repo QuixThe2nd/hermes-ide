@@ -29,16 +29,66 @@ from plugins.auto_update.systemd import (
     format_exec_start,
     format_environment,
 )
-from plugins.llm_usage_proxy.systemd import (
-    ProbeOutcome,
-    ProbeResult,
-    _classify_probe,
-)
 from plugins.claude_viewer.config import (
     load_claude_viewer_config,
     plugin_explicitly_disabled,
 )
 from plugins.claude_viewer.port import FREE, PortState, probe_port_state
+
+
+class ProbeOutcome:
+    """String sentinels for systemctl probe classification."""
+
+    TRUE = "true"
+    FALSE = "false"
+    QUERY_FAILED = "query_failed"
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    outcome: str
+    detail: str = ""
+
+    @property
+    def known(self) -> bool:
+        return self.outcome != ProbeOutcome.QUERY_FAILED
+
+    @property
+    def as_bool(self) -> bool:
+        return self.outcome == ProbeOutcome.TRUE
+
+
+def _classify_probe(code: int, stdout: str, stderr: str, *, active_words: set[str]) -> ProbeResult:
+    blob = f"{stderr} {stdout}".lower()
+    query_markers = (
+        "failed to connect to bus",
+        "connection timed out",
+        "operation timed out",
+        "timed out after",
+        "access denied",
+        "permission denied",
+        "transport endpoint",
+        "can't connect",
+    )
+    detail = " ".join((stderr or "").split())[:200]
+    if any(marker in blob for marker in query_markers):
+        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail or f"exit code {code}")
+    text = stdout.strip().lower()
+    if code == 0 and text in active_words:
+        return ProbeResult(ProbeOutcome.TRUE)
+    if code in {3, 4}:
+        return ProbeResult(ProbeOutcome.FALSE)
+    if code == 1:
+        if text and text not in {"unknown", "not-found"}:
+            return ProbeResult(ProbeOutcome.FALSE)
+        if not detail:
+            return ProbeResult(ProbeOutcome.FALSE)
+        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail)
+    if detail:
+        return ProbeResult(ProbeOutcome.QUERY_FAILED, detail)
+    if code != 0:
+        return ProbeResult(ProbeOutcome.QUERY_FAILED, f"exit code {code}")
+    return ProbeResult(ProbeOutcome.FALSE)
 
 logger = logging.getLogger(__name__)
 

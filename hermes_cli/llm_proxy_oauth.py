@@ -1,9 +1,9 @@
-"""OAuth access-token resolver for the ``llm_usage_proxy`` key manager.
+"""OAuth access-token resolver for the standalone litellm-oauth usage proxy.
 
-The proxy process (``plugins/llm_usage_proxy/server.py``) is deliberately
-stdlib-only, so it cannot resolve or refresh upstream OAuth credentials
-itself. For a route marked OAuth-managed in the proxy's key store it spawns
-this module instead:
+The proxy process (vendored at ``/opt/litellm-oauth/server/plugins/
+llm_usage_proxy/server.py``) is deliberately stdlib-only, so it cannot resolve
+or refresh upstream OAuth credentials itself. For a route marked OAuth-managed
+in the proxy's key store it spawns this module instead:
 
     python -m hermes_cli.llm_proxy_oauth <provider-id>
 

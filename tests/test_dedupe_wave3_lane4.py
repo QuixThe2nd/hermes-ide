@@ -17,7 +17,6 @@ _GROUPS = (
     ("_windows_runtime_self_lock", "hermes_cli.runtime_repair:_windows_runtime_self_lock", ("hermes_cli.managed_uv:_windows_runtime_self_lock",)),
     ("_sweep_stale_runtime_backups", "hermes_cli.runtime_repair:_sweep_stale_runtime_backups", ("hermes_cli.managed_uv:_sweep_stale_runtime_backups",)),
     ("_classify_is_enabled_probe", "plugins.auto_update.systemd:_classify_is_enabled_probe", ("plugins.drift_watch.systemd:_classify_is_enabled_probe",)),
-    ("_classify_probe", "plugins.llm_usage_proxy.systemd:_classify_probe", ("plugins.claude_viewer.systemd:_classify_probe",)),
     ("managed_gateway_auth_headers", "tools.managed_tool_gateway:managed_gateway_auth_headers", ("tools.managed_gateway_auth:managed_gateway_auth_headers",)),
     ("_classify_is_active_probe", "plugins.auto_update.systemd:_classify_is_active_probe", ("plugins.drift_watch.systemd:_classify_is_active_probe",)),
     ("_default_live_venv", "hermes_cli.runtime_repair:_default_live_venv", ("hermes_cli.managed_uv:_default_live_venv",)),
@@ -27,7 +26,7 @@ _GROUPS = (
     ("_reconcile_probe_fields", "plugins.auto_update.systemd:_reconcile_probe_fields", ("plugins.drift_watch.systemd:_reconcile_probe_fields",)),
     ("disable_timer", "plugins.auto_update.systemd:disable_timer", ("plugins.drift_watch.systemd:disable_timer",)),
     ("_report_runtime_repair_failure", "hermes_cli.runtime_repair:_report_runtime_repair_failure", ("hermes_cli.managed_uv:_report_runtime_repair_failure",)),
-    ("_systemd_quote", "plugins.auto_update.systemd:_systemd_quote", ("plugins.llm_usage_proxy.systemd:_systemd_quote", "plugins.claude_viewer.systemd:_systemd_quote", "plugins.drift_watch.systemd:_systemd_quote")),
+    ("_systemd_quote", "plugins.auto_update.systemd:_systemd_quote", ("plugins.claude_viewer.systemd:_systemd_quote", "plugins.drift_watch.systemd:_systemd_quote")),
     ("_rename_with_retry", "hermes_cli.runtime_repair:_rename_with_retry", ("hermes_cli.managed_uv:_rename_with_retry",)),
     ("_tenv", "tools.terminal_tool_config:_tenv", ("tools.terminal_tool:_tenv",)),
     ("check_requirements", "plugins.hermes_starts:check_requirements", ("plugins.discord_guests:check_requirements",)),
@@ -40,7 +39,7 @@ _GROUPS = (
     ("linger_warning", "plugins.auto_update.systemd:linger_warning", ("plugins.drift_watch.systemd:linger_warning",)),
     ("_set_cached_sudo_password", "tools.terminal_tool_sudo:_set_cached_sudo_password", ("tools.terminal_tool:_set_cached_sudo_password",)),
     ("_clamp_timeout_seconds", "tools.agent_cli_runner:_clamp_timeout_seconds", ("tools.claude_agent_tool:_clamp_timeout_seconds", "tools.cursor_agent_tool:_clamp_timeout_seconds",)),
-    ("_coerce_bool", "plugins.auto_update.config:_coerce_bool", ("plugins.llm_usage_proxy.config:_coerce_bool", "plugins.fallback_watch.core:_coerce_bool", "plugins.claude_viewer.config:_coerce_bool", "plugins.drift_watch.config:_coerce_bool")),
+    ("_coerce_bool", "plugins.auto_update.config:_coerce_bool", ("plugins.fallback_watch.core:_coerce_bool", "plugins.claude_viewer.config:_coerce_bool", "plugins.drift_watch.config:_coerce_bool")),
     ("register", "plugins.fallback_watch:register", ("plugins.home_server:register",)),
     ("probe_timer_is_active", "plugins.auto_update.systemd:probe_timer_is_active", ("plugins.drift_watch.systemd:probe_timer_is_active",)),
     ("probe_timer_is_enabled", "plugins.auto_update.systemd:probe_timer_is_enabled", ("plugins.drift_watch.systemd:probe_timer_is_enabled",)),
@@ -109,14 +108,10 @@ def test_drift_watch_binds_its_own_unit_names(tmp_path) -> None:
 
 def test_probe_result_types_are_shared() -> None:
     from plugins.auto_update import systemd as auto
-    from plugins.claude_viewer import systemd as viewer
     from plugins.drift_watch import systemd as drift
-    from plugins.llm_usage_proxy import systemd as proxy
 
     assert drift.ProbeOutcome is auto.ProbeOutcome
     assert drift.ProbeResult is auto.ProbeResult
-    assert viewer.ProbeOutcome is proxy.ProbeOutcome
-    assert viewer.ProbeResult is proxy.ProbeResult
 
 
 def test_gateway_auth_preserves_connector_trust_and_exact_origins() -> None:

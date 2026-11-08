@@ -248,9 +248,7 @@ _EXTRA_ENV_KEYS = frozenset({
     # Copilot ACP client keys — profile-isolable so profiles can use different backends.
     "HERMES_COPILOT_ACP_COMMAND",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL",
-    # Shared-owner llm_usage_proxy mode: this profile's caller token for the central
-    # proxy (minted on the owner with `hermes llm_usage_proxy callers create`).
-    "HERMES_USAGE_PROXY_CALLER_TOKEN"})
+})
 
 
 # ---- Managed mode (NixOS declarative config) ----

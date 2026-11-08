@@ -2097,10 +2097,9 @@ class _CronRunScope:
             platform="",
             chat_id="",
             chat_name="",
-            # The job's durable identity, bound OUTSIDE the chat routing keys:
-            # the usage-proxy transport reads it to attribute the run's LLM
-            # requests to this job (one ledger chat per job, not per run),
-            # while delivery routing keeps seeing an empty chat.
+            # The job's durable identity, bound OUTSIDE the chat routing keys
+            # (one identity per job, not per run), while delivery routing
+            # keeps seeing an empty chat.
             job_id=job_id,
             job_name=str(job.get("name") or job_id),
             # Cron can't receive completions after its turn; async delegation output could
