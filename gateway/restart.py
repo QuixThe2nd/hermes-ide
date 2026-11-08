@@ -84,6 +84,30 @@ SYSTEMD_TIMEOUT_STOP_SEC_FLOOR = 60.0
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
+# Timeout env vars deprecated by the single documented ``gateway.drain_timeout``
+# config key. Old deployments that set them keep working; each is warned once
+# per process so the operator learns the canonical home.
+_DEPRECATED_TIMEOUT_ENVS = {
+    "HERMES_RESTART_DRAIN_TIMEOUT": "gateway.drain_timeout",
+    "HERMES_CRON_DRAIN_TIMEOUT": "gateway.drain_timeout",
+    "HERMES_RESTART_AFTER_TURN_TIMEOUT": "gateway.drain_timeout",
+}
+_deprecated_env_warned: set[str] = set()
+
+
+def warn_deprecated_timeout_env(name: str) -> None:
+    """Once-per-process deprecation notice for a legacy timeout env var, when set."""
+    if name not in _DEPRECATED_TIMEOUT_ENVS or name in _deprecated_env_warned:
+        return
+    _deprecated_env_warned.add(name)
+    import os
+
+    if str(os.environ.get(name, "")).strip():
+        logger.warning(
+            "%s is deprecated — set %s in config.yaml instead (still honoured for now)",
+            name, _DEPRECATED_TIMEOUT_ENVS[name],
+        )
+
 
 def is_global_startup_conflict(error_code: str | None) -> bool:
     """True when an adapter's fatal error is a single-writer ownership conflict.
@@ -413,8 +437,19 @@ def _restart_notify_payload(
     return data
 
 
+def _runner_restart_platforms(runner: Any) -> bool:
+    """Resolve ``gateway.restart_platforms`` from the runner's own raw config (default True)."""
+    try:
+        from gateway.run import _load_gateway_config
+
+        return restart_platforms_enabled(_load_gateway_config())
+    except Exception:  # noqa: BLE001 - config read must never block a restart
+        return True
+
+
 async def queue_user_restart(
-    runner: Any, source: Optional[SessionSource], message_id: Optional[str]
+    runner: Any, source: Optional[SessionSource], message_id: Optional[str],
+    *, restart_platforms: Optional[bool] = None,
 ) -> dict:
     """Queue a user-requested restart — the ONE shared ``/restart`` sequence.
 
@@ -505,9 +540,13 @@ async def queue_user_restart(
 
         active_agents = runner._running_agent_count()
 
-
+        if restart_platforms is None:
+            restart_platforms = _runner_restart_platforms(runner)
         via_service = user_restart_via_service()
-        started = runner.request_restart(detached=not via_service, via_service=via_service)
+        started = runner.request_restart(
+            detached=not via_service, via_service=via_service,
+            restart_platforms=restart_platforms,
+        )
 
         return {
             "status": "restarting" if started else "already_in_progress",
@@ -518,6 +557,30 @@ async def queue_user_restart(
         # Setup resolved (started, failed, or cancelled): drop the provisional
         # preflight state so a later attempt retries it, and wake any rider.
         restart_preflight.release_restart_preflight(preflight_attempt)
+
+
+def restart_platforms_enabled(config: Optional[Mapping[str, Any]] = None) -> bool:
+    """Whether a restart also bounces platform gateway connections (``gateway.restart_platforms``).
+
+    True (default): the overlap successor takes over the platform transports —
+    adapters reconnect on the successor, exactly like every restart before the
+    flag existed. False: the restart touches agent-core sessions only; platform
+    adapters are not bounced — no successor spawn through their hubs, no
+    restart choreography on their connections — and each transport simply
+    rides the predecessor until it exits, then reconnects on the successor.
+    """
+    gw: Any = None
+    if config is not None:
+        try:
+            gw = config.get("gateway")
+        except Exception:
+            gw = None
+    if not isinstance(gw, Mapping):
+        return True
+    raw = gw.get("restart_platforms", True)
+    if isinstance(raw, str):
+        return raw.strip().lower() in _TRUTHY
+    return bool(raw)
 
 
 def restart_committed(runner: Any) -> bool:
