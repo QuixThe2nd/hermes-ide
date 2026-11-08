@@ -311,3 +311,134 @@ class TestToolProgressDrainLoop:
             assert "Searching" not in final_text
             assert "terminal" not in final_text
             assert "---" not in final_text
+
+
+# === TOOL BUBBLE ACROSS SEGMENT BREAKS (edit transport) ===
+
+
+def _make_edit_streaming_adapter():
+    """Adapter on the EDIT transport: no native frames, real send/edit mocks.
+
+    Each send returns a fresh message id so tests can tell the tool box apart
+    from a later text message."""
+    import itertools
+    from gateway.platforms.base import BasePlatformAdapter
+
+    EditAdapter = type(
+        "EditAdapter",
+        (BasePlatformAdapter,),
+        {"MAX_MESSAGE_LENGTH": 4096, "SUPPORTS_MESSAGE_EDITING": True},
+    )
+    EditAdapter.__abstractmethods__ = frozenset()
+    adapter = EditAdapter.__new__(EditAdapter)
+    adapter._typing_paused = set()
+    adapter._fatal_error_message = None
+    ids = itertools.count(1)
+
+    async def _send(**kwargs):
+        return SimpleNamespace(success=True, message_id=f"msg-{next(ids)}")
+
+    adapter.send = AsyncMock(side_effect=_send)
+    adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+    return adapter
+
+
+def _make_edit_consumer():
+    consumer_cfg = StreamConsumerConfig(chat_type="dm", cursor="▌", edit_interval=0.0)
+    adapter = _make_edit_streaming_adapter()
+    consumer = GatewayStreamConsumer(adapter, "chat-1", consumer_cfg)
+    return consumer, adapter
+
+
+async def _drive(consumer, steps):
+    """Run the drain loop, feeding ``steps`` (callables) between short waits."""
+    task = asyncio.create_task(consumer.run())
+    try:
+        for step in steps:
+            await asyncio.sleep(0.2)
+            step()
+        await asyncio.sleep(0.4)
+        consumer.finish()
+        await asyncio.sleep(0.3)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+class TestToolBubbleAcrossSegmentBreaks:
+    """Consecutive tool-only rounds keep editing ONE progress bubble.
+
+    agent/turn_tool_round.py fires a segment break before every tool round; a
+    break that delivered NO text must not discard the tool box — the next
+    round's tool lines keep editing the same message."""
+
+    @pytest.mark.asyncio
+    async def test_tool_break_tool_edits_same_bubble(self):
+        """tool line → break (no text) → second tool line: one send, then an edit."""
+        consumer, adapter = _make_edit_consumer()
+
+        await _drive(consumer, [
+            lambda: consumer.on_tool_progress("🔍 Searching..."),
+            consumer.on_segment_break,
+            lambda: consumer.on_tool_progress("💻 terminal: ls"),
+        ])
+
+        # The box was sent exactly once — the second line EDITED it.
+        assert adapter.send.await_count == 1, (
+            f"expected exactly one progress send, got {adapter.send.await_count}"
+        )
+        assert "Searching" in adapter.send.await_args.kwargs["content"]
+        assert adapter.edit_message.await_count >= 1
+        first_edit = adapter.edit_message.await_args_list[0]
+        assert first_edit.kwargs["message_id"] == "msg-1"
+        assert "Searching" in first_edit.kwargs["content"]
+        assert "terminal" in first_edit.kwargs["content"]
+        # The bubble survives the break for further rounds.
+        assert consumer._message_id == "msg-1"
+
+    @pytest.mark.asyncio
+    async def test_text_after_preserved_bubble_is_new_message(self):
+        """tool line → break (no text) → text delta: text lands BELOW the box."""
+        consumer, adapter = _make_edit_consumer()
+
+        await _drive(consumer, [
+            lambda: consumer.on_tool_progress("🔍 Searching..."),
+            consumer.on_segment_break,
+            lambda: consumer.on_delta("Here is the real answer."),
+        ])
+
+        assert adapter.send.await_count == 2, (
+            f"text must be a NEW message below the box, sends={adapter.send.await_count}"
+        )
+        text_send = adapter.send.await_args_list[-1]
+        assert "real answer" in text_send.kwargs["content"]
+        assert "Searching" not in text_send.kwargs["content"]
+        # Never edit the preserved tool box with the text.
+        for call in adapter.edit_message.await_args_list:
+            if "real answer" in call.kwargs["content"]:
+                assert call.kwargs["message_id"] != "msg-1"
+        assert consumer._message_id != "msg-1"
+
+    @pytest.mark.asyncio
+    async def test_break_with_text_still_resets(self):
+        """tool line → text → break (WITH text): next tool line starts a fresh box."""
+        consumer, adapter = _make_edit_consumer()
+
+        await _drive(consumer, [
+            lambda: consumer.on_tool_progress("🔍 Searching..."),
+            lambda: consumer.on_delta("Preamble text."),
+            consumer.on_segment_break,
+            lambda: consumer.on_tool_progress("💻 terminal: ls"),
+        ])
+
+        # The second tool line opened a NEW message, it did not edit msg-1.
+        assert adapter.send.await_count == 2
+        second_send = adapter.send.await_args_list[-1]
+        assert "terminal" in second_send.kwargs["content"]
+        for call in adapter.edit_message.await_args_list:
+            if "terminal" in call.kwargs["content"]:
+                assert call.kwargs["message_id"] != "msg-1"
+        assert consumer._message_id != "msg-1"
