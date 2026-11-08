@@ -171,10 +171,11 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
 
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
                 new_text: str = None, operations: Optional[List[Dict[str, Any]]] = None,
-                store: Optional[MemoryStore] = None) -> str:
+                store: Optional[MemoryStore] = None, description: str = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
-    aliases ``content`` — callers mirror ``old_text`` with it (patch-tool shape)."""
+    aliases ``content`` — callers mirror ``old_text`` with it (patch-tool shape).
+    ``description`` is the progress-narration phrase only; never stored."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     if content is None and new_text is not None:
@@ -309,6 +310,15 @@ MEMORY_SCHEMA = {
             "new_text": {
                 "type": "string",
                 "description": "Alias for 'content' (single-op shape). Provided so the replace/remove old_text/new_text pairing works; if both are set, 'content' wins."
+            },
+            "description": {
+                "type": "string",
+                "description": (
+                    "One short phrase (max ~80 chars) saying WHY this memory change is being "
+                    "made, e.g. 'save the deploy rule in the fork skill'. Shown to the user "
+                    "as progress: '<emoji> <phrase> to <description>'. Optional. Never put "
+                    "the entry content or secrets here."
+                )
             },
             "operations": {
                 "type": "array",
