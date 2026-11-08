@@ -698,7 +698,7 @@ def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], t
             backend_args += ["--cdp", str(bd_port)]
         if _cloud._is_headed_mode():
             backend_args.append("--headed")
-        if engine != "auto" and not _bt._is_camofox_mode():
+        if engine not in ("auto", "camofox") and not _bt._is_camofox_mode():
             backend_args += ["--engine", engine]
 
     argv = _agent_browser_argv(browser_cmd)
