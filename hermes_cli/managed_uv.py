@@ -35,7 +35,9 @@ from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.runtime_repair import (
+    _cut_over_windows_runtime_config,
     _default_live_venv,
+    _record_runtime_repair,
     _reload_hermes_constants,
     _remove_tree,
     _rename_with_retry,
@@ -260,6 +262,20 @@ class _UvResult(str):
         return iter(((str(self) or None), self.fresh_bootstrap))
 
 
+def _run_runtime_repair(
+    uv_bin: str,
+    repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
+) -> RuntimeRepairResult:
+    """Run the repair once and fan its outcome out to every update consumer."""
+    repair = repair_vulnerable_runtime(uv_bin)
+    _record_runtime_repair(repair)
+    if repair_observer is not None:
+        repair_observer(repair)
+    if repair.status == "failed":
+        _report_runtime_repair_failure(repair)
+    return repair
+
+
 def _ensure_uv_path(
     *,
     repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
@@ -296,11 +312,7 @@ def _ensure_uv_path(
         # that first update can migrate a vulnerable runtime without requiring
         # a second ``hermes update``.
         try:
-            repair = repair_vulnerable_runtime(result)
-            if repair_observer is not None:
-                repair_observer(repair)
-            if repair.status == "failed":
-                _report_runtime_repair_failure(repair)
+            _run_runtime_repair(result, repair_observer)
         except Exception as exc:
             logger.warning("Managed Python runtime repair failed: %s", exc)
     else:
@@ -433,11 +445,7 @@ def update_managed_uv(
     # module on disk before the updater imports it. Calling the repair here is
     # what makes the migration happen on that first update.
     try:
-        repair = repair_vulnerable_runtime(existing)
-        if repair_observer is not None:
-            repair_observer(repair)
-        if repair.status == "failed":
-            _report_runtime_repair_failure(repair)
+        _run_runtime_repair(existing, repair_observer)
     except Exception as exc:
         # Runtime refresh is deliberately non-fatal. The live venv was not
         # touched unless a fully prepared candidate reached cutover.
