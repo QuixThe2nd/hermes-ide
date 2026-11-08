@@ -997,6 +997,7 @@ DEFAULT_CONFIG = {
             "fields": [
                 "model", "context_pct",
                 "turn_time", "api_time", "tool_time", "overhead_time", "api_calls", "tool_calls",
+                "reasoning",
             ],
         },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
