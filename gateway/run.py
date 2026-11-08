@@ -11590,6 +11590,9 @@ class GatewayRunner(
         demoted_for_compression: bool
         steered: bool
         redirected: bool
+        # Why a steer-mode message fell back to queue: "agent-not-live",
+        # "media-not-steerable", or "steer-failed" (None when no steer was attempted).
+        steer_fallback_reason: Optional[str] = None
 
     def _steer_delivered_ack_enabled(self, event: MessageEvent) -> bool:
         """Resolve the busy_steer_delivered_ack_enabled display setting.
