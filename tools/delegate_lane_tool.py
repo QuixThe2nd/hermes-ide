@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Mapping
@@ -17,9 +19,10 @@ from tools.delegate_tool_omp import is_quota_error, run_omp_lane
 from tools.registry import no_cache_check_fn, registry
 
 
-def _prompt(spec: Mapping[str, Any], task: str, context: str, *, with_soul: bool) -> str:
+def _soul_material(spec: Mapping[str, Any]) -> str:
+    """Lane soul sections only: instructions plus any injected skill files."""
     sections = []
-    if with_soul and spec.get("soul"):
+    if spec.get("soul"):
         sections.append("# Lane instructions\n" + read_soul(spec["soul"]).strip())
     for skill_dir in spec.get("skills", []):
         directory = resolve_lane_path(skill_dir)
@@ -27,9 +30,22 @@ def _prompt(spec: Mapping[str, Any], task: str, context: str, *, with_soul: bool
         if not skill_file.is_file():
             raise FileNotFoundError(f"lane skill file does not exist: {skill_file}")
         sections.append(f"# Injected skill: {skill_dir}\n" + skill_file.read_text(encoding="utf-8"))
+    return "\n\n".join(sections)
+
+
+def _task_prompt(task: str, context: str) -> str:
+    """Task sections only: optional context plus the task brief."""
+    sections = []
     if context.strip():
         sections.append("# Additional context\n" + context.strip())
     sections.append("# Task\n" + task.strip())
+    return "\n\n".join(sections)
+
+
+def _prompt(spec: Mapping[str, Any], task: str, context: str, *, with_soul: bool) -> str:
+    soul = _soul_material(spec) if with_soul else ""
+    sections = [soul] if soul else []
+    sections.append(_task_prompt(task, context))
     return "\n\n".join(sections)
 
 
@@ -49,6 +65,10 @@ def _run_external(spec, task, workdir, model, timeout_seconds, context):
     }
     if spec["harness"] == "claude" and spec.get("tools_allowlist"):
         args["allowed_tools"] = ",".join(spec["tools_allowlist"])
+    if spec["harness"] == "claude":
+        soul_file = context.get("_claude_soul_file") if isinstance(context, dict) else None
+        if soul_file:
+            args["system_prompt_file"] = soul_file
     forwarded = {key: context[key] for key in ("task_id", "session_id", "tool_call_id") if key in context}
     return _delegate_agent_handler(args, **forwarded)
 
@@ -60,12 +80,16 @@ def _run_subagent(spec, task, workdir, model, _timeout_seconds, context):
     if parent is None:
         from tools.agent_dispatch_context import get_agent_dispatch_context
         parent = get_agent_dispatch_context()
-    return delegate_agent(
+    kwargs = dict(
         goal=task,
         context=f"Run all workspace operations in this existing directory: {workdir}",
         background=False, parent_agent=parent,
         credentials_cfg={**_cfg(), "model": model},
     )
+    ephemeral_soul = context.get("_ephemeral_soul")
+    if ephemeral_soul:
+        kwargs["ephemeral_system_prompt"] = ephemeral_soul
+    return delegate_agent(**kwargs)
 
 
 _RUNNERS = {
@@ -184,27 +208,49 @@ def delegate_lane(
             "none", [],
         )
     try:
-        prompt = _prompt(spec, task, context, with_soul=spec["harness"] != "omp")
+        soul_material = _soul_material(spec)
+        if spec["harness"] == "omp":
+            prompt = _prompt(spec, task, context, with_soul=True)
+        elif spec["harness"] == "cursor":
+            prompt = _prompt(spec, task, context, with_soul=True)
+        else:
+            prompt = _task_prompt(task, context)
     except (OSError, ValueError) as exc:
         return _format_result(spec, {"success": False, "error": str(exc)}, "none", [])
+    claude_soul_file = None
+    if spec["harness"] == "claude" and soul_material:
+        handle, soul_path = tempfile.mkstemp(prefix="hermes-claude-soul-", suffix=".md")
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            fh.write(soul_material)
+        claude_soul_file = soul_path
+        dispatch_context = {**dispatch_context, "_claude_soul_file": soul_path}
+    if spec["harness"] == "subagent" and soul_material:
+        dispatch_context = {**dispatch_context, "_ephemeral_soul": soul_material}
     attempts = []
     payload: Dict[str, Any] = {"success": False, "error": "no model attempted"}
     selected = "none"
-    for model in spec["models"]:
-        selected = model
-        try:
-            payload = _payload(_RUNNERS[spec["harness"]](
-                spec, prompt, workdir, model, timeout_seconds, dispatch_context
-            ))
-        except Exception as exc:
-            payload = {"success": False, "error": str(exc)}
-        error = _error(payload)
-        attempts.append({
-            "model": model, "success": _succeeded(payload),
-            "error": error or None, "quota": not _succeeded(payload) and _quota_failure(payload),
-        })
-        if _succeeded(payload) or not _quota_failure(payload):
-            break
+    try:
+        for model in spec["models"]:
+            selected = model
+            try:
+                payload = _payload(_RUNNERS[spec["harness"]](
+                    spec, prompt, workdir, model, timeout_seconds, dispatch_context
+                ))
+            except Exception as exc:
+                payload = {"success": False, "error": str(exc)}
+            error = _error(payload)
+            attempts.append({
+                "model": model, "success": _succeeded(payload),
+                "error": error or None, "quota": not _succeeded(payload) and _quota_failure(payload),
+            })
+            if _succeeded(payload) or not _quota_failure(payload):
+                break
+    finally:
+        if claude_soul_file:
+            try:
+                os.unlink(claude_soul_file)
+            except OSError:
+                pass
     return _format_result(spec, payload, selected, attempts)
 
 

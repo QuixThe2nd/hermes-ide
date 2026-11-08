@@ -489,6 +489,7 @@ def delegate_claude_agent(
     background: bool = False,
     session_id: str | None = None,
     tool_call_id: str | None = None,
+    system_prompt_file: str | None = None,
 ) -> str:
     """Delegate one dev task to the Claude Code CLI.
 
@@ -535,6 +536,12 @@ def delegate_claude_agent(
                 "permission_mode must be one of "
                 f"{list(_ALLOWED_PERMISSION_MODES)}, got: {permission_mode!r}"
             ),
+        )
+
+    if system_prompt_file is not None and not Path(system_prompt_file).is_file():
+        return _make_result(
+            success=False,
+            error=f"system_prompt_file does not exist: {system_prompt_file}",
         )
 
     # Uniform lifecycle gate — BEFORE any side effect (the /goal brief
@@ -607,6 +614,11 @@ def delegate_claude_agent(
         binary,
         "-p",
     ]
+    if system_prompt_file is not None:
+        # Lane soul material pinned at the harness level: the file's contents
+        # ride in the child's system prompt, not the task text. The lane layer
+        # owns the file's lifecycle (it outlives the subprocess by contract).
+        cmd.extend(["--append-system-prompt-file", str(system_prompt_file)])
     if model_name:
         cmd.extend(["--model", model_name])
     cmd.extend(
@@ -1071,6 +1083,7 @@ def _handle_delegate_claude_agent(args, **kw):
         background=resolve_background_arg(args),
         session_id=kw.get("session_id"),
         tool_call_id=kw.get("tool_call_id"),
+        system_prompt_file=args.get("system_prompt_file"),
     )
 
 
