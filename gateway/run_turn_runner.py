@@ -73,8 +73,7 @@ class _ExecApprovalDeclined(RuntimeError):
 
 
 class _TurnRunnerCore:
-    """Sole owner of the TurnRunner constructor: both TurnRunner shapes (the monolith copy in
-    ``gateway/run.py`` and this module's) share it so the pairing can never drift again."""
+    """Sole owner of the live TurnRunner constructor."""
 
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
