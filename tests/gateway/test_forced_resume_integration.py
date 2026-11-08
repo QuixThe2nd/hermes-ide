@@ -18,8 +18,7 @@ The contract under proof (RESUME §1/§2/§3):
 * each replacement result persists exactly once, and the persisted
   transcript carries no synthetic recovery row;
 * a REAL user message arriving during recovery runs verbatim, unwrapped,
-  after the completed assistant→tool batch;
-* cooperative restarts keep their safe-pause guidance (regression).
+  after the completed assistant→tool batch.
 
 Deliberately NO import from ``gateway.forced_resume_replay``: the module's
 symbols changed across the fix, and importing them would turn a base-commit
@@ -359,24 +358,6 @@ def test_forced_victim_real_user_message_runs_verbatim_after_batch():
     # CURRENT turn (never interleaved inside the batch).
     assert model_history[-1].get("role") == "tool"
     assert model_history[-1].get("tool_call_id") == "call_deploy"
-
-
-def test_cooperative_restart_keeps_pause_guidance_at_model_boundary():
-    """Regression: the session that accepted the cooperative steer still
-    receives its safe-pause guidance — forced transparency must not leak
-    into (or from) the cooperative path."""
-    history = _interrupted_terminal_history()
-    agent, store = _run_and_capture_agent(history, "", "cooperative_restart", {})
-
-    # Cooperative parked sessions do NOT re-run their interrupted calls.
-    assert agent.executions == []
-    assert store.appended == []
-
-    run_message, kwargs = agent.run_calls[0]
-    assert isinstance(run_message, str) and run_message.strip()
-    assert "parked itself" in run_message
-    assert "CONTINUE the parked task" in run_message
-    assert kwargs.get("continue_interrupted_turn") is None
 
 
 def test_text_only_interruption_resumes_without_note():

@@ -777,9 +777,7 @@ class GatewayStartupMixin:
         """
         from gateway.run import _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window
         window = _auto_continue_freshness_window()
-        from gateway.restart_wind_down import should_auto_resume_session
 
-        allowlist = self._resume_allowlist_for_this_boot()
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
                 self.session_store._ensure_loaded_locked()  # noqa: SLF001
@@ -790,7 +788,6 @@ class GatewayStartupMixin:
                     and entry.origin is not None
                     and entry.resume_reason in self._AUTO_RESUME_REASONS
                     and (platform is None or entry.origin.platform == platform)
-                    and should_auto_resume_session(entry.session_key, allowlist)
                 ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)

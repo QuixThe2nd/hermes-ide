@@ -1,7 +1,7 @@
 """Synthesized auto-resume turns must not claim a NEW user message exists.
 
-Observed live (2026-09-13): a Discord session parked by a cooperative
-gateway restart was auto-resumed at startup with NO user message, yet the
+Observed live (2026-09-13): a Discord session auto-resumed at startup with
+NO user message (the idle /restart requester's comeback turn), yet the
 model-visible note read "Address the user's NEW message below FIRST ...".
 The startup resume event is synthesized with ``text=""``
 (``_schedule_resume_pending_sessions``), but on a shared multi-user session
@@ -18,6 +18,7 @@ leak's actual data flow, not just the note builder's branches.
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.run_resume_reasons import RESTART_REQUESTER_RESUME_REASON
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner, _prepare_resume_pending_message
 from gateway.session import SessionSource
@@ -61,25 +62,22 @@ async def _prepared_turn_message(runner: GatewayRunner, event: MessageEvent) -> 
         event=event, source=event.source, history=[],
     )
     note, _persisted = _prepare_resume_pending_message(
-        "cooperative_restart", prepared,
+        RESTART_REQUESTER_RESUME_REASON, prepared,
     )
     return note
 
 
 @pytest.mark.asyncio
-async def test_synthesized_auto_resume_event_gets_parked_wording():
+async def test_synthesized_auto_resume_event_gets_restore_wording():
     """The leak: empty synthesized event + shared-session attribution must
-    still render the parked/no-new-message wording."""
+    still render the no-new-message wording."""
     runner = _make_runner()
     source = _shared_discord_thread_source()
 
     note = await _prepared_turn_message(runner, _synth_resume_event(source))
 
-    assert "parked itself" in note
+    assert "restored successfully" in note
     assert "NEW message below" not in note
-    # The cooperative tail guidance replaces the has-message tail verbatim.
-    assert "resume from the first step" in note
-    assert "resume where you left off" not in note
 
 
 @pytest.mark.asyncio
@@ -95,7 +93,8 @@ async def test_synthesized_auto_resume_event_stays_empty_after_prep():
 
     assert prepared == ""
     # And the seam persists the note (never a blank user row, #86580).
-    _note, persisted = _prepare_resume_pending_message("cooperative_restart", prepared)
+    _note, persisted = _prepare_resume_pending_message(
+        RESTART_REQUESTER_RESUME_REASON, prepared)
     assert persisted == _note
     assert persisted.strip()
 

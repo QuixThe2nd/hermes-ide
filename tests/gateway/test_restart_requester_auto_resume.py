@@ -87,7 +87,7 @@ async def test_restart_notification_marks_idle_requester_and_schedules_resume_on
     await asyncio.sleep(0)
 
     assert entry.resume_pending is True
-    assert entry.resume_reason == "cooperative_restart"
+    assert entry.resume_reason == "restart_requester"
     assert session_key in runner._running_agents
     assert runner._running_agents[session_key] is _AGENT_PENDING_SENTINEL
     runner._run_startup_resume_event.assert_awaited_once()

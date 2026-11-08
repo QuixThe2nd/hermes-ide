@@ -35,7 +35,6 @@ import logging
 import os
 import queue
 import re
-import secrets
 import shlex
 import site
 import sys
@@ -2295,10 +2294,8 @@ def build_resume_recovery_note(
     nowhere (#57056).
     """
     reason_phrase = (
-        "a cooperative gateway restart"
-        if reason == "cooperative_restart"
-        else "a gateway restart"
-        if reason == "restart_timeout"
+        "a gateway restart"
+        if reason in ("restart_timeout", RESTART_REQUESTER_RESUME_REASON)
         else "a gateway shutdown"
         if reason == "shutdown_timeout"
         else "a gateway interruption"
@@ -2310,18 +2307,6 @@ def build_resume_recovery_note(
         )
         tail_guidance = (
             "Do NOT re-execute old tool calls — resume where you left off."
-        )
-    elif reason == "cooperative_restart":
-        resume_guidance = (
-            "This session parked itself so the gateway could restart. "
-            "No user is waiting on a restore acknowledgement. "
-            "Review the conversation history and CONTINUE the parked "
-            "task from the last safe pause."
-        )
-        tail_guidance = (
-            "Do NOT re-run tool calls whose results already "
-            "appear in the history — resume from the first step "
-            "that has no recorded result. Do not ask what next."
         )
     elif interactive:
         resume_guidance = (
@@ -2831,10 +2816,9 @@ from agent.replay_cleanup import (  # noqa: E402
     strip_stale_dangerous_confirmations,
 )
 
-# Transparent forced-interruption recovery: victims of a gateway bounce (as
-# opposed to sessions that accepted a cooperative restart) resume below the
-# LLM boundary — unresolved replayable calls re-run through the normal
-# dispatcher instead of the model being told the process restarted.
+# Transparent forced-interruption recovery: victims of a gateway bounce
+# resume below the LLM boundary — unresolved replayable calls re-run through
+# the normal dispatcher instead of the model being told the process restarted.
 from gateway.forced_resume_replay import (  # noqa: E402
     build_victim_replay_plan,
     claim_forced_recovery_ownership,
@@ -2843,6 +2827,7 @@ from gateway.forced_resume_replay import (  # noqa: E402
     plan_forced_resume_turn,
     trim_incomplete_assistant_text_tail,
 )
+from gateway.run_resume_reasons import RESTART_REQUESTER_RESUME_REASON  # noqa: E402
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
@@ -4085,6 +4070,7 @@ os.environ["HERMES_QUIET"] = "1"
 # see gateway/cwd_placeholder.py for the three-case contract (local vs docker
 # mount-off vs docker mount-on).  MESSAGING_CWD is a backward-compat fallback.
 from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
+from gateway.runtime_footer import turn_metrics
 
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
@@ -4220,11 +4206,6 @@ from gateway.whatsapp_identity import (
     canonical_whatsapp_identifier as _canonical_whatsapp_identifier,  # noqa: F401
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
-)
-from gateway.restart_wind_down import (
-    RESTART_WIND_DOWN_SEND_WAIT_SECONDS,
-    WIND_DOWN_TERMINAL_CLOSED,
-    WIND_DOWN_TERMINAL_DRAINED,
 )
 
 
@@ -6172,34 +6153,10 @@ class GatewayRunner(
     _restart_via_service: bool = False
     _detached_restart_watcher_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
-    _cooperative_restart_steered_sessions: Optional[List[str]] = None
-    # ── Opt-in restart wind-down cycle state (⏸️ Discord reaction) ─────────
-    # ``_restart_generation`` counts restart cycles this process opened and
-    # ``_restart_wind_down_nonce`` is a fresh random token per cycle, so a
-    # reaction can only ever authorize the offer the *current* cycle minted.
-    # ``_restart_wind_down_offer`` is the authoritative server-side binding of
-    # message id + requester snowflake to that cycle; ``None`` means no
-    # actionable prompt exists. ``_restart_wind_down_accepted`` is the one-shot
-    # latch — it flips synchronously, before any await, so concurrent reaction
-    # events can only ever produce a single accepted transition.
+    # ``_restart_generation`` counts restart cycles this process opened;
+    # ``_restart_cycle_open`` makes the bump idempotent within one cycle.
     _restart_generation: int = 0
     _restart_cycle_open: bool = False
-    _restart_wind_down_nonce: Optional[str] = None
-    _restart_wind_down_offer: Optional[Dict[str, Any]] = None
-    _restart_wind_down_accepted: bool = False
-    _restart_wind_down_allowlist_written: bool = False
-    # Set the moment a cycle's prompt is retired, whatever retired it. A send
-    # that is still in flight when that happens must not re-register its
-    # message as actionable — the cycle is over, so the just-sent prompt is
-    # stale the instant it exists and gets a terminal edit instead.
-    _restart_wind_down_finalized: bool = False
-    _restart_wind_down_final_reason: Optional[str] = None
-    # While this cycle's ⏸️ embed is being delivered. The adapter registers
-    # the offered message before its seeded-reaction round trip, so a valid
-    # requester reaction can reach ``accept_restart_wind_down_opt_in`` before
-    # this runner has registered the offer; the record lets that reaction wait
-    # (bounded, identity-matched) instead of being answered ``no_offer``.
-    _restart_wind_down_send_in_flight: Optional[Dict[str, Any]] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
@@ -6411,12 +6368,6 @@ class GatewayRunner(
         self._restart_command_source: Optional[SessionSource] = None
         self._restart_generation = 0
         self._restart_cycle_open = False
-        self._restart_wind_down_nonce: Optional[str] = None
-        self._restart_wind_down_offer: Optional[Dict[str, Any]] = None
-        self._restart_wind_down_accepted = False
-        self._restart_wind_down_allowlist_written = False
-        self._restart_wind_down_finalized = False
-        self._restart_wind_down_final_reason: Optional[str] = None
         # Monotonic-ish wall clock of when this GatewayRunner was constructed.
         # Used by the /restart redelivery guard to bound the window in which a
         # missing dedup marker is treated as a stale redelivery.
@@ -7257,6 +7208,13 @@ class GatewayRunner(
         demoted_for_compression: bool
         steered: bool
         redirected: bool
+        # Why a steer-mode message fell back to queue: "agent-not-live",
+        # "media-not-steerable", or "steer-failed" (None when no steer was attempted).
+        steer_fallback_reason: Optional[str] = None
+        # True when a steer-eligible follow-up that hit the agent-not-live window
+        # was parked in the steer-on-live slot instead of the pending FIFO — it is
+        # steered into the run the moment _run_agent_track_agent promotes the agent.
+        parked_for_steer: bool = False
 
     def _steer_delivered_ack_enabled(self, event: MessageEvent) -> bool:
         """Resolve the busy_steer_delivered_ack_enabled display setting.
@@ -7668,507 +7626,20 @@ class GatewayRunner(
             "restart_timeout",
             "shutdown_timeout",
             "restart_interrupted",
-            "cooperative_restart",
+            RESTART_REQUESTER_RESUME_REASON,
         }
     )
 
-    def _request_cooperative_restart_wind_down(self) -> list[str]:
-        """Ask live chat sessions to park, then record only who accepted.
-
-        New turns stay refused (``_draining``). This only steers already-
-        running agents so they can reach a pausable state instead of
-        pinning the drain until they naturally finish.
-
-        Called at opt-in time — never merely because a restart began — so the
-        steer reflects what is live *at the reaction*, and a requester who
-        never reacts leaves every live session to finish on its own.
-
-        Persistence follows acceptance, never intent: the receipt left for
-        the next process is exactly the keys whose agent accepted the steer.
-        A session whose ``steer()`` returned False must finish on its own —
-        persisting it would auto-resume it at startup as if it had parked.
-        An empty accepted set is still a real receipt ("resume nobody"),
-        and the ``written`` latch is set only when that exact set is
-        durably on disk, so a failed write invalidates any stale receipt
-        instead of letting an older cycle's file speak for this one.
-        """
-        from gateway.restart_wind_down import (
-            mark_cooperative_restart_sessions,
-            steer_running_agents_for_restart,
-            write_resume_allowlist,
-        )
-
-        steered = steer_running_agents_for_restart(self)
-        persisted = write_resume_allowlist(steered)
-        if persisted:
-            self._restart_wind_down_allowlist_written = True
-        # Deliberately the accepted set, not the attempted one: user-facing
-        # shutdown notices may claim an LLM steer was accepted only for
-        # sessions whose agent actually took that exact text.
-        self._cooperative_restart_steered_sessions = list(steered)
-        marked = mark_cooperative_restart_sessions(self, steered)
-        logger.info(
-            "Cooperative restart: %d session(s) recorded as asked to park, "
-            "%d accepted the steer (%d marked resume_pending; receipt %s)",
-            len(getattr(self, "_cooperative_restart_sessions", []) or []),
-            len(steered),
-            marked,
-            "written"
-            if persisted
-            else "NOT written — stale receipt invalidated",
-        )
-        return steered
-
-    # ------------------------------------------------------------------
-    # Opt-in restart wind-down (⏸️ reaction on the Discord pause offer)
-    # ------------------------------------------------------------------
-
     def _begin_restart_cycle(self) -> int:
-        """Open one restart cycle: bump the generation and mint a nonce.
-
-        Idempotent within the cycle. The wind-down prompt send opens it
-        early so the ⏸️ offer it is about to send can be bound to a
-        generation; ``request_restart`` then re-enters here and must NOT
-        mint a second generation, or the live offer would be orphaned
-        behind a stale one.
+        """Open one restart cycle: bump the generation. Idempotent within the
+        cycle, so a restart that re-enters the setup path mints no second
+        generation.
         """
         if self._restart_cycle_open:
             return self._restart_generation
         self._restart_cycle_open = True
         self._restart_generation += 1
-        self._restart_wind_down_nonce = secrets.token_hex(8)
-        self._restart_wind_down_offer = None
-        self._restart_wind_down_accepted = False
-        self._restart_wind_down_allowlist_written = False
-        self._restart_wind_down_finalized = False
-        self._restart_wind_down_final_reason = None
-        self._restart_wind_down_send_in_flight: Optional[Dict[str, Any]] = None
         return self._restart_generation
-
-    def _restart_wind_down_offer_eligible(self, source: Optional[SessionSource]) -> bool:
-        """True only for a native-Discord user restart with someone to ask.
-
-        Every other surface — Telegram/Signal/Slack, relay-fronted Discord,
-        signal, update, API and service-manager restarts — never reaches the
-        offer at all, because they never send the wind-down prompt with
-        a native Discord source. This is the second gate: even on that path an
-        offer needs a numeric requester snowflake to authorize against, and at
-        least one live chat that is not the requester's own turn.
-
-        The engaged-restart check is ``_restart_task_started``, not
-        ``_draining``: the user-restart path sends this offer *before* it
-        hands off to ``request_restart()`` (which sets ``_draining``), so a
-        draining flag alone must not suppress the one prompt this
-        cycle is about to make. Once the drain task itself is running — a
-        signal/update/API restart that went straight to
-        ``request_restart()`` — no offer may appear behind it.
-        """
-        if source is None or source.platform != Platform.DISCORD:
-            return False
-        if getattr(source, "delivered_via_upstream_relay", False) is True:
-            return False
-        requester_user_id = str(getattr(source, "user_id", "") or "").strip()
-        if not requester_user_id.isdigit():
-            return False
-        if getattr(self, "_restart_task_started", False):
-            return False
-        from gateway.restart_wind_down import iter_steerable_agents
-
-        for _session_key, _agent in iter_steerable_agents(self):
-            return True
-        return False
-
-    async def _send_restart_wind_down_prompt(self, source: SessionSource) -> bool:
-        """Post the one ⏸️ opt-in embed in the requester's channel/thread.
-
-        Returns True when an actionable prompt is now registered. Any failure
-        (no adapter, no client, Discord send error) simply leaves the restart
-        on the natural-wait path — the offer is an acceleration, never a
-        precondition.
-        """
-        from gateway.restart_wind_down import restart_wind_down_prompt_spec
-
-        if not self._restart_wind_down_offer_eligible(source):
-            return False
-        adapter = self.adapters.get(Platform.DISCORD)
-        if adapter is None:
-            return False
-        send = getattr(adapter, "send_restart_wind_down_offer", None)
-        if not callable(send):
-            return False
-
-        generation = self._begin_restart_cycle()
-        nonce = self._restart_wind_down_nonce
-        requester_user_id = str(source.user_id or "").strip()
-        # Discord threads are their own channel: the connector keys chat_id on
-        # the thread id, so chat_id alone already targets the right place.
-        channel_id = str(source.chat_id)
-        # Mark the send in flight *before* awaiting it. The adapter registers
-        # the offered message the moment its id is known — before its own
-        # seeded-reaction round trip — so a fast requester ⏸️ can reach
-        # accept_restart_wind_down_opt_in() while this coroutine is still
-        # waiting for ``send`` to return. That reaction waits on this record
-        # instead of being told ``no_offer`` and lost.
-        in_flight = self._open_restart_wind_down_send(
-            generation=generation,
-            nonce=nonce,
-            channel_id=channel_id,
-            requester_user_id=requester_user_id,
-        )
-        try:
-            try:
-                message_id = await send(
-                    channel_id=channel_id,
-                    requester_user_id=requester_user_id,
-                    generation=generation,
-                    nonce=nonce,
-                    spec=restart_wind_down_prompt_spec(),
-                )
-            except Exception:
-                logger.warning(
-                    "Restart wind-down offer could not be sent; waiting naturally",
-                    exc_info=True,
-                )
-                return False
-            if not message_id:
-                return False
-
-            if in_flight.get("abandoned"):
-                # A valid reaction waited out this send, timed out, and was
-                # answered ``no_offer`` — which already retired the prompt on
-                # the adapter. Registering now would resurrect an actionable
-                # offer behind a message the requester has been told is spent,
-                # and a second ⏸️ on it would steer a wind-down the first one
-                # never ran. The reaction path made the terminal edit, so this
-                # side only refuses.
-                logger.info(
-                    "Restart wind-down offer landed after its reaction had "
-                    "already been answered offer-less; leaving the prompt "
-                    "unregistered"
-                )
-                return False
-
-            # The send awaited above, so the drain may have finalized the cycle
-            # while the embed was in flight. Registering it now would resurrect
-            # an actionable prompt for a cycle that is already over — retire it
-            # straight into its terminal edit instead.
-            if self._restart_wind_down_finalized:
-                from gateway.restart_wind_down import (
-                    restart_wind_down_terminal_spec,
-                )
-
-                logger.info(
-                    "Restart wind-down offer arrived after the cycle finalized; "
-                    "marking the just-sent prompt terminal"
-                )
-                try:
-                    await adapter.finalize_restart_wind_down_offer(
-                        message_id=message_id,
-                        channel_id=channel_id,
-                        spec=restart_wind_down_terminal_spec(
-                            self._restart_wind_down_final_reason
-                            or WIND_DOWN_TERMINAL_CLOSED
-                        ),
-                    )
-                except Exception:
-                    logger.debug(
-                        "Stale restart wind-down prompt could not be edited",
-                        exc_info=True,
-                    )
-                return False
-
-            if self._restart_wind_down_accepted:
-                # A valid reaction landed while the embed was in flight, waited
-                # on the record above, and already ran the wind-down against a
-                # registration this coroutine no longer owns. Re-registering
-                # would re-arm a spent prompt; the reaction path already made
-                # its terminal edit.
-                logger.info(
-                    "Restart wind-down opt-in already accepted while the offer "
-                    "was being delivered; leaving the prompt unregistered"
-                )
-                return False
-
-            self._restart_wind_down_offer = {
-                "generation": generation,
-                "nonce": nonce,
-                "message_id": str(message_id),
-                "channel_id": channel_id,
-                "requester_user_id": requester_user_id,
-            }
-            logger.info(
-                "Restart wind-down offer sent (generation=%d, channel=%s); "
-                "waiting for the requester's ⏸️ reaction",
-                generation,
-                channel_id,
-            )
-            return True
-        finally:
-            # Release any reaction waiting on this send — after the offer (or
-            # its refusal) is registered, so waiters re-check settled state.
-            self._close_restart_wind_down_send(in_flight)
-
-    def _open_restart_wind_down_send(
-        self,
-        *,
-        generation: int,
-        nonce: Optional[str],
-        channel_id: str,
-        requester_user_id: str,
-    ) -> Dict[str, Any]:
-        """Record that this cycle's ⏸️ embed is being delivered.
-
-        Carries exactly the fields a reaction can be matched on before the
-        message id exists runner-side: the cycle's generation and nonce, the
-        channel, and the requester. The waiting side identity-checks those and
-        bounds the wait, so the record can only ever delay a would-be-valid
-        reaction — it can never authorize one.
-        """
-        record: Dict[str, Any] = {
-            "generation": int(generation),
-            "nonce": nonce,
-            "channel_id": str(channel_id),
-            "requester_user_id": str(requester_user_id),
-            "done": asyncio.Event(),
-            "abandoned": False,
-        }
-        self._restart_wind_down_send_in_flight = record
-        return record
-
-    def _close_restart_wind_down_send(self, record: Dict[str, Any]) -> None:
-        """Drop the record and release its waiters; never clobber a newer one."""
-        if getattr(self, "_restart_wind_down_send_in_flight", None) is record:
-            self._restart_wind_down_send_in_flight = None
-        done = record.get("done")
-        if done is not None and not done.is_set():
-            done.set()
-
-    async def _await_restart_wind_down_send(
-        self,
-        *,
-        channel_id: str,
-        requester_user_id: str,
-        generation: int,
-        nonce: Optional[str],
-    ) -> None:
-        """Wait out this cycle's offer send — once, bounded, only on a match.
-
-        A no-op that never yields unless a send for this exact cycle,
-        requester and channel is still delivering its embed, so the latch
-        ordering in the caller is unchanged on every other path.
-        """
-        record = getattr(self, "_restart_wind_down_send_in_flight", None)
-        if not isinstance(record, dict):
-            return
-        if (
-            record.get("generation") != int(generation)
-            or record.get("nonce") != nonce
-            or str(record.get("channel_id") or "") != str(channel_id)
-            or str(record.get("requester_user_id") or "") != str(requester_user_id)
-        ):
-            return
-        done = record.get("done")
-        if not isinstance(done, asyncio.Event) or done.is_set():
-            return
-        try:
-            await asyncio.wait_for(done.wait(), RESTART_WIND_DOWN_SEND_WAIT_SECONDS)
-        except asyncio.TimeoutError:
-            # This attempt is terminal, not merely late. The caller is about
-            # to answer the reaction ``no_offer``, and its adapter has already
-            # retired the prompt — so a send that completes from here on must
-            # not register an actionable offer for a message nobody is waiting
-            # on any more. Flagging the record makes that refusal follow the
-            # send instead of racing it, and releasing ``done`` stops any
-            # concurrent waiter from burning the whole bound again.
-            record["abandoned"] = True
-            if not done.is_set():
-                done.set()
-            logger.debug(
-                "Restart wind-down offer send did not land within %ss; "
-                "answering the reaction as offer-less",
-                RESTART_WIND_DOWN_SEND_WAIT_SECONDS,
-            )
-
-    async def accept_restart_wind_down_opt_in(
-        self,
-        *,
-        message_id: str,
-        channel_id: str,
-        requester_user_id: str,
-        emoji: str,
-        generation: int,
-        nonce: Optional[str],
-    ) -> Dict[str, Any]:
-        """Run the cooperative wind-down once, at reaction time.
-
-        The whole authorization decision is made against server-side state
-        this runner owns: the exact message id it offered, the exact requester
-        snowflake, the exact normalized pause emoji, and the current restart
-        generation and nonce. Footer text is never consulted. The one-shot
-        latch flips before the first await, so a second valid event —
-        concurrent, duplicated, or a remove/re-add — can only ever see
-        ``already_accepted``.
-
-        Returns a dict with ``accepted`` plus either ``accepted_count`` (the
-        sessions that took the steer) or ``no_targets`` (everything finished
-        between prompt and reaction — a harmless terminal no-op).
-        """
-        from gateway.restart_wind_down import normalize_pause_emoji
-
-        # The offer embed may still be delivering: the adapter registers the
-        # offered message before its seeded-reaction round trip, so a valid
-        # requester ⏸️ can beat this runner's own registration. Wait for that
-        # send to land — once, bounded, only on an exact cycle/requester/
-        # channel match — before ruling ``no_offer``. Every check below then
-        # runs unchanged against the registered offer.
-        if (
-            not self._restart_wind_down_accepted
-            and self._restart_wind_down_offer is None
-        ):
-            await self._await_restart_wind_down_send(
-                channel_id=channel_id,
-                requester_user_id=requester_user_id,
-                generation=generation,
-                nonce=nonce,
-            )
-
-        offer = self._restart_wind_down_offer
-        # The latch is checked first: a reaction re-submitted after the one
-        # accepted transition is "already accepted" even if a broken adapter
-        # managed to re-register the message.
-        if self._restart_wind_down_accepted:
-            return {"accepted": False, "reason": "already_accepted"}
-        if offer is None:
-            return {"accepted": False, "reason": "no_offer"}
-        if normalize_pause_emoji(emoji) is None:
-            return {"accepted": False, "reason": "wrong_emoji"}
-        if generation != offer["generation"]:
-            return {"accepted": False, "reason": "stale_generation"}
-        if nonce is None or nonce != offer["nonce"]:
-            return {"accepted": False, "reason": "stale_nonce"}
-        if str(message_id) != offer["message_id"]:
-            return {"accepted": False, "reason": "wrong_message"}
-        if str(channel_id) != offer["channel_id"]:
-            return {"accepted": False, "reason": "wrong_channel"}
-        if str(requester_user_id) != offer["requester_user_id"]:
-            return {"accepted": False, "reason": "wrong_user"}
-        if not self._restart_requested:
-            return {"accepted": False, "reason": "not_restarting"}
-
-        # Claim the transition synchronously, then retire the offer so no
-        # later event — including one already in flight — can re-enter.
-        self._restart_wind_down_accepted = True
-        self._restart_wind_down_offer = None
-
-        attempted_before = len(
-            getattr(self, "_cooperative_restart_sessions", None) or []
-        )
-        steered = self._request_cooperative_restart_wind_down()
-        had_targets = (
-            len(getattr(self, "_cooperative_restart_sessions", None) or [])
-            > attempted_before
-        )
-        if not self._restart_wind_down_allowlist_written:
-            # The exact accepted set could not be persisted and the stale
-            # receipt was already invalidated inside the write. The accepted
-            # sessions keep their resume_pending marks — a missing receipt
-            # falls back to the usual pending scan, which still revives
-            # them — and the cycle-finalize path clears the receipt again
-            # before the next boot could rely on a half-written one.
-            logger.warning(
-                "Restart wind-down opt-in: the accepted-steer receipt could "
-                "not be persisted; any stale receipt was invalidated"
-            )
-        if not had_targets:
-            logger.info(
-                "Restart wind-down opt-in: every live session had already "
-                "finished; nothing to pause (empty receipt: resume nobody)"
-            )
-            return {"accepted": True, "no_targets": True, "accepted_count": 0}
-        logger.info(
-            "Restart wind-down opt-in accepted: %d session(s) took the "
-            "safe-pause steer",
-            len(steered),
-        )
-        return {"accepted": True, "accepted_count": len(steered), "steered": steered}
-
-    async def _finalize_restart_wind_down_offer(self, reason: str) -> None:
-        """Retire the ⏸️ prompt. Local state first, then best-effort cleanup.
-
-        ``reason`` is one of the ``WIND_DOWN_TERMINAL_*`` kinds. Called from
-        every path that makes the prompt moot: natural drain completion and
-        safety-cap progression out of ``_await_active_work_before_restart``,
-        and shutdown/cancellation out of ``_stop_impl_body`` (adapters are
-        still connected there, so the terminal edit can still be delivered).
-
-        A Discord cleanup failure is logged and swallowed — it must never
-        re-arm the offer or block the restart.
-        """
-        from gateway.restart_wind_down import (
-            clear_resume_allowlist,
-            restart_wind_down_terminal_spec,
-        )
-
-        offer = self._restart_wind_down_offer
-        # Deactivate local state FIRST: from here on a reaction is a no-op even
-        # if every Discord call below fails.
-        self._restart_wind_down_offer = None
-        self._restart_wind_down_finalized = True
-        self._restart_wind_down_final_reason = reason
-        if not self._restart_wind_down_allowlist_written:
-            # No opt-in happened this cycle, so any receipt on disk belongs to
-            # an older one. Drop it or the next boot would resume sessions that
-            # were never asked to park. This must also run for the cycles that
-            # never had an offer to retire — Telegram/signal/update restarts,
-            # a Discord restart with no live peer — which is exactly why it
-            # sits above the no-offer early return below.
-            clear_resume_allowlist()
-
-        if offer is None:
-            return
-
-        accepted = int(
-            len(getattr(self, "_cooperative_restart_steered_sessions", None) or [])
-        )
-        spec = restart_wind_down_terminal_spec(reason, accepted=accepted)
-        adapter = self.adapters.get(Platform.DISCORD)
-        finalize = (
-            getattr(adapter, "finalize_restart_wind_down_offer", None)
-            if adapter is not None
-            else None
-        )
-        if not callable(finalize):
-            return
-        try:
-            await finalize(
-                message_id=offer["message_id"],
-                channel_id=offer["channel_id"],
-                spec=spec,
-            )
-        except Exception:
-            logger.debug(
-                "Restart wind-down offer cleanup failed (offer already inert)",
-                exc_info=True,
-            )
-
-    def _resume_allowlist_for_this_boot(self):
-        """Steer-time snapshot for this process, or None on the crash path.
-
-        The file is consumed once so a later unclean exit is a real crash
-        again. The in-memory copy covers reconnect reschedule in the same
-        process.
-        """
-        if "_cooperative_resume_allowlist" not in self.__dict__:
-            from gateway.restart_wind_down import consume_resume_allowlist
-
-            allowlist = consume_resume_allowlist()
-            self._cooperative_resume_allowlist = allowlist
-            if allowlist is not None:
-                logger.info(
-                    "Cooperative restart allowlist: resume %d snapshotted chat(s)",
-                    len(allowlist),
-                )
-        return self._cooperative_resume_allowlist
 
     @staticmethod
     def _log_background_resume_result(task: "asyncio.Task") -> None:
@@ -9255,9 +8726,9 @@ class GatewayRunner(
         #
         # Drain-queued messages first: replay claims the snapshot, re-injects
         # each event into the owning adapter's FIFO and starts the turn for
-        # sessions the cooperative resume set does not already cover. Running
-        # before the resume scheduler lets both share one allowlist read and
-        # sees the replay turns' pre-claimed slots (no double turn). Under
+        # sessions the resume scheduler does not already cover. Running
+        # before the resume scheduler lets replay see the scheduler's
+        # pre-claimed slots (no double turn). Under
         # multiplex_profiles every served profile's home-scoped queue is
         # claimed, not just the launch home's.
         replay_drain_queues_for_profiles(self)
@@ -9819,12 +9290,6 @@ class GatewayRunner(
             self._clear_plugin_message_injector()
             self._draining = True
 
-            # Retire any ⏸️ restart wind-down prompt before adapters go down,
-            # while the terminal embed edit can still be delivered. Covers the
-            # paths the after-turn wait never reaches: signal shutdown, update
-            # restarts, and a drain cancel/abort.
-            await self._finalize_restart_wind_down_offer(WIND_DOWN_TERMINAL_CLOSED)
-
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):
                 await stop_watchdog()
@@ -9923,22 +9388,8 @@ class GatewayRunner(
                 # Drain completed gracefully — all running sessions finished.
                 # Clear the pre-drain resume_pending markers so sessions that
                 # completed during the drain window don't carry a stale flag.
-                # Keep cooperative-restart markers: those sessions parked on
-                # purpose so startup can auto-continue them.
-                from gateway.restart_wind_down import COOPERATIVE_RESTART_REASON
-
-                _coop = set(getattr(self, "_cooperative_restart_sessions", []) or [])
                 for _sk in _pre_drain_keys:
                     if _sk in self._running_agents:
-                        continue
-                    if _sk in _coop:
-                        continue
-                    _entry = None
-                    try:
-                        _entry = self.session_store._entries.get(_sk)
-                    except Exception:
-                        _entry = None
-                    if getattr(_entry, "resume_reason", None) == COOPERATIVE_RESTART_REASON:
                         continue
                     try:
                         await self.async_session_store.clear_resume_pending(_sk)
@@ -10892,10 +10343,11 @@ class GatewayRunner(
     def _mark_and_schedule_restart_requester_resume(self, notify_data: dict) -> None:
         """Resume an idle /restart requester after the comeback notice delivers.
 
-        Reuses ``cooperative_restart`` only for resume-note routing (interactive
-        guidance), not because the session accepted a wind-down steer. Scheduled
-        directly here so the wind-down allowlist cannot exclude the requester and
-        so a slow boot-path send still resumes after ``_schedule_resume_pending_sessions``.
+        Uses ``RESTART_REQUESTER_RESUME_REASON`` for resume-note routing
+        (interactive guidance): the requester interrupted nothing, so the
+        synthesized comeback turn reports the restore and asks what next.
+        Scheduled directly here so a slow boot-path send still resumes after
+        ``_schedule_resume_pending_sessions``.
         No restart-loop guard: user-requested restart of an idle chat is expected.
         """
         source = self._source_from_restart_notify_payload(notify_data)
@@ -10959,10 +10411,8 @@ class GatewayRunner(
             )
             return
 
-        from gateway.restart_wind_down import COOPERATIVE_RESTART_REASON
-
         if not self.session_store.mark_resume_pending(
-            session_key, COOPERATIVE_RESTART_REASON
+            session_key, RESTART_REQUESTER_RESUME_REASON
         ):
             return
 

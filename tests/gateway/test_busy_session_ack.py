@@ -295,15 +295,23 @@ class TestBusySessionAck:
         # that would mash separate messages together, #43066).
         assert adapter._pending_messages.get(sk) is event
 
-        # Ack uses queue-mode wording (not steer, not interrupt)
+        # Ack explains the steer fallback instead of the generic queue text
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
-        assert "Steered" not in content
+        assert "Couldn't steer into the current run" in content
+        assert "the active run didn't accept the injection" in content
+        assert "queued for the next turn" in content
+        assert "Steered into current run" not in content
 
     @pytest.mark.asyncio
-    async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
-        """If agent is still starting (sentinel), steer mode falls back to queue."""
+    async def test_steer_mode_parks_when_agent_pending(self, monkeypatch):
+        """If agent is still starting (sentinel), a steer-eligible follow-up is
+        PARKED in the steer-on-live slot (steered in the moment the agent goes
+        live), not queued as a second user turn."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "steer"
         adapter = _make_adapter()
@@ -317,12 +325,44 @@ class TestBusySessionAck:
 
         await runner._handle_active_session_busy_message(event, sk)
 
-        # Event was queued instead of steered (FIFO path, #43066)
+        # Event was parked for steer-on-live, NOT queued into the FIFO
+        assert runner._parked_steer_map().get(sk) is event
+        assert adapter._pending_messages.get(sk) is None
+
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "pending start" in content
+        assert "injected as soon as the run accepts" in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_falls_back_to_queue_when_media_not_steerable(self):
+        """A non-voice media follow-up can't be steered mid-run — the ack must
+        say so instead of showing the generic queue text."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="")
+        event.message_type = MessageType.PHOTO if hasattr(MessageType, "PHOTO") else MessageType.TEXT
+        event.media_urls = ["/tmp/photo.jpg"]
+        event.media_types = ["image/jpeg"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
         assert adapter._pending_messages.get(sk) is event
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
+        assert "Couldn't steer into the current run" in content
+        assert "attachments can't be steered mid-run" in content
+        assert "queued for the next turn" in content
 
     @pytest.mark.asyncio
     async def test_interrupt_mode_text_followups_fifo_not_merged(self):
@@ -837,36 +877,6 @@ class TestLongRunningNotificationOwnership:
             "sess", agent, executor_task=None
         ) is True
 
-    def test_notification_suppressed_for_requesters_session(self):
-        """The requester's chat — the one the restart wind-down embed targets —
-        stays quiet for the drain (the original suppression contract)."""
-        agent = MagicMock()
-        runner = self._qualifying_runner(agent)
-        source = SessionSource(
-            platform=Platform.TELEGRAM, chat_id="123",
-            chat_type="dm", user_id="requester",
-        )
-        requester_key = runner._session_key_for_source(source)
-        runner._running_agents[requester_key] = agent
-        runner._restart_requested = True
-        runner._restart_command_source = source
-
-        assert runner._should_emit_long_running_notification(
-            requester_key, agent, executor_task=None
-        ) is False
-
-    def test_notification_suppressed_for_park_steered_session(self):
-        """A session whose agent accepted the cooperative park steer was told
-        in-band to wind down; its heartbeat stays quiet for the drain."""
-        agent = MagicMock()
-        runner = self._qualifying_runner(agent)
-        runner._restart_requested = True
-        runner._cooperative_restart_steered_sessions = ["sess"]
-
-        assert runner._should_emit_long_running_notification(
-            "sess", agent, executor_task=None
-        ) is False
-
     def test_notification_emitted_when_restart_not_requested(self):
         agent = MagicMock()
         runner = self._qualifying_runner(agent)
@@ -953,8 +963,8 @@ class TestLongRunningHeartbeatIterationDetail:
         adapter.send = first_send
 
         async def _edit_then_restart(*a, **k):
-            runner._restart_requested = True  # restart notice goes out while the edit is awaited
-            runner._cooperative_restart_steered_sessions = ["sess"]  # this chat was told (park steer)
+            runner._restart_requested = True  # restart begins while the edit is awaited
+            runner._running_agents.pop("sess", None)  # the turn finished; the loop must stop
             return SimpleNamespace(success=False)
 
         adapter.edit_message = AsyncMock(side_effect=_edit_then_restart)
@@ -979,20 +989,4 @@ class TestLongRunningHeartbeatIterationDetail:
 
         assert first_send.await_count == 1  # the original heartbeat only
         adapter.edit_message.assert_awaited_once()
-
-    def test_notification_stops_once_targeted_drain_notice(self):
-        """After the restart notice a heartbeat would contradict it (#10990) — but only for
-        chats actually told about the drain (wind-down embed target or cooperative park
-        steer), not on the bare process-wide flag."""
-        from gateway.run import GatewayRunner
-
-        runner = object.__new__(GatewayRunner)
-        runner._running_agents = {}
-        agent = MagicMock()
-        runner._running_agents["sess"] = agent
-        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is True
-        runner._restart_requested = True
-        runner._cooperative_restart_steered_sessions = ["sess"]  # cooperative park-steer lane: told
-        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
-
 

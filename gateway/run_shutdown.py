@@ -26,7 +26,6 @@ from gateway.restart import (
     resolve_planned_restart_exit_code,
 )
 from agent.interrupt_compat import request_hard_interrupt
-from gateway.restart_wind_down import WIND_DOWN_TERMINAL_DRAINED
 from gateway.run_common import _UNSET
 from utils import atomic_json_write
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
@@ -1236,9 +1235,6 @@ class GatewayShutdownMixin:
         restart_source = self._restart_command_source if self._restart_requested else None
 
         base_msg = "⚠️ Gateway shutting down"
-        steered_sessions = set(
-            getattr(self, "_cooperative_restart_steered_sessions", None) or []
-        )
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         # Routing snapshot per target that actually received the ⚠️, so the
@@ -1321,16 +1317,7 @@ class GatewayShutdownMixin:
                     adapter=adapter,
                 )
 
-                session_msg = base_msg
-                if session_key in steered_sessions:
-                    from gateway.restart_wind_down import COOPERATIVE_RESTART_STEER
-
-                    session_msg = (
-                        f"{base_msg}\n\n"
-                        "Message sent to the LLM:\n"
-                        f"```\n{COOPERATIVE_RESTART_STEER}\n```"
-                    )
-                result = await adapter.send(chat_id, session_msg, metadata=metadata)
+                result = await adapter.send(chat_id, base_msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -1602,30 +1589,6 @@ class GatewayShutdownMixin:
                 agent, context="shutdown finalize"
             )
 
-    def _session_has_pending_drain_notice(self, session_key: Optional[str]) -> bool:
-        """True only when this session's chat was actually told a restart drain is pending.
-
-        A restart can arrive from surfaces that notify no chat (SIGUSR1, the
-        updater, the control socket) or from a different chat than the one
-        mid-turn; shutdown notices go out only once the drain reaches
-        ``stop()``, and the drain itself waits without a timeout. Keying the
-        heartbeat suppression off the bare process-wide restart flag would
-        silence those un-notified sessions' liveness signal for the entire
-        drain. The notified set is exactly the two lanes that carry a drain
-        notice today: the requester's chat (the restart wind-down embed
-        target) and the sessions whose agent accepted the cooperative park
-        steer.
-        """
-        if not session_key or not getattr(self, "_restart_requested", False):
-            return False
-        if session_key in (
-            getattr(self, "_cooperative_restart_steered_sessions", None) or []
-        ):
-            return True
-        from gateway.restart_wind_down import requester_session_key
-
-        return requester_session_key(self) == session_key
-
     def _should_emit_long_running_notification(
         self, session_key: Optional[str], agent: Any, executor_task: Optional[Any],
     ) -> bool:
@@ -1636,10 +1599,6 @@ class GatewayShutdownMixin:
         a fresh agent took the slot mid-run, #12029).
         """
         if agent is None or (executor_task is not None and executor_task.done()):
-            return False
-        if self._session_has_pending_drain_notice(session_key):
-            # #10990: only chats actually told about the drain are silenced,
-            # unlike the old process-wide _draining/_restart_requested check.
             return False
         if session_key:
             _hb_state = self._peek_session_state(session_key)
@@ -2153,9 +2112,6 @@ class GatewayShutdownMixin:
         """
         active = self._probed_active_work_count()
         if active is not None and active <= 0:
-            await self._finalize_restart_wind_down_offer(
-                WIND_DOWN_TERMINAL_DRAINED
-            )
             return True
 
         if active is None:
@@ -2211,7 +2167,6 @@ class GatewayShutdownMixin:
             "Restart deferred wait complete — active work drained; "
             "proceeding to stop()"
         )
-        await self._finalize_restart_wind_down_offer(WIND_DOWN_TERMINAL_DRAINED)
         return True
 
     def request_restart(self, *, detached: bool = False, via_service: bool = False, overlap: bool = True) -> bool:
@@ -2236,11 +2191,10 @@ class GatewayShutdownMixin:
         # Keep ``_running`` True so adapters stay connected and the active
         # turn can still deliver its final response (#77184).
         self._draining = True
-        # No cooperative wind-down here. The drain waits naturally; the park
-        # steer only happens if the requester opts in via the ⏸️ reaction on
-        # the Discord wind-down embed offered for this cycle. The
-        # cycle opener itself runs INSIDE the setup transaction below — an
-        # exception out of it must hit the rollback, not strand the latch.
+        # The drain waits naturally for in-flight work; nothing steers live
+        # sessions mid-restart. The cycle opener itself runs INSIDE the setup
+        # transaction below — an exception out of it must hit the rollback,
+        # not strand the latch.
 
         async def _run_restart() -> None:
             # A transport with multi-generation support starts the successor

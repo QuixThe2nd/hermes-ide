@@ -747,7 +747,8 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     # Write config.yaml so _run_agent picks up tool_preview_length
-    config = {"display": {"tool_preview_length": preview_length}}
+    # Tests preview length, not boxing: the code fence would add chars.
+    config = {"display": {"tool_preview_length": preview_length, "tool_progress_codebox": False}}
     (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
     adapter = ProgressCaptureAdapter()
@@ -1117,6 +1118,7 @@ async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id
         tmp_path,
         DuplicateNativeToolsAgent,
         session_id="sess-native-ids",
+        config_data={"display": {"tool_progress": "all"}},
         platform=Platform.SLACK,
         chat_id="C1",
         thread_id="thread-1",
@@ -1160,6 +1162,7 @@ async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
         tmp_path,
         DuplicateNativeToolsAgent,
         session_id="sess-native-fallback",
+        config_data={"display": {"tool_progress": "all"}},
         platform=Platform.SLACK,
         chat_id="C1",
         thread_id="thread-1",
