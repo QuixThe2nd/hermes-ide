@@ -14,6 +14,17 @@ from tests.gateway.restart_test_helpers import make_restart_runner
 
 
 @pytest.fixture(autouse=True)
+def isolated_restart_home(tmp_path, monkeypatch):
+    """Keep restart sidecar writes in the per-test home, not the session default."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(None)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    yield tmp_path
+    reset_hermes_home_override(token)
+
+
+@pytest.fixture(autouse=True)
 def successor_process_identity(monkeypatch):
     """Give fake successor PIDs a stable, live process fingerprint by default."""
     monkeypatch.setattr("gateway.status.get_process_start_time", lambda _pid: 4242)
@@ -42,8 +53,8 @@ async def test_hub_successor_exits_overlap_under_systemd_without_service_request
 
 
 @pytest.mark.asyncio
-async def test_pause_for_update_requests_the_same_overlap_flow(tmp_path):
-    """The update control verb must spawn first, not opt back into serial drain."""
+async def test_pause_for_update_preserves_pre_swap_serial_flow(tmp_path):
+    """The pre-update control verb drains without spawning onto the old tree."""
     import gateway.run as gateway_run
 
     runner = SimpleNamespace(
@@ -63,34 +74,42 @@ async def test_pause_for_update_requests_the_same_overlap_flow(tmp_path):
 
     assert json.loads(response)["result"]["pausing"] is True
     runner.request_restart.assert_called_once_with(
-        detached=False, via_service=True, overlap=True
+        detached=False, via_service=True, overlap=False
     )
 
 
 @pytest.mark.asyncio
-async def test_restart_control_requests_the_same_overlap_flow(tmp_path):
-    """The CLI-facing control verb is the same successor-first gateway flow."""
+async def test_restart_control_requests_the_same_overlap_flow(monkeypatch):
+    """The control verb reaches the shared queue and returns main's ACK shape."""
     import gateway.run as gateway_run
 
     runner = SimpleNamespace(
         request_restart=MagicMock(return_value=True),
         config=SimpleNamespace(multiplex_profiles=False),
     )
+    queued = AsyncMock(return_value={
+        "status": "restarting", "active_agents": 0, "via_service": False,
+    })
+    monkeypatch.setattr("gateway.restart.queue_user_restart", queued)
     server = await gateway_run._start_gateway_start_control_socket(runner)
     assert server is not None
     try:
         response = await asyncio.get_running_loop().run_in_executor(
             None,
             server.handle_request_line,
-            json.dumps({"verb": "restart", "id": 1}).encode(),
+            json.dumps({
+                "verb": "restart", "id": 1,
+                "params": {"restart_platforms": False},
+            }).encode(),
         )
     finally:
         await server.stop()
 
-    assert json.loads(response)["result"]["restarting"] is True
-    runner.request_restart.assert_called_once_with(
-        detached=False, via_service=True, overlap=True
-    )
+    result = json.loads(response)["result"]
+    assert result["queued"] is True
+    assert result["status"] == "restarting"
+    queued.assert_awaited_once_with(runner, None, None, restart_platforms=False)
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio

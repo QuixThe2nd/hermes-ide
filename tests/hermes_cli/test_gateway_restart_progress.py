@@ -423,6 +423,29 @@ def test_update_path_uses_the_same_non_destructive_observer(monkeypatch):
     restart.assert_called_once_with(100, via_service=True, home=None, from_update=True)
 
 
+def test_update_request_marks_update_drain_and_uses_sigusr1(tmp_path, monkeypatch):
+    from hermes_cli import gateway_restart_progress as progress
+
+    monkeypatch.setattr(progress, "_read_status", lambda home: {
+        "pid": 100, "gateway_state": "running",
+    })
+    marker = MagicMock(return_value=True)
+    query = MagicMock()
+    kill = MagicMock()
+    monkeypatch.setattr("gateway.status.write_update_restart_marker", marker)
+    monkeypatch.setattr(progress, "query_gateway_control", query)
+    monkeypatch.setattr(progress.os, "kill", kill)
+
+    outcome = progress.request_gateway_restart(
+        100, home=tmp_path, via_service=True, from_update=True,
+    )
+
+    assert outcome.accepted is True
+    marker.assert_called_once_with(100, target_home=tmp_path)
+    kill.assert_called_once_with(100, progress.signal.SIGUSR1)
+    query.assert_not_called()
+
+
 def test_ctrl_c_detaches_without_force(monkeypatch, capsys):
     from hermes_cli import gateway_restart_progress as progress
 
