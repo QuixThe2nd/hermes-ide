@@ -277,7 +277,6 @@ class DiscordHubServer:
         self._adapter_profiles: Dict[str, set[str]] = {}
         self._adapter_routes: Dict[str, list] = {}
         self._raw_messages: "OrderedDict[str, Any]" = OrderedDict()
-        self._prompt_owners: Dict[str, str] = {}
         self._successors = OverlapSuccessorRegistry()
         self.matrix = MatrixHub(self)
         self._stopping = False
@@ -717,10 +716,6 @@ class DiscordHubServer:
             return {"value": {
                 "id": result.id, "name": result.name, "guild_id": result.guild.id,
             }}
-        if method == "send_restart_wind_down_offer" and result:
-            self._prompt_owners[f"{token_key}:{result}"] = client.generation_id
-        elif method == "finalize_restart_wind_down_offer":
-            self._prompt_owners.pop(f"{token_key}:{params.get('kwargs', {}).get('message_id')}", None)
         return _send_result_dict(result)
 
     async def _request_generation_control(self, generation_id: str, method: str,
@@ -740,13 +735,6 @@ class DiscordHubServer:
             return await asyncio.wait_for(future, timeout=timeout)
         finally:
             client.controls.pop(control_id, None)
-
-    async def request_control(self, token_key: str, message_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        owner = self._prompt_owners.pop(f"{token_key}:{message_id}", None)
-        client = self._clients.get(owner or "")
-        if client is None:
-            return {"accepted": False, "reason": "owner_detached"}
-        return await self._request_client_control(client, "accept_restart_wind_down_opt_in", params)
 
     async def _spawn_gateway(self, params: Dict[str, Any]) -> Dict[str, Any]:
         from gateway.restart import detached_restart_spawn_blocked, spawn_replacement_gateway
@@ -804,10 +792,6 @@ class _HubProfileResolver:
     def __init__(self, server: DiscordHubServer, token_key: str) -> None:
         self.server = server
         self.token_key = token_key
-
-    async def accept_restart_wind_down_opt_in(self, **params: Any) -> Dict[str, Any]:
-        return await self.server.request_control(
-            self.token_key, str(params.get("message_id") or ""), params)
 
     def _profile_name_for_source(self, source: Any, adapter_profile: Optional[str] = None) -> Optional[str]:
         profiles = self.server._adapter_profiles.get(self.token_key) or {"default"}

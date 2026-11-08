@@ -23,6 +23,7 @@ from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
+from gateway.runtime_footer import turn_metrics
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
@@ -642,13 +643,24 @@ class TurnRunner(_TurnRunnerCore):
         # Code-box presentation (display.tool_progress_codebox): the whole
         # accumulated group becomes ONE unlabelled fenced block, with inner ```
         # escaped so already-fenced command/code previews render inside the box
-        # instead of breaking out. Only the editable (accumulate) lane boxes;
-        # "separate"-mode rows keep their plain per-row text.
+        # instead of breaking out. Applies to every lane: accumulated bubbles,
+        # "separate" per-row messages and non-editable fallback sends.
         from gateway.display_config import format_progress_group
 
-        return format_progress_group(
-            lines, bool(self._ctx.progress_codebox) and st.can_edit
-        )
+        return format_progress_group(lines, self._codebox_active(st))
+
+    async def _send_progress_row(self, st, row):
+        """Send one row as its own message(s): "separate" grouping and non-editable fallbacks.
+
+        An oversized boxed row ships as several limit-fitting boxes (the editable lane's
+        buffer slicing is skipped here because nothing edits these rows afterwards).
+        """
+        from gateway.display_config import format_progress_row
+
+        result = None
+        for text in format_progress_row(row, self._codebox_active(st), st._PROGRESS_TEXT_LIMIT, st._progress_len_fn):
+            result = await self._send_progress_text(st, text)
+        return result
 
     def _split_progress_groups(self, st, lines: list) -> list[list]:
         """Partition progress lines into platform-sized editable bubbles."""
@@ -744,7 +756,11 @@ class TurnRunner(_TurnRunnerCore):
         # row instead of collapsing into (×N).
 
     def _codebox_active(self, st) -> bool:
-        return bool(self._ctx.progress_codebox) and st.can_edit
+        return bool(self._ctx.progress_codebox)
+
+    def _chunking_active(self, st) -> bool:
+        # Buffer slicing only serves the editable lane; non-editable rows are chunked at send time.
+        return self._codebox_active(st) and st.can_edit
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick.
@@ -763,7 +779,7 @@ class TurnRunner(_TurnRunnerCore):
                 # dedup memory says this row repeats: seed the fresh bubble with the
                 # counted row instead of a plain copy (or a row the buffer dropped).
                 line = f"{base_msg} (×{count + 1})"
-                if self._codebox_active(st):
+                if self._chunking_active(st):
                     slices = chunk_oversized_progress_row(line, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
                     st.progress_lines.extend(slices)
                     return slices[-1]
@@ -776,7 +792,7 @@ class TurnRunner(_TurnRunnerCore):
                 # Only the trailing lines of that row are replaced; earlier pending
                 # rows must stay visible.
                 tail = repeat_row_text(base_msg, count, self._codebox_active(st))[st._row_head_len:]
-                if self._codebox_active(st):
+                if self._chunking_active(st):
                     slices = chunk_oversized_progress_row(tail, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
                     if len(slices) > 1:
                         st.progress_lines[-st._row_slices:] = slices
@@ -786,7 +802,7 @@ class TurnRunner(_TurnRunnerCore):
                 st._row_slices = 1
                 return tail
             line = f"{base_msg} (×{count + 1})"
-            if self._codebox_active(st):
+            if self._chunking_active(st):
                 slices = chunk_oversized_progress_row(line, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
                 if len(slices) > 1:
                     st.progress_lines[-1:] = slices
@@ -794,7 +810,7 @@ class TurnRunner(_TurnRunnerCore):
                     return slices[-1]
             st.progress_lines[-1] = line
             return st.progress_lines[-1]
-        if self._codebox_active(st):
+        if self._chunking_active(st):
             slices = chunk_oversized_progress_row(raw, st._PROGRESS_TEXT_LIMIT, st._progress_len_fn)
             if len(slices) > 1:
                 st.progress_lines.extend(slices)
@@ -856,10 +872,13 @@ class TurnRunner(_TurnRunnerCore):
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
             else:
                 st.can_edit = False
-            await self._send_progress_text(st, msg)
+            await self._send_progress_row(st, msg)
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
-        result = await self._send_progress_text(st, self._progress_text(st, st.progress_lines) if st.can_edit else msg)
+        result = await (
+            self._send_progress_text(st, self._progress_text(st, st.progress_lines))
+            if st.can_edit else self._send_progress_row(st, msg)
+        )
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
         return True
@@ -2162,6 +2181,7 @@ class TurnRunner(_TurnRunnerCore):
         # about to shrink.
         common = {
             "messages": result.get("messages", []), "api_calls": result.get("api_calls", 0),
+            **turn_metrics(result),
             "failed": result.get("failed", False), "failure_reason": result.get("failure_reason"),
             "partial": result.get("partial", False), "completed": result.get("completed"),
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),

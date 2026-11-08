@@ -713,6 +713,136 @@ class GatewayBusySessionMixin:
             )
         return False
 
+    # Seconds a parked steer-on-live follow-up waits for the agent build before
+    # being flushed back to the pending FIFO (hung-build guard; the window is
+    # normally well under a second).
+    _STEER_ON_LIVE_TIMEOUT_SECONDS = 60.0
+
+    def _parked_steer_map(self) -> Dict[str, MessageEvent]:
+        """Per-session parked steer-on-live events; lazily created so bare test
+        runners built via ``object.__new__`` work without ``__init__``."""
+        parked = self.__dict__.get("_parked_steer_events")
+        if parked is None:
+            parked = {}
+            self.__dict__["_parked_steer_events"] = parked
+        return parked
+
+    def _flush_parked_steer(self, session_key: str) -> None:
+        """Recover this session's parked steer-on-live event into the pending
+        FIFO (turn teardown, /stop, drain). Idempotent; never drops silently."""
+        event = self._parked_steer_map().pop(session_key, None)
+        if event is None:
+            return
+        if self._queue_or_replace_pending_event(session_key, event) is None:
+            logger.warning(
+                "Parked steer follow-up for session %s could not be re-queued (no adapter) — dropped",
+                session_key,
+            )
+        else:
+            logger.info(
+                "Recovered parked steer follow-up for session %s into the pending queue",
+                session_key,
+            )
+
+    def _arm_parked_steer_timeout(self, session_key: str, event: MessageEvent) -> None:
+        """Flush the parked event back to the FIFO if the agent never goes live
+        within the timeout (hung build). Identity-checked so a superseding park
+        is never flushed by an older timer."""
+        async def _flush_if_still_parked() -> None:
+            await asyncio.sleep(self._STEER_ON_LIVE_TIMEOUT_SECONDS)
+            if self._parked_steer_map().get(session_key) is event:
+                logger.warning(
+                    "Parked steer follow-up for session %s timed out waiting for the agent "
+                    "to start; re-queued for the next turn",
+                    session_key,
+                )
+                self._flush_parked_steer(session_key)
+
+        try:
+            asyncio.get_running_loop().create_task(_flush_if_still_parked())
+        except RuntimeError:  # no loop — nothing parked can ever be consumed anyway
+            pass
+
+    async def _maybe_park_steer_on_agent_live(
+        self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
+    ) -> bool:
+        """Park a steer-eligible follow-up in the steer-on-live slot when the
+        turn's agent is still being built (``_AGENT_PENDING_SENTINEL``).
+
+        The parked event is steered into the run the moment
+        ``_run_agent_track_agent`` promotes the agent, instead of waiting out
+        the whole turn as a queued second user turn. Only steer mode parks —
+        queue/interrupt modes keep their current behavior. Returns True when
+        the event was parked (the caller must NOT also queue it)."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        if effective_mode != "steer" or self._draining:
+            return False
+        # Commands never park — they keep their dedicated dispatch/discard lanes
+        # (the drain's slash-command safety net must stay reachable for them).
+        if event.get_command():
+            return False
+        agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
+        if agent_live:
+            return False
+        steer_text = await self._prepare_busy_steer_text(event)
+        _steer_media_urls = getattr(event, "media_urls", None) or []
+        _steer_all_voice = bool(_steer_media_urls) and (
+            len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
+        )
+        plain_text = (
+            event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
+        )
+        if not (steer_text and (plain_text or _steer_all_voice)):
+            return False
+        parked = self._parked_steer_map()
+        # At most one parked event per session: an earlier one still parked means
+        # the agent never promoted — recover it to the FIFO rather than dropping.
+        if parked.get(session_key) is not None:
+            self._flush_parked_steer(session_key)
+        parked[session_key] = event
+        self._arm_parked_steer_timeout(session_key, event)
+        logger.info(
+            "Parked steer follow-up for session %s until the agent goes live", session_key
+        )
+        return True
+
+    async def _consume_parked_steer_on_agent_live(self, session_key: str, agent: Any) -> None:
+        """Steer the session's parked follow-up into the just-promoted agent.
+
+        Called from ``_run_agent_track_agent`` right after the agent lands in
+        ``turn.agent``. On any steer failure the event is recovered into the
+        adapter's pending FIFO so the existing post-turn drain handles it —
+        never dropped."""
+        event = self._parked_steer_map().pop(session_key, None)
+        if event is None:
+            return
+        steer = getattr(agent, "steer", None)
+        if agent is None or not callable(steer):
+            self._queue_or_replace_pending_event(session_key, event)
+            return
+        steered = False
+        try:
+            text = await self._prepare_busy_steer_text(event)
+            steered = bool(text) and self._try_agent_verb(
+                agent, "steer", text, session_key, event=event
+            )
+        except Exception:
+            logger.warning(
+                "Steering parked follow-up into the live agent failed for session %s",
+                session_key, exc_info=True,
+            )
+            steered = False
+        if steered:
+            logger.info("Steered parked follow-up into live agent for session %s", session_key)
+            if self._steer_delivered_ack_enabled(event):
+                self._register_steer_delivered_ack(event, session_key, agent)
+        else:
+            self._queue_or_replace_pending_event(session_key, event)
+            logger.info(
+                "Recovered parked steer follow-up for session %s into the pending queue (steer failed)",
+                session_key,
+            )
+
     async def _resolve_busy_steer_or_redirect(
         self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
     ) -> "GatewayRunner._BusySteerOutcome":
@@ -732,6 +862,8 @@ class GatewayBusySessionMixin:
         if demoted_for_compression:
             effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
         steered = redirected = False
+        steer_fallback_reason = None
+        parked_for_steer = False
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
         plain_text = (
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
@@ -751,7 +883,26 @@ class GatewayBusySessionMixin:
                     running_agent, "steer", steer_text, session_key, event=event
                 )
             if not steered:
-                effective_mode = "queue"
+                # Agent-not-live + steer-eligible: park in the steer-on-live slot
+                # instead of queueing — it is steered in the moment the agent
+                # build finishes (_run_agent_track_agent promotion).
+                if (
+                    not agent_live
+                    and await self._maybe_park_steer_on_agent_live(
+                        event, session_key, "steer", running_agent
+                    )
+                ):
+                    parked_for_steer = True
+                else:
+                    effective_mode = "queue"
+                    # Record WHY steer fell back to queue so the ack can say so
+                    # instead of the generic queue text (silent-feel bug fix).
+                    if not agent_live:
+                        steer_fallback_reason = "agent-not-live"
+                    elif not (steer_text and (plain_text or _steer_all_voice)):
+                        steer_fallback_reason = "media-not-steerable"
+                    else:
+                        steer_fallback_reason = "steer-failed"
         elif (
             effective_mode == "interrupt" and plain_text and agent_live
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
@@ -763,6 +914,7 @@ class GatewayBusySessionMixin:
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
+            steer_fallback_reason=steer_fallback_reason, parked_for_steer=parked_for_steer,
         )
 
     @staticmethod
@@ -876,10 +1028,20 @@ class GatewayBusySessionMixin:
         " — your message is queued for when it finishes (use /stop to cancel everything)."
     )
 
+    # Human phrasing for why a steer-mode message fell back to queue, keyed by
+    # _BusySteerOutcome.steer_fallback_reason.
+    _STEER_FALLBACK_REASONS = {
+        "agent-not-live": "the run isn't accepting injections right now",
+        "media-not-steerable": "attachments can't be steered mid-run",
+        "steer-failed": "the active run didn't accept the injection",
+    }
+
     def _compose_busy_ack_message(
         self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
         demoted_for_subagents: bool, demoted_for_compression: bool,
+        steer_fallback_reason: Optional[str] = None,
+        parked_for_steer: bool = False,
     ) -> str:
         from gateway.run import (
             _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
@@ -913,7 +1075,10 @@ class GatewayBusySessionMixin:
             except Exception:
                 pass
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode and self._agent_has_active_subagents(running_agent):
+        if parked_for_steer:
+            head, tail = "⏩ Steered into current run (pending start)", \
+                ". It will be injected as soon as the run accepts."
+        elif is_steer_mode and self._agent_has_active_subagents(running_agent):
             head = "⏩ Steered into current run and its active subagent(s)"
             tail = ". Your message arrives after their next tool call."
         elif is_steer_mode:
@@ -925,6 +1090,12 @@ class GatewayBusySessionMixin:
             head, tail = "⏳ Subagent working", self._BUSY_DEMOTED_TAIL
         elif is_queue_mode and demoted_for_compression:
             head, tail = "⏳ Compressing context", self._BUSY_DEMOTED_TAIL
+        elif is_queue_mode and steer_fallback_reason:
+            # Steer mode was active but fell back to queue — say why instead
+            # of the generic queue text, which reads as steering failing silently.
+            _why = self._STEER_FALLBACK_REASONS.get(steer_fallback_reason, "steering wasn't possible")
+            head, tail = f"⏳ Couldn't steer into the current run ({_why})", \
+                " — queued for the next turn. I'll respond once the current task finishes."
         elif is_queue_mode:
             head, tail = "⏳ Queued for the next turn", ". I'll respond once the current task finishes."
         else:
@@ -1144,6 +1315,8 @@ class GatewayBusySessionMixin:
         demoted_for_compression = outcome.demoted_for_compression
         steered = outcome.steered
         redirected = outcome.redirected
+        steer_fallback_reason = outcome.steer_fallback_reason
+        parked_for_steer = outcome.parked_for_steer
         if steered and self._steer_delivered_ack_enabled(event):
             # The busy-steer bubble below promises FUTURE delivery;
             # schedule the one-shot follow-up ack for the moment the
@@ -1165,7 +1338,7 @@ class GatewayBusySessionMixin:
         # turn (#43066 sub-bug 2). The FIFO path gives each text its own
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
-        if not steered and not redirected:
+        if not steered and not redirected and not parked_for_steer:
             self._queue_or_replace_pending_event(session_key, event)
 
         is_queue_mode = effective_mode == "queue"
@@ -1284,7 +1457,12 @@ class GatewayBusySessionMixin:
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode:
+        if parked_for_steer:
+            message = (
+                f"⏩ Steered into current run (pending start){status_detail}. "
+                f"It will be injected as soon as the run accepts."
+            )
+        elif is_steer_mode:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
@@ -1306,6 +1484,14 @@ class GatewayBusySessionMixin:
             message = (
                 f"⏳ Compressing context{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
+            )
+        elif is_queue_mode and steer_fallback_reason:
+            # Steer mode was active but fell back to queue — say why instead
+            # of the generic queue text, which reads as steering failing silently.
+            _why = self._STEER_FALLBACK_REASONS.get(steer_fallback_reason, "steering wasn't possible")
+            message = (
+                f"⏳ Couldn't steer into the current run ({_why}){status_detail} — "
+                f"queued for the next turn. I'll respond once the current task finishes."
             )
         elif is_queue_mode:
             message = (

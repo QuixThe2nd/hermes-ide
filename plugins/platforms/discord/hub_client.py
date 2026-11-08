@@ -324,12 +324,7 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
         try:
             method = message.get("method")
             params = message.get("params") or {}
-            if method == "accept_restart_wind_down_opt_in":
-                accept = getattr(self.gateway_runner, "accept_restart_wind_down_opt_in", None)
-                if not callable(accept):
-                    raise RuntimeError("gateway runner is not ready for Discord control events")
-                result = await accept(**params)
-            elif method == "invoke_picker_callback":
+            if method == "invoke_picker_callback":
                 picker_id = str(params.get("picker_id") or "")
                 callback = self._picker_callbacks.pop(picker_id, None)
                 if not callable(callback):
@@ -594,19 +589,6 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         return self._value(await self._rpc("create_handoff_thread", parent_chat_id, name))
-
-    async def send_restart_wind_down_offer(self, *, channel_id: str, requester_user_id: str,
-                                           generation: int, nonce: Optional[str],
-                                           spec: Optional[dict] = None) -> Optional[str]:
-        return self._value(await self._rpc(
-            "send_restart_wind_down_offer", channel_id=channel_id,
-            requester_user_id=requester_user_id, generation=generation, nonce=nonce, spec=spec))
-
-    async def finalize_restart_wind_down_offer(self, *, message_id: str, channel_id: str,
-                                               spec: dict) -> bool:
-        return bool(self._value(await self._rpc(
-            "finalize_restart_wind_down_offer", message_id=message_id,
-            channel_id=channel_id, spec=spec)))
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:

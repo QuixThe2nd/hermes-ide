@@ -1049,7 +1049,7 @@ class GatewaySlashCommandsMixin(
         # Cycle mode (per-platform), reading the current effective mode via the resolver.
         from gateway.display_config import resolve_display_setting
         cycle = ["off", "new", "all", "verbose", "log", "compact", "describe"]
-        current = resolve_display_setting(user_config, platform_key, "tool_progress", "all")
+        current = resolve_display_setting(user_config, platform_key, "tool_progress", "describe")
         new_mode = cycle[(cycle.index(current if current in cycle else "all") + 1) % len(cycle)]
         description = t(f"gateway.verbose.mode_{new_mode}")
         try:
