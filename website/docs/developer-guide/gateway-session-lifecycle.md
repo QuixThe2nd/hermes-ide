@@ -382,8 +382,15 @@ All four reasons are in `_AUTO_RESUME_REASONS` and eligible for startup auto-res
 
 ### Cooperative restart wind-down
 
-On in-band `/restart` (and SIGUSR1), the gateway still refuses new turns, but
-it also snapshots every *other* live chat at the moment the park steer is
+The wind-down offer is **opt-in** via `gateway.restart_wind_down_offer: true`
+in `config.yaml` (default off since the multi-instance overlap restart keeps
+sessions alive across restarts — the always-on ⏸️ park embed became restart
+chatter). With the flag off, `/restart` replies with a terse
+"♻ Restarting gateway..." and simply waits for live sessions to finish on
+their own during the drain.
+
+With the flag on, in-band `/restart` (and SIGUSR1) still refuses new turns,
+but it also snapshots every *other* live chat at the moment the park steer is
 sent, then steers those agents once: park at a safe pause, do not start new
 long work, end the turn. The snapshot is written even when the list is empty.
 Those steered sessions are marked `resume_pending` with `cooperative_restart`.
