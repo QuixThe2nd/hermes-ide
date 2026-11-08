@@ -24,7 +24,9 @@ writes and exactly what replay parses.
 
 import asyncio
 import json
+import logging
 import os
+import time
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -672,6 +674,79 @@ async def test_missing_adapter_retains_records_until_the_platform_returns():
     )
     assert not drain_queue_path().exists()
     assert not claimed_drain_queue_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_missing_adapter_drops_record_older_than_bounded_age(caplog):
+    source = make_restart_source(chat_id="permanently-offline-chat")
+    runner, _adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("too old to retain", source=source, message_id="m-expired"),
+        session_key,
+        runner,
+    )
+    records = _snapshot_events()
+    records[0]["queued_at"] = time.time() - 25 * 60 * 60
+    drain_queue_path().write_text(
+        json.dumps({"version": 1, "events": records}, indent=None), encoding="utf-8"
+    )
+    offline, _offline_adapter = make_restart_runner()
+    offline.adapters = {}
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run_drain_queue"):
+        assert replay_drain_queue(offline) == 0
+
+    expiration_warnings = [
+        entry.getMessage()
+        for entry in caplog.records
+        if entry.getMessage().startswith("Dropping drain-queued")
+    ]
+    assert len(expiration_warnings) == 1
+    assert session_key in expiration_warnings[0]
+    assert "25.0 hours" in expiration_warnings[0]
+    assert not drain_queue_path().exists()
+    assert not claimed_drain_queue_path().exists()
+
+    caplog.clear()
+    assert replay_drain_queue(offline) == 0
+    assert not caplog.records
+
+
+@pytest.mark.asyncio
+async def test_missing_adapter_expires_only_old_records(caplog):
+    source = make_restart_source(chat_id="mixed-offline-ages-chat")
+    runner, _adapter = make_restart_runner()
+    session_key = runner._session_key_for_source(source)
+    _queue_in_draining_process(
+        _event("expired", source=source, message_id="m-old"), session_key, runner
+    )
+    _queue_in_draining_process(
+        _event("fresh", source=source, message_id="m-fresh"), session_key, runner
+    )
+    records = _snapshot_events()
+    records[0]["queued_at"] = time.time() - 25 * 60 * 60
+    drain_queue_path().write_text(
+        json.dumps({"version": 1, "events": records}, indent=None), encoding="utf-8"
+    )
+    offline, _offline_adapter = make_restart_runner()
+    offline.adapters = {}
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run_drain_queue"):
+        assert replay_drain_queue(offline) == 0
+
+    assert [record["event"]["message_id"] for record in _snapshot_events()] == [
+        "m-fresh"
+    ]
+    assert not claimed_drain_queue_path().exists()
+    expiration_warnings = [
+        entry.getMessage()
+        for entry in caplog.records
+        if entry.getMessage().startswith("Dropping drain-queued")
+    ]
+    assert len(expiration_warnings) == 1
+    assert session_key in expiration_warnings[0]
+    assert "25.0 hours" in expiration_warnings[0]
 
 
 @pytest.mark.asyncio

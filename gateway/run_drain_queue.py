@@ -31,12 +31,12 @@ leaves the claim ledger only when its own processing completes successfully.
 Deferred, cancelled, and failed turns retain their original record for the
 final write-back. A claim left by a crashed replay therefore holds exactly
 the unsettled records, and the next boot RESUMES it instead of discarding it.
-Events whose adapter is not live are retained, not dropped: their records
-return to the live snapshot and retry at the platform's reconnect or the next
-boot; when that write-back fails, the claim file — the sole copy — is kept
-and retried after storage recovers. One runner-scoped owner per canonical
-profile home prevents overlapping startup/reconnect passes from sharing the
-claim file; callback identity fences stale owners from a later pass.
+Events whose adapter is not live are retained for reconnect/next boot up to a
+bounded queue age; permanently unserved records then settle with one warning
+instead of replaying forever. When write-back fails, the claim file — the sole
+copy — is kept and retried after storage recovers. One runner-scoped owner per
+canonical profile home prevents overlapping startup/reconnect passes from
+sharing the claim file; callback identity fences stale owners from a later pass.
 
 Under ``gateway.multiplex_profiles`` each profile's handler queues under
 its own home, so startup replays every served profile's queue, not just
@@ -46,6 +46,7 @@ the launch home's.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from datetime import datetime
@@ -53,7 +54,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import (
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    inbound_platform_message_id,
+)
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -68,6 +74,7 @@ DRAIN_QUEUE_FILENAME = "drain_message_queue.json"
 DRAIN_QUEUE_CLAIMED_FILENAME = "drain_message_queue.replaying.json"
 
 _SNAPSHOT_VERSION = 1
+_DRAIN_QUEUE_NO_ADAPTER_MAX_AGE_SECONDS = 24 * 60 * 60
 
 # Attribute stamped on every event the durable snapshot owns (set by
 # ``record_drain_event`` on durable acceptance — a fresh append, or an
@@ -967,6 +974,39 @@ def _canonical_replay_home(home: Optional[Path]) -> str:
     return os.path.normcase(str(base.expanduser().resolve(strict=False)))
 
 
+def _replay_event_already_processed(runner: Any, session_key: str, event: MessageEvent) -> bool:
+    """Return true only when the transcript positively records this platform message."""
+    message_id = inbound_platform_message_id(event)
+    if not message_id:
+        return False
+    store = getattr(runner, "session_store", None)
+    if store is None:
+        return False
+    try:
+        session_id = store.peek_session_id(session_key)
+        if not session_id:
+            return False
+        return store.has_platform_message_id(session_id, message_id) is True
+    except Exception:
+        logger.debug(
+            "Drain replay: processed-message lookup failed for %s; retaining the record",
+            session_key,
+            exc_info=True,
+        )
+        return False
+
+
+def _no_adapter_record_age(record: Dict[str, Any], now: float) -> Optional[float]:
+    """Return a valid non-negative queue age, or None when expiry is unsafe."""
+    queued_at = record.get("queued_at")
+    if isinstance(queued_at, bool) or not isinstance(queued_at, (int, float)):
+        return None
+    age = now - float(queued_at)
+    if not math.isfinite(age) or age < 0:
+        return None
+    return age
+
+
 def _release_replay_owner(runner: Any, home_key: str, owner: Dict[str, Any]) -> None:
     """Release only the owner's own slot; stale callbacks cannot remove a successor."""
     owner["finished"] = True
@@ -1014,10 +1054,11 @@ def _replay_drain_queue_owned(
     """Replay a claimed snapshot and settle records from processing completion.
 
     Every injected event receives a private callback bound to its ORIGINAL raw
-    record and this claim owner. Only a terminal ``SUCCESS`` removes that one
-    record. ``DEFERRED``, cancellation, and failure keep it claimed for the
-    final write-back; queued siblings are never settled by the head turn.
-    Events whose adapter is not live remain queued for reconnect/next boot.
+    record and this claim owner. ``SUCCESS`` or positive proof that its platform
+    message is already persisted removes that one record. Other outcomes stay
+    claimed for the final write-back; queued siblings are never settled by the
+    head turn. Events whose adapter is not live wait for reconnect/next boot,
+    subject to the bounded no-adapter age.
     """
     claimed, folded_live = claim_drain_queue(home)
     if not claimed:
@@ -1081,6 +1122,7 @@ def _replay_drain_queue_owned(
     def _settle_replay(
         session: str,
         record: Dict[str, Any],
+        event: MessageEvent,
         outcome: ProcessingOutcome,
     ) -> None:
         owners = getattr(runner, "_drain_replay_owners", None)
@@ -1094,7 +1136,9 @@ def _replay_drain_queue_owned(
         if marker not in in_flight:
             return
         in_flight.discard(marker)
-        if outcome is ProcessingOutcome.SUCCESS:
+        if outcome is ProcessingOutcome.SUCCESS or _replay_event_already_processed(
+            runner, session, event
+        ):
             _mark_record_settled(pending, session, record, home)
         if not in_flight:
             _finish_replay_pass()
@@ -1105,14 +1149,44 @@ def _replay_drain_queue_owned(
         if platform is not None and getattr(source, "platform", None) != platform:
             # Scoped pass (platform reconnect): other platforms keep waiting.
             continue
+        unprocessed_items: List[Tuple[MessageEvent, Dict[str, Any]]] = []
+        for event, record in items:
+            if _replay_event_already_processed(runner, session_key, event):
+                logger.info(
+                    "Settling drain-queued message for %s: message_id=%s was already processed",
+                    session_key,
+                    inbound_platform_message_id(event),
+                )
+                _mark_record_settled(pending, session_key, record, home)
+            else:
+                unprocessed_items.append((event, record))
+        items = unprocessed_items
+        if not items:
+            continue
         adapter = runner._adapter_for_source(source)
         if adapter is None:
-            logger.warning(
-                "Retaining %d drain-queued message(s) for %s: no live adapter "
-                "yet — retried on reconnect or at next boot",
-                len(items),
-                session_key,
-            )
+            retained_count = 0
+            now = time.time()
+            for _event, record in items:
+                age = _no_adapter_record_age(record, now)
+                if age is not None and age > _DRAIN_QUEUE_NO_ADAPTER_MAX_AGE_SECONDS:
+                    _mark_record_settled(pending, session_key, record, home)
+                    logger.warning(
+                        "Dropping drain-queued message for %s: no live adapter; queue age "
+                        "%.1f hours exceeds the %d-hour limit",
+                        session_key,
+                        age / 3600,
+                        _DRAIN_QUEUE_NO_ADAPTER_MAX_AGE_SECONDS // 3600,
+                    )
+                else:
+                    retained_count += 1
+            if retained_count:
+                logger.warning(
+                    "Retaining %d drain-queued message(s) for %s: no live adapter "
+                    "yet — retried on reconnect or at next boot",
+                    retained_count,
+                    session_key,
+                )
             continue
         for event, record in items:
             # A replay injection is a re-delivery of an already-received
@@ -1123,8 +1197,8 @@ def _replay_drain_queue_owned(
             if _receipt is not None:
                 _mark_drain_restart_receipt(event, _receipt)
             event._gateway_replay_completion = (
-                lambda outcome, key=session_key, original=record: _settle_replay(
-                    key, original, outcome
+                lambda outcome, key=session_key, original=record, replayed=event: _settle_replay(
+                    key, original, replayed, outcome
                 )
             )
             consumer = runner._queue_or_replace_pending_event(session_key, event)
