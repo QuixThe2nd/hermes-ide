@@ -182,7 +182,7 @@ The counted injection heading is display-only — the model receives the injecte
 context unchanged.
 
 - The injection-progress card's heading upgrades from `🧠 Injecting Memory` to
-  `🧠 Recalled N memories` (singular for `N == 1`) when the injection event
+  `🧠 Remembering N memories` (singular for `N == 1`) when the injection event
   carries a positive integer `recalled_count` — summed across providers from
   `recalled_count()`, which defaults to `recall_status()`'s count. Providers
   that suppress their indicator line (Hindsight's `recall_indicator: false`)

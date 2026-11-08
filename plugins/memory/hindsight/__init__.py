@@ -956,7 +956,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_results", "description": "Keep only the top N ranked recall results after score filtering (0 = no cap)", "default": 0},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "recall_sync", "description": "Recall synchronously against the current message before each turn (higher relevance, adds recall latency to the turn). Default off: recall runs in the background and is injected on the next turn.", "default": False},
-            {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory. Off by default — the gateway's '🧠 Recalled N memories' card already reports the count; set true to opt back in.", "default": False},
+            {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory. Off by default — the gateway's '🧠 Remembering N memories' card already reports the count; set true to opt back in.", "default": False},
             {"key": "retain_indicator", "description": "Show a '👁️ Hindsight — saving to memory…' status line when a turn is saved to memory (turn off for customer-facing agents)", "default": True},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},

@@ -5964,9 +5964,9 @@ def _format_context_injection_progress(
         and recalled_count > 0
     ):
         heading = (
-            f"🧠 Recalled {recalled_count} memory"
+            f"🧠 Remembering {recalled_count} memory"
             if recalled_count == 1
-            else f"🧠 Recalled {recalled_count} memories"
+            else f"🧠 Remembering {recalled_count} memories"
         )
 
     if not include_content:
