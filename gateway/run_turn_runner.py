@@ -1909,16 +1909,15 @@ class TurnRunner(_TurnRunnerCore):
         # sequences. Telegram observed=True rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
         agent_history, observed_group_context, cursor_recovery_note = _build_gateway_agent_history(
-            ctx.history, channel_prompt=ctx.channel_prompt, inject_timestamps=_message_timestamps_enabled(ctx.user_config),
+            ctx.history, channel_prompt=ctx.channel_prompt,
+            inject_timestamps=_message_timestamps_enabled(ctx.user_config),
+            hermes_session_id=ctx.session_id,
         )
-        if cursor_recovery_note:
-            # Observed-group cursor recovery is ordinary context machinery (not
-            # restart prose); mirror the facade resume path (run.py) so a note
-            # never drops on the normal turn path.
-            if isinstance(ctx.message, str) and ctx.message:
-                ctx.message = f"{cursor_recovery_note}\n\n{ctx.message}"
-            else:
-                ctx.message = cursor_recovery_note
+        # Recovery preparation decides whether this note is an ordinary new
+        # message or must yield to the pure continuation seam.
+        self._cursor_recovery_note = cursor_recovery_note
+        self._live_history_selected = False
+        self._live_replay_source = None
         # FTS write-corruption guard: if persistence failed silently the reloaded transcript is stale
         # while the SAME cached agent still holds the live conversation (same-session amnesia). Only
         # for a reused agent bound to this exact session_id.
@@ -1929,9 +1928,10 @@ class TurnRunner(_TurnRunnerCore):
             # Consecutive lagging turns per session (cleared on /new): one lag is a blip, a streak
             # is the #114266 write outage and must escalate past a repeating WARNING.
             streaks = getattr(self._runner, "_transcript_lag_streaks", None)
-            if streaks is None:  # tests may build bare runners
+            if not isinstance(streaks, dict):  # tests may build bare runners
                 streaks = self._runner._transcript_lag_streaks = {}
             if selected is not agent_history:
+                self._live_history_selected = True
                 streak = streaks[ctx.session_key] = streaks.get(ctx.session_key, 0) + 1
                 log = logger.error if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else logger.warning
                 log(
@@ -1944,6 +1944,10 @@ class TurnRunner(_TurnRunnerCore):
                 )
                 # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
                 # the full canonicalization so no replay transform can slip through.
+                # Keep the authoritative pre-cleanup rows for forced replay
+                # planning; canonicalization synthesizes UNKNOWN for a
+                # dangling batch and would otherwise hide the replay work.
+                self._live_replay_source = selected
                 agent_history = canonicalize_replay_history(selected)
             else:
                 streaks.pop(ctx.session_key, None)
@@ -1957,65 +1961,23 @@ class TurnRunner(_TurnRunnerCore):
         notes = getattr(self._runner, attr, None)
         note = notes.pop(ctx.session_key, None) if notes and ctx.session_key and ctx.session_key in notes else None
         if note:
-            ctx.message = note + "\n\n" + ctx.message
+            if isinstance(ctx.message, str):
+                ctx.message = note + "\n\n" + ctx.message
+            else:
+                # A pure continuation has no current user message. Keep the
+                # one-shot note for the next real user turn.
+                notes[ctx.session_key] = note
 
     def _resume_note_interactive(self) -> bool:
         """Interactive platforms report the restore and ask what next; event platforms (webhook,
         API server) continue the work — nobody is present to answer."""
         return bool(getattr(self._runner._delivery_adapter_for(self._ctx.source), "interactive_resume", True))
 
-    def _prepare_turn_message(self, agent_history):
-        """Prepend recovery/notice guidance to ``ctx.message``.
+    def _prepare_turn_message(self, agent_history, observed_group_context=None):
+        """Prepare ordinary guidance or transparent forced-victim recovery."""
+        from gateway.run_turn_recovery import prepare_turn_message
 
-        Returns (persist_user_message_override, persist_user_timestamp_override): real user text is
-        kept separate from API-only recovery guidance so stale guidance never replays as user text.
-        """
-        from gateway.run import (
-            _auto_continue_freshness_window, _is_fresh_gateway_interruption,
-            _last_transcript_timestamp, _prepare_resume_pending_message, build_resume_recovery_note,
-        )
-        ctx = self._ctx
-        persist_override: Optional[Any] = ctx.persist_user_message
-        self._prepend_pending_note("_pending_model_notes")
-        # Auto-continue: history ending with a tool result means the previous turn was cut off
-        # (restart, crash, SIGTERM). Session-level resume_pending (drain-timeout shutdown) uses
-        # stronger reason-aware wording that subsumes this case. Both gate on the age of
-        # ``history[-1]`` (not agent_history, which stripped tool-row timestamps); no stamp = fresh.
-        window = _auto_continue_freshness_window()
-        interruption_is_fresh = _is_fresh_gateway_interruption(_last_transcript_timestamp(ctx.history), window_secs=window)
-        entry = None
-        if ctx.session_key:
-            with suppress(Exception):
-                entry = self._runner.session_store._entries.get(ctx.session_key)
-        resume_pending = entry is not None and getattr(entry, "resume_pending", False)
-        resume_reason = (getattr(entry, "resume_reason", None) or "restart_timeout") if resume_pending else None
-        # resume_pending freshness ALSO uses the restart watchdog's ``last_resume_marked_at`` (the true
-        # interruption stamp): the transcript clock can be hours older for an active thread, and the
-        # startup auto-resume turn has empty text, so gating on it alone yields a blank user message.
-        mark_is_fresh = resume_pending and _is_fresh_gateway_interruption(
-            getattr(entry, "last_resume_marked_at", None), window_secs=window,
-        )
-        if resume_pending and (interruption_is_fresh or mark_is_fresh):
-            # Empty message = the startup auto-resume turn; there is no NEW user message.
-            ctx.message, persist_override = _prepare_resume_pending_message(
-                resume_reason, ctx.message, interactive=self._resume_note_interactive(),
-            )
-        elif agent_history and agent_history[-1].get("role") == "tool" and interruption_is_fresh:
-            persist_override = ctx.message
-            ctx.message = (
-                "[System note: A new message has arrived. The conversation "
-                "history contains pending tool outputs from an interrupted turn. "
-                "IGNORE those pending results. Address the user's NEW message "
-                "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
-                + ctx.message
-            )
-        self._prepend_pending_note("_pending_skills_reload_notes")
-        # Safety net: a startup auto-resume event carries empty text; if the resume_pending branch
-        # did not fire (freshness signals disagreed, marker cleared) we must NOT hand the model a blank
-        # user turn. Restricted to resume_pending sessions so caption-less image turns are untouched.
-        if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
-            ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
-        return persist_override, ctx.persist_user_timestamp
+        return prepare_turn_message(self, agent_history, observed_group_context)
 
     def _native_image_run_message(self):
         """Wrap the user turn as an OpenAI-style multimodal content list when
@@ -2037,7 +1999,8 @@ class TurnRunner(_TurnRunnerCore):
         return ctx.message
 
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
-                                        persist_user_message_override, persist_user_timestamp_override):
+                                        persist_user_message_override, persist_user_timestamp_override,
+                                        *, continue_interrupted_turn=False, forced_recovery_blocked=None):
         """Run the turn with the per-session gateway approval callback registered: dangerous-command
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from gateway.run import _wrap_current_message_with_observed_context
@@ -2068,10 +2031,26 @@ class TurnRunner(_TurnRunnerCore):
                 kwargs["moa_config"] = ctx.moa_config
             if persist_user_timestamp_override is not None:
                 kwargs["persist_user_timestamp"] = persist_user_timestamp_override
+            if continue_interrupted_turn:
+                # Continue the original assistant/tool loop without adding a
+                # synthetic user row or re-running new-user side channels.
+                kwargs["continue_interrupted_turn"] = True
             # The RAW inbound id (not event_message_id, the reply anchor) rides the persisted user
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            if forced_recovery_blocked is not None:
+                # Internal control outcome: recovery could not prove a safe
+                # model boundary. Never call the model or fabricate prose.
+                return {
+                    "final_response": None,
+                    "messages": [],
+                    "completed": False,
+                    "failed": True,
+                    "interrupted": False,
+                    "error": forced_recovery_blocked,
+                    "forced_recovery_control": True,
+                }
             from agent.notification_presentation import notification_turn
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
                 return agent.run_conversation(api_message, **kwargs)
@@ -2241,7 +2220,10 @@ class TurnRunner(_TurnRunnerCore):
         every rebind. session_key propagates via contextvars (_set_session_env / set_current_session_key)
         — never os.environ["HERMES_SESSION_KEY"], which would misroute approvals across sessions.
         """
-        from gateway.run import _current_max_iterations, _normalize_empty_agent_response, _sanitize_gateway_final_response
+        from gateway.run import (
+            _current_max_iterations, _is_forced_recovery_control_outcome,
+            _normalize_empty_agent_response, _sanitize_gateway_final_response,
+        )
         ctx = self._ctx
         runner = self._runner
         # Platform.LOCAL ("local") maps to the "cli" hint key the agent understands.
@@ -2303,8 +2285,16 @@ class TurnRunner(_TurnRunnerCore):
             agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
-        persist_msg, persist_ts = self._prepare_turn_message(agent_history)
-        result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        preparation = self._prepare_turn_message(agent_history, observed_group_context)
+        agent_history = preparation.agent_history
+        observed_group_context = preparation.observed_group_context
+        history_media_paths = preparation.history_media_paths
+        result = self._run_conversation_with_approval(
+            agent, agent_history, observed_group_context,
+            preparation.persist_user_message, preparation.persist_user_timestamp,
+            continue_interrupted_turn=preparation.continue_interrupted_turn,
+            forced_recovery_blocked=preparation.blocked_error,
+        )
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.
@@ -2340,6 +2330,10 @@ class TurnRunner(_TurnRunnerCore):
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             **usage,
         }
+        if _is_forced_recovery_control_outcome(result):
+            # Deliberately silent: no empty-response normalization, error
+            # prose, auto-media tags, or persistence rows for a forced victim.
+            return {"final_response": "", "forced_recovery_control": True, **common}
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
