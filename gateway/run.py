@@ -4205,7 +4205,6 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
-    GATEWAY_OVERLAP_RESTART_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     detached_restart_spawn_blocked,
     is_global_startup_conflict,
@@ -4214,6 +4213,7 @@ from gateway.restart import (
     parse_restart_drain_timeout,
     parse_signal_interrupt_grace_timeout,
     resolve_cron_drain_budget,
+    resolve_planned_restart_exit_code,
 )
 
 
@@ -14751,18 +14751,11 @@ class GatewayRunner(
                 except Exception as e:
                     logger.debug("Failed to write planned restart notification marker: %s", e)
 
-            if self._restart_requested and self._restart_via_service:
-                # The service manager is the sole restart owner.  Exit 75
-                # paired with ``RestartForceExitStatus=75`` asks systemd to
-                # replace this process without a second helper racing the
-                # unit's stop/start job.  The generated launchd plist's
-                # unconditional ``KeepAlive`` likewise replaces the process
-                # after this planned exit.
-                self._exit_code = (
-                    GATEWAY_OVERLAP_RESTART_EXIT_CODE
-                    if getattr(self, "_overlap_restart_successor_started", False)
-                    else GATEWAY_SERVICE_RESTART_EXIT_CODE
-                )
+            planned_exit_code = resolve_planned_restart_exit_code(self)
+            if planned_exit_code is not None:
+                # 75 asks the supervisor to replace us; 76 confirms that the
+                # hub-started successor already exists and must remain alone.
+                self._exit_code = planned_exit_code
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False

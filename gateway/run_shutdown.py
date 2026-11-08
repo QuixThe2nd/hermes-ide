@@ -22,7 +22,8 @@ from typing import Any, Callable, Dict, Optional
 
 from gateway.config import Platform
 from gateway.restart import (
-    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, resolve_cron_drain_budget
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, resolve_cron_drain_budget,
+    resolve_planned_restart_exit_code,
 )
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.restart_wind_down import WIND_DOWN_TERMINAL_DRAINED
@@ -2745,9 +2746,10 @@ class GatewayShutdownMixin:
                     },
                     indent=None,
                 )
-        if self._restart_requested and self._restart_via_service:
-            # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.
-            self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
+        planned_exit_code = resolve_planned_restart_exit_code(self)
+        if planned_exit_code is not None:
+            # 75 requests a supervisor replacement; 76 preserves the hub successor as the sole gateway.
+            self._exit_code = planned_exit_code
             self._exit_reason = self._exit_reason or "Gateway restart requested"
         self._draining = False
         # Terminal gateway_state: "stopped", or "running" on an UNEXPECTED signal (docker restart,
