@@ -22,10 +22,26 @@ SUCCESSOR_WATCH_POLL_SECONDS = 2.0
 SUCCESSOR_RESPAWN_BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0, 30.0)
 
 
+# The launch markers are popped from os.environ right after the PID claim (so
+# tool children never inherit them), but the hub attach that proves this
+# process is an attested successor happens later, when adapters connect.
+# Keep the predecessor here until this process becomes authoritative.
+_pending_predecessor_pid: Optional[int] = None
+
+
+def remember_pending_predecessor(pid: Optional[int]) -> None:
+    global _pending_predecessor_pid
+    _pending_predecessor_pid = pid if pid and pid > 0 else None
+
+
+def forget_pending_predecessor() -> None:
+    remember_pending_predecessor(None)
+
+
 def overlap_predecessor_pid() -> Optional[int]:
     """Return the expected predecessor for a hub-spawned successor, else None."""
     if os.environ.get(OVERLAP_SUCCESSOR_ENV) != "1":
-        return None
+        return _pending_predecessor_pid
     try:
         pid = int(os.environ.get(OVERLAP_PREDECESSOR_PID_ENV, ""))
     except ValueError:
@@ -170,6 +186,7 @@ async def claim_when_predecessor_exits(
             claim = False
         if claim is True:
             runner._overlap_successor_pending = False
+            forget_pending_predecessor()
             logger.warning(
                 "Overlap predecessor PID %d exited; successor PID %d is now the authoritative gateway",
                 predecessor_pid, os.getpid(),

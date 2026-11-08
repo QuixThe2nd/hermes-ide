@@ -12176,6 +12176,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     runner._overlap_successor_pending = _claim_state == GATEWAY_CLAIM_SUCCESSOR_PENDING
     if runner._overlap_successor_pending:
         runner._overlap_predecessor_pid = overlap_predecessor_pid()
+        # Hub attach (adapter connect, below) still has to prove successor identity.
+        from gateway.overlap_restart import remember_pending_predecessor
+        remember_pending_predecessor(runner._overlap_predecessor_pid)
         # The runner and claim task now own this one-shot launch state; do not leak it into tool children.
         os.environ.pop(OVERLAP_SUCCESSOR_ENV, None)
         os.environ.pop(OVERLAP_PREDECESSOR_PID_ENV, None)
