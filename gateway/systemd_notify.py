@@ -28,6 +28,11 @@ def notify(message: str) -> bool:
         return False
 
 
+def handover_main_pid(pid: int) -> bool:
+    """Move systemd's MainPID to the service-cgroup overlap successor."""
+    return notify(f"MAINPID={int(pid)}")
+
+
 def watchdog_interval_seconds() -> float | None:
     try:
         interval = float(os.environ.get("WATCHDOG_USEC", "") if _notify_socket() else "") / 1e6

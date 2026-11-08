@@ -15,6 +15,8 @@ import inspect
 import json
 import logging
 import os
+import socket
+import struct
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -23,7 +25,6 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 from agent.async_utils import consume_detached_task_result
 from hermes_constants import get_default_hermes_root
-from gateway.overlap_restart import OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,8 @@ class _Client:
     platform: str = "discord"
     router: Optional[DiscordSessionRouter] = None
     processing_reactions: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
+    gateway_pid: int = 0
+    peer_pid: Optional[int] = None
 
     async def deliver(self, session_key: str, record: Dict[str, Any]) -> None:
         await self.send({"type": "event", "session_key": session_key, "record": record})
@@ -267,6 +270,22 @@ class _Client:
         async with self.write_lock:
             self.writer.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
             await self.writer.drain()
+
+
+def _socket_peer_pid(writer: asyncio.StreamWriter) -> Optional[int]:
+    peercred = writer.get_extra_info("peercred")
+    if peercred:
+        return int(peercred[0])
+    raw_socket = writer.get_extra_info("socket")
+    if raw_socket is None or not hasattr(socket, "SO_PEERCRED"):
+        return None
+    try:
+        credentials = raw_socket.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"),
+        )
+        return struct.unpack("3i", credentials)[0]
+    except (OSError, struct.error):
+        return None
 
 
 class DiscordHubServer:
@@ -494,9 +513,10 @@ class DiscordHubServer:
                         client = _Client(generation, reader, writer, asyncio.Lock(), {})
                         config_data = params.get("config") or {}
                         platform_name = str(params.get("platform") or "discord")
-                        peercred = writer.get_extra_info("peercred")
-                        peer_pid = int(peercred[0]) if peercred else None
+                        peer_pid = _socket_peer_pid(writer)
                         gateway_pid = int(params.get("gateway_pid") or 0)
+                        client.gateway_pid = gateway_pid
+                        client.peer_pid = peer_pid
                         if peer_pid is not None and gateway_pid and gateway_pid != peer_pid:
                             raise RuntimeError("attached gateway PID does not match the socket peer")
                         if platform_name == "matrix":
@@ -608,6 +628,20 @@ class DiscordHubServer:
             }
         if method == "spawn_gateway":
             return await self._spawn_gateway(params)
+        if method == "register_spawned_gateway":
+            if client is None:
+                raise RuntimeError("an attached predecessor is required")
+            predecessor_pid = int(params.get("predecessor_pid") or 0)
+            if predecessor_pid != client.gateway_pid:
+                raise RuntimeError("attached gateway is not the claimed predecessor")
+            if client.peer_pid != predecessor_pid:
+                raise RuntimeError("socket peer is not the claimed predecessor")
+            pid = int(params.get("pid") or 0)
+            home = str(params.get("hermes_home") or "")
+            if not home:
+                raise ValueError("hermes_home is required")
+            self._successors.record_spawn(pid, home, predecessor_pid)
+            return {"pid": pid}
         if method == "rpc":
             if client is not None and client.platform == "matrix":
                 return await self.matrix.rpc(client, params)
@@ -747,12 +781,8 @@ class DiscordHubServer:
             client.controls.pop(control_id, None)
 
     async def _spawn_gateway(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        from gateway.restart import detached_restart_spawn_blocked, spawn_replacement_gateway
+        from plugins.platforms.discord.overlap_spawn import spawn_gateway_successor
 
-        blocked = detached_restart_spawn_blocked()
-        if blocked:
-            raise RuntimeError("test isolation forbids a detached gateway spawn")
-        project_root = str(Path(__file__).resolve().parents[3])
         home = str(params.get("hermes_home") or "")
         if not home:
             raise ValueError("hermes_home is required")
@@ -763,28 +793,9 @@ class DiscordHubServer:
         if predecessor_pid <= 0:
             raise ValueError("predecessor_pid must be a positive integer")
 
-        def _popen(argv: list[str], **kwargs: Any):
-            import subprocess
-            from tools.environments.local import served_profile_child_env
-
-            # The checkout venv the replacement was resolved to (spawn_replacement_gateway);
-            # pinning the child to it prevents a hub running under another interpreter from
-            # leaking a foreign VIRTUAL_ENV/PYTHONPATH into mixed site-packages (cffi incident).
-            venv_bin_dir = kwargs.pop("checkout_venv_bin_dir", None)
-            env = served_profile_child_env(target_home=home, inherit_credentials=True)
-            if venv_bin_dir:
-                env["VIRTUAL_ENV"] = str(Path(venv_bin_dir).parent)
-                env["PATH"] = venv_bin_dir + os.pathsep + env.get("PATH", "")
-            # Exactly the checkout: foreign inherited entries poison the child's sys.path.
-            env["PYTHONPATH"] = project_root
-            for marker in ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE"):
-                env.pop(marker, None)
-            env[OVERLAP_SUCCESSOR_ENV] = "1"
-            env[OVERLAP_PREDECESSOR_PID_ENV] = str(predecessor_pid)
-            kwargs["env"] = env
-            return subprocess.Popen(argv, **kwargs)
-
-        process = await asyncio.to_thread(spawn_replacement_gateway, project_root, popen=_popen)
+        process = await asyncio.to_thread(
+            spawn_gateway_successor, home=home, predecessor_pid=predecessor_pid,
+        )
         self._successors.record_spawn(process.pid, home, predecessor_pid)
         return {"pid": process.pid}
 

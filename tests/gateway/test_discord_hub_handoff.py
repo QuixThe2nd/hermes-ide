@@ -567,6 +567,146 @@ async def test_active_busy_event_hands_off_before_drain_ack():
     assert not drain_queue_path().exists()
 
 
+def test_systemd_successor_is_spawned_by_predecessor_and_registered_with_hub(monkeypatch, tmp_path):
+    """A service successor must remain in the gateway unit, not the hub unit."""
+    adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    monkeypatch.setenv("INVOCATION_ID", "gateway-unit")
+    monkeypatch.setattr("plugins.platforms.discord.hub_client.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("gateway.restart.detached_restart_spawn_blocked", lambda: False)
+    local_spawn = MagicMock(return_value=SimpleNamespace(pid=5150))
+    monkeypatch.setattr("gateway.restart.spawn_replacement_gateway", local_spawn)
+    calls = []
+
+    async def rpc(method, params):
+        calls.append((method, params))
+        return {"pid": 5150}
+
+    adapter._call = rpc
+    adapter.wait_for_overlap_successor = AsyncMock()
+
+    assert run(adapter.spawn_overlap_successor(via_service=True, predecessor_pid=4242)) == 5150
+
+    local_spawn.assert_called_once()
+    assert calls == [("register_spawned_gateway", {
+        "pid": 5150, "hermes_home": str(tmp_path), "predecessor_pid": 4242,
+    })]
+    assert adapter._last_overlap_successor_service_managed is True
+
+
+def test_systemd_successor_is_predecessor_local_even_for_detached_request(monkeypatch, tmp_path):
+    """Actual gateway supervision, not the request flag, selects the unit cgroup."""
+    adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    monkeypatch.setenv("INVOCATION_ID", "gateway-unit")
+    monkeypatch.setattr("plugins.platforms.discord.hub_client.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("gateway.restart.detached_restart_spawn_blocked", lambda: False)
+    local_spawn = MagicMock(return_value=SimpleNamespace(pid=5150))
+    monkeypatch.setattr("gateway.restart.spawn_replacement_gateway", local_spawn)
+    calls = []
+
+    async def rpc(method, params):
+        calls.append((method, params))
+        return {"pid": 5150}
+
+    adapter._call = rpc
+    adapter.wait_for_overlap_successor = AsyncMock()
+
+    assert run(adapter.spawn_overlap_successor(via_service=False, predecessor_pid=4242)) == 5150
+
+    local_spawn.assert_called_once()
+    assert calls == [("register_spawned_gateway", {
+        "pid": 5150, "hermes_home": str(tmp_path), "predecessor_pid": 4242,
+    })]
+    assert adapter._last_overlap_successor_service_managed is True
+
+
+def test_overlap_spawn_supervisor_env_is_scoped_to_launcher(monkeypatch, tmp_path):
+    """A hub child must not inherit the hub unit's restart/notify identity."""
+    import subprocess
+    from plugins.platforms.discord.overlap_spawn import spawn_gateway_successor
+
+    monkeypatch.setattr("gateway.restart.detached_restart_spawn_blocked", lambda: False)
+    supervisor_env = {
+        "PATH": "/usr/bin",
+        "INVOCATION_ID": "hub-unit",
+        "NOTIFY_SOCKET": "/run/systemd/notify",
+        "WATCHDOG_USEC": "1000000",
+        "WATCHDOG_PID": "4242",
+        "XPC_SERVICE_NAME": "hub-launchd-job",
+        "HERMES_SUPERVISED_CHILD": "1",
+    }
+    monkeypatch.setattr(
+        "tools.environments.local.served_profile_child_env",
+        lambda **kwargs: dict(supervisor_env),
+    )
+    captured = []
+
+    def fake_popen(argv, **kwargs):
+        captured.append(kwargs["env"])
+        return SimpleNamespace(pid=5150)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    spawn_gateway_successor(home=str(tmp_path), predecessor_pid=4242)
+    for marker in supervisor_env.keys() - {"PATH"}:
+        assert marker not in captured[-1]
+
+    spawn_gateway_successor(
+        home=str(tmp_path), predecessor_pid=4242, preserve_supervisor=True,
+    )
+    for marker, value in supervisor_env.items():
+        if marker != "PATH":
+            assert captured[-1][marker] == value
+    assert captured[-1]["PATH"].endswith(supervisor_env["PATH"])
+
+
+@pytest.mark.platforms("posix")
+def test_hub_registers_local_successor_for_the_attached_predecessor(tmp_path):
+    async def scenario(socket_dir):
+        server = DiscordHubServer(Path(socket_dir) / "hub.sock")
+
+        class FakeDiscordConnection:
+            async def disconnect(self):
+                pass
+
+        async def fake_attach(generation_id, config_data, profile, profile_routes, gate_credential=None):
+            server._adapters[_token_key(config_data["token"])] = FakeDiscordConnection()
+
+        server._attach_adapter = fake_attach
+        record_spawn = MagicMock()
+        server._successors.record_spawn = record_spawn
+        await server.start()
+        client = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+        client._socket_path = server.socket_path
+        try:
+            assert await client.connect()
+            result = await client._call("register_spawned_gateway", {
+                "pid": 5150, "hermes_home": str(tmp_path),
+                "predecessor_pid": os.getpid(),
+            })
+            assert result == {"pid": 5150}
+            record_spawn.assert_called_once_with(5150, str(tmp_path), os.getpid())
+        finally:
+            await client.disconnect()
+            await server.stop()
+
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="h-") as socket_dir:
+        run(scenario(socket_dir))
+
+
+def test_hub_rejects_local_successor_registration_from_another_peer(tmp_path):
+    server = DiscordHubServer(tmp_path / "unused.sock")
+    client = SimpleNamespace(gateway_pid=4242, peer_pid=9999)
+    server._successors.record_spawn = MagicMock()
+
+    with pytest.raises(RuntimeError, match="socket peer is not the claimed predecessor"):
+        run(server._dispatch(client, "register_spawned_gateway", {
+            "pid": 5150, "hermes_home": str(tmp_path), "predecessor_pid": 4242,
+        }))
+    server._successors.record_spawn.assert_not_called()
+
+
 def test_hub_marks_successor_with_predecessor_pid(monkeypatch, tmp_path):
     import subprocess
     from gateway.overlap_restart import OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV

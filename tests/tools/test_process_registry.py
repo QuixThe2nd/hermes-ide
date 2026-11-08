@@ -71,6 +71,33 @@ def _spawn_python_sleep(seconds: float) -> subprocess.Popen:
     )
 
 
+def test_running_gateway_loop_qualifies_without_pid_file_ownership(monkeypatch):
+    """An overlap successor is protected before it wins gateway.pid."""
+    import gateway.run as gateway_run
+    import tools.process_registry as process_registry
+
+    loop = MagicMock()
+    loop.is_running.return_value = True
+    loop.is_closed.return_value = False
+    runner = MagicMock(_gateway_loop=loop)
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda **kwargs: 999999)
+
+    assert process_registry._is_supervised_gateway_process() is True
+
+
+def test_inherited_gateway_environment_does_not_qualify_a_descendant(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.process_registry as process_registry
+
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setenv("INVOCATION_ID", "inherited-by-a-terminal-child")
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: None)
+
+    assert process_registry._is_supervised_gateway_process() is False
+
+
 def test_kill_started_since_preserves_preexisting_and_foreign_processes(registry):
     old = _make_session(sid="proc_old", task_id="session-a")
     finished = _make_session(
@@ -2163,11 +2190,11 @@ class TestSystemdCgroupIsolation:
     @pytest.fixture()
     def _gateway_identity(self, monkeypatch):
         """Opt-in: mark this test as running AS the live gateway process."""
-        monkeypatch.setenv("_HERMES_GATEWAY", "1")
-        monkeypatch.setattr(
-            "gateway.status.get_running_pid",
-            lambda *, cleanup_stale=False: os.getpid(),
-        )
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        loop.is_closed.return_value = False
+        runner = MagicMock(_gateway_loop=loop)
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
 
     def _fake_popen_capture(self):
         """Return (fake_popen, captured) where captured["argv"] gets the

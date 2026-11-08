@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import gateway.run as gateway_run
+from gateway.config import Platform
 from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
 from gateway.session_context import clear_session_vars, set_session_vars
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -132,10 +133,10 @@ def _bind_session(runner, **kwargs):
     from gateway.config import Platform
 
     source = make_restart_source(
-        platform=Platform(str(kwargs.get("platform") or "discord")),
         chat_id=str(kwargs.get("chat_id") or ""),
         chat_type=str(kwargs.get("chat_type") or "dm"),
         thread_id=kwargs.get("thread_id"),
+        platform=Platform(kwargs.get("platform") or Platform.DISCORD),
         user_id=kwargs.get("user_id"),
     )
     runner._cache_session_source(kwargs.get("session_key", ""), source)
@@ -174,6 +175,41 @@ def test_register_exposes_restart_tool_on_gateway_toolset():
     # /restart takes no arguments — this is not a new API surface.
     assert schema["parameters"].get("properties") in (None, {})
     assert schema["parameters"]["additionalProperties"] is False
+
+
+def test_enabled_plugin_survives_saved_discord_toolset_resolution(tmp_path, monkeypatch):
+    """A stale plugin-known list must not hide restart from a live Discord gateway."""
+    hermes_home = tmp_path / ".hermes"
+    (hermes_home / "config.yaml").write_text(
+        "plugins:\n  enabled: [gateway_restart]\n", encoding="utf-8",
+    )
+    runner, _ = make_restart_runner()
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+    from hermes_cli.tools_config import _get_platform_tools
+
+    saved_config = {
+        "plugins": {"enabled": ["gateway_restart"]},
+        "platform_toolsets": {"discord": ["hermes-discord"]},
+        "known_plugin_toolsets": {"discord": ["gateway"]},
+    }
+    enabled = _get_platform_tools(saved_config, "discord", include_default_mcp_servers=False)
+
+    assert "gateway" in enabled
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    # Earlier CLI-shaped checks in this process may have cached "no runner".
+    # This assertion exercises saved-toolset resolution with the live runner above.
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    definitions = get_tool_definitions(
+        enabled_toolsets=sorted(enabled), quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    assert "restart" in {item["function"]["name"] for item in definitions}
 
 
 def test_schema_describes_immediate_natural_drain():

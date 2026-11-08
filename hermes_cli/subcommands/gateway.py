@@ -86,7 +86,10 @@ def build_gateway_parser(
     _add_system_flag(gateway_restart)
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
-    _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
+    _flag(gateway_restart, "--force",
+        help="Bypass the graceful successor-first drain and force a supervisor restart; "
+            "this interrupts active chats. Also starts a separate gateway for a profile "
+            "already served by the default multiplexer (not recommended).")
     gateway_restart.add_argument(
         "--no-platforms", dest="no_platforms", action="store_true",
         help="Restart agent-core sessions without bouncing platform gateway "

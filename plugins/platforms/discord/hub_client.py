@@ -472,15 +472,44 @@ class DiscordHubClientAdapter(BasePlatformAdapter):
     async def spawn_overlap_successor(
         self, *, via_service: bool = False, predecessor_pid: Optional[int] = None
     ) -> Optional[int]:
-        # systemd is taught not to respawn the predecessor after a successful
-        # overlap handoff. Other supervisors retain their legacy restart path.
-        if via_service and not os.environ.get("INVOCATION_ID"):
+        self._last_overlap_successor_pid = None
+        self._last_overlap_successor_start_time = None
+        self._last_overlap_successor_service_managed = False
+        predecessor = predecessor_pid or os.getpid()
+        home = str(get_hermes_home())
+        systemd_managed = bool(os.environ.get("INVOCATION_ID"))
+        if systemd_managed:
+            # The predecessor must spawn inside the gateway unit so MAINPID can
+            # move to this exact child, regardless of the caller's request flag.
+            from plugins.platforms.discord.overlap_spawn import spawn_gateway_successor
+
+            process = await asyncio.to_thread(
+                spawn_gateway_successor,
+                home=home, predecessor_pid=predecessor, preserve_supervisor=True,
+            )
+            pid = int(process.pid)
+        elif via_service:
+            # Other supervisors retain drain-then-relaunch; a hub child would
+            # belong to the hub's cgroup rather than the gateway supervisor.
             return None
-        result = await self._call("spawn_gateway", {
-            "hermes_home": str(get_hermes_home()),
-            "predecessor_pid": predecessor_pid or os.getpid(),
-        })
-        pid = int(result["pid"])
+        else:
+            result = await self._call("spawn_gateway", {
+                "hermes_home": home,
+                "predecessor_pid": predecessor,
+            })
+            pid = int(result["pid"])
+
+        # Latch the child before any fallible hub registration or readiness
+        # wait. The runner reads these fields even if a later step raises.
+        from gateway.status import get_process_start_time
+
+        self._last_overlap_successor_pid = pid
+        self._last_overlap_successor_start_time = get_process_start_time(pid)
+        self._last_overlap_successor_service_managed = systemd_managed
+        if systemd_managed:
+            await self._call("register_spawned_gateway", {
+                "pid": pid, "hermes_home": home, "predecessor_pid": predecessor,
+            })
         await self.wait_for_overlap_successor()
         return pid
 

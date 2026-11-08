@@ -8,6 +8,7 @@ import pytest
 import gateway.status as gateway_status
 import hermes_cli.update_cmd_drain_report as drain_report
 from hermes_cli import gateway as gw
+from hermes_cli.gateway_restart_progress import RestartOutcome
 
 
 @pytest.fixture
@@ -19,8 +20,8 @@ def graceful_timeout(monkeypatch):
     monkeypatch.setattr(gw, "_systemd_main_pid", lambda **k: pid)
     monkeypatch.setattr(gw, "_get_restart_exit_wait_budget", lambda: 30.0)
     monkeypatch.setattr(drain_report, "drain_progress_reporter", lambda **k: None)
-    graceful = MagicMock(return_value=False)
-    monkeypatch.setattr(gw, "_graceful_restart_via_sigusr1", graceful)
+    graceful = MagicMock(return_value=RestartOutcome(accepted=False))
+    monkeypatch.setattr("hermes_cli.gateway_restart_progress.restart_gateway_with_progress", graceful)
     probe = MagicMock(return_value=gw.GATEWAY_LOOP_ALIVE)
     monkeypatch.setattr(gw, "probe_gateway_loop_liveness", probe)
     reset_and_run = MagicMock()
@@ -29,17 +30,18 @@ def graceful_timeout(monkeypatch):
 
 
 @pytest.mark.parametrize("verdict", [gw.GATEWAY_LOOP_ALIVE, gw.GATEWAY_LOOP_UNKNOWN])
-def test_graceful_timeout_leaves_live_or_uncertain_service_untouched(
+def test_acknowledged_restart_leaves_live_or_uncertain_service_untouched(
     graceful_timeout, monkeypatch, capsys, verdict
 ):
     graceful_timeout.probe.return_value = verdict
+    graceful_timeout.graceful.return_value = RestartOutcome(accepted=True, completed=False)
 
     gw.systemd_restart()
 
     graceful_timeout.reset_and_run.assert_not_called()
     output = capsys.readouterr().out
-    assert "graceful restart is still underway" in output
-    assert "leaving the live service untouched" in output
+    assert "reporting until the old process exits" in output
+    graceful_timeout.graceful.assert_called_once_with(4242, via_service=True)
 
 
 def test_explicit_force_allows_escalation_after_graceful_timeout(graceful_timeout):
@@ -60,8 +62,7 @@ def test_proven_wedged_loop_allows_escalation_after_graceful_timeout(graceful_ti
     )
 
 
-def test_sigusr1_send_failure_is_not_reported_as_a_pending_drain(graceful_timeout):
-    graceful_timeout.graceful.return_value = None
+def test_restart_request_send_failure_is_not_reported_as_a_pending_drain(graceful_timeout):
 
     with pytest.raises(SystemExit) as exc_info:
         gw._systemd_graceful_restart_action(False, 4242)

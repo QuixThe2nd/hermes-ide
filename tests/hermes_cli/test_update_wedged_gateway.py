@@ -221,13 +221,12 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
         "terminate_pid",
         lambda pid, force=False, **kwargs: events.append(("kill" if force else "term", pid)),
     )
-    # Never let a real SIGUSR1 escape to the live test PID — the drain path
-    # goes through _graceful_restart_via_sigusr1 (in-place restart) before
-    # any exit-wait, and these tests feed launchd_restart os.getpid().
+    # Never let a real SIGUSR1 escape to the live test PID — the shared observer
+    # owns the request and unbounded drain, and these tests feed it os.getpid().
     monkeypatch.setattr(
-        gateway_cli,
-        "_graceful_restart_via_sigusr1",
-        lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
+        "hermes_cli.gateway_restart_progress.restart_gateway_with_progress",
+        lambda pid, **_: events.append(("drain", pid))
+        or __import__("types").SimpleNamespace(accepted=True, completed=True),
     )
     monkeypatch.setattr(
         gateway_cli,
@@ -440,9 +439,9 @@ class TestLaunchdRestartWedgedIntegration:
         )
         # Never let a real SIGUSR1 escape to PID 4242 during tests.
         monkeypatch.setattr(
-            gateway_cli,
-            "_graceful_restart_via_sigusr1",
-            lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
+            "hermes_cli.gateway_restart_progress.restart_gateway_with_progress",
+            lambda pid, **_: events.append(("drain", pid))
+            or __import__("types").SimpleNamespace(accepted=True, completed=False),
         )
         # KeepAlive revival observed instantly — avoids the real 15s poll
         # (mocked subprocess.run returns empty stdout, so the PID probe
@@ -471,20 +470,19 @@ class TestLaunchdRestartWedgedIntegration:
         # The 180s drain wait must never run for a wedged loop.
         assert not any(isinstance(e, tuple) and e[0] == "drain" for e in events)
 
-    def test_busy_gateway_keeps_full_drain_budget(self, monkeypatch):
-        """A busy-but-alive gateway (fresh heartbeat) must NOT be escalated —
-        that would bypass the in-flight cron drain floor (#86684)."""
+    def test_busy_gateway_keeps_unbounded_drain(self, monkeypatch):
+        """A busy-but-alive gateway must drain its work without an observation deadline."""
         events = self._setup(monkeypatch, gateway_cli.GATEWAY_LOOP_ALIVE)
         gateway_cli.launchd_restart()
         assert "escalate" not in events
-        assert ("drain", 4242, 195.0) in events
+        assert ("drain", 4242) in events
 
-    def test_unknown_liveness_keeps_full_drain_budget(self, monkeypatch):
+    def test_unknown_liveness_keeps_unbounded_drain(self, monkeypatch):
         """Ambiguity (no heartbeat) must never trigger escalation."""
         events = self._setup(monkeypatch, gateway_cli.GATEWAY_LOOP_UNKNOWN)
         gateway_cli.launchd_restart()
         assert "escalate" not in events
-        assert ("drain", 4242, 195.0) in events
+        assert ("drain", 4242) in events
 
 
 @pytest.mark.platforms("linux")
@@ -606,14 +604,12 @@ class TestLoopTickWitness:
                 "terminate_pid",
                 lambda pid, force=False, **kwargs: events.append(("kill" if force else "term", pid)),
             )
-            # Never let a real SIGUSR1 escape to os.getpid() — the drain
-            # path now goes through _graceful_restart_via_sigusr1 (in-place
-            # restart) before any exit-wait, and this test feeds the REAL
-            # launchd_restart our own live PID.
+            # Never let a real SIGUSR1 escape to os.getpid(); the shared observer
+            # owns both the request and the unbounded drain.
             monkeypatch.setattr(
-                gateway_cli,
-                "_graceful_restart_via_sigusr1",
-                lambda pid, timeout, **_: events.append(("drain", pid, timeout)) or True,
+                "hermes_cli.gateway_restart_progress.restart_gateway_with_progress",
+                lambda pid, **_: events.append(("drain", pid))
+                or __import__("types").SimpleNamespace(accepted=True, completed=True),
             )
             monkeypatch.setattr(
                 gateway_cli,

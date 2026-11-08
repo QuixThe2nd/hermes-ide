@@ -3176,9 +3176,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         wanted_by = "default.target"
 
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)
-    systemd_type, systemd_watchdog_directives = "simple", ""
+    systemd_type = "simple"
+    systemd_watchdog_directives = "NotifyAccess=main\n"
     if watchdog_seconds > 0:
-        systemd_type, systemd_watchdog_directives = "notify", f"NotifyAccess=main\nWatchdogSec={watchdog_seconds}s\n"
+        systemd_type = "notify"
+        systemd_watchdog_directives += f"WatchdogSec={watchdog_seconds}s\n"
     path_entries.extend(_build_user_local_paths(user_home, path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
@@ -4010,72 +4012,25 @@ def systemd_restart(system: bool = False, force: bool = False):
 
 
 def _systemd_graceful_restart_action(system: bool, pid: int, force: bool = False) -> str | None:
-    """SIGUSR1-drain the live gateway; return a follow-up systemctl verb only when authorized."""
+    """Use the gateway-owned handoff; only explicit force or no ACK plus a wedge may escalate."""
     scope_label = _service_scope_label(system).capitalize()
-    # Graceful in-band restart, mirroring the systemd branch. Previously this sent a bare SIGTERM and waited
-    # ``_get_restart_drain_timeout()`` — which defaults to 0, so the wait could never succeed and every
-    # restart fell through to ``kickstart -k``. A bare SIGTERM also leaves ``restart_requested`` False, so
-    # the gateway exits 1 instead of 75 and reports itself to chat as "shutting down" rather than
-    # "restarting", losing the resume_pending handoff. SIGUSR1 is the drain-aware path: refuse new turns,
-    # wait for in-flight work (``agent.restart_after_turn_timeout``), then stop() within
-    # ``agent.restart_drain_timeout``. The wait budget must cover BOTH phases plus headroom (#77184) — the
-    # raw drain timeout covers only the second. Announce the wait BEFORE it runs: it can last the full
-    # budget while the old gateway finishes in-flight agent runs, and it streams into surfaces with no other
-    # feedback — the desktop updater's live output most of all, where a silent stop here reads as "update
-    # stuck" (#44515).
-    wait_budget = _get_restart_exit_wait_budget()
-    print(
-        f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
-        f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
-    )
-    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
-    graceful_result = _graceful_restart_via_sigusr1(
-        pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)
-    )
-    if graceful_result is None and not force:
-        print(
-            f"✗ Could not send the graceful restart request to PID {pid}; "
-            "leaving the live service untouched (use --force to restart it explicitly)."
-        )
-        raise SystemExit(1)
-    if graceful_result is not True:
-        if force:
-            print("⚠ Explicit --force requested; forcing a service restart...")
-            return "restart"
-        if probe_gateway_loop_liveness(pid) != GATEWAY_LOOP_WEDGED:
-            print(
-                f"⏳ {scope_label} graceful restart is still underway (PID {pid}); "
-                "leaving the live service untouched while its drain completes."
-            )
-            return None
-        print(
-            f"⚠ Gateway PID {pid} event loop is unresponsive after the graceful wait; "
-            "forcing a service restart..."
-        )
+    if force:
+        print("⚠ Explicit --force requested; interrupting active chats with a service restart...")
         return "restart"
+    print(f"⏳ {scope_label} service restarting gracefully (PID {pid}) — reporting until the old process exits...")
+    from hermes_cli.gateway_restart_progress import restart_gateway_with_progress
 
-    # Exit 75 hands restart ownership to systemd; observe that replacement rather than restarting again.
-    replacement_observed: list[bool] = []
-    if _wait_for_systemd_service_restart(system=system, previous_pid=pid, replacement_observed=replacement_observed):
+    outcome = restart_gateway_with_progress(pid, via_service=True)
+    if outcome.accepted:
         return None
-    if replacement_observed or _systemd_service_is_start_limited(system=system):
-        return None
-
-    # A replacement may have started but not reached runtime readiness in time; never stop that generation.
-    props = _read_systemd_unit_properties(system=system)
-    if not props:
-        return None
-    replacement_pid = _systemd_main_pid_from_props(props)
-    if (
-        props.get("ActiveState") in {"active", "activating", "reloading"}
-        or props.get("SubState") == "auto-restart"
-        or (replacement_pid is not None and replacement_pid != pid)
-    ):
-        return None
-
-    print("⚠ Systemd did not relaunch the gateway after its graceful exit; starting the inactive service...")
-    # ``start`` is intentionally idempotent: a replacement appearing after the snapshot must not be stopped.
-    return "start"
+    if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+        print(f"⚠ Gateway PID {pid} event loop is unresponsive; forcing a service restart...")
+        return "restart"
+    print(
+        f"✗ Could not send the graceful restart request to PID {pid}; "
+        "leaving the live service untouched (use --force to restart it explicitly)."
+    )
+    raise SystemExit(1)
 
 
 def _systemd_reset_and_run(action: str, *, system: bool, previous_pid) -> None:
@@ -4927,7 +4882,7 @@ def _wait_for_launchd_service_pid(
         time.sleep(0.5)
 
 
-def launchd_restart():
+def launchd_restart(force: bool = False):
     label = get_launchd_label()
     domain = _launchd_domain()
     target = f"{domain}/{label}"
@@ -4943,24 +4898,20 @@ def launchd_restart():
             print(f"⚠ Gateway PID {pid} event loop is unresponsive — " "skipping drain and forcing a bounded stop...")
             _escalate_wedged_gateway(pid)
             pid = None
-        if pid is not None:
-            # Graceful in-band restart via SIGUSR1 (mirrors systemd); the budget covers both the idle wait
-            # and the drain. A bare SIGTERM would lose the resume_pending handoff. Announce BEFORE waiting:
-            # surfaces with no other feedback (desktop updater) read silence as "update stuck".
-            wait_budget = _get_restart_exit_wait_budget()
-            print(f"→ Stopping gateway (PID {pid}) — draining in-flight runs (up to {wait_budget:.0f}s)...")
-            from hermes_cli.update_cmd_drain_report import drain_progress_reporter
-            if _graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
-                # KeepAlive revives a planned exit, so do NOT kickstart (-k would kill the replacement) —
-                # but a clean exit doesn't prove supervision, so verify a replacement PID appears first.
-                if _wait_for_launchd_service_pid(label, pid, timeout=15.0, domain=domain):
-                    _launchd_ok("✓ Service restart requested")
-                    return
-                print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
-            else:
-                print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
-        # Captured: an unloaded job (3/113/125) is the expected case below, which
-        # prints its own ↻ line — and e.stderr feeds the update_cmd failure diagnostic.
+        if force:
+            print("⚠ Explicit --force requested; interrupting active chats with launchd kickstart...")
+        elif pid is not None:
+            print(f"→ Restarting gateway (PID {pid}) through the gateway-owned handoff...")
+            from hermes_cli.gateway_restart_progress import restart_gateway_with_progress
+
+            outcome = restart_gateway_with_progress(pid, via_service=True)
+            if outcome.accepted:
+                _launchd_ok("✓ Service restart requested")
+                return
+            print("⚠ Graceful restart was not acknowledged; leaving the live gateway untouched")
+            return
+        # Only an explicit force, a proven wedge, or a gateway with no live PID
+        # reaches launchctl's destructive kickstart path.
         _wait_for_api_server_port_free()
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90, **_CAPTURE_TEXT)
         _launchd_ok("✓ Service restarted")
@@ -5911,11 +5862,12 @@ def _service_backend(*, windows: bool = True) -> str | None:
 
 
 def _service_call(backend: str, verb: str, system: bool | None = False, force: bool = False) -> None:
-    """Run ``verb`` on ``backend``; explicit force applies only to systemd restart."""
+    """Run ``verb`` on ``backend``; explicit force applies only to service restart."""
     if backend == "windows":
         return getattr(_gw_windows(), verb)()
     if backend == "launchd":
-        return globals()[f"launchd_{verb}"]()
+        kwargs = {"force": True} if force and verb == "restart" else {}
+        return globals()[f"launchd_{verb}"](**kwargs)
     fn = globals()[f"systemd_{verb}"]
     kwargs = {} if system is None else {"system": system}
     if force and verb == "restart":
@@ -6584,14 +6536,25 @@ def _restart_all(system: bool) -> None:
         _service_call(kind, "start", system)
 
 
-def _restart_via_control_socket(restart_platforms: bool) -> bool:
+def _restart_via_control_socket(restart_platforms: bool, *, old_pid: int | None = None) -> bool:
     """Ask the running gateway (control socket) to run the ONE restart core.
+
+    With a live PID, attach to the non-destructive progress observer so the CLI
+    reports successor readiness and the predecessor's drain. Without one, keep
+    the original queue-only transport probe before falling back to startup.
 
     Returns True when the restart was queued or already in progress in the
     running process — the CLI then has nothing left to orchestrate. False when
     no gateway answers (not running, old gateway without the verb, dead
     socket) and the caller falls through to the SIGUSR1/service transports.
     """
+    if old_pid is not None:
+        from hermes_cli.gateway_restart_progress import restart_gateway_with_progress
+
+        outcome = restart_gateway_with_progress(
+            old_pid, via_service=False, restart_platforms=restart_platforms,
+        )
+        return outcome.accepted
     try:
         from hermes_constants import get_hermes_home
         from gateway.control_socket import request_gateway_restart
@@ -6640,8 +6603,11 @@ def _cmd_restart(args):
         _restart_all(system)
         return
 
-    # Door 1: the running process runs the ONE restart core itself.
-    if _restart_via_control_socket(restart_platforms):
+    # Door 1: the running process runs the ONE restart core itself. A live PID
+    # keeps the CLI attached for successor and drain progress; Ctrl-C detaches.
+    from gateway.status import get_running_pid
+
+    if _restart_via_control_socket(restart_platforms, old_pid=get_running_pid()):
         return
 
     # The Windows restart path handles both registered installs and detached restarts.
@@ -6690,6 +6656,15 @@ def _cmd_restart(args):
     if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
         restart_externally_supervised_gateway(supervised_pid)
         return
+
+    if supervised_pid and not force:
+        from hermes_cli.gateway_restart_progress import restart_gateway_with_progress
+
+        outcome = restart_gateway_with_progress(supervised_pid, via_service=False)
+        if outcome.accepted:
+            return
+        print(f"✗ Could not request a graceful restart from gateway PID {supervised_pid}; leaving it untouched")
+        sys.exit(1)
 
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")

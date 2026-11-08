@@ -73,27 +73,20 @@ def _wait_for_supervised_gateway_replacement(
 
 
 def restart_externally_supervised_gateway(supervised_pid: int) -> None:
-    """Hand ``supervised_pid`` back to its supervisor (SIGUSR1 drain) and report the fresh PID.
+    """Hand ``supervised_pid`` back to its supervisor and observe the same unbounded drain.
 
-    Never falls through to SIGTERM + foreground run on either failure branch: that would
-    SIGTERM a KeepAlive-armed process and stamp this CLI's PID, recreating the competing-owner
-    wedge (#110637). A broken/unloaded supervisor surfaces as exit 1, not a success printed over
-    a dead gateway (the contract ``launchd_restart`` enforces via ``_wait_for_launchd_service_pid``).
+    Never falls through to SIGTERM + foreground run: that would SIGTERM a
+    KeepAlive-armed process and stamp this CLI's PID, recreating the competing-owner
+    wedge (#110637). An unsent request surfaces as exit 1; an acknowledged one is
+    left gateway-owned even when this CLI detaches.
     """
-    from hermes_cli.gateway import _get_restart_exit_wait_budget, _graceful_restart_via_sigusr1, _print_lines
+    from hermes_cli.gateway_restart_progress import restart_gateway_with_progress
+    from hermes_cli.gateway import _print_lines
 
-    wait_budget = _get_restart_exit_wait_budget()
-    print(f"→ Restarting externally-supervised gateway (PID {supervised_pid}) — "
-          f"draining in-flight runs (up to {wait_budget:.0f}s)...")
-    if _graceful_restart_via_sigusr1(supervised_pid, wait_budget):
-        replacement_pid = _wait_for_supervised_gateway_replacement(supervised_pid)
-        if replacement_pid is not None:
-            print()
-            print(f"✓ Gateway relaunched by its supervisor (PID {replacement_pid})")
-            return
-        print("⚠ Supervisor did not relaunch the gateway after its graceful exit")
-    else:
-        print(f"⚠ Gateway did not exit within {wait_budget:.0f}s of SIGUSR1 (or the signal could not be sent)")
+    print(f"→ Restarting externally-supervised gateway (PID {supervised_pid}) through its gateway-owned handoff...")
+    outcome = restart_gateway_with_progress(supervised_pid, via_service=True)
+    if outcome.accepted:
+        return
     _print_lines(
         "",
         "✗ Not stopping or foreground-running a supervisor-owned gateway.",

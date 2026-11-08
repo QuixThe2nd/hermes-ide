@@ -492,12 +492,21 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # are resolved, closing splice bypasses like `kick"start"`. Runs after the profile-flag check so both
     # passes apply independently.
     for segment in _iter_command_segments(normalized):
+        if _contains_absolute_hermes_lifecycle(segment):
+            return True
         joined = " ".join(segment)
         if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
             return True
         stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
         if stripped != joined and _GATEWAY_LIFECYCLE_PATTERN.search(stripped):
             return True
+    if re.search(r"(?:\||\|&)\s*(?:\S+\s+)*at(?:\s|$)", normalized):
+        # ``at`` executes its stdin. Inspect quoted producer arguments only when
+        # this really is an at pipeline; the same text in documentation stays inert.
+        for segment in _iter_command_segments(normalized):
+            for token in segment:
+                if any(char.isspace() for char in token) and contains_gateway_lifecycle_command(token):
+                    return True
     # The label may be built in an earlier `;`-segment, so no pass above sees verb + label together.
     # Order-independent launchctl pass (#77083): a shell loop can build the gateway label from a variable
     # defined in an earlier `;`-separated segment (`label=${item%%:*}; launchctl bootout
@@ -744,6 +753,39 @@ def _executed_command_index(segment: list[str]) -> Optional[int]:
         return None
     index = _peel_transparent_prefixes(segment, index)
     return index if index < len(segment) else None
+
+
+_HERMES_LAUNCHER_RE = re.compile(r"(?i)^hermes(?:\.(?:exe|cmd|bat|com|ps1))?$")
+
+
+def _contains_absolute_hermes_lifecycle(segment: list[str]) -> bool:
+    """Read the wrapper-peeled executable, not a bare-``hermes`` text anchor.
+
+    Absolute venv paths otherwise evade Branch A through every transparent
+    wrapper. Shell payloads and ``at`` here-strings recurse through the same
+    choke point; path-shaped prose never occupies an executable position.
+    """
+    index = _executed_command_index(segment)
+    if index is None:
+        return False
+    executable = re.split(r"[/\\]", segment[index])[-1]
+    arguments = segment[index + 1:]
+    if _HERMES_LAUNCHER_RE.fullmatch(executable):
+        return (
+            len(arguments) >= 2
+            and arguments[0].lower() == "gateway"
+            and arguments[1].lower() in {"restart", "stop", "uninstall"}
+        )
+    name = executable.lower().removesuffix(".exe")
+    if name in _SHELL_EXECUTABLES:
+        for position, token in enumerate(arguments[:-1]):
+            if token in _SHELL_COMMAND_FLAGS:
+                return contains_gateway_lifecycle_command(arguments[position + 1])
+    if name == "at":
+        for position, token in enumerate(arguments[:-1]):
+            if token == "<<<":
+                return contains_gateway_lifecycle_command(arguments[position + 1])
+    return False
 
 
 def contains_launchctl_submit_command(command: str) -> bool:
