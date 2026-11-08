@@ -295,11 +295,13 @@ class TestBusySessionAck:
         # that would mash separate messages together, #43066).
         assert adapter._pending_messages.get(sk) is event
 
-        # Ack uses queue-mode wording (not steer, not interrupt)
+        # Ack explains the steer fallback instead of the generic queue text
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
-        assert "Steered" not in content
+        assert "Couldn't steer into the current run" in content
+        assert "the active run didn't accept the injection" in content
+        assert "queued for the next turn" in content
+        assert "Steered into current run" not in content
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
@@ -322,7 +324,39 @@ class TestBusySessionAck:
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
+        assert "Couldn't steer into the current run" in content
+        assert "the run isn't accepting injections right now" in content
+        assert "queued for the next turn" in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_falls_back_to_queue_when_media_not_steerable(self):
+        """A non-voice media follow-up can't be steered mid-run — the ack must
+        say so instead of showing the generic queue text."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="")
+        event.message_type = MessageType.PHOTO if hasattr(MessageType, "PHOTO") else MessageType.TEXT
+        event.media_urls = ["/tmp/photo.jpg"]
+        event.media_types = ["image/jpeg"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        assert adapter._pending_messages.get(sk) is event
+
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "Couldn't steer into the current run" in content
+        assert "attachments can't be steered mid-run" in content
+        assert "queued for the next turn" in content
 
     @pytest.mark.asyncio
     async def test_interrupt_mode_text_followups_fifo_not_merged(self):

@@ -732,6 +732,7 @@ class GatewayBusySessionMixin:
         if demoted_for_compression:
             effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
         steered = redirected = False
+        steer_fallback_reason = None
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
         plain_text = (
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
@@ -752,6 +753,14 @@ class GatewayBusySessionMixin:
                 )
             if not steered:
                 effective_mode = "queue"
+                # Record WHY steer fell back to queue so the ack can say so
+                # instead of the generic queue text (silent-feel bug fix).
+                if not agent_live:
+                    steer_fallback_reason = "agent-not-live"
+                elif not (steer_text and (plain_text or _steer_all_voice)):
+                    steer_fallback_reason = "media-not-steerable"
+                else:
+                    steer_fallback_reason = "steer-failed"
         elif (
             effective_mode == "interrupt" and plain_text and agent_live
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
@@ -763,6 +772,7 @@ class GatewayBusySessionMixin:
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
+            steer_fallback_reason=steer_fallback_reason,
         )
 
     @staticmethod
@@ -876,10 +886,19 @@ class GatewayBusySessionMixin:
         " — your message is queued for when it finishes (use /stop to cancel everything)."
     )
 
+    # Human phrasing for why a steer-mode message fell back to queue, keyed by
+    # _BusySteerOutcome.steer_fallback_reason.
+    _STEER_FALLBACK_REASONS = {
+        "agent-not-live": "the run isn't accepting injections right now",
+        "media-not-steerable": "attachments can't be steered mid-run",
+        "steer-failed": "the active run didn't accept the injection",
+    }
+
     def _compose_busy_ack_message(
         self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
         demoted_for_subagents: bool, demoted_for_compression: bool,
+        steer_fallback_reason: Optional[str] = None,
     ) -> str:
         from gateway.run import (
             _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
@@ -925,6 +944,12 @@ class GatewayBusySessionMixin:
             head, tail = "⏳ Subagent working", self._BUSY_DEMOTED_TAIL
         elif is_queue_mode and demoted_for_compression:
             head, tail = "⏳ Compressing context", self._BUSY_DEMOTED_TAIL
+        elif is_queue_mode and steer_fallback_reason:
+            # Steer mode was active but fell back to queue — say why instead
+            # of the generic queue text, which reads as steering failing silently.
+            _why = self._STEER_FALLBACK_REASONS.get(steer_fallback_reason, "steering wasn't possible")
+            head, tail = f"⏳ Couldn't steer into the current run ({_why})", \
+                " — queued for the next turn. I'll respond once the current task finishes."
         elif is_queue_mode:
             head, tail = "⏳ Queued for the next turn", ". I'll respond once the current task finishes."
         else:
@@ -1144,6 +1169,7 @@ class GatewayBusySessionMixin:
         demoted_for_compression = outcome.demoted_for_compression
         steered = outcome.steered
         redirected = outcome.redirected
+        steer_fallback_reason = outcome.steer_fallback_reason
         if steered and self._steer_delivered_ack_enabled(event):
             # The busy-steer bubble below promises FUTURE delivery;
             # schedule the one-shot follow-up ack for the moment the
@@ -1306,6 +1332,14 @@ class GatewayBusySessionMixin:
             message = (
                 f"⏳ Compressing context{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
+            )
+        elif is_queue_mode and steer_fallback_reason:
+            # Steer mode was active but fell back to queue — say why instead
+            # of the generic queue text, which reads as steering failing silently.
+            _why = self._STEER_FALLBACK_REASONS.get(steer_fallback_reason, "steering wasn't possible")
+            message = (
+                f"⏳ Couldn't steer into the current run ({_why}){status_detail} — "
+                f"queued for the next turn. I'll respond once the current task finishes."
             )
         elif is_queue_mode:
             message = (
