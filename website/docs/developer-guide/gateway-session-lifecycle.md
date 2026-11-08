@@ -406,6 +406,53 @@ or `/restart`.
 
 ---
 
+## 7b. The Restart Pipeline — one core, three doors
+
+Every way to restart the gateway resolves to ONE core: the in-process overlap
+restart, `gateway/run_shutdown.py::request_restart(overlap=True, via_service=...)`
+(reached through `gateway/restart.py::queue_user_restart` for user-initiated
+restarts). There is no second restart semantics anywhere in the tree.
+
+| Door | Path |
+|---|---|
+| `/restart` (slash) | `gateway/slash_commands.py` -> `queue_user_restart` |
+| `restart` (agent tool) | `plugins/gateway_restart/tool.py` -> `queue_user_restart` — no confirmation gate; it fires immediately |
+| `hermes gateway restart` (CLI) | `hermes_cli/gateway.py::_cmd_restart` — control-socket `restart` verb (runs `queue_user_restart` in the live process) -> SIGUSR1 (mapped to the same `request_restart` core) -> service-manager restart as a *transport* -> stop+start when nothing is running |
+
+The old gateway_restart confirm-gate (ping the user, wait for the literal word
+"restart") and the CLI's parallel restart orchestration are gone.
+
+Pipeline semantics (unchanged by the unification — the overlap handover is
+canonical):
+
+1. A successor gateway process spawns first (`gateway/overlap_restart.py::spawn_successor`).
+2. The hub moves new conversations/new user messages to the successor immediately.
+3. The predecessor admits nothing new; running sessions continue undisturbed.
+4. When active work provably drains to zero, the predecessor exits (the
+   fail-closed destructive boundary in `_run_restart` — no force drain, ever).
+5. Resumed chats land on the successor.
+
+### `gateway.restart_platforms`
+
+Config flag (default `true`): whether a restart also bounces platform gateway
+connections — adapters reconnect on the successor. `false` restarts agent-core
+sessions without bouncing platform connections (no successor spawn through
+platform hubs; each transport rides the predecessor until it exits).
+`hermes gateway restart --no-platforms` overrides the config for that one CLI
+call; the slash command and the agent tool follow the config flag only.
+
+### stop / start / update
+
+- `hermes gateway stop` — admission closes, in-flight work drains (same drain
+  machinery), the process exits. **No successor.**
+- `hermes gateway start` — a fresh process. `stop`->`start` is therefore NOT a
+  restart: adapter continuity is broken by design, while a restart hands over.
+- `hermes update` — fast-forward `git pull` (with the existing safety rails),
+  then the SAME unified restart pipeline (fleet-wide, drain-first). When the
+  checkout did not change, the restart is skipped and status is printed.
+
+---
+
 ## 8. Message Queuing Flow
 
 The message queuing system handles two scenarios:

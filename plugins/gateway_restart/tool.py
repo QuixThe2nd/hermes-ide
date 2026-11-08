@@ -2,8 +2,8 @@
 
 The tool queues through the same gateway-owned sequence as the ``/restart``
 slash command: warn about uncommitted runtime source, persist the requester's
-comeback routing, offer the opt-in Discord wind-down embed, then hand off to
-``GatewayRunner.request_restart``. The shared drain blocks new work and waits
+comeback routing, then hand off to ``GatewayRunner.request_restart``. The
+shared drain blocks new work and waits
 for in-flight sessions to finish naturally, with no cap, before the gateway
 bounces and comes back online. The tool never runs a wait of its own beside
 that drain. The shell/systemctl path stays blocked by the lifecycle guard —
@@ -44,7 +44,7 @@ RESTART_SCHEMA = {
 
 # Gateway-loop round trips (the state probe, then the queued restart) are
 # quick — the shared on-loop sequence synchronously writes one small marker
-# file, optionally sends the Discord wind-down embed, and hands off to
+# file and hands off to
 # request_restart, which schedules the drain task. The synchronous marker
 # write matters: it cannot keep running past a cancelled hand-off the way a
 # thread-pool write can, so a timeout can never leave a phantom notify marker
