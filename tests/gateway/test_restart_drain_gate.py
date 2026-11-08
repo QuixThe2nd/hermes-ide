@@ -26,6 +26,7 @@ import pytest
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import (
+    RestartTestAdapter,
     make_restart_runner,
     make_restart_source,
 )
@@ -219,6 +220,10 @@ async def test_cold_plain_text_after_confirmation_is_queued_durably():
     # confirmed restart whose busy mode says messages survive it.
     runner._restart_requested = True
     runner._busy_input_mode = "queue"
+    # An overlap-capable adapter with no attached successor keeps the legacy
+    # durable admission path; only readiness changes the verdict.
+    mock_adapter.supports_overlap_restart = True
+    mock_adapter.admits_owned_work_while_draining = MagicMock(return_value=False)
 
     result = await runner._handle_message(_make_event("one more thing…"))
 
@@ -229,6 +234,37 @@ async def test_cold_plain_text_after_confirmation_is_queued_durably():
     events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
     assert events[0]["event"]["text"] == "one more thing…"
     assert events[0]["session_key"] == session_key
+
+
+@pytest.mark.asyncio
+async def test_ready_successor_handoff_never_acks_or_writes_drain_queue():
+    """An idle draining predecessor returns the event to the attached hub."""
+    from gateway.config import Platform
+    from gateway.run_drain_queue import drain_queue_path
+
+    runner, _mock_adapter = _make_gate_runner()
+    adapter = RestartTestAdapter(Platform.DISCORD)
+    adapter.supports_overlap_restart = True
+    adapter._running = True
+    adapter.admits_owned_work_while_draining = lambda _source=None: True
+    adapter.handoff_event = AsyncMock(side_effect=[False, True])
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    event = _make_event("run in the successor now")
+    event.internal = False
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    session_key = runner._session_key_for_source(event.source)
+    assert adapter.handoff_event.await_count == 2
+    for handoff in adapter.handoff_event.await_args_list:
+        assert handoff.args == (event, session_key)
+        assert handoff.kwargs == {"target_pid": None}
+    assert not adapter._pending_messages
+    assert not drain_queue_path().exists()
 
 
 @pytest.mark.asyncio
