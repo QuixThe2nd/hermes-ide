@@ -511,11 +511,14 @@ async def queue_user_restart(
         # restart cycle (request_restart re-enters the already-open cycle and
         # mints no second generation). The embed is the only thing that can
         # trigger a park steer — without it the restart simply waits for the
-        # live sessions to finish on their own. Runners without the capability
-        # (older cores, foreign objects) skip it, and any failure here just
-        # leaves the restart on the natural-wait drain.
+        # live sessions to finish on their own. Off by default
+        # (``gateway.restart_wind_down_offer``): the overlap restart keeps
+        # sessions alive across restarts, so the offer is debugging surface,
+        # not default UX. Runners without the capability (older cores, foreign
+        # objects) skip it, and any failure here just leaves the restart on
+        # the natural-wait drain.
         send_offer = getattr(runner, "_send_restart_wind_down_prompt", None)
-        if callable(send_offer):
+        if callable(send_offer) and restart_wind_down_offer_enabled():
             try:
                 await send_offer(source)
             except Exception as exc:
@@ -533,6 +536,22 @@ async def queue_user_restart(
         # Setup resolved (started, failed, or cancelled): drop the provisional
         # preflight state so a later attempt retries it, and wake any rider.
         restart_preflight.release_restart_preflight(preflight_attempt)
+
+
+def restart_wind_down_offer_enabled() -> bool:
+    """``gateway.restart_wind_down_offer`` — opt-in (default off).
+
+    The always-on ⏸️ park offer became obsolete chatter once the overlap
+    restart kept sessions alive across restarts; the flag exists so the
+    wind-down path can still be exercised and debugged deliberately.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        gateway_cfg = (load_config() or {}).get("gateway") or {}
+    except Exception:
+        return False
+    return bool(gateway_cfg.get("restart_wind_down_offer", False))
 
 
 def restart_committed(runner: Any) -> bool:

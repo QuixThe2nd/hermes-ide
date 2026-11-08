@@ -737,6 +737,9 @@ async def test_slash_restart_offers_the_pause_embed_for_native_discord(
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr("gateway.restart.is_gateway_supervisor_process", lambda: False)
     monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: False)
+    monkeypatch.setattr(
+        "gateway.restart.restart_wind_down_offer_enabled", lambda: True
+    )
     adapter = MagicMock()
     adapter.send_restart_wind_down_offer = AsyncMock(return_value="m-1")
     adapter.finalize_restart_wind_down_offer = AsyncMock(return_value=True)
@@ -765,7 +768,7 @@ async def test_slash_restart_offers_the_pause_embed_for_native_discord(
     result = await runner._handle_restart_command(event)
 
     # A peer chat is live, so the reply is the draining notice.
-    assert "1" in result
+    assert result == "♻ Restarting gateway..."
     adapter.send_restart_wind_down_offer.assert_awaited_once()
     kwargs = adapter.send_restart_wind_down_offer.await_args.kwargs
     assert kwargs["channel_id"] == "9001"
@@ -903,5 +906,72 @@ async def test_both_user_restart_entry_points_share_the_gateway_queue_helper(
     assert status["status"] == "restarting"
     assert shared_calls == ["7", "8"]
     assert runner.request_restart.call_count == 2
+
+
+# ── the automatic offer is opt-in (gateway.restart_wind_down_offer) ───────
+
+
+def _eligible_discord_restart_runner():
+    """A runner whose /restart would offer the ⏸️ embed if offers were on."""
+    adapter = MagicMock()
+    adapter.send_restart_wind_down_offer = AsyncMock(return_value="m-1")
+    adapter.finalize_restart_wind_down_offer = AsyncMock(return_value=True)
+    runner, _telegram = make_restart_runner()
+    runner.adapters = {Platform.DISCORD: adapter, Platform.TELEGRAM: MagicMock()}
+    source = make_restart_source(
+        chat_id="9001",
+        chat_type="thread",
+        thread_id="9001",
+        platform=Platform.DISCORD,
+        user_id=_REQUESTER_ID,
+    )
+    other = MagicMock()
+    other.steer.return_value = True
+    runner._running_agents["agent:main:discord:thread:other"] = other
+    runner.request_restart = MagicMock(return_value=True)
+    return runner, adapter, source
+
+
+@pytest.mark.asyncio
+async def test_queue_user_restart_skips_the_wind_down_offer_by_default(
+    tmp_path, monkeypatch
+):
+    """No config flag → no embed. The restart still hands off to the drain."""
+    from gateway.restart import queue_user_restart
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.restart.user_restart_via_service", lambda: False)
+    config_path = get_hermes_home() / "config.yaml"
+    assert not config_path.exists()  # isolated home: the flag is unset
+    runner, adapter, source = _eligible_discord_restart_runner()
+
+    status = await queue_user_restart(runner, source, "m-0")
+
+    assert status["status"] == "restarting"
+    adapter.send_restart_wind_down_offer.assert_not_awaited()
+    assert runner._restart_wind_down_offer is None
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_queue_user_restart_offers_when_flag_enabled(tmp_path, monkeypatch):
+    """``gateway.restart_wind_down_offer: true`` restores today's behavior."""
+    from gateway.restart import queue_user_restart
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.restart.user_restart_via_service", lambda: False)
+    (get_hermes_home() / "config.yaml").write_text(
+        "gateway:\n  restart_wind_down_offer: true\n", encoding="utf-8"
+    )
+    runner, adapter, source = _eligible_discord_restart_runner()
+
+    status = await queue_user_restart(runner, source, "m-0")
+
+    assert status["status"] == "restarting"
+    adapter.send_restart_wind_down_offer.assert_awaited_once()
+    assert runner._restart_wind_down_offer is not None
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 
 
