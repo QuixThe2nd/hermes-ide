@@ -644,13 +644,21 @@ def cron_doctor() -> int:
 
 _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver", "failure_deliver"),
                    ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
-                   ("model", "model"), ("provider", "model_provider"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"))
 
 
+def _warn_ignored_model_pins(args) -> None:
+    """Per-job model/provider pins are removed; --model/--provider are accepted no-ops."""
+    if getattr(args, "model", None) or getattr(args, "model_provider", None):
+        print(color("⚠ per-job cron model/provider pins are removed; jobs always use the "
+                    "fleet default (cron.model config override > global default). "
+                    "--model/--provider ignored.", Colors.YELLOW))
+
+
 def _job_api_kwargs(args) -> Dict[str, Any]:
     """Collect the create/update kwargs shared by ``cron create`` and ``cron edit``."""
+    _warn_ignored_model_pins(args)
     return {api_key: getattr(args, attr, None) for api_key, attr in _JOB_ARG_FIELDS}
 
 
@@ -726,6 +734,12 @@ def cron_edit(args):
                        schedule=getattr(args, "schedule", None),
                        prompt=getattr(args, "prompt", None), skills=final_skills,
                        no_agent=getattr(args, "no_agent", None), **_job_api_kwargs(args))
+    if not result.get("success") and str(result.get("error", "")).startswith("No updates provided") and (
+            getattr(args, "model", None) or getattr(args, "model_provider", None)):
+        # Only deprecated model/provider flags were passed: nothing to write, treat as a no-op.
+        print(color(f"Updated job: {job.get('name', args.job_id)} ({args.job_id}) — "
+                    "no other changes requested", Colors.GREEN))
+        return 0
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1

@@ -64,11 +64,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
     cron_create.add_argument("--model",
-        help="Pin this job to a specific inference model (user-owned; the "
-            "agent's cronjob tool cannot set this). Omit to follow "
-            "cron.model / model.default from config.yaml.")
+        help="(Deprecated, ignored) Per-job model pins are removed; jobs "
+            "always use the fleet default (cron.model config override > "
+            "global default).")
     cron_create.add_argument("--provider", dest="model_provider",
-        help="Inference provider paired with --model (e.g. 'openrouter', 'nous').")
+        help="(Deprecated, ignored) Kept for script compatibility; see --model.")
     cron_create.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Overrides agent.reasoning_effort "
@@ -127,11 +127,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
     )
     cron_edit.add_argument("--model",
-        help="Pin this job to a specific inference model (user-owned; the "
-            "agent's cronjob tool cannot set this). Pass empty string to "
-            "clear the pin and follow cron.model / model.default.")
+        help="(Deprecated, ignored) Per-job model pins are removed; jobs "
+            "always use the fleet default (cron.model config override > "
+            "global default).")
     cron_edit.add_argument("--provider", dest="model_provider",
-        help="Inference provider paired with --model. Pass empty string to clear.")
+        help="(Deprecated, ignored) Kept for script compatibility; see --model.")
     cron_edit.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "
