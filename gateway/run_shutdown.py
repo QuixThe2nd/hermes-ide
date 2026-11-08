@@ -2543,7 +2543,9 @@ class GatewayShutdownMixin:
 
     async def _stop_finalize_agents_and_adapters(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Detached restart launch, agent finalization, idle-cache cleanup, adapter teardown."""
-        if self._restart_requested and self._restart_detached:
+        if self._restart_requested and self._restart_detached and not getattr(
+            self, "_overlap_restart_successor_started", False
+        ):
             with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart: %s"):
                 await self._launch_detached_restart_command()
         await self._finalize_shutdown_agents(ctx.active_agents)
@@ -2721,9 +2723,18 @@ class GatewayShutdownMixin:
                     },
                     indent=None,
                 )
+        from gateway.restart import GATEWAY_OVERLAP_RESTART_EXIT_CODE
+
         planned_exit_code = resolve_planned_restart_exit_code(self)
+        if planned_exit_code == GATEWAY_OVERLAP_RESTART_EXIT_CODE:
+            # Never exit 76 until the original successor is verified live and
+            # any service-cgroup MainPID transfer has completed successfully.
+            from gateway.overlap_restart import handover_systemd_overlap_successor
+
+            if not handover_systemd_overlap_successor(self, planned_exit_code):
+                planned_exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
         if planned_exit_code is not None:
-            # 75 requests a supervisor replacement; 76 preserves the hub successor as the sole gateway.
+            # 75 requests a supervisor replacement; 76 preserves the verified successor as the sole gateway.
             self._exit_code = planned_exit_code
             self._exit_reason = self._exit_reason or "Gateway restart requested"
         self._draining = False

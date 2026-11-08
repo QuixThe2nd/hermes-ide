@@ -577,12 +577,21 @@ def _composite_toolsets(
 
 
 def _enabled_plugin_toolsets(config: dict, platform: str, toolset_names: List[str], plugin_ts_keys: Set[str]) -> Set[str]:
-    """Plugin toolsets: on by default unless default-off or "known" for this platform
-    (``known_plugin_toolsets``, written on every save) and absent from the saved list."""
+    """Plugin toolsets default on unless default-off or declined in the applicable saved list.
+
+    A toolset later promoted to the built-in checklist needs a built-in decline;
+    its old plugin-known entry predates that choice and must not hide it forever.
+    """
     known_for_platform = set((config.get("known_plugin_toolsets", {}) or {}).get(platform, []) or [])
+    known_builtin = set((config.get("known_builtin_toolsets", {}) or {}).get(platform, []) or [])
+    configurable = _configurable_keys()
+    declined = {
+        ts_key for ts_key in known_for_platform
+        if ts_key not in configurable or ts_key in known_builtin
+    }
     return {
         pts for pts in plugin_ts_keys
-        if pts in toolset_names or (pts not in _DEFAULT_OFF_TOOLSETS and pts not in known_for_platform)
+        if pts in toolset_names or (pts not in _DEFAULT_OFF_TOOLSETS and pts not in declined)
     }
     # An unresolvable name must never be echoed back as an "enabled" toolset:
     # the caller would believe the platform has it while get_toolset()

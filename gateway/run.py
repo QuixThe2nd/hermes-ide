@@ -7094,10 +7094,25 @@ class GatewayRunner(
         # ``active_work`` names each unit only while draining — that is when an observer (``hermes
         # update``) needs to know WHAT holds the gateway open; a per-turn write would be wasted I/O.
         active_work = self._describe_active_work() if gateway_state == "draining" else None
+        if gateway_state == "draining":
+            self._persist_restart_drain_status(active_work or [])
         _write_runtime_status_quiet(
             gateway_state=gateway_state, exit_reason=exit_reason,
             restart_requested=self._restart_requested, active_agents=self._active_work_count(),
             active_work=active_work)
+
+    def _persist_restart_drain_status(self, active_work: list[dict]) -> None:
+        """Keep predecessor progress visible after a successor owns the shared status record."""
+        if not self._restart_requested:
+            return
+        try:
+            from gateway.restart_drain_status import write_restart_drain_status
+
+            write_restart_drain_status(
+                active_agents=self._active_work_count(), active_work=active_work,
+            )
+        except Exception as exc:
+            logger.debug("Could not persist restart drain progress: %s", exc)
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json``.
@@ -7120,6 +7135,8 @@ class GatewayRunner(
             write_runtime_status(active_agents=self._active_work_count())
         except Exception:
             pass
+        if self._restart_requested:
+            self._persist_restart_drain_status(self._describe_active_work())
         try:
             from gateway.restart_channel_rename import schedule_idle_refresh
 
@@ -9798,10 +9815,20 @@ class GatewayRunner(
                 except Exception as e:
                     logger.debug("Failed to write planned restart notification marker: %s", e)
 
+            from gateway.restart import GATEWAY_OVERLAP_RESTART_EXIT_CODE
+
             planned_exit_code = resolve_planned_restart_exit_code(self)
+            if planned_exit_code == GATEWAY_OVERLAP_RESTART_EXIT_CODE:
+                # Exit 76 is permitted only for the same live successor, after
+                # any required MainPID transfer has succeeded. A proven-dead
+                # successor may use serial supervisor replacement instead.
+                from gateway.overlap_restart import handover_systemd_overlap_successor
+
+                if not handover_systemd_overlap_successor(self, planned_exit_code):
+                    planned_exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
             if planned_exit_code is not None:
                 # 75 asks the supervisor to replace us; 76 confirms that the
-                # hub-started successor already exists and must remain alone.
+                # verified successor already exists and must remain alone.
                 self._exit_code = planned_exit_code
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
@@ -11835,7 +11862,7 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
-        def _restart_verb_handler(restart_platforms: bool = True) -> dict:
+        def _restart_verb_handler(params: dict) -> dict:
             """`hermes gateway restart` asks this process to run the ONE restart core.
 
             Same pipeline as ``/restart`` and the agent ``restart`` tool
@@ -11846,6 +11873,7 @@ async def _start_gateway_start_control_socket(runner):
             """
             from gateway.restart import _runner_restart_platforms, queue_user_restart
 
+            restart_platforms = params.get("restart_platforms")
             if restart_platforms is None:
                 restart_platforms = _runner_restart_platforms(runner)
             result_box: list[dict] = []

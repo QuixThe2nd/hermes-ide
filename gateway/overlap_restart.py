@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import logging
 import os
+import time
 from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -302,6 +303,80 @@ def _iter_adapters(runner: Any):
                 yield adapter
 
 
+def _overlap_successor_identity_state(runner: Any, successor_pid: int) -> str:
+    """Return live, dead, or unknown without guessing on a missing fingerprint."""
+    from gateway.status import _pid_exists, get_process_start_time
+
+    if not _pid_exists(successor_pid):
+        return "dead"
+    expected_start = getattr(runner, "_overlap_restart_successor_start_time", None)
+    current_start = get_process_start_time(successor_pid)
+    if current_start is None or expected_start is None:
+        return "unknown"
+    # A different incarnation at the same PID proves our successor is gone.
+    return "live" if current_start == expected_start else "dead"
+
+
+def handover_systemd_overlap_successor(runner: Any, planned_exit_code: Optional[int]) -> bool:
+    """Return whether exit 76 is safe for the original, still-live successor.
+
+    A service-cgroup successor additionally needs a successful MAINPID transfer.
+    If notify fails while that successor remains alive, keep the predecessor
+    process parked here and retry rather than exiting into either a duplicate
+    (75) or an untracked survivor (76). A dead/reused successor permits serial
+    supervisor replacement by returning False.
+    """
+    from gateway.restart import GATEWAY_OVERLAP_RESTART_EXIT_CODE
+
+    if planned_exit_code != GATEWAY_OVERLAP_RESTART_EXIT_CODE:
+        return False
+    successor_pid = int(getattr(runner, "_overlap_restart_successor_pid", 0))
+    managed = getattr(runner, "_overlap_successor_systemd_managed", False) is True
+    logged_wait = False
+    while True:
+        identity = _overlap_successor_identity_state(runner, successor_pid)
+        if identity == "dead":
+            logger.error(
+                "Overlap successor PID %d is dead or its PID was reused; "
+                "allowing serial supervisor replacement",
+                successor_pid,
+            )
+            return False
+        if identity == "live":
+            if not managed:
+                return True
+            from gateway.systemd_notify import handover_main_pid
+
+            if handover_main_pid(successor_pid):
+                # Close the check/notify race: a successor that died during the
+                # transfer must not authorize the predecessor's exit 76.
+                identity = _overlap_successor_identity_state(runner, successor_pid)
+                if identity == "live":
+                    return True
+                if identity == "dead":
+                    return False
+            if not logged_wait:
+                logger.error(
+                    "Could not hand systemd MainPID to live overlap successor PID %d; "
+                    "keeping the predecessor parked and retrying without spawning another gateway",
+                    successor_pid,
+                )
+                logged_wait = True
+        elif not logged_wait:
+            logger.error(
+                "Overlap successor PID %d has no verifiable process fingerprint; "
+                "keeping the predecessor parked rather than risking a duplicate",
+                successor_pid,
+            )
+            logged_wait = True
+        # The shutdown watchdog's hard exit would defeat the no-duplicate
+        # recovery if notify stays unavailable. Parking is now intentional.
+        watchdog_done = getattr(runner, "_shutdown_watchdog_done", None)
+        if watchdog_done is not None:
+            watchdog_done.set()
+        time.sleep(0.2)
+
+
 async def spawn_successor(
     runner: Any, *, via_service: bool, restart_platforms: bool = True,
 ) -> Optional[int]:
@@ -326,20 +401,43 @@ async def spawn_successor(
         spawn = getattr(adapter, "spawn_overlap_successor", None)
         if not callable(spawn):
             continue
-        pid = await spawn(via_service=via_service, predecessor_pid=os.getpid())
+        readiness_failed = False
+        try:
+            pid = await spawn(via_service=via_service, predecessor_pid=os.getpid())
+        except Exception:
+            # Adapters latch immediately after Popen, before registration and
+            # readiness waits. Never forget a live child and spawn a second one.
+            pid = getattr(adapter, "_last_overlap_successor_pid", None)
+            if pid is None:
+                raise
+            readiness_failed = True
+            logger.exception(
+                "Overlap successor was spawned but readiness confirmation failed; "
+                "retaining the child as the restart successor"
+            )
         if pid is None:
             continue
         runner._overlap_restart_successor_started = True
         runner._overlap_restart_successor_pid = int(pid)
-        for candidate in _iter_adapters(runner):
-            if getattr(candidate, "supports_overlap_restart", False) is not True:
-                continue
-            wait_ready = getattr(candidate, "wait_for_overlap_successor", None)
-            if callable(wait_ready):
-                await wait_ready()
-            mark_ready = getattr(candidate, "mark_overlap_successor_ready", None)
-            if callable(mark_ready):
-                mark_ready()
+        runner._overlap_successor_systemd_managed = (
+            getattr(adapter, "_last_overlap_successor_service_managed", False) is True
+        )
+        successor_start = getattr(adapter, "_last_overlap_successor_start_time", None)
+        if successor_start is None:
+            from gateway.status import get_process_start_time
+
+            successor_start = get_process_start_time(int(pid))
+        runner._overlap_restart_successor_start_time = successor_start
+        if not readiness_failed:
+            for candidate in _iter_adapters(runner):
+                if getattr(candidate, "supports_overlap_restart", False) is not True:
+                    continue
+                wait_ready = getattr(candidate, "wait_for_overlap_successor", None)
+                if callable(wait_ready):
+                    await wait_ready()
+                mark_ready = getattr(candidate, "mark_overlap_successor_ready", None)
+                if callable(mark_ready):
+                    mark_ready()
         logger.info("Overlapping gateway successor started as pid %s", pid)
         return int(pid)
     return None

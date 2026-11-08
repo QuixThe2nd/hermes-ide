@@ -1,7 +1,6 @@
 """Name what a draining gateway is waiting on while ``hermes update`` blocks on it.
 
-The gateway's in-band restart (SIGUSR1 → ``request_restart``) defers ``stop()`` until in-flight
-work finishes, capped by ``agent.restart_after_turn_timeout`` (30 min by default). From the
+The gateway's in-band restart defers ``stop()`` until in-flight work finishes, without a deadline. From the
 updater's side that was a bare "draining (up to 1875s)..." followed by silence, which reads as a
 hung update. The gateway publishes each unit it is holding for in ``gateway_state.json``
 (``active_work``, written by ``GatewayShutdownMixin._describe_active_work``); this module turns
@@ -81,7 +80,7 @@ def read_active_work(home: Optional[Path] = None) -> Optional[list]:
 
 def format_drain_report(work: Optional[list], *, remaining_s: float, home: Optional[Path] = None) -> str:
     """Multi-line progress block: what the gateway is waiting on plus how to stop waiting."""
-    lines = [f"  ⏳ still draining — {int(max(remaining_s, 0))}s left before the forced restart"]
+    lines = ["  ⏳ still draining — no forced restart is scheduled"]
     if work is None:
         lines.append("     (gateway did not report what it is waiting on — pre-update gateway or unreadable state file)")
     elif not work:
@@ -89,8 +88,7 @@ def format_drain_report(work: Optional[list], *, remaining_s: float, home: Optio
     else:
         lines.append(f"     waiting on {len(work)} active work unit(s):")
         lines.extend(f"       • {describe_active_work_unit(u, home)}" for u in work)
-        lines.append("     finish or kill the work above to release the drain now; "
-                     "agent.restart_after_turn_timeout in config.yaml caps this wait")
+        lines.append("     finish or stop the work above to release the drain; the gateway waits without a deadline")
     return "\n".join(lines)
 
 

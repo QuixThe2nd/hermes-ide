@@ -314,6 +314,38 @@ class TestGatewayLifecyclePattern:
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
 
+class TestWrappedAbsoluteGatewayLifecycle:
+    """Wrapper peeling must reach the real Hermes executable, including its path."""
+
+    @pytest.mark.parametrize("command", [
+        "systemd-run --unit=x --collect /opt/venv/bin/hermes gateway restart",
+        "nohup /opt/venv/bin/hermes gateway stop",
+        "setsid /opt/venv/bin/hermes gateway restart",
+        "sudo -n /opt/venv/bin/hermes gateway stop",
+        "env HERMES_PROFILE=default /opt/venv/bin/hermes gateway restart",
+        "timeout 30s /opt/venv/bin/hermes gateway stop",
+        "sh -c '/opt/venv/bin/hermes gateway restart'",
+        "bash -c '/opt/venv/bin/hermes gateway stop'",
+        "/opt/venv/bin/hermes gateway restart &",
+        "at now <<< '/opt/venv/bin/hermes gateway restart'",
+        "printf '%s\\n' '/opt/venv/bin/hermes gateway stop' | at now",
+    ])
+    def test_wrapped_absolute_executable_is_blocked(self, command):
+        from cron.lifecycle_guard import scan_gateway_lifecycle
+
+        assert scan_gateway_lifecycle(command)[0] is True, command
+
+    @pytest.mark.parametrize("command", [
+        "cat /opt/runbooks/hermes-gateway-restart.md",
+        "printf '%s\\n' 'See /opt/venv/bin/hermes gateway restart-notes.md'",
+        "/opt/venv/bin/hermes gateway status",
+    ])
+    def test_read_only_mentions_and_status_stay_allowed(self, command):
+        from cron.lifecycle_guard import scan_gateway_lifecycle
+
+        assert scan_gateway_lifecycle(command)[0] is False, command
+
+
 class TestProfileFlagGatewayLifecycle:
     """#78028: `hermes -p <profile> gateway restart|stop` bypasses Branch A's
     literal adjacency, so it needs its own pattern. It is only the same
@@ -369,6 +401,14 @@ class TestProfileFlagGatewayLifecycle:
         # additional layer, not a replacement.
         assert _contains_gateway_lifecycle_command("hermes gateway restart")
         assert _contains_gateway_lifecycle_command("hermes gateway stop")
+
+    @pytest.mark.parametrize("text", [
+        "systemd-run --collect /opt/venv/bin/hermes -p zeus gateway restart",
+        "nohup /opt/venv/bin/hermes --profile=zeus gateway stop",
+        "sh -c '/opt/venv/bin/hermes --profile zeus gateway restart'",
+    ])
+    def test_wrapped_absolute_self_target_blocked(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should block: {text!r}"
 
     def test_hermes_home_derived_profile(self, monkeypatch):
         # Without HERMES_PROFILE the guard falls back to the HERMES_HOME-

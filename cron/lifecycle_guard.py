@@ -350,7 +350,10 @@ _TRANSPARENT_PREFIX_VALUE_OPTIONS = {
     "setpriv": {"--reuid", "--regid", "--groups", "--inh-caps", "--ambient-caps", "--bounding-set",
                 "--selinux-label", "--apparmor-profile"},
     "systemd-run": {"-u", "--unit", "-p", "--property", "-E", "--setenv", "--slice",
-                    "--description", "--uid", "--gid", "--on-calendar", "--service-type"},
+                    "--description", "--uid", "--gid", "--on-calendar", "--service-type",
+                    "--working-directory", "--nice", "--timer-property", "--timezone",
+                    "--on-active", "--on-boot", "--on-startup", "--on-unit-active",
+                    "--on-unit-inactive", "-M", "--machine", "-H", "--host"},
     "nsenter": {"-t", "--target", "-S", "--setuid", "-G", "--setgid", "-r", "--root", "-w", "--wd"},
     "unshare": {"--map-user", "--map-group", "--setgroups", "-R", "--root", "-w", "--wd"},
 }
@@ -492,12 +495,21 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # are resolved, closing splice bypasses like `kick"start"`. Runs after the profile-flag check so both
     # passes apply independently.
     for segment in _iter_command_segments(normalized):
+        if _contains_absolute_hermes_lifecycle(segment):
+            return True
         joined = " ".join(segment)
         if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
             return True
         stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
         if stripped != joined and _GATEWAY_LIFECYCLE_PATTERN.search(stripped):
             return True
+    if re.search(r"(?:\||\|&)\s*(?:\S+\s+)*at(?:\s|$)", normalized):
+        # ``at`` executes its stdin. Inspect quoted producer arguments only when
+        # this really is an at pipeline; the same text in documentation stays inert.
+        for segment in _iter_command_segments(normalized):
+            for token in segment:
+                if any(char.isspace() for char in token) and contains_gateway_lifecycle_command(token):
+                    return True
     # The label may be built in an earlier `;`-segment, so no pass above sees verb + label together.
     # Order-independent launchctl pass (#77083): a shell loop can build the gateway label from a variable
     # defined in an earlier `;`-separated segment (`label=${item%%:*}; launchctl bootout
@@ -744,6 +756,39 @@ def _executed_command_index(segment: list[str]) -> Optional[int]:
         return None
     index = _peel_transparent_prefixes(segment, index)
     return index if index < len(segment) else None
+
+
+_HERMES_LAUNCHER_RE = re.compile(r"(?i)^hermes(?:\.(?:exe|cmd|bat|com|ps1))?$")
+
+
+def _contains_absolute_hermes_lifecycle(segment: list[str]) -> bool:
+    """Read the wrapper-peeled executable, not a bare-``hermes`` text anchor.
+
+    Absolute venv paths otherwise evade Branch A through every transparent
+    wrapper. Shell payloads and ``at`` here-strings recurse through the same
+    choke point; path-shaped prose never occupies an executable position.
+    """
+    index = _executed_command_index(segment)
+    if index is None:
+        return False
+    executable = re.split(r"[/\\]", segment[index])[-1]
+    arguments = segment[index + 1:]
+    if _HERMES_LAUNCHER_RE.fullmatch(executable):
+        return (
+            len(arguments) >= 2
+            and arguments[0].lower() == "gateway"
+            and arguments[1].lower() in {"restart", "stop", "uninstall"}
+        )
+    name = executable.lower().removesuffix(".exe")
+    if name in _SHELL_EXECUTABLES:
+        for position, token in enumerate(arguments[:-1]):
+            if token in _SHELL_COMMAND_FLAGS:
+                return contains_gateway_lifecycle_command(arguments[position + 1])
+    if name == "at":
+        for position, token in enumerate(arguments[:-1]):
+            if token == "<<<":
+                return contains_gateway_lifecycle_command(arguments[position + 1])
+    return False
 
 
 def contains_launchctl_submit_command(command: str) -> bool:
@@ -1552,8 +1597,13 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
-def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
-    """Yield the scripts the token at *index* executes, if any."""
+def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(script, honors_shebang)`` for scripts the token at *index* executes.
+
+    A shell or ``source`` invocation ignores the file's shebang; direct exec
+    honors it. The distinction prevents a Node/Python shim from being walked
+    as shell without weakening ``bash <that-same-file>``.
+    """
     if index >= len(segment):
         return
     executable = segment[index]
@@ -1561,7 +1611,8 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     if executable_name in {".", "source"}:
         if len(segment) > index + 1:
-            yield from _resolved_or_nothing(segment[index + 1], cwd)
+            for path in _resolved_or_nothing(segment[index + 1], cwd):
+                yield path, False
         return
 
     if executable_name in _SHELL_EXECUTABLES:
@@ -1582,16 +1633,18 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
                 continue
             break
         if arg_index < len(arguments) and arguments[arg_index] not in _SHELL_COMMAND_FLAGS:
-            yield from _resolved_or_nothing(arguments[arg_index], cwd)
+            for path in _resolved_or_nothing(arguments[arg_index], cwd):
+                yield path, False
         return
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
     if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
-        yield from _resolved_or_nothing(executable, cwd)
+        for path in _resolved_or_nothing(executable, cwd):
+            yield path, True
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
+def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[tuple[Path, bool]]:
     """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
     a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
@@ -1603,6 +1656,34 @@ def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -
         peeled = _peel_transparent_prefixes(segment, index)
         if peeled != index:
             yield from _references_at(segment, peeled, cwd)
+
+
+def _has_non_shell_shebang(text: str) -> bool:
+    """Whether a directly executed file is interpreted by something other than a POSIX shell."""
+    first_line = text.split("\n", 1)[0]
+    if not first_line.startswith("#!"):
+        return False
+    try:
+        tokens = shlex.split(first_line[2:])
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    interpreter = tokens[0]
+    if _executable_name(interpreter) == "env":
+        arguments = tokens[1:]
+        if arguments[:1] in (["-S"], ["--split-string"]):
+            arguments = arguments[1:]
+            if len(arguments) == 1:
+                try:
+                    arguments = shlex.split(arguments[0])
+                except ValueError:
+                    return False
+        # Unknown env options and assignments stay on the conservative shell-walk path.
+        if not arguments or arguments[0].startswith("-") or "=" in arguments[0]:
+            return False
+        interpreter = arguments[0]
+    return _executable_name(interpreter) not in _SHELL_EXECUTABLES
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
@@ -1799,11 +1880,19 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    candidates = [
+        (path, executed, honors_shebang) for path, honors_shebang
+        in _iter_referenced_shell_scripts(walk_command, cwd=cwd)
+    ]
     if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+        candidates += [
+            (path, False, honors_shebang) for path, honors_shebang
+            in _iter_referenced_shell_scripts(command, cwd=cwd)
+        ]
 
-    for script_path, candidate_executed in candidates:
+    for script_path, candidate_executed, honors_shebang in candidates:
+        if not isinstance(script_path, Path):
+            continue
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:
@@ -1847,6 +1936,16 @@ def _contains_unsafe_gateway_action(
                     )
                 continue
         if not script_text:
+            continue
+        if honors_shebang and _has_non_shell_shebang(script_text):
+            # The interpreter is not a shell: scan the whole file for literal lifecycle commands,
+            # but do not mistake its language's path expressions for nested shell references.
+            if not budget.charge_text(script_text):
+                if candidate_executed:
+                    return _budget_exhausted(budget, "text", depth)
+                continue
+            if _direct_lifecycle_scan(script_text):
+                return True
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):

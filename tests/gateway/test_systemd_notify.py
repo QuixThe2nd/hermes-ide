@@ -55,6 +55,16 @@ def test_notify_uses_nonblocking_datagram_send(monkeypatch):
     assert calls[0] == ("setblocking", False)
 
 
+def test_main_pid_handover_uses_the_nonblocking_notify_path(monkeypatch):
+    import gateway.systemd_notify as notify_mod
+
+    sent = []
+    monkeypatch.setattr(notify_mod, "notify", lambda message: sent.append(message) or True)
+
+    assert notify_mod.handover_main_pid(5150) is True
+    assert sent == ["MAINPID=5150"]
+
+
 @pytest.mark.asyncio
 async def test_watchdog_sends_ready_heartbeat_and_stopping(monkeypatch):
     calls: list[str] = []

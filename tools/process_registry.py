@@ -6,6 +6,7 @@ Nothing runs on the host unless TERMINAL_ENV=local; other backends run in their 
 
 import codecs
 from contextlib import suppress
+from functools import partial
 import json
 import logging
 import os
@@ -33,8 +34,17 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 from hermes_cli.config import get_hermes_home
 
 from tools.process_registry_notifications import format_process_notification
-from tools.process_registry_checkpoint import ProcessCheckpointMixin
+import tools.process_registry_checkpoint as _process_registry_checkpoint
 from tools.process_registry_results import load_completed_results, save_completed_result
+from agent.redact import redact_sensitive_text as _redact_sensitive_text
+
+# Durable checkpoints must redact even when live model output opts out. The
+# checkpoint mixin imports its redactor at module scope, so bind that seam to
+# the same forced policy used by durable process-result receipts.
+_process_registry_checkpoint.redact_sensitive_text = partial(
+    _redact_sensitive_text, force=True
+)
+ProcessCheckpointMixin = _process_registry_checkpoint.ProcessCheckpointMixin
 
 logger = logging.getLogger(__name__)
 
@@ -261,22 +271,25 @@ def _systemd_run_user_scope_available() -> bool:
 
 
 def _is_supervised_gateway_process() -> bool:
-    """Whether this process is the live, supervised Hermes gateway itself.
-    Supervisor markers and ``_HERMES_GATEWAY`` are inherited by every descendant (and
-    importing ``gateway.run`` sets the latter), so also require ownership of the live
-    gateway PID file — scopes are for the gateway, not terminal children or CLIs.
-    Reads the launch marker (``HERMES_SUPERVISED_CHILD`` included), not the restart-route
-    probe: a Windows Scheduled-Task gateway sets only that marker, and the self-kill guards
-    gated here must protect it too (#113667)."""
-    if os.environ.get("_HERMES_GATEWAY") != "1":
-        return False
-    try:
-        from gateway.restart import is_supervised_gateway_launch
-        from gateway.status import get_running_pid
+    """Whether this process is actively running a ``GatewayRunner`` loop.
 
-        return is_supervised_gateway_launch() and get_running_pid(cleanup_stale=False) == os.getpid()
+    PID-file ownership is deliberately not identity: an overlap successor runs
+    its loop before the predecessor exits and releases ``gateway.pid``. The
+    runner reference and loop are process-local, so inherited supervisor and
+    ``_HERMES_GATEWAY`` markers in terminal descendants cannot qualify them.
+    """
+    try:
+        from gateway.run import _gateway_runner_ref
+
+        runner = _gateway_runner_ref()
+        loop = getattr(runner, "_gateway_loop", None)
+        return bool(
+            loop is not None
+            and loop.is_running()
+            and not loop.is_closed()
+        )
     except Exception as exc:
-        logger.debug("Could not verify supervised gateway process identity: %s", exc)
+        logger.debug("Could not verify running gateway loop identity: %s", exc)
         return False
 
 

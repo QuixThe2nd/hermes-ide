@@ -1088,6 +1088,26 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     assert "Pending fleet restart completed" in capsys.readouterr().out
 
 
+def test_pending_restart_leaves_unacknowledged_manual_gateway_untouched(monkeypatch):
+    """Catch-up must not resurrect the old stop-then-restart lifecycle."""
+    from hermes_cli import gateway
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda **kwargs: [4242])
+    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **kwargs: [])
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda **kwargs: set())
+    monkeypatch.setattr(update_cmd_fleet, "_drain_or_signal_gateway_for_update", lambda *args: None)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an unacknowledged live gateway must not be stopped")
+
+    monkeypatch.setattr(gateway, "kill_gateway_processes", forbidden)
+    monkeypatch.setattr(gateway, "_wait_for_gateway_exit", forbidden)
+    monkeypatch.setattr(gateway.os, "kill", forbidden)
+
+    assert update_cmd._run_pending_fleet_restart() is False
+
+
 # ---------------------------------------------------------------------------
 # Serve-only fleets: no gateway PIDs, but systemd-managed serve/dashboard
 # units still run pre-update code (Codex P1 B)

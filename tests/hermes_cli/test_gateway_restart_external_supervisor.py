@@ -13,7 +13,6 @@ import pytest
 
 from gateway import status as gateway_status
 from hermes_cli import gateway as gw
-from hermes_cli import gateway_supervised_restart as supervised
 
 SUPERVISED_ARGV = [
     "/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run", "--external-supervisor",
@@ -32,9 +31,11 @@ def restart_calls(monkeypatch):
             return calls["replacement"]
         return 4321
 
-    def _sigusr1(pid, budget, **k):
-        calls["sigusr1"] = (pid, budget)
-        return calls["sigusr1_returns"]
+    def _progress(pid, **kwargs):
+        calls["sigusr1"] = (pid, kwargs)
+        return SimpleNamespace(
+            accepted=calls["sigusr1_returns"], completed=calls["sigusr1_returns"],
+        )
 
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer", lambda **k: None)
@@ -44,8 +45,9 @@ def restart_calls(monkeypatch):
     monkeypatch.setattr(gateway_status, "get_running_pid", _running_pid)
     monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: SUPERVISED_ARGV if pid == 4321 else None)
     monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda home, **k: None)
-    monkeypatch.setattr(supervised, "SUPERVISED_REPLACEMENT_VERIFY_TIMEOUT", 0.5)
-    monkeypatch.setattr(gw, "_graceful_restart_via_sigusr1", _sigusr1)
+    monkeypatch.setattr(
+        "hermes_cli.gateway_restart_progress.restart_gateway_with_progress", _progress,
+    )
     monkeypatch.setattr(gw, "stop_profile_gateway", lambda: calls.__setitem__("stopped", True) or True)
     monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
     monkeypatch.setattr(gw, "run_gateway", lambda **k: calls.__setitem__("started", True))
@@ -58,13 +60,13 @@ def _run_restart():
 
 def test_external_supervisor_gateway_restarts_via_sigusr1_handback(restart_calls, capsys):
     _run_restart()
-    assert restart_calls["sigusr1"] == (4321, 7.0), "must SIGUSR1 the supervised gateway, not stop it"
+    assert restart_calls["sigusr1"] == (4321, {"via_service": True}), (
+        "must use the gateway-owned handoff, not stop the supervised gateway"
+    )
     assert not restart_calls["stopped"], "the CLI must not SIGTERM a supervisor-owned gateway"
     assert not restart_calls["started"], "a foreground run would stamp the CLI PID and wedge respawns"
     out = capsys.readouterr().out
-    assert "relaunched by its supervisor" in out and "5555" in out, (
-        "success must ride on the verified replacement PID, not the bare exit"
-    )
+    assert "gateway-owned handoff" in out
 
 
 def test_custom_systemd_unit_gateway_hands_back_despite_socket_saying_systemd(restart_calls, monkeypatch):
@@ -75,25 +77,26 @@ def test_custom_systemd_unit_gateway_hands_back_despite_socket_saying_systemd(re
         "gateway.control_socket.identify_gateway", lambda home, **k: {"pid": 4321, "supervisor": "systemd"}
     )
     _run_restart()
-    assert restart_calls["sigusr1"] == (4321, 7.0)
+    assert restart_calls["sigusr1"] == (4321, {"via_service": True})
     assert not restart_calls["stopped"] and not restart_calls["started"]
 
 
-@pytest.mark.parametrize("sigusr1_returns, replacement", [(True, None), (False, 5555)])
-def test_handback_failure_never_takes_ownership(restart_calls, sigusr1_returns, replacement):
-    # An unloaded supervisor (clean exit, no replacement) or a drain timeout must fail loudly;
-    # SIGTERM + foreground run would recreate the competing-owner wedge (#110637).
-    restart_calls["sigusr1_returns"] = sigusr1_returns
-    restart_calls["replacement"] = replacement
+def test_unacknowledged_handback_never_takes_ownership(restart_calls):
+    # An unsent request must fail loudly; SIGTERM + foreground run would recreate
+    # the competing-owner wedge (#110637).
+    restart_calls["sigusr1_returns"] = False
     with pytest.raises(SystemExit) as exc:
         _run_restart()
     assert exc.value.code == 1
-    assert restart_calls["sigusr1"] == (4321, 7.0), "the graceful handback must be attempted first"
+    assert restart_calls["sigusr1"] == (4321, {"via_service": True}), (
+        "the graceful handback must be attempted first"
+    )
     assert not restart_calls["stopped"] and not restart_calls["started"]
 
 
-def test_plain_manual_gateway_still_uses_stop_and_run(restart_calls, monkeypatch):
+def test_plain_manual_gateway_uses_detached_unified_handoff(restart_calls, monkeypatch):
     monkeypatch.setattr(gw, "_capture_gateway_argv", lambda pid: ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run"])
     _run_restart()
-    assert restart_calls["sigusr1"] is None, "no supervisor marker: the detached fallback is the restart"
-    assert restart_calls["started"], "a plain manually-run gateway must still be restarted in-process"
+    assert restart_calls["sigusr1"] == (4321, {"via_service": False})
+    assert not restart_calls["stopped"]
+    assert not restart_calls["started"], "the gateway-owned overlap successor replaces the old foreground run"
