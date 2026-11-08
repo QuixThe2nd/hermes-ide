@@ -27,6 +27,9 @@ def _make_runner(ctx, adapter=None):
         def _adapter_for_source(self, source):
             return adapter
 
+        def _delivery_adapter_for(self, source):
+            return adapter
+
     return TurnRunner(_StubGatewayRunner(), ctx)
 
 
