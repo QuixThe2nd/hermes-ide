@@ -81,12 +81,12 @@ class ReconcileResult:
     timer_active_known: bool = True
 
 
-def service_unit_path(scope: InstallScope) -> Path:
-    return scope.unit_dir / SERVICE_NAME
+def service_unit_path(scope: InstallScope, service_name: str = SERVICE_NAME) -> Path:
+    return scope.unit_dir / service_name
 
 
-def timer_unit_path(scope: InstallScope) -> Path:
-    return scope.unit_dir / TIMER_NAME
+def timer_unit_path(scope: InstallScope, timer_name: str = TIMER_NAME) -> Path:
+    return scope.unit_dir / timer_name
 
 
 def _systemd_quote(value: str) -> str:
@@ -193,11 +193,13 @@ def write_units_if_changed(
     *,
     service_body: str,
     timer_body: str,
+    service_name: str = SERVICE_NAME,
+    timer_name: str = TIMER_NAME,
 ) -> bool:
     changed = False
     for path, body in (
-        (service_unit_path(scope), service_body),
-        (timer_unit_path(scope), timer_body),
+        (service_unit_path(scope, service_name), service_body),
+        (timer_unit_path(scope, timer_name), timer_body),
     ):
         existing = path.read_text(encoding="utf-8") if path.is_file() else ""
         if existing == body:
@@ -331,9 +333,10 @@ def probe_timer_is_active(
     scope: InstallScope,
     *,
     run_systemctl: Callable[[Sequence[str]], tuple[int, str, str]] | None = None,
+    timer_name: str = TIMER_NAME,
 ) -> ProbeResult:
     runner = _resolve_systemctl_runner(run_systemctl)
-    code, out, err = runner(build_systemctl_cmd(scope, "is-active", TIMER_NAME))
+    code, out, err = runner(build_systemctl_cmd(scope, "is-active", timer_name))
     return _classify_is_active_probe(code, out, err)
 
 
@@ -341,9 +344,10 @@ def probe_timer_is_enabled(
     scope: InstallScope,
     *,
     run_systemctl: Callable[[Sequence[str]], tuple[int, str, str]] | None = None,
+    timer_name: str = TIMER_NAME,
 ) -> ProbeResult:
     runner = _resolve_systemctl_runner(run_systemctl)
-    code, out, err = runner(build_systemctl_cmd(scope, "is-enabled", TIMER_NAME))
+    code, out, err = runner(build_systemctl_cmd(scope, "is-enabled", timer_name))
     return _classify_is_enabled_probe(code, out, err)
 
 
@@ -384,11 +388,13 @@ def _reconcile_probe_fields(
     )
 
 
-def expected_timer_disable_argv(scope: InstallScope) -> list[list[str]]:
+def expected_timer_disable_argv(
+    scope: InstallScope, *, timer_name: str = TIMER_NAME
+) -> list[list[str]]:
     """Exact stop+disable argv pair for the timer unit (never the oneshot service)."""
     return [
-        build_systemctl_cmd(scope, "stop", TIMER_NAME),
-        build_systemctl_cmd(scope, "disable", TIMER_NAME),
+        build_systemctl_cmd(scope, "stop", timer_name),
+        build_systemctl_cmd(scope, "disable", timer_name),
     ]
 
 
@@ -396,11 +402,12 @@ def disable_timer(
     scope: InstallScope,
     *,
     run_systemctl: Callable[[Sequence[str]], tuple[int, str, str]] | None = None,
+    timer_name: str = TIMER_NAME,
 ) -> tuple[str, ...]:
     """Stop/disable the timer only — never stop the oneshot service."""
     runner = _resolve_systemctl_runner(run_systemctl)
     warnings: list[str] = []
-    for argv in expected_timer_disable_argv(scope):
+    for argv in expected_timer_disable_argv(scope, timer_name=timer_name):
         code, _, err = runner(argv)
         if code != 0:
             action = argv[-2] if len(argv) >= 2 else "control"
