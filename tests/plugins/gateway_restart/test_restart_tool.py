@@ -229,6 +229,16 @@ def test_schema_describes_immediate_natural_drain():
     assert all(term not in description.lower() for term in removed_terms)
 
 
+def test_schema_describes_successor_tool_result_and_single_bounce():
+    from plugins.gateway_restart.tool import RESTART_SCHEMA
+
+    description = RESTART_SCHEMA["description"]
+    assert "Restarted successfully" in description
+    assert "continues the interrupted task" in description
+    assert "do not call restart again for the same restart" in description.lower()
+    assert "ends this turn immediately" not in description.lower()
+
+
 def test_plugin_discovery_loads_tool_on_gateway_toolset(_isolate_hermes_home):
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry

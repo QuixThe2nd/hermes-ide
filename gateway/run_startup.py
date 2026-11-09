@@ -53,6 +53,7 @@ class GatewayStartupMixin:
     ) -> bool:
         """Wait for the adapter turn; replay settlement uses processing completion."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        event._gateway_resume_claim = session_key
         try:
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
@@ -61,6 +62,7 @@ class GatewayStartupMixin:
                 await asyncio.shield(task)
             return True
         finally:
+            del event._gateway_resume_claim
             # Release the pre-claimed slot if handle_message raised before _handle_message took ownership.
             _pre_state = self._peek_session_state(session_key)
             if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:

@@ -1122,6 +1122,134 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     assert session_key not in getattr(adapter, "_pending_messages", {})
 
 
+def _wire_resume_cold_path_probe(runner, adapter):
+    """Wire the real adapter/runner dispatch path and record cold-turn entry."""
+    from gateway.run import GatewayRunner
+
+    runner._handle_message = GatewayRunner._handle_message.__get__(
+        runner, GatewayRunner
+    )
+    runner._release_running_agent_state = (
+        GatewayRunner._release_running_agent_state.__get__(runner, GatewayRunner)
+    )
+    runner._check_slash_access = lambda *a, **k: None
+    runner._begin_session_run_generation = lambda session_key: 1
+    runner._is_session_run_current = lambda session_key, generation: True
+    runner._invalidate_session_run_generation = lambda *a, **k: 0
+    runner._claim_active_session_slot = lambda session_key, source: (object(), None)
+    runner._active_session_leases = {}
+    runner._busy_ack_ts = {}
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner.session_store.get_or_create_session.return_value = None
+
+    cold_runs = []
+
+    async def _run(event, source, quick_key, run_generation):
+        cold_runs.append((quick_key, runner._running_agents.get(quick_key)))
+        return "RESUMED OK"
+
+    runner._handle_message_with_agent = _run
+    adapter.set_message_handler(runner._handle_message)
+    adapter.send = AsyncMock()
+    adapter._keep_typing = AsyncMock()
+    adapter._stop_typing_refresh = AsyncMock()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="1")
+    )
+    adapter._run_processing_hook = AsyncMock()
+    return cold_runs
+
+
+@pytest.mark.asyncio
+async def test_preclaimed_resume_event_consumes_claim_in_steer_mode():
+    """The resume event must inherit its own pre-claim, not queue behind it."""
+    runner, adapter = make_restart_runner()
+    runner._busy_input_mode = "steer"
+    source = make_restart_source(chat_id="steer-resume-chat")
+    session_key = runner._session_key_for_source(source)
+    runner.session_store._entries = {
+        session_key: SessionEntry(
+            session_key=session_key,
+            session_id="sid-steer-resume",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.DISCORD,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_requester",
+            last_resume_marked_at=datetime.now(),
+        )
+    }
+    cold_runs = _wire_resume_cold_path_probe(runner, adapter)
+    # Drive scheduler -> resume wrapper -> real runner directly. The adapter's
+    # late-drain rescue would hide the sentinel ownership bug under test.
+    adapter.handle_message = runner._handle_message
+
+    assert runner._schedule_resume_pending_sessions() == 1
+    assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+    for _ in range(20):
+        await asyncio.sleep(0.02)
+
+    assert cold_runs == [(session_key, _AGENT_PENDING_SENTINEL)]
+    assert session_key not in runner._running_agents
+    assert session_key not in adapter._pending_messages
+    state = runner._peek_session_state(session_key)
+    assert state is None or not state.conversation.queued_events
+    assert session_key not in runner._parked_steer_map()
+
+
+@pytest.mark.asyncio
+async def test_resume_marker_does_not_bypass_a_real_running_agent():
+    """A marked event still queues normally when the slot holds real work."""
+    runner, adapter = make_restart_runner()
+    runner._busy_input_mode = "steer"
+    source = make_restart_source(chat_id="real-agent-resume-chat")
+    session_key = runner._session_key_for_source(source)
+    cold_runs = _wire_resume_cold_path_probe(runner, adapter)
+    real_agent = object()
+    runner._session_state(session_key).turn.agent = real_agent
+    event = MessageEvent(
+        text="", message_type=MessageType.TEXT, source=source, internal=True,
+    )
+
+    adapter.handle_message = runner._handle_message
+    await runner._run_startup_resume_event(adapter, event, session_key)
+
+    assert cold_runs == []
+    assert runner._running_agents.get(session_key) is real_agent
+    state = runner._peek_session_state(session_key)
+    assert (
+        adapter._pending_messages.get(session_key) is event
+        or event in state.conversation.queued_events
+    )
+    assert session_key not in runner._parked_steer_map()
+
+
+@pytest.mark.asyncio
+async def test_unmarked_internal_event_cannot_consume_pending_claim():
+    """Only the wrapper's own event may inherit the pending sentinel."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="unmarked-resume-chat")
+    session_key = runner._session_key_for_source(source)
+    cold_runs = _wire_resume_cold_path_probe(runner, adapter)
+    runner._session_state(session_key).turn.agent = _AGENT_PENDING_SENTINEL
+    event = MessageEvent(
+        text="", message_type=MessageType.TEXT, source=source, internal=True,
+    )
+
+    await runner._handle_message(event)
+
+    assert cold_runs == []
+    state = runner._peek_session_state(session_key)
+    assert (
+        adapter._pending_messages.get(session_key) is event
+        or event in state.conversation.queued_events
+    )
+    assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+    runner._release_running_agent_state(session_key)
+
+
 # ---------------------------------------------------------------------------
 # Startup-restore inbound gate must be BOUNDED
 # ---------------------------------------------------------------------------

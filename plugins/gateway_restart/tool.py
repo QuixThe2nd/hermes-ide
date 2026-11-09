@@ -25,11 +25,13 @@ RESTART_SCHEMA = {
     "name": "restart",
     "description": (
         "Restart hermes-ide through the same path as the /restart slash "
-        "command. All new turns will continue in a new instance while the "
-        "old instance finishes long running turns. A successful restart "
-        "ends this turn immediately: do not plan further tool calls or a "
-        "closing summary after it — the user sees the restart lifecycle "
-        "notices instead. Use it to pick up config or code changes, or to "
+        "command. New turns and other sessions' long running turns "
+        "continue in a new instance. This call only requests the restart; "
+        "the old process terminates this turn mechanically. The successor "
+        "supplies the tool result exactly 'Restarted successfully' and "
+        "continues the interrupted task from that result. Continue the "
+        "original task then; do not call restart again for the same "
+        "restart. Use this to pick up config or code changes, or to "
         "recover a misbehaving gateway."
     ),
     "parameters": {

@@ -707,6 +707,30 @@ class GatewayInboundMixin:
         # — that copy was never consumed and grew unbounded.
         running_agent.interrupt(_interrupt_text)
 
+    def _resume_claim_event_consumes_sentinel(
+        self, event: "MessageEvent", session_key: str
+    ) -> bool:
+        """Whether *event* is the startup auto-resume turn whose pre-claim it should inherit.
+
+        ``_schedule_resume_pending_sessions`` and ``_mark_and_schedule_restart_requester_resume``
+        claim the session slot with ``_AGENT_PENDING_SENTINEL`` BEFORE dispatching an empty
+        internal resume event, so a racing inbound cannot start a duplicate agent (#45456). But
+        the busy guards read that same sentinel as "agent still starting" and queued the resume
+        event behind its own pre-claim — ``_run_startup_resume_event`` then released the claim
+        because ``handle_message`` never took ownership, and the resume was orphaned. The event
+        the pre-claim was placed FOR (``event._gateway_resume_claim == session_key``, internal,
+        slot still holding only the sentinel) consumes the claim and becomes the turn; every
+        other event keeps the queue/park behavior, and a real live agent is never bypassed.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        if not getattr(event, "internal", False) or (
+            getattr(event, "_gateway_resume_claim", None) != session_key
+        ):
+            return False
+        state = self._peek_session_state(session_key)
+        return state is not None and state.turn.agent is _AGENT_PENDING_SENTINEL
+
     async def _hm_handle_running_session_message(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Optional[str]:
@@ -725,12 +749,22 @@ class GatewayInboundMixin:
 
         _ra_state = self._peek_session_state(_quick_key)
         running_agent = _ra_state.turn.agent if _ra_state else None
+        if self._resume_claim_event_consumes_sentinel(event, _quick_key):
+            # The startup auto-resume turn inherits its own pre-claim; the cold
+            # path (get-or-create session → claim → _handle_message_with_agent)
+            # owns it instead of queueing it behind the sentinel it claimed.
+            return await self._handle_message(event)
         if running_agent is _AGENT_PENDING_SENTINEL:  # agent still being set up
             if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
                 self._release_running_agent_state(_quick_key)
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
-            self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
+            if getattr(event, "internal", False):
+                # Internal wakes ride the FIFO as their own turn — never merged
+                # into the human head slot (a wake is not user text).
+                self._queue_or_replace_pending_event(_quick_key, event)
+            else:
+                self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
         from gateway.overlap_restart import admits_owned_work, handoff_overlap_event
         if self._draining and not admits_owned_work(self, event.source):
@@ -2023,7 +2057,14 @@ class GatewayInboundMixin:
             except Exception:
                 logger.debug("reaped-session staleness check failed", exc_info=True)
 
-        if self._is_session_running(_quick_key):
+        if self._is_session_running(_quick_key) and not (
+            self._resume_claim_event_consumes_sentinel(event, _quick_key)
+        ):
+            # The resume-claim exemption: the startup auto-resume event's only
+            # "running" state is the pre-claim sentinel placed for IT, so it
+            # consumes the claim and falls through to the cold path below —
+            # queueing it behind its own sentinel orphaned the resume. A real
+            # live agent (not the sentinel) still owns the busy path.
             # Resolve the command once; every command's mid-run behavior is
             # declared on its CommandDef (busy_policy / busy_handler in
             # hermes_cli/commands.py) and dispatched through the single
@@ -2167,7 +2208,13 @@ class GatewayInboundMixin:
                 ):
                     return None
                 # Queue the message so it will be picked up after the
-                # agent starts.
+                # agent starts. Internal events (resume wakes, background
+                # completions) ride the FIFO as their own turn — never merged
+                # into the human head slot, whose text-merge semantics would
+                # collapse a wake into the next user message.
+                if getattr(event, "internal", False):
+                    self._queue_or_replace_pending_event(_quick_key, event)
+                    return None
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     merge_pending_message_event(

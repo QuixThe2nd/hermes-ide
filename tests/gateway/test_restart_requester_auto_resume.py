@@ -75,7 +75,7 @@ async def test_restart_notification_marks_idle_requester_and_schedules_resume_on
     notify_path.write_text(
         json.dumps(
             {
-                "platform": "telegram",
+                "platform": source.platform.value,
                 "chat_id": "42",
                 "chat_type": "dm",
             }

@@ -7,6 +7,7 @@ are imported at call time to retain the ``gateway.run`` monkeypatch seams.
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -137,6 +138,139 @@ def _stand_down_for_claim_loss(
     )
     ctx.message = None
     preparation.blocked_error = f"forced_recovery_{claim}_{suffix}"
+
+
+def _repair_restart_tool_tail(history: list) -> Optional[tuple[list, bool]]:
+    """Return the exact successful restart result the successor must resume from."""
+    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+    from agent.turn_control import GATEWAY_RESTART_CONTROL, TURN_CONTROL_FIELD
+    from gateway.forced_resume_replay import resolve_replay_call_target
+
+    if not history:
+        return None
+    tail_index = len(history) - 1
+    close_row = history[tail_index]
+    drop_close = bool(
+        isinstance(close_row, dict)
+        and close_row.get("role") == "assistant"
+        and not close_row.get("tool_calls")
+        and close_row.get("content")
+        == "[Turn ended here: gateway restart was queued by the restart tool]"
+    )
+    if drop_close:
+        tail_index -= 1
+    if tail_index < 1 or not isinstance(history[tail_index], dict):
+        return None
+    if history[tail_index].get("role") != "tool":
+        return None
+
+    result_end = tail_index + 1
+    assistant_index = tail_index
+    while (
+        assistant_index >= 0
+        and isinstance(history[assistant_index], dict)
+        and history[assistant_index].get("role") == "tool"
+    ):
+        assistant_index -= 1
+    if assistant_index < 0 or not isinstance(history[assistant_index], dict):
+        return None
+    assistant = history[assistant_index]
+    if assistant.get("role") != "assistant":
+        return None
+    tool_calls = assistant.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return None
+
+    restart_call = None
+    for call in tool_calls:
+        if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+            continue
+        function = call["function"]
+        target, _arguments = resolve_replay_call_target(
+            function.get("name"), function.get("arguments")
+        )
+        if target != "restart":
+            continue
+        if restart_call is not None:
+            return None
+        call_id = call.get("id") or call.get("call_id")
+        if not isinstance(call_id, str) or not call_id:
+            return None
+        restart_call = call
+    if restart_call is None:
+        return None
+
+    id_variants = tool_call_id_variants(restart_call)
+    matching_results = []
+    for index in range(assistant_index + 1, result_end):
+        row = history[index]
+        if id_variants.isdisjoint(tool_result_id_variants(row.get("tool_call_id"))):
+            continue
+        content = row.get("content")
+        trusted_result = content == "Restarted successfully"
+        if not trusted_result:
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                payload = None
+            trusted_result = bool(
+                isinstance(payload, dict)
+                and payload.get("success") is True
+                and payload.get(TURN_CONTROL_FIELD) == GATEWAY_RESTART_CONTROL
+            )
+        if not trusted_result:
+            return None
+        matching_results.append(index)
+    if len(matching_results) != 1:
+        return None
+
+    result_index = matching_results[0]
+    rewritten = [
+        dict(row) if isinstance(row, dict) else row
+        for index, row in enumerate(history)
+        if not (drop_close and index == len(history) - 1)
+    ]
+    result = rewritten[result_index]
+    changed = bool(
+        drop_close
+        or result.get("content") != "Restarted successfully"
+        or "api_content" in result
+    )
+    result["content"] = "Restarted successfully"
+    result.pop("api_content", None)
+    return rewritten, changed
+
+
+def _continue_restart_tool_turn(turn, preparation: TurnMessagePreparation) -> bool:
+    """Repair and continue a restart call without replaying any tool."""
+    ctx = turn._ctx
+    repair = _repair_restart_tool_tail(ctx.history)
+    if repair is None:
+        return False
+
+    from gateway.run import plan_forced_resume_turn
+
+    resume_turn = plan_forced_resume_turn(ctx.message)
+    ctx.message = resume_turn.message
+    preparation.persist_user_message = resume_turn.persist_user_message
+    preparation.continue_interrupted_turn = resume_turn.continue_interrupted_turn
+    rewritten, changed = repair
+    if changed:
+        persisted = turn._runner.session_store.rewrite_transcript(
+            ctx.session_id, rewritten, active_only=True
+        )
+        if not persisted:
+            logger.error(
+                "Restart continuation for %s could not persist its repaired tool result",
+                ctx.session_id,
+            )
+            ctx.message = None
+            preparation.persist_user_message = None
+            preparation.blocked_error = "restart_tool_continuation_rewrite_failed"
+            return True
+    ctx.history = rewritten
+    _rebuild_durable_history(turn, preparation)
+    return True
 
 
 def _replay_interrupted_batch(turn, preparation: TurnMessagePreparation) -> None:
@@ -301,18 +435,22 @@ def prepare_turn_message(
     )
 
     _consume_queued_resume_text(turn)
+    restart_tool_continuation = False
     if is_resume_pending:
         if is_forced_interruption_reason(resume_reason):
             _replay_interrupted_batch(turn, preparation)
         else:
-            ctx.message, preparation.persist_user_message = (
-                _prepare_resume_pending_message(
-                    resume_reason,
-                    ctx.message,
-                    interactive=turn._resume_note_interactive(),
+            restart_tool_continuation = _continue_restart_tool_turn(turn, preparation)
+            if not restart_tool_continuation:
+                ctx.message, preparation.persist_user_message = (
+                    _prepare_resume_pending_message(
+                        resume_reason,
+                        ctx.message,
+                        interactive=turn._resume_note_interactive(),
+                    )
                 )
-            )
-        _append_cursor_recovery_note(turn, preparation)
+        if not restart_tool_continuation:
+            _append_cursor_recovery_note(turn, preparation)
     elif fresh_tool_tail:
         preparation.persist_user_message = ctx.message
         ctx.message = (
