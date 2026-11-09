@@ -1,9 +1,12 @@
-"""The ``restart`` tool renders no progress bubble.
+"""The ``restart`` tool renders a progress bubble like any other tool.
 
-Restart lifecycle notices own the user-facing presentation after the tool
-queues the shared drain. A separate ``♻️ restart`` progress bubble adds no
-useful activity signal — the same display-suppression rule the ``clarify``
-tool already follows (#52374).
+Suppression was originally added alongside ``clarify`` (#52374, #529) on the
+theory that restart lifecycle notices owned the user-facing presentation.
+Under the overlap-restart architecture the requester turn gets no lifecycle
+message until after the bounce, so a suppressed bubble left the restart turn
+visibly silent. Directive 2026-11-09: the tool call must be visible like any
+other; ``clarify`` keeps its suppression (the interactive prompt IS the
+rendering, #52374).
 """
 
 import importlib
@@ -69,8 +72,8 @@ def _install_fakes(monkeypatch, mode):
 
 @pytest.mark.parametrize("mode", ["all", "verbose"])
 @pytest.mark.asyncio
-async def test_restart_tool_never_renders_progress_bubble(monkeypatch, tmp_path, mode):
-    """No progress bubble for restart in any mode; other tools still render."""
+async def test_restart_tool_renders_progress_bubble(monkeypatch, tmp_path, mode):
+    """A progress bubble for restart in every mode; other rules still hold."""
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
     gateway_run = _install_fakes(monkeypatch, mode)
@@ -91,9 +94,8 @@ async def test_restart_tool_never_renders_progress_bubble(monkeypatch, tmp_path,
     all_content = "\n".join(
         [m["content"] for m in adapter.sent] + [e["content"] for e in adapter.edits]
     )
-    # No restart progress line at all — tool name or ♻️ verb line.
-    assert "restart" not in all_content
-    assert "♻️" not in all_content
+    # The restart tool call IS visible — tool name or its describe verb line.
+    assert "restart" in all_content.lower() or "restarting the agent" in all_content.lower()
     # The clarify suppression beside it still holds.
     assert "clarify" not in all_content
     assert "Which environment?" not in all_content

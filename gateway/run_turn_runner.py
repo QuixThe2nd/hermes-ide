@@ -186,12 +186,14 @@ class TurnRunner(_TurnRunnerCore):
             or event_type != "tool.started"
             # The adapter's send_clarify IS the user-facing rendering (interactive buttons or the
             # numbered-text fallback), so a progress bubble is pure duplication — and in verbose mode it
-            # dumps the raw tool-call args JSON ({"question": ..., "choices": [...]}) into the chat. For
-            # ``restart`` the lifecycle notices own the user-facing presentation after the tool queues
-            # the shared drain, so a "♻️ restart" bubble is the same duplication (#52374, #529). Because
-            # the progress queue drains on a background task, that raw JSON typically lands right underneath
-            # the rendered prompt.
-            or tool_name in {"clarify", "restart"}
+            # dumps the raw tool-call args JSON ({"question": ..., "choices": [...]}) into the chat
+            # (#52374). ``restart`` was suppressed alongside it (#52374, #529) on the theory that the
+            # restart lifecycle notices owned the user-facing presentation — but under the
+            # overlap-restart architecture the requester turn gets no lifecycle message until after
+            # the bounce, so the suppressed bubble left restart turns visibly silent. ``restart``
+            # now renders like any other tool (directive 2026-11-09); only ``clarify`` stays
+            # suppressed here.
+            or tool_name == "clarify"
             or self._agent_interrupted()
         ):
             return
