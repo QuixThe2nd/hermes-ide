@@ -141,8 +141,8 @@ def test_same_pid_stamp_yields_no_note(tmp_path, monkeypatch):
 
 
 def test_note_renders_exactly_once_across_recovery_and_replay(tmp_path, monkeypatch):
-    """(4) One recovery bakes the note into stored content once; a replay of that
-    stored turn sees exactly one note (and the drained file cannot recover twice)."""
+    """(4) One recovery bakes the note into stored content exactly once (and the
+    drained file cannot recover twice — there is no replay path to double it)."""
     flush_dir = _make_flush_dir(tmp_path)
     monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
     assert flush_overflow_to_file(
@@ -159,14 +159,6 @@ def test_note_renders_exactly_once_across_recovery_and_replay(tmp_path, monkeypa
     assert recover_pending_to_db(db) == 1
     db.append_message.assert_called_once()
     content = db.append_message.call_args.kwargs["content"]
-    assert content.count("[Gateway restart completed") == 1
-    # The turn-level seam (format_drain_restart_receipt) reads an event attribute
-    # the flushed-recovery path never sets, so replaying the stored row adds none.
-    from gateway.platforms.event import MessageEvent
-    from gateway.run_drain_queue import format_drain_restart_receipt
-
-    replayed = MessageEvent(text=content, source=MagicMock())
-    assert format_drain_restart_receipt(replayed) is None
     assert content.count("[Gateway restart completed") == 1
     # The flush file is consumed — no second recovery is possible.
     assert not list(flush_dir.glob("*.json"))

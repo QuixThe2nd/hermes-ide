@@ -19,7 +19,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +70,10 @@ def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any,
     """Serialise and write one pending value; return True when a payload was written.
 
     ``restart_requested`` (passed explicitly by the shutdown callers, never read from
-    global state) carries the drain-restart lifecycle stamp onto the payload: the same
-    ``run_drain_queue._restart_drain_stamp`` the durable drain snapshot uses, so a
-    message flushed while the process drains for a requested restart can prove — at
-    recovery, in the successor process — that the restart completed.
+    global state) carries the drain-restart lifecycle stamp onto the payload
+    (``run_drain_queue._restart_drain_stamp``), so a message flushed while the
+    process drains for a requested restart can prove — at recovery, in the
+    successor process — that the restart completed.
     """
     try:
         serialised = _serialise_value(value)
@@ -93,20 +93,13 @@ def _flush_value(flush_dir: Path, kind: str, session_key: str, value: Any,
 
 
 def flush_pending_to_file(pending: Dict[str, Any], *, reason: str = "shutdown",
-                          skip_attrs: Iterable[str] = (),
                           restart_requested: bool = False) -> int:
-    """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count.
-
-    ``skip_attrs`` names ownership-marker attributes: a slot whose value carries a truthy
-    marker is left unspooled because another durable record already owns it (e.g. the
-    drain-restart snapshot owns ``_drain_snapshot_owned`` mirrors — spooling them here
-    would replay the same content twice after restart).
-    """
+    """Serialise non-empty ``_pending_messages`` slots (``MessageEvent`` or str); return count."""
     if not pending:
         return 0
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
     for session_key, value in list(pending.items()):
-        if value is not None and not any(getattr(value, attr, None) for attr in skip_attrs):
+        if value is not None:
             flushed += _flush_value(flush_dir, "pending", session_key, value, reason=reason,
                                     ts=ts, restart_requested=restart_requested)
     if flushed:
@@ -352,9 +345,10 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
     # cannot establish (no stamp, malformed/oversized pid, same pid, live pid,
     # unavailable liveness backend) leaves the text unchanged; recovery proceeds
     # either way. Applying it at the turn seam instead (run.py's
-    # format_drain_restart_receipt) would duplicate: that seam reads an event
-    # attribute the flushed-recovery path never sets, while the note here is already
-    # part of the stored user content the turn replays.
+    # format_drain_restart_receipt — removed with the drain-snapshot replay)
+    # would duplicate: that seam read an event attribute the flushed-recovery
+    # path never sets, while the note here is already part of the stored user
+    # content the turn replays.
     from gateway.run_drain_queue import (
         drain_restart_receipt_for_record,
         render_drain_restart_receipt,

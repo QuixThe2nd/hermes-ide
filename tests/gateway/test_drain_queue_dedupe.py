@@ -1,17 +1,18 @@
 """Dedupe for gateway queue re-delivery: ONE agent turn per inbound message id.
 
-The invariant: no matter how a platform message reaches the gateway — durable
-drain-snapshot replay at boot, FIFO overflow promotion after a busy window, or
-busy-window rescue staging on the idle path — it must never start more than one
-agent turn. Duplicate copies are dropped idempotently (one log line each), and
-an event that survives dedupe as a known re-delivery carries a visible marker
-so the model can tell a redelivery from a fresh user message instead of
-answering each copy.
+The invariant: no matter how a platform message reaches the gateway — FIFO
+overflow promotion after a busy window, or busy-window rescue staging on the
+idle path — it must never start more than one agent turn. Duplicate copies
+are dropped idempotently (one log line each), and an event that survives
+dedupe as a known re-delivery carries a visible marker so the model can tell
+a redelivery from a fresh user message instead of answering each copy.
 
 Observed on this host (2026-09-14): a restart replay re-injected one user
 message seven times (~64 duplicate replies in one thread), and a session whose
 FIFO overflow had grown ~24-29 copies of ONE message drained one duplicate
-turn per promoted copy, re-appending as it went.
+turn per promoted copy, re-appending as it went. (The durable drain-snapshot
+replay itself was removed in Nov 2026 — restarts no longer snapshot other
+chats' work — but the FIFO-level dedupe that incident motivated remains.)
 """
 
 import asyncio
@@ -23,20 +24,11 @@ import pytest
 from gateway.platforms.base import BasePlatformAdapter, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.run import GatewayRunner
-from gateway.run_drain_queue import (
-    claimed_drain_queue_path,
-    drain_queue_path,
-    queue_drain_refused_message,
-    record_drain_event,
-    replay_drain_queue,
-    serialize_drain_event,
-)
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
     make_restart_source,
 )
 
-QUEUED_MARKER = "queued for the next turn after it comes back"
 REDELIVERY_MARKER = "re-delivered"
 
 
@@ -53,28 +45,6 @@ def _event(
         source=source or make_restart_source(),
         message_id=message_id,
     )
-
-
-def _snapshot_events() -> list:
-    data = json.loads(drain_queue_path().read_text(encoding="utf-8"))
-    return data["events"]
-
-
-def _queue_in_draining_process(event: MessageEvent, session_key: str, runner=None):
-    """Queue one event the way the draining gateway does (real write path)."""
-    if runner is None:
-        runner, adapter = make_restart_runner()
-    else:
-        adapter = runner._adapter_for_source(event.source)
-    runner._draining = True
-    runner._restart_requested = True
-    runner._busy_input_mode = "queue"
-    return queue_drain_refused_message(runner, event, session_key)
-
-
-async def _settle(runner) -> None:
-    if runner._background_tasks:
-        await asyncio.gather(*list(runner._background_tasks))
 
 
 class _StubAdapter(BasePlatformAdapter):
@@ -107,139 +77,6 @@ def _text_event(text: str, msg_id: str) -> MessageEvent:
 
 def _bare_runner() -> GatewayRunner:
     return GatewayRunner.__new__(GatewayRunner)
-
-
-# ── (a) drain-snapshot replay ────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_drain_snapshot_repeated_copies_of_one_message_id_replay_as_one_turn():
-    """The platform re-delivered one message id seven times inside the drain
-    window (the boot-replay symptom). The durable snapshot and the in-memory
-    FIFO must each hold exactly ONE copy, and the post-restart replay must
-    dispatch exactly one turn with no duplicate tail parked behind it."""
-    source = make_restart_source(chat_id="dup-replay-chat")
-    runner, adapter = make_restart_runner()
-    session_key = runner._session_key_for_source(source)
-    event = _event("tell me a joke", source=source, message_id="m-dup")
-
-    assert _queue_in_draining_process(event, session_key, runner) is not None
-    for _ in range(6):  # same message id re-delivered during the drain window
-        ack = _queue_in_draining_process(event, session_key, runner)
-        assert ack is not None and QUEUED_MARKER in ack  # honest: it IS queued
-
-    assert [e["event"]["message_id"] for e in _snapshot_events()] == ["m-dup"]
-    assert runner._queue_depth(session_key, adapter=adapter) == 1
-
-    fresh, fresh_adapter = make_restart_runner()
-    fresh_adapter.handle_message = AsyncMock()
-    assert replay_drain_queue(fresh) == 1
-    await _settle(fresh)
-
-    fresh_adapter.handle_message.assert_awaited_once()
-    replayed = fresh_adapter.handle_message.await_args.args[0]
-    assert replayed.message_id == "m-dup"
-    # No parked duplicate tail: each parked copy would run as its own turn via
-    # the post-turn drain (the amplification loop).
-    state = fresh._peek_session_state(session_key)
-    assert [e.message_id for e in state.conversation.queued_events] == []
-    assert not drain_queue_path().exists()
-    assert not claimed_drain_queue_path().exists()
-
-
-@pytest.mark.asyncio
-async def test_replay_dedupes_snapshot_records_by_message_id():
-    """A snapshot that already holds N copies of one id (written by an older
-    process, or folded generations) replays as exactly one injected copy —
-    dedupe must not depend on the append path alone."""
-    source = make_restart_source(chat_id="foreign-snapshot-chat")
-    fresh, fresh_adapter = make_restart_runner()
-    session_key = fresh._session_key_for_source(source)
-    record = serialize_drain_event(session_key, _event("ping me", source=source, message_id="m-f"))
-    drain_queue_path().parent.mkdir(parents=True, exist_ok=True)
-    drain_queue_path().write_text(
-        json.dumps({"version": 1, "events": [record] * 5}, indent=None),
-        encoding="utf-8",
-    )
-
-    fresh_adapter.handle_message = AsyncMock()
-    assert replay_drain_queue(fresh) == 1
-    await _settle(fresh)
-
-    fresh_adapter.handle_message.assert_awaited_once()
-    state = fresh._peek_session_state(session_key)
-    assert [e.message_id for e in state.conversation.queued_events] == []
-    assert not drain_queue_path().exists()
-    assert not claimed_drain_queue_path().exists()
-
-
-@pytest.mark.asyncio
-async def test_replay_settles_message_already_persisted_without_injecting_it():
-    source = make_restart_source(chat_id="already-processed-chat")
-    fresh, fresh_adapter = make_restart_runner()
-    session_key = fresh._session_key_for_source(source)
-    _queue_in_draining_process(
-        _event("already answered", source=source, message_id="m-processed"),
-        session_key,
-    )
-    fresh.session_store.peek_session_id.return_value = "sid-processed"
-    fresh.session_store.has_platform_message_id.return_value = True
-    fresh_adapter.handle_message = AsyncMock()
-
-    assert replay_drain_queue(fresh) == 0
-
-    fresh_adapter.handle_message.assert_not_called()
-    assert not drain_queue_path().exists()
-    assert not claimed_drain_queue_path().exists()
-    assert replay_drain_queue(fresh) == 0
-
-
-@pytest.mark.asyncio
-async def test_replay_duplicate_settles_when_current_turn_finishes_unsuccessfully():
-    source = make_restart_source(chat_id="duplicate-failure-chat")
-    fresh, fresh_adapter = make_restart_runner()
-    session_key = fresh._session_key_for_source(source)
-    _queue_in_draining_process(
-        _event("answered before this replay", source=source, message_id="m-duplicate"),
-        session_key,
-    )
-    fresh.session_store.peek_session_id.return_value = "sid-duplicate"
-    fresh.session_store.has_platform_message_id.return_value = False
-    fresh_adapter.handle_message = AsyncMock()
-    assert replay_drain_queue(fresh) == 1
-    await _settle(fresh)
-
-    replayed = fresh_adapter.handle_message.await_args.args[0]
-    fresh.session_store.has_platform_message_id.return_value = True
-    replayed._gateway_replay_completion(ProcessingOutcome.FAILURE)
-
-    assert not drain_queue_path().exists()
-    assert not claimed_drain_queue_path().exists()
-    assert replay_drain_queue(fresh) == 0
-
-
-@pytest.mark.asyncio
-async def test_replay_unprocessed_failure_remains_durable():
-    source = make_restart_source(chat_id="unprocessed-failure-chat")
-    fresh, fresh_adapter = make_restart_runner()
-    session_key = fresh._session_key_for_source(source)
-    _queue_in_draining_process(
-        _event("still needs a reply", source=source, message_id="m-unprocessed"),
-        session_key,
-    )
-    fresh.session_store.peek_session_id.return_value = "sid-unprocessed"
-    fresh.session_store.has_platform_message_id.return_value = False
-    fresh_adapter.handle_message = AsyncMock()
-    assert replay_drain_queue(fresh) == 1
-    await _settle(fresh)
-
-    replayed = fresh_adapter.handle_message.await_args.args[0]
-    replayed._gateway_replay_completion(ProcessingOutcome.FAILURE)
-
-    assert [record["event"]["message_id"] for record in _snapshot_events()] == [
-        "m-unprocessed"
-    ]
-    assert not claimed_drain_queue_path().exists()
 
 
 # ── (b) FIFO overflow promotion ──────────────────────────────────────────────
@@ -278,29 +115,6 @@ def test_enqueue_fifo_drops_redelivered_copy_and_marks_the_queued_one():
     survivor = adapter._pending_messages[session_key]
     assert survivor is first  # FIFO order: the first copy keeps its turn
     assert survivor.redelivered is True
-
-
-@pytest.mark.asyncio
-async def test_busy_queue_during_drain_drops_second_copy_of_same_message_id():
-    """The busy drain path (durable snapshot + FIFO mirror) admits a
-    re-delivered id exactly once — both pools stay at one copy, and the ack
-    stays honest because the message IS queued (its first copy)."""
-    runner, adapter = make_restart_runner()
-    runner._draining = True
-    runner._restart_requested = True
-    runner._busy_input_mode = "queue"
-    source = make_restart_source(chat_id="busy-dup-chat")
-    session_key = runner._session_key_for_source(source)
-    event = _event("status ping please", source=source, message_id="m-busy-dup")
-
-    assert await runner._handle_active_session_busy_message(event, session_key) is True
-    assert await runner._handle_active_session_busy_message(event, session_key) is True
-
-    assert [e["event"]["message_id"] for e in _snapshot_events()] == ["m-busy-dup"]
-    assert runner._queue_depth(session_key, adapter=adapter) == 1
-    assert adapter._pending_messages[session_key].redelivered is True
-    # Both copies were acked honestly — the queue holds the first copy.
-    assert sum(QUEUED_MARKER in msg for msg in adapter.sent) == 2
 
 
 # ── (c) busy-window rescue staging ───────────────────────────────────────────
@@ -351,38 +165,6 @@ def test_rescue_park_incoming_redelivery_of_rescued_id_appends_nothing():
 
 
 # ── (d) the model-visible re-delivery marker ─────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_replayed_event_carries_the_redelivery_marker_to_the_model():
-    """A drain-queue replay is a re-injection, not a fresh user message: the
-    replayed event must carry the payload marker, and the marker must reach
-    the model-facing turn text through the shared inbound preparation seam."""
-    source = make_restart_source(chat_id="marker-replay-chat")
-    runner, _adapter = make_restart_runner()
-    session_key = runner._session_key_for_source(source)
-    _queue_in_draining_process(
-        _event("queued before the bounce", source=source, message_id="m-mark"),
-        session_key,
-        runner,
-    )
-
-    fresh, fresh_adapter = make_restart_runner()
-    fresh_adapter.handle_message = AsyncMock()
-    assert replay_drain_queue(fresh) == 1
-    await _settle(fresh)
-
-    replayed = fresh_adapter.handle_message.await_args.args[0]
-    assert replayed.message_id == "m-mark"
-    assert replayed.redelivered is True
-
-    # The marker is visible to the model, not just gateway bookkeeping.
-    turn_text = await fresh._prepare_inbound_message_text(
-        event=replayed, source=replayed.source, history=[], session_key=session_key
-    )
-    assert turn_text is not None
-    assert REDELIVERY_MARKER in turn_text.lower()
-    assert "queued before the bounce" in turn_text
 
 
 def test_marker_reaches_model_text_for_marked_queued_event():
@@ -462,61 +244,3 @@ def test_enqueue_fifo_still_dedupes_platform_events_with_same_message_id():
     survivor = adapter._pending_messages[session_key]
     assert survivor is first
     assert survivor.redelivered is True
-
-
-@pytest.mark.asyncio
-async def test_replay_keeps_internal_event_sharing_external_message_id():
-    """A claimed replay group with an external event and an internal completion
-    sharing the same reply-anchor message id must retain both — dropping the
-    internal would lose the completion notification permanently on restart."""
-    source = make_restart_source(chat_id="internal-replay-chat")
-    fresh, fresh_adapter = make_restart_runner()
-    session_key = fresh._session_key_for_source(source)
-    external = _event("user question", source=source, message_id="m-anchor")
-    internal = _event("job completed", source=source, message_id="m-anchor")
-    internal.internal = True
-    records = [
-        serialize_drain_event(session_key, external),
-        serialize_drain_event(session_key, internal),
-    ]
-    drain_queue_path().parent.mkdir(parents=True, exist_ok=True)
-    drain_queue_path().write_text(
-        json.dumps({"version": 1, "events": records}, indent=None),
-        encoding="utf-8",
-    )
-
-    fresh_adapter.handle_message = AsyncMock()
-    assert replay_drain_queue(fresh) == 1
-    await _settle(fresh)
-
-    fresh_adapter.handle_message.assert_awaited_once()
-    dispatched = fresh_adapter.handle_message.await_args.args[0]
-    assert dispatched.text == "user question"
-    assert dispatched.message_id == "m-anchor"
-    assert not getattr(dispatched, "internal", False)
-
-    state = fresh._peek_session_state(session_key)
-    slot = fresh_adapter._pending_messages.get(session_key)
-    overflow = state.conversation.queued_events
-    queued = ([slot] if slot else []) + list(overflow)
-    assert len(queued) == 1
-    assert queued[0].text == "job completed"
-    assert queued[0].internal is True
-    assert queued[0].message_id == "m-anchor"
-
-
-def test_record_drain_event_keeps_distinct_internal_events_sharing_reply_anchor_id():
-    runner, _adapter = make_restart_runner()
-    source = make_restart_source(chat_id="internal-drain-chat")
-    session_key = runner._session_key_for_source(source)
-    event_a = _event("job A completed", source=source, message_id="m-anchor")
-    event_a.internal = True
-    event_b = _event("job B completed", source=source, message_id="m-anchor")
-    event_b.internal = True
-
-    assert record_drain_event(runner, session_key, event_a) is True
-    assert record_drain_event(runner, session_key, event_b) is True
-
-    records = _snapshot_events()
-    assert len(records) == 2
-    assert all(r["event"]["message_id"] == "m-anchor" for r in records)

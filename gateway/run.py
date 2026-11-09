@@ -4130,11 +4130,7 @@ from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
 from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.run_hygiene_compression import GatewayHygieneCompressionMixin
-from gateway.run_drain_queue import (
-    queue_drain_busy_message,
-    queue_drain_refused_message,
-    replay_drain_queues_for_profiles,
-)
+from gateway.run_drain_queue import discard_drain_queue_snapshots_for_profiles
 from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -7055,21 +7051,13 @@ class GatewayRunner(
         Every busy sub-path — the photo-priority branch, the Telegram
         follow-up grace window, the pending-sentinel setup window and the
         general follow-up fall-through — must give this SAME answer: the
-        queued-for-next-turn ack when the drain policy allows durable
-        queueing (``queue_drain_busy_message`` writes the snapshot first and
-        the in-memory FIFO second, keeping each sub-path's merge semantics),
-        the honest refusal otherwise. A sub-path that silently merges
-        in-memory and returns None during a drain loses the message to the
-        process bounce while promising nothing — the exact gap the durable
-        queue exists to close.
+        honest refusal. A restart never snapshots other chats' drain-window
+        messages to a durable file (user contract, Nov 2026): the hub
+        transports hand NEW user messages to the successor via
+        ``handoff_overlap_event`` while the predecessor drains, and a
+        non-hub platform's user re-sends after the bounce. Parking in the
+        in-memory FIFO would promise a queue the process bounce destroys.
         """
-        if self._queue_during_drain_enabled(effective_mode) and queue_drain_busy_message(
-            self, event, session_key
-        ):
-            return DeferredReply(
-                f"⏳ Gateway {self._status_action_gerund()} — queued for the "
-                f"next turn after it comes back."
-            )
         return DeferredReply(
             f"⏳ Gateway is {self._status_action_gerund()} and is not "
             f"accepting another turn right now."
@@ -7613,14 +7601,18 @@ class GatewayRunner(
 
 
 
-    # Drain-timeout reasons set by _stop_impl() when a still-running turn is
-    # force-interrupted; "restart_interrupted" is set by
+    # Reasons eligible for startup auto-resume. "shutdown_timeout" is set by
+    # _stop_impl() when a still-running turn is force-interrupted on a
+    # shutdown; "restart_interrupted" is set by
     # SessionStore.suspend_recently_active() on crash recovery (no
-    # .clean_shutdown marker).  All three mean "the agent was mid-turn and
-    # we killed it" — eligible for startup auto-resume.
+    # .clean_shutdown marker); the requester reason drives the idle /restart
+    # comeback note and the restart() tool continuation. A "restart_timeout"
+    # mark deliberately does NOT auto-resume (user contract, Nov 2026): the
+    # successor never synthesizes a continuation for another chat's
+    # interrupted turn — the flag stays for the next user message, which
+    # resumes through the ordinary resume_pending path.
     _AUTO_RESUME_REASONS = frozenset(
         {
-            "restart_timeout",
             "shutdown_timeout",
             "restart_interrupted",
             RESTART_REQUESTER_RESUME_REASON,
@@ -8721,14 +8713,12 @@ class GatewayRunner(
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
         #
-        # Drain-queued messages first: replay claims the snapshot, re-injects
-        # each event into the owning adapter's FIFO and starts the turn for
-        # sessions the resume scheduler does not already cover. Running
-        # before the resume scheduler lets replay see the scheduler's
-        # pre-claimed slots (no double turn). Under
-        # multiplex_profiles every served profile's home-scoped queue is
-        # claimed, not just the launch home's.
-        replay_drain_queues_for_profiles(self)
+        # Legacy drain-queue snapshots (written by older builds) are
+        # discarded, never replayed: a restart must not hand a successor a
+        # file of other chats' in-flight work (user contract, Nov 2026).
+        # Delivery of drain-window messages belongs to the hub transports
+        # (``handoff_overlap_event``) and to the next user message.
+        discard_drain_queue_snapshots_for_profiles(self)
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
@@ -9603,10 +9593,7 @@ class GatewayRunner(
             # without flushing causes permanent data loss.
             try:
                 from gateway.shutdown_flush import flush_pending_to_file
-                # Snapshot-owned mirrors stay out: the durable drain snapshot already
-                # owns them, and spooling here too would replay them twice after restart.
                 flush_pending_to_file(dict(self._pending_messages), reason="shutdown",
-                                      skip_attrs=("_drain_snapshot_owned",),
                                       restart_requested=bool(getattr(self, "_restart_requested", False)))
             except Exception:
                 pass

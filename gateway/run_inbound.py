@@ -1389,7 +1389,6 @@ class GatewayInboundMixin:
             _check_unavailable_skill,
             _hermes_home,
             _is_slack_ignored_channel,
-            queue_drain_refused_message,
         )
         from gateway.run import (
             _AGENT_PENDING_SENTINEL,
@@ -2419,16 +2418,11 @@ class GatewayInboundMixin:
                 self, event, _quick_key, require_successor_ready=True,
             ):
                 return None
-            # Plain text / media the gate refused is no longer dropped: the
-            # idle session has no in-memory queue to join, so queue it
-            # durably for the post-restart process to replay. Slash commands
-            # keep the notice — the gate verdict itself is untouched.
-            if canonical is None:
-                _drain_queued_ack = queue_drain_refused_message(
-                    self, event, _quick_key
-                )
-                if _drain_queued_ack is not None:
-                    return _drain_queued_ack
+            # Plain text / media the gate refused keeps the honest notice: a
+            # restart never durably snapshots another chat's drain-window
+            # message (user contract, Nov 2026) — the hub hands NEW messages
+            # to the successor, and a non-hub platform's user re-sends after
+            # the bounce. Slash commands keep the notice too.
             return _cold_drain_notice
 
         plain_handler = self._gateway_plain_command_handlers().get(canonical)
@@ -3788,15 +3782,6 @@ class GatewayInboundMixin:
         # would bust the agent-cache signature — and tells the model this is
         # the SAME message re-delivered, not a new request, so it answers
         # once instead of per copy.
-        # Restart-drain lifecycle receipt, proved and rendered by the
-        # queue's own module (see ``run_drain_queue.drain_restart_receipt_for_record``
-        # and ``format_drain_restart_receipt``); None leaves the text unchanged.
-        from gateway.run_drain_queue import format_drain_restart_receipt
-
-        _receipt_note = format_drain_restart_receipt(event)
-        if _receipt_note is not None:
-            message_text = f"{_receipt_note}\n\n{message_text}"
-
         if getattr(event, "redelivered", False):
             _redelivery_id = getattr(event, "message_id", None)
             _redelivery_note = "[Re-delivered message"

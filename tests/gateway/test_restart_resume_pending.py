@@ -595,7 +595,7 @@ async def test_drain_timeout_marks_resume_pending():
     """End-to-end: a drain timeout during gateway stop should flag every
     active session as resume_pending BEFORE the interrupt fires, so the
     next startup's suspend_recently_active() does not destroy them."""
-    runner, adapter = make_restart_runner()
+    runner, adapter = make_restart_runner(platform=Platform.TELEGRAM)
     adapter.disconnect = AsyncMock()
     runner._restart_drain_timeout = 0.05
 
@@ -674,8 +674,8 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
 async def test_reconnect_reschedule_is_platform_scoped():
     """The platform filter limits the pass to that platform's sessions, so
     reconnecting one platform never resumes another's pending session."""
-    runner, adapter = make_restart_runner()
-    tg_source = make_restart_source(chat_id="tg-chat")
+    runner, adapter = make_restart_runner(platform=Platform.TELEGRAM)
+    tg_source = make_restart_source(chat_id="tg-chat", platform=Platform.TELEGRAM)
     discord_source = SessionSource(
         platform=Platform.DISCORD, chat_id="dc-chat", chat_type="dm", user_id="u1"
     )
@@ -881,7 +881,7 @@ async def test_warmup_disabled_by_nonpositive_timeout(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_restart_notifies_notification_channel_even_without_active_sessions():
-    runner, adapter = make_restart_runner()
+    runner, adapter = make_restart_runner(platform=Platform.TELEGRAM)
     runner._restart_requested = True
     runner.config.platforms[Platform.TELEGRAM].notification_channel = DeliveryTarget(
         platform=Platform.TELEGRAM,
@@ -892,12 +892,16 @@ async def test_restart_notifies_notification_channel_even_without_active_session
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 1
-    assert "restarting" in adapter.sent[0] and "Send any message" in adapter.sent[0]
+    # The notice is the same shutdown/restart banner either way; the
+    # invariant is that the notification channel is warned even when no
+    # session is active. (The old "Send any message to continue" handover
+    # wording is gone with the durable replay it described.)
+    assert "Gateway" in adapter.sent[0]
 
 
 @pytest.mark.asyncio
 async def test_restart_notification_channel_broadcast_not_deduped_across_threads():
-    runner, adapter = make_restart_runner()
+    runner, adapter = make_restart_runner(platform=Platform.TELEGRAM)
     runner._restart_requested = True
     session_key = "agent:main:telegram:group:999"
     runner.session_store._entries[session_key] = MagicMock(

@@ -1,119 +1,69 @@
-"""Durable queue for messages that arrive while the gateway is draining.
+"""Drain-window record format + legacy-snapshot disposal.
 
-``/restart`` closes admission (``_draining``) while in-flight work finishes.
-Until this module, every message that landed in that window was either
-refused (idle sessions: the drain-gate notice — the message was simply gone)
-or parked in the adapter's in-memory ``_pending_messages`` FIFO (busy
-sessions) — a queue that dies with the process bounce, so the "queued for
-the next turn after it comes back" ack was a promise nothing could keep.
+Scope after the Nov 2026 successor-delivery redesign (user contract, Parsa
+2026-11-09): a restart NEVER durably snapshots other chats' in-flight or
+drain-window work. The predecessor keeps running its current turns; the hub
+transports (Discord/Matrix) hand NEW user messages to the successor via
+``handoff_overlap_event``, and once a turn ends the next user message is
+delivered to the new instance by the hub. The former
+``drain_message_queue.json`` snapshot/replay handover — whose
+``drain_message_queue.replaying.json`` claim was replayed into model turns
+on every later boot, injecting ``[Gateway restart completed]`` and a new
+turn into chats that never asked — must not exist.
 
-Every drain-time queueing appends the
-event to one JSON snapshot in the gateway state dir, and gateway startup
-replays that snapshot — re-injecting each event into the owning adapter's
-pending FIFO and starting the turn — before the resume scheduler runs.
+What remains in this module:
 
-Ownership of the underlying semantics stays where it was:
+- ``serialize_drain_event`` / ``deserialize_drain_event`` — the JSON record
+  format the hub clients use to carry a ``MessageEvent`` across the
+  predecessor/successor RPC boundary (registration, routing, handoff,
+  processing-completion). That is live process-to-process delivery, not a
+  file of acting sessions.
+- The restart-drain lifecycle stamp + receipt proof/renderers, shared with
+  ``shutdown_flush`` (the pending-message flush recovery, which bakes the
+  receipt into stored user content exactly once).
+- ``discard_drain_queue_snapshots_for_profiles`` — the boot-time disposal
+  of any snapshot left by an older build: one warning, both files gone,
+  never a replay.
 
-- the drain gate (``_slash_drain_gate_notice`` / ``_DRAIN_ALLOWED_COMMANDS``)
-  stays the authoritative idle-path verdict; queueing only replaces what the
-  gate does with a *refused* plain-text/media event, never a command;
-- the busy path's ``_queue_or_replace_pending_event`` (photo merge, FIFO
-  promotion, ``_BUSY_QUEUE_MAX_PENDING`` cap) stays the queue mechanics —
-  both the drain-time append and the startup replay route through it;
-- startup replay reuses the resume-scheduler's task dispatch
-  (``_run_startup_resume_event``), so replayed turns are waited on by the
-  same startup-restore gate as boot auto-resume turns.
-
-Replay never loses an acknowledged message to a crash: the snapshot is
-claimed by an atomic rename BEFORE any event is injected, and each record
-leaves the claim ledger only when its own processing completes successfully.
-Deferred, cancelled, and failed turns retain their original record for the
-final write-back. A claim left by a crashed replay therefore holds exactly
-the unsettled records, and the next boot RESUMES it instead of discarding it.
-Events whose adapter is not live are retained for reconnect/next boot up to a
-bounded queue age; permanently unserved records then settle with one warning
-instead of replaying forever. When write-back fails, the claim file — the sole
-copy — is kept and retried after storage recovers. One runner-scoped owner per
-canonical profile home prevents overlapping startup/reconnect passes from
-sharing the claim file; callback identity fences stale owners from a later pass.
-
-Under ``gateway.multiplex_profiles`` each profile's handler queues under
-its own home, so startup replays every served profile's queue, not just
-the launch home's.
-
-Scope after the unified restart pipeline (Nov 2026 successor-delivery
-audit, ``tests/gateway/test_successor_delivery_*.py``): overlap-capable
-transports (Discord/Matrix hub clients) hand NEW user messages to the
-successor via ``handoff_overlap_event`` before any queueing is consulted,
-and the API server refuses new turns at the HTTP layer (503
-``gateway_draining``). The predecessor-side queue survives for exactly the
-transports that still feed a draining predecessor: the webhook adapter
-(and every other non-hub messaging platform — Telegram, Slack, WhatsApp,
-...) whose listener stays attached to the predecessor through the drain,
-plus the hub transports' no-ready-successor fallback (successor spawn
-failed or never attached). For those the snapshot IS the successor-side
-delivery vehicle: the predecessor records, never processes, and the
-successor replays at startup.
+Ownership-marker attribute kept for hub-record compatibility: events the
+old durable snapshot used to own carried ``_drain_snapshot_owned`` and the
+hub completion record still round-trips the field. Nothing sets it anymore;
+consumers treat it as always-False.
 """
 
 from __future__ import annotations
 
 import logging
-import math
 import os
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from gateway.config import Platform
-from gateway.platforms.event import (
-    MessageEvent,
-    MessageType,
-    ProcessingOutcome,
-    inbound_platform_message_id,
-)
+from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
-from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
 DRAIN_QUEUE_FILENAME = "drain_message_queue.json"
-# Claim marker: the live snapshot is renamed here before injection. While a
-# replay runs the claim file doubles as the DISPATCH LEDGER — records are
-# rewritten out of it as their consumption is secured — so a crash mid-replay
-# leaves exactly the un-delivered set, which the next boot resumes (never
-# discards, never re-reads as a fresh queue).
 DRAIN_QUEUE_CLAIMED_FILENAME = "drain_message_queue.replaying.json"
 
-_SNAPSHOT_VERSION = 1
-_DRAIN_QUEUE_NO_ADAPTER_MAX_AGE_SECONDS = 24 * 60 * 60
-
-# Attribute stamped on every event the durable snapshot owns (set by
-# ``record_drain_event`` on durable acceptance — a fresh append, or an
-# idempotently-dropped re-delivery whose twin is already recorded). The
-# adapter's background pending-turn drain (``platforms/base.py``) reads it to
-# leave the parked in-memory mirror UNCONSUMED: the snapshot is the one owner,
-# and re-running the mirror re-enters the drain gate, which re-records and
-# re-acks the SAME event — the restart-drain completion-amplification loop.
-# Never serialized; replay rebuilds events from the snapshot, so replayed
-# copies arrive clean and drain normally.
+# See the module docstring: a compatibility field on hub completion records,
+# always False now that no durable drain snapshot exists.
 DRAIN_SNAPSHOT_OWNED_ATTR = "_drain_snapshot_owned"
 
-# Lifecycle receipt for post-restart replay. ``serialize_drain_event`` stamps
-# the RECORD (gateway-owned durable state beside auth.json — the one place a
-# platform message cannot forge it: event metadata is user-influenceable, so
-# the ownership fact must not ride the event) with the identity of the
-# process that queued the event during its restart-requested drain. Replay
-# in a DIFFERENT process proves that restart completed — the queueing
-# process is gone and its successor is delivering the message — which is the
-# weakest cross-process provenance that states the fact. Legacy records
-# (no stamp) and same-process reconnect replay (the restart never finished,
-# or was cancelled) prove nothing and get no receipt; delivery is unchanged
-# either way. Never serialized onto the event: replay sets the in-memory
-# attribute below only after the record check passes.
+# Lifecycle receipt for post-restart recovery. ``serialize_drain_event`` and
+# the shutdown pending-flush stamp the RECORD (gateway-owned durable state
+# beside auth.json — the one place a platform message cannot forge it: event
+# metadata is user-influenceable, so the ownership fact must not ride the
+# event) with the identity of the process that queued the event during its
+# restart-requested drain. Recovery in a DIFFERENT process proves that
+# restart completed — the queueing process is gone and its successor is
+# delivering the message — which is the weakest cross-process provenance
+# that states the fact. Legacy records (no stamp) and same-process recovery
+# (the restart never finished, or was cancelled) prove nothing and get no
+# receipt; delivery is unchanged either way.
 DRAIN_RESTART_STAMP_FIELD = "restart_drain"
-DRAIN_RESTART_COMPLETED_ATTR = "_drain_restart_completed"
 # A durable JSON stamp can carry any integer; no host allocates pids past the
 # signed 32-bit range, so anything larger is malformed data, never a pid whose
 # death could be proven (probing it must not throw either).
@@ -139,7 +89,7 @@ def drain_restart_receipt_for_record(record: Any) -> Optional[Dict[str, Any]]:
     cancelled), a queueing pid that is somehow still alive, an out-of-range
     pid (the stamp is durable JSON: a corrupted or oversized integer is not a
     pid anyone can prove dead), or an unavailable liveness backend; in every
-    None case replay proceeds unchanged, just without the receipt.
+    None case recovery proceeds unchanged, just without the receipt.
     """
     if not isinstance(record, dict):
         return None
@@ -171,43 +121,13 @@ def drain_restart_receipt_for_record(record: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _mark_drain_restart_receipt(event: MessageEvent, receipt: Dict[str, Any]) -> None:
-    """Attach the proven receipt to the replayed event (never serialized)."""
-    try:
-        setattr(event, DRAIN_RESTART_COMPLETED_ATTR, dict(receipt))
-    except Exception:
-        pass
-
-
-def format_drain_restart_receipt(event: MessageEvent) -> Optional[str]:
-    """Render the lifecycle-receipt note for one replayed event, if proven.
-
-    The event carries a receipt only when it was durably queued while a
-    PREVIOUS gateway process drained for a requested restart, and this turn
-    replays it from the drain snapshot after that restart finished (proven
-    per-record at replay time — see ``drain_restart_receipt_for_record``; a
-    same-process or unprovable replay never sets the attribute). Like the
-    re-delivery note in ``run.py`` it is per-turn user content, so the cached
-    system prompt signature is untouched; it states the lifecycle fact only —
-    the restart completed — and claims nothing about deployment health.
-
-    Returns the bracketed note, or None when the event carries no receipt
-    (in which case the caller leaves the message text unchanged).
-    """
-    receipt = getattr(event, DRAIN_RESTART_COMPLETED_ATTR, None)
-    if not isinstance(receipt, dict):
-        return None
-    return render_drain_restart_receipt(receipt)
-
-
 def render_drain_restart_receipt(receipt: Dict[str, Any]) -> str:
     """Render the bracketed lifecycle-receipt note for a proven receipt.
 
-    Shared by the drain-snapshot replay path (``format_drain_restart_receipt``,
-    which prepends the note to the turn's message text) and the shutdown
-    pending-flush recovery path (``shutdown_flush._recover_one_payload``,
-    which bakes it into the stored user content once): one owning renderer,
-    so both vehicles state the fact in the same words.
+    Used by the shutdown pending-flush recovery path
+    (``shutdown_flush._recover_one_payload``), which bakes it into the stored
+    user content once. The drain-snapshot replay path that also used this
+    renderer is gone (see the module docstring).
     """
     note = "[Gateway restart completed"
     queued_pid = receipt.get("queued_pid")
@@ -225,32 +145,104 @@ def render_drain_restart_receipt(receipt: Dict[str, Any]) -> str:
     return note
 
 
-def _mark_drain_snapshot_owned(event: MessageEvent) -> None:
-    """Record durable acceptance on the event itself.
+def drain_queue_path(home: Optional[Path] = None) -> Path:
+    """Legacy live-snapshot path in the gateway state dir (now only checked
+    for disposal at boot). *home* pins the profile home."""
+    base = Path(home) if home is not None else get_hermes_home()
+    return base / "gateway" / DRAIN_QUEUE_FILENAME
 
-    Two receipts, one truth: the ownership stamp above, and the
-    ``_gateway_accepted`` receipt ``wake.admit_internal_event`` requires —
-    without it a successfully queued internal completion reported
-    WakeNotAccepted and the notifier rewound and re-delivered it, growing the
-    snapshot again. Call ONLY on the durably-accepted paths; a refused
-    admission (cap/serialize/IO) must keep both flags unset so the caller
-    stays retryable.
+
+def claimed_drain_queue_path(home: Optional[Path] = None) -> Path:
+    return drain_queue_path(home).parent / DRAIN_QUEUE_CLAIMED_FILENAME
+
+
+def discard_drain_queue_snapshots(home: Optional[Path] = None) -> bool:
+    """Delete any legacy drain snapshot/claim under *home*; warn once.
+
+    A restart no longer writes these files (see the module docstring); one
+    left by an older build is discarded at boot — never replayed into a
+    model turn. Returns True when at least one file was removed.
     """
+    removed = False
+    for path in (drain_queue_path(home), claimed_drain_queue_path(home)):
+        try:
+            existed = path.exists()
+        except OSError:
+            logger.debug("Drain snapshot existence check failed for %s", path,
+                         exc_info=True)
+            continue
+        if not existed:
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            logger.warning(
+                "Could not remove legacy drain snapshot %s; it is never "
+                "replayed — delete it manually",
+                path,
+            )
+            continue
+        removed = True
+    if removed:
+        logger.warning(
+            "Discarded legacy drain-queue snapshot(s) under %s: restarts no "
+            "longer snapshot or replay other chats' in-flight work (the "
+            "successor only continues the restart requester; the hub "
+            "delivers every new message)",
+            drain_queue_path(home).parent,
+        )
+    return removed
+
+
+def discard_drain_queue_snapshots_for_profiles(runner: Any) -> None:
+    """Boot entry: dispose of every queue this gateway could own.
+
+    Under ``gateway.multiplex_profiles`` a secondary profile's snapshot lived
+    under that profile's home, so dispose of each served profile's files as
+    well as the launch home's — mirroring the enumeration chokepoint gateway
+    startup uses for adapter discovery (``profiles_to_serve``).
+    """
+    discard_drain_queue_snapshots()
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False):
+        return
+    from hermes_cli.profiles import profiles_to_serve
+
     try:
-        setattr(event, DRAIN_SNAPSHOT_OWNED_ATTR, True)
-        event._gateway_processing_deferred = True
-        event._gateway_accepted = True
+        served = list(
+            profiles_to_serve(
+                multiplex=True,
+                profile_allowlist=getattr(config, "multiplex_profile_allowlist", None),
+            )
+        )
     except Exception:
-        pass
+        logger.warning(
+            "Legacy drain-snapshot disposal could not enumerate the "
+            "multiplex profiles; disposing the launch home only",
+            exc_info=True,
+        )
+        return
+    for _profile_name, profile_home in served:
+        try:
+            discard_drain_queue_snapshots(profile_home)
+        except Exception:
+            logger.warning(
+                "Legacy drain-snapshot disposal failed for profile home %s",
+                profile_home,
+                exc_info=True,
+            )
+
+
+# ── hub record (de)serialization — the single pair, on the event model ──────
 
 # Routing-relevant SessionSource fields. Session-key derivation
 # (``build_session_key``) and reply anchoring must see the same values the
-# live event carried, or a replayed message would land on a different
-# session than the one the user was talking to.
+# live event carried, or a routed message would land on a different session
+# than the one the user was talking to.
 #
 # Deliberately EXCLUDED (the source dataclass's own wire-invisible trust
 # signals — its field docs say they must never be restorable from
-# persistence, and the snapshot is a persistence medium):
+# persistence, and a serialized record is a persistence medium):
 # ``delivered_via_upstream_relay`` and ``profile_route_rejected``. A record
 # carrying either would hand whatever process reads it an authorization it
 # was never re-granted.
@@ -278,12 +270,13 @@ _SOURCE_FIELDS = (
     "bot_display_name",
 )
 
-# MessageEvent fields persisted for replay. Media paths survive the bounce
-# (they live under HERMES_HOME), so the replayed event re-enters the same
-# vision/STT preprocessing a fresh message would. ``text`` is deliberately
-# NOT in this tuple: it is a required positional on ``MessageEvent`` and the
-# generic skip-empty filter below would drop an empty caption, so serialize
-# always emits it explicitly (empty string included).
+# MessageEvent fields carried in the hub record. Media paths survive the
+# process boundary (they live under HERMES_HOME), so the rebuilt event
+# re-enters the same vision/STT preprocessing a fresh message would.
+# ``text`` is deliberately NOT in this tuple: it is a required positional on
+# ``MessageEvent`` and the generic skip-empty filter below would drop an
+# empty caption, so serialize always emits it explicitly (empty string
+# included).
 _EVENT_FIELDS = (
     "message_id",
     "ledger_message_id",
@@ -295,12 +288,10 @@ _EVENT_FIELDS = (
     "reply_to_author_name",
     "reply_to_is_own_message",
     "auto_skill",
-    # Channel-scoped instructions ride along so the replayed event re-enters
+    # Channel-scoped instructions ride along so the rebuilt event re-enters
     # the turn with the same per-channel system prompt and backfilled
-    # context the original inbound message carried — without them a drain
-    # would silently strip the channel's instructions from the queued
-    # message. They are applied at API call time and never persisted to the
-    # transcript, so the queue snapshot is not a second transcript copy.
+    # context the original inbound message carried. They are applied at API
+    # call time and never persisted to the transcript.
     "channel_prompt",
     "channel_context",
     "internal",
@@ -309,33 +300,14 @@ _EVENT_FIELDS = (
 )
 
 
-def drain_queue_path(home: Optional[Path] = None) -> Path:
-    """Live snapshot path in the gateway state dir.
-
-    *home* pins the profile home the queue belongs to — startup replay under
-    ``gateway.multiplex_profiles`` reads every served profile's file. The
-    default resolves the ambient home, which the drain-time append path
-    relies on: it always runs inside the owning profile's home scope.
-    """
-    base = Path(home) if home is not None else get_hermes_home()
-    return base / "gateway" / DRAIN_QUEUE_FILENAME
-
-
-def claimed_drain_queue_path(home: Optional[Path] = None) -> Path:
-    return drain_queue_path(home).parent / DRAIN_QUEUE_CLAIMED_FILENAME
-
-
-# ── (de)serialization — the single pair, built on the existing event model ──
-
-
 def _json_safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     """Keep the JSON-encodable metadata entries (ids, flags, short strings).
 
     Metadata is free-form; a connector could stash an exotic object there.
-    Dropping the exotic entry keeps the WHOLE event queueable — the honest
-    alternative (fail the append) would refuse the message over a
-    decoration. Observed keys across the platform connectors are plain
-    routing ids/flags, so this drops nothing in practice.
+    Dropping the exotic entry keeps the WHOLE event carryable — the honest
+    alternative (fail the send) would refuse the message over a decoration.
+    Observed keys across the platform connectors are plain routing ids/flags,
+    so this drops nothing in practice.
     """
     kept: Dict[str, Any] = {}
     for key, value in metadata.items():
@@ -351,16 +323,14 @@ def _json_safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
 def serialize_drain_event(
     session_key: str, event: MessageEvent, *, restart_requested: bool = False
 ) -> Dict[str, Any]:
-    """Flatten one queued event + its source into a JSON-safe record.
+    """Flatten one event + its source into a JSON-safe hub record.
 
-    The FULL metadata dict is persisted, not just the security keys
-    ``_queue_or_replace_pending_event`` compares: routing metadata such as
-    ``whatsapp_from_owner`` decides how the replayed message is treated, and
-    the snapshot already lives in the gateway state dir beside auth.json at
-    the same trust level. A survey of the connectors found no display
-    secrets in metadata — only ids and flags — so no denylist is needed;
-    ``_SOURCE_FIELDS`` documents the two source-level trust flags that stay
-    off disk.
+    The FULL metadata dict is persisted, not just a subset: routing metadata
+    such as ``whatsapp_from_owner`` decides how the routed message is
+    treated, and the record stays inside the gateway's own RPC channel. A
+    survey of the connectors found no display secrets in metadata — only ids
+    and flags — so no denylist is needed; ``_SOURCE_FIELDS`` documents the
+    two source-level trust flags that are never serialized.
     """
     source = getattr(event, "source", None)
     if source is None:
@@ -403,8 +373,8 @@ def serialize_drain_event(
         "event_timestamp": timestamp.isoformat() if timestamp is not None else None,
     }
     # The restart-drain stamp closes one gap: nothing else in the record (or
-    # anywhere durable) binds the queued message to the restart-draining
-    # PROCESS, so replay could not tell "queued by the pre-restart process"
+    # anywhere durable) binds a queued message to the restart-draining
+    # PROCESS, so recovery could not tell "queued by the pre-restart process"
     # from "queued by this live process during a cancelled restart".
     stamp = _restart_drain_stamp(restart_requested)
     if stamp is not None:
@@ -413,10 +383,10 @@ def serialize_drain_event(
 
 
 def deserialize_drain_event(record: Any) -> Tuple[str, MessageEvent]:
-    """Rebuild ``(session_key, MessageEvent)`` from a snapshot record.
+    """Rebuild ``(session_key, MessageEvent)`` from a hub record.
 
     Raises ``ValueError`` on any structurally invalid record so the caller
-    can quarantine a corrupt snapshot without crashing startup.
+    can quarantine a corrupt payload without crashing.
     """
     from gateway.config import Platform
     from gateway.session import SessionSource
@@ -473,896 +443,3 @@ def deserialize_drain_event(record: Any) -> Tuple[str, MessageEvent]:
         except ValueError:
             pass
     return session_key, MessageEvent(**event_kwargs)
-
-
-# ── drain-time append ────────────────────────────────────────────────────────
-
-
-def _quarantine_snapshot(path: Path, reason: str) -> None:
-    """Rename an unreadable snapshot aside instead of overwriting it.
-
-    A corrupt file still holds the only copy of whatever the previous
-    process queued; letting the next append overwrite it would discard the
-    bytes silently. The timestamped ``.bad`` sibling keeps them for
-    forensics while the caller proceeds with a fresh snapshot. Best effort:
-    a quarantine failure is logged and never raises.
-    """
-    sibling = path.with_name(f"{path.name}.bad-{time.time_ns()}")
-    try:
-        os.replace(path, sibling)
-    except OSError:
-        logger.warning(
-            "Drain queue snapshot unreadable (%s) and could not be "
-            "quarantined; starting a fresh one",
-            reason,
-            exc_info=True,
-        )
-        return
-    logger.warning(
-        "Drain queue snapshot unreadable (%s); quarantined as %s and "
-        "starting a fresh one",
-        reason,
-        sibling.name,
-    )
-
-
-def _load_snapshot_events(path: Path) -> List[Dict[str, Any]]:
-    """Read the events list from *path*; missing → empty; corrupt → the file
-    is quarantined as a ``.bad`` sibling (unreadable data is never
-    overwritten in place) and a fresh snapshot starts."""
-    import json
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return []
-    except (OSError, ValueError) as exc:
-        _quarantine_snapshot(path, str(exc))
-        return []
-    events = data.get("events") if isinstance(data, dict) else None
-    if not isinstance(events, list):
-        _quarantine_snapshot(path, "'events' missing or not a list")
-        return []
-    return [event for event in events if isinstance(event, dict)]
-
-
-def record_drain_event(
-    runner: Any, session_key: str, event: MessageEvent, *, home: Optional[Path] = None
-) -> bool:
-    """Append one event to the durable drain snapshot.
-
-    ``home`` pins the owning profile for boot-time replay staging; live drain
-    callers retain the ambient profile-scoped default.
-
-    Returns True only when the event is durably on disk; the caller must
-    answer with the OLD refusal on False so the ack never promises a queue
-    that does not exist. The per-session cap reuses the runner's
-    ``_BUSY_QUEUE_MAX_PENDING`` and counts the LOGICAL backlog — the union
-    of the in-memory FIFO and the durable snapshot. Once drain queueing
-    starts, every accepted event exists in BOTH pools (durable append, then
-    the FIFO enqueue), so the union is the larger of the two depths;
-    summing them counted each drain-window event twice and refused the
-    message that hit cap/2 (the 17th at the default cap of 32, with an
-    empty pre-drain backlog). A pre-drain backlog lives only in the FIFO;
-    records retained for a platform that was down at boot live only in the
-    snapshot — ``max`` counts each logical message once.
-
-    A re-delivered copy of a message id already recorded for this session
-    is dropped idempotently (one log line): the first copy IS durably on
-    disk, so True stays an honest ack — the queue holds the message, just
-    not twice. Without this, a platform re-delivery inside the drain window
-    wrote N records and the boot replay injected N turns for one message.
-    Internal synthetic events are exempt from this dedupe.
-
-    Every True return stamps the event (:func:`_mark_drain_snapshot_owned`):
-    the ownership marker the adapter's background pending-turn drain honors,
-    and the ``_gateway_accepted`` receipt ``wake.admit_internal_event``
-    requires. A False return (cap / serialize / IO) leaves both unset, so a
-    failed admission stays retryable.
-    """
-    path = drain_queue_path(home)
-    events = _load_snapshot_events(path)
-    cap = int(getattr(runner, "_BUSY_QUEUE_MAX_PENDING", 32))
-    session = str(session_key or "")
-    message_id = str(getattr(event, "message_id", "") or "").strip()
-    if message_id and not getattr(event, "internal", False):
-        for item in events:
-            if item.get("session_key") != session:
-                continue
-            existing_id = str(
-                (item.get("event") or {}).get("message_id", "") or ""
-            ).strip()
-            if existing_id == message_id:
-                logger.info(
-                    "Drain queue already holds message id %s for session %s — "
-                    "dropping the re-delivered copy (one platform message, "
-                    "one queued turn)",
-                    message_id,
-                    session,
-                )
-                # The twin is durably on disk, so this copy is owned too:
-                # the receipt stays honest and the mirror must not run.
-                _mark_drain_snapshot_owned(event)
-                return True
-    durable_depth = sum(1 for item in events if item.get("session_key") == session)
-    in_memory_depth = 0
-    depth_of = getattr(runner, "_queue_depth", None)
-    adapter = None
-    if callable(depth_of):
-        try:
-            adapter = runner._adapter_for_source(event.source)
-            in_memory_depth = int(depth_of(session, adapter=adapter) or 0)
-        except Exception:
-            logger.debug(
-                "Drain queue in-memory depth check failed for %s", session, exc_info=True
-            )
-            in_memory_depth = 0
-    if max(durable_depth, in_memory_depth) >= cap:
-        logger.warning(
-            "Dropping drain-time message for session %s — pending backlog at "
-            "cap (%d logical event(s); in-memory FIFO %d, durable snapshot %d).",
-            session,
-            cap,
-            in_memory_depth,
-            durable_depth,
-        )
-        return False
-    try:
-        record = serialize_drain_event(
-            session,
-            event,
-            restart_requested=bool(getattr(runner, "_restart_requested", False)),
-        )
-    except Exception as exc:
-        logger.warning("Drain queue serialization failed for %s: %s", session, exc)
-        return False
-    events.append(record)
-    try:
-        atomic_json_write(
-            path,
-            {"version": _SNAPSHOT_VERSION, "events": events},
-            indent=None,
-        )
-    except Exception:
-        logger.warning(
-            "Drain queue snapshot write failed; refusing to promise a queued turn",
-            exc_info=True,
-        )
-        return False
-    _mark_drain_snapshot_owned(event)
-    return True
-
-
-def queue_drain_refused_message(
-    runner: Any, event: MessageEvent, session_key: str
-) -> Optional[str]:
-    """Idle-path drain admission for a plain-text/media event the gate refused.
-
-    Returns the queued-for-next-turn ack, or None when queueing is not
-    allowed or failed — the caller then answers with the drain-gate notice
-    it already built (honest refusal instead of a false promise).
-
-    Posture (aligned with the busy path's ``_queue_during_drain_enabled``):
-    the queued ack is promised only when a RESTART was requested and the
-    effective busy input mode says messages survive it (queue/steer). An
-    external quiesce (``_enter_external_drain`` sets ``_draining`` without
-    ``_restart_requested``) gets None — the caller's plain drain notice, the
-    same honest refusal the busy path gives under that state — because an
-    externally stopped gateway has no restart of its own that would replay
-    this snapshot; queueing would park the message for a comeback nobody
-    promised (it would replay only at some LATER restart).
-    """
-    if not getattr(runner, "_draining", False):
-        return None
-    enabled = getattr(runner, "_queue_during_drain_enabled", None)
-    if not callable(enabled):
-        return None
-    mode_of = getattr(runner, "_effective_busy_input_mode", None)
-    effective_mode = mode_of(event.source) if callable(mode_of) else None
-    if not enabled(effective_mode):
-        return None
-    if not record_drain_event(runner, session_key, event):
-        return None
-    runner._queue_or_replace_pending_event(session_key, event)
-    from gateway.platforms.base import DeferredReply
-
-    return DeferredReply(
-        f"⏳ Gateway {runner._status_action_gerund()} — queued for the next "
-        f"turn after it comes back."
-    )
-
-
-def queue_drain_busy_message(runner: Any, event: MessageEvent, session_key: str) -> bool:
-    """Busy-path drain queueing: durable snapshot first, in-memory FIFO second.
-
-    The busy path's own policy (``_queue_during_drain_enabled``) decides
-    whether this is called at all. Returns False when the durable append
-    failed (cap / serialize / IO) — the caller keeps the old refusal text.
-    """
-    if not record_drain_event(runner, session_key, event):
-        return False
-    runner._queue_or_replace_pending_event(session_key, event)
-    return True
-
-
-# ── startup replay ───────────────────────────────────────────────────────────
-
-
-def _parse_claim_records(
-    path: Path,
-) -> Optional[List[Tuple[str, MessageEvent, Dict[str, Any]]]]:
-    """Parse a claimed snapshot into ``(session_key, event, raw_record)`` triples.
-
-    The raw record rides along so a pass that cannot inject an event can
-    write the ORIGINAL bytes back without a re-serialize round trip. A
-    single unreadable RECORD only costs that record (dropped + logged) — the
-    good ones in the same file still replay, so one torn row cannot discard
-    a whole drain window's messages. An unreadable FILE is quarantined as a
-    ``.bad`` sibling (its bytes may be all that is left of a drain window)
-    and returns None: startup must proceed either way.
-    """
-    import json
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        raw_events = data.get("events") if isinstance(data, dict) else None
-        if not isinstance(raw_events, list):
-            raise ValueError("snapshot 'events' is not a list")
-    except Exception as exc:
-        logger.warning(
-            "Drain queue snapshot corrupt after claim (%s); quarantined and "
-            "continuing startup: %s",
-            path.name,
-            exc,
-        )
-        _quarantine_snapshot(path, str(exc))
-        return None
-    parsed: List[Tuple[str, MessageEvent, Dict[str, Any]]] = []
-    dropped = 0
-    for item in raw_events:
-        try:
-            session_key, event = deserialize_drain_event(item)
-            parsed.append((session_key, event, item))
-        except Exception as exc:
-            dropped += 1
-            logger.warning(
-                "Drain queue record unreadable; dropping that record and "
-                "replaying the rest: %s",
-                exc,
-            )
-    if dropped:
-        logger.warning(
-            "Dropped %d unreadable drain queue record(s) out of %d",
-            dropped,
-            len(raw_events),
-        )
-    return parsed
-
-
-def claim_drain_queue(
-    home: Optional[Path] = None,
-) -> Tuple[List[Tuple[str, MessageEvent, Dict[str, Any]]], bool]:
-    """Claim the snapshot atomically; it becomes the replay's dispatch ledger.
-
-    Returns ``(records, folded_live)``; an empty list means nothing to
-    replay. Claiming renames the live file to the claim marker, so an
-    injection crash can never be re-read as a fresh queue.
-
-    A claim marker left by a CRASHED replay is resumed, never discarded: it
-    holds exactly the records whose dispatch was never durably marked
-    (settled groups are rewritten out of it as they are consumed), so
-    dropping it would delete every acknowledged message the crash had not
-    yet delivered. A live snapshot written by a LATER drain window (after
-    that crash) was never claimed — its records are folded into this pass
-    and the file removed up-front, so a crash mid-pass cannot re-fold
-    already-settled records on the next boot.
-    """
-    claimed = claimed_drain_queue_path(home)
-    resuming = claimed.exists()
-    if resuming:
-        logger.warning(
-            "Resuming drain queue claim left by an interrupted replay "
-            "(records whose delivery was never confirmed): %s",
-            claimed.name,
-        )
-    else:
-        path = drain_queue_path(home)
-        if not path.exists():
-            return [], False
-        try:
-            os.replace(path, claimed)
-        except OSError:
-            logger.warning(
-                "Drain queue claim failed; skipping replay this boot", exc_info=True
-            )
-            return [], False
-    parsed = _parse_claim_records(claimed)
-    if parsed is None or not resuming:
-        return parsed or [], False
-    live = drain_queue_path(home)
-    if not live.exists():
-        return parsed, False
-    folded = _parse_claim_records(live)
-    if not folded:
-        return parsed, False
-    try:
-        live.unlink()
-    except OSError:
-        logger.debug("Could not remove folded drain queue snapshot", exc_info=True)
-    return parsed + folded, True
-
-
-def clear_claimed_drain_queue(home: Optional[Path] = None) -> None:
-    """Delete the claim marker after every record is settled (or retained)."""
-    try:
-        claimed_drain_queue_path(home).unlink(missing_ok=True)
-    except OSError:
-        logger.debug("Could not remove drain queue claim marker", exc_info=True)
-
-
-def _pop_replay_head(runner: Any, adapter: Any, session_key: str) -> Optional[MessageEvent]:
-    """Take the head event out of the FIFO so it runs as THIS turn.
-
-    Mirrors the /queue flush shape: the slot's event starts the turn, the
-    overflow tail stays parked for the post-turn drain to promote in arrival
-    order.
-    """
-    pending_slot = getattr(adapter, "_pending_messages", None)
-    if isinstance(pending_slot, dict):
-        head = pending_slot.pop(session_key, None)
-        if head is not None:
-            return head
-    peek_state = getattr(runner, "_peek_session_state", None)
-    _q_state = peek_state(session_key) if callable(peek_state) else None
-    conversation = getattr(_q_state, "conversation", None) if _q_state is not None else None
-    overflow = getattr(conversation, "queued_events", None) if conversation is not None else None
-    if overflow:
-        return overflow.pop(0)
-    return None
-
-
-def _rewrite_claim_ledger(
-    pending: Dict[str, List[Dict[str, Any]]], home: Optional[Path] = None
-) -> bool:
-    """Atomically persist the still-owed records as the claim ledger."""
-    records = [record for group in pending.values() for record in group]
-    try:
-        atomic_json_write(
-            claimed_drain_queue_path(home),
-            {"version": _SNAPSHOT_VERSION, "events": records},
-            indent=None,
-        )
-        return True
-    except Exception:
-        logger.error(
-            "Drain queue dispatch-ledger rewrite failed; %d message(s) stay "
-            "claimed and will be re-replayed on the next boot (a duplicate "
-            "turn is possible; a lost one is not)",
-            len(records),
-            exc_info=True,
-        )
-        return False
-
-
-def _mark_record_settled(
-    pending: Dict[str, List[Dict[str, Any]]],
-    session_key: str,
-    record: Dict[str, Any],
-    home: Optional[Path] = None,
-) -> None:
-    """Remove only the completed callback's original record from the claim.
-
-    Record identity, not session or message id, is the settlement key: a head
-    turn must never acknowledge its queued siblings. If the rewrite fails the
-    record returns to its exact position and the final write-back retains it.
-    """
-    records = pending.get(session_key)
-    if not records:
-        return
-    for index, candidate in enumerate(records):
-        if candidate is record:
-            break
-    else:
-        return
-    records.pop(index)
-    if not records:
-        pending.pop(session_key, None)
-    if _rewrite_claim_ledger(pending, home):
-        return
-    records.insert(index, record)
-    pending[session_key] = records
-
-
-def _unlink_folded_live(home: Optional[Path] = None) -> None:
-    """Remove a folded snapshot left on disk (its records joined the pass)."""
-    try:
-        drain_queue_path(home).unlink(missing_ok=True)
-    except OSError:
-        logger.debug("Could not remove folded drain queue snapshot", exc_info=True)
-
-
-def _write_back_retained_records(
-    records: List[Dict[str, Any]],
-    home: Optional[Path] = None,
-    folded_live: bool = False,
-) -> bool:
-    """Return never-injected records to the live snapshot (merge, never clobber).
-
-    The claim ledger is rewritten to hold exactly *records* and then renamed
-    onto the live path, so the retained set is durably retryable at the
-    platform's reconnect or the next boot, and never exists in both files at
-    once. ``folded_live`` marks a pass that folded (and removed) a later
-    live snapshot: that content is already accounted for in this pass, so
-    the merge must not read the path again and resurrect dispatched records.
-
-    Returns False when either step fails — the claim file then remains the
-    sole durable copy of the retained records, and the caller must KEEP it:
-    clearing it would delete the last copy. The next boot resumes the claim
-    once storage recovers.
-    """
-    claim = claimed_drain_queue_path(home)
-    path = drain_queue_path(home)
-    events: List[Dict[str, Any]] = [] if folded_live else _load_snapshot_events(path)
-    events.extend(records)
-    try:
-        atomic_json_write(
-            claim,
-            {"version": _SNAPSHOT_VERSION, "events": events},
-            indent=None,
-        )
-    except Exception:
-        logger.error(
-            "Drain queue write-back failed; keeping the claim file — it still "
-            "holds all %d retained message(s) and is retried once storage "
-            "recovers",
-            len(records),
-            exc_info=True,
-        )
-        return False
-    try:
-        os.replace(claim, path)
-    except OSError:
-        logger.error(
-            "Drain queue claim could not be released onto the live snapshot; "
-            "keeping it — it holds exactly the %d retained message(s)",
-            len(records),
-            exc_info=True,
-        )
-        return False
-    return True
-
-
-def _scheduler_will_resume(runner: Any, session_key: str) -> bool:
-    """True when the resume scheduler would resume ``session_key`` THIS boot.
-
-    Mirrors ``GatewayRunner._schedule_resume_pending_sessions`` exactly —
-    the candidate filter (``resume_pending``, not suspended, origin present,
-    reason in ``_AUTO_RESUME_REASONS``) plus the freshness gate on
-    ``last_resume_marked_at or updated_at``. Replay may only leave a queued
-    message for the scheduler when the scheduler will ACTUALLY take it: an
-    eligible reason alone is not enough, because a suspended entry or a
-    stale marker makes the scheduler skip the session — and then nobody
-    would ever consume the queued message.
-    """
-    from gateway.session_lifecycle import auto_continue_freshness_window
-
-    store = getattr(runner, "session_store", None)
-    if store is None:
-        return False
-    try:
-        with store._lock:  # noqa: SLF001 — same locked snapshot the scheduler reads
-            store._ensure_loaded_locked()  # noqa: SLF001
-            entries = store._entries  # noqa: SLF001
-            entry = entries.get(session_key) if isinstance(entries, dict) else None
-            resume_pending = bool(getattr(entry, "resume_pending", False))
-            suspended = bool(getattr(entry, "suspended", False))
-            origin = getattr(entry, "origin", None)
-            reason = getattr(entry, "resume_reason", None)
-            marker = getattr(entry, "last_resume_marked_at", None) or getattr(
-                entry, "updated_at", None
-            )
-    except Exception:
-        logger.debug(
-            "Drain replay: resume-pending lookup failed for %s; replay owns "
-            "the turn",
-            session_key,
-            exc_info=True,
-        )
-        return False
-    reasons = getattr(runner, "_AUTO_RESUME_REASONS", frozenset())
-    if not resume_pending or suspended or origin is None or reason not in reasons:
-        return False
-    if marker is not None:
-        window = auto_continue_freshness_window()
-        if (datetime.now() - marker).total_seconds() > window:
-            return False
-    return True
-
-
-def _canonical_replay_home(home: Optional[Path]) -> str:
-    base = Path(home) if home is not None else get_hermes_home()
-    return os.path.normcase(str(base.expanduser().resolve(strict=False)))
-
-
-def _replay_event_already_processed(runner: Any, session_key: str, event: MessageEvent) -> bool:
-    """Return true only when the transcript positively records this platform message."""
-    message_id = inbound_platform_message_id(event)
-    if not message_id:
-        return False
-    store = getattr(runner, "session_store", None)
-    if store is None:
-        return False
-    try:
-        session_id = store.peek_session_id(session_key)
-        if not session_id:
-            return False
-        return store.has_platform_message_id(session_id, message_id) is True
-    except Exception:
-        logger.debug(
-            "Drain replay: processed-message lookup failed for %s; retaining the record",
-            session_key,
-            exc_info=True,
-        )
-        return False
-
-
-def _no_adapter_record_age(record: Dict[str, Any], now: float) -> Optional[float]:
-    """Return a valid non-negative queue age, or None when expiry is unsafe."""
-    queued_at = record.get("queued_at")
-    if isinstance(queued_at, bool) or not isinstance(queued_at, (int, float)):
-        return None
-    age = now - float(queued_at)
-    if not math.isfinite(age) or age < 0:
-        return None
-    return age
-
-
-def _release_replay_owner(runner: Any, home_key: str, owner: Dict[str, Any]) -> None:
-    """Release only the owner's own slot; stale callbacks cannot remove a successor."""
-    owner["finished"] = True
-    owner["waiting"] = False
-    owners = getattr(runner, "_drain_replay_owners", None)
-    if isinstance(owners, dict) and owners.get(home_key) is owner:
-        owners.pop(home_key, None)
-
-
-def replay_drain_queue(
-    runner: Any,
-    platform: Optional[Platform] = None,
-    home: Optional[Path] = None,
-) -> int:
-    """Run one owned replay pass per canonical profile home on this runner.
-
-    Ownership is acquired BEFORE the rename claim. A reconnect that overlaps a
-    live startup/reconnect pass therefore cannot steal its ``.replaying.json``;
-    a later process still recovers that file through the normal crash path.
-    """
-    owners = getattr(runner, "_drain_replay_owners", None)
-    if not isinstance(owners, dict):
-        owners = {}
-        runner._drain_replay_owners = owners
-    home_key = _canonical_replay_home(home)
-    if home_key in owners:
-        logger.debug("Drain replay already active for profile home %s", home_key)
-        return 0
-    owner: Dict[str, Any] = {"waiting": False, "finished": False}
-    owners[home_key] = owner
-    try:
-        return _replay_drain_queue_owned(runner, owner, home_key, platform, home)
-    finally:
-        if not owner.get("waiting"):
-            _release_replay_owner(runner, home_key, owner)
-
-
-def _replay_drain_queue_owned(
-    runner: Any,
-    owner: Dict[str, Any],
-    home_key: str,
-    platform: Optional[Platform],
-    home: Optional[Path],
-) -> int:
-    """Replay a claimed snapshot and settle records from processing completion.
-
-    Every injected event receives a private callback bound to its ORIGINAL raw
-    record and this claim owner. ``SUCCESS`` or positive proof that its platform
-    message is already persisted removes that one record. Other outcomes stay
-    claimed for the final write-back; queued siblings are never settled by the
-    head turn. Events whose adapter is not live wait for reconnect/next boot,
-    subject to the bounded no-adapter age.
-    """
-    claimed, folded_live = claim_drain_queue(home)
-    if not claimed:
-        if claimed_drain_queue_path(home).exists():
-            # A claim whose records were all unreadable: nothing to deliver,
-            # but the marker must not outlive the pass (the next boot would
-            # treat the corpse as a crashed replay's ledger).
-            clear_claimed_drain_queue(home)
-        return 0
-
-    grouped: Dict[str, List[Tuple[MessageEvent, Dict[str, Any]]]] = {}
-    dropped_redeliveries = 0
-    for session_key, event, record in claimed:
-        group = grouped.setdefault(session_key, [])
-        message_id = str(getattr(event, "message_id", "") or "").strip()
-        if message_id and any(
-            str(getattr(existing, "message_id", "") or "").strip() == message_id
-            and not getattr(existing, "internal", False)
-            for existing, _existing_record in group
-        ):
-            dropped_redeliveries += 1
-            continue
-        group.append((event, record))
-    if dropped_redeliveries:
-        logger.info(
-            "Dropped %d re-delivered drain record(s) by message id — one "
-            "platform message, one replayed turn",
-            dropped_redeliveries,
-        )
-
-    # In-memory mirror of the on-disk claim. Successful per-event callbacks
-    # rewrite their own record out of BOTH; every other outcome stays here for
-    # the final retained-record write-back.
-    pending: Dict[str, List[Dict[str, Any]]] = {
-        session_key: [record for _event, record in items]
-        for session_key, items in grouped.items()
-    }
-    in_flight: set[int] = set()
-    had_in_flight = False
-    pass_finished = False
-
-    def _finish_replay_pass() -> List[Dict[str, Any]]:
-        nonlocal pass_finished
-        retained = [record for group in pending.values() for record in group]
-        if pass_finished:
-            return retained
-        pass_finished = True
-        try:
-            if retained and not _write_back_retained_records(
-                retained, home, folded_live and not had_in_flight
-            ):
-                # The claim remains the sole durable copy after write-back failure.
-                return retained
-            clear_claimed_drain_queue(home)
-            if folded_live and not retained and not had_in_flight:
-                _unlink_folded_live(home)
-            return retained
-        finally:
-            _release_replay_owner(runner, home_key, owner)
-
-    def _settle_replay(
-        session: str,
-        record: Dict[str, Any],
-        event: MessageEvent,
-        outcome: ProcessingOutcome,
-    ) -> None:
-        owners = getattr(runner, "_drain_replay_owners", None)
-        if (
-            owner.get("finished")
-            or not isinstance(owners, dict)
-            or owners.get(home_key) is not owner
-        ):
-            return
-        marker = id(record)
-        if marker not in in_flight:
-            return
-        in_flight.discard(marker)
-        if outcome is ProcessingOutcome.SUCCESS or _replay_event_already_processed(
-            runner, session, event
-        ):
-            _mark_record_settled(pending, session, record, home)
-        if not in_flight:
-            _finish_replay_pass()
-
-    injected: Dict[str, Any] = {}
-    for session_key, items in grouped.items():
-        source = items[0][0].source
-        if platform is not None and getattr(source, "platform", None) != platform:
-            # Scoped pass (platform reconnect): other platforms keep waiting.
-            continue
-        unprocessed_items: List[Tuple[MessageEvent, Dict[str, Any]]] = []
-        for event, record in items:
-            if _replay_event_already_processed(runner, session_key, event):
-                logger.info(
-                    "Settling drain-queued message for %s: message_id=%s was already processed",
-                    session_key,
-                    inbound_platform_message_id(event),
-                )
-                _mark_record_settled(pending, session_key, record, home)
-            else:
-                unprocessed_items.append((event, record))
-        items = unprocessed_items
-        if not items:
-            continue
-        adapter = runner._adapter_for_source(source)
-        if adapter is None:
-            retained_count = 0
-            now = time.time()
-            for _event, record in items:
-                age = _no_adapter_record_age(record, now)
-                if age is not None and age > _DRAIN_QUEUE_NO_ADAPTER_MAX_AGE_SECONDS:
-                    _mark_record_settled(pending, session_key, record, home)
-                    logger.warning(
-                        "Dropping drain-queued message for %s: no live adapter; queue age "
-                        "%.1f hours exceeds the %d-hour limit",
-                        session_key,
-                        age / 3600,
-                        _DRAIN_QUEUE_NO_ADAPTER_MAX_AGE_SECONDS // 3600,
-                    )
-                else:
-                    retained_count += 1
-            if retained_count:
-                logger.warning(
-                    "Retaining %d drain-queued message(s) for %s: no live adapter "
-                    "yet — retried on reconnect or at next boot",
-                    retained_count,
-                    session_key,
-                )
-            continue
-        for event, record in items:
-            # A replay injection is a re-delivery of an already-received
-            # platform message: mark the event so the model can tell it from
-            # a fresh user message and answer it once, not per copy.
-            event.redelivered = True
-            _receipt = drain_restart_receipt_for_record(record)
-            if _receipt is not None:
-                _mark_drain_restart_receipt(event, _receipt)
-            event._gateway_replay_completion = (
-                lambda outcome, key=session_key, original=record, replayed=event: _settle_replay(
-                    key, original, replayed, outcome
-                )
-            )
-            consumer = runner._queue_or_replace_pending_event(session_key, event)
-            if consumer is None:
-                # A capped or ownership-refused insertion has no processing
-                # callback to wait for. Keep its raw record durable, but do
-                # not pin the profile's replay owner on an immortal wait.
-                continue
-            in_flight.add(id(record))
-            had_in_flight = True
-            owner["waiting"] = True
-            injected[session_key] = adapter
-
-    def _forget_session_wait(session_key: str) -> None:
-        # No turn was dispatched to invoke these callbacks. Keep the records in
-        # pending, but let this pass write them back and release its owner.
-        for _event, record in grouped.get(session_key, []):
-            in_flight.discard(id(record))
-
-    started = 0
-    for session_key, adapter in injected.items():
-        if _scheduler_will_resume(runner, session_key):
-            # Scheduling is not completion: the injected records keep their
-            # callbacks and leave the claim only as their own turns finish.
-            continue
-        if runner._is_session_running(session_key):
-            # The live turn drains this FIFO. Busy scheduling likewise does
-            # not acknowledge any of the records queued behind it.
-            continue
-        head = _pop_replay_head(runner, adapter, session_key)
-        if head is None:
-            _forget_session_wait(session_key)
-            continue
-        task = _dispatch_replay_turn(runner, adapter, head, session_key)
-        if task:
-            started += 1
-        else:
-            _forget_session_wait(session_key)
-
-    retained = [] if in_flight else _finish_replay_pass()
-    if not injected:
-        return 0
-    logger.info(
-        "Replaying %d drain-queued message(s) across %d session(s)",
-        len(claimed) - len(retained),
-        len(injected),
-    )
-    return started
-
-
-def replay_drain_queues_for_profiles(
-    runner: Any, platform: Optional[Platform] = None
-) -> int:
-    """Startup/reconnect entry: replay every queue this gateway can own.
-
-    Under ``gateway.multiplex_profiles`` a secondary profile's inbound
-    handler runs inside that profile's home scope, so its drain snapshot is
-    written under the PROFILE home — one ambient replay would claim only the
-    launch home's file and the secondary queues would sit unclaimed until
-    some later gateway serving them alone happens to boot. Enumerate the
-    served profiles through the same chokepoint gateway startup uses for
-    adapter and MCP discovery (``profiles_to_serve``) and replay each home's
-    queue explicitly. Single-profile gateways keep exactly the one ambient
-    pass they always had.
-    """
-    config = getattr(runner, "config", None)
-    if not getattr(config, "multiplex_profiles", False):
-        return replay_drain_queue(runner, platform=platform)
-    from hermes_cli.profiles import profiles_to_serve
-
-    try:
-        served = list(
-            profiles_to_serve(
-                multiplex=True,
-                profile_allowlist=getattr(config, "multiplex_profile_allowlist", None),
-            )
-        )
-    except Exception:
-        logger.warning(
-            "Drain replay could not enumerate the multiplex profiles; "
-            "replaying the launch home only",
-            exc_info=True,
-        )
-        return replay_drain_queue(runner, platform=platform)
-    started = 0
-    for _profile_name, profile_home in served:
-        try:
-            started += replay_drain_queue(runner, platform=platform, home=profile_home)
-        except Exception:
-            logger.warning(
-                "Drain replay failed for profile home %s", profile_home, exc_info=True
-            )
-    return started
-
-
-def _dispatch_replay_turn(
-    runner: Any,
-    adapter: Any,
-    event: MessageEvent,
-    session_key: str,
-) -> bool:
-    """Start replay; durable settlement arrives through the event completion callback."""
-    import asyncio
-
-    from gateway.run import _AGENT_PENDING_SENTINEL
-
-    async def _run() -> None:
-        await runner._run_startup_resume_event(adapter, event, session_key)
-
-    # Same marker the startup-restore drain sets, so the (still closed)
-    # inbound restore gate lets the replayed turn through instead of
-    # queueing it behind itself.
-    try:
-        setattr(event, "_hermes_startup_restore_replay", True)
-    except Exception:
-        pass
-    # Pre-claim the runner slot exactly like _schedule_resume_pending_sessions:
-    # between task creation and the task's first await, an inbound message (or
-    # the resume scheduler about to run) must see the session as occupied.
-    try:
-        _resume_state = runner._session_state(session_key)
-        _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
-        _resume_state.turn.started_ts = time.time()
-        runner._persist_active_agents()
-    except Exception:
-        logger.debug(
-            "Drain replay pre-claim failed for %s; dispatching without it",
-            session_key,
-            exc_info=True,
-        )
-    try:
-        task = asyncio.create_task(_run())
-    except Exception:
-        logger.warning("Drain replay turn dispatch failed for %s", session_key, exc_info=True)
-        # The pre-claim above holds the running-agent slot and the task that
-        # would normally clear it was never created — release it here or the
-        # session stays "running" until the process dies.
-        release = getattr(runner, "_release_running_agent_state", None)
-        if callable(release):
-            try:
-                release(session_key)
-            except Exception:
-                logger.debug(
-                    "Drain replay slot release failed for %s", session_key, exc_info=True
-                )
-        return False
-    background = getattr(runner, "_background_tasks", None)
-    if background is not None:
-        background.add(task)
-        task.add_done_callback(background.discard)
-    if getattr(runner, "_startup_restore_in_progress", False):
-        tasks = getattr(runner, "_startup_restore_tasks", None)
-        if tasks is None:
-            tasks = []
-            runner._startup_restore_tasks = tasks
-        tasks.append(task)
-    return True
