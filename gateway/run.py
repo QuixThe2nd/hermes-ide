@@ -5548,6 +5548,13 @@ def _normalize_empty_agent_response(
     generic provider-failed reply and the user never sees /compact. Curated agent text survives.
     """
     is_overflow = is_context_overflow_failure_result(agent_result, history_len)
+    if _exempt_from_empty_response_normalization(agent_result):
+        # Typed control outcomes (forced-recovery victim, committed gateway
+        # restart) are contractually silent: their emptiness is not a failure,
+        # so no fabricated prose and no retry hint. Guarded HERE — at the point
+        # the error text is produced — so every caller (the run_turn site and
+        # the outer ``_hmwa_shape_agent_response`` boundary alike) is covered.
+        return response
     if response and not (is_overflow and _looks_like_gateway_provider_error(response)):
         return response
 
