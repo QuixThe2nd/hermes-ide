@@ -2,12 +2,14 @@
 
 The restart pipeline earns deletion of the predecessor-side drain queue only
 if every transport routes NEW user messages away from a draining predecessor.
-Discord attaches through the multi-generation hub: once the overlap successor
-has attached, a new user message that reaches the draining predecessor is
-returned to the hub (``handoff_event``) — never queued on the predecessor and
-never silently dropped. When the successor has NOT attached (hub spawn
-failed / never became ready), the predecessor keeps the durable drain
-snapshot as the safety net — the one case the queue legitimately serves.
+Discord attaches through the multi-generation hub: a new user message that
+reaches the draining predecessor is returned to the hub (``handoff_event``) —
+never queued on the predecessor and never silently dropped. This holds in the
+PRE-ATTACH window too: the hub retains a handed-off record with no eligible
+generation and replays it when the successor attaches, so a restart stays
+invisible to the user. The durable drain snapshot stays as the crash-only
+fallback — a hub that refuses every handoff past the successor-attach
+deadline (hub died, connection gone).
 """
 
 import json
@@ -97,7 +99,7 @@ def _make_gate_runner(adapter):
     return runner
 
 
-def _hub_adapter(*, successor_ready: bool):
+def _hub_adapter(*, successor_ready: bool, router=None):
     adapter = DiscordHubClientAdapter(
         PlatformConfig(token="fake-token", typing_indicator=False)
     )
@@ -106,6 +108,12 @@ def _hub_adapter(*, successor_ready: bool):
     async def fake_call(method, params=None):
         assert method == "handoff", f"unexpected hub RPC: {method}"
         handoffs.append(params or {})
+        if router is not None:
+            return await router.handoff(
+                params["session_key"], adapter._generation_id,
+                int(params["version"]), params["record"],
+                target_pid=params.get("target_pid"),
+            )
         return True
 
     adapter._call = fake_call
@@ -141,29 +149,90 @@ async def test_new_user_message_mid_drain_hands_off_to_successor_never_queues():
 
 
 @pytest.mark.asyncio
-async def test_no_ready_successor_falls_back_to_durable_queue_not_a_silent_drop():
-    """Successor NOT attached (spawn failed / still pending): the hub handoff
-    is not offered, and the predecessor must not silently process or drop the
-    message — the durable drain snapshot is the delivery vehicle the
-    successor replays at startup. This is the shrunk case that keeps the
-    predecessor-side queue alive."""
-    adapter, handoffs = _hub_adapter(successor_ready=False)
+async def test_pre_attach_message_parks_at_hub_and_reaches_the_successor():
+    """Successor NOT yet attached (the overlap pre-attach window): the hub
+    accepts the handoff anyway — it retains the record for the successor and
+    replays it on attach — so the restart stays invisible: no drain-queue
+    snapshot, no re-delivery banner, the successor handles the message
+    directly once it attaches."""
+    from plugins.platforms.discord.hub import DiscordSessionRouter
+
+    router = DiscordSessionRouter()
+    predecessor_received = []
+    successor_received = []
+
+    adapter, handoffs = _hub_adapter(successor_ready=False, router=router)
+    router.attach(adapter._generation_id, lambda key, record: _record(
+        predecessor_received, key, record))
     adapter.set_message_handler(AsyncMock())
     handler = adapter._message_handler
     runner = _make_gate_runner(adapter)
     runner._draining = True
     runner._restart_requested = True
     runner._busy_input_mode = "queue"
-    event = _make_event("no successor ever attached")
+    event = _make_event("parked during the pre-attach window")
+    session_key = runner._session_key_for_source(event.source)
+    # Establish the session's hub version the way the delivering hub does: the
+    # hub routes the original inbound delivery to the predecessor generation.
+    assert await router.route(session_key, {
+        "session_key": session_key, "event": {"text": "original delivery"},
+    }) == adapter._generation_id
+    adapter._session_versions[session_key] = predecessor_received[0][1]["_discord_hub_version"]
+
+    result = await runner._handle_message(event)
+
+    assert result is None  # the hub owns the event; the predecessor acks nothing
+    assert len(handoffs) == 1
+    handler.assert_not_called()  # the predecessor starts no turn for it
+    assert not adapter._pending_messages
+    assert not drain_queue_path().exists()
+    assert len(predecessor_received) == 1  # the handoff never re-delivered to it
+    assert len(router.undelivered) == 1  # parked at the hub, unacknowledged
+
+    # The successor generation attaches later and claims the parked record.
+    router.attach("successor-gen", lambda key, record: _record(
+        successor_received, key, record))
+    assert await router.replay_undelivered() == 1
+    assert router.undelivered == []
+    assert len(successor_received) == 1
+    assert successor_received[0][0] == session_key
+    assert successor_received[0][1]["event"]["text"] == "parked during the pre-attach window"
+
+
+async def _record(sink, key, record):
+    sink.append((key, record))
+
+
+@pytest.mark.asyncio
+async def test_dead_hub_falls_back_to_durable_queue_after_attach_deadline():
+    """Crash-only fallback: when the hub itself refuses every handoff (hub
+    died, connection gone) and no successor ever attaches, the predecessor
+    waits out the successor-attach deadline and only then leaves the event to
+    the durable drain snapshot — never a silent drop."""
+    adapter, handoffs = _hub_adapter(successor_ready=False)
+    adapter.overlap_successor_attach_timeout = 0.02
+
+    async def dead_hub(method, params=None):
+        handoffs.append(params or {})
+        raise ConnectionError("Discord hub is not attached")
+
+    adapter._call = dead_hub
+    adapter.set_message_handler(AsyncMock())
+    handler = adapter._message_handler
+    runner = _make_gate_runner(adapter)
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    event = _make_event("hub is gone")
 
     result = await runner._handle_message(event)
 
     assert isinstance(result, str) and QUEUED_MARKER in result
-    assert handoffs == []  # readiness gate refused before any hub RPC
-    handler.assert_not_called()  # the predecessor starts no turn for it
+    assert len(handoffs) >= 2  # retried past the first refusal before giving up
+    handler.assert_not_called()
     session_key = runner._session_key_for_source(event.source)
     events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
-    assert [e["event"]["text"] for e in events] == ["no successor ever attached"]
+    assert [e["event"]["text"] for e in events] == ["hub is gone"]
     assert events[0]["session_key"] == session_key
     assert session_key in adapter._pending_messages
 
