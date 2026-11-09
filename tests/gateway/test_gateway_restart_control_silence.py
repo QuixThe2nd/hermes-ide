@@ -24,6 +24,8 @@ boundaries consume.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from gateway.config import Platform
 from gateway.run import (
     _exempt_from_empty_response_normalization,
@@ -95,6 +97,19 @@ class TestEmptyResponseNormalizationExemption:
             {"final_response": "", "api_calls": 1}, "", history_len=3
         )
         assert prose.strip() != ""
+
+
+def test_normalizer_returns_silence_for_restart_control():
+    """The fabricator itself must stand down for the typed restart bit — every
+    caller (including the outer ``_hmwa_shape_agent_response`` boundary) funnels
+    through ``_normalize_empty_agent_response``, so the guard belongs where the
+    error text is produced."""
+    out = _normalize_empty_agent_response(
+        {"final_response": "", "api_calls": 1, "gateway_restart_queued": True},
+        "",
+        history_len=3,
+    )
+    assert out == ""
 
 
 # ---------------------------------------------------------------------------
@@ -224,3 +239,53 @@ def test_ordinary_empty_turn_still_gets_normalized_prose():
     assert result["final_response"].strip() != ""
     assert "no response was generated" in result["final_response"]
     assert not result.get("gateway_restart_queued")
+
+
+# ---------------------------------------------------------------------------
+# Outer handler: _hmwa_shape_agent_response must honor the typed bit too
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_outer_shape_agent_response_keeps_restart_silence():
+    """The outer empty-response boundary (``_hmwa_shape_agent_response``, the
+    messaging-webhook twin of the run_turn site) runs the normalizer WITHOUT
+    its own exemption guard — the restart-control silence must survive it
+    anyway, or the user sees the generic dead-turn error after the restart
+    bounce."""
+    from unittest.mock import AsyncMock
+
+    from gateway.run_turn import GatewayTurnMixin
+
+    runner = MagicMock()
+    runner._is_intentional_silence = GatewayTurnMixin._is_intentional_silence
+    runner._clear_restart_failure_count = AsyncMock()
+    runner.async_session_store = MagicMock()
+    runner.async_session_store.clear_resume_pending = AsyncMock()
+
+    source = SessionSource(
+        platform=Platform.LOCAL, chat_id="c", user_id="u"
+    )
+    session_entry = SimpleNamespace(session_id="s")
+    agent_result = {
+        "final_response": "",
+        "api_calls": 1,
+        "messages": [],
+        "gateway_restart_queued": True,
+    }
+
+    response, _silence, _messages = await GatewayTurnMixin._hmwa_shape_agent_response(
+        runner,
+        agent_result,
+        source,
+        [],
+        session_entry,
+        "sk-restart",
+        "qk",
+        0,
+        "s",
+        "local",
+        0.0,
+    )
+    assert response == ""
+    assert "no response was generated" not in response

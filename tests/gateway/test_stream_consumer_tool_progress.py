@@ -368,6 +368,60 @@ async def _drive(consumer, steps):
             pass
 
 
+class TestPendingToolLinesOnFinalTick:
+    """got_done lands in the SAME drain as the tool line (the restart turn's
+    shape: prose, then the tool call as the last action, then done — the
+    edit-interval debounce never fires an interim edit). The final frame must
+    still carry the composed Strategy-B frame so the tool call stays visible."""
+
+    @pytest.mark.asyncio
+    async def test_tool_line_then_immediate_done_composes_final(self):
+        consumer, adapter = _make_edit_consumer()
+        # Everything queued before the drain loop runs: one got_done tick.
+        consumer.on_delta("Restarting the agent now.")
+        consumer.on_tool_progress("🔄 restart: restarting the agent")
+        consumer.finish()
+
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.4)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        delivered = (
+            [c.kwargs.get("content", "") for c in adapter.send.await_args_list]
+            + [c.kwargs.get("content", "") for c in adapter.edit_message.await_args_list]
+        )
+        assert any(
+            "restart" in c and "Restarting the agent now." in c for c in delivered
+        ), f"expected a composed final frame (text + tool line), got: {delivered}"
+
+    @pytest.mark.asyncio
+    async def test_tool_only_turn_then_immediate_done_shows_tool_box(self):
+        """Tool-only turn (no text at all): the tool box itself is the final."""
+        consumer, adapter = _make_edit_consumer()
+        consumer.on_tool_progress("🔄 restart: restarting the agent")
+        consumer.finish()
+
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.4)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        delivered = (
+            [c.kwargs.get("content", "") for c in adapter.send.await_args_list]
+            + [c.kwargs.get("content", "") for c in adapter.edit_message.await_args_list]
+        )
+        assert any("restart" in c for c in delivered), (
+            f"expected the tool box in the final frame, got: {delivered}"
+        )
+
+
 class TestToolBubbleAcrossSegmentBreaks:
     """Consecutive tool-only rounds keep editing ONE progress bubble.
 

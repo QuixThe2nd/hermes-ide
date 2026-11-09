@@ -941,6 +941,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 display_text = self._compose_frame_content()
             if display_text and self.cfg.cursor:
                 display_text += self.cfg.cursor
+        elif self._tool_progress_lines:
+            # got_done / segment break landed in the SAME drain as the tool line
+            # (the restart shape: the tool call is the turn's last action, so the
+            # edit-interval debounce never fired an interim edit). Compose the
+            # same Strategy-B frame here or the pending tool call is silently
+            # dropped from the final bubble. Draft transports never accumulate
+            # tool lines, so prefix-stable draft frames are unaffected.
+            display_text = self._compose_frame_content()
 
         # A got_done FRESH send via the draft transport already carries finalize=True,
         # unlike an EDIT, which REQUIRES_EDIT_FINALIZE adapters still need a pass for.
