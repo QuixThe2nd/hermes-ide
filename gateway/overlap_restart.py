@@ -21,6 +21,9 @@ OVERLAP_PREDECESSOR_PID_ENV = "HERMES_OVERLAP_PREDECESSOR_PID"
 GATEWAY_CLAIM_SUCCESSOR_PENDING = "successor-pending"
 SUCCESSOR_WATCH_POLL_SECONDS = 2.0
 SUCCESSOR_RESPAWN_BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0, 30.0)
+# Hub-capable adapters expose their own attach timeout; this is the fallback
+# for adapters that do not.
+DEFAULT_OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS = 300.0
 
 
 # The launch markers are popped from os.environ right after the PID claim (so
@@ -262,23 +265,49 @@ async def handoff_overlap_event(
     target_pid: Optional[int] = None,
     require_successor_ready: bool = False,
 ) -> bool:
-    """Return an unowned event to its shared hub instead of dropping or queueing it."""
+    """Return an unowned event to its shared hub instead of dropping or queueing it.
+
+    Before the successor generation has attached, the hub still accepts the
+    handoff: it retains the record with no eligible delivery generation and
+    replays it on the successor's attach. The handoff is therefore attempted
+    immediately even while ``admits_owned_work_while_draining`` is still False.
+    Only a handoff the hub itself refused (a newer delivery won the version
+    fence, the hub connection died) is retried, bounded by the
+    successor-attach deadline; after that deadline the event may fall through
+    to the caller's durable drain queue — the crash-only fallback for a hub
+    that will never route it.
+    """
     adapter = _overlap_adapter(runner, event.source)
     if adapter is None:
         return False
     ready = getattr(adapter, "admits_owned_work_while_draining", None)
-    if require_successor_ready and (not callable(ready) or not ready(event.source)):
-        return False
     handoff = getattr(adapter, "handoff_event", None)
     if not callable(handoff):
         return False
+    park_deadline: Optional[float] = None
     retry_delay = 0.05
     while True:
         if await handoff(event, session_key, target_pid=target_pid) is True:
             return True
         event._gateway_accepted = False
-        if not require_successor_ready or not ready(event.source):
+        if not require_successor_ready:
             return False
+        if callable(ready) and ready(event.source):
+            # Ready successor: an unbounded retry is correct below.
+            park_deadline = None
+        else:
+            if park_deadline is None:
+                park_deadline = time.monotonic() + float(getattr(
+                    adapter, "overlap_successor_attach_timeout",
+                    DEFAULT_OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS,
+                ))
+            elif time.monotonic() >= park_deadline:
+                logger.error(
+                    "Hub handoff for %s gave up after the successor-attach "
+                    "deadline; leaving the event to the durable drain queue",
+                    session_key,
+                )
+                return False
         # A newer delivery can win the version fence, or the hub connection can
         # fail transiently. Keep the event live and unacknowledged until routing
         # succeeds; falling through would recreate the drain ack/queue bug.
