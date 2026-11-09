@@ -46,6 +46,10 @@ class MatrixHubClientAdapter(MatrixAdapter):
     """Keep prompt/session state locally; never open Matrix sync or crypto locally."""
 
     supports_overlap_restart = True
+    # Read by gateway.overlap_restart.handoff_overlap_event: how long a
+    # draining predecessor keeps retrying a hub-parked handoff before the
+    # durable drain queue may claim the event.
+    overlap_successor_attach_timeout = _OVERLAP_SUCCESSOR_ATTACH_TIMEOUT_SECONDS
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config)

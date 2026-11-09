@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -529,6 +530,117 @@ def test_overlap_admission_opens_only_after_successor_attaches(tmp_path):
             await server.stop()
 
     run(scenario())
+
+
+@pytest.mark.asyncio
+async def test_active_busy_event_before_successor_attach_parks_at_hub():
+    """Pre-attach overlap window: a busy-session follow-up on a draining
+    predecessor is handed to the hub, which retains it for the successor —
+    no drain-queue snapshot, no re-delivery banner."""
+    from gateway.run_drain_queue import drain_queue_path
+    from tests.gateway.restart_test_helpers import make_restart_runner
+
+    router = DiscordSessionRouter()
+    predecessor_received = []
+    successor_received = []
+
+    adapter = DiscordHubClientAdapter(PlatformConfig(token="fake-token"))
+    router.attach(adapter._generation_id, lambda key, record: _hub_sink_record(
+        predecessor_received, key, record))
+    runner, _ = make_restart_runner(adapter, platform=Platform.DISCORD)
+    adapter.gateway_runner = runner
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    adapter._running = True
+    # Successor NOT attached yet: readiness gate is shut, the hub is the park.
+    adapter._call = _router_rpc(router, adapter)
+    adapter._send_with_retry = AsyncMock()
+
+    source = SessionSource(
+        platform=Platform.DISCORD, chat_id="42", chat_type="dm", user_id="7"
+    )
+    event = MessageEvent(text="during the pre-attach window", source=source, message_id="busy-1")
+    session_key = adapter._event_session_key(event)
+    assert await router.route(session_key, {
+        "session_key": session_key, "event": {"text": "original delivery"},
+    }) == adapter._generation_id
+    adapter._session_versions[session_key] = (
+        predecessor_received[0][1]["_discord_hub_version"])
+
+    await adapter._handle_message_while_active(event, session_key)
+
+    assert event._gateway_accepted is True
+    assert len(router.undelivered) == 1  # parked at the hub, unacknowledged
+    assert len(predecessor_received) == 1  # never re-delivered to the predecessor
+    assert not drain_queue_path().exists()
+    adapter._send_with_retry.assert_not_awaited()
+
+    # The successor attaches and claims the parked record.
+    router.attach("successor-gen", lambda key, record: _hub_sink_record(
+        successor_received, key, record))
+    assert await router.replay_undelivered() == 1
+    assert len(successor_received) == 1
+    assert successor_received[0][1]["event"]["text"] == "during the pre-attach window"
+
+
+async def _hub_sink_record(sink, session_key, record):
+    sink.append((session_key, record))
+
+
+@pytest.mark.asyncio
+async def test_unready_handoff_retries_until_attach_deadline_then_falls_through():
+    """A hub that keeps refusing with no attached successor is retried up to
+    the successor-attach deadline; only then may the event fall through to
+    the caller's durable drain queue (the crash-only fallback)."""
+    from gateway.overlap_restart import handoff_overlap_event
+
+    attempts = []
+
+    async def refusing_handoff(event, session_key, target_pid=None):
+        attempts.append(session_key)
+        return False
+
+    adapter = SimpleNamespace(
+        supports_overlap_restart=True,
+        admits_owned_work_while_draining=lambda source=None: False,
+        handoff_event=refusing_handoff,
+        overlap_successor_attach_timeout=0.03,
+    )
+    runner = SimpleNamespace(
+        _intake_adapter_for=lambda source: adapter,
+        _session_key_for_source=lambda source: "agent:main:discord:42",
+    )
+    event = SimpleNamespace(source=SimpleNamespace())
+
+    assert not await handoff_overlap_event(
+        runner, event, "agent:main:discord:42", require_successor_ready=True,
+    )
+    assert len(attempts) >= 2  # first refusal did not fall through immediately
+    assert event._gateway_accepted is False
+
+
+def _router_rpc(router, adapter):
+    async def rpc(method, params=None):
+        params = params or {}
+        if method == "handoff":
+            return await router.handoff(
+                params["session_key"], adapter._generation_id,
+                int(params["version"]), params["record"],
+                target_pid=params.get("target_pid"),
+            )
+        if method == "route":
+            return await router.route(params["session_key"], params["record"])
+        if method == "register":
+            return await router.register(params["session_key"], adapter._generation_id)
+        if method == "unregister":
+            return router.unregister(
+                params["session_key"], adapter._generation_id, params.get("version")
+            )
+        if method == "ping":
+            return {"pid": os.getpid(), "current_generation": router.current_generation}
+        raise AssertionError(f"unexpected hub RPC: {method}")
+    return rpc
 
 
 @pytest.mark.asyncio
