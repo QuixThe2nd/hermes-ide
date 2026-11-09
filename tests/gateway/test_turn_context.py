@@ -934,6 +934,33 @@ class TestTurnRunner:
         assert messages
         assert all(len(message) <= message_limit for message in messages)
 
+    @pytest.mark.parametrize(
+        ("recalled_count", "expected_heading"),
+        [
+            (1, "🧠 Injecting 1 memory"),
+            (5, "🧠 Injecting 5 memories"),
+            (0, "🧠 Injecting Memory"),
+            (None, "🧠 Injecting Memory"),
+            (True, "🧠 Injecting Memory"),
+        ],
+    )
+    def test_context_injection_counted_memory_heading(self, recalled_count, expected_heading):
+        from gateway.run import _format_context_injection_progress
+
+        content = "<memory-context>observed fact</memory-context>"
+        messages = _format_context_injection_progress(
+            content=content,
+            injected_chars=len(content),
+            sources=["memory"],
+            message_limit=2000,
+            supports_code_blocks=True,
+            include_content=False,
+            recalled_count=recalled_count,
+        )
+
+        assert messages == [expected_heading]
+        assert "Remembering" not in "\n".join(messages)
+
     def test_context_injection_mixed_timestamp_and_memory_splits_standalone_time_line(self):
         from gateway.run import _format_context_injection_progress
 
