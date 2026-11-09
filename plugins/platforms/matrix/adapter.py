@@ -369,6 +369,7 @@ _MatrixModelPickerPrompt = _MatrixChoicePickerPrompt = _MatrixPickerPrompt
 # (#53026).
 DEFAULT_MAX_MESSAGE_LENGTH = 16000
 MATRIX_MAX_MESSAGE_LENGTH_CEILING = 65535
+_FINAL_ANSWER_PING_MXID = "@parsa:yazdani.au"
 
 
 def _resolve_max_message_length(config) -> int:
@@ -1386,6 +1387,12 @@ class MatrixAdapter(BasePlatformAdapter):
             self._client = None
         logger.info("Matrix: disconnected")
 
+    def prefers_fresh_final_streaming(
+        self, content: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Use a fresh final send: an m.replace edit cannot create the reply notification."""
+        return True
+
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -1393,8 +1400,18 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=True)
         reply_to = self._inbox_router.child_reply_anchor(chat_id, reply_to)
         last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+        wants_final_ping = bool(
+            metadata and metadata.get("notify") and not metadata.get("_interim_send")
+        )
+        for chunk_index, chunk in enumerate(
+            self.truncate_message(self.format_message(content), self.max_message_length)
+        ):
             msg_content = self._build_text_message_content(chunk)
+            if chunk_index == 0 and wants_final_ping:
+                mentions = msg_content.setdefault("m.mentions", {})
+                user_ids = mentions.setdefault("user_ids", [])
+                if _FINAL_ANSWER_PING_MXID not in user_ids:
+                    user_ids.append(_FINAL_ANSWER_PING_MXID)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
