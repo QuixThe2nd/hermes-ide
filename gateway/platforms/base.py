@@ -1695,18 +1695,6 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         incoming_has_media = bool(event.media_urls)
         # Durable-ownership boundary (drain-restart snapshots own the stamped side and
         # replay it after the bounce).  Chosen mechanism: block cross-boundary merges.
-        # An unstamped live event merging into a snapshot-owned head would diverge the
-        # live head from the durable copy its replay re-admits — so return unmerged and
-        # let the snapshot stay the head's one owner.  Conversely a stamped event
-        # merging into an unmarked head must mark the surviving head, or the merged
-        # (partly snapshot-owned) head reads as unowned, is processed live before
-        # shutdown, and its incoming portion is ALSO replayed after restart.
-        incoming_owned = bool(getattr(event, "_drain_snapshot_owned", False))
-        if bool(getattr(existing, "_drain_snapshot_owned", False)) and not incoming_owned:
-            return None
-        if incoming_owned:
-            existing._drain_snapshot_owned = True
-
         def _padded_inline_flags(msg: MessageEvent) -> List[Optional[bool]]:
             flags = list(getattr(msg, "media_text_inlined", []) or [])
             return flags + [None] * (len(msg.media_urls) - len(flags))
@@ -3892,20 +3880,6 @@ class BasePlatformAdapter(ABC):
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
     # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.
 
-    def _pending_event_is_drain_snapshot_owned(self, session_key: str) -> bool:
-        """True when the session's parked pending event is a drain-admission mirror.
-
-        ``record_drain_event`` (gateway/run_drain_queue.py) stamps each event the
-        durable drain snapshot owns (``_drain_snapshot_owned``) at drain-time
-        admission. The background pending-turn drain must leave such mirrors
-        parked for the post-bounce replay: running one re-enters the drain gate,
-        which re-records and re-acks the SAME event — the restart-drain
-        completion-amplification loop (one admitted completion filled the
-        snapshot to cap and replayed as that many turns).
-        """
-        pending_event = self._pending_messages.get(session_key)
-        return bool(getattr(pending_event, "_drain_snapshot_owned", False))
-
     def _release_session_guard(self, session_key: str, *, guard: Optional[asyncio.Event] = None) -> None:
         """Release the session guard; with ``guard`` given, only if the entry is still that exact
         Event (an old task's unwind must not clear the guard a reset-like command swapped in)."""
@@ -3993,12 +3967,7 @@ class BasePlatformAdapter(ABC):
         """Tail of /stop, /new, /reset: release the command-scoped guard, then
         spawn a fresh processing task for any follow-up queued meanwhile."""
         await self._flush_text_debounce_now(session_key)
-        # A drain-snapshot-owned mirror stays parked for the post-bounce replay.
-        pending_event = (
-            None
-            if self._pending_event_is_drain_snapshot_owned(session_key)
-            else self._pending_messages.pop(session_key, None)
-        )
+        pending_event = self._pending_messages.pop(session_key, None)
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is not None:
             self._start_session_processing(pending_event, session_key)
@@ -4493,12 +4462,7 @@ class BasePlatformAdapter(ABC):
         drop: re-queue it if another task already owns the session (drain handoff), else spawn the
         drain task and leave it the guard. Nothing pending: release the guard only if we still own
         it."""
-        # A drain-snapshot-owned mirror stays parked for the post-bounce replay.
-        late_pending = (
-            None
-            if self._pending_event_is_drain_snapshot_owned(session_key)
-            else self._pending_messages.pop(session_key, None)
-        )
+        late_pending = self._pending_messages.pop(session_key, None)
         current_task = asyncio.current_task()
         if late_pending is not None:
             existing_task = self._session_tasks.get(session_key)
@@ -4619,17 +4583,7 @@ class BasePlatformAdapter(ABC):
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
-            if (
-                session_key in self._pending_messages
-                and self._pending_event_is_drain_snapshot_owned(session_key)
-            ):
-                # Drain-snapshot-owned mirror: leave it parked for the
-                # post-bounce replay; this task finishes normally below.
-                logger.debug(
-                    "[%s] Leaving drain-snapshot-owned pending event parked "
-                    "for session %s (durable queue owns it)",
-                    self.name, session_key)
-            elif session_key in self._pending_messages:
+            if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
@@ -4733,10 +4687,7 @@ class BasePlatformAdapter(ABC):
             # in self._background_tasks now.  Re-check.
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
             from gateway.shutdown_flush import flush_pending_to_file
-            # Snapshot-owned mirrors stay out: the durable drain snapshot already owns
-            # them, and spooling here too would replay them twice after restart.
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown",
-                                  skip_attrs=("_drain_snapshot_owned",))
+            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,

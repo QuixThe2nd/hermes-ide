@@ -2605,7 +2605,6 @@ class GatewayShutdownMixin:
             from gateway.shutdown_flush import flush_pending_to_file
             flush_pending_to_file(
                 dict(self._pending_messages), reason="shutdown",
-                skip_attrs=("_drain_snapshot_owned",),
                 restart_requested=bool(getattr(self, "_restart_requested", False)),
             )
         # The overflow FIFO tail lives in SessionState.conversation.queued_events — flush it too.

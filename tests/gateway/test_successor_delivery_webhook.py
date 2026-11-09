@@ -1,12 +1,10 @@
-"""Successor delivery during a restart window: webhook (no overlap support).
+"""Webhook inbound during a restart drain (no overlap support).
 
-The webhook transport has NO overlap/hub attachment: inbound webhooks keep
-arriving at the predecessor for as long as it holds the listener — it still
-feeds the predecessor mid-drain. There is no successor handoff path for it,
-so the durable drain snapshot IS its successor-delivery vehicle: the
-predecessor durably records the message (never silently processes it) and
-the successor process replays it into a real turn at startup. This is the
-transport that shrinks the predecessor-side queue instead of deleting it.
+The webhook transport has NO overlap/hub attachment, so a webhook that fires
+while the predecessor drains gets the honest refusal — a restart never
+durably snapshots another endpoint's drain-window message (user contract,
+Nov 2026): no file is written, no successor turn is synthesized, and the
+caller's retry re-delivers after the bounce.
 """
 
 import asyncio
@@ -20,16 +18,13 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.platforms.event import ProcessingOutcome
-from gateway.run_drain_queue import claimed_drain_queue_path, drain_queue_path, replay_drain_queue
+from gateway.run_drain_queue import claimed_drain_queue_path, drain_queue_path
 from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import (
     RestartTestAdapter,
     make_restart_runner,
     make_restart_source,
 )
-
-QUEUED_MARKER = "queued for the next turn after it comes back"
-
 
 def _make_event(text: str):
     return MessageEvent(
@@ -107,11 +102,10 @@ async def _settle(runner) -> None:
 
 
 @pytest.mark.asyncio
-async def test_webhook_message_mid_drain_is_durably_queued_never_processed():
-    """A webhook message that reaches the draining predecessor is recorded in
-    the durable drain snapshot and answered with the queued ack — the
-    predecessor starts no turn for it (that would be "queued for later
-    predecessor processing", exactly what must never happen silently)."""
+async def test_webhook_message_mid_drain_is_refused_never_snapshotted():
+    """A webhook message that reaches the draining predecessor is answered
+    with the honest drain refusal — the predecessor starts no turn for it
+    and never writes a durable queue of it."""
     runner, adapter = _make_gate_runner()
     handler = adapter._message_handler
     runner._draining = True
@@ -120,52 +114,14 @@ async def test_webhook_message_mid_drain_is_durably_queued_never_processed():
 
     result = await runner._handle_message(_make_event("hook arrived mid-drain"))
 
-    assert isinstance(result, str) and QUEUED_MARKER in result
+    assert isinstance(result, str) and "not accepting new work" in result
     handler.assert_not_called()  # the predecessor never starts the turn
     session_key = runner._session_key_for_source(
         make_restart_source(platform=Platform.WEBHOOK)
     )
-    events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
-    assert [e["event"]["text"] for e in events] == ["hook arrived mid-drain"]
-    assert events[0]["source"]["platform"] == "webhook"
-    assert events[0]["session_key"] == session_key
-    assert session_key in adapter._pending_messages
-
-
-@pytest.mark.asyncio
-async def test_successor_process_replays_the_webhook_message_into_a_turn():
-    """End to end: the successor process (fresh runner, same HERMES_HOME)
-    replays the webhook message the draining predecessor recorded — one real
-    turn on the successor, then the snapshot is fully settled."""
-    predecessor, _padapter = _make_gate_runner()
-    predecessor._draining = True
-    predecessor._restart_requested = True
-    predecessor._busy_input_mode = "queue"
-    result = await predecessor._handle_message(_make_event("hook for the successor"))
-    assert isinstance(result, str) and QUEUED_MARKER in result
-    session_key = predecessor._session_key_for_source(
-        make_restart_source(platform=Platform.WEBHOOK)
-    )
-    # The in-memory FIFO dies with the predecessor process; only the snapshot
-    # survives — exactly what the successor boots from.
-
-    successor, successor_adapter = make_restart_runner(
-        adapter=RestartTestAdapter(Platform.WEBHOOK), platform=Platform.WEBHOOK
-    )
-    successor_adapter.handle_message = AsyncMock()
-
-    assert replay_drain_queue(successor) == 1
-    await _settle(successor)
-
-    successor_adapter.handle_message.assert_awaited_once()
-    replayed = successor_adapter.handle_message.await_args.args[0]
-    assert replayed.text == "hook for the successor"
-    assert replayed.source.platform == Platform.WEBHOOK
-    assert replayed.redelivered is True
-    # At-most-once: both snapshot files are gone once the turn settles.
     assert not drain_queue_path().exists()
     assert not claimed_drain_queue_path().exists()
-    assert not successor._is_session_running(session_key)
+    assert session_key not in adapter._pending_messages
 
 
 @pytest.mark.asyncio

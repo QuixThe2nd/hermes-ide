@@ -185,7 +185,11 @@ class GatewayBusySessionMixin:
                 from gateway.platforms.event import transfer_replay_completion
 
                 return transfer_replay_completion(queued_copy, queued_event)
-        if session_key in pending_slot:
+        if session_key in pending_slot or getattr(queued_event, "internal", False):
+            # Internal events (resume wakes, background completions) never take the
+            # human head slot: the slot's text-merge semantics would collapse a wake
+            # into the next user message (mirrors the adapter-side rule that a wake
+            # must not merge into an occupied human slot).
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
@@ -776,6 +780,11 @@ class GatewayBusySessionMixin:
         the event was parked (the caller must NOT also queue it)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         if effective_mode != "steer" or self._draining:
+            return False
+        # The startup auto-resume event consumes its own pre-claim; parking it
+        # "until the agent goes live" orphans the resume — there is no agent
+        # build to wait for behind the sentinel it placed itself.
+        if self._resume_claim_event_consumes_sentinel(event, session_key):
             return False
         # Commands never park — they keep their dedicated dispatch/discard lanes
         # (the drain's slash-command safety net must stay reachable for them).

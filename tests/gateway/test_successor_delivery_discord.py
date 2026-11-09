@@ -21,7 +21,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.run_drain_queue import drain_queue_path
+from gateway.run_drain_queue import claimed_drain_queue_path, drain_queue_path
 from gateway.session import SessionEntry, build_session_key
 from plugins.platforms.discord.hub_client import DiscordHubClientAdapter
 from tests.gateway.restart_test_helpers import (
@@ -29,7 +29,6 @@ from tests.gateway.restart_test_helpers import (
     make_restart_source,
 )
 
-QUEUED_MARKER = "queued for the next turn after it comes back"
 
 
 def _make_event(text: str):
@@ -204,11 +203,11 @@ async def _record(sink, key, record):
 
 
 @pytest.mark.asyncio
-async def test_dead_hub_falls_back_to_durable_queue_after_attach_deadline():
+async def test_dead_hub_refuses_honestly_after_attach_deadline():
     """Crash-only fallback: when the hub itself refuses every handoff (hub
     died, connection gone) and no successor ever attaches, the predecessor
-    waits out the successor-attach deadline and only then leaves the event to
-    the durable drain snapshot — never a silent drop."""
+    waits out the successor-attach deadline and then refuses honestly — a
+    loud refusal, never a silent drop and never a durable snapshot."""
     adapter, handoffs = _hub_adapter(successor_ready=False)
     adapter.overlap_successor_attach_timeout = 0.02
 
@@ -227,14 +226,15 @@ async def test_dead_hub_falls_back_to_durable_queue_after_attach_deadline():
 
     result = await runner._handle_message(event)
 
-    assert isinstance(result, str) and QUEUED_MARKER in result
+    assert isinstance(result, str) and "not accepting new work" in result
     assert len(handoffs) >= 2  # retried past the first refusal before giving up
     handler.assert_not_called()
     session_key = runner._session_key_for_source(event.source)
-    events = json.loads(drain_queue_path().read_text(encoding="utf-8"))["events"]
-    assert [e["event"]["text"] for e in events] == ["hub is gone"]
-    assert events[0]["session_key"] == session_key
-    assert session_key in adapter._pending_messages
+    # Crash-only fallback keeps no durable copy (user contract, Nov 2026):
+    # honest refusal, nothing snapshotted, nothing parked in-memory.
+    assert not drain_queue_path().exists()
+    assert not claimed_drain_queue_path().exists()
+    assert session_key not in adapter._pending_messages
 
 
 @pytest.mark.asyncio

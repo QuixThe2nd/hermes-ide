@@ -53,6 +53,7 @@ class GatewayStartupMixin:
     ) -> bool:
         """Wait for the adapter turn; replay settlement uses processing completion."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        event._gateway_resume_claim = session_key
         try:
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
@@ -61,14 +62,21 @@ class GatewayStartupMixin:
                 await asyncio.shield(task)
             return True
         finally:
+            del event._gateway_resume_claim
             # Release the pre-claimed slot if handle_message raised before _handle_message took ownership.
             _pre_state = self._peek_session_state(session_key)
             if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
                 self._release_running_agent_state(session_key)
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
+        """Park an inbound message that landed during startup restore.
+
+        Process-local for this boot only — restarts never snapshot other
+        chats' inbound work to a durable file (user contract, Nov 2026): the
+        queue dies with the process, and the drain below dispatches it once
+        the restore gate opens.
+        """
         from gateway.platforms.event import inbound_platform_message_id
-        from gateway.run_drain_queue import record_drain_event
 
         event._gateway_processing_deferred = True
         source = event.source
@@ -87,30 +95,20 @@ class GatewayStartupMixin:
                 and self._is_session_running(session_key)
             ):
                 return
-        home = None
-        if getattr(self.config, "multiplex_profiles", False):
-            home = self._resolve_profile_home_for_source(source)
-        if record_drain_event(self, session_key, event, home=home):
-            logger.info(
-                "Durably queued inbound message during gateway startup restore: "
-                "platform=%s chat=%s",
-                source.platform.value if source and source.platform else "unknown",
-                source.chat_id if source else "unknown",
-            )
-            return
         queue = getattr(self, "_startup_restore_queue", None)
         if queue is None:
             queue = self._startup_restore_queue = []
         queue.append(event)
-        logger.warning(
-            "Startup restore could not durably queue inbound message; retaining "
-            "a process-local retry for this boot"
+        logger.info(
+            "Queued inbound message during gateway startup restore (process-local): "
+            "platform=%s chat=%s",
+            source.platform.value if source and source.platform else "unknown",
+            source.chat_id if source else "unknown",
         )
 
     async def _drain_startup_restore_queue(self) -> int:
-        """Move accepted startup work into the durable drain replay, without waiting for turns."""
+        """Dispatch the startup-restore queue's events as turns, without waiting for them."""
         from gateway.platforms.event import inbound_platform_message_id
-        from gateway.run_drain_queue import record_drain_event, replay_drain_queues_for_profiles
 
         drained = 0
         queue = getattr(self, "_startup_restore_queue", None) or []
@@ -135,15 +133,73 @@ class GatewayStartupMixin:
                         continue
                 except Exception:
                     logger.debug("startup-restore ledger dedupe check failed", exc_info=True)
-            home = None
-            if getattr(self.config, "multiplex_profiles", False):
-                home = self._resolve_profile_home_for_source(source)
-            if not record_drain_event(self, session_key, event, home=home):
+            if adapter is None or self._is_session_running(session_key):
+                # No live intake for it, or a restored turn already owns the
+                # session: leave it parked — a still-live predecessor or the
+                # platform's own re-delivery owns delivery.
                 queue.append(event)
                 break
-            drained += 1
-        replay_drain_queues_for_profiles(self)
+            if self._dispatch_startup_restore_event(adapter, event, session_key):
+                drained += 1
         return drained
+
+    def _dispatch_startup_restore_event(
+        self, adapter: Any, event: MessageEvent, session_key: str
+    ) -> bool:
+        """Start one restore-queued turn; same shape as the resume scheduler's dispatch."""
+        import asyncio
+
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        async def _run() -> None:
+            await self._run_startup_resume_event(adapter, event, session_key)
+
+        # Bypasses the inbound restore gate (which would re-queue it here).
+        try:
+            setattr(event, "_hermes_startup_restore_replay", True)
+        except Exception:
+            pass
+        # Pre-claim the runner slot exactly like _schedule_resume_pending_sessions:
+        # between task creation and the task's first await, an inbound message (or
+        # the resume scheduler about to run) must see the session as occupied.
+        try:
+            _resume_state = self._session_state(session_key)
+            _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
+            _resume_state.turn.started_ts = time.time()
+            self._persist_active_agents()
+        except Exception:
+            logger.debug(
+                "Startup-restore dispatch pre-claim failed for %s; dispatching without it",
+                session_key,
+                exc_info=True,
+            )
+        try:
+            task = asyncio.create_task(_run())
+        except Exception:
+            logger.warning(
+                "Startup-restore turn dispatch failed for %s", session_key, exc_info=True
+            )
+            release = getattr(self, "_release_running_agent_state", None)
+            if callable(release):
+                try:
+                    release(session_key)
+                except Exception:
+                    logger.debug(
+                        "Startup-restore slot release failed for %s",
+                        session_key,
+                        exc_info=True,
+                    )
+            return False
+        background = getattr(self, "_background_tasks", None)
+        if background is not None:
+            background.add(task)
+            task.add_done_callback(background.discard)
+        tasks = getattr(self, "_startup_restore_tasks", None)
+        if tasks is None:
+            tasks = []
+            self._startup_restore_tasks = tasks
+        tasks.append(task)
+        return True
 
     @staticmethod
     def _start_free_tier_bootstrap() -> None:
