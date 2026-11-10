@@ -1403,16 +1403,24 @@ class MatrixAdapter(BasePlatformAdapter):
         wants_final_ping = bool(
             metadata and metadata.get("notify") and not metadata.get("_interim_send")
         )
+        formatted_content = self.format_message(content)
+        if wants_final_ping:
+            # Element's mention push rule needs a visible pill, not m.mentions alone.
+            formatted_content = f"{_FINAL_ANSWER_PING_MXID} {formatted_content}"
         for chunk_index, chunk in enumerate(
-            self.truncate_message(self.format_message(content), self.max_message_length)
+            self.truncate_message(formatted_content, self.max_message_length)
         ):
             msg_content = self._build_text_message_content(chunk)
             if chunk_index == 0 and wants_final_ping:
                 mentions = msg_content.setdefault("m.mentions", {})
                 user_ids = mentions.setdefault("user_ids", [])
-                if _FINAL_ANSWER_PING_MXID not in user_ids:
-                    user_ids.append(_FINAL_ANSWER_PING_MXID)
-            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+                if _FINAL_ANSWER_PING_MXID in user_ids:
+                    user_ids.remove(_FINAL_ANSWER_PING_MXID)
+                user_ids.append(_FINAL_ANSWER_PING_MXID)
+            self._apply_relation_metadata(
+                msg_content, reply_to=reply_to, metadata=metadata,
+                suppress_reply=wants_final_ping,
+            )
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -2837,18 +2845,20 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _apply_relation_metadata(
         self, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> None:
+        metadata: Optional[Dict[str, Any]] = None, suppress_reply: bool = False,
+    ) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         thread_id = str((metadata or {}).get("thread_id") or "")
-        if reply_to:
+        if reply_to and not suppress_reply:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            relates_to["is_falling_back"] = True
-            # Non-thread clients render the reply fallback; default it to the thread root.
-            relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
+            if not suppress_reply:
+                relates_to["is_falling_back"] = True
+                # Non-thread clients render the reply fallback; default it to the thread root.
+                relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:
