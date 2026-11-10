@@ -174,7 +174,7 @@ Instead of manually collecting user IDs for allowlists, enable DM pairing. When 
 Use `/verbose` to control how much tool activity you see. In messaging platforms, less is usually more — keep it on "new" to see just new tool calls. In the CLI, "all" gives you a satisfying live view of everything the agent does.
 
 :::tip
-Messaging sessions persist until an explicit `/new` or `/reset`. Context compression manages long conversations without an idle or daily reset.
+Messaging sessions persist until an explicit `/new`. Context compression manages long conversations without an idle or daily reset.
 :::
 
 ## Security

@@ -248,7 +248,7 @@ AIAgent._invoke_tool()
 
 ### Memory Flush Lifecycle
 
-Explicit conversation boundaries (such as `/new`, `/reset`, or `/resume`) flush and finalize the outgoing session. Idle time and daily boundaries never finalize it.
+Explicit conversation boundaries (such as `/new` or `/resume`) flush and finalize the outgoing session. Idle time and daily boundaries never finalize it.
 
 Resource-only TTL, LRU, and memory-pressure eviction commits the cached transcript to configured memory providers before releasing the agent's clients. It does not close the durable conversation: the next turn reloads the same transcript and identity.
 

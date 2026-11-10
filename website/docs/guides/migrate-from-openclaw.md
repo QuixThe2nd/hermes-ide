@@ -98,7 +98,7 @@ Skill conflicts are handled by `--skill-conflict`: `skip` leaves the existing He
 
 ### Session lifetime
 
-Idle and daily reset timers are not imported: Hermes conversations persist until an explicit `/new` or `/reset`. Advanced session settings (identity links, thread bindings, maintenance, scope and send policy) remain archived for reference.
+Idle and daily reset timers are not imported: Hermes conversations persist until an explicit `/new`. Advanced session settings (identity links, thread bindings, maintenance, scope and send policy) remain archived for reference.
 
 ### MCP servers
 

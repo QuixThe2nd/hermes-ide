@@ -214,7 +214,7 @@ platform network disconnect as an event-loop failure.
 
 | Command | Description |
 |---------|-------------|
-| `/new` or `/reset` | Start a fresh conversation |
+| `/new` | Start a fresh conversation |
 | `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
 | `/personality [name]` | Set a personality (`none` to reset) |
 | `/retry` | Retry the last message |
@@ -252,7 +252,7 @@ Sessions persist across messages until they reset. The agent remembers your conv
 
 ### Persistent `/model` Overrides
 
-A `/model` switch in a gateway chat applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/new` (or `/reset`) clears the override, and `/model <name> --global` writes it through to `config.yaml` instead. `/model <name> --once` applies for a single turn only.
+A `/model` switch in a gateway chat applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/new` clears the override, and `/model <name> --global` writes it through to `config.yaml` instead. `/model <name> --once` applies for a single turn only.
 
 ### Delivery Reliability
 
@@ -288,7 +288,7 @@ old behavior: in-flight responses are lost on crash).
 ### Session continuity
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
-or `/reset` for an explicit new conversation; context compression remains automatic.
+for an explicit new conversation; context compression remains automatic.
 Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
 variables are ignored. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic

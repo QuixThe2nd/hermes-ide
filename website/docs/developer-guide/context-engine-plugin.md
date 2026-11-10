@@ -212,10 +212,10 @@ Only one engine can be registered. A second plugin attempting to register is rej
 3. update_from_response() — after each API call
 4. should_compress() — checked each turn
 5. compress() — called when should_compress() returns True
-6. on_session_end() — session boundary (CLI exit, /reset, gateway shutdown)
+6. on_session_end() — session boundary (CLI exit, /new, gateway shutdown)
 ```
 
-`on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.
+`on_session_reset()` is called on `/new` to clear per-session state without a full shutdown.
 
 ## Configuration
 
