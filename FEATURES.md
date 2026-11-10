@@ -1,0 +1,446 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Hermes IDE" width="100%">
+</p>
+
+# Hermes IDE ☤
+
+Hermes IDE is an independently maintained fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent), building a developer-focused agent harness with extra tooling and gateway behaviour.
+
+## Diverging from upstream
+
+This repository is no longer kept in sync with NousResearch/hermes-agent. Automatic upstream imports have stopped, and Hermes IDE follows its own development direction. Updates come from this repository, or an explicitly configured origin, rather than pulling in Nous changes. Differences from upstream are intentional, not a backlog to catch up on.
+
+The plan is to replace the inherited implementation one subsystem at a time while keeping the application usable. Starting from a working agent lets us preserve useful behaviour and test replacements against real workflows, instead of rebuilding everything and rediscovering the same edge cases. We keep what works until its replacement is ready; we do not need a complete rewrite before we can improve the system.
+
+The long-term goal is an independent harness with no remaining upstream implementation code. That is a direction, not a claim about today's codebase: substantial inherited code remains, and moving or renaming it does not make it a new implementation. Features, configuration and architecture will increasingly differ, so upstream documentation and compatibility should not be assumed to carry over unchanged.
+
+Nous Research and the Hermes contributors built the foundation this project started from. We retain that history and the applicable license, copyright and attribution notices as the codebase evolves.
+
+Stock Hermes needs a lot of config. It does not arrive wheels-included, so you spend a long time wiring providers, channels, memory, notifications, a home server, and skills before it feels like a working assistant. A fresh Hermes also starts off stupid, and it only slowly learns: skills from experience, memory of who you are, your conventions, the shape of your homelab. Learning is the point of Hermes, but day one is bare.
+
+This repo is part of an effort to build a preconfigured, **wheels-included** Hermes. The tooling lives in the tree, the dev pipelines come prebuilt, and capability that makes the out-of-box experience better belongs here instead of in a pile of private scripts. Upstream keeps its repo slim and ships capability externally, Debian to this fork's Ubuntu; this fork is deliberately the opposite. So on top of the agent you get the machinery around it: coding lanes, a Discord home server, model quota routing, safer restarts, and the small things you normally discover after losing an afternoon. Most of it exists to cut down on wiring and checking.
+
+The biggest piece of that machinery is Discord. This fork is **Discord First**: Discord isn't just another gateway adapter here, it is the primary operator surface, where the work gets driven from. Telegram, Slack, WhatsApp, Signal, and the CLI still work. Discord is where the house is. An optional per-channel response gate (OpenRouter Decisions, provider `jev`) decides whether unprompted messages deserve an answer, and its judge sees the bot's own recent replies too, so follow-ups to an ongoing conversation are recognized instead of denied. Its three confidence cutoffs (`addresses_bot_min`, `continues_bot_thread_min`, `noise_max`) are settable per profile — defaults keep the historical behavior exactly, and a change takes effect on the next restart. A sibling reaction gate, scoped and switched on separately, asks the same judge which single whitelisted emoji fits each eligible message and adds it when the combined probability of "no reaction" and "no fitting emoji" stays strictly below one half, or when one emoji's probability strictly outscores the runner-up emoji's by more than five times — reacting without ever speaking. That decision rule is a `decision_formula` key: a small comparison-only expression over the abstention mass, the top two emoji probabilities and the whitelist size, interpreted safely (never evaluated as code), so operators can tighten the boundary or change the runaway ratio without a code change. Edits to that gate's config block are picked up live, so the whitelist and the formula can change without a restart. The live read resolves the block exactly as a reconnect would — managed-scope pins and all supported spellings included — and an invalid edit keeps the running gate until a valid one lands. In a listed channel's threads, both gates stay silent until the bot has already participated in the thread (`threads_require_membership`, on by default and settable per gate).
+
+## Discord First
+
+Start with a home server: a new Discord server for just you and your bot, then run `/sethomeserver`. Consider it mission control. Hermes builds the whole house in one pass: Notifications, Lounges, Honcho Memory, Models, and Speeds, with Notifications at the top. Moving an existing home server needs confirmation, because even Discord layout changes have somehow acquired paperwork.
+
+The home_server plugin keeps that layout in sync. It checks at most hourly, but the template fingerprint bypasses the wait when the layout changes, so new or reordered channels appear straight away. It is idempotent, keeps categories and channels in template order, never deletes anything, renames legacy Quotas and Chat categories to Models and Lounges in place, and does not clobber existing home, notification, or rename targets.
+
+Notifications get their own category instead of cluttering the lounges: `#model-fallback`, `#gateway-restarts`, and `#other`. The restarts channel doubles as a session counter: `#gateway-restarts` becomes `agents-N` while Hermes is running and `restarting-N-agents` while it drains, so you can see how many sessions are alive without opening another dashboard.
+
+Conversation uses an email-inspired structure. Chat lives in `#inbox` and `#outbox`. The outbox is where you start conversations and threads; the inbox contains conversations initiated by your agent. Agents can start conversations at any time using a tool, a post-run hook, or a cronjob, and they get another cronjob registered that automatically modifies how conversations are started, so your agent can give itself creative freedom. The goal of the inbox is to give your agent an outlet for unsolicited advice.
+
+Hermes Starts is what lets the agent speak first. It creates and pins its own Discord inbox, then uses each opening message as the anchor for a new thread. Any new bot message in that channel is auto-threaded the same way — whatever path delivered it, not only `start_conversation` openings. The plugin also lets the agent ask for changes to how it runs — its instructions, access, tools, limits, or working habits — when it has actually hit friction or spotted a concrete opportunity. Inbox Sparks adds a once-per-4-hour window where the agent must weigh starting a conversation before a turn ends. The inbox is allowed to be quiet; it is not allowed to exist only as decoration.
+
+Discord History provides read-only search over an owner-authorized PostgreSQL archive of Discord messages. It is opt-in and off by default. Papercuts keeps a structured journal of workflow friction, and its optional daily autofix cron, installed with `hermes papercuts autofix install`, turns small mechanical fixes into PRs.
+
+Memory observability is crucial for a good agent, and stock Hermes provides almost none. Hermes IDE shows both reads and writes: the memory channels in your home server log edits, and memory injection is displayed in live chats. That includes the memory and user-profile blocks injected into the system prompt: a session's first turn shows their redacted content in the same tool-style card, and the card reappears only when the content changes, so steady-state turns stay quiet. The injection card respects `display.context_injection_content`: the default keeps the redacted full-content card, `false` collapses it to a single `🧠 memory context injected` line, and multiplexed profiles plus `display.platforms.<platform>` overrides each resolve their own value. When the providers behind an injection report a discrete count, the card's heading is `🧠 Injecting N memories` (singular for one) instead of `🧠 Injecting Memory` — Hindsight's `recall_indicator: false` suppresses only the status line, never this count. Hindsight's separate `👁️ Hindsight — recalled N memories` status line is off by default (the counted card already reports the recall); set the `recall_indicator` plugin setting to `true` to opt back in. It is display-only — the injected context still reaches the model unchanged.
+
+The Models category is a quota wall. Hermes IDE automatically monitors configured token providers for remaining usage, resets available, time till expiry, and uptime, then orders the list of preferred models to match. `quota_channels` creates Discord voice channels under a Models category — one row each for Codex, Kimi, Cursor, and Grok, and one row per Z.AI credential-pool wallet (`z.ai 1`, `z.ai 2`, …) — ordered with the same score used by fallback routing:
+
+`quota_frac × (168h / hours_to_reset) + one full wallet per pending usage-limit reset (Codex/Grok/z.ai), all × uptime_24h × uptime_1h`
+
+Codex, z.ai, and Cursor get automatic 7-day token enrichment. The channel names show what is left, when it resets, and which provider Hermes currently prefers.
+
+`cache_trace` adds opt-in, metadata-only request tracing for cache and latency diagnosis. Enable it per profile with `hermes plugins enable cache_trace` to correlate request-component fingerprints, observed cache-field presence and API timing without storing prompt text, tool arguments or response content. Local traces are bounded and private; missing cache telemetry stays unknown rather than becoming a cache miss. See the [cache trace guide](plugins/cache_trace/README.md).
+
+X search, xAI speech, and Codex image generation can each pin a named proxy provider with profile-scoped credentials; an invalid pin fails closed, while leaving it unset preserves native routing. The speech and image provider pickers recognize a valid pin as ready and skip native sign-in; a broken pin reports a setup failure. The Desktop profile editor checks X search readiness using the selected profile's own credentials.
+
+The Codex rotation default is `gpt-6-astra` (config migration v42 advances older `gpt-5.6-sol` entries; Sol stays manually selectable). `fallback_watch` tails `agent.log` and alerts Discord when the primary model falls back; it is opt-in, off by default, and cooldown-deduped.
+
+The Speeds category is the same trick pointed at downloads. `speed_channels` turns Discord voice channels into a download wall for qBittorrent, SABnzbd, and slskd. The names show live throughput and queue depth, and the category label shows current 1.1.1.1 ICMP latency plus the countdown to the next poll.
+
+Adding a guest through `discord_guests` creates a private `#<guest>-<host>-lounge` under Lounges. Legacy Chat still resolves. `@everyone` stays view-denied, so only that member and the house bots can see it.
+
+Power users will have noticed that when Hermes is used too much, Discord rate limits it from creating new threads. Hermes IDE handles this automatically by queuing threads to be auto-created once the rate limit passes.
+
+Stock Hermes is also inconsistent about when it pings you, so you end up jumping between threads checking which one needs input. Hermes IDE avoids pinging you on iterations or mid-run messages, but will reply to you or ping you on the final message. I found this simple change improved my productivity a lot, because I stopped burning mental bandwidth rotating between 20 chats for hours straight waiting for one to complete. There is no periodic "still working" heartbeat: Hermes replies (or pings you) on the final message, and mid-turn signal comes from tool progress, drafts and the busy acknowledgment instead.
+
+Gateway tool progress can use **compact** mode for one logical line per tool call — e.g. `📄 read_file({"path": "README.md", "limit": 100})` — with full JSON arguments and no preview truncation:
+
+```yaml
+display:
+  tool_progress_command: true   # optional: cycle modes with /verbose
+  platforms:
+    discord:
+      tool_progress: compact
+```
+
+Tool-progress groups can render as one fenced code box per group via `display.tool_progress_codebox` or `display.platforms.<platform>.tool_progress_codebox`; normal commentary, finals, and status notices stay standalone plain messages.
+
+The smaller edges are handled too. Tool progress can also use **describe** mode (`tool_progress: describe`): each tool call renders as one short human phrase — and tools that accept an optional `description` argument fold that intent into the phrase, e.g. `Fetching recent Discord messages in channel 1234 to find the deploy report`. Sessions use your stable username instead of a server nickname. `DISCORD_ALLOWED_GUILDS` lets any member of a listed server talk to the bot without changing DM access. Threads rename once after the first reply lands, not halfway through a turn. Progress updates respect each platform's real message limit. Quote-replies in auto-threaded channels get their own thread by default, keeping the parent channel clean; set `discord.auto_thread_replies: false` to answer them inline instead.
+
+Every final reply can carry a one-line runtime footer — model, context %, per-turn timing breakdown, call counts, and the effective reasoning effort (e.g. `glm-5.3-flash · 12% · 16s · 1 call · medium`) — so you can see at a glance which model answered and how deep it thought. It is on by default; trim or disable it with `display.runtime_footer` (`/footer off` works from any chat), per-platform overrides included.
+
+Multiplexed profiles use their own `display.show_reasoning`. When enabled, a single `💭 Reasoned about <describe>` line summarizes the first non-empty reasoning line, using Discord subtext or italic text elsewhere. Streaming previews and interim updates stay standalone, and only the completed final answer reply-pings you. If an auto-threaded root turn cannot attach a reply reference, the final message uses an inline mention instead — with a masked jump link to the message that started the thread, so you can hop straight back to it; when the guild id is unavailable it degrades to the plain mention.
+
+Clarify prompts mention the requesting user by default; set `discord.clarify_mentions: false` to stop that. The questions are numbered plain text rather than buttons, because Discord component views time out. A `resolve_ticket` proposal is terminal: the confirmation embed is the reply, and Hermes does not add another message underneath it.
+
+The typing indicator stays on while a background delegated task is still running. MoA consult and debate progress uses one self-editing embed per call that names every configured advisor model and shows each one waiting, responded, failed, or skipped as results arrive — round by round for debates — with live N/T advisor counts on `moa_ask`. Cursor runs post a Cursor-branded progress embed with a "Watch live session" link instead of dumping a URL, and Claude runs post a Claude-branded embed that links into the local viewer after the delegation tool-progress message, in the same order as Cursor.
+
+## Coding delegated from chat
+
+Coding jobs leave the chat and run against the target checkout. `delegate_agent(backend="cursor")` sends small and medium jobs to a Cursor My Machines Cloud Agent. Cursor builds its checkout from pushed refs only, so the tool refuses to start when your local HEAD has unpushed commits. It does not quietly run against yesterday's code.
+
+`delegate_agent(backend="claude")` handles medium and large jobs through the Claude Code CLI, with headless `/goal` as the default lane. Give it a `/goal <condition>` and it keeps going until a model judge, verified through the claude-glm wrapper — bundled with Hermes and installed alongside the `hermes` command, primary glm-5.2 with a glm-5.3-flash fallback — says the condition has been met. If the goal is too long for Claude Code's 4000-character limit, Hermes puts it in a brief inside the workdir instead of aborting the run. Claude writes stream-json output to the `claude-runs` logs while it works, so you can tail the run instead of staring at a silent chat.
+
+Neither delegate tool has a stall watchdog or a default wall-clock limit, though a positive `timeout_seconds` still applies when you set one. `delegate_agent action='list'` shows the current tool, iteration, time since activity, and whether a child looks stalled. Slow and dead are different problems. Both delegate tools and the dev-pipeline lanes use the same agent-CLI runner underneath.
+
+All the delegate tools (`delegate_agent` with its `subagent`/`claude`/`cursor` backends, and `delegate_assistant`) share one lifecycle: an omitted `background` runs the work in the background — the call returns a handle immediately and delivers exactly one completion later — unless the session cannot receive a late completion (cron jobs, one-shot runs, stateless HTTP endpoints), where it blocks to completion inline instead. `background=false` always blocks inline for that turn, and `background=true` always detaches, refused up front with no work started where late delivery is impossible. Set `delegation.default_background: false` in config to make an omitted argument block again. `delegate_task` still dispatches as a hidden alias of the renamed tool.
+
+Optional delegation lanes add `delegate_ui_dev`, `delegate_client_dev`, `delegate_backend_dev`, and `delegate_reverse_engineer` for focused implementation and static-analysis work. A non-empty `delegation.lanes` config opts into all four without changing the default tool surface; each lane combines a short soul, ordered model fallback, and optional skills, MCP, and tool restrictions over OMP or an existing delegation harness. Every result carries a receipt naming the lane, harness, winning model, reviewer, and verdict. See [the lane guide](skills/dev-lanes/README.md) for configuration and safety boundaries.
+
+While a background delegation runs, the parent model automatically receives a bounded, current snapshot of its workers' observed state (accepted vs. actually started vs. active, from harness runtime evidence) with each of its own model requests — no manual status checks, log tails, or process searches needed; the one completion message still arrives on its own.
+
+Sometimes you want the whole coding process handed off, including the paperwork. The dev-pipeline plugin takes a repo and task through MoA planning, Cursor execution, mechanical verification, dual-model review, and a draft PR. It reports each stage back to chat in plain English and skips useless same-stage heartbeats. A separate claude-endurance lane uses Claude Code through claude-glm for broad or long builds.
+
+Planning normally uses a consult; `delegate_development plan_mode=debate` runs the multi-round adversarial council instead. Reviews use a Russian-language kimi and grok pair, and `open_pr=false` skips the draft PR when you do not want one. `delegate_development` itself is currently parked and not registered.
+
+Research has a lane of its own. `delegate_research` hands a substantial research brief to durable `researcher`-profile lanes (transient systemd user or system service) and returns one citation-checked report; every cited URL must have been fetched during the job. Set `deep_research.worker_file_tools: false` in the calling profile's config to run no-file jobs instead: lanes are pinned to `web,browser` and the synthesis writer to the empty `research_writer` toolset.
+
+Agents are very good at ignoring the nice coding lane you built and editing the source anyway. The code-lane-gate plugin blocks in-context source edits everywhere by default, inside a git repo or not. Set `CODE_LANE_GATE_E2E=0` to opt out. Terminal writes are still a known v1 bypass.
+
+One model is usually enough. When it is not, `moa_ask` and `moa_debate` give you multi-model consults and debates without leaving the chat. Both tools were restored from the archive. Reference advisors do not enter configured or automatic fallback chains when their client is missing or request recovery fails; those failures stay attached to the selected advisor. Provider-specific same-client recovery remains unchanged, including Nous catalog self-healing.
+
+`pr_intent_watch` watches this fork for new PRs and comments on what the change is trying to do, whether it is worth considering, and whether the claimed bug sounds real. It is opt-in and off by default — set `pr_intent_watch.enabled: true` in config to turn it on. It is an intent review, not a code review; the watcher never sees the diff.
+
+`claude_viewer` ships the Claude run viewer with Hermes and installs and starts it automatically on Linux/systemd when the gateway comes up. The "Watch live session" link in a `delegate_agent(backend="claude")` embed uses this machine's LAN or Tailscale address, detected at runtime, instead of somebody else's hardcoded IP, so it works on any install. Use `hermes claude_viewer status|enable|disable|reconcile` to control it. Opening a run lands on its original prompt, with `G` jumping to the live tail. The viewer has no authentication, so keep it on your LAN or tailnet. If the port is already being served by a viewer you started yourself, reconcile stands down instead of starting a small civil war over one socket.
+
+`mission_control` points the same local-viewer idea at every session, not just Claude runs: `hermes mission_control serve` puts a messenger-style web inbox for the last 24 hours of Hermes on loopback, across the main database and every profile. The top **Your turn** section collects pending Clarify prompts and idle open conversations whose latest message is an assistant answer. Working sessions without pending input remain Active; closed conversations stay excluded. Sections stay honest (Your turn, Active, Open · unfinished, Open · completed, Closed) and open sessions always render ahead of closed ones, however much newer the closed session's last activity is; closed means the projected tip carries `ended_at` or the archived flag, so an ended-but-unarchived conversation never sits in an open section. Transcripts render with maximal runs of consecutive tool calls collapsed into expandable groups, pages poll live, and a composer starts new chats or replies by admitting an authenticated, profile-scoped run on the core API server (`/v1/runs`) so no child process is ever spawned and the prompt never leaves the one request's JSON body — a send the API refuses (busy, unreachable, session mismatch) fails explicitly with the text restored for retry; when a run asks a clarifying question the card pauses it, blocks the composer, and the answer is proxied back through the same profile-scoped session clarify routes (`GET`/`POST /api/sessions/{session_id}/clarify`) with that profile's own key to resume it, with stale, cross-session, or ambiguous answers refused. Codex's between-tools commentary renders as ordinary messages — recovered only from the narration column, never tool arguments — and dispatched research jobs land under their parent's sub-agents section instead of posing as separate top-level chats. Participants render as generic letter badges, optionally layered with local avatar PNGs you drop beside a profile's database (a missing or broken image just falls back to the letter). It reads through bounded SQL so a giant tool blob never leaves the database whole, is stdlib-only with no external assets, and adds no model tools. Like the Claude viewer it has no authentication: loopback is the supported bind, a non-loopback `--host` is explicit and warned about at startup, and remote access is your authenticating proxy's problem. The optional `mission_control` config section holds `host`, `port`, and `discord_sync`; the Discord archive mirror runs only when a `DISCORD_BOT_TOKEN` sits in the `.env` beside a profile's database.
+
+## Matrix inbox conversations
+
+Matrix rooms can opt into one-private-room-per-message routing with `matrix.inbox_rooms`. Each authorized new top-level text or media message creates an ordinary invite-only private room—not an `m.direct` direct message—invites the sender, carries the original event into that room's session, and keeps the answer and follow-ups there instead of creating a synthetic thread. The inbox gets a child-room link, while the child links back to the opening event. Existing sender and room allowlists still apply; edits, replies, commands, notices, bots, and unauthorized senders do not create rooms.
+
+```yaml
+matrix:
+  inbox_rooms:
+    "!inbox:matrix.example.org": null
+    "!requests:matrix.example.org": "!optional-space:matrix.example.org"
+```
+
+Encrypted openings preserve encryption in the child or fail closed. Replay/restart recovery uses profile-scoped metadata and bot-owned Matrix account data without storing opening text. Parent-space linking is optional and permission-aware. See the [Matrix guide](website/docs/user-guide/messaging/matrix.md#inbox-rooms-one-private-room-per-opening-message) for permissions, excluded events, and failure behavior.
+
+## Memory and profiles
+
+Memory should fail loudly. Honcho memory tools return dead API keys, 401s, and timeouts as real errors instead of pretending there was simply nothing to store or recall.
+
+Hindsight can use `{chat}` inside `bank_id_template`, which gives one profile a separate bank for each messaging chat. It also skips memory lines already injected earlier in the same session. On the first bank init, Hermes seeds a `retain_mission` that ignores transient task state and two recall rules: prefer newer facts and ignore session dumps.
+
+The default SOUL gives fresh profiles a credential preflight before asking you for another key. They check environment variables, `.env`, local secret files, and any configured secret manager first. Asking the human again is the last step, where it belongs.
+
+Research and sandbox profiles often need to read files without being allowed to rewrite the machine. `hermes profile create NAME --read-only` creates a profile with the `file_readonly` toolset: `read_file` and `search_files`, without `write_file` or `patch`. On an existing profile, `hermes tools enable file_readonly` swaps out the normal `file` toolset the same way on every platform.
+
+## WhatsApp missions
+
+WhatsApp chats can be given a job instead of being left as permanent open conversations. Assistant chats expose the mission-aware `end_session` tool or the one-way `escalate_task` tool.
+
+Goal-bound missions use the missions plugin through `delegate_assistant` and `end_session`. Mission-only DMs are controlled by `platforms.<whatsapp|whatsapp_cloud>.extra.mission_only_dms` and are off by default. When enabled, Hermes answers those DMs only while an assistant mission is attached to the chat.
+
+A mission on a `@g.us` group admits exactly that group. It needs no mention and keeps all members in one shared session. Profile-scoped pairing no longer leaks into the global allowlist.
+
+Allowlisted groups can also observe unmentioned chatter with `observe_unmentioned_group_messages` and `require_mention`. This is off by default. Hermes stores the chatter as context but waits until the next ping or mention before replying.
+
+## Operations
+
+A stalled gateway should not look dead. `display.retry_progress` adds a live provider retry and fallback bubble during stalls; it is off by default. Replies can also end with a timing split for total, API, tools, and other time, which is off by default upstream. Tool previews are capped at `display.tool_preview_length`; 0 (the Discord default) shows the full command and all arguments.
+
+A gate that fails its config check fails safe and now says so. An invalid `response_gate` or `reaction_gate` block keeps the platform loading with that gate off, and the validation error surfaces in `hermes gateway status`, `/api/status`, and the dashboard's Channels page instead of only the log — so a gate that never runs cannot masquerade as a gate that was never configured. The notice clears only after an accepted effective change (the gate corrected or disabled at boot, reconcile, or live reload) or once the profile is removed; a rejected reload keeps the previous gate running, so its notice stays.
+
+Important status and warning notices a platform outage swallowed are not lost either: when the transport marks a notice send as a transient failure, the delivery ledger retains it, and the same reconnect that revives the adapter replays it into the original chat (thread included, prefixed with a ♻️ recovered-notice marker, no pings). Notices already delivered never replay.
+
+Steered follow-ups get a second "✅ Steer delivered" acknowledgement when the text actually reaches the model's context. Accepted and delivered are different states, although software often enjoys pretending otherwise.
+
+`/restart` waits for active sessions to finish naturally — with no cap, so a user-requested restart never interrupts in-flight work, however long the last session takes. New work is refused while it waits, and the restart proceeds only once every active session, cron run, and API run has finished. `agent.restart_after_turn_timeout` is legacy and ignored for this wait. Before the restart is queued, both `/restart` and the `restart` tool run a short read-only source check of the installed checkout — root-level Python files, Python under `agent/`, `cron/`, `gateway/`, `hermes_cli/`, `plugins/`, and `tools/`, plus `plugin.yaml` files under `plugins/` — and warn the requester in the same chat when uncommitted runtime source changes exist in that scope (or, honestly, when the check cannot finish); the warning is informational only — it never asks for confirmation, never blocks recovery and adds at most four seconds before queuing, is skipped for packaged installs, and `drift_watch` remains the separate periodic record. Plain user messages that arrive during the wait follow the busy-input policy: with `queue` or `steer` they are appended to a durable on-disk snapshot and replayed when the gateway comes back, starting the session's turn so the message can be answered after recovery (each claim remains durable until its message finishes successfully; queued, refusal, and shutdown notices never count as answers). Replay is at-least-once: a crash between an external effect and recording completion can repeat that effect — and records for a platform still offline at boot wait on disk until it reconnects, as does the whole queue if a retry write fails until storage recovers. Each queued record also carries a lifecycle stamp of the draining process, so a replayed turn in the successor process tells the model — once, on that turn — that the restart completed and this message was queued during it; a same-process replay or a record without proof claims nothing, and the queued message is delivered either way. With the default `interrupt` posture, or during an external quiesce with no restart requested, they get the honest drain notice instead, on the idle and busy paths alike. Busy sessions that were already promised "queued for the next turn" get the same durability. Slash commands outside the lifecycle/read-only allowlist still get the drain notice instead of being queued. On Discord the requester gets one ⏸️ embed in the same chat, and only their reaction asks the other live chats to park safely now; that reaction-time snapshot is the only set resumed after restart. The shutdown warning shows each accepted LLM park steer. Chats that received the warning get a matching ♻️ back-online notice after the gateway returns, including after a raw SIGTERM.
+
+A session the bounce kills mid-turn — drain timeout, crash, anything it did not agree to — resumes transparently instead of being told the gateway restarted. Hermes re-runs that turn's still-unanswered calls literally through the normal dispatcher — same name, call id, and arguments, side-effecting calls included — keeps every completed result, and continues the turn through the same continue-after-tool-results path an uninterrupted loop uses. Nothing synthetic is added anywhere: no restart note, no continuation note, no recovery user row in the model request or the transcript. If real user text arrives while recovery closes the batch, it runs verbatim as the next message after the batch completes. Only sessions that accepted the park steer see restart guidance. The one call never replayed is the lifecycle request that caused the bounce (the `restart` tool or a shell command targeting the gateway itself): it keeps the existing UNKNOWN effect-disposition treatment so a bounce cannot re-trigger itself, and calls that cannot pair unambiguously (duplicate or missing call ids) fail closed the same way instead of guessing.
+
+Discord recovery keeps the original message identity across interrupted-turn resume, missed-message backfill, and startup queue drain. A message already being recovered or answered is not dispatched again by those replay paths; failed work stays retryable, and background completion notices do not count as answers to earlier human messages.
+
+Agents can call the `restart` tool as well. It queues immediately through the same drain path as `/restart`, including when other sessions or background jobs are active. The drain refuses new work and waits for every in-flight turn to finish naturally before the gateway bounces and sends the requesting chat its comeback notice. Restart lifecycle notices provide the user-facing status, without a second progress bubble sitting beside them.
+
+Lifecycle messages can go to a dedicated channel per platform with `/setnotify` and `/clearnotify`, which keeps startup and shutdown noise out of the home chat. The system prompt also tells the agent its own platform display name; on Discord that means the server nickname or global name appears as `**Your name:**` in session context.
+
+`auto_update` runs unattended Hermes updates through an independent Linux/systemd timer, controlled with `hermes auto_update status|enable|disable|reconcile`. The default schedule is four times a day (00:00, 06:00, 12:00, 18:00), with no randomized delay. Every tick prepares the available update even while Hermes is busy, and the fleet restarts onto a fully prepared update only once Hermes is idle, ignoring stale streaming or unanswered rows outside the idle window. Before each update, quick snapshots keep the newest three plus the smallest set of older snapshots still holding the only usable (integrity-verified) copy of a database the newer ones skipped or failed to capture — retention is recovery-aware, so a database too large for the per-file cap never loses its last good copy to pruning. Note the limitation: capped updates preserve older copies, they do not create a fresh copy of an oversized database; capture one with a manual snapshot or full backup.
+
+`drift_watch` keeps a default-on eye on the live checkout. Twice an hour it inventories uncommitted drift, and when the drift set changes it captures a patch and copies untracked files, using auditd attribution where available. `hermes drift_watch reconcile` repairs its timer and setup. It watches and records; it is read-only toward git state.
+
+Cron jobs do not get to casually restart the gateway or rewrite the live checkout. A quote-aware lifecycle guard blocks cron-spawned commands that try either one. Narrowly recognized Python read-and-print observations can inspect lifecycle phrases as data. Command-visible redirection, shell state, expansions, and ambiguous pipeline consumers keep the original text visible to the guard. This lexical check does not validate ambient interpreter, import-path, or executable lookup state.
+
+A cron job can claim its own scrollback with a `thread:` deliver token: `deliver: thread:<chat id>` (or `thread:<platform>:<chat id>` when the platform must be explicit) opens a fresh thread named after the job on first delivery. The concrete `platform:chat:thread` target is written back onto the job, so later runs — and restart-safe worker replays, which cannot create threads — reuse it instead of minting duplicates. When no live thread-capable adapter is available, the run still delivers flat on the parent chat and the job is left untouched. Failure notices on the `failure_deliver` lane never create threads.
+
+Installs with a provisioned inbox channel (hermes_starts, or the home_server `#inbox`) get that behavior by default: a job created from a Discord session in the inbox's guild whose delivery would default to `origin` is rewritten at create time to the `inbox` token, giving every cron job its own job-named thread under the inbox instead of rooting in the chat it was created from. Explicit targets are never rewritten, installs without a provisioned inbox are unaffected, and `cron.inbox_delivery_enforce: false` opts out.
+
+Config gains API retry backoff timing plus fallback chains for web search and web extract. `agent.tool_call_narration_guidance` is on by default and asks the model to briefly explain a tool call before it makes one. Parent agents run on a default 256-turn budget (`agent.max_turns`, the same default `run_agent.py`'s `main()` uses); set it higher or to `none`/`0` for no limit. The silent default — what a no-override install lands on when `model.default` is empty and no model was ever picked — is Grok-4.6 through xAI OAuth (`xai-oauth`), matching the reference gateway's primary; every implicit path shares one source of truth (`PREFERRED_SILENT_DEFAULT_PROVIDER`/`_MODEL` in `hermes_cli/models.py`, mirrored by the model catalog's `default` labels, with aggregators spelling it `x-ai/grok-4.6`). The GLM-5.3-Flash / GPT-5.6-Sol / Kimi-K3 fallback chain is unchanged. `security.allow_agent_config_writes` lets an operator opt out of the `write_file` and `patch` guard on the Hermes config file; it is off by default. `display.notify_on_complete` can send a native OS notification when a turn finishes, including over an SSH target, and is also off by default.
+
+`compression.tail_mode` defaults to `lean`, which clamps the verbatim tail to 10–25K. Set it to `legacy` to restore the old `0.20 × threshold` tail.
+
+On Discord, automatic context compression reports as a single tool-style status instead of scattered notices: one `🗜️ context_compress · …` message appears when an attempt starts (`selecting compressor` until the provider route is actually chosen, then edited to name it while the summary runs) and is edited in place when the attempt resolves — `✅` with the real provider/model and before/after message counts only when compression genuinely commits (a deterministic local summary is labelled as such, never credited to a provider), or a short failure category (e.g. `summary provider timed out`) with a `/compress` retry hint when it does not. A cooldown warning after a failed attempt folds into the same message rather than posting again. The gateway's pre-agent session-hygiene pass gets the same card: it posts when the summary work starts, and when the turn-hold budget releases your message while the summary is still streaming, the card switches once to "still compressing in the background" and later resolves to `✅` at the fenced adoption boundary (or `⚠️` if nothing commits) — replacing the separate deferral/timeout notices it used to post. Other platforms see no card at all and keep their existing notices.
+
+## Inherited upstream documentation
+
+The material below is retained from [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) as a historical reference, not a promise of feature or configuration parity. Its installation commands target Nous Hermes, not Hermes IDE. Use this repository's documentation and [issue tracker](https://github.com/QuixThe2nd/hermes-ide/issues) for fork-specific behaviour and support.
+
+---
+
+<p align="center">
+  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
+</p>
+<p align="center">
+  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
+  <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
+  <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
+</p>
+
+**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+
+Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
+
+<table>
+<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
+<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
+<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
+<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
+<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
+<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
+<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
+</table>
+
+---
+
+## Quick Install
+
+### Linux, macOS, WSL2, Termux
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+### Windows (native, PowerShell)
+
+> **Heads up:** Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
+
+Run this in PowerShell:
+
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
+
+If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
+
+> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
+>
+> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
+
+After installation:
+
+```bash
+source ~/.bashrc    # reload shell (or: source ~/.zshrc)
+hermes              # start chatting!
+```
+
+### Troubleshooting
+
+#### Windows Defender or antivirus flags `uv.exe` as malware
+
+If your antivirus (Bitdefender, Windows Defender, etc.) quarantines `uv.exe` from the Hermes `bin` folder (`%LOCALAPPDATA%\hermes\bin\uv.exe`), this is a **false positive**. The file is Astral's `uv` — the Rust Python package manager Hermes bundles to manage its Python environment. ML-based antivirus engines commonly flag unsigned Rust binaries that download and install packages.
+
+**To verify your copy is authentic:**
+
+```powershell
+# Install GitHub CLI if needed
+winget install --id GitHub.cli
+
+# Login to GitHub
+gh auth login
+
+# Run verification
+$uv = "$env:LOCALAPPDATA\hermes\bin\uv.exe"
+$ver = (& $uv --version).Split(' ')[1]
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$zip = "$env:TEMP\uv.zip"
+Invoke-WebRequest "https://github.com/astral-sh/uv/releases/download/$ver/uv-x86_64-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
+gh attestation verify $zip --repo astral-sh/uv
+Expand-Archive $zip "$env:TEMP\uv_x" -Force
+(Get-FileHash "$env:TEMP\uv_x\uv.exe").Hash -eq (Get-FileHash $uv).Hash
+```
+
+If attestation says "Verification succeeded" and the last line prints `True`, you're good.
+
+**To whitelist Hermes:**
+- **Windows Defender:** Run PowerShell as Admin → `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\hermes\bin"`
+- **Bitdefender:** Add an exception in the Bitdefender console (Protection > Antivirus > Settings > Manage Exceptions)
+- Whitelist the **folder**, not the file hash — Hermes updates `uv` and the hash changes every version
+
+For more context, see the upstream Astral reports: [astral-sh/uv#13553](https://github.com/astral-sh/uv/issues/13553), [astral-sh/uv#15011](https://github.com/astral-sh/uv/issues/15011), [astral-sh/uv#10079](https://github.com/astral-sh/uv/issues/10079).
+
+---
+
+## Getting Started
+
+```bash
+hermes              # Interactive CLI — start a conversation
+hermes model        # Choose your LLM provider and model
+hermes tools        # Configure which tools are enabled
+hermes config set   # Set individual config values
+hermes config get   # Print individual config values
+hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
+hermes setup        # Run the full setup wizard (configures everything at once)
+hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
+hermes update       # Update to the latest version
+hermes doctor       # Diagnose any issues
+```
+
+📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
+
+---
+
+## Skip the API-key collection — Nous Portal
+
+Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
+
+- **300+ models** — pick any of them with `/model <name>`
+- **Tool Gateway** — web search (Firecrawl), image generation (FAL), text-to-speech (OpenAI), cloud browser (Browser Use), all routed through your sub. No extra accounts.
+
+One command from a fresh install:
+
+```bash
+hermes setup --portal
+```
+
+That logs you in via OAuth, sets Nous as your provider, and turns on the Tool Gateway. Check what's wired up any time with `hermes portal info`. Full details on the [Tool Gateway docs page](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway).
+
+You can still bring your own keys per-tool whenever you want — the gateway is per-backend, not all-or-nothing.
+
+---
+
+## CLI vs Messaging Quick Reference
+
+Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
+
+| Action                         | CLI                                           | Messaging platforms                                                              |
+| ------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
+| Start chatting                 | `hermes`                                      | Run `hermes gateway setup` + `hermes gateway start`, then send the bot a message |
+| Start fresh conversation       | `/new` or `/reset`                            | `/new` or `/reset`                                                               |
+| Change model                   | `/model [provider:model]`                     | `/model [provider:model]`                                                        |
+| Set a personality              | `/personality [name]`                         | `/personality [name]`                                                            |
+| Retry or undo the last turn    | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                |
+| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                        |
+| Browse skills                  | `/skills` or `/<skill-name>`                  | `/<skill-name>`                                                                  |
+| Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
+| Platform-specific status       | `/platforms`                                  | `/status`, `/platform`                                                           |
+
+For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
+
+---
+
+## Documentation
+
+All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
+
+| Section                                                                                             | What's Covered                                             |
+| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)                 | Install → setup → first conversation in 2 minutes          |
+| [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli)                              | Commands, keybindings, personalities, sessions             |
+| [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)                | Config file, providers, models, all options                |
+| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)                | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
+| [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security)                          | Command approval, DM pairing, container isolation          |
+| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)            | 40+ tools, toolset system, terminal backends               |
+| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)              | Procedural memory, Skills Hub, creating skills             |
+| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)                     | Persistent memory, user profiles, best practices           |
+| [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)               | Connect any MCP server for extended capabilities           |
+| [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)              | Scheduled tasks with platform delivery                     |
+| [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files)       | Project context that shapes every conversation             |
+| [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture)             | Project structure, agent loop, key classes                 |
+| [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)             | Development setup, PR process, code style                  |
+| [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands)                  | All commands and flags                                     |
+| [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference                                 |
+
+---
+
+## Migrating from OpenClaw
+
+If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
+
+**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
+
+**Anytime after install:**
+
+```bash
+hermes claw migrate              # Interactive migration (full preset)
+hermes claw migrate --dry-run    # Preview what would be migrated
+hermes claw migrate --preset user-data   # Migrate without secrets
+hermes claw migrate --overwrite  # Overwrite existing conflicts
+```
+
+What gets imported:
+
+- **SOUL.md** — persona file
+- **Memories** — MEMORY.md and USER.md entries
+- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
+- **Command allowlist** — approval patterns
+- **Messaging settings** — platform configs, allowed users, working directory
+- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
+- **TTS assets** — workspace audio files
+- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
+
+See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
+
+---
+
+## Contributing
+
+We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
+
+Quick start for contributors — use the standard installer, then work from the
+full git checkout it creates at `$HERMES_HOME/hermes-agent` (usually
+`~/.hermes/hermes-agent`). This matches the layout used by `hermes update`, the
+managed venv, lazy dependencies, gateway, and docs tooling.
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+uv pip install -e ".[all,dev]"
+scripts/run_tests.sh
+```
+
+Manual clone fallback (for throwaway clones/CI where you intentionally do not
+want the managed install layout):
+
+Create the venv outside the cloned source tree — a venv inside the directory
+the agent operates from can be wiped by a relative-path command the agent runs
+against its own checkout, destroying the running runtime mid-session.
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv ~/.hermes/venvs/hermes-dev --python 3.11
+source ~/.hermes/venvs/hermes-dev/bin/activate
+uv pip install -e ".[all,dev]"
+scripts/run_tests.sh
+```
+
+---
+
+## Community
+
+- 💬 [Discord](https://discord.gg/NousResearch)
+- 📚 [Skills Hub](https://agentskills.io)
+- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
+- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
+- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+Built by [Nous Research](https://nousresearch.com).
