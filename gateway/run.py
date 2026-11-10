@@ -10459,6 +10459,14 @@ class GatewayRunner(
         )
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        if getattr(self, "_launched_as_overlap_successor", False):
+            notify_path = _hermes_home / ".restart_notify.json"
+
+            def _clear_restart_notify_after_resume(completed: asyncio.Task) -> None:
+                if not completed.cancelled():
+                    notify_path.unlink(missing_ok=True)
+
+            task.add_done_callback(_clear_restart_notify_after_resume)
         if getattr(self, "_startup_restore_in_progress", False):
             tasks = getattr(self, "_startup_restore_tasks", None)
             if tasks is None:
@@ -11886,6 +11894,17 @@ async def _start_gateway_start_control_socket(runner):
             restart_platforms = params.get("restart_platforms")
             if restart_platforms is None:
                 restart_platforms = _runner_restart_platforms(runner)
+            requester = params.get("requester")
+            if not isinstance(requester, dict) or not requester:
+                requester = None
+            source = (
+                runner._source_from_restart_notify_payload(requester)
+                if requester is not None else None
+            )
+            message_id = (
+                str(requester["message_id"])
+                if requester is not None and requester.get("message_id") else None
+            )
             result_box: list[dict] = []
             _done = threading.Event()
 
@@ -11894,7 +11913,8 @@ async def _start_gateway_start_control_socket(runner):
                     try:
                         result_box.append(
                             await queue_user_restart(
-                                runner, None, None, restart_platforms=bool(restart_platforms)
+                                runner, source, message_id,
+                                restart_platforms=bool(restart_platforms),
                             )
                         )
                     finally:
@@ -12153,6 +12173,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         GATEWAY_CLAIM_SUCCESSOR_PENDING, OVERLAP_PREDECESSOR_PID_ENV, OVERLAP_SUCCESSOR_ENV,
         overlap_predecessor_pid,
     )
+    runner._launched_as_overlap_successor = os.environ.get(OVERLAP_SUCCESSOR_ENV) == "1"
     _claim_state = _start_gateway_claim_pid_file()
     if not _claim_state:
         return False
@@ -12243,6 +12264,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _control_server = await _start_gateway_start_control_socket(runner)
             _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
             await start_deferred_adapters(runner)
+            await runner._send_restart_notification()
             cron_stop, cron_provider, cron_thread, housekeeping_thread = (
                 _start_gateway_start_cron_and_housekeeping(runner))
             runner._start_systemd_watchdog()

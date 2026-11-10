@@ -1169,6 +1169,7 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
         async def start(self):
             import os
             assert self._overlap_successor_pending is True
+            assert self._launched_as_overlap_successor is True
             assert OVERLAP_SUCCESSOR_ENV not in os.environ
             assert OVERLAP_PREDECESSOR_PID_ENV not in os.environ
             events.append("hub-adapter-start")
@@ -1179,6 +1180,9 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
 
         def _start_systemd_watchdog(self):
             events.append("systemd-watchdog")
+
+        async def _send_restart_notification(self):
+            events.append("restart-notification")
 
     control = SimpleNamespace()
     cron_provider = SimpleNamespace()
@@ -1193,7 +1197,7 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
 
     import threading
     threading_event = threading.Event()
-    deferred = AsyncMock()
+    deferred = AsyncMock(side_effect=lambda: events.append("deferred-adapters"))
     monkeypatch.setattr(gateway_run, "GatewayRunner", FakeRunner)
     monkeypatch.setattr(gateway_run, "_start_gateway_start_control_socket", start_control)
     monkeypatch.setattr(gateway_run, "_start_gateway_start_cron_and_housekeeping", start_cron)
@@ -1223,7 +1227,8 @@ async def test_start_gateway_attaches_before_deferred_authority_claim(monkeypatc
     assert await gateway_run.start_gateway(config=GatewayConfig(), verbosity=None)
     replace.assert_not_awaited()
     assert events == [
-        "hub-adapter-start", "predecessor-exited", "control-socket", "lifecycle", "cron", "systemd-watchdog",
+        "hub-adapter-start", "predecessor-exited", "control-socket", "lifecycle",
+        "deferred-adapters", "restart-notification", "cron", "systemd-watchdog",
     ]
     deferred.assert_awaited_once()
     assert tail == {"control": control, "cron_provider": cron_provider}

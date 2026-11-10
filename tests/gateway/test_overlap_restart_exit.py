@@ -113,6 +113,58 @@ async def test_restart_control_requests_the_same_overlap_flow(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_restart_control_rebuilds_worker_requester(monkeypatch):
+    import gateway.run as gateway_run
+    from gateway.config import Platform
+
+    runner, _adapter = make_restart_runner(platform=Platform.MATRIX)
+    queued = AsyncMock(return_value={
+        "status": "restarting", "active_agents": 0, "via_service": False,
+    })
+    monkeypatch.setattr("gateway.restart.queue_user_restart", queued)
+    server = await gateway_run._start_gateway_start_control_socket(runner)
+    assert server is not None
+    try:
+        response = await asyncio.get_running_loop().run_in_executor(
+            None,
+            server.handle_request_line,
+            json.dumps({
+                "verb": "restart", "id": 1,
+                "params": {
+                    "restart_platforms": False,
+                    "requester": {
+                        "platform": "matrix",
+                        "chat_id": "!room:example.org",
+                        "chat_type": "group",
+                        "thread_id": "thread-7",
+                        "user_id": "@user:example.org",
+                        "scope_id": "scope-9",
+                        "message_id": "$event",
+                        "delivered_via_upstream_relay": True,
+                    },
+                },
+            }).encode(),
+        )
+    finally:
+        await server.stop()
+
+    assert json.loads(response)["result"]["queued"] is True
+    queued.assert_awaited_once()
+    args = queued.await_args.args
+    source = args[1]
+    assert args[0] is runner
+    assert args[2] == "$event"
+    assert queued.await_args.kwargs == {"restart_platforms": False}
+    assert source.platform is Platform.MATRIX
+    assert source.chat_id == "!room:example.org"
+    assert source.chat_type == "group"
+    assert source.thread_id == "thread-7"
+    assert source.user_id == "@user:example.org"
+    assert source.scope_id == "scope-9"
+    assert source.delivered_via_upstream_relay is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.platforms("posix")
 async def test_sigusr1_requests_the_same_overlap_flow(tmp_path, monkeypatch):
     """ExecReload/SIGUSR1 is another entry to the canonical successor-first flow."""

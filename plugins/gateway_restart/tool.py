@@ -212,6 +212,25 @@ def _socket_result_json(ack: dict) -> str:
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
+def _restart_requester_from_session() -> Optional[dict]:
+    """Build the restart-notify requester shape from the worker's bound chat."""
+    from gateway.session_context import delivered_via_upstream_relay, get_session_env
+
+    requester = {}
+    for field in (
+        "platform", "chat_id", "chat_type", "thread_id", "user_id", "scope_id",
+        "message_id",
+    ):
+        value = get_session_env(f"HERMES_SESSION_{field.upper()}", "").strip()
+        if value:
+            requester[field] = value
+    if not requester.get("platform") or not requester.get("chat_id"):
+        return None
+    if delivered_via_upstream_relay():
+        requester["delivered_via_upstream_relay"] = True
+    return requester
+
+
 def _restart_via_control_socket() -> str:
     """Queue the restart through the gateway's control socket (out-of-process path).
 
@@ -226,11 +245,14 @@ def _restart_via_control_socket() -> str:
 
         from gateway.control_socket import request_gateway_restart
 
-        ack = request_gateway_restart(
-            get_hermes_home(),
-            restart_platforms=True,
-            timeout=_SOCKET_RESTART_TIMEOUT_S,
-        )
+        request_kwargs: dict[str, Any] = {
+            "restart_platforms": True,
+            "timeout": _SOCKET_RESTART_TIMEOUT_S,
+        }
+        requester = _restart_requester_from_session()
+        if requester is not None:
+            request_kwargs["requester"] = requester
+        ack = request_gateway_restart(get_hermes_home(), **request_kwargs)
     except Exception as exc:
         logger.warning("restart tool: control-socket transport failed: %s", exc)
         return _error_json(_NO_GATEWAY_ERROR)
