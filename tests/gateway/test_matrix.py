@@ -662,7 +662,7 @@ class TestMatrixRenderingPayloads:
             assert content["body"].count("```") % 2 == 0
 
     @pytest.mark.asyncio
-    async def test_notify_final_pings_parsa_without_reply_quote(self):
+    async def test_notify_final_pings_and_replies_without_quote(self):
         body = "Final answer"
 
         result = await self.adapter.send(
@@ -679,22 +679,30 @@ class TestMatrixRenderingPayloads:
         assert self._mention_ids(content) == [mxid]
         assert content["body"] == f"{mxid} {body}"
         assert content["formatted_body"] == f"{pill} {body}"
-        assert "m.in_reply_to" not in content.get("m.relates_to", {})
+        assert content["m.relates_to"] == {"m.in_reply_to": {"event_id": "$question"}}
 
     @pytest.mark.asyncio
-    async def test_notify_final_thread_does_not_quote_user_event(self):
+    @pytest.mark.parametrize(
+        ("reply_to", "reply_target"),
+        [("$question", "$question"), (None, "$root")],
+        ids=["reply-to-event", "thread-root-fallback"],
+    )
+    async def test_notify_final_thread_replies_without_quote(self, reply_to, reply_target):
         result = await self.adapter.send(
             "!room:example.org",
             "Threaded final answer",
-            reply_to="$question",
+            reply_to=reply_to,
             metadata={"notify": True, "thread_id": "$root"},
         )
 
         assert result.success is True
         content = self._sent_contents()[0]
+        assert content["body"] == f"{self._FINAL_PING_MXID} Threaded final answer"
         assert content["m.relates_to"] == {
             "rel_type": "m.thread",
             "event_id": "$root",
+            "is_falling_back": True,
+            "m.in_reply_to": {"event_id": reply_target},
         }
         assert self._FINAL_PING_MXID in self._mention_ids(content)
 
