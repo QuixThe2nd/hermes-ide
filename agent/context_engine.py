@@ -5,7 +5,7 @@ limit, tracks usage, and may expose tools. ContextCompressor is the default;
 ``context.engine`` selects a plugin (``plugins/context_engine/<name>/``); one is active.
 Lifecycle: on_session_start() -> per API response update_from_response() -> per turn
 should_compress() / compress() -> on_session_end() at real session boundaries only
-(CLI exit, /reset, gateway expiry), never per-turn.
+(CLI exit, /new, gateway expiry), never per-turn.
 """
 
 import json
@@ -181,10 +181,10 @@ class ContextEngine(ABC):
         """Session begins: load persisted state. kwargs may include hermes_home, platform, model."""
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Real session boundary (CLI exit, /reset, gateway expiry) — never per-turn."""
+        """Real session boundary (CLI exit, /new, gateway expiry) — never per-turn."""
 
     def on_session_reset(self) -> None:
-        """/new or /reset: reset per-session state (default: counters and token tracking)."""
+        """/new: reset per-session state (default: counters and token tracking)."""
         # Reset cross-call calibration state captured under the PREVIOUS model. These fields encode "the
         # provider proved this prompt fit" / "preflight can be deferred" decisions that are only valid for
         # the model that produced them. Carrying them across a switch to a smaller-context model would let

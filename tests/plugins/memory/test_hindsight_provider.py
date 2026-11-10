@@ -1479,7 +1479,7 @@ class TestUpdateModeAppendCapability:
     def test_session_switch_flush_picks_capability_against_old_session(
         self, provider_with_config, monkeypatch
     ):
-        """When the API supports append, the flush on /reset must land
+        """When the API supports append, the flush on /new must land
         in the OLD session's stable document, not a per-process id."""
         self._clear_capability_cache()
         monkeypatch.setattr(

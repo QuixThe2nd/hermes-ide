@@ -1943,7 +1943,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return "compressor"
 
     def on_session_reset(self) -> None:
-        """Reset all per-session state for /new or /reset (also resets micro-compaction)."""
+        """Reset all per-session state for /new (also resets micro-compaction)."""
         super().on_session_reset()
         self._reset_session_compaction_state()
         self._reset_micro_compact_cursor_state()
@@ -2110,12 +2110,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear all per-session compaction state at a real session boundary.
-        Session end (CLI exit, gateway expiry, id rotation) — NOT /new or /reset. Every per-session
+        Session end (CLI exit, gateway expiry, id rotation) — NOT /new. Every per-session
         flag/counter can contaminate the next live session (suppressed compression, stale cooldowns,
         misleading warnings), so the whole surface is reset here.
 
         Session end (CLI exit, gateway expiry, session-id rotation) goes through this method rather than
-        ``on_session_reset()`` (/new, /reset). The original fix (#38788) only cleared ``_previous_summary``,
+        ``on_session_reset()`` (/new). The original fix (#38788) only cleared ``_previous_summary``,
         but the same cross-session contamination risk applies to every per-session variable that
         ``on_session_reset()`` clears: stale ``_ineffective_compression_count`` can suppress compression in
         a subsequent live session; ``_summary_failure_cooldown_until`` can block summary generation;
@@ -2131,7 +2131,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.awaiting_real_usage_after_compression = self._provider_omits_usage = False
 
     def _reset_session_compaction_state(self) -> None:
-        """Shared per-session reset for /new, /reset and session end."""
+        """Shared per-session reset for /new and session end."""
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
@@ -2681,7 +2681,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.summary_model = summary_model_override or ""
         self._session_db: Any = None
         self._session_id: str = ""
-        # Per-session state (also reset by /new, /reset and session end).
+        # Per-session state (also reset by /new and session end).
         self._reset_session_compaction_state()
         # Terminal summary failures (access/quota, network, empty content, finish_reason=length): compress()
         # must ABORT and preserve the session regardless of abort_on_summary_failure (see _TERMINAL_SUMMARY_FAILURES).

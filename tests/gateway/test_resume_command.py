@@ -250,7 +250,7 @@ class TestHandleResumeCommand:
     async def test_resume_evicts_cached_agent(self, tmp_path):
         """Gateway /resume evicts the cached AIAgent so the next message
         rebuilds with the correct session_id end-to-end — mirrors /branch
-        and /reset. Without this, the cached agent's memory provider keeps
+        and /new. Without this, the cached agent's memory provider keeps
         writing into the wrong session. See #6672.
         """
         import threading

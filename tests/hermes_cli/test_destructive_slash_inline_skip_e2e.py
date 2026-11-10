@@ -1,6 +1,6 @@
 """End-to-end integration test for the destructive-slash inline-skip path.
 
-Drives ``HermesCLI.process_command("/reset now")`` against a minimal stand-in
+Drives ``HermesCLI.process_command("/new now")`` against a minimal stand-in
 and verifies:
 
 1. ``new_session`` was invoked (the command actually ran)
@@ -53,15 +53,15 @@ def _make_cli_stub():
     return self_, new_session_calls
 
 
-def test_reset_now_invokes_new_session_without_modal():
-    """``/reset now`` runs ``new_session`` and never touches the modal."""
+def test_new_now_invokes_new_session_without_modal():
+    """``/new now`` runs ``new_session`` and never touches the modal."""
     self_, calls = _make_cli_stub()
 
     with patch(
         "cli.load_cli_config",
         return_value={"approvals": {"destructive_slash_confirm": True}},
     ):
-        self_.process_command("/reset now")
+        self_.process_command("/new now")
 
     assert calls, "new_session was never invoked"
     # The /new branch passes title=None when there's no non-skip remainder.

@@ -1621,7 +1621,7 @@ class GatewayBusySessionMixin:
         Order: ``busy_handler`` (mid-run variant) → ``busy_policy == "dispatch"`` (normal handler)
         → catch-all reject text. Rejecting is required rather than falling through to
         interrupt + discard: commands like /model, /reasoning, /voice, /insights, /title,
-        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /setnotify, /reset (all
+        /resume, /retry, /undo, /compress, /usage, /reload-mcp, /setnotify (all
         registered as Discord slash commands) would interrupt the agent AND get silently
         discarded by the slash-command safety net, producing a zero-char response.
         See #5057, #6252, #10370.
@@ -1692,10 +1692,10 @@ class GatewayBusySessionMixin:
         return EphemeralReply(t("gateway.stop.stopped"))
 
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
-        # /reset and /new bypass the running-agent guard (else they'd queue as user text and replay
+        # /new bypasses the running-agent guard (else it would queue as user text and replay
         # into the same broken history); clear pending messages so the old text doesn't replay.
         from gateway.run import _INTERRUPT_REASON_RESET
-        # Interrupt the agent first, then clear the adapter's pending queue so the stale "/reset" text
+        # Interrupt the agent first, then clear the adapter's pending queue so the stale "/new" text
         # doesn't get re-processed as a user message after the interrupt completes. See #2170.
         await self._interrupt_and_clear_session(
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command",
@@ -1956,7 +1956,7 @@ class GatewayBusySessionMixin:
     async def _maybe_confirm_destructive_slash(
         self, *, event: MessageEvent, command: str, title: str, detail: str, execute
     ) -> Union[str, "EphemeralReply", None]:
-        """Gate a destructive session slash command (/new, /reset, /undo).
+        """Gate a destructive session slash command (/new, /undo).
 
         ``execute()`` (async → str | EphemeralReply) runs immediately when
         ``approvals.destructive_slash_confirm`` is off; otherwise via ``_request_slash_confirm``:
@@ -1996,7 +1996,7 @@ class GatewayBusySessionMixin:
 
     _DESTRUCTIVE_OPTOUT_NOTE = {
         True: (
-            "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
+            "\n\nℹ️ Future /clear, /new, and /undo will run "
             "without confirmation. Re-enable via "
             "`approvals.destructive_slash_confirm: true` in config.yaml."
         ),
@@ -2005,7 +2005,7 @@ class GatewayBusySessionMixin:
         # opt-out that was never written.
         False: (
             "\n\n⚠️ Could not save that preference (config.yaml is not "
-            "writable), so /clear, /new, /reset, and /undo will ask "
+            "writable), so /clear, /new, and /undo will ask "
             "again next time. To silence it permanently, set "
             "`approvals.destructive_slash_confirm: false` in config.yaml."
         ),

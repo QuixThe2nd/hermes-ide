@@ -105,8 +105,8 @@ class TestMessageEventGetCommand:
         assert event.get_command() == "new"
 
     def test_command_with_args(self):
-        event = MessageEvent(text="/reset session")
-        assert event.get_command() == "reset"
+        event = MessageEvent(text="/new session")
+        assert event.get_command() == "new"
 
     def test_not_a_command(self):
         event = MessageEvent(text="hello")

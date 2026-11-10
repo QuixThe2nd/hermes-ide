@@ -3878,7 +3878,7 @@ class BasePlatformAdapter(ABC):
             state.cancel_timer()
 
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
-    # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.
+    # reconciliation is deterministic across completion, /stop /new, and stale-lock heal.
 
     def _release_session_guard(self, session_key: str, *, guard: Optional[asyncio.Event] = None) -> None:
         """Release the session guard; with ``guard`` given, only if the entry is still that exact
@@ -3964,7 +3964,7 @@ class BasePlatformAdapter(ABC):
 
     async def _drain_pending_after_session_command(
         self, session_key: str, command_guard: asyncio.Event) -> None:
-        """Tail of /stop, /new, /reset: release the command-scoped guard, then
+        """Tail of /stop, /new: release the command-scoped guard, then
         spawn a fresh processing task for any follow-up queued meanwhile."""
         await self._flush_text_debounce_now(session_key)
         pending_event = self._pending_messages.pop(session_key, None)
@@ -3973,7 +3973,7 @@ class BasePlatformAdapter(ABC):
             self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
-        """Dispatch a reset-like bypass command (/stop, /new, /reset): keep a guard installed while
+        """Dispatch a reset-like bypass command (/stop, /new): keep a guard installed while
         the runner handles it (follow-ups stay queued), cancel the old task AFTER the response,
         drain once."""
         logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key)
@@ -4052,7 +4052,7 @@ class BasePlatformAdapter(ABC):
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
         if should_bypass_active_session(cmd):
             try:
-                # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.
+                # /stop, /new: cancel + response + drain; other bypasses don't cancel.
                 if cmd and is_interrupt_then_dispatch(cmd):
                     self._discard_text_debounce(session_key)
                     await self._dispatch_active_session_command(event, session_key, cmd)
@@ -4351,7 +4351,7 @@ class BasePlatformAdapter(ABC):
             with self._media_delivery_scope(event.source):
                 content = None if diagnostic_wake_muted(event) else self.warning_text(
                     f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
-                    "Try again or use /reset to start a fresh session.",
+                    "Try again or use /new to start a fresh session.",
                     "Sorry, I encountered an error.",
                     logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
             if content is None:

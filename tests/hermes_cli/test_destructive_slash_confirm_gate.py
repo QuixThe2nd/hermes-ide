@@ -1,6 +1,6 @@
 """Tests for the approvals.destructive_slash_confirm config gate.
 
-Destructive session slash commands (/clear, /new, /reset, /undo) discard
+Destructive session slash commands (/clear, /new, /undo) discard
 conversation state.  This config key (default True) gates a three-option
 confirmation prompt — "Always Approve" flips the key to False so future
 destructive commands run silently.

@@ -631,7 +631,7 @@ def finalize_turn(
     # called here — run_conversation() is called once per user message in
     # multi-turn sessions. Shutting down after every turn would kill the
     # provider before the second message. Actual session-end cleanup is
-    # handled by the CLI (atexit / /reset) and gateway (session expiry /
+    # handled by the CLI (atexit / /new) and gateway (session expiry /
     # _reset_session).
 
     # Chat/session title, resolved once for both the optional OS

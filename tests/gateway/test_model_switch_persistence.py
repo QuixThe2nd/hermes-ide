@@ -5,7 +5,7 @@ The gateway /model command stores session overrides in
 
 1. Be applied in ``run_sync()`` so the next agent uses the switched model.
 2. Not be mistaken for fallback activation (which evicts the cached agent).
-3. Survive across multiple messages until /reset clears them.
+3. Survive across multiple messages until /new clears them.
 
 Tests exercise the real ``_apply_session_model_override()`` and
 ``_is_intentional_model_switch()`` methods on ``GatewayRunner``.

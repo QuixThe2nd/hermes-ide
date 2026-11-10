@@ -104,7 +104,7 @@ gateway:
     aggressive_unsupported: "--aggressive desteklenmiyor; yalnızca son alışverişleri tutmak için '/compress here [N]' kullanın veya turları silmek için /undo kullanın."
     focus_line:            "Odak: \"{topic}\""
     summary_failed:        "⚠️ Özet oluşturma başarısız ({error}). {count} geçmiş mesaj kaldırılıp yer tutucuyla değiştirildi; önceki bağlam artık kurtarılamaz. auxiliary.compression model yapılandırmanızı kontrol edin."
-    aborted:               "⚠️ Sıkıştırma iptal edildi ({error}). Hiçbir mesaj silinmedi — konuşma değişmedi. Tekrar denemek için /compress, temiz bir oturum için /reset komutunu çalıştırın veya auxiliary.compression model yapılandırmanızı kontrol edin."
+    aborted:               "⚠️ Sıkıştırma iptal edildi ({error}). Hiçbir mesaj silinmedi — konuşma değişmedi. Tekrar denemek için /compress, temiz bir oturum için /new komutunu çalıştırın veya auxiliary.compression model yapılandırmanızı kontrol edin."
     aux_failed:            "ℹ️ Yapılandırılmış sıkıştırma modeli `{model}` başarısız oldu ({error}). Ana modelinizle kurtarıldı — bağlam sağlam — ancak config.yaml içindeki `auxiliary.compression.model` öğesini kontrol etmek isteyebilirsiniz."
     turnhold_deferred:     "ℹ️ Bağlam sıkıştırma ertelendi — özet hâlâ akışta. Bu tur sıkıştırma olmadan devam ediliyor."
     failed:                "Sıkıştırma başarısız: {error}"
@@ -247,7 +247,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
-Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+Future messages in this room will use that transcript until `/new` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Adlandırılmış oturum bulunamadı.\nMevcut oturumu adlandırmak için `/title Oturumum`, daha sonra geri dönmek için `/resume Oturumum` kullanın."
     all_requires_admin: "_Not: `--all` (sohbetler arası listeleme) yapılandırılmış bir yönetici gerektirir; yalnızca bu sohbetin oturumları gösteriliyor._"

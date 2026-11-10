@@ -1,4 +1,4 @@
-"""Tests that /new (and its /reset alias) clears session-scoped overrides."""
+"""Tests that /new clears session-scoped overrides."""
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock

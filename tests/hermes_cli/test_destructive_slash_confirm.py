@@ -91,7 +91,7 @@ def test_gate_on_choice_always_persists_and_returns_always():
 #
 # Users on platforms where the prompt_toolkit modal doesn't dispatch keys
 # (currently native Windows PowerShell) need a way to bypass the confirmation
-# without flipping the config gate.  ``/reset now``, ``/new --yes``, ``/clear
+# without flipping the config gate.  ``/new now``, ``/new --yes``, ``/clear
 # -y`` all skip the modal and return "once" immediately.
 # ---------------------------------------------------------------------------
 
@@ -100,7 +100,7 @@ def test_split_destructive_skip_recognized_tokens():
     """``now``, ``--yes``, and ``-y`` are recognized as skip tokens."""
     from cli import HermesCLI
 
-    assert HermesCLI._split_destructive_skip("/reset now") == ("", True)
+    assert HermesCLI._split_destructive_skip("/new now") == ("", True)
     assert HermesCLI._split_destructive_skip("/clear --yes") == ("", True)
     assert HermesCLI._split_destructive_skip("/undo -y") == ("", True)
 
@@ -119,7 +119,7 @@ def test_split_destructive_skip_handles_empty_and_none():
 
 
 def test_confirm_destructive_slash_now_skips_modal():
-    """``/reset now`` skips the modal even when the gate is on."""
+    """``/new now`` skips the modal even when the gate is on."""
     from cli import HermesCLI
 
     # Build a prompt stub that fails the test if invoked — proving the modal
@@ -141,7 +141,7 @@ def test_confirm_destructive_slash_now_skips_modal():
         return_value={"approvals": {"destructive_slash_confirm": True}},
     ):
         result = _bound(HermesCLI._confirm_destructive_slash, self_)(
-            "new", "detail", cmd_original="/reset now",
+            "new", "detail", cmd_original="/new now",
         )
 
     assert result == "once"

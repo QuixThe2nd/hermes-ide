@@ -98,7 +98,7 @@ Hermes 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Teleg
 | 操作 | CLI | 消息平台 |
 |------|-----|----------|
 | 开始对话 | `hermes` | 运行 `hermes gateway setup` + `hermes gateway start`，然后给机器人发消息 |
-| 开始新对话 | `/new` 或 `/reset` | `/new` 或 `/reset` |
+| 开始新对话 | `/new` | `/new` |
 | 更换模型 | `/model [provider:model]` | `/model [provider:model]` |
 | 设置人格 | `/personality [name]` | `/personality [name]` |
 | 重试或撤销上一轮 | `/retry`、`/undo` | `/retry`、`/undo` |

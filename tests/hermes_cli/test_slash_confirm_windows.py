@@ -117,7 +117,7 @@ class TestModal:
         cli = _make_cli()
         outcome = _run_on_daemon(
             lambda: cli._prompt_text_input_modal(
-                title="⚠️  /reset",
+                title="⚠️  /new",
                 detail="This starts a fresh session.",
                 choices=_SAMPLE_CHOICES,
                 timeout=5,
@@ -163,7 +163,7 @@ class TestModal:
 
         outcome = _run_on_daemon(
             lambda: cli._prompt_text_input_modal(
-                title="⚠️  /reset",
+                title="⚠️  /new",
                 detail="This starts a fresh session.",
                 choices=_SAMPLE_CHOICES,
                 timeout=5,

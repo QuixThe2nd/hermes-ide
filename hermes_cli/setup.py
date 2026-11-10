@@ -483,7 +483,7 @@ def _apply_default_agent_settings(config: dict):
     print_info(f"  Max iterations: {DEFAULT_MAX_TURNS}")
     print_info("  Tool progress: all")
     print_info("  Compression threshold: 0.50")
-    print_info("  Session reset: never (use /reset or compression)")
+    print_info("  Session reset: never (use /new or compression)")
     print_info("  Run `hermes setup agent` later to customize.")
 
 

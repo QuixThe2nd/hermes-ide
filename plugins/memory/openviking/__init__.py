@@ -2361,7 +2361,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, **kwargs) -> None:
         """Commit the old session and rotate cached state to the new session_id.
 
-        Fires on /resume, /branch, /reset, /new, and context compression. Without it
+        Fires on /resume, /branch, /new, and context compression. Without it
         ``_session_id`` stays stuck at the initialize() value, later sync_turn writes
         land in the closed session and the new one never gets extracted. The old
         session's drain+commit is offloaded so command threads never block.

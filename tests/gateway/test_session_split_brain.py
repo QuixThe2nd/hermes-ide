@@ -3,7 +3,7 @@ repeated 'Interrupting current task...' while /stop reports no active task.
 
 Covers three layers of the fix:
 
-1. Adapter-side task ownership (_session_tasks map): /stop, /new, /reset
+1. Adapter-side task ownership (_session_tasks map): /stop, /new
    actually cancel the in-flight adapter task and release the guard in
    order, so follow-up messages reach the new session.
 
@@ -97,17 +97,17 @@ def _make_runner():
 
 
 # ===========================================================================
-# Layer 1: Adapter-side session cancellation on /stop /new /reset
+# Layer 1: Adapter-side session cancellation on /stop /new
 # ===========================================================================
 
 
 class TestAdapterSessionCancellation:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("command_text", ["/stop", "/new", "/reset"])
+    @pytest.mark.parametrize("command_text", ["/stop", "/new"])
     async def test_command_cancels_active_task_and_unblocks_follow_up(
         self, command_text
     ):
-        """/stop /new /reset must cancel the adapter task and let follow-ups through."""
+        """/stop /new must cancel the adapter task and let follow-ups through."""
         adapter = _make_adapter()
         sk = _session_key()
         processing_started = asyncio.Event()
@@ -117,7 +117,7 @@ class TestAdapterSessionCancellation:
         async def _handler(event):
             nonlocal blocked_first_message
             cmd = event.get_command()
-            if cmd in {"stop", "new", "reset", "model"}:
+            if cmd in {"stop", "new", "model"}:
                 return f"handled:{cmd}"
 
             if blocked_first_message:

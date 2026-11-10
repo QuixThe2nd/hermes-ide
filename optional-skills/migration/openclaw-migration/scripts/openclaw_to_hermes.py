@@ -1220,7 +1220,7 @@ class Migrator:
                 else "Review the migration report."
             )
             steps.append(
-                "Start a new Hermes session (or /reset) to pick up the imported config."
+                "Run /new in Hermes to pick up the imported config."
             )
         if summary.get("conflict", 0) > 0:
             steps.append(

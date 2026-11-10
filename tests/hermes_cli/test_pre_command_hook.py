@@ -89,7 +89,7 @@ def test_fire_helper_swallows_manager_errors(monkeypatch):
     monkeypatch.setattr(plugins_mod, "get_plugin_manager", _boom)
     # Never raises.
     plugins_mod.fire_pre_command_hook(
-        surface="gateway", command="new", alias_used="reset", args_raw="",
+        surface="gateway", command="context", alias_used="ctx", args_raw="",
     )
 
 

@@ -397,7 +397,7 @@ class GatewayAgentCacheMixin:
         per gateway lifetime.
 
         Use this at every site that ends a running turn, regardless of
-        cause (normal completion, /stop, /reset, /resume, sentinel
+        cause (normal completion, /stop, /new, /resume, sentinel
         cleanup, stale-eviction).  Per-session state that PERSISTS
         across turns (``_session_model_overrides``, ``_voice_mode``,
         ``_pending_approvals``, ``_update_prompt_pending``) is NOT

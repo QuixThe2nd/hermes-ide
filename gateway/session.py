@@ -913,7 +913,7 @@ class SessionEntry:
     # of binding the request to an unrelated recent session.
     prev_session_id: Optional[str] = None
 
-    # Set by reset_session() when the user explicitly sends /new or /reset.
+    # Set by reset_session() when the user explicitly sends /new.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
     # skill re-injection on the first message of the new session.  We can't
     # reuse was_auto_reset for this because that flag fires the "session

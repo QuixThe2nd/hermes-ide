@@ -161,6 +161,14 @@ async def test_registers_native_sethomeserver_slash_command(adapter):
 
 
 @pytest.mark.asyncio
+async def test_native_slash_commands_exclude_reset(adapter):
+    adapter._register_slash_commands()
+
+    assert "new" in adapter._client.tree.commands
+    assert "reset" not in adapter._client.tree.commands
+
+
+@pytest.mark.asyncio
 async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter):
     class UnknownInteraction(Exception):
         status = 404
@@ -177,12 +185,12 @@ async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter)
     )
     adapter.handle_message = AsyncMock()
 
-    await adapter._run_simple_slash(interaction, "/reset", "Session reset~")
+    await adapter._run_simple_slash(interaction, "/new", "New conversation started~")
 
     interaction.response.defer.assert_awaited_once_with(ephemeral=True)
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
-    assert event.text == "/reset"
+    assert event.text == "/new"
     assert event.source.chat_id == "123"
     interaction.edit_original_response.assert_not_awaited()
     interaction.delete_original_response.assert_not_awaited()

@@ -1,4 +1,4 @@
-"""Invariant: interrupting a session (/stop, /new, /reset) discards a parked human follow-up but
+"""Invariant: interrupting a session (/stop, /new) discards a parked human follow-up but
 never a parked internal wake (async-delegation completion, notify+wake). See #114456.
 
 Real ``BasePlatformAdapter`` pending slot + post-command drain, real

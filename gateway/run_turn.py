@@ -1299,7 +1299,7 @@ class GatewayTurnMixin:
             _quick_key=_quick_key, run_generation=run_generation,
         )
         # Summary failure aborts the compressor (nothing dropped). Warn the user visibly — agent.log
-        # is invisible on TG/Discord — so they know the chat is "frozen" and can /compress or /reset.
+        # is invisible on TG/Discord — so they know the chat is "frozen" and can /compress or /new.
         _comp = getattr(attempt.agent, "context_compressor", None)
         _hyg_aborted = _comp is not None and getattr(_comp, "_last_compress_aborted", False)
         # A fence-cancelled _compress_context returns the original transcript with
@@ -2242,7 +2242,7 @@ class GatewayTurnMixin:
             return (
                 "⚠️ This session's history is temporarily unavailable, so this message was not "
                 "processed. Ask the operator to inspect state.db, then resend after it is healthy. "
-                "Use /reset only if you intentionally want to start a new conversation."
+                "Use /new only if you intentionally want to start a new conversation."
             ), _session_env_tokens
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
@@ -2499,7 +2499,7 @@ class GatewayTurnMixin:
             # previous conversation's context_compressor._previous_summary —
             # the cache is keyed on the stable session_key, so an auto-reset
             # otherwise reuses the old agent and leaks prior history into new
-            # compaction summaries. Mirrors /reset and the compression-exhausted
+            # compaction summaries. Mirrors /new and the compression-exhausted
             # path (#9893). Covers daily/idle/suspended auto-reset.
             self._evict_cached_agent(session_key)
             session_entry.was_auto_reset = False
@@ -2567,7 +2567,7 @@ class GatewayTurnMixin:
         turn_sidecar_notes: List[str] = []
 
         # If the previous session expired and was auto-reset, deliver a notice
-        # so the agent knows this is a fresh conversation (not an intentional /reset).
+        # so the agent knows this is a fresh conversation (not an intentional /new).
         if _was_auto_reset:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
@@ -2743,7 +2743,7 @@ class GatewayTurnMixin:
             return (
                 "⚠️ This session's history is temporarily unavailable, so "
                 "this message was not processed. Ask the operator to inspect "
-                "state.db, then resend after it is healthy. Use /reset only "
+                "state.db, then resend after it is healthy. Use /new only "
                 "if you intentionally want to start a new conversation."
             )
 
@@ -3944,7 +3944,7 @@ class GatewayTurnMixin:
                                     # user — agent.log alone is invisible on
                                     # TG/Discord/etc. — so they know the chat
                                     # is "frozen" at the current size and can
-                                    # /compress to retry or /reset to start
+                                    # /compress to retry or /new to start
                                     # fresh.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
                                     _hyg_aborted = _comp is not None and getattr(
@@ -4055,7 +4055,7 @@ class GatewayTurnMixin:
                                                 "⚠️ Context compression aborted "
                                                 f"({_err}). No messages were dropped — "
                                                 "conversation is unchanged. Run /compress "
-                                                "to retry, /reset for a clean session, or "
+                                                "to retry, /new for a clean session, or "
                                                 "check your auxiliary.compression model "
                                                 "configuration."
                                             )
@@ -5043,13 +5043,13 @@ class GatewayTurnMixin:
                     return (
                         "⚠️ Session too large for the model's context window.\n"
                         "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                        "/new to start fresh."
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
             return (
                 f"Sorry, I encountered an unexpected error.{status_hint}\n"
-                "Try again or use /reset to start a fresh session."
+                "Try again or use /new to start a fresh session."
             )
         finally:
             # Restore session context variables to their pre-handler state
@@ -6589,7 +6589,7 @@ class GatewayTurnMixin:
             )
         _diag_lines.append(
             "To increase the limit, set agent.gateway_timeout in config.yaml (value in seconds, 0 "
-            "= no limit) and restart the gateway.\nTry again, or use /reset to start fresh."
+            "= no limit) and restart the gateway.\nTry again, or use /new to start fresh."
         )
         return {
             "final_response": "\n".join(_diag_lines),
@@ -8354,7 +8354,7 @@ class GatewayTurnMixin:
                                     f"⚠️ No activity for {_elapsed_warn} min. "
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    f"You can continue waiting or use /new.",
                                     metadata=_interim_metadata(_status_thread_metadata),
                                 )
                             except Exception as _warn_err:
@@ -8462,7 +8462,7 @@ class GatewayTurnMixin:
                 _diag_lines.append(
                     "To increase the limit, set agent.gateway_timeout in config.yaml "
                     "(value in seconds, 0 = no limit) and restart the gateway.\n"
-                    "Try again, or use /reset to start fresh."
+                    "Try again, or use /new to start fresh."
                 )
 
                 response = {

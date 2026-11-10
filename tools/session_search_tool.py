@@ -49,7 +49,7 @@ _RELATIVE_UNIT_SECONDS = {"h": 3600, "d": 86400, "w": 604800}
 _DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started")
 # Compaction handoff summaries (agent/context_compressor.py); excluded from bookends.
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
-# /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
+# /new and idle/daily expiry end the predecessor WITHOUT
 # carrying its transcript forward — unlike compression continuations and live delegation
 # children. The store's boundary set, so the two cannot drift.
 _FRESH_RESET_END_REASONS = _BOUNDARY_END_REASONS

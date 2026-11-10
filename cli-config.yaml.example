@@ -968,8 +968,8 @@ memory:
 # =============================================================================
 # Session Continuity (Messaging Platforms)
 # =============================================================================
-# Conversations persist across inactivity and daily boundaries. Use /new or
-# /reset explicitly; context compression manages long conversations.
+# Conversations persist across inactivity and daily boundaries. Use /new
+# explicitly; context compression manages long conversations.
 
 # Maximum number of simultaneously active chat sessions across CLI, TUI,
 # dashboard chat, and messaging gateway. Set to null, 0, or omit to allow

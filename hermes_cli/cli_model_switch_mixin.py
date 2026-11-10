@@ -898,7 +898,7 @@ class CLIModelSwitchMixin:
         for line in result.message.splitlines():
             _cprint(f"  {prefix} {line}" if line.startswith("openai_runtime") else f"    {line}")
         if result.success and result.requires_new_session:
-            _cprint("    Tip: `/reset` starts a new session immediately.")
+            _cprint("    Tip: `/new` starts a new session immediately.")
 
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""

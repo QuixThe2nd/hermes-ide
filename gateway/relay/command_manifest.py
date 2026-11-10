@@ -47,7 +47,6 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
     """The relay lane's Discord slash-command manifest (native-tree mirror)."""
     return [
         _cmd("new", "Start a new conversation"),
-        _cmd("reset", "Reset your Hermes session"),
         _cmd("model", "Show or change the model",
              _opt("name", "Model name. Leave empty to see current.")),
         _cmd("reasoning", "Show/change reasoning effort, or toggle showing it",

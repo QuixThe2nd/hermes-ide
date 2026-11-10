@@ -536,7 +536,7 @@ class CLIInfoMixin:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
 
             print()
-            print("  Conversations persist until /new or /reset.")
+            print("  Conversations persist until /new.")
             print()
             print("  To start the gateway:")
             print("    python cli.py --gateway")

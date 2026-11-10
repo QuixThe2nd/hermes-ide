@@ -7,7 +7,7 @@ NEXT message reuses the old ``AIAgent`` instance — carrying its
 ``context_compressor._previous_summary`` — and prior-conversation content leaks
 into the new session's compaction summaries.
 
-Manual ``/reset`` and the compression-exhausted path (#9893) already evict the
+Manual ``/new`` and the compression-exhausted path (#9893) already evict the
 cached agent. This pins the matching eviction onto the auto-reset cleanup block
 in ``_handle_message_with_agent``.
 

@@ -112,7 +112,7 @@ def _strip_resume_name(parts: list[str]) -> str:
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
-    # ------------------------------------------------------------------ /new, /reset
+    # ------------------------------------------------------------------ /new
 
     async def _cleanup_old_agent_for_reset(self, session_key: str) -> None:
         """Close the old agent's tool resources (sandboxes, browsers, subprocesses) before eviction.
@@ -150,7 +150,7 @@ class GatewaySessionCommandsMixin:
         await self.hooks.emit("session:reset", dict(hook_payload))
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /new or /reset command."""
+        """Handle /new command."""
         source = event.source
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
@@ -479,7 +479,7 @@ class GatewaySessionCommandsMixin:
             return (
                 "🗜️ Nothing to compact: this session runs on the Codex app-server runtime, whose "
                 "context lives in a Codex-owned thread that only exists while the agent is active. "
-                "Send a message first, then /compress — or /reset to start fresh.")
+                "Send a message first, then /compress — or /new to start fresh.")
         compressor = getattr(agent, "context_compressor", None)
         count_before = getattr(compressor, "compression_count", 0)
         try:
@@ -493,7 +493,7 @@ class GatewaySessionCommandsMixin:
                 "unchanged by design — the app-server now carries the compacted context.")
         return (
             "⚠️ Codex app-server compaction did not complete — the thread is unchanged. Check the "
-            "app-server logs, retry /compress, or /reset for a clean session.")
+            "app-server logs, retry /compress, or /new for a clean session.")
 
     async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
         """Handle /compress -- manually compress conversation context; ``/compress <focus>`` tells

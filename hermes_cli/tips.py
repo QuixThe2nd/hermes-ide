@@ -375,7 +375,7 @@ TIPS = [
     # --- Batch ---
     "batch_runner.py --resume content-matches completed prompts by text so dataset reorders don't re-run finished work.",
     # --- Less-Known Slash Commands ---
-    '/new starts a fresh session in place (alias /reset) — fresh session ID, clean history, CLI stays open.',
+    '/new starts a fresh session in place — fresh session ID, clean history, CLI stays open.',
     '/clear wipes the terminal screen AND starts a new session — one shortcut for a visual reset.',
     '/history prints the current conversation in-line without leaving the CLI — useful for a quick re-read.',
     '/save writes the current conversation to disk without ending the session.',

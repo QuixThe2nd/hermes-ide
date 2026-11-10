@@ -128,7 +128,7 @@ def _finish_change(c: Console, invalidate_cache: bool, what: str = "Change will 
     if not notice:
         return
     c.print(f"[dim]{what} in your next session.[/]")
-    c.print(f"[dim]Use /reset to start a new session now, or --now to {verb} immediately (invalidates prompt cache).[/]\n")
+    c.print(f"[dim]Use /new to start a new session now, or --now to {verb} immediately (invalidates prompt cache).[/]\n")
 
 
 def _print_error(c: Console, message: str) -> None:

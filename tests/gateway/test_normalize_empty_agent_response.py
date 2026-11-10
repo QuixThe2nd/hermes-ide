@@ -2,7 +2,7 @@
 ``_normalize_empty_agent_response``.
 
 When a turn is stopped because session persistence failed (SQLite lock
-contention, disk exhaustion, ...), the user must NOT be told to /reset —
+contention, disk exhaustion, ...), the user must NOT be told to /new —
 that destroys their conversation context and does nothing to fix storage.
 They must also never see 'The request failed: None' when the gateway result
 dict carries an explicit ``error: None``.
@@ -16,7 +16,7 @@ from gateway.run import _normalize_empty_agent_response
 class TestPersistenceFailureRecoveryMessage:
     """Failed turns whose failure_reason marks a session-persistence
     failure get a dedicated recovery message: reassure the user their
-    history is protected, tell them to resend — never suggest /reset."""
+    history is protected, tell them to resend — never suggest /new."""
 
     def test_locked_persistence_failure_gets_recovery_message(self):
         agent_result = {
@@ -30,7 +30,7 @@ class TestPersistenceFailureRecoveryMessage:
         response = _normalize_empty_agent_response(agent_result, "", history_len=10)
 
         assert "send it again" in response.lower()
-        assert "/reset" not in response
+        assert "/new" not in response
         assert "unknown error" not in response.lower()
 
     def test_disk_persistence_failure_mentions_disk(self):
@@ -45,7 +45,7 @@ class TestPersistenceFailureRecoveryMessage:
         response = _normalize_empty_agent_response(agent_result, "", history_len=10)
 
         assert "disk" in response.lower()
-        assert "/reset" not in response
+        assert "/new" not in response
         assert "unknown error" not in response.lower()
 
     def test_unknown_cause_persistence_failure_still_avoids_reset(self):
@@ -59,7 +59,7 @@ class TestPersistenceFailureRecoveryMessage:
 
         response = _normalize_empty_agent_response(agent_result, "", history_len=10)
 
-        assert "/reset" not in response
+        assert "/new" not in response
         assert "send it again" in response.lower()
 
     def test_legacy_shape_error_text_mentioning_session_storage(self):
@@ -74,7 +74,7 @@ class TestPersistenceFailureRecoveryMessage:
 
         response = _normalize_empty_agent_response(agent_result, "", history_len=10)
 
-        assert "/reset" not in response
+        assert "/new" not in response
         assert "send it again" in response.lower()
 
 

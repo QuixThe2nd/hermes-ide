@@ -300,7 +300,7 @@ class CLIModalMixin:
         "win32"`` and fell back to a raw ``input()`` prompt. When the confirm was triggered from the
         ``process_loop`` daemon thread (the normal case) that ``input()`` ran off the main thread and
         deadlocked against prompt_toolkit's stdin ownership — the user saw a frozen cursor and Ctrl-C was
-        swallowed (bare ``/reset`` froze; ``/reset now`` worked only because it skips the prompt entirely).
+        swallowed (bare ``/new`` froze; ``/new now`` worked only because it skips the prompt entirely).
         """
         if not choices:
             return None
@@ -503,7 +503,7 @@ class CLIModalMixin:
         """Split inline-skip tokens out of a destructive slash command → ``(remainder, skip)``.
 
         ``remainder`` is the text minus the leading "/cmd" word and any skip tokens; ``skip`` is
-        True iff one was found: "/reset now" -> ("", True); "/reset --yes My title" ->
+        True iff one was found: "/new now" -> ("", True); "/new --yes My title" ->
         ("My title", True); "/new My title" -> ("My title", False).
         """
         tokens = (cmd_text or "").strip().split()
@@ -516,13 +516,13 @@ class CLIModalMixin:
 
     def _confirm_destructive_slash(
         self, command: str, detail: str, cmd_original: Optional[str] = None) -> Optional[str]:
-        """Confirm a destructive slash command (``/clear``, ``/new``/``/reset``, ``/undo``): returns
+        """Confirm a destructive slash command (``/clear``, ``/new``, ``/undo``): returns
         ``"once"``, ``"always"`` (persists the opt-out) or ``None`` (cancelled). Gate off → "once"
         silently; ``now`` / ``--yes`` / ``-y`` in ``cmd_original`` bypasses the modal (callers strip
         the tokens via :meth:`_split_destructive_skip`).
 
         Inline-skip: if ``cmd_original`` contains ``now``, ``--yes``, or ``-y`` as an argument (e.g.
-        ``/reset now``, ``/new --yes My title``), the modal is bypassed and ``"once"`` is returned
+        ``/new now``, ``/new --yes My title``), the modal is bypassed and ``"once"`` is returned
         immediately. This is an escape hatch for non-interactive use and for the degraded path where the
         modal can't be marshaled onto the app loop (native Windows itself now drives the modal normally —
         see #33961). Callers are responsible for stripping the skip tokens from any remaining argument
@@ -539,7 +539,7 @@ class CLIModalMixin:
                 ("always", "Always Approve", "proceed and silence this prompt permanently"),
                 ("cancel", "Cancel", "keep current conversation")],
             unchanged="Conversation unchanged.",
-            always_msg="🔒 Future /clear, /new, /reset, and /undo will run without confirmation.",
+            always_msg="🔒 Future /clear, /new, and /undo will run without confirmation.",
             once_verb="proceeding")
 
     def _ring_bell(self, prompt: bool = False, context: str = "", detail: str = "") -> None:

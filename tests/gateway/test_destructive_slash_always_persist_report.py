@@ -3,7 +3,7 @@
 ``save_config_value`` swallows its own errors and reports the outcome through
 its return value, so the caller's ``try``/``except`` never sees a failed write.
 ``_on_confirm`` ignored that return value and appended "Future /clear, /new,
-/reset, and /undo will run without confirmation" unconditionally, so on any
+and /undo will run without confirmation" unconditionally, so on any
 install whose ``config.yaml`` is not writable (read-only bind mount, container
 recreation) the user was told the preference stuck when it had not. The prompt
 comes back on the next restart with no explanation.

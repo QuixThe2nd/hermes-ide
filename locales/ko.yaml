@@ -104,7 +104,7 @@ gateway:
     aggressive_unsupported: "--aggressive는 지원되지 않습니다. '/compress here [N]'으로 최근 대화만 유지하거나 /undo로 턴을 삭제하세요."
     focus_line:            "초점: \"{topic}\""
     summary_failed:        "⚠️ 요약 생성에 실패했습니다 ({error}). 과거 메시지 {count}개가 제거되어 자리표시자로 대체되었으며, 이전 컨텍스트는 더 이상 복구할 수 없습니다. auxiliary.compression 모델 설정을 확인해 보세요."
-    aborted:               "⚠️ 압축이 중단되었습니다 ({error}). 메시지가 삭제되지 않았으며 대화는 그대로 유지됩니다. 다시 시도하려면 /compress를 실행하거나, 새 세션을 시작하려면 /reset을 사용하거나, auxiliary.compression 모델 설정을 확인하세요."
+    aborted:               "⚠️ 압축이 중단되었습니다 ({error})。메시지가 삭제되지 않았으며 대화는 그대로 유지됩니다. 다시 시도하려면 /compress를 실행하거나, 새 세션을 시작하려면 /new을 사용하거나, auxiliary.compression 모델 설정을 확인하세요."
     aux_failed:            "ℹ️ 구성된 압축 모델 `{model}`이(가) 실패했습니다 ({error}). 메인 모델로 복구되어 컨텍스트는 보존되었지만, config.yaml의 `auxiliary.compression.model` 설정을 확인하는 것이 좋습니다."
     turnhold_deferred:     "ℹ️ 컨텍스트 압축이 연기되었습니다 — 요약이 아직 스트리밍 중입니다. 이번 턴은 압축 없이 계속합니다."
     failed:                "압축 실패: {error}"
@@ -247,7 +247,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
-Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+Future messages in this room will use that transcript until `/new` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "이름이 지정된 세션이 없습니다.\n현재 세션에 이름을 지정하려면 `/title 내 세션`을 사용하고, 나중에 `/resume 내 세션`으로 돌아오세요."
     all_requires_admin: "_참고: `--all`(채팅 간 목록)은 구성된 관리자가 필요합니다. 이 채팅의 세션만 표시합니다._"

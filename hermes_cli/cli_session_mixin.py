@@ -427,7 +427,7 @@ class CLISessionMixin:
 
     def _notify_session_boundary(self, event_type: str) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize / on_session_reset).
-        Non-blocking; errors swallowed. Safe from shutdown, /new, /reset."""
+        Non-blocking; errors swallowed. Safe from shutdown, /new."""
         with contextlib.suppress(Exception):
             from hermes_cli.lifecycle import finalize_session, invoke_hook
 

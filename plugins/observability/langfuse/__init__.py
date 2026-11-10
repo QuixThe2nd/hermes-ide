@@ -965,7 +965,7 @@ def on_session_finalize(*, session_id: str = "", reason: str = "", **_: Any) -> 
     with _failsafe("finalize flush"):
         client.flush()
 
-    # Shut down only at true process exit (not /new, /reset, session expiry: the
+    # Shut down only at true process exit (not /new, session expiry: the
     # cached client must keep exporting). Doing it while modules are intact keeps
     # the SDK's atexit handler off torn-down opentelemetry globals (TypeError on quit).
     if reason == "shutdown" and callable(getattr(client, "shutdown", None)):

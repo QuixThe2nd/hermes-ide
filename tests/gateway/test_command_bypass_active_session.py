@@ -2,7 +2,7 @@
 
 When an agent is running, the base adapter's Level 1 guard in
 handle_message() intercepts all incoming messages and queues them as
-pending.  Certain commands (/stop, /new, /reset, /approve, /deny,
+pending.  Certain commands (/stop, /new, /approve, /deny,
 /status) must bypass this guard and be dispatched directly to the gateway
 runner — otherwise they are queued as user text and either:
   - leak into the conversation as agent input (/stop, /new), or
@@ -114,16 +114,16 @@ class TestCommandBypassActiveSession:
         assert any("handled:new" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
-    async def test_reset_bypasses_guard(self):
-        """/reset (alias for /new) must be dispatched directly."""
+    async def test_reset_is_queued_as_unknown_command(self):
+        """/reset is unknown and must follow the normal pending-message path."""
         adapter = _make_adapter()
         sk = _session_key()
         adapter._active_sessions[sk] = asyncio.Event()
 
         await adapter.handle_message(_make_event("/reset"))
 
-        assert sk not in adapter._pending_messages
-        assert any("handled:reset" in r for r in adapter.sent_responses)
+        assert sk in adapter._pending_messages
+        assert not any("handled:reset" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
     async def test_approve_bypasses_guard(self):
@@ -289,8 +289,8 @@ class TestCommandBypassActiveSession:
 # Tests: non-bypass-set commands (no dedicated Level-2 handler) also bypass
 # instead of interrupting + being discarded.  Regression for the Discord
 # ghost-slash-command bug where /model, /reasoning, /voice, /insights, /title,
-# /resume, /retry, /undo, /compress, /usage, /reload-mcp,
-# /reset silently interrupted the running agent.
+# /resume, /retry, /undo, /compress, /usage, /reload-mcp
+# silently interrupted the running agent.
 # ---------------------------------------------------------------------------
 
 
@@ -342,7 +342,7 @@ class TestAllResolvableCommandsBypassGuard:
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
             "resume", "retry", "undo", "compress", "usage",
-            "reload-mcp", "reset",
+            "reload-mcp",
         ):
             assert should_bypass_active_session(cmd) is True, (
                 f"/{cmd} must bypass the active-session guard"
@@ -351,6 +351,8 @@ class TestAllResolvableCommandsBypassGuard:
     def test_should_bypass_returns_false_for_unknown(self):
         """Unknown words don't bypass — they get queued as user text."""
         from hermes_cli.commands import should_bypass_active_session
+
+        assert should_bypass_active_session("reset") is False
 
         assert should_bypass_active_session("foobar") is False
         assert should_bypass_active_session(None) is False

@@ -43,7 +43,7 @@ class TestCommandRegistry:
         for cmd in COMMAND_REGISTRY:
             for alias in cmd.aliases:
                 if alias in canonical_names:
-                    # reset -> new is intentional (reset IS an alias for new)
+                    # A collision is valid only when it resolves back to this command.
                     target = next(c for c in COMMAND_REGISTRY if c.name == alias)
                     # This should only happen if the alias points to the same entry
                     assert resolve_command(alias).name == cmd.name or alias == cmd.name, \
@@ -107,7 +107,7 @@ class TestDerivedDicts:
 
     def test_commands_dict_includes_aliases(self):
         assert "/bg" in COMMANDS
-        assert "/reset" in COMMANDS
+        assert "/reset" not in COMMANDS
         assert "/q" in COMMANDS
         assert "/exit" in COMMANDS
         assert "/reload_mcp" in COMMANDS

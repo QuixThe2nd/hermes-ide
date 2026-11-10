@@ -1,6 +1,6 @@
 """An interrupt abort must reach the in-flight stream's socket (#98974).
 
-Report #98974: ``/stop`` / ``/reset`` logged ``OpenAI client aborted
+Report #98974: ``/stop`` / ``/new`` logged ``OpenAI client aborted
 (stream_interrupt_abort, ..., tcp_force_closed=0, deferred_close=stranger_thread)
 — no sockets found`` and the self-hosted serve kept generating for minutes.
 Two shapes miss the socket: (a) the pool sweep skips the connection checked

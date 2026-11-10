@@ -32,7 +32,7 @@ class CommandDef:
     # Mid-run (agent busy) gateway behavior (gateway/run.py Guard-2 dispatcher): "dispatch" = run
     # while busy (normal handler or the ``busy_handler`` variant); "reject" = refuse mid-run
     # (generic "Agent is running" unless ``busy_handler`` names a reject message);
-    # "interrupt_then_dispatch" = interrupt first (/stop, /new, /reset; Guard 1, platforms/base.py).
+    # "interrupt_then_dispatch" = interrupt first (/stop, /new; Guard 1, platforms/base.py).
     busy_policy: str = "reject"
     busy_handler: str | None = None  # key of a special mid-run handler in Guard-2 table
     # Key in ``hermes_cli.slash_exec.EXECUTORS`` (a string, not a callable: keeps this module
@@ -51,7 +51,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
                gateway_only=True, busy_policy="dispatch", busy_handler="start"),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",), args_hint="[name]",
+               args_hint="[name]",
                busy_policy="interrupt_then_dispatch", busy_handler="new"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
@@ -398,7 +398,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     """True for any resolvable slash command: every recognized command is dispatched mid-run
     (Guard-2 handler or the "busy" catch-all), never queued — gateway.run's safety net discards
     command text reaching the pending queue, so a queued mid-run /model (or /reasoning, /voice,
-    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp, /reset)
+    /insights, /title, /resume, /retry, /undo, /compress, /usage, /reload-mcp)
     would silently interrupt the agent AND get discarded — a zero-char response. See issue
     #5057 / PRs #6252, #10370, #4665. ACTIVE_SESSION_BYPASS_COMMANDS remains the subset with
     explicit Level-2 handlers; the rest fall through to the catch-all.

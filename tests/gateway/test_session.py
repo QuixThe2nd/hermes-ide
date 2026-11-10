@@ -1168,7 +1168,7 @@ class TestEnsureLoadedSkipsInvalidEntries:
 
 
 class TestSessionStoreEntriesAttribute:
-    """Regression: /reset must access _entries, not _sessions."""
+    """Regression: /new must access _entries, not _sessions."""
 
     def test_entries_attribute_exists(self):
         config = GatewayConfig()

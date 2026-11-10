@@ -955,7 +955,7 @@ _PROVIDER_ERROR_REPLIES = (
 
 
 # Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
-# commands (/compress, /new) — the /compact and /reset aliases are absent from /help.
+# commands (/compress, /new) — the /compact alias is absent from /help.
 _CONTEXT_OVERFLOW_REPLY = (
     "⚠️ This conversation has grown too long for me to read all at once. "
     "Use /compress to shorten the history, or /new to start a fresh conversation.")
@@ -5562,7 +5562,7 @@ def _normalize_empty_agent_response(
         error_detail = agent_result.get("error") or "unknown error"
         error_str = str(error_detail).lower()
         # Session-persistence failures get a dedicated recovery message.
-        # Suggesting /reset here would be actively harmful: it destroys the
+        # Suggesting /new here would be actively harmful: it destroys the
         # user's conversation context and does nothing to fix the underlying
         # storage problem (lock contention, disk exhaustion, ...).
         failure_reason = str(agent_result.get("failure_reason") or "")
@@ -6420,7 +6420,7 @@ class GatewayRunner(
         # (designed for "next-turn" follow-ups where repeated sends collapse into one event).  /queue has
         # different semantics: each invocation must produce its own full agent turn, in FIFO order, with no
         # merging. When the slot is occupied, additional /queue items land here and are promoted
-        # one-at-a-time after each run's drain. Cleared on /new and /reset.  /model and other mid-session
+        # one-at-a-time after each run's drain. Cleared on /new.  /model and other mid-session
         # operations preserve the queue. Lives on SessionState.conversation.queued_events; native image
         # paths, busy-ack debounce timestamps and the monotonic run-generation counter (#28686, NEVER reset)
         # live on SessionState too. See gateway.session_stall.
@@ -7071,7 +7071,7 @@ class GatewayRunner(
     # tail.  Enqueue puts new items in the slot when free, otherwise in
     # the overflow.  Promotion (called after each run's drain) moves the
     # next overflow item into the slot so the following recursion picks
-    # it up.  Clearing happens on /new and /reset via
+    # it up.  Clearing happens on /new via
     # _handle_reset_command.
 
 
@@ -8937,7 +8937,7 @@ class GatewayRunner(
                         # agent-cache eviction must NOT do this: the
                         # session is still alive and a resumed turn rebuilds
                         # its agent from these overrides. Only true session
-                        # finalization, /new, and /reset clear them.) See
+                        # finalization and /new clear them.) See
                         # _CONVERSATION_SCOPED_STATE.
                         self._clear_conversation_scope(
                             key, reason="expiry_finalized"
@@ -10803,7 +10803,7 @@ class GatewayRunner(
     # when they change.  The agent bakes these into its compressor / context
     # handling at construction time, so a mid-running-gateway config edit
     # would otherwise be silently ignored until the user triggers a
-    # different cache eviction (model switch, /reset, etc.).
+    # different cache eviction (model switch, /new, etc.).
     #
     # Each entry is a tuple of (section, key) read from the raw config dict.
     # Add more here as new baked-at-construction config settings are added.

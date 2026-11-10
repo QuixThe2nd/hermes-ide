@@ -7,7 +7,7 @@ it. New commands land often; `/help` in-session is always authoritative.
 
 ### Session
 ```
-/new (/reset) [name]     Fresh session
+/new [name]             Fresh session
 /clear                   Clear screen + new session (CLI)
 /retry                   Resend last message
 /undo [N]                Back up N user turns and re-prompt

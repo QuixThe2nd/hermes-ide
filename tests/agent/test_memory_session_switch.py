@@ -1,7 +1,7 @@
 """Tests for the on_session_switch hook and session_id propagation.
 
 Covers #6672: memory providers must be notified when AIAgent.session_id
-rotates mid-process (via /resume, /branch, /reset, /new, or context
+rotates mid-process (via /resume, /branch, /new, or context
 compression). Without the notification, providers that cache per-session
 state in initialize() (Hindsight, and any plugin that stores session_id
 for scoped writes) keep writing into the old session's record.

@@ -6,7 +6,7 @@ was permanent for the life of the session: nothing ever decremented
 ``_ineffective_compression_count`` (or ``_fallback_compression_streak``)
 while blocked, so a session whose middle region was briefly too small to
 compact never auto-compacted again — it grew unbounded until the provider's
-hard context limit, and only ``/new`` or ``/reset`` recovered it.
+hard context limit, and only ``/new`` recovered it.
 
 The recovery contract pinned here:
 

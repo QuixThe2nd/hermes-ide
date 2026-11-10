@@ -16,7 +16,7 @@ def test_session_hooks_in_valid_hooks():
 @patch("hermes_cli.lifecycle.invoke_hook")
 @patch("hermes_cli.lifecycle.finalize_session")
 def test_session_finalize_on_reset(mock_finalize_session, mock_invoke_hook):
-    """Verify on_session_finalize fires when /new or /reset is used."""
+    """Verify on_session_finalize fires when /new is used."""
     cli = HermesCLI()
     cli.agent = MagicMock()
     cli.agent.session_id = "test-session-id"

@@ -1731,7 +1731,7 @@ class GatewayShutdownMixin:
                 # extraction on a single serialized background worker.
                 # shutdown_memory_provider() -> shutdown_all() only gives that
                 # worker a ~5s bounded drain and abandons (cancels) anything
-                # still queued past it, so a /reset — or any gateway session
+                # still queued past it, so a /new — or any gateway session
                 # rotation that reaches this cleanup path — could silently drop
                 # writes the session had already handed off. The next session
                 # then loads stale memory (#73297). Give pending work a bounded

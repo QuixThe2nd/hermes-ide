@@ -230,7 +230,11 @@ def test_manifest_declares_discord_only_sethomeserver():
     assert [o["name"] for o in row.get("options", [])] == ["confirm"]
 
 
+def test_manifest_excludes_reset_and_keeps_new():
+    names = {row["name"] for row in build_relay_command_manifest()}
 
+    assert "new" in names
+    assert "reset" not in names
 
 
 # ── auto-thread routing feedback (send-result thread_id) ─────────────────

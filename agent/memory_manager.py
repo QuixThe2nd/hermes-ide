@@ -770,7 +770,7 @@ class MemoryManager:
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False,
                           rewound: bool = False, **kwargs) -> None:
         """Notify providers that ``AIAgent.session_id`` rotated without teardown
-        (``/resume``, ``/branch``, ``/reset``, ``/new``, compression). ``rewound=True``
+        (``/resume``, ``/branch``, ``/new``, compression). ``rewound=True``
         (``/undo``): same id, truncated transcript."""
         if not new_session_id:
             return

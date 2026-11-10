@@ -1445,7 +1445,7 @@ class TestSessionFinalizeHook:
         assert events.index("flush") < events.index("shutdown")
 
     def test_finalize_keeps_client_alive_on_session_rotation(self, monkeypatch):
-        """/new, /reset, and gateway session expiry finalize the session but
+        """/new and gateway session expiry finalize the session but
         the process lives on — the cached client must NOT be shut down or
         later sessions silently stop exporting."""
         mod = self._fresh_plugin()

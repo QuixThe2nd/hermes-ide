@@ -1,12 +1,12 @@
-"""Regression tests for #73297: memory rollback after /reset.
+"""Regression tests for #73297: memory rollback after /new.
 
 The gateway's ``_cleanup_agent_resources`` (the cleanup chokepoint that
-``/reset`` and every other gateway session rotation invokes to tear down the
+``/new`` and every other gateway session rotation invokes to tear down the
 cached agent) used to call ``shutdown_memory_provider()`` WITHOUT first
 draining the memory manager's serialized background write worker.
 ``shutdown_memory_provider`` -> ``shutdown_all`` only gives that worker a
 bounded (~5s) drain and abandons whatever is still queued past it, so a
-/reset could silently drop writes the session had already handed off — the
+/new could silently drop writes the session had already handed off — the
 next session then loaded stale memory.
 
 The CLI exit path already drains via ``MemoryManager.flush_pending`` before
@@ -101,7 +101,7 @@ def test_cleanup_flushes_pending_writes_before_shutdown(monkeypatch):
     """#73297 invariant: ``disk_state_after_reset >= last_known_state_before_reset``.
 
     A real write ("fact-1") is queued on the memory manager's background
-    worker behind a slow gate write, so it is PENDING when /reset cleanup
+    worker behind a slow gate write, so it is PENDING when /new cleanup
     runs. ``shutdown_all``'s drain is shortened (via ``_SYNC_DRAIN_TIMEOUT_S``)
     to model the production condition where the bounded drain abandons queued
     work — the condition the issue reports. Without the pre-shutdown
@@ -130,7 +130,7 @@ def test_cleanup_flushes_pending_writes_before_shutdown(monkeypatch):
 
     agent = _make_agent(mgr)
 
-    # Run the gateway cleanup path the /reset handler runs. No explicit flush
+    # Run the gateway cleanup path the /new handler runs. No explicit flush
     # here — the contract is that cleanup itself flushes before shutdown.
     GatewayRunner._cleanup_agent_resources(object(), agent)
 

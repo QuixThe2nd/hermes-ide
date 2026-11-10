@@ -111,7 +111,7 @@ Hermes tiene dos puntos de entrada: inicia la interfaz de terminal con `hermes`,
 | Acción                              | CLI                                           | Plataformas de mensajería                                                         |
 | ----------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
 | Empezar a chatear                   | `hermes`                                      | Ejecuta `hermes gateway setup` + `hermes gateway start`, luego envía un mensaje al bot |
-| Nueva conversación                  | `/new` o `/reset`                             | `/new` o `/reset`                                                                 |
+| Nueva conversación                  | `/new`                                        | `/new`                                                                          |
 | Cambiar modelo                      | `/model [proveedor:modelo]`                   | `/model [proveedor:modelo]`                                                       |
 | Establecer personalidad             | `/personality [nombre]`                       | `/personality [nombre]`                                                           |
 | Reintentar o deshacer último turno  | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                 |

@@ -104,7 +104,7 @@ gateway:
     aggressive_unsupported: "--aggressive não é suportado; usa '/compress here [N]' para manter apenas as trocas recentes, ou /undo para remover turnos."
     focus_line:            "Foco: \"{topic}\""
     summary_failed:        "⚠️ Falha ao gerar o resumo ({error}). {count} mensagem(ns) histórica(s) foram removidas e substituídas por um marcador; o contexto anterior já não pode ser recuperado. Considera verificar a configuração do modelo auxiliary.compression."
-    aborted:               "⚠️ Compressão abortada ({error}). Nenhuma mensagem foi removida — a conversa está inalterada. Executa /compress para tentar de novo, /reset para uma sessão nova, ou verifica a configuração do modelo auxiliary.compression."
+    aborted:               "⚠️ Compressão abortada ({error}). Nenhuma mensagem foi removida — a conversa está inalterada. Executa /compress para tentar de novo, /new para uma sessão nova, ou verifica a configuração do modelo auxiliary.compression."
     aux_failed:            "ℹ️ O modelo de compressão configurado `{model}` falhou ({error}). Recuperado com o teu modelo principal — o contexto está intacto — mas talvez queiras verificar `auxiliary.compression.model` em config.yaml."
     turnhold_deferred:     "ℹ️ Compressão de contexto adiada — o resumo ainda está em transmissão. Continuando sem compressão neste turno."
     failed:                "Compressão falhou: {error}"
@@ -247,7 +247,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
     matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
     matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
-Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+Future messages in this room will use that transcript until `/new` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Não foram encontradas sessões com nome.\nUsa `/title A minha sessão` para nomear a sessão atual e depois `/resume A minha sessão` para voltar a ela."
     all_requires_admin: "_Nota: `--all` (listagem entre conversas) requer um administrador configurado; mostram-se apenas as sessões desta conversa._"

@@ -236,7 +236,7 @@ class MemoryProvider(ABC):
     def on_session_switch(
         self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, rewound: bool = False, **kwargs,
     ) -> None:
-        """session_id reassigned mid-process (/resume, /branch, /reset, /new, compression)
+        """session_id reassigned mid-process (/resume, /branch, /new, compression)
         without teardown: rebind per-session state so later writes land in the right record.
         ``reset`` is True only for a genuinely new conversation (flush buffers); ``rewound``:
         same id but the transcript was truncated."""

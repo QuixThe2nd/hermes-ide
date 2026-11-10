@@ -2536,7 +2536,7 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     on every TUI session close.
 
     Pass ``force_remove=True`` for actual user-initiated teardown
-    (e.g. ``/reset``-style flows that haven't been wired yet, or future
+    (e.g. ``/new`` session teardown, or future
     "destroy my sandbox" commands).
 
     The idle reaper passes the env through ``env.cleanup()`` directly (not

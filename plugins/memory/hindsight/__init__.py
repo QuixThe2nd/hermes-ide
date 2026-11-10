@@ -2787,7 +2787,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "",
                           reset: bool = False, **kwargs) -> None:
-        """Rotate per-session state (/resume, /branch, /reset, /new, compression) so
+        """Rotate per-session state (/resume, /branch, /new, compression) so
         writes don't land in the previous session's document. Always: flush buffered
         turns under the OLD ids first (``retain_every_n_turns > 1`` would silently
         lose them), join the in-flight prefetch and drop its result (no stale recall

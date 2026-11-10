@@ -294,8 +294,7 @@ _DISCORD_MAX_APP_COMMANDS = 100
 # Placeholders are the arg names; text is `.strip()`ped unless ``strip`` is False.
 _REQUIRED = object()
 _NATIVE_SLASH_COMMANDS: tuple = (
-    ("new", "Start a new conversation", (), "/reset", "New conversation started~"),
-    ("reset", "Reset your Hermes session", (), "/reset", "Session reset~"),
+    ("new", "Start a new conversation", (), "/new", "New conversation started~"),
     ("model", "Show or change the model",
      (("name", str, "", "Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.", None),),
      "/model {name}", None),
@@ -1491,7 +1490,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     - Receiving messages from servers and DMs
     - Sending responses with Discord markdown
     - Thread support
-    - Native slash commands (/ask, /reset, /status, /stop)
+    - Native slash commands (/ask, /new, /status, /stop)
     - Button-based exec approvals
     - Auto-threading for long conversations
     - Reaction-based feedback

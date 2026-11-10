@@ -104,7 +104,7 @@ class MessageEvent:
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 
     def is_command(self) -> bool:
-        """Check if this is a command message (e.g., /new, /reset)."""
+        """Check if this is a command message (e.g., /new)."""
         return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
 
     def get_command(self) -> Optional[str]:

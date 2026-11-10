@@ -1,4 +1,4 @@
-"""Regression tests for topic/channel skill auto-injection after /new or /reset.
+"""Regression tests for topic/channel skill auto-injection after /new.
 
 Covers the fix for issue #6508.
 
@@ -23,7 +23,7 @@ We use ``was_auto_reset`` for surprise resets (idle/daily/suspended) and
 ``is_fresh_reset`` for user-initiated resets because the former also drives
 a "Session automatically reset due to inactivity" user-facing notice and
 a context-note prepend into the agent's prompt — both wrong for an explicit
-/new or /reset.
+/new.
 """
 
 from gateway.config import GatewayConfig, Platform
@@ -78,13 +78,13 @@ class TestResetSessionStampsFreshReset:
 
 class TestIsNewSessionSurvivesUpdatedAtBump:
     def test_is_new_session_true_after_reset_then_next_message(self, tmp_path):
-        """The actual bug: _is_new_session was False on message after /reset."""
+        """The actual bug: _is_new_session was False on message after /new."""
         store = _make_store(tmp_path)
         source = _make_source()
         store.get_or_create_session(source)
         session_key = store._generate_session_key(source)
 
-        # User sends /reset
+        # User sends /new
         store.reset_session(session_key)
 
         # Next inbound message — get_or_create_session bumps updated_at
@@ -118,7 +118,7 @@ class TestVanillaBehaviorUnaffected:
 
 class TestPersistence:
     def test_is_fresh_reset_survives_to_dict_from_dict(self, tmp_path):
-        """Protect against the gateway restarting between /reset and the
+        """Protect against the gateway restarting between /new and the
         next message — the flag must be persisted in sessions.json.
         """
         store = _make_store(tmp_path)

@@ -1378,7 +1378,7 @@ class GatewayInboundMixin:
 
         This is the core message processing pipeline:
         1. Check user authorization
-        2. Check for commands (/new, /reset, etc.)
+        2. Check for commands (/new, etc.)
         3. Check for running agent and interrupt if needed
         4. Get or create session
         5. Build context for agent

@@ -98,7 +98,7 @@ def test_turn_end_unregister_reports_withdrawn_prompt(gateway_session):
 
 
 def test_session_boundary_teardown_reports_withdrawn_prompt(gateway_session):
-    """``clear_session`` (/new, /reset, auto-reset) wakes the wait with no decision: the result
+    """``clear_session`` (/new, auto-reset) wakes the wait with no decision: the result
     is a withdrawn prompt, not a user deny."""
     thread, holder = _run_gate_until_pending()
     mod.clear_session(SESSION_KEY)

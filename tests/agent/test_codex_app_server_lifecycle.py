@@ -2,7 +2,7 @@
 
 The Codex runtime drops ``agent._codex_session`` on turn crash and on
 retirement (agent/codex_runtime.py), but ``AIAgent.close()`` — the hard
-teardown for /new, /reset, and session expiry — had no owner for it, so
+teardown for /new and session expiry — had no owner for it, so
 the app-server child process survived until interpreter exit.
 """
 
