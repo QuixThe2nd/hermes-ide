@@ -695,6 +695,8 @@ class TurnRunner(_TurnRunnerCore):
         _row_tail: bool = False
         _row_head_len: int = 0
         _row_slices: int = 0
+        # Prefix of separate-mode rows whose sends succeeded; flush owns the tail.
+        _delivered_rows: int = 0
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -832,7 +834,14 @@ class TurnRunner(_TurnRunnerCore):
         """Force-deliver the absorbed bubble (throttle bypassed), then release the
         gate's waiter. Interrupted turns keep row suppression — release only."""
         if st.progress_lines and not self._agent_interrupted():
-            if not await self._roll_progress_overflow_if_needed(st):
+            if not st.can_edit:
+                while st._delivered_rows < len(st.progress_lines):
+                    row = st.progress_lines[st._delivered_rows]
+                    result = await self._send_progress_row(st, row)
+                    if not result.success:
+                        break
+                    st._delivered_rows += 1
+            elif not await self._roll_progress_overflow_if_needed(st):
                 await self._progress_send_or_edit(st, st.progress_lines[-1])
         self._signal_flush_marker(raw)
 
@@ -840,6 +849,7 @@ class TurnRunner(_TurnRunnerCore):
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
         st.progress_msg_id, st.progress_lines = None, []
+        st._delivered_rows = 0
         st._row_tail, st._row_head_len, st._row_slices = False, 0, 0
         # Producer-side dedup memory (last_progress_msg/repeat_count) survives the
         # bubble reset: it tracks the previous row emitted, not the rendered bubble.
@@ -1000,15 +1010,20 @@ class TurnRunner(_TurnRunnerCore):
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
             else:
                 st.can_edit = False
-            await self._send_progress_row(st, msg)
+            result = await self._send_progress_row(st, msg)
+            if result.success:
+                st._delivered_rows = len(st.progress_lines)
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
         result = await (
             self._send_progress_text(st, self._progress_text(st, st.progress_lines))
             if st.can_edit else self._send_progress_row(st, msg)
         )
-        if result.success and result.message_id:
-            st.progress_msg_id = result.message_id
+        if result.success:
+            if not st.can_edit:
+                st._delivered_rows = len(st.progress_lines)
+            if result.message_id:
+                st.progress_msg_id = result.message_id
         return True
 
     async def send_progress_messages(self):
