@@ -619,6 +619,47 @@ def test_handler_queues_via_control_socket_when_no_runner(monkeypatch):
     assert requested["restart_platforms"] is True
 
 
+def test_handler_socket_request_includes_worker_chat_identity(monkeypatch):
+    from plugins.gateway_restart.tool import handle_restart
+
+    _no_runner(monkeypatch)
+    requested = {}
+
+    def _fake_restart(home, *, restart_platforms=True, timeout=15.0, requester=None):
+        requested["requester"] = requester
+        return {"queued": True, "status": "restarting"}
+
+    monkeypatch.setattr(
+        "gateway.control_socket.request_gateway_restart", _fake_restart
+    )
+    set_session_vars(
+        platform="matrix",
+        chat_id="!room:example.org",
+        chat_type="group",
+        thread_id="thread-7",
+        user_id="@user:example.org",
+        scope_id="scope-9",
+        message_id="$event",
+        delivered_via_upstream_relay=True,
+    )
+    try:
+        result = json.loads(handle_restart({}))
+    finally:
+        clear_session_vars(None)
+
+    assert result["success"] is True
+    assert requested["requester"] == {
+        "platform": "matrix",
+        "chat_id": "!room:example.org",
+        "chat_type": "group",
+        "thread_id": "thread-7",
+        "user_id": "@user:example.org",
+        "scope_id": "scope-9",
+        "message_id": "$event",
+        "delivered_via_upstream_relay": True,
+    }
+
+
 def test_handler_socket_ack_already_in_progress_is_success(monkeypatch):
     from plugins.gateway_restart.tool import handle_restart
 

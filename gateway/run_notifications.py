@@ -711,6 +711,12 @@ class GatewayNotificationsMixin:
         from gateway.run import _hermes_home, _non_conversational_metadata
 
         notify_path = _hermes_home / ".restart_notify.json"
+        if getattr(self, "_overlap_successor_pending", False):
+            logger.info(
+                "Restart requester continuation is deferred until this process "
+                "holds the gateway lock"
+            )
+            return None
         if not notify_path.exists():
             return None
         clear_notify = True
@@ -791,7 +797,7 @@ class GatewayNotificationsMixin:
             logger.warning("Restart notification failed: %s", e)
             return None
         finally:
-            if clear_notify:
+            if clear_notify and not getattr(self, "_launched_as_overlap_successor", False):
                 notify_path.unlink(missing_ok=True)
     def _notification_channel_transports(self):
         """Yield ``(platform, platform_cfg, channel, transport)`` for every notification channel with a live transport."""

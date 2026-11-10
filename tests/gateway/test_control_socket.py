@@ -13,6 +13,7 @@ from gateway.control_socket import (
     GatewayControlServer,
     identify_gateway,
     query_gateway_control,
+    request_gateway_restart,
     resolve_client_socket_path,
     resolve_server_socket_path,
     windows_pipe_name,
@@ -192,6 +193,35 @@ def test_verb_handler_receives_params(home: Path):
     assert got == {"echo": {"old": "a", "new": "b"}}
     assert received == {"old": "a", "new": "b"}
     assert bare_ok == {"ok": 1}
+
+
+def test_restart_requester_is_optional_wire_param(home: Path):
+    received = []
+    requester = {"platform": "matrix", "chat_id": "!room:example.org"}
+
+    def restart(params):
+        received.append(params)
+        return {"queued": True}
+
+    async def scenario():
+        server = GatewayControlServer(home, verb_handlers={"restart": restart})
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            with_requester = await loop.run_in_executor(
+                None, lambda: request_gateway_restart(home, requester=requester))
+            without_requester = await loop.run_in_executor(
+                None, lambda: request_gateway_restart(home, requester={}))
+            return with_requester, without_requester
+        finally:
+            await server.stop()
+
+    with_requester, without_requester = _run(scenario())
+    assert with_requester == without_requester == {"queued": True}
+    assert received == [
+        {"restart_platforms": True, "requester": requester},
+        {"restart_platforms": True},
+    ]
 
 
 def test_stop_removes_socket_and_pointer(home: Path):

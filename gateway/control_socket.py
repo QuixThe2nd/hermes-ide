@@ -353,6 +353,7 @@ def pause_gateway_for_update(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIM
 
 
 def request_gateway_restart(home: Path, *, restart_platforms: bool = True,
+                             requester: Optional[dict] = None,
                              timeout: float = 15.0) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` to run the ONE restart core in-process.
 
@@ -363,9 +364,10 @@ def request_gateway_restart(home: Path, *, restart_platforms: bool = True,
     when no gateway answers / the gateway predates the verb — the caller then
     falls back to the SIGUSR1 / service-manager transports.
     """
-    return query_gateway_control(
-        home, "restart", params={"restart_platforms": bool(restart_platforms)}, timeout=timeout,
-    )
+    params: dict[str, Any] = {"restart_platforms": bool(restart_platforms)}
+    if isinstance(requester, dict) and requester:
+        params["requester"] = requester
+    return query_gateway_control(home, "restart", params=params, timeout=timeout)
 
 
 def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dict[str, Any]]:
