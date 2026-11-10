@@ -596,6 +596,35 @@ class TestBuildStatusPhrase:
             set_friendly_tool_labels(True)
 
 
+class TestDescribeToolCallTerminalFallback:
+    def test_missing_description_describes_command(self):
+        phrase = describe_tool_call("terminal", {"command": "git status"})
+
+        assert "git status" in phrase
+        assert phrase != "Running a terminal command"
+
+    def test_missing_description_redacts_command_secrets(self):
+        secret = "sk-live-abc123secret"
+        phrase = describe_tool_call(
+            "terminal",
+            {"command": f'curl -H "Authorization: Bearer {secret}"'},
+        )
+
+        assert secret not in phrase
+        assert "***" in phrase
+
+    def test_description_wins_over_command(self):
+        phrase = describe_tool_call(
+            "terminal",
+            {"command": "git status", "description": "checking git status"},
+        )
+
+        assert phrase == "Checking git status"
+
+    def test_no_command_or_description_uses_generic_phrase(self):
+        assert describe_tool_call("terminal", {}) == "Running a terminal command"
+
+
 class TestDescribeToolCallProgressiveLabels:
     """Raw ``description`` passthrough renders with a present-progressive first word.
 
