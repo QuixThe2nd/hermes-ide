@@ -73,7 +73,7 @@ YOLO 模式在 CLI 和 gateway 会话中均可使用。在内部，它会设置 
 YOLO 模式会禁用会话中**所有**危险命令安全检查——**但硬性黑名单除外**（见下文）。仅在完全信任所生成命令的情况下使用（例如，在一次性环境中经过充分测试的自动化脚本）。
 :::
 
-对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands)。
+对于破坏性会话斜杠命令（`/clear`、`/new`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands)。
 
 ### 硬性黑名单（始终生效的底线）
 

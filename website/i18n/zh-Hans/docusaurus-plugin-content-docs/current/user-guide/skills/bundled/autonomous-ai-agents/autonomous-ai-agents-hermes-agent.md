@@ -251,7 +251,7 @@ hermes uninstall            Uninstall Hermes
 
 ### 会话控制
 ```
-/new (/reset)        Fresh session
+/new                 Fresh session
 /clear               Clear screen + new session (CLI)
 /retry               Resend last message
 /undo                Remove last exchange
@@ -445,13 +445,13 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 
 完整枚举位于 `toolsets.py` 的 `TOOLSETS` 字典中；`_HERMES_CORE_TOOLS` 是大多数平台继承的默认工具包。
 
-工具变更在 `/reset`（新会话）后生效。为保留 prompt 缓存，变更**不会**在对话中途生效。
+工具变更在 `/new`（新会话）后生效。为保留 prompt 缓存，变更**不会**在对话中途生效。
 
 ---
 
 ## 安全与隐私开关
 
-常见的"为什么 Hermes 对我的输出/工具调用/命令做了 X？"开关——以及更改它们的确切命令。其中大多数需要新会话（聊天中的 `/reset`，或启动新的 `hermes` 调用），因为它们在启动时只读取一次。
+常见的"为什么 Hermes 对我的输出/工具调用/命令做了 X？"开关——以及更改它们的确切命令。其中大多数需要新会话（聊天中的 `/new`，或启动新的 `hermes` 调用），因为它们在启动时只读取一次。
 
 ### 工具输出中的密钥脱敏
 
@@ -502,7 +502,7 @@ hermes config set approvals.mode off         # 绕过一切（不推荐）
 
 ### 禁用 web/browser/image-gen 工具
 
-要完全阻止模型访问网络或媒体工具，打开 `hermes tools` 并按平台切换。在下次会话（`/reset`）后生效。参见上方的工具与 Skill 部分。
+要完全阻止模型访问网络或媒体工具，打开 `hermes tools` 并按平台切换。在下次会话（`/new`）后生效。参见上方的工具与 Skill 部分。
 
 ---
 
@@ -720,7 +720,7 @@ export PYTHONPATH="$(pwd)"
 ### 工具不可用
 1. `hermes tools` — 检查 toolset 是否为你的平台启用
 2. 某些工具需要环境变量（检查 `.env`）
-3. 启用工具后执行 `/reset`
+3. 启用工具后执行 `/new`
 
 ### 模型/提供商问题
 1. `hermes doctor` — 检查配置和依赖
@@ -729,7 +729,7 @@ export PYTHONPATH="$(pwd)"
 4. **Copilot 403**：`gh auth login` 的 token **不适用于** Copilot API。必须通过 `hermes model` → GitHub Copilot 使用 Copilot 专用 OAuth 设备码流程。
 
 ### 变更未生效
-- **工具/skill：** `/reset` 以更新后的 toolset 启动新会话
+- **工具/skill：** `/new` 以更新后的 toolset 启动新会话
 - **配置变更：** 在 gateway 中：`/restart`。在 CLI 中：退出并重新启动。
 - **代码变更：** 重启 CLI 或 gateway 进程
 

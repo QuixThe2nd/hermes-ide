@@ -78,7 +78,7 @@ async def handle(event_type: str, context: dict):
 | `gateway:startup` | Gateway 进程启动 | `platforms`（活跃平台名称列表） |
 | `session:start` | 新消息会话创建 | `platform`、`user_id`、`session_id`、`session_key` |
 | `session:end` | 会话结束（重置前） | `platform`、`user_id`、`session_key` |
-| `session:reset` | 用户执行 `/new` 或 `/reset` | `platform`、`user_id`、`session_key` |
+| `session:reset` | 用户执行 `/new` | `platform`、`user_id`、`session_key` |
 | `agent:start` | Agent 开始处理消息 | `platform`、`user_id`、`session_id`、`message` |
 | `agent:step` | 工具调用循环的每次迭代 | `platform`、`user_id`、`session_id`、`iteration`、`tool_names` |
 | `agent:end` | Agent 完成处理 | `platform`、`user_id`、`session_id`、`message`、`response` |
