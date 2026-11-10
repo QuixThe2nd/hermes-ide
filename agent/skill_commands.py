@@ -636,6 +636,26 @@ def build_preloaded_skills_prompt(
     return "\n\n".join(prompt_parts), loaded_names, missing
 
 
+def available_skill_names() -> list[str]:
+    """Sorted names of skills the active profile can actually load (for error messages)."""
+    try:
+        return sorted(name.lstrip("/") for name in scan_skill_commands())
+    except Exception:
+        return []
+
+
+def unknown_skills_error(missing: list[str]) -> ValueError:
+    """Fail-closed error for ``-s`` naming only skills the active profile does not have.
+
+    pc_e08d2fc3eab2: a bare ``Unknown skill(s): x`` after spawn leaves the operator guessing
+    whether the name is a typo or simply absent from this profile; listing what *is* available
+    turns the dead end into a self-service fix.
+    """
+    names = available_skill_names()
+    suffix = f" Available skills on this profile: {', '.join(names)}." if names else ""
+    return ValueError(f"Unknown skill(s): {', '.join(missing)}.{suffix}")
+
+
 def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
     """``skills.auto_load`` from *user_config* (else the active profile config), deduplicated;
     empty when unset, malformed, or the config is unreadable."""
