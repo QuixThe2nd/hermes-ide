@@ -10334,19 +10334,19 @@ class GatewayRunner(
 
         return SessionSource(**kwargs)
 
-    def _mark_and_schedule_restart_requester_resume(self, notify_data: dict) -> None:
-        """Resume an idle /restart requester after the comeback notice delivers.
+    def _mark_and_schedule_restart_requester_resume(self, notify_data: dict) -> bool:
+        """Durably mark the restart requester, then schedule it when its adapter is ready.
 
-        Uses ``RESTART_REQUESTER_RESUME_REASON`` for resume-note routing
-        (interactive guidance): the requester interrupted nothing, so the
-        synthesized comeback turn reports the restore and asks what next.
-        Scheduled directly here so a slow boot-path send still resumes after
-        ``_schedule_resume_pending_sessions``.
-        No restart-loop guard: user-requested restart of an idle chat is expected.
+        Return True when the notify marker can be discarded: the durable mark
+        succeeded, the session was already scheduled, or the session is an
+        intentional skip. Lookup and persistence failures return False so the
+        caller retains the marker for a later attempt. Adapter absence after a
+        successful mark leaves ``resume_pending`` for the startup/reconnect
+        scheduler; it is not a reason to retain or rewrite the marker.
         """
         source = self._source_from_restart_notify_payload(notify_data)
         if source is None:
-            return
+            return True
 
         session_key = self._session_key_for_source(source)
         try:
@@ -10359,26 +10359,26 @@ class GatewayRunner(
                 session_key,
                 exc,
             )
-            return
+            return False
 
         if entry is None:
             logger.info(
                 "Skipping restart requester auto-resume for %s: session entry missing",
                 session_key,
             )
-            return
+            return True
         if entry.suspended:
             logger.info(
                 "Skipping restart requester auto-resume for %s: session suspended",
                 session_key,
             )
-            return
+            return True
         if self._is_session_running(session_key):
             logger.info(
                 "Skipping restart requester auto-resume for %s: session already running",
                 session_key,
             )
-            return
+            return True
 
         restored = self._restored_source(entry) or source
         try:
@@ -10388,32 +10388,47 @@ class GatewayRunner(
                     "longer authorized under the current allowlist",
                     session_key,
                 )
-                return
+                return True
         except Exception as exc:
             logger.info(
                 "Skipping restart requester auto-resume for %s: authorization check failed: %s",
                 session_key,
                 exc,
             )
-            return
+            return False
 
-        adapter = self._adapter_for_source(restored)
-        if adapter is None:
-            logger.info(
-                "Skipping restart requester auto-resume for %s: adapter not ready",
+        try:
+            marked = self.session_store.mark_resume_pending(
+                session_key, RESTART_REQUESTER_RESUME_REASON
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not mark restart requester session %s for auto-resume; "
+                "keeping restart marker: %s",
+                session_key,
+                exc,
+            )
+            return False
+        if not marked:
+            logger.warning(
+                "Could not mark restart requester session %s for auto-resume; "
+                "keeping restart marker",
                 session_key,
             )
-            return
-
-        if not self.session_store.mark_resume_pending(
-            session_key, RESTART_REQUESTER_RESUME_REASON
-        ):
-            return
+            return False
 
         logger.info(
             "Marked restart requester session %s for startup auto-resume",
             session_key,
         )
+
+        adapter = self._adapter_for_source(restored)
+        if adapter is None:
+            logger.info(
+                "Restart requester session %s remains pending until its adapter is ready",
+                session_key,
+            )
+            return True
 
         _resume_state = self._session_state(session_key)
         _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
@@ -10450,6 +10465,7 @@ class GatewayRunner(
                 tasks = []
                 self._startup_restore_tasks = tasks
             tasks.append(task)
+        return True
 
     async def _send_shutdown_comeback_notifications(
         self,

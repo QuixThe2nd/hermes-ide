@@ -1,4 +1,4 @@
-"""Auto-resume the idle /restart requester after the comeback notice delivers."""
+"""Auto-resume the restart requester independently of courtesy notice delivery."""
 
 import asyncio
 import json
@@ -131,11 +131,52 @@ async def test_restart_notification_skips_running_or_suspended_requester(
 
 
 @pytest.mark.asyncio
-async def test_restart_notification_send_failure_does_not_mark_requester(
+async def test_restart_notification_send_failure_still_marks_and_schedules_requester(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     source = make_restart_source(chat_id="42")
+    session_key, entry = _idle_requester_entry(source)
+
+    runner, adapter = make_restart_runner()
+    _wire_session_store(runner, {session_key: entry})
+    runner._restored_source = gateway_run.GatewayRunner._restored_source.__get__(
+        runner, gateway_run.GatewayRunner
+    )
+    runner._adapter_for_source = gateway_run.GatewayRunner._adapter_for_source.__get__(
+        runner, gateway_run.GatewayRunner
+    )
+    runner._run_startup_resume_event = AsyncMock()
+    runner._persist_active_agents = MagicMock()
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(
+        json.dumps({"platform": source.platform.value, "chat_id": "42", "chat_type": "dm"})
+    )
+
+    async def _fail_notice_after_durable_mark(*args, **kwargs):
+        assert entry.resume_pending is True
+        assert entry.resume_reason == "restart_requester"
+        return SendResult(success=False, error="Chat not found")
+
+    adapter.send = AsyncMock(side_effect=_fail_notice_after_durable_mark)
+
+    await runner._send_restart_notification()
+    await asyncio.sleep(0)
+
+    assert entry.resume_pending is True
+    assert entry.resume_reason == "restart_requester"
+    assert runner._running_agents[session_key] is _AGENT_PENDING_SENTINEL
+    runner._run_startup_resume_event.assert_awaited_once()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_restart_notification_without_adapter_leaves_requester_pending(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    source = make_restart_source(chat_id="42", platform=Platform.TELEGRAM)
     session_key, entry = _idle_requester_entry(source)
 
     runner, adapter = make_restart_runner()
@@ -146,11 +187,40 @@ async def test_restart_notification_send_failure_does_not_mark_requester(
     notify_path.write_text(
         json.dumps({"platform": "telegram", "chat_id": "42", "chat_type": "dm"})
     )
-    adapter.send = AsyncMock(
-        return_value=SendResult(success=False, error="Chat not found"),
+    adapter.send = AsyncMock()
+
+    await runner._send_restart_notification()
+
+    assert entry.resume_pending is True
+    assert entry.resume_reason == "restart_requester"
+    assert session_key not in runner._running_agents
+    runner._run_startup_resume_event.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_restart_notification_keeps_marker_when_resume_mark_fails(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    source = make_restart_source(chat_id="42")
+    session_key, entry = _idle_requester_entry(source)
+
+    runner, _adapter = make_restart_runner()
+    _wire_session_store(runner, {session_key: entry})
+    runner._run_startup_resume_event = AsyncMock()
+    runner.session_store.mark_resume_pending = MagicMock(
+        side_effect=OSError("session store write failed")
+    )
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(
+        json.dumps({"platform": source.platform.value, "chat_id": "42", "chat_type": "dm"})
     )
 
     await runner._send_restart_notification()
 
     assert entry.resume_pending is False
     runner._run_startup_resume_event.assert_not_awaited()
+    assert notify_path.exists()

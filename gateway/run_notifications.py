@@ -713,6 +713,7 @@ class GatewayNotificationsMixin:
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
+        clear_notify = True
 
         try:
             data = json.loads(notify_path.read_text(encoding="utf-8-sig"))
@@ -726,6 +727,11 @@ class GatewayNotificationsMixin:
                 return None
 
             platform = Platform(platform_str)
+            # Continuation is durable work; the courtesy notice is best-effort.
+            # Mark and, when possible, schedule before transport resolution so
+            # a missing transport or failed send cannot strand the requester.
+            clear_notify = False
+            clear_notify = self._mark_and_schedule_restart_requester_resume(data)
             transport = resolve_delivery_transport(platform, self.config, self.adapters)
             if transport is None:
                 logger.debug(
@@ -780,13 +786,13 @@ class GatewayNotificationsMixin:
                 platform_str,
                 chat_id,
             )
-            self._mark_and_schedule_restart_requester_resume(data)
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
+            if clear_notify:
+                notify_path.unlink(missing_ok=True)
     def _notification_channel_transports(self):
         """Yield ``(platform, platform_cfg, channel, transport)`` for every notification channel with a live transport."""
         from gateway.delivery import resolve_delivery_transport
