@@ -662,7 +662,7 @@ class TestMatrixRenderingPayloads:
             assert content["body"].count("```") % 2 == 0
 
     @pytest.mark.asyncio
-    async def test_notify_final_adds_parsa_ping_without_changing_body_or_reply(self):
+    async def test_notify_final_pings_parsa_without_reply_quote(self):
         body = "Final answer"
 
         result = await self.adapter.send(
@@ -674,10 +674,29 @@ class TestMatrixRenderingPayloads:
 
         assert result.success is True
         content = self._sent_contents()[0]
-        assert self._mention_ids(content) == [self._FINAL_PING_MXID]
-        assert content["body"] == body
-        assert self._FINAL_PING_MXID not in content.get("formatted_body", "")
-        assert content["m.relates_to"] == {"m.in_reply_to": {"event_id": "$question"}}
+        mxid = self._FINAL_PING_MXID
+        pill = f'<a href="https://matrix.to/#/{mxid}">{mxid}</a>'
+        assert self._mention_ids(content) == [mxid]
+        assert content["body"] == f"{mxid} {body}"
+        assert content["formatted_body"] == f"{pill} {body}"
+        assert "m.in_reply_to" not in content.get("m.relates_to", {})
+
+    @pytest.mark.asyncio
+    async def test_notify_final_thread_does_not_quote_user_event(self):
+        result = await self.adapter.send(
+            "!room:example.org",
+            "Threaded final answer",
+            reply_to="$question",
+            metadata={"notify": True, "thread_id": "$root"},
+        )
+
+        assert result.success is True
+        content = self._sent_contents()[0]
+        assert content["m.relates_to"] == {
+            "rel_type": "m.thread",
+            "event_id": "$root",
+        }
+        assert self._FINAL_PING_MXID in self._mention_ids(content)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -695,6 +714,7 @@ class TestMatrixRenderingPayloads:
         result = await self.adapter.send(
             "!room:example.org",
             "Hello @alice:example.org",
+            reply_to="$question",
             metadata=metadata,
         )
 
@@ -702,6 +722,9 @@ class TestMatrixRenderingPayloads:
         content = self._sent_contents()[0]
         assert self._mention_ids(content) == ["@alice:example.org"]
         assert self._FINAL_PING_MXID not in self._mention_ids(content)
+        assert self._FINAL_PING_MXID not in content["body"]
+        assert self._FINAL_PING_MXID not in content.get("formatted_body", "")
+        assert content["m.relates_to"] == {"m.in_reply_to": {"event_id": "$question"}}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -741,9 +764,15 @@ class TestMatrixRenderingPayloads:
         assert result.success is True
         contents = self._sent_contents()
         assert len(contents) > 1
-        assert self._mention_ids(contents[0]) == [self._FINAL_PING_MXID]
+        mxid = self._FINAL_PING_MXID
+        pill = f'<a href="https://matrix.to/#/{mxid}">{mxid}</a>'
+        assert self._mention_ids(contents[0]) == [mxid]
+        assert contents[0]["body"].startswith(f"{mxid} ")
+        assert pill in contents[0]["formatted_body"]
         assert all(
-            self._FINAL_PING_MXID not in self._mention_ids(content)
+            mxid not in self._mention_ids(content)
+            and mxid not in content["body"]
+            and mxid not in content.get("formatted_body", "")
             for content in contents[1:]
         )
 
@@ -760,8 +789,10 @@ class TestMatrixRenderingPayloads:
         content = self._sent_contents()[0]
         assert self._mention_ids(content) == ["@alice:example.org"]
         assert self._mention_ids(content["m.new_content"]) == ["@alice:example.org"]
-        assert self._FINAL_PING_MXID not in self._mention_ids(content)
-        assert self._FINAL_PING_MXID not in self._mention_ids(content["m.new_content"])
+        for payload in (content, content["m.new_content"]):
+            assert self._FINAL_PING_MXID not in self._mention_ids(payload)
+            assert self._FINAL_PING_MXID not in payload["body"]
+            assert self._FINAL_PING_MXID not in payload.get("formatted_body", "")
         assert content["m.relates_to"] == {"rel_type": "m.replace", "event_id": "$preview"}
 
     def test_matrix_prefers_fresh_final_send(self):
