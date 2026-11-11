@@ -9,6 +9,8 @@ Delegation lanes are configured specializations of Hermes' existing delegation b
 - `delegate_backend_dev` handles APIs, data layers, migrations, and contracts.
 - `delegate_reverse_engineer` handles static-only binary, APK, and protocol analysis.
 
+Each lane tool takes an optional `description` argument — a short phrase shown to the user as progress ("Delegated to backend dev lane: migrating the schema") instead of the bare tool name. It never enters the task prompt.
+
 The bundled defaults use OMP. Every lane can instead select `claude`, `cursor`, or `subagent` in config. Models form an ordered fallback chain; only quota and rate-limit failures advance the chain, with OMP `errorStatus` 403 and 429 classified as quota. Other errors stop immediately so an invalid task or missing credential does not fan out across providers.
 
 ## Opt in

@@ -326,6 +326,13 @@ def _schema(lane_name: str) -> dict:
                 "task": {"type": "string", "description": "Self-contained, verifiable task brief."},
                 "workdir": {"type": "string", "description": "Existing absolute workspace directory."},
                 "context": {"type": "string", "description": "Optional constraints, evidence, and background."},
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "One short phrase (max ~80 chars) saying WHAT the agent is doing, "
+                        "e.g. 'implementing the retry gate'. Shown to the user as progress. Optional."
+                    ),
+                },
                 "timeout_seconds": {
                     "type": "integer", "default": 0,
                     "description": "Optional per-model-attempt wall-clock limit; 0 means no limit.",

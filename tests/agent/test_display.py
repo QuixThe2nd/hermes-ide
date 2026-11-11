@@ -18,6 +18,7 @@ from agent.display import (
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
 )
+from tools.delegate_lane_specs import LANE_TOOL_NAMES
 
 
 @pytest.fixture(autouse=True)
@@ -213,6 +214,59 @@ class TestDescribeToolCallSkillAndDelegateDescription:
             {"backend": "cursor", "goal": "g", "description": "cloud fix"},
         )
         assert phrase == "Delegated to Cursor agent: cloud fix"
+
+class TestDescribeDelegateLanePhrase:
+    """describe_tool_call — progress phrases for the delegate_<lane> tools."""
+
+    def test_lane_with_description_names_lane_and_reason(self):
+        phrase = describe_tool_call(
+            "delegate_backend_dev",
+            {
+                "task": "wire the retry gate",
+                "workdir": "/repo",
+                "description": "implementing the retry gate",
+            },
+        )
+        assert phrase == "Delegated to backend dev lane: implementing the retry gate"
+
+    def test_lane_without_description_uses_workdir(self):
+        phrase = describe_tool_call(
+            "delegate_ui_dev", {"task": "polish layout", "workdir": "/repo"}
+        )
+        assert phrase == "Delegating to the ui dev lane in /repo"
+
+    def test_lane_without_description_or_workdir(self):
+        assert describe_tool_call("delegate_client_dev", {"task": "t"}) == (
+            "Delegating to the client dev lane"
+        )
+
+    @pytest.mark.parametrize("tool_name", LANE_TOOL_NAMES)
+    def test_every_lane_tool_has_a_phrase(self, tool_name):
+        # Registered from the lane spec table: no lane falls back to the raw
+        # tool name ("Delegate_backend_dev") as its progress phrase.
+        assert describe_tool_call(tool_name, {"task": "t"}) is not None
+        assert not describe_tool_call(tool_name, {"task": "t"}).startswith("delegate_")
+
+    def test_task_and_context_never_render(self):
+        phrase = describe_tool_call(
+            "delegate_reverse_engineer",
+            {
+                "task": "decompile the firmware blob at 0x4000",
+                "context": "secret evidence body",
+                "workdir": "/bin",
+            },
+        )
+        assert phrase == "Delegating to the reverse engineer lane in /bin"
+        assert "firmware" not in phrase
+        assert "evidence" not in phrase
+
+    def test_composed_phrase_wins_over_raw_description_passthrough(self):
+        # A lane call carrying `description` must keep its lane attribution;
+        # the generic progressive passthrough must not swallow it.
+        phrase = describe_tool_call(
+            "delegate_backend_dev", {"task": "t", "description": "migrating the schema"}
+        )
+        assert phrase == "Delegated to backend dev lane: migrating the schema"
 
 
 class TestDescribeToolCallMemoryDescription:

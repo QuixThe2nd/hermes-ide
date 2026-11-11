@@ -594,3 +594,38 @@ def test_tool_definitions_route_delegation_to_lanes():
     )
     agent = next(d for d in exposed if d["function"]["name"] == "delegate_agent")
     assert "delegate_ui_dev" in agent["function"]["description"]
+
+
+# --- Progress description (user-facing phrase; never part of the task) -------
+
+
+@pytest.mark.parametrize("lane_name", LANE_NAMES)
+def test_lane_schema_has_optional_progress_description(lane_name):
+    properties = lane_tool._schema(lane_name)["parameters"]["properties"]
+    assert "description" in properties
+    assert properties["description"]["type"] == "string"
+    assert "description" not in lane_tool._schema(lane_name)["parameters"]["required"]
+    assert "Shown to the user as progress" in properties["description"]["description"]
+
+
+def test_handler_ignores_progress_description_in_prompt(monkeypatch, workdir):
+    _configure(monkeypatch, {"backend_dev": {"models": ["provider/m"]}})
+    captured = {}
+
+    def _attempt(spec, task, directory, model, timeout, context):
+        captured["prompt"] = task
+        return {"success": True, "final_report": "done"}
+
+    monkeypatch.setitem(lane_tool._RUNNERS, "omp", _attempt)
+    result = json.loads(registry.dispatch(
+        "delegate_backend_dev",
+        {
+            "task": "Change the API",
+            "workdir": str(workdir),
+            "description": "implementing the retry gate",
+        },
+    ))
+    assert result["success"] is True
+    assert "Change the API" in captured["prompt"]
+    assert "retry gate" not in captured["prompt"]
+    assert "description" not in captured["prompt"]
