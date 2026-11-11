@@ -215,6 +215,7 @@ def handle_api_error(
     active_system_prompt = _ue.active_system_prompt
     retry_count = _ue.retry_count
     compression_attempts = _ue.compression_attempts
+    max_retries = _ue.max_retries
     return _verdict(_ue.action, _ue.result)
 
 
@@ -243,13 +244,15 @@ _RETRYABLE_CLIENT_REASONS = frozenset({
 class UnrecoveredErrorVerdict:
     """``action``: ``"continue"`` (retry), ``"break"`` (fallback armed / redirect pending) or
     ``"return"`` (``result`` is the terminal result dict). Rebinds ``active_system_prompt``,
-    ``retry_count`` and ``compression_attempts``."""
+    ``retry_count``, ``max_retries`` (raised by the extended transport-retry budget) and
+    ``compression_attempts``."""
 
     action: str
     active_system_prompt: Any
     retry_count: Any
     compression_attempts: Any
     result: Optional[Dict[str, Any]] = None
+    max_retries: Any = None
 
 
 def settle_unrecovered_error(
@@ -271,7 +274,7 @@ def settle_unrecovered_error(
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(
             action=action, active_system_prompt=active_system_prompt, retry_count=retry_count,
-            compression_attempts=compression_attempts, result=result,
+            compression_attempts=compression_attempts, result=result, max_retries=max_retries,
         )
 
     # ``FailoverReason.billing`` (402) is deliberately NOT excluded: pool rotation and
@@ -373,6 +376,39 @@ def settle_unrecovered_error(
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
             retry_count = compression_attempts = 0
             return _verdict("break")
+        # Extended transport-retry budget (2026-11-12 incident): a transient
+        # transport failure with no fallback left buys one more attempt inside
+        # the configurable window, with capped exponential backoff. Raising
+        # ``max_retries`` by exactly one keeps every later failure flowing back
+        # through this same decision (window expiry, interrupts and
+        # non-transient verdicts all fall through to the terminal result).
+        from agent.transport_retry import next_transport_retry
+
+        _transport_wait = next_transport_retry(agent, _retry, classified)
+        if _transport_wait is not None:
+            _ext_attempts = getattr(agent, "_transport_retry_attempts", 0)
+            logger.info(
+                "%sRetries exhausted but transport window is open — extended attempt %d "
+                "(waiting %.0fs; window %.0fs)",
+                agent.log_prefix, _ext_attempts, _transport_wait,
+                float(getattr(agent, "_transport_retry_window_seconds", 0.0) or 0.0),
+            )
+            _interrupted = interruptible_backoff_sleep(
+                agent, _transport_wait, _retry, messages=messages,
+                conversation_history=conversation_history, api_call_count=api_call_count,
+                abort_message="Interrupt detected during extended transport retry wait, aborting.",
+                interrupt_text=(
+                    f"Operation interrupted: extended transport retry after error "
+                    f"({type(api_error).__name__}: {agent._clean_error_message(str(api_error))})."
+                ),
+                activity_label=f"extended transport retry (wait {int(_transport_wait)}s)",
+            )
+            if _interrupted is not None:
+                return _verdict("return", _interrupted)
+            if _retry.restart_with_redirected_messages:
+                return _verdict("break")
+            max_retries += 1
+            return _verdict("continue")
         return _verdict("return", max_retries_exhausted_result(
             agent, api_error, classified, max_retries=max_retries, is_rate_limited=is_rate_limited,
             error_msg=error_msg, api_kwargs=api_kwargs, api_messages=api_messages,

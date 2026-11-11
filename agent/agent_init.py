@@ -1389,6 +1389,19 @@ def _apply_agent_section(agent, _agent_cfg):
     except (TypeError, ValueError):
         agent._retry_max_delay = 60.0
 
+    # Extended transport-retry window for transient transport failures (TTFB/idle
+    # watchdog kills, upstream 5xx, timeouts) once the regular retries are
+    # exhausted — seconds; 0 disables the extended budget (fast-fail as before).
+    from agent.transport_retry import DEFAULT_TRANSPORT_RETRY_WINDOW_SECONDS
+    try:
+        agent._transport_retry_window_seconds = float(
+            _agent_section.get("transport_retry_window_seconds", DEFAULT_TRANSPORT_RETRY_WINDOW_SECONDS))
+    except (TypeError, ValueError):
+        agent._transport_retry_window_seconds = DEFAULT_TRANSPORT_RETRY_WINDOW_SECONDS
+    # Per-turn budget bookkeeping — reset by the turn prolog (conversation_loop.py).
+    agent._transport_retry_deadline = None
+    agent._transport_retry_attempts = 0
+
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
     """``int(raw)`` when positive, else None. ``reject`` lists types refused outright (bool, float)."""

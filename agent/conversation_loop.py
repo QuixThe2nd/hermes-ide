@@ -1579,6 +1579,12 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # Per-turn transient-reconnect notice gate + extended transport-retry budget
+    # (see agent/status_output.py::_buffer_transient_reconnect_notice and
+    # agent/transport_retry.py) — one reconnect notice per turn, one window per turn.
+    agent._transient_reconnect_notice_sent = False
+    agent._transport_retry_deadline = None
+    agent._transport_retry_attempts = 0
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
@@ -1860,6 +1866,12 @@ def _run_conversation_inlined(
     # Per-turn diagnostic: a failed compression-tip adoption in a previous
     # turn's flush must not be reported against this turn.
     agent._compression_adoption_failed = False
+    # Per-turn transient-reconnect notice gate + extended transport-retry budget
+    # (see agent/status_output.py::_buffer_transient_reconnect_notice and
+    # agent/transport_retry.py) — one reconnect notice per turn, one window per turn.
+    agent._transient_reconnect_notice_sent = False
+    agent._transport_retry_deadline = None
+    agent._transport_retry_attempts = 0
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
@@ -6755,6 +6767,32 @@ def _run_conversation_inlined(
                         _retry.primary_recovery_attempted = False
                         _retry.restart_with_rebuilt_messages = True
                         break
+                    # Extended transport-retry budget (2026-11-12 incident, mirrors
+                    # settle_unrecovered_error): a transient transport failure with
+                    # no fallback left buys one more attempt inside the configurable
+                    # window, with capped exponential backoff. Raising max_retries by
+                    # exactly one keeps every later failure flowing back here.
+                    from agent.transport_retry import next_transport_retry as _next_transport_retry
+                    from agent.turn_recovery import interruptible_backoff_sleep as _interruptible_backoff_sleep
+
+                    _transport_wait = _next_transport_retry(agent, _retry, classified)
+                    if _transport_wait is not None:
+                        _interrupted = _interruptible_backoff_sleep(
+                            agent, _transport_wait, _retry, messages=messages,
+                            conversation_history=conversation_history, api_call_count=api_call_count,
+                            abort_message="Interrupt detected during extended transport retry wait, aborting.",
+                            interrupt_text=(
+                                f"Operation interrupted: extended transport retry after error "
+                                f"({type(api_error).__name__}: {agent._clean_error_message(str(api_error))})."
+                            ),
+                            activity_label=f"extended transport retry (wait {int(_transport_wait)}s)",
+                        )
+                        if _interrupted is not None:
+                            return _interrupted
+                        if _retry.restart_with_redirected_messages:
+                            break
+                        max_retries += 1
+                        continue
                     # Terminal — flush buffered retry/fallback trace.
                     agent._flush_status_buffer()
                     _final_summary = agent._summarize_api_error(api_error)
